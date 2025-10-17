@@ -883,13 +883,35 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 		return nil, nil, m.err
 	}
 
+	if listener == nil {
+		return nil, nil, errors.New("listener cannot be nil")
+	}
+
+	// Create a done channel to stop the goroutine
+	done := make(chan struct{})
+
 	// Start goroutine to handle updates
 	go func() {
-		for creds := range m.updates {
-			m.mu.Lock()
-			m.credentials = creds
-			m.mu.Unlock()
-			listener.OnNext(creds)
+		defer func() {
+			if r := recover(); r != nil {
+				// this is just a mock:
+				// allow panics to be caught without crashing
+			}
+		}()
+
+		for {
+			select {
+			case <-done:
+				return
+			case creds, ok := <-m.updates:
+				if !ok {
+					return
+				}
+				m.mu.Lock()
+				m.credentials = creds
+				m.mu.Unlock()
+				listener.OnNext(creds)
+			}
 		}
 	}()
 
@@ -904,6 +926,7 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 				// allow multiple closes from multiple listeners
 			}
 		}()
+		close(done)
 		return
 	}, nil
 }

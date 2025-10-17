@@ -373,11 +373,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
-		credListener := c.streamingCredentialsManager.Listener(
+		credListener, err := c.streamingCredentialsManager.Listener(
 			cn,
 			c.reAuthConnection(),
 			c.onAuthenticationErr(),
 		)
+		if err != nil {
+			return fmt.Errorf("failed to create credentials listener: %w", err)
+		}
 
 		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
 			Subscribe(credListener)

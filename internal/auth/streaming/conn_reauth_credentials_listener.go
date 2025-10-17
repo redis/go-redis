@@ -59,19 +59,5 @@ func (c *ConnReAuthCredentialsListener) OnError(err error) {
 	c.onErr(c.conn, err)
 }
 
-// newConnReAuthCredentialsListener creates a new ConnReAuthCredentialsListener.
-// Implements the auth.CredentialsListener interface.
-func newConnReAuthCredentialsListener(
-	conn *pool.Conn,
-	reAuth func(conn *pool.Conn, credentials auth.Credentials) error,
-	onErr func(conn *pool.Conn, err error),
-) *ConnReAuthCredentialsListener {
-	return &ConnReAuthCredentialsListener{
-		conn:   conn,
-		reAuth: reAuth,
-		onErr:  onErr,
-	}
-}
-
 // Ensure ConnReAuthCredentialsListener implements the CredentialsListener interface.
 var _ auth.CredentialsListener = (*ConnReAuthCredentialsListener)(nil)

@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"errors"
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
@@ -29,19 +30,24 @@ func (m *Manager) Listener(
 	poolCn *pool.Conn,
 	reAuth func(*pool.Conn, auth.Credentials) error,
 	onErr func(*pool.Conn, error),
-) auth.CredentialsListener {
+) (auth.CredentialsListener, error) {
+	if poolCn == nil {
+		return nil, errors.New("poolCn cannot be nil")
+	}
 	connID := poolCn.GetID()
 	listener, ok := m.credentialsListeners.Get(connID)
-	if !ok {
-		newCredListener := newConnReAuthCredentialsListener(
-			poolCn,
-			reAuth,
-			onErr,
-		)
-		newCredListener.manager = m
+	if !ok || listener == nil {
+		newCredListener := &ConnReAuthCredentialsListener{
+			conn:    poolCn,
+			reAuth:  reAuth,
+			onErr:   onErr,
+			manager: m,
+		}
+
 		m.credentialsListeners.Add(connID, newCredListener)
+		listener = newCredListener
 	}
-	return listener
+	return listener, nil
 }
 
 func (m *Manager) MarkForReAuth(poolCn *pool.Conn, reAuthFn func(error)) {
