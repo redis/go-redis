@@ -500,7 +500,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		// this should not happen with a new connection, but we handle it gracefully
 		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
-			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accpet=%v, err=%v", newcn.GetID(), acceptConn, err)
+			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}
