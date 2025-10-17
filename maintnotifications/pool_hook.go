@@ -174,6 +174,10 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 	return true, false, nil
 }
 
+func (ph *PoolHook) OnRemove(_ context.Context, _ *pool.Conn, _ error) {
+	// Not used
+}
+
 // Shutdown gracefully shuts down the processor, waiting for workers to complete
 func (ph *PoolHook) Shutdown(ctx context.Context) error {
 	return ph.workerManager.shutdownWorkers(ctx)

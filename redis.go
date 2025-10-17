@@ -217,9 +217,7 @@ type baseClient struct {
 	pubSubPool *pool.PubSubPool
 	hooksMixin
 
-	onClose      func() error // hook called when client is closed
-	onCloseSlice []func() error
-	onCloseMu    sync.Mutex
+	onClose func() error // hook called when client is closed
 
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
