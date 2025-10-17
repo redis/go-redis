@@ -1,5 +1,16 @@
 # Release Notes
 
+# 9.14.1 (2025-10-15)
+
+## Changes
+- fix(otel): Add support for filtering traces for certain commands ([#3519](https://github.com/redis/go-redis/pull/3519))
+- fix(pool): remove conn from idleConns if present ([#3546](https://github.com/redis/go-redis/pull/3546))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@Sovietaced](https://github.com/Sovietaced), [@ndyakov](https://github.com/ndyakov)
+
 # 9.14.0 (2025-09-10)
 
 ## Highlights
