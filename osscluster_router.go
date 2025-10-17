@@ -21,7 +21,7 @@ type slotResult struct {
 
 // routeAndRun routes a command to the appropriate cluster nodes and executes it
 func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *clusterNode) error {
-	policy := c.cmdInfoResolver.getCommandPolicy(ctx, cmd.Name())
+	policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd.Name())
 	if policy == nil {
 		return c.executeDefault(ctx, cmd, node)
 	}
