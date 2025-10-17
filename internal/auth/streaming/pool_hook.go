@@ -92,8 +92,11 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			var err error
 			timeout := time.After(r.reAuthTimeout)
 
-			// Try to acquire the connection (set Usable to false)
-			for !conn.Usable.CompareAndSwap(true, false) {
+			// Try to acquire the connection
+			// We need to ensure the connection is both Usable and not Used
+			// to prevent data races with concurrent operations
+			acquired := false
+			for !acquired {
 				select {
 				case <-timeout:
 					// Timeout occurred, cannot acquire connection
@@ -101,7 +104,12 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 					reAuthFn(err)
 					return
 				default:
-					time.Sleep(time.Millisecond)
+					// Try to acquire: set Usable=false only if Used=false
+					if !conn.Used.Load() && conn.Usable.CompareAndSwap(true, false) {
+						acquired = true
+					} else {
+						time.Sleep(time.Millisecond)
+					}
 				}
 			}
 

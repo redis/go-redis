@@ -305,6 +305,8 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
 		username, password := credentials.BasicAuth()
+
+		// Use background context - timeout is handled by ReadTimeout in WithReader/WithWriter
 		ctx := context.Background()
 
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
