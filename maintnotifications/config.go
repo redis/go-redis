@@ -1,4 +1,4 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
@@ -8,24 +8,24 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/util"
-	"github.com/redis/go-redis/v9/logging"
 )
 
-// MaintNotificationsMode represents the maintenance notifications mode
-type MaintNotificationsMode string
+// Mode represents the maintenance notifications mode
+type Mode string
 
 // Constants for maintenance push notifications modes
 const (
-	MaintNotificationsDisabled MaintNotificationsMode = "disabled" // Client doesn't send CLIENT MAINT_NOTIFICATIONS ON command
-	MaintNotificationsEnabled  MaintNotificationsMode = "enabled"  // Client forcefully sends command, interrupts connection on error
-	MaintNotificationsAuto     MaintNotificationsMode = "auto"     // Client tries to send command, disables feature on error
+	ModeDisabled Mode = "disabled" // Client doesn't send CLIENT MAINT_NOTIFICATIONS ON command
+	ModeEnabled  Mode = "enabled"  // Client forcefully sends command, interrupts connection on error
+	ModeAuto     Mode = "auto"     // Client tries to send command, disables feature on error
 )
 
 // IsValid returns true if the maintenance notifications mode is valid
-func (m MaintNotificationsMode) IsValid() bool {
+func (m Mode) IsValid() bool {
 	switch m {
-	case MaintNotificationsDisabled, MaintNotificationsEnabled, MaintNotificationsAuto:
+	case ModeDisabled, ModeEnabled, ModeAuto:
 		return true
 	default:
 		return false
@@ -33,7 +33,7 @@ func (m MaintNotificationsMode) IsValid() bool {
 }
 
 // String returns the string representation of the mode
-func (m MaintNotificationsMode) String() string {
+func (m Mode) String() string {
 	return string(m)
 }
 
@@ -66,12 +66,12 @@ func (e EndpointType) String() string {
 	return string(e)
 }
 
-// Config provides configuration options for hitless upgrades.
+// Config provides configuration options for maintenance notifications
 type Config struct {
 	// Mode controls how client maintenance notifications are handled.
-	// Valid values: MaintNotificationsDisabled, MaintNotificationsEnabled, MaintNotificationsAuto
-	// Default: MaintNotificationsAuto
-	Mode MaintNotificationsMode
+	// Valid values: ModeDisabled, ModeEnabled, ModeAuto
+	// Default: ModeAuto
+	Mode Mode
 
 	// EndpointType specifies the type of endpoint to request in MOVING notifications.
 	// Valid values: EndpointTypeAuto, EndpointTypeInternalIP, EndpointTypeInternalFQDN,
@@ -111,11 +111,6 @@ type Config struct {
 	// Default: 2 * RelaxedTimeout
 	PostHandoffRelaxedDuration time.Duration
 
-	// LogLevel controls the verbosity of hitless upgrade logging.
-	// LogLevelError (0) = errors only, LogLevelWarn (1) = warnings, LogLevelInfo (2) = info, LogLevelDebug (3) = debug
-	// Default: logging.LogLevelError(0)
-	LogLevel logging.LogLevel
-
 	// Circuit breaker configuration for endpoint failure handling
 	// CircuitBreakerFailureThreshold is the number of failures before opening the circuit.
 	// Default: 5
@@ -136,20 +131,19 @@ type Config struct {
 }
 
 func (c *Config) IsEnabled() bool {
-	return c != nil && c.Mode != MaintNotificationsDisabled
+	return c != nil && c.Mode != ModeDisabled
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		Mode:                       MaintNotificationsAuto, // Enable by default for Redis Cloud
-		EndpointType:               EndpointTypeAuto,       // Auto-detect based on connection
+		Mode:                       ModeAuto,         // Enable by default for Redis Cloud
+		EndpointType:               EndpointTypeAuto, // Auto-detect based on connection
 		RelaxedTimeout:             10 * time.Second,
 		HandoffTimeout:             15 * time.Second,
 		MaxWorkers:                 0, // Auto-calculated based on pool size
 		HandoffQueueSize:           0, // Auto-calculated based on max workers
 		PostHandoffRelaxedDuration: 0, // Auto-calculated based on relaxed timeout
-		LogLevel:                   logging.LogLevelError,
 
 		// Circuit breaker configuration
 		CircuitBreakerFailureThreshold: 5,
@@ -180,9 +174,6 @@ func (c *Config) Validate() error {
 	}
 	if c.PostHandoffRelaxedDuration < 0 {
 		return ErrInvalidPostHandoffRelaxedDuration
-	}
-	if !c.LogLevel.IsValid() {
-		return ErrInvalidLogLevel
 	}
 
 	// Circuit breaker validation
@@ -299,10 +290,6 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.PostHandoffRelaxedDuration = c.PostHandoffRelaxedDuration
 	}
 
-	// LogLevel: 0 is a valid value (errors only), so we need to check if it was explicitly set
-	// We'll use the provided value as-is, since 0 is valid
-	result.LogLevel = c.LogLevel
-
 	// Apply defaults for configuration fields
 	result.MaxHandoffRetries = defaults.MaxHandoffRetries
 	if c.MaxHandoffRetries > 0 {
@@ -325,9 +312,9 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
 	}
 
-	if result.LogLevel.DebugOrAbove() {
-		internal.Logger.Printf(context.Background(), "hitless: debug logging enabled")
-		internal.Logger.Printf(context.Background(), "hitless: config: %+v", result)
+	if internal.LogLevel.DebugOrAbove() {
+		internal.Logger.Printf(context.Background(), logs.DebugLoggingEnabled())
+		internal.Logger.Printf(context.Background(), logs.ConfigDebug(result))
 	}
 	return result
 }
@@ -346,7 +333,6 @@ func (c *Config) Clone() *Config {
 		MaxWorkers:                 c.MaxWorkers,
 		HandoffQueueSize:           c.HandoffQueueSize,
 		PostHandoffRelaxedDuration: c.PostHandoffRelaxedDuration,
-		LogLevel:                   c.LogLevel,
 
 		// Circuit breaker configuration
 		CircuitBreakerFailureThreshold: c.CircuitBreakerFailureThreshold,

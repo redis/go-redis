@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-	"github.com/redis/go-redis/v9/hitless"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -261,17 +261,13 @@ type Options struct {
 	// Default is 15 seconds.
 	FailingTimeoutSeconds int
 
-	// HitlessUpgradeConfig provides custom configuration for hitless upgrades.
-	// When HitlessUpgradeConfig.Mode is not "disabled", the client will handle
+	// MaintNotificationsConfig provides custom configuration for maintnotifications.
+	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
 	// cluster upgrade notifications gracefully and manage connection/pool state
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
-	// If nil, hitless upgrades are in "auto" mode and will be enabled if the server supports it.
-	HitlessUpgradeConfig *HitlessUpgradeConfig
+	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
+	MaintNotificationsConfig *maintnotifications.Config
 }
-
-// HitlessUpgradeConfig provides configuration options for hitless upgrades.
-// This is an alias to hitless.Config for convenience.
-type HitlessUpgradeConfig = hitless.Config
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
@@ -359,24 +355,24 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
 
-	opt.HitlessUpgradeConfig = opt.HitlessUpgradeConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
+	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
 	// auto-detect endpoint type if not specified
-	endpointType := opt.HitlessUpgradeConfig.EndpointType
-	if endpointType == "" || endpointType == hitless.EndpointTypeAuto {
+	endpointType := opt.MaintNotificationsConfig.EndpointType
+	if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
 		// Auto-detect endpoint type if not specified
-		endpointType = hitless.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+		endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
 	}
-	opt.HitlessUpgradeConfig.EndpointType = endpointType
+	opt.MaintNotificationsConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {
 	clone := *opt
 
-	// Deep clone HitlessUpgradeConfig to avoid sharing between clients
-	if opt.HitlessUpgradeConfig != nil {
-		configClone := *opt.HitlessUpgradeConfig
-		clone.HitlessUpgradeConfig = &configClone
+	// Deep clone MaintNotificationsConfig to avoid sharing between clients
+	if opt.MaintNotificationsConfig != nil {
+		configClone := *opt.MaintNotificationsConfig
+		clone.MaintNotificationsConfig = &configClone
 	}
 
 	return &clone

@@ -1,6 +1,6 @@
-package hitless
+package maintnotifications
 
-// State represents the current state of a hitless upgrade operation.
+// State represents the current state of a maintenance operation
 type State int
 
 const (

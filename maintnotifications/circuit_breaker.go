@@ -1,4 +1,4 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker
@@ -101,9 +102,8 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
 				cb.requests.Store(0)
 				cb.successes.Store(0)
-				if cb.config != nil && cb.config.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(),
-						"hitless: circuit breaker for %s transitioning to half-open", cb.endpoint)
+				if internal.LogLevel.InfoOrAbove() {
+					internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
 				}
 				// Fall through to half-open logic
 			} else {
@@ -144,20 +144,16 @@ func (cb *CircuitBreaker) recordFailure() {
 	case CircuitBreakerClosed:
 		if failures >= int64(cb.failureThreshold) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerClosed), int32(CircuitBreakerOpen)) {
-				if cb.config != nil && cb.config.LogLevel.WarnOrAbove() {
-					internal.Logger.Printf(context.Background(),
-						"hitless: circuit breaker opened for endpoint %s after %d failures",
-						cb.endpoint, failures)
+				if internal.LogLevel.WarnOrAbove() {
+					internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
 				}
 			}
 		}
 	case CircuitBreakerHalfOpen:
 		// Any failure in half-open state immediately opens the circuit
 		if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerOpen)) {
-			if cb.config != nil && cb.config.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(),
-					"hitless: circuit breaker reopened for endpoint %s due to failure in half-open state",
-					cb.endpoint)
+			if internal.LogLevel.WarnOrAbove() {
+				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
 			}
 		}
 	}
@@ -180,10 +176,8 @@ func (cb *CircuitBreaker) recordSuccess() {
 		if successes >= int64(cb.maxRequests) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerClosed)) {
 				cb.failures.Store(0)
-				if cb.config != nil && cb.config.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(),
-						"hitless: circuit breaker closed for endpoint %s after %d successful requests",
-						cb.endpoint, successes)
+				if internal.LogLevel.InfoOrAbove() {
+					internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
 				}
 			}
 		}
@@ -331,9 +325,8 @@ func (cbm *CircuitBreakerManager) cleanup() {
 	}
 
 	// Log cleanup results
-	if len(toDelete) > 0 && cbm.config != nil && cbm.config.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(context.Background(),
-			"hitless: circuit breaker cleanup removed %d/%d entries", len(toDelete), count)
+	if len(toDelete) > 0 && internal.LogLevel.InfoOrAbove() {
+		internal.Logger.Printf(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
 	}
 
 	cbm.lastCleanup.Store(now.Unix())

@@ -1,7 +1,8 @@
-package hitless
+package maintnotifications
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -10,11 +11,12 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
+	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/push"
 )
 
-// Push notification type constants for hitless upgrades
+// Push notification type constants for maintenance
 const (
 	NotificationMoving      = "MOVING"
 	NotificationMigrating   = "MIGRATING"
@@ -23,8 +25,8 @@ const (
 	NotificationFailedOver  = "FAILED_OVER"
 )
 
-// hitlessNotificationTypes contains all notification types that hitless upgrades handles
-var hitlessNotificationTypes = []string{
+// maintenanceNotificationTypes contains all notification types that maintenance handles
+var maintenanceNotificationTypes = []string{
 	NotificationMoving,
 	NotificationMigrating,
 	NotificationMigrated,
@@ -53,8 +55,8 @@ func (k MovingOperationKey) String() string {
 	return fmt.Sprintf("seq:%d-conn:%d", k.SeqID, k.ConnID)
 }
 
-// HitlessManager provides a simplified hitless upgrade functionality with hooks and atomic state.
-type HitlessManager struct {
+// Manager provides a simplified upgrade functionality with hooks and atomic state.
+type Manager struct {
 	client  interfaces.ClientInterface
 	config  *Config
 	options interfaces.OptionsInterface
@@ -81,13 +83,13 @@ type MovingOperation struct {
 	Deadline    time.Time
 }
 
-// NewHitlessManager creates a new simplified hitless manager.
-func NewHitlessManager(client interfaces.ClientInterface, pool pool.Pooler, config *Config) (*HitlessManager, error) {
+// NewManager creates a new simplified manager.
+func NewManager(client interfaces.ClientInterface, pool pool.Pooler, config *Config) (*Manager, error) {
 	if client == nil {
 		return nil, ErrInvalidClient
 	}
 
-	hm := &HitlessManager{
+	hm := &Manager{
 		client:  client,
 		pool:    pool,
 		options: client.GetOptions(),
@@ -104,25 +106,25 @@ func NewHitlessManager(client interfaces.ClientInterface, pool pool.Pooler, conf
 }
 
 // GetPoolHook creates a pool hook with a custom dialer.
-func (hm *HitlessManager) InitPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) {
+func (hm *Manager) InitPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) {
 	poolHook := hm.createPoolHook(baseDialer)
 	hm.pool.AddPoolHook(poolHook)
 }
 
 // setupPushNotifications sets up push notification handling by registering with the client's processor.
-func (hm *HitlessManager) setupPushNotifications() error {
+func (hm *Manager) setupPushNotifications() error {
 	processor := hm.client.GetPushProcessor()
 	if processor == nil {
 		return ErrInvalidClient // Client doesn't support push notifications
 	}
 
 	// Create our notification handler
-	handler := &NotificationHandler{manager: hm}
+	handler := &NotificationHandler{manager: hm, operationsManager: hm}
 
-	// Register handlers for all hitless upgrade notifications with the client's processor
-	for _, notificationType := range hitlessNotificationTypes {
+	// Register handlers for all upgrade notifications with the client's processor
+	for _, notificationType := range maintenanceNotificationTypes {
 		if err := processor.RegisterHandler(notificationType, handler, true); err != nil {
-			return fmt.Errorf("failed to register handler for %s: %w", notificationType, err)
+			return errors.New(logs.FailedToRegisterHandler(notificationType, err))
 		}
 	}
 
@@ -130,7 +132,7 @@ func (hm *HitlessManager) setupPushNotifications() error {
 }
 
 // TrackMovingOperationWithConnID starts a new MOVING operation with a specific connection ID.
-func (hm *HitlessManager) TrackMovingOperationWithConnID(ctx context.Context, newEndpoint string, deadline time.Time, seqID int64, connID uint64) error {
+func (hm *Manager) TrackMovingOperationWithConnID(ctx context.Context, newEndpoint string, deadline time.Time, seqID int64, connID uint64) error {
 	// Create composite key
 	key := MovingOperationKey{
 		SeqID:  seqID,
@@ -148,13 +150,13 @@ func (hm *HitlessManager) TrackMovingOperationWithConnID(ctx context.Context, ne
 	// Use LoadOrStore for atomic check-and-set operation
 	if _, loaded := hm.activeMovingOps.LoadOrStore(key, movingOp); loaded {
 		// Duplicate MOVING notification, ignore
-		if hm.config.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Duplicate MOVING operation ignored: %s", connID, seqID, key.String())
+		if internal.LogLevel.DebugOrAbove() { // Debug level
+			internal.Logger.Printf(context.Background(), logs.DuplicateMovingOperation(connID, newEndpoint, seqID))
 		}
 		return nil
 	}
-	if hm.config.LogLevel.DebugOrAbove() { // Debug level
-		internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Tracking MOVING operation: %s", connID, seqID, key.String())
+	if internal.LogLevel.DebugOrAbove() { // Debug level
+		internal.Logger.Printf(context.Background(), logs.TrackingMovingOperation(connID, newEndpoint, seqID))
 	}
 
 	// Increment active operation count atomically
@@ -164,7 +166,7 @@ func (hm *HitlessManager) TrackMovingOperationWithConnID(ctx context.Context, ne
 }
 
 // UntrackOperationWithConnID completes a MOVING operation with a specific connection ID.
-func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64) {
+func (hm *Manager) UntrackOperationWithConnID(seqID int64, connID uint64) {
 	// Create composite key
 	key := MovingOperationKey{
 		SeqID:  seqID,
@@ -173,14 +175,14 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 
 	// Remove from active operations atomically
 	if _, loaded := hm.activeMovingOps.LoadAndDelete(key); loaded {
-		if hm.config.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Untracking MOVING operation: %s", connID, seqID, key.String())
+		if internal.LogLevel.DebugOrAbove() { // Debug level
+			internal.Logger.Printf(context.Background(), logs.UntrackingMovingOperation(connID, seqID))
 		}
 		// Decrement active operation count only if operation existed
 		hm.activeOperationCount.Add(-1)
 	} else {
-		if hm.config.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), "hitless: conn[%d] seqID[%d] Operation not found for untracking: %s", connID, seqID, key.String())
+		if internal.LogLevel.DebugOrAbove() { // Debug level
+			internal.Logger.Printf(context.Background(), logs.OperationNotTracked(connID, seqID))
 		}
 	}
 }
@@ -188,7 +190,7 @@ func (hm *HitlessManager) UntrackOperationWithConnID(seqID int64, connID uint64)
 // GetActiveMovingOperations returns active operations with composite keys.
 // WARNING: This method creates a new map and copies all operations on every call.
 // Use sparingly, especially in hot paths or high-frequency logging.
-func (hm *HitlessManager) GetActiveMovingOperations() map[MovingOperationKey]*MovingOperation {
+func (hm *Manager) GetActiveMovingOperations() map[MovingOperationKey]*MovingOperation {
 	result := make(map[MovingOperationKey]*MovingOperation)
 
 	// Iterate over sync.Map to build result
@@ -211,18 +213,18 @@ func (hm *HitlessManager) GetActiveMovingOperations() map[MovingOperationKey]*Mo
 
 // IsHandoffInProgress returns true if any handoff is in progress.
 // Uses atomic counter for lock-free operation.
-func (hm *HitlessManager) IsHandoffInProgress() bool {
+func (hm *Manager) IsHandoffInProgress() bool {
 	return hm.activeOperationCount.Load() > 0
 }
 
 // GetActiveOperationCount returns the number of active operations.
 // Uses atomic counter for lock-free operation.
-func (hm *HitlessManager) GetActiveOperationCount() int64 {
+func (hm *Manager) GetActiveOperationCount() int64 {
 	return hm.activeOperationCount.Load()
 }
 
-// Close closes the hitless manager.
-func (hm *HitlessManager) Close() error {
+// Close closes the manager.
+func (hm *Manager) Close() error {
 	// Use atomic operation for thread-safe close check
 	if !hm.closed.CompareAndSwap(false, true) {
 		return nil // Already closed
@@ -259,7 +261,7 @@ func (hm *HitlessManager) Close() error {
 }
 
 // GetState returns current state using atomic counter for lock-free operation.
-func (hm *HitlessManager) GetState() State {
+func (hm *Manager) GetState() State {
 	if hm.activeOperationCount.Load() > 0 {
 		return StateMoving
 	}
@@ -267,7 +269,7 @@ func (hm *HitlessManager) GetState() State {
 }
 
 // processPreHooks calls all pre-hooks and returns the modified notification and whether to continue processing.
-func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (hm *Manager) processPreHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 
@@ -285,7 +287,7 @@ func (hm *HitlessManager) processPreHooks(ctx context.Context, notificationCtx p
 }
 
 // processPostHooks calls all post-hooks with the processing result.
-func (hm *HitlessManager) processPostHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+func (hm *Manager) processPostHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 
@@ -295,7 +297,7 @@ func (hm *HitlessManager) processPostHooks(ctx context.Context, notificationCtx 
 }
 
 // createPoolHook creates a pool hook with this manager already set.
-func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
+func (hm *Manager) createPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) *PoolHook {
 	if hm.poolHooksRef != nil {
 		return hm.poolHooksRef
 	}
@@ -311,7 +313,7 @@ func (hm *HitlessManager) createPoolHook(baseDialer func(context.Context, string
 	return hm.poolHooksRef
 }
 
-func (hm *HitlessManager) AddNotificationHook(notificationHook NotificationHook) {
+func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooksMu.Lock()
 	defer hm.hooksMu.Unlock()
 	hm.hooks = append(hm.hooks, notificationHook)
