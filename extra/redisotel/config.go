@@ -22,9 +22,11 @@ type config struct {
 	tp     trace.TracerProvider
 	tracer trace.Tracer
 
-	dbStmtEnabled bool
-	callerEnabled bool
-	filter        func(cmd redis.Cmder) bool
+	dbStmtEnabled         bool
+	callerEnabled         bool
+	filterDial            bool
+	filterProcessPipeline func(cmds []redis.Cmder) bool
+	filterProcess         func(cmd redis.Cmder) bool
 
 	// Metrics options.
 
@@ -132,7 +134,23 @@ func WithCallerEnabled(on bool) TracingOption {
 // passwords.
 func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
 	return tracingOption(func(conf *config) {
-		conf.filter = filter
+		conf.filterProcess = filter
+	})
+}
+
+// WithCommandsFilter allows filtering of pipeline commands
+// when tracing to omit commands that may have sensitive details like
+// passwords in a pipeline.
+func WithCommandsFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterProcessPipeline = filter
+	})
+}
+
+// WithDialFilter enables or disables filtering of dial commands.
+func WithDialFilter(on bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterDial = on
 	})
 }
 
