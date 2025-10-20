@@ -1017,7 +1017,7 @@ type ClusterClient struct {
 	nodes           *clusterNodes
 	state           *clusterStateHolder
 	cmdsInfoCache   *cmdsInfoCache
-	cmdInfoResolver *CommandInfoResolver
+	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
 }
@@ -1425,7 +1425,10 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 
 	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
 		for _, cmd := range cmds {
-			policy := c.extractCommandInfo(ctx, cmd)
+			var policy *routing.CommandPolicy
+			if c.cmdInfoResolver != nil {
+				policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+			}
 			if policy != nil && !policy.CanBeUsedInPipeline() {
 				return fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -1442,7 +1445,10 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 	}
 
 	for _, cmd := range cmds {
-		policy := c.extractCommandInfo(ctx, cmd)
+		var policy *routing.CommandPolicy
+		if c.cmdInfoResolver != nil {
+			policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+		}
 		if policy != nil && !policy.CanBeUsedInPipeline() {
 			return fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
@@ -2199,11 +2205,11 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-func (c *ClusterClient) GetResolver() *CommandInfoResolver {
+func (c *ClusterClient) GetResolver() *commandInfoResolver {
 	return c.cmdInfoResolver
 }
 
-func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver *CommandInfoResolver) {
+func (c *ClusterClient) SetCommandInfoResolver(cmdInfoResolver *commandInfoResolver) {
 	c.cmdInfoResolver = cmdInfoResolver
 }
 
@@ -2218,9 +2224,9 @@ func (c *ClusterClient) extractCommandInfo(ctx context.Context, cmd Cmder) *rout
 
 // NewDynamicResolver returns a CommandInfoResolver
 // that uses the underlying cmdInfo cache to resolve the policies
-func (c *ClusterClient) NewDynamicResolver() *CommandInfoResolver {
-	return &CommandInfoResolver{
-		resolve: c.extractCommandInfo,
+func (c *ClusterClient) NewDynamicResolver() *commandInfoResolver {
+	return &commandInfoResolver{
+		resolveFunc: c.extractCommandInfo,
 	}
 }
 

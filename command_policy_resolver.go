@@ -117,18 +117,20 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 	},
 }
 
-type CommandInfoResolver struct {
-	resolve          func(ctx context.Context, cmd Cmder) *routing.CommandPolicy
-	fallBackResolver *CommandInfoResolver
+type CommandInfoResolveFunc func(ctx context.Context, cmd Cmder) *routing.CommandPolicy
+
+type commandInfoResolver struct {
+	resolveFunc      CommandInfoResolveFunc
+	fallBackResolver *commandInfoResolver
 }
 
-func NewCommandInfoResolver(resolver func(ctx context.Context, cmd Cmder) *routing.CommandPolicy) *CommandInfoResolver {
-	return &CommandInfoResolver{
-		resolve: resolver,
+func NewCommandInfoResolver(resolveFunc CommandInfoResolveFunc) *commandInfoResolver {
+	return &commandInfoResolver{
+		resolveFunc: resolveFunc,
 	}
 }
 
-func NewDefaultCommandPolicyResolver() *CommandInfoResolver {
+func NewDefaultCommandPolicyResolver() *commandInfoResolver {
 	return NewCommandInfoResolver(func(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
 		module := "core"
 		command := cmd.Name()
@@ -146,12 +148,12 @@ func NewDefaultCommandPolicyResolver() *CommandInfoResolver {
 	})
 }
 
-func (r *CommandInfoResolver) GetCommandPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
-	if r.resolve == nil {
+func (r *commandInfoResolver) GetCommandPolicy(ctx context.Context, cmd Cmder) *routing.CommandPolicy {
+	if r.resolveFunc == nil {
 		return nil
 	}
 
-	policy := r.resolve(ctx, cmd)
+	policy := r.resolveFunc(ctx, cmd)
 	if policy != nil {
 		return policy
 	}
@@ -163,6 +165,6 @@ func (r *CommandInfoResolver) GetCommandPolicy(ctx context.Context, cmd Cmder) *
 	return nil
 }
 
-func (r *CommandInfoResolver) SetFallbackResolver(fallbackResolver *CommandInfoResolver) {
+func (r *commandInfoResolver) SetFallbackResolver(fallbackResolver *commandInfoResolver) {
 	r.fallBackResolver = fallbackResolver
 }
