@@ -41,7 +41,7 @@ func generateConnID() uint64 {
 
 type Conn struct {
 	// Connection identifier for unique tracking
-	id uint64 // Unique numeric identifier for this connection
+	id uint64
 
 	usedAt int64 // atomic
 
