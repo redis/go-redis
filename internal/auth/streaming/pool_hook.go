@@ -79,6 +79,8 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 	r.shouldReAuthLock.RUnlock()
 
 	if ok {
+		// Acquire both locks to atomically move from shouldReAuth to scheduledReAuth
+		// This prevents race conditions where OnGet might miss the transition
 		r.shouldReAuthLock.Lock()
 		r.scheduledLock.Lock()
 		r.scheduledReAuth[connID] = true

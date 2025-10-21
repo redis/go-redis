@@ -39,10 +39,11 @@ func (m *Manager) Listener(
 	connID := poolCn.GetID()
 	// if we reconnect the underlying network connection, the streaming credentials listener will continue to work
 	// so we can get the old listener from the cache and use it.
-
 	// subscribing the same (an already subscribed) listener for a StreamingCredentialsProvider SHOULD be a no-op
 	listener, ok := m.credentialsListeners.Get(connID)
 	if !ok || listener == nil {
+		// Create new listener for this connection
+		// Note: Callbacks (reAuth, onErr) are captured once and reused for the connection's lifetime
 		newCredListener := &ConnReAuthCredentialsListener{
 			conn:    poolCn,
 			reAuth:  reAuth,

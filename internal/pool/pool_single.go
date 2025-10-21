@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// SingleConnPool is a pool that always returns the same connection.
+// Note: This pool is not thread-safe.
+// It is intended to be used by clients that need a single connection.
 type SingleConnPool struct {
 	pool      Pooler
 	cn        *Conn
@@ -13,6 +16,12 @@ type SingleConnPool struct {
 
 var _ Pooler = (*SingleConnPool)(nil)
 
+// NewSingleConnPool creates a new single connection pool.
+// The pool will always return the same connection.
+// The pool will not:
+// - Close the connection
+// - Reconnect the connection
+// - Track the connection in any way
 func NewSingleConnPool(pool Pooler, cn *Conn) *SingleConnPool {
 	return &SingleConnPool{
 		pool: pool,
