@@ -13,7 +13,7 @@ type ReAuthPoolHook struct {
 	shouldReAuth     map[uint64]func(error)
 	shouldReAuthLock sync.RWMutex
 	workers          chan struct{}
-	reAuthTimeout time.Duration
+	reAuthTimeout    time.Duration
 	// conn id -> bool
 	scheduledReAuth map[uint64]bool
 	scheduledLock   sync.RWMutex
@@ -62,7 +62,8 @@ func (r *ReAuthPoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (acce
 	r.scheduledLock.RUnlock()
 	// has scheduled reauth, reject the connection
 	if ok && hasScheduled {
-		// simply reject the connection, it will be re-authenticated in OnPut
+		// simply reject the connection, it currently has a reauth scheduled
+		// and the worker is waiting for slot to execute the reauth
 		return false, nil
 	}
 	return true, nil
@@ -149,9 +150,6 @@ func (r *ReAuthPoolHook) OnRemove(_ context.Context, conn *pool.Conn, _ error) {
 	r.scheduledLock.Lock()
 	delete(r.scheduledReAuth, conn.GetID())
 	r.scheduledLock.Unlock()
-	r.shouldReAuthLock.Lock()
-	delete(r.shouldReAuth, conn.GetID())
-	r.shouldReAuthLock.Unlock()
 	r.ClearReAuthMark(conn.GetID())
 }
 
