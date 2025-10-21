@@ -67,10 +67,10 @@ func newConfig(opts ...baseOption) *config {
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
 		callerEnabled: true,
-		filterProcess: defaultCommandFilter,
+		filterProcess: DefaultCommandFilter,
 		filterProcessPipeline: func(cmds []redis.Cmder) bool {
 			for _, cmd := range cmds {
-				if defaultCommandFilter(cmd) {
+				if DefaultCommandFilter(cmd) {
 					return true
 				}
 			}
@@ -163,7 +163,8 @@ func WithDialFilter(on bool) TracingOption {
 	})
 }
 
-func defaultCommandFilter(cmd redis.Cmder) bool {
+// DefaultCommandFilter filters out AUTH commands from tracing.
+func DefaultCommandFilter(cmd redis.Cmder) bool {
 	if strings.ToLower(cmd.Name()) == "auth" {
 		return true
 	}
