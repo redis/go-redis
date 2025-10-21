@@ -3407,14 +3407,16 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(rawValResults[0]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 		Expect(rawValResults[1]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
-			rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
-			rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
-			Expect(rawRes).To(BeNil())
-			Expect(rawVal).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
+		rawRes, err := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawRes).To(BeNil())
+
+		rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+		Expect(client2.FTAggregateWithArgs(ctx, "idx1", "*", options).Err()).To(HaveOccurred())
+		Expect(rawVal).To(BeNil())
 
 	})
 
@@ -3435,13 +3437,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		flags = attributes[0].(map[interface{}]interface{})["flags"].([]interface{})
 		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
-			rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
-			Expect(rawResInfo).To(BeNil())
-			Expect(rawValInfo).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResInfo, err := client2.FTInfo(ctx, "idx1").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResInfo).To(BeNil())
+
+		rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
+		Expect(client2.FTInfo(ctx, "idx1").Err()).To(HaveOccurred())
+		Expect(rawValInfo).To(BeNil())
 	})
 
 	It("should handle FTSpellCheck with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftspellcheck"), func() {
@@ -3462,13 +3466,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		results := resSpellCheck.(map[interface{}]interface{})["results"].(map[interface{}]interface{})
 		Expect(results["impornant"].([]interface{})[0].(map[interface{}]interface{})["important"]).To(BeEquivalentTo(0.5))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
-			rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
-			Expect(rawResSpellCheck).To(BeNil())
-			Expect(rawValSpellCheck).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResSpellCheck, err := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResSpellCheck).To(BeNil())
+
+		rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
+		Expect(client2.FTSpellCheck(ctx, "idx1", "impornant").Err()).To(HaveOccurred())
+		Expect(rawValSpellCheck).To(BeNil())
 	})
 
 	It("should handle FTSearch with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftsearch"), func() {
@@ -3489,13 +3495,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		totalResults2 := res2.(map[interface{}]interface{})["total_results"]
 		Expect(totalResults2).To(BeEquivalentTo(int64(1)))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
-			rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
-			Expect(rawRes2).To(BeNil())
-			Expect(rawVal2).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawRes2, err := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawRes2).To(BeNil())
+
+		rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
+		Expect(client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).Err()).To(HaveOccurred())
+		Expect(rawVal2).To(BeNil())
 	})
 	It("should handle FTSynDump with Unstable RESP3 Search Module and without stability", Label("search", "ftsyndump"), func() {
 		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
@@ -3523,13 +3531,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(valSynDump).To(BeEquivalentTo(resSynDump))
 		Expect(resSynDump.(map[interface{}]interface{})["baby"]).To(BeEquivalentTo([]interface{}{"id1"}))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
-			rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
-			Expect(rawResSynDump).To(BeNil())
-			Expect(rawValSynDump).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResSynDump, err := client2.FTSynDump(ctx, "idx1").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResSynDump).To(BeNil())
+
+		rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
+		Expect(client2.FTSynDump(ctx, "idx1").Err()).To(HaveOccurred())
+		Expect(rawValSynDump).To(BeNil())
 	})
 
 	It("should test not affected Resp 3 Search method - FTExplain", Label("search", "ftexplain"), func() {

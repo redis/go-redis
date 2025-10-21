@@ -220,6 +220,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		idleMin,
 		connsMax,
 		usage,
+		waits,
+		waitsDuration,
 		timeouts,
 		hits,
 		misses,
