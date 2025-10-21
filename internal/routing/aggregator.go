@@ -477,7 +477,7 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 	val, e := toBool(result)
 	if e != nil {
 		a.err.CompareAndSwap(nil, e)
-		return nil
+		return e
 	}
 
 	if val {
@@ -561,7 +561,7 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 	val, e := toBool(result)
 	if e != nil {
 		a.err.CompareAndSwap(nil, e)
-		return nil
+		return e
 	}
 
 	if val {
