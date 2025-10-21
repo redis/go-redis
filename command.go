@@ -4369,18 +4369,14 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 					return err
 				}
 
-				// Handle tips that don't have a colon (like "nondeterministic_output")
-				if !strings.Contains(tip, ":") {
-					rawTips[tip] = ""
-					continue
-				}
-
-				// Handle normal key:value tips
 				k, v, ok := strings.Cut(tip, ":")
 				if !ok {
-					return fmt.Errorf("redis: unexpected tip %q in COMMAND reply", tip)
+					// Handle tips that don't have a colon (like "nondeterministic_output")
+					rawTips[tip] = ""
+				} else {
+					// Handle normal key:value tips
+					rawTips[k] = v
 				}
-				rawTips[k] = v
 			}
 			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips)
 
