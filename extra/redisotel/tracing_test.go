@@ -156,7 +156,7 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(BasicCommandFilter),
+			WithCommandFilter(defaultCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "auth", "test-password")
@@ -181,7 +181,7 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(BasicCommandFilter),
+			WithCommandFilter(defaultCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3, "AUTH", "test-user", "test-password")
@@ -206,7 +206,7 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(BasicCommandFilter),
+			WithCommandFilter(defaultCommandFilter),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3)
