@@ -1,5 +1,80 @@
 # Release Notes
 
+# 9.15.0-beta.3 (2025-09-26)
+
+## Highlights
+This beta release includes a pre-production version of processing push notifications and hitless upgrades.
+
+# Changes
+
+- chore: Update hash_commands.go ([#3523](https://github.com/redis/go-redis/pull/3523))
+
+## 🚀 New Features
+
+- feat: RESP3 notifications support & Hitless notifications handling ([#3418](https://github.com/redis/go-redis/pull/3418))
+
+## 🐛 Bug Fixes
+
+- fix: pipeline repeatedly sets the error ([#3525](https://github.com/redis/go-redis/pull/3525))
+
+## 🧰 Maintenance
+
+- chore(deps): bump rojopolis/spellcheck-github-actions from 0.51.0 to 0.52.0 ([#3520](https://github.com/redis/go-redis/pull/3520))
+- feat(e2e-testing): maintnotifications e2e and refactor ([#3526](https://github.com/redis/go-redis/pull/3526))
+- feat(tag.sh): Improved resiliency of the release process ([#3530](https://github.com/redis/go-redis/pull/3530))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@cxljs](https://github.com/cxljs), [@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), and [@omid-h70](https://github.com/omid-h70)
+
+
+# 9.15.0-beta.1 (2025-09-10)
+
+## Highlights
+This beta release includes a pre-production version of processing push notifications and hitless upgrades.
+
+### Hitless Upgrades
+Hitless upgrades is a major new feature that allows for zero-downtime upgrades in Redis clusters.
+You can find more information in the [Hitless Upgrades documentation](https://github.com/redis/go-redis/tree/master/hitless).
+
+# Changes
+
+## 🚀 New Features
+- [CAE-1088] & [CAE-1072] feat: RESP3 notifications support & Hitless notifications handling ([#3418](https://github.com/redis/go-redis/pull/3418))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), [@ofekshenawa](https://github.com/ofekshenawa)
+
+
+# 9.14.0 (2025-09-10)
+
+## Highlights
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+# Changes
+
+## 🚀 New Features
+
+- Added batch process method to the pipeline ([#3510](https://github.com/redis/go-redis/pull/3510))
+
+## 🐛 Bug Fixes
+
+- fix: SetErr on Cmd if the command cannot be queued correctly in multi/exec ([#3509](https://github.com/redis/go-redis/pull/3509))
+
+## 🧰 Maintenance
+
+- Updates release drafter config to exclude dependabot ([#3511](https://github.com/redis/go-redis/pull/3511))
+- chore(deps): bump actions/setup-go from 5 to 6 ([#3504](https://github.com/redis/go-redis/pull/3504))
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@elena-kolevska](https://github.com/elena-kolevksa), [@htemelski-redis](https://github.com/htemelski-redis) and [@ndyakov](https://github.com/ndyakov)
+
+
 # 9.13.0 (2025-09-03)
 
 ## Highlights

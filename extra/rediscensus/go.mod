@@ -7,8 +7,8 @@ replace github.com/redis/go-redis/v9 => ../..
 replace github.com/redis/go-redis/extra/rediscmd/v9 => ../rediscmd
 
 require (
-	github.com/redis/go-redis/extra/rediscmd/v9 v9.13.0
-	github.com/redis/go-redis/v9 v9.13.0
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.16.0-beta.1
+	github.com/redis/go-redis/v9 v9.16.0-beta.1
 	go.opencensus.io v0.24.0
 )
 
@@ -19,6 +19,7 @@ require (
 )
 
 retract (
-	v9.7.2 // This version was accidentally released.
-	v9.5.3 // This version was accidentally released.
+	v9.7.2 // This version was accidentally released. Please use version 9.7.3 instead.
+	v9.5.3 // This version was accidentally released. Please use version 9.6.0 instead.
 )
+

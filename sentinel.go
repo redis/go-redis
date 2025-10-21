@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/push"
 )
 
 //------------------------------------------------------------------------------
@@ -62,6 +63,8 @@ type FailoverOptions struct {
 	Protocol int
 	Username string
 	Password string
+
+	// Push notifications are always enabled for RESP3 connections
 	// CredentialsProvider allows the username and password to be updated
 	// before reconnecting. It should return the current username and password.
 	CredentialsProvider func() (username string, password string)
@@ -136,6 +139,15 @@ type FailoverOptions struct {
 	FailingTimeoutSeconds int
 
 	UnstableResp3 bool
+
+	// MaintNotificationsConfig is not supported for FailoverClients at the moment
+	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
+	// When MaintNotificationsConfig.Mode is not "disabled", the client will handle
+	// upgrade notifications gracefully and manage connection/pool state transitions
+	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
+	// If nil, maintnotifications upgrades are disabled.
+	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
+	//MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -454,8 +466,6 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	opt.Dialer = masterReplicaDialer(failover)
 	opt.init()
 
-	var connPool *pool.ConnPool
-
 	rdb := &Client{
 		baseClient: &baseClient{
 			opt: opt,
@@ -463,15 +473,29 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	}
 	rdb.init()
 
-	connPool = newConnPool(opt, rdb.dialHook)
-	rdb.connPool = connPool
+	// Initialize push notification processor using shared helper
+	// Use void processor by default for RESP2 connections
+	rdb.pushProcessor = initializePushProcessor(opt)
+
+	var err error
+	rdb.connPool, err = newConnPool(opt, rdb.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
+	}
+	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
+
 	rdb.onClose = rdb.wrappedOnClose(failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
-		_ = connPool.Filter(func(cn *pool.Conn) bool {
-			return cn.RemoteAddr().String() != addr
-		})
+		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
+			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
@@ -529,13 +553,38 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		},
 	}
 
+	// Initialize push notification processor using shared helper
+	// Use void processor for Sentinel clients
+	c.pushProcessor = NewVoidPushNotificationProcessor()
+
 	c.initHooks(hooks{
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
-	c.connPool = newConnPool(opt, c.dialHook)
+	var err error
+	c.connPool, err = newConnPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
+	}
+	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
+	if err != nil {
+		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
 
 	return c
+}
+
+// GetPushNotificationHandler returns the handler for a specific push notification name.
+// Returns nil if no handler is registered for the given name.
+func (c *SentinelClient) GetPushNotificationHandler(pushNotificationName string) push.NotificationHandler {
+	return c.pushProcessor.GetHandler(pushNotificationName)
+}
+
+// RegisterPushNotificationHandler registers a handler for a specific push notification name.
+// Returns an error if a handler is already registered for this push notification name.
+// If protected is true, the handler cannot be unregistered.
+func (c *SentinelClient) RegisterPushNotificationHandler(pushNotificationName string, handler push.NotificationHandler, protected bool) error {
+	return c.pushProcessor.RegisterHandler(pushNotificationName, handler, protected)
 }
 
 func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
@@ -547,13 +596,31 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
-
-		newConn: func(ctx context.Context, channels []string) (*pool.Conn, error) {
-			return c.newConn(ctx)
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
+			if err != nil {
+				return nil, err
+			}
+			// will return nil if already initialized
+			err = c.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				return nil, err
+			}
+			// Track connection in PubSubPool
+			c.pubSubPool.TrackConn(cn)
+			return cn, nil
 		},
-		closeConn: c.connPool.CloseConn,
+		closeConn: func(cn *pool.Conn) error {
+			// Untrack connection from PubSubPool
+			c.pubSubPool.UntrackConn(cn)
+			_ = cn.Close()
+			return nil
+		},
+		pushProcessor: c.pushProcessor,
 	}
 	pubsub.init()
+
 	return pubsub
 }
 
