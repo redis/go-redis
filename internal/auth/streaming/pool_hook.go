@@ -95,7 +95,9 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			// Try to acquire the connection
 			// We need to ensure the connection is both Usable and not Used
 			// to prevent data races with concurrent operations
+			const baseDelay = time.Microsecond
 			acquired := false
+			attempt := 0
 			for !acquired {
 				select {
 				case <-timeout:
@@ -109,12 +111,23 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 						if !conn.Used.Load() {
 							acquired = true
 						} else {
-							// Release Usable and retry
+							// Release Usable and retry with exponential backoff
 							conn.Usable.Store(true)
-							time.Sleep(time.Millisecond)
+							if attempt > 0 {
+								// Exponential backoff: 1, 2, 4, 8... up to 512 microseconds
+								delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+								time.Sleep(delay)
+							}
+							attempt++
 						}
 					} else {
-						time.Sleep(time.Millisecond)
+						// Connection not usable, retry with exponential backoff
+						if attempt > 0 {
+							// Exponential backoff: 1, 2, 4, 8... up to 512 microseconds
+							delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+							time.Sleep(delay)
+						}
+						attempt++
 					}
 				}
 			}
