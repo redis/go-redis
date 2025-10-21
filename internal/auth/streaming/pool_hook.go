@@ -75,7 +75,6 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 	connID := conn.GetID()
 	// Check if reauth is needed and get the function with proper locking
 	r.shouldReAuthLock.RLock()
-	r.scheduledLock.RLock()
 	reAuthFn, ok := r.shouldReAuth[connID]
 	r.shouldReAuthLock.RUnlock()
 
