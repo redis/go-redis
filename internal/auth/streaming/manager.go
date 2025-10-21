@@ -15,11 +15,13 @@ type Manager struct {
 }
 
 func NewManager(pl pool.Pooler, reAuthTimeout time.Duration) *Manager {
-	return &Manager{
+	m := &Manager{
 		pool:                 pl,
 		poolHookRef:          NewReAuthPoolHook(pl.Size(), reAuthTimeout),
 		credentialsListeners: NewCredentialsListeners(),
 	}
+	m.poolHookRef.manager = m
+	return m
 }
 
 func (m *Manager) PoolHook() pool.PoolHook {
@@ -35,6 +37,10 @@ func (m *Manager) Listener(
 		return nil, errors.New("poolCn cannot be nil")
 	}
 	connID := poolCn.GetID()
+	// if we reconnect the underlying network connection, the streaming credentials listener will continue to work
+	// so we can get the old listener from the cache and use it.
+
+	// subscribing the same (an already subscribed) listener for a StreamingCredentialsProvider SHOULD be a no-op
 	listener, ok := m.credentialsListeners.Get(connID)
 	if !ok || listener == nil {
 		newCredListener := &ConnReAuthCredentialsListener{
@@ -53,4 +59,8 @@ func (m *Manager) Listener(
 func (m *Manager) MarkForReAuth(poolCn *pool.Conn, reAuthFn func(error)) {
 	connID := poolCn.GetID()
 	m.poolHookRef.MarkForReAuth(connID, reAuthFn)
+}
+
+func (m *Manager) RemoveListener(connID uint64) {
+	m.credentialsListeners.Remove(connID)
 }

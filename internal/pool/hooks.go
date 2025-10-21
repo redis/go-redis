@@ -22,7 +22,13 @@ type PoolHook interface {
 	OnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error)
 
 	// OnRemove is called when a connection is removed from the pool.
-	// It can be used for cleanup or logging purposes.
+	// This happens when:
+	// - Connection fails health check
+	// - Connection exceeds max lifetime
+	// - Pool is being closed
+	// - Connection encounters an error
+	// Implementations should clean up any per-connection state.
+	// The reason parameter indicates why the connection was removed.
 	OnRemove(ctx context.Context, conn *Conn, reason error)
 }
 

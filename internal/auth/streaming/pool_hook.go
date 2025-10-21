@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -17,6 +18,9 @@ type ReAuthPoolHook struct {
 	// conn id -> bool
 	scheduledReAuth map[uint64]bool
 	scheduledLock   sync.RWMutex
+
+	// for cleanup
+	manager *Manager
 }
 
 func NewReAuthPoolHook(poolSize int, reAuthTimeout time.Duration) *ReAuthPoolHook {
@@ -32,7 +36,6 @@ func NewReAuthPoolHook(poolSize int, reAuthTimeout time.Duration) *ReAuthPoolHoo
 		workers:         workers,
 		reAuthTimeout:   reAuthTimeout,
 	}
-
 }
 
 func (r *ReAuthPoolHook) MarkForReAuth(connID uint64, reAuthFn func(error)) {
@@ -41,27 +44,22 @@ func (r *ReAuthPoolHook) MarkForReAuth(connID uint64, reAuthFn func(error)) {
 	r.shouldReAuth[connID] = reAuthFn
 }
 
-func (r *ReAuthPoolHook) ClearReAuthMark(connID uint64) {
-	r.shouldReAuthLock.Lock()
-	defer r.shouldReAuthLock.Unlock()
-	delete(r.shouldReAuth, connID)
-}
-
 func (r *ReAuthPoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (accept bool, err error) {
+	connID := conn.GetID()
 	r.shouldReAuthLock.RLock()
-	_, ok := r.shouldReAuth[conn.GetID()]
+	_, shouldReAuth := r.shouldReAuth[connID]
 	r.shouldReAuthLock.RUnlock()
 	// This connection was marked for reauth while in the pool,
 	// reject the connection
-	if ok {
+	if shouldReAuth {
 		// simply reject the connection, it will be re-authenticated in OnPut
 		return false, nil
 	}
 	r.scheduledLock.RLock()
-	hasScheduled, ok := r.scheduledReAuth[conn.GetID()]
+	_, hasScheduled := r.scheduledReAuth[connID]
 	r.scheduledLock.RUnlock()
 	// has scheduled reauth, reject the connection
-	if ok && hasScheduled {
+	if hasScheduled {
 		// simply reject the connection, it currently has a reauth scheduled
 		// and the worker is waiting for slot to execute the reauth
 		return false, nil
@@ -70,22 +68,38 @@ func (r *ReAuthPoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (acce
 }
 
 func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, error) {
+	if conn == nil {
+		// noop
+		return true, false, nil
+	}
+	connID := conn.GetID()
 	// Check if reauth is needed and get the function with proper locking
 	r.shouldReAuthLock.RLock()
-	reAuthFn, ok := r.shouldReAuth[conn.GetID()]
+	r.scheduledLock.RLock()
+	reAuthFn, ok := r.shouldReAuth[connID]
 	r.shouldReAuthLock.RUnlock()
 
 	if ok {
+		r.shouldReAuthLock.Lock()
 		r.scheduledLock.Lock()
-		r.scheduledReAuth[conn.GetID()] = true
+		r.scheduledReAuth[connID] = true
+		delete(r.shouldReAuth, connID)
 		r.scheduledLock.Unlock()
-		// Clear the mark immediately to prevent duplicate reauth attempts
-		r.ClearReAuthMark(conn.GetID())
+		r.shouldReAuthLock.Unlock()
 		go func() {
 			<-r.workers
+			// safety first
+			if conn == nil || (conn != nil && conn.IsClosed()) {
+				r.workers <- struct{}{}
+				return
+			}
 			defer func() {
+				if rec := recover(); rec != nil {
+					// once again - safety first
+					internal.Logger.Printf(context.Background(), "panic in reauth worker: %v", rec)
+				}
 				r.scheduledLock.Lock()
-				delete(r.scheduledReAuth, conn.GetID())
+				delete(r.scheduledReAuth, connID)
 				r.scheduledLock.Unlock()
 				r.workers <- struct{}{}
 			}()
@@ -96,7 +110,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			// Try to acquire the connection
 			// We need to ensure the connection is both Usable and not Used
 			// to prevent data races with concurrent operations
-			const baseDelay = time.Microsecond
+			const baseDelay = 10 * time.Microsecond
 			acquired := false
 			attempt := 0
 			for !acquired {
@@ -108,36 +122,33 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 					return
 				default:
 					// Try to acquire: set Usable=false, then check Used
-					if conn.Usable.CompareAndSwap(true, false) {
-						if !conn.Used.Load() {
+					if conn.CompareAndSwapUsable(true, false) {
+						if !conn.IsUsed() {
 							acquired = true
 						} else {
 							// Release Usable and retry with exponential backoff
-							conn.Usable.Store(true)
-							if attempt > 0 {
-								// Exponential backoff: 1, 2, 4, 8... up to 512 microseconds
-								delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-								time.Sleep(delay)
-							}
-							attempt++
+							// todo(ndyakov): think of a better way to do this without the need
+							// to release the connection, but just wait till it is not used
+							conn.SetUsable(true)
 						}
-					} else {
-						// Connection not usable, retry with exponential backoff
-						if attempt > 0 {
-							// Exponential backoff: 1, 2, 4, 8... up to 512 microseconds
-							delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-							time.Sleep(delay)
-						}
+					}
+					if !acquired {
+						// Exponential backoff: 10, 20, 40, 80... up to 5120 microseconds
+						delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
+						time.Sleep(delay)
 						attempt++
 					}
 				}
 			}
 
-			// Successfully acquired the connection, perform reauth
-			reAuthFn(nil)
+			// safety first
+			if !conn.IsClosed() {
+				// Successfully acquired the connection, perform reauth
+				reAuthFn(nil)
+			}
 
 			// Release the connection
-			conn.Usable.Store(true)
+			conn.SetUsable(true)
 		}()
 	}
 
@@ -147,10 +158,16 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 }
 
 func (r *ReAuthPoolHook) OnRemove(_ context.Context, conn *pool.Conn, _ error) {
+	connID := conn.GetID()
+	r.shouldReAuthLock.Lock()
 	r.scheduledLock.Lock()
-	delete(r.scheduledReAuth, conn.GetID())
+	delete(r.scheduledReAuth, connID)
+	delete(r.shouldReAuth, connID)
 	r.scheduledLock.Unlock()
-	r.ClearReAuthMark(conn.GetID())
+	r.shouldReAuthLock.Unlock()
+	if r.manager != nil {
+		r.manager.RemoveListener(connID)
+	}
 }
 
 var _ pool.PoolHook = (*ReAuthPoolHook)(nil)

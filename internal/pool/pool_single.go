@@ -28,30 +28,30 @@ func (p *SingleConnPool) CloseConn(cn *Conn) error {
 	return p.pool.CloseConn(cn)
 }
 
-func (p *SingleConnPool) Get(ctx context.Context) (*Conn, error) {
+func (p *SingleConnPool) Get(_ context.Context) (*Conn, error) {
 	if p.stickyErr != nil {
 		return nil, p.stickyErr
 	}
 	if p.cn == nil {
 		return nil, ErrClosed
 	}
-	p.cn.Used.Store(true)
+	p.cn.SetUsed(true)
 	p.cn.SetUsedAt(time.Now())
 	return p.cn, nil
 }
 
-func (p *SingleConnPool) Put(ctx context.Context, cn *Conn) {
+func (p *SingleConnPool) Put(_ context.Context, cn *Conn) {
 	if p.cn == nil {
 		return
 	}
 	if p.cn != cn {
 		return
 	}
-	p.cn.Used.Store(false)
+	p.cn.SetUsed(false)
 }
 
-func (p *SingleConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
-	cn.Used.Store(false)
+func (p *SingleConnPool) Remove(_ context.Context, cn *Conn, reason error) {
+	cn.SetUsed(false)
 	p.cn = nil
 	p.stickyErr = reason
 }
@@ -76,6 +76,6 @@ func (p *SingleConnPool) Stats() *Stats {
 	return &Stats{}
 }
 
-func (p *SingleConnPool) AddPoolHook(hook PoolHook) {}
+func (p *SingleConnPool) AddPoolHook(_ PoolHook) {}
 
-func (p *SingleConnPool) RemovePoolHook(hook PoolHook) {}
+func (p *SingleConnPool) RemovePoolHook(_ PoolHook) {}

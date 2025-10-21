@@ -68,15 +68,15 @@ type Conn struct {
 	// is not in use. That way, the connection won't be used to send multiple commands at the same time and
 	// potentially corrupt the command stream.
 
-	// Usable flag to mark connection as safe for use
+	// usable flag to mark connection as safe for use
 	// It is false before initialization and after a handoff is marked
 	// It will be false during other background operations like re-authentication
-	Usable atomic.Bool
+	usable atomic.Bool
 
-	// Used flag to mark connection as used when a command is going to be
+	// used flag to mark connection as used when a command is going to be
 	// processed on that connection. This is used to prevent a race condition with
 	// background operations that may execute commands, like re-authentication.
-	Used atomic.Bool
+	used atomic.Bool
 
 	// Inited flag to mark connection as initialized, this is almost the same as usable
 	// but it is used to make sure we don't initialize a network connection twice
@@ -142,7 +142,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	// Initialize atomic state
-	cn.Usable.Store(false)           // false initially, set to true after initialization
+	cn.usable.Store(false)           // false initially, set to true after initialization
 	cn.handoffRetriesAtomic.Store(0) // 0 initially
 
 	// Initialize handoff state atomically
@@ -167,6 +167,42 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 	atomic.StoreInt64(&cn.usedAt, tm.Unix())
 }
 
+// Usable
+
+// CompareAndSwapUsable atomically compares and swaps the usable flag (lock-free).
+func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
+	return cn.usable.CompareAndSwap(old, new)
+}
+
+// IsUsable returns true if the connection is safe to use for new commands (lock-free).
+func (cn *Conn) IsUsable() bool {
+	return cn.usable.Load()
+}
+
+// SetUsable sets the usable flag for the connection (lock-free).
+// prefer CompareAndSwapUsable() when possible
+func (cn *Conn) SetUsable(usable bool) {
+	cn.usable.Store(usable)
+}
+
+// Used
+
+// CompareAndSwapUsed atomically compares and swaps the used flag (lock-free).
+func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
+	return cn.used.CompareAndSwap(old, new)
+}
+
+// IsUsed returns true if the connection is currently in use (lock-free).
+func (cn *Conn) IsUsed() bool {
+	return cn.used.Load()
+}
+
+// SetUsed sets the used flag for the connection (lock-free).
+// prefer CompareAndSwapUsed() when possible
+func (cn *Conn) SetUsed(val bool) {
+	cn.used.Store(val)
+}
+
 // getNetConn returns the current network connection using atomic load (lock-free).
 // This is the fast path for accessing netConn without mutex overhead.
 func (cn *Conn) getNetConn() net.Conn {
@@ -182,18 +218,6 @@ func (cn *Conn) getNetConn() net.Conn {
 // This is used for the fast path of connection replacement.
 func (cn *Conn) setNetConn(netConn net.Conn) {
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
-}
-
-// Lock-free helper methods for handoff state management
-
-// isUsable returns true if the connection is safe to use (lock-free).
-func (cn *Conn) isUsable() bool {
-	return cn.Usable.Load()
-}
-
-// setUsable sets the usable flag atomically (lock-free).
-func (cn *Conn) setUsable(usable bool) {
-	cn.Usable.Store(usable)
 }
 
 // getHandoffState returns the current handoff state atomically (lock-free).
@@ -240,11 +264,6 @@ func (cn *Conn) incrementHandoffRetries(delta int) int {
 	return int(cn.handoffRetriesAtomic.Add(uint32(delta)))
 }
 
-// IsUsable returns true if the connection is safe to use for new commands (lock-free).
-func (cn *Conn) IsUsable() bool {
-	return cn.isUsable()
-}
-
 // IsPooled returns true if the connection is managed by a pool and will be pooled on Put.
 func (cn *Conn) IsPooled() bool {
 	return cn.pooled
@@ -257,11 +276,6 @@ func (cn *Conn) IsPubSub() bool {
 
 func (cn *Conn) IsInited() bool {
 	return cn.Inited.Load()
-}
-
-// SetUsable sets the usable flag for the connection (lock-free).
-func (cn *Conn) SetUsable(usable bool) {
-	cn.setUsable(usable)
 }
 
 // SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
@@ -494,11 +508,10 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 		// first we need to mark the connection as not usable
 		// to prevent the pool from returning it to the caller
 		if !connAcquired {
-			if cn.Usable.CompareAndSwap(true, false) {
-				connAcquired = true
-			} else {
+			if !cn.usable.CompareAndSwap(true, false) {
 				continue
 			}
+			connAcquired = true
 		}
 
 		currentState := cn.getHandoffState()
@@ -568,7 +581,7 @@ func (cn *Conn) ClearHandoffState() {
 	cn.setHandoffState(cleanState)
 	cn.setHandoffRetries(0)
 	// Clearing handoff state also means the connection is usable again
-	cn.setUsable(true)
+	cn.SetUsable(true)
 }
 
 // IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).

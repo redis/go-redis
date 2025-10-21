@@ -27,11 +27,7 @@ type ConnReAuthCredentialsListener struct {
 // It calls the reAuth function with the new credentials.
 // If the reAuth function returns an error, it calls the onErr function with the error.
 func (c *ConnReAuthCredentialsListener) OnNext(credentials auth.Credentials) {
-	if c.conn.IsClosed() {
-		return
-	}
-
-	if c.reAuth == nil {
+	if c.conn == nil || c.conn.IsClosed() || c.manager == nil || c.reAuth == nil {
 		return
 	}
 
@@ -41,17 +37,20 @@ func (c *ConnReAuthCredentialsListener) OnNext(credentials auth.Credentials) {
 	// The connection pool hook will re-authenticate the connection when it is
 	// returned to the pool in a clean, idle state.
 	c.manager.MarkForReAuth(c.conn, func(err error) {
+		// err is from connection acquisition (timeout, etc.)
 		if err != nil {
+			// Log the error
 			c.OnError(err)
 			return
 		}
+		// err is from reauth command execution
 		err = c.reAuth(c.conn, credentials)
 		if err != nil {
+			// Log the error
 			c.OnError(err)
 			return
 		}
 	})
-
 }
 
 // OnError is called when an error occurs.

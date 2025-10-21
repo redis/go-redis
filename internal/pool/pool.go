@@ -435,7 +435,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	now := time.Now()
 	attempts := 0
 
-	// get hooks manager
+	// Get hooks manager once for this getConn call for performance.
+	// Note: Hooks added/removed during this call won't be reflected.
 	p.hookManagerMu.RLock()
 	hookManager := p.hookManager
 	p.hookManagerMu.RUnlock()
@@ -580,11 +581,12 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		if cn.IsUsable() {
-			if cn.Used.CompareAndSwap(false, true) {
+		if cn.CompareAndSwapUsed(false, true) {
+			if cn.IsUsable() {
 				p.idleConnsLen.Add(-1)
 				break
 			}
+			cn.SetUsed(false)
 		}
 
 		// Connection is not usable, put it back in the pool
@@ -679,10 +681,9 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldCloseConn = true
 	}
 
-	// Mark connection as not used only
-	// if it's not being closed
+	// if the connection is not going to be closed, mark it as not used
 	if !shouldCloseConn {
-		cn.Used.Store(false)
+		cn.SetUsed(false)
 	}
 
 	p.freeTurn()
