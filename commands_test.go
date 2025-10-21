@@ -2412,6 +2412,77 @@ var _ = Describe("Commands", func() {
 
 			Expect(args).To(Equal(expectedArgs))
 		})
+
+		It("should IncrByFloat with edge cases", func() {
+			// Test with negative increment
+			set := client.Set(ctx, "key", "10.5", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat := client.IncrByFloat(ctx, "key", -2.3)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2, 0.0001))
+
+			// Test with zero increment (should return current value)
+			incrByFloat = client.IncrByFloat(ctx, "key", 0.0)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2, 0.0001))
+
+			// Test with very small increment (precision test)
+			incrByFloat = client.IncrByFloat(ctx, "key", 0.0001)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2001, 0.00001))
+
+			// Test with non-existent key (should start from 0)
+			incrByFloat = client.IncrByFloat(ctx, "nonexistent", 5.5)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(5.5))
+
+			// Test with integer value stored as string
+			set = client.Set(ctx, "intkey", "42", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "intkey", 0.5)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(42.5))
+
+			// Test with scientific notation
+			set = client.Set(ctx, "scikey", "1.5e2", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "scikey", 5.0)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(155.0))
+
+			// Test with negative scientific notation
+			incrByFloat = client.IncrByFloat(ctx, "scikey", -1.5e1)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(140.0))
+
+			// Test error case: non-numeric value
+			set = client.Set(ctx, "stringkey", "notanumber", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "stringkey", 1.0)
+			Expect(incrByFloat.Err()).To(HaveOccurred())
+			Expect(incrByFloat.Err().Error()).To(ContainSubstring("value is not a valid float"))
+
+			// Test with very large numbers
+			set = client.Set(ctx, "largekey", "1.7976931348623157e+308", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			// This should work as it's within float64 range
+			incrByFloat = client.IncrByFloat(ctx, "largekey", -1.0e+308)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 7.976931348623157e+307, 1e+300))
+
+			// Test with very small numbers (near zero)
+			set = client.Set(ctx, "smallkey", "1e-10", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "smallkey", 1e-10)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 2e-10, 1e-15))
+		})
 	})
 
 	Describe("hashes", func() {
@@ -2948,7 +3019,8 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
+			// overhead of the push notification check is about 1-2ms for 100 commands
+			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
@@ -6169,6 +6241,34 @@ var _ = Describe("Commands", func() {
 			Expect(n).To(Equal(int64(3)))
 		})
 
+		It("should XTrimMaxLenMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenMode(ctx, "stream", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMaxLenApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenApproxMode(ctx, "stream", 0, 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDMode(ctx, "stream", "4-0", "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDApproxMode(ctx, "stream", "4-0", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
 		It("should XAdd", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -6220,6 +6320,37 @@ var _ = Describe("Commands", func() {
 			n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XAckDel", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// First, create a consumer group
+			err := client.XGroupCreate(ctx, "stream", "testgroup", "0").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Read messages to create pending entries
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "testgroup",
+				Consumer: "testconsumer",
+				Streams:  []string{"stream", ">"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Test XAckDel with KEEPREF mode
+			n, err := client.XAckDel(ctx, "stream", "testgroup", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
+
+			// Clean up
+			client.XGroupDestroy(ctx, "stream", "testgroup")
+		})
+
+		It("should XDelEx", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// Test XDelEx with KEEPREF mode
+			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
 		})
 
 		It("should XLen", func() {

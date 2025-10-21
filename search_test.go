@@ -38,6 +38,17 @@ func encodeFloat32Vector(vec []float32) []byte {
 	return buf.Bytes()
 }
 
+func encodeFloat16Vector(vec []float32) []byte {
+	buf := new(bytes.Buffer)
+	for _, v := range vec {
+		// Convert float32 to float16 (16-bit representation)
+		// This is a simplified conversion - in practice you'd use a proper float16 library
+		f16 := uint16(v * 1000) // Simple scaling for test purposes
+		binary.Write(buf, binary.LittleEndian, f16)
+	}
+	return buf.Bytes()
+}
+
 var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
@@ -819,7 +830,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return only the base query when options is nil", Label("search", "ftaggregate"), func() {
-		args := redis.FTAggregateQuery("testQuery", nil)
+		args, err := redis.FTAggregateQuery("testQuery", nil)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(Equal(redis.AggregateQuery{"testQuery"}))
 	})
 
@@ -828,7 +840,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Verbatim: true,
 			Scorer:   "BM25",
 		}
-		args := redis.FTAggregateQuery("testQuery", options)
+		args, err := redis.FTAggregateQuery("testQuery", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args[0]).To(Equal("testQuery"))
 		Expect(args).To(ContainElement("VERBATIM"))
 		Expect(args).To(ContainElement("SCORER"))
@@ -839,7 +852,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			AddScores: true,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("ADDSCORES"))
 	})
 
@@ -847,7 +861,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			LoadAll: true,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("LOAD"))
 		Expect(args).To(ContainElement("*"))
 	})
@@ -859,7 +874,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 				{Field: "field2"},
 			},
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		// Verify LOAD options related arguments
 		Expect(args).To(ContainElement("LOAD"))
 		// Check that field names and aliases are present
@@ -872,7 +888,8 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		options := &redis.FTAggregateOptions{
 			Timeout: 500,
 		}
-		args := redis.FTAggregateQuery("q", options)
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(args).To(ContainElement("TIMEOUT"))
 		found := false
 		for i, a := range args {
@@ -1745,6 +1762,631 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(nanCount).To(Equal(2))
 	})
 
+	It("should FTCreate VECTOR with VAMANA algorithm - basic", Label("search", "ftcreate"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            2,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "a", "v", "aaaaaaaa")
+		client.HSet(ctx, "b", "v", "aaaabaaa")
+		client.HSet(ctx, "c", "v", "aaaaabaa")
+
+		searchOptions := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			DialectVersion: 2,
+			Params:         map[string]interface{}{"vec": "aaaaaaaa"},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("a"))
+		Expect(res.Docs[0].Fields["__v_score"]).To(BeEquivalentTo("0"))
+	})
+
+	It("should FTCreate VECTOR with VAMANA algorithm - with compression", Label("search", "ftcreate"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT16",
+			Dim:               256,
+			DistanceMetric:    "COSINE",
+			Compression:       "LVQ8",
+			TrainingThreshold: 10240,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+	})
+
+	It("should FTCreate VECTOR with VAMANA algorithm - advanced parameters", Label("search", "ftcreate"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:                   "FLOAT32",
+			Dim:                    512,
+			DistanceMetric:         "IP",
+			Compression:            "LVQ8",
+			ConstructionWindowSize: 300,
+			GraphMaxDegree:         128,
+			SearchWindowSize:       20,
+			Epsilon:                0.02,
+			TrainingThreshold:      20480,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+	})
+
+	It("should fail FTCreate VECTOR with VAMANA - missing required parameters", Label("search", "ftcreate"), func() {
+		// Test missing Type
+		cmd := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Dim:            2,
+				DistanceMetric: "L2",
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
+
+		// Test missing Dim
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Type:           "FLOAT32",
+				DistanceMetric: "L2",
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
+
+		// Test missing DistanceMetric
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: &redis.FTVamanaOptions{
+				Type: "FLOAT32",
+				Dim:  2,
+			}}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("Type, Dim and DistanceMetric are required for VECTOR VAMANA"))
+	})
+
+	It("should fail FTCreate VECTOR with multiple vector options", Label("search", "ftcreate"), func() {
+		// Test VAMANA + HNSW
+		cmd := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
+				VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+				HNSWOptions:   &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions"))
+
+		// Test VAMANA + FLAT
+		cmd = client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{
+				VamanaOptions: &redis.FTVamanaOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+				FlatOptions:   &redis.FTFlatOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			}})
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("VectorArgs must have exactly one of FlatOptions, HNSWOptions, or VamanaOptions"))
+	})
+
+	It("should test VAMANA L2 distance metric", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            3,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		// L2 distance test vectors
+		vectors := [][]float32{
+			{1.0, 0.0, 0.0},
+			{2.0, 0.0, 0.0},
+			{0.0, 1.0, 0.0},
+			{5.0, 0.0, 0.0},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(3))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA COSINE distance metric", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            3,
+			DistanceMetric: "COSINE",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := [][]float32{
+			{1.0, 0.0, 0.0},
+			{0.707, 0.707, 0.0},
+			{0.0, 1.0, 0.0},
+			{-1.0, 0.0, 0.0},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(3))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA IP distance metric", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            3,
+			DistanceMetric: "IP",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := [][]float32{
+			{1.0, 2.0, 3.0},
+			{2.0, 1.0, 1.0},
+			{3.0, 3.0, 3.0},
+			{0.1, 0.1, 0.1},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "score", Asc: true}},
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(3))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc2"))
+	})
+
+	It("should test VAMANA basic functionality", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            4,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := [][]float32{
+			{1.0, 2.0, 3.0, 4.0},
+			{2.0, 3.0, 4.0, 5.0},
+			{3.0, 4.0, 5.0, 6.0},
+			{10.0, 11.0, 12.0, 13.0},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			Return:         []redis.FTSearchReturn{{FieldName: "__v_score"}},
+			SortBy:         []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			DialectVersion: 2,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 3 @v $vec]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(3))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0")) // Should be closest to itself
+		Expect(res.Docs[0].Fields["__v_score"]).To(BeEquivalentTo("0"))
+	})
+
+	It("should test VAMANA FLOAT16 type", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT16",
+			Dim:            4,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := [][]float32{
+			{1.5, 2.5, 3.5, 4.5},
+			{2.5, 3.5, 4.5, 5.5},
+			{3.5, 4.5, 5.5, 6.5},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat16Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat16Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(2))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA FLOAT32 type", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            4,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := [][]float32{
+			{1.0, 2.0, 3.0, 4.0},
+			{2.0, 3.0, 4.0, 5.0},
+			{3.0, 4.0, 5.0, 6.0},
+		}
+
+		for i, vec := range vectors {
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(2))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA with default dialect", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            2,
+			DistanceMetric: "L2",
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		client.HSet(ctx, "a", "v", "aaaaaaaa")
+		client.HSet(ctx, "b", "v", "aaaabaaa")
+		client.HSet(ctx, "c", "v", "aaaaabaa")
+
+		searchOptions := &redis.FTSearchOptions{
+			Return: []redis.FTSearchReturn{{FieldName: "__v_score"}},
+			SortBy: []redis.FTSearchSortBy{{FieldName: "__v_score", Asc: true}},
+			Params: map[string]interface{}{"vec": "aaaaaaaa"},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 2 @v $vec]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(2))
+	})
+
+	It("should test VAMANA with LVQ8 compression", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA compression with both vector types", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		// Test FLOAT16 with LVQ8
+		vamanaOptions16 := &redis.FTVamanaOptions{
+			Type:              "FLOAT16",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx16",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v16", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions16}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx16")
+
+		// Test FLOAT32 with LVQ8
+		vamanaOptions32 := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ8",
+			TrainingThreshold: 1024,
+		}
+		val, err = client.FTCreate(ctx, "idx32",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v32", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions32}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx32")
+
+		// Add data to both indices
+		for i := 0; i < 15; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			client.HSet(ctx, fmt.Sprintf("doc16_%d", i), "v16", encodeFloat16Vector(vec))
+			client.HSet(ctx, fmt.Sprintf("doc32_%d", i), "v32", encodeFloat32Vector(vec))
+		}
+
+		queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+
+		// Test FLOAT16 index
+		searchOptions16 := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat16Vector(queryVec)},
+		}
+		res16, err := client.FTSearchWithArgs(ctx, "idx16", "*=>[KNN 3 @v16 $vec as score]", searchOptions16).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res16.Total).To(BeEquivalentTo(3))
+
+		// Test FLOAT32 index
+		searchOptions32 := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(queryVec)},
+		}
+		res32, err := client.FTSearchWithArgs(ctx, "idx32", "*=>[KNN 3 @v32 $vec as score]", searchOptions32).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res32.Total).To(BeEquivalentTo(3))
+	})
+
+	It("should test VAMANA construction window size", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:                   "FLOAT32",
+			Dim:                    6,
+			DistanceMetric:         "L2",
+			ConstructionWindowSize: 300,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 6)
+			for j := 0; j < 6; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA graph max degree", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:           "FLOAT32",
+			Dim:            6,
+			DistanceMetric: "COSINE",
+			GraphMaxDegree: 64,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 25)
+		for i := 0; i < 25; i++ {
+			vec := make([]float32, 6)
+			for j := 0; j < 6; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 6 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(6))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA search window size", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:             "FLOAT32",
+			Dim:              6,
+			DistanceMetric:   "L2",
+			SearchWindowSize: 20,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 30)
+		for i := 0; i < 30; i++ {
+			vec := make([]float32, 6)
+			for j := 0; j < 6; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 8 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(8))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
+	It("should test VAMANA all advanced parameters", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:                   "FLOAT32",
+			Dim:                    8,
+			DistanceMetric:         "L2",
+			Compression:            "LVQ8",
+			ConstructionWindowSize: 200,
+			GraphMaxDegree:         32,
+			SearchWindowSize:       15,
+			Epsilon:                0.01,
+			TrainingThreshold:      1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 15)
+		for i := 0; i < 15; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		Expect(res.Docs[0].ID).To(BeEquivalentTo("doc0"))
+	})
+
 	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
 		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
@@ -2262,6 +2904,418 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(res.Rows[0].Fields["maxValue"]).To(BeEquivalentTo("-inf"))
 	})
 
+	It("should test VAMANA with LVQ4 compression", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ4",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		// Don't check specific document ID as vector search is probabilistic
+		Expect(res.Docs).To(HaveLen(5))
+	})
+
+	It("should test VAMANA with LeanVec4x8 compression and reduce parameter", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LeanVec4x8",
+			TrainingThreshold: 1024,
+			ReduceDim:         4, // Reduce dimension to 4 (half of original 8)
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		// Don't check specific document ID as vector search is probabilistic
+		Expect(res.Docs).To(HaveLen(5))
+	})
+
+	It("should test VAMANA compression algorithms with FLOAT16 type", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
+
+		for _, compression := range compressionAlgorithms {
+			vamanaOptions := &redis.FTVamanaOptions{
+				Type:              "FLOAT16",
+				Dim:               8,
+				DistanceMetric:    "L2",
+				Compression:       compression,
+				TrainingThreshold: 1024,
+			}
+
+			// Add reduce parameter for LeanVec compressions
+			if strings.HasPrefix(compression, "LeanVec") {
+				vamanaOptions.ReduceDim = 4
+			}
+
+			indexName := fmt.Sprintf("idx_%s", compression)
+			val, err := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{},
+				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(BeEquivalentTo("OK"))
+			WaitForIndexing(client, indexName)
+
+			for i := 0; i < 15; i++ {
+				vec := make([]float32, 8)
+				for j := 0; j < 8; j++ {
+					vec[j] = float32(i + j)
+				}
+				client.HSet(ctx, fmt.Sprintf("doc_%s_%d", compression, i), "v", encodeFloat16Vector(vec))
+			}
+
+			queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			searchOptions := &redis.FTSearchOptions{
+				DialectVersion: 2,
+				NoContent:      true,
+				Params:         map[string]interface{}{"vec": encodeFloat16Vector(queryVec)},
+			}
+			res, err := client.FTSearchWithArgs(ctx, indexName, "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Total).To(BeEquivalentTo(3))
+		}
+	})
+
+	It("should test VAMANA compression algorithms with FLOAT32 type", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
+
+		for _, compression := range compressionAlgorithms {
+			vamanaOptions := &redis.FTVamanaOptions{
+				Type:              "FLOAT32",
+				Dim:               8,
+				DistanceMetric:    "L2",
+				Compression:       compression,
+				TrainingThreshold: 1024,
+			}
+
+			// Add reduce parameter for LeanVec compressions
+			if strings.HasPrefix(compression, "LeanVec") {
+				vamanaOptions.ReduceDim = 4
+			}
+
+			indexName := fmt.Sprintf("idx_%s", compression)
+			val, err := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{},
+				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(BeEquivalentTo("OK"))
+			WaitForIndexing(client, indexName)
+
+			for i := 0; i < 15; i++ {
+				vec := make([]float32, 8)
+				for j := 0; j < 8; j++ {
+					vec[j] = float32(i + j)
+				}
+				client.HSet(ctx, fmt.Sprintf("doc_%s_%d", compression, i), "v", encodeFloat32Vector(vec))
+			}
+
+			queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			searchOptions := &redis.FTSearchOptions{
+				DialectVersion: 2,
+				NoContent:      true,
+				Params:         map[string]interface{}{"vec": encodeFloat32Vector(queryVec)},
+			}
+			res, err := client.FTSearchWithArgs(ctx, indexName, "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Total).To(BeEquivalentTo(3))
+		}
+	})
+
+	It("should test VAMANA compression with different distance metrics", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
+		distanceMetrics := []string{"L2", "COSINE", "IP"}
+
+		for _, compression := range compressionAlgorithms {
+			for _, metric := range distanceMetrics {
+				vamanaOptions := &redis.FTVamanaOptions{
+					Type:              "FLOAT32",
+					Dim:               8,
+					DistanceMetric:    metric,
+					Compression:       compression,
+					TrainingThreshold: 1024,
+				}
+
+				// Add reduce parameter for LeanVec compressions
+				if strings.HasPrefix(compression, "LeanVec") {
+					vamanaOptions.ReduceDim = 4
+				}
+
+				indexName := fmt.Sprintf("idx_%s_%s", compression, metric)
+				val, err := client.FTCreate(ctx, indexName,
+					&redis.FTCreateOptions{},
+					&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(val).To(BeEquivalentTo("OK"))
+				WaitForIndexing(client, indexName)
+
+				for i := 0; i < 10; i++ {
+					vec := make([]float32, 8)
+					for j := 0; j < 8; j++ {
+						vec[j] = float32(i + j)
+					}
+					client.HSet(ctx, fmt.Sprintf("doc_%s_%s_%d", compression, metric, i), "v", encodeFloat32Vector(vec))
+				}
+
+				queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+				searchOptions := &redis.FTSearchOptions{
+					DialectVersion: 2,
+					NoContent:      true,
+					Params:         map[string]interface{}{"vec": encodeFloat32Vector(queryVec)},
+				}
+				res, err := client.FTSearchWithArgs(ctx, indexName, "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res.Total).To(BeEquivalentTo(3))
+			}
+		}
+	})
+
+	It("should test VAMANA compression with all advanced parameters", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
+
+		for _, compression := range compressionAlgorithms {
+			vamanaOptions := &redis.FTVamanaOptions{
+				Type:                   "FLOAT32",
+				Dim:                    8,
+				DistanceMetric:         "L2",
+				Compression:            compression,
+				ConstructionWindowSize: 200,
+				GraphMaxDegree:         32,
+				SearchWindowSize:       15,
+				Epsilon:                0.01,
+				TrainingThreshold:      1024,
+			}
+
+			// Add reduce parameter for LeanVec compressions
+			if strings.HasPrefix(compression, "LeanVec") {
+				vamanaOptions.ReduceDim = 4
+			}
+
+			indexName := fmt.Sprintf("idx_%s_advanced", compression)
+			val, err := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{},
+				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(BeEquivalentTo("OK"))
+			WaitForIndexing(client, indexName)
+
+			for i := 0; i < 15; i++ {
+				vec := make([]float32, 8)
+				for j := 0; j < 8; j++ {
+					vec[j] = float32(i + j)
+				}
+				client.HSet(ctx, fmt.Sprintf("doc_%s_advanced_%d", compression, i), "v", encodeFloat32Vector(vec))
+			}
+
+			queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			searchOptions := &redis.FTSearchOptions{
+				DialectVersion: 2,
+				NoContent:      true,
+				Params:         map[string]interface{}{"vec": encodeFloat32Vector(queryVec)},
+			}
+			res, err := client.FTSearchWithArgs(ctx, indexName, "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Total).To(BeEquivalentTo(5))
+		}
+	})
+
+	It("should fail when using reduce parameter with non-LeanVec compression", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ8",
+			TrainingThreshold: 1024,
+			ReduceDim:         4, // This should fail for LVQ8
+		}
+		_, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should test VAMANA with LVQ4 compression in RESP3", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LVQ4",
+			TrainingThreshold: 1024,
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		// Don't check specific document ID as vector search is probabilistic
+		Expect(res.Docs).To(HaveLen(5))
+	})
+
+	It("should test VAMANA with LeanVec4x8 compression and reduce parameter in RESP3", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		vamanaOptions := &redis.FTVamanaOptions{
+			Type:              "FLOAT32",
+			Dim:               8,
+			DistanceMetric:    "L2",
+			Compression:       "LeanVec4x8",
+			TrainingThreshold: 1024,
+			ReduceDim:         4, // Reduce dimension to 4 (half of original 8)
+		}
+		val, err := client.FTCreate(ctx, "idx1",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx1")
+
+		vectors := make([][]float32, 20)
+		for i := 0; i < 20; i++ {
+			vec := make([]float32, 8)
+			for j := 0; j < 8; j++ {
+				vec[j] = float32(i + j)
+			}
+			vectors[i] = vec
+			client.HSet(ctx, fmt.Sprintf("doc%d", i), "v", encodeFloat32Vector(vec))
+		}
+
+		searchOptions := &redis.FTSearchOptions{
+			DialectVersion: 2,
+			NoContent:      true,
+			Params:         map[string]interface{}{"vec": encodeFloat32Vector(vectors[0])},
+		}
+		res, err := client.FTSearchWithArgs(ctx, "idx1", "*=>[KNN 5 @v $vec as score]", searchOptions).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.Total).To(BeEquivalentTo(5))
+		// Don't check specific document ID as vector search is probabilistic
+		Expect(res.Docs).To(HaveLen(5))
+	})
+
+	It("should test VAMANA compression algorithms with FLOAT16 type in RESP3", Label("search", "ftcreate", "vamana"), func() {
+		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+
+		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
+
+		for _, compression := range compressionAlgorithms {
+			vamanaOptions := &redis.FTVamanaOptions{
+				Type:              "FLOAT16",
+				Dim:               8,
+				DistanceMetric:    "L2",
+				Compression:       compression,
+				TrainingThreshold: 1024,
+			}
+
+			// Add reduce parameter for LeanVec compressions
+			if strings.HasPrefix(compression, "LeanVec") {
+				vamanaOptions.ReduceDim = 4
+			}
+
+			indexName := fmt.Sprintf("idx_resp3_%s", compression)
+			val, err := client.FTCreate(ctx, indexName,
+				&redis.FTCreateOptions{},
+				&redis.FieldSchema{FieldName: "v", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{VamanaOptions: vamanaOptions}}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(BeEquivalentTo("OK"))
+			WaitForIndexing(client, indexName)
+
+			// Add test data
+			for i := 0; i < 15; i++ {
+				vec := make([]float32, 8)
+				for j := 0; j < 8; j++ {
+					vec[j] = float32(i + j)
+				}
+				client.HSet(ctx, fmt.Sprintf("doc_resp3_%s_%d", compression, i), "v", encodeFloat16Vector(vec))
+			}
+
+			queryVec := []float32{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0}
+			searchOptions := &redis.FTSearchOptions{
+				DialectVersion: 2,
+				NoContent:      true,
+				Params:         map[string]interface{}{"vec": encodeFloat16Vector(queryVec)},
+			}
+			res, err := client.FTSearchWithArgs(ctx, indexName, "*=>[KNN 3 @v $vec as score]", searchOptions).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Total).To(BeEquivalentTo(3))
+		}
+	})
 })
 
 func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {
@@ -2353,14 +3407,16 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(rawValResults[0]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 		Expect(rawValResults[1]).To(Or(BeEquivalentTo(results[0]), BeEquivalentTo(results[1])))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
-			rawRes, _ := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
-			rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
-			Expect(rawRes).To(BeNil())
-			Expect(rawVal).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		options = &redis.FTAggregateOptions{Apply: []redis.FTAggregateApply{{Field: "@CreatedDateTimeUTC * 10", As: "CreatedDateTimeUTC"}}}
+		rawRes, err := client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawRes).To(BeNil())
+
+		rawVal = client2.FTAggregateWithArgs(ctx, "idx1", "*", options).RawVal()
+		Expect(client2.FTAggregateWithArgs(ctx, "idx1", "*", options).Err()).To(HaveOccurred())
+		Expect(rawVal).To(BeNil())
 
 	})
 
@@ -2381,13 +3437,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		flags = attributes[0].(map[interface{}]interface{})["flags"].([]interface{})
 		Expect(flags).To(ConsistOf("SORTABLE", "NOSTEM"))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResInfo, _ := client2.FTInfo(ctx, "idx1").RawResult()
-			rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
-			Expect(rawResInfo).To(BeNil())
-			Expect(rawValInfo).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResInfo, err := client2.FTInfo(ctx, "idx1").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResInfo).To(BeNil())
+
+		rawValInfo := client2.FTInfo(ctx, "idx1").RawVal()
+		Expect(client2.FTInfo(ctx, "idx1").Err()).To(HaveOccurred())
+		Expect(rawValInfo).To(BeNil())
 	})
 
 	It("should handle FTSpellCheck with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftspellcheck"), func() {
@@ -2408,13 +3466,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		results := resSpellCheck.(map[interface{}]interface{})["results"].(map[interface{}]interface{})
 		Expect(results["impornant"].([]interface{})[0].(map[interface{}]interface{})["important"]).To(BeEquivalentTo(0.5))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResSpellCheck, _ := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
-			rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
-			Expect(rawResSpellCheck).To(BeNil())
-			Expect(rawValSpellCheck).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResSpellCheck, err := client2.FTSpellCheck(ctx, "idx1", "impornant").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResSpellCheck).To(BeNil())
+
+		rawValSpellCheck := client2.FTSpellCheck(ctx, "idx1", "impornant").RawVal()
+		Expect(client2.FTSpellCheck(ctx, "idx1", "impornant").Err()).To(HaveOccurred())
+		Expect(rawValSpellCheck).To(BeNil())
 	})
 
 	It("should handle FTSearch with Unstable RESP3 Search Module and without stability", Label("search", "ftcreate", "ftsearch"), func() {
@@ -2435,13 +3495,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		totalResults2 := res2.(map[interface{}]interface{})["total_results"]
 		Expect(totalResults2).To(BeEquivalentTo(int64(1)))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawRes2, _ := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
-			rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
-			Expect(rawRes2).To(BeNil())
-			Expect(rawVal2).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawRes2, err := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawRes2).To(BeNil())
+
+		rawVal2 := client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).RawVal()
+		Expect(client2.FTSearchWithArgs(ctx, "txt", "foo bar hello world", &redis.FTSearchOptions{NoContent: true}).Err()).To(HaveOccurred())
+		Expect(rawVal2).To(BeNil())
 	})
 	It("should handle FTSynDump with Unstable RESP3 Search Module and without stability", Label("search", "ftsyndump"), func() {
 		text1 := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText}
@@ -2469,13 +3531,15 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(valSynDump).To(BeEquivalentTo(resSynDump))
 		Expect(resSynDump.(map[interface{}]interface{})["baby"]).To(BeEquivalentTo([]interface{}{"id1"}))
 
-		// Test with UnstableResp3 false
-		Expect(func() {
-			rawResSynDump, _ := client2.FTSynDump(ctx, "idx1").RawResult()
-			rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
-			Expect(rawResSynDump).To(BeNil())
-			Expect(rawValSynDump).To(BeNil())
-		}).Should(Panic())
+		// Test with UnstableResp3 false - should return error instead of panic
+		rawResSynDump, err := client2.FTSynDump(ctx, "idx1").RawResult()
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("RESP3 responses for this command are disabled"))
+		Expect(rawResSynDump).To(BeNil())
+
+		rawValSynDump := client2.FTSynDump(ctx, "idx1").RawVal()
+		Expect(client2.FTSynDump(ctx, "idx1").Err()).To(HaveOccurred())
+		Expect(rawValSynDump).To(BeNil())
 	})
 
 	It("should test not affected Resp 3 Search method - FTExplain", Label("search", "ftexplain"), func() {

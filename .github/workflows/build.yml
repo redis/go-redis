@@ -2,9 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [master, v9, v9.7, v9.8]
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski-redis/*', 'ce/*']
   pull_request:
-    branches: [master, v9, v9.7, v9.8]
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski-redis/*', 'ce/*']
 
 permissions:
   contents: read
@@ -27,12 +27,12 @@ jobs:
 
     steps:
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Test environment
         env:
@@ -44,7 +44,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.2.x"]="8.2-M01-pre"
+            ["8.2.x"]="8.2.1-pre"
             ["8.0.x"]="8.0.2"
             ["7.4.x"]="rs-7.4.0-v5"
           )
@@ -84,7 +84,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run tests
         uses: ./.github/actions/run-tests

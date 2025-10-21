@@ -22,7 +22,7 @@ type metricsState struct {
 
 // InstrumentMetrics starts reporting OpenTelemetry Metrics.
 //
-// Based on https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/semantic_conventions/database-metrics.md
+// Based on https://github.com/open-telemetry/semantic-conventions/blob/main/docs/database/database-metrics.md
 func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 	baseOpts := make([]baseOption, len(opts))
 	for i, opt := range opts {
@@ -113,10 +113,15 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 	return nil
 }
 
+func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set) {
+	poolAttrs = attribute.NewSet(conf.attrs...)
+	idleAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "idle"))...)
+	usedAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "used"))...)
+	return
+}
+
 func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, error) {
-	labels := conf.attrs
-	idleAttrs := append(labels, attribute.String("state", "idle"))
-	usedAttrs := append(labels, attribute.String("state", "used"))
+	poolAttrs, idleAttrs, usedAttrs := poolStatsAttrs(conf)
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.idle.max",
@@ -145,6 +150,23 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 	usage, err := conf.meter.Int64ObservableUpDownCounter(
 		"db.client.connections.usage",
 		metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	waits, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.waits",
+		metric.WithDescription("The number of times a connection was waited for"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	waitsDuration, err := conf.meter.Int64ObservableUpDownCounter(
+		"db.client.connections.waits_duration",
+		metric.WithDescription("The total time spent for waiting a connection in nanoseconds"),
+		metric.WithUnit("ns"),
 	)
 	if err != nil {
 		return nil, err
@@ -179,22 +201,27 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		func(ctx context.Context, o metric.Observer) error {
 			stats := rdb.PoolStats()
 
-			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributes(labels...))
-			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributes(labels...))
-			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributes(labels...))
+			o.ObserveInt64(idleMax, int64(redisConf.MaxIdleConns), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(idleMin, int64(redisConf.MinIdleConns), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(connsMax, int64(redisConf.PoolSize), metric.WithAttributeSet(poolAttrs))
 
-			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributes(idleAttrs...))
-			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributes(usedAttrs...))
+			o.ObserveInt64(usage, int64(stats.IdleConns), metric.WithAttributeSet(idleAttrs))
+			o.ObserveInt64(usage, int64(stats.TotalConns-stats.IdleConns), metric.WithAttributeSet(usedAttrs))
 
-			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributes(labels...))
-			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributes(labels...))
-			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributes(labels...))
+			o.ObserveInt64(waits, int64(stats.WaitCount), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(waitsDuration, stats.WaitDurationNs, metric.WithAttributeSet(poolAttrs))
+
+			o.ObserveInt64(timeouts, int64(stats.Timeouts), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(hits, int64(stats.Hits), metric.WithAttributeSet(poolAttrs))
+			o.ObserveInt64(misses, int64(stats.Misses), metric.WithAttributeSet(poolAttrs))
 			return nil
 		},
 		idleMax,
 		idleMin,
 		connsMax,
 		usage,
+		waits,
+		waitsDuration,
 		timeouts,
 		hits,
 		misses,
