@@ -44,7 +44,22 @@ there are three environment variables that need to be set before running the tes
   - Notification delivery consistency
   - Handoff behavior per endpoint type
 
-### 3. Timeout Configurations Scenario (`scenario_timeout_configs_test.go`)
+### 3. Database Management Scenario (`scenario_database_management_test.go`)
+**Dynamic database creation and deletion**
+- **Purpose**: Test database lifecycle management via fault injector
+- **Features Tested**: CREATE_DATABASE, DELETE_DATABASE endpoints
+- **Configuration**: Various database configurations (simple, with modules, clustered)
+- **Duration**: ~10 minutes
+- **Key Validations**:
+  - Database creation with different configurations
+  - Database creation with Redis modules (ReJSON, search, timeseries, bf)
+  - Database deletion
+  - Complete lifecycle (create → use → delete)
+  - Configuration validation
+
+See [DATABASE_MANAGEMENT.md](DATABASE_MANAGEMENT.md) for detailed documentation on database management endpoints.
+
+### 4. Timeout Configurations Scenario (`scenario_timeout_configs_test.go`)
 **Various timeout strategies**
 - **Purpose**: Test different timeout configurations and their impact
 - **Features Tested**: Conservative, Aggressive, HighLatency timeouts
@@ -58,7 +73,7 @@ there are three environment variables that need to be set before running the tes
   - Recovery times appropriate for each strategy
   - Error rates correlate with timeout aggressiveness
 
-### 4. TLS Configurations Scenario (`scenario_tls_configs_test.go`)
+### 5. TLS Configurations Scenario (`scenario_tls_configs_test.go`)
 **Security and encryption testing framework**
 - **Purpose**: Test push notifications with different TLS configurations
 - **Features Tested**: NoTLS, TLSInsecure, TLSSecure, TLSMinimal, TLSStrict
@@ -71,7 +86,7 @@ there are three environment variables that need to be set before running the tes
   - Security compliance
 - **Note**: TLS configuration is handled at the Redis connection config level, not client options level
 
-### 5. Stress Test Scenario (`scenario_stress_test.go`)
+### 6. Stress Test Scenario (`scenario_stress_test.go`)
 **Extreme load and concurrent operations**
 - **Purpose**: Test system limits and behavior under extreme stress
 - **Features Tested**: Maximum concurrent operations, multiple clients

@@ -23,19 +23,19 @@ NC='\033[0m' # No Color
 
 # Logging functions
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
 }
 
 log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+    echo -e "${YELLOW}[WARNING]${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 # Help function
@@ -134,15 +134,14 @@ export FAULT_INJECTION_API_URL="$FAULT_INJECTOR_URL"
 export E2E_SCENARIO_TESTS="true"
 
 # Build test command
-TEST_CMD="go test -tags=e2e -v"
+TEST_CMD="go test -json -tags=e2e"
 
 if [[ -n "$TIMEOUT" ]]; then
     TEST_CMD="$TEST_CMD -timeout=$TIMEOUT"
 fi
 
-if [[ -n "$VERBOSE" ]]; then
-    TEST_CMD="$TEST_CMD $VERBOSE"
-fi
+# Note: -v flag is not compatible with -json output format
+# The -json format already provides verbose test information
 
 if [[ -n "$RUN_PATTERN" ]]; then
     TEST_CMD="$TEST_CMD -run $RUN_PATTERN"
@@ -160,15 +159,15 @@ fi
 
 # Show configuration
 log_info "Maintenance notifications E2E Tests Configuration:"
-echo "  Repository Root: $REPO_ROOT"
-echo "  E2E Directory: $E2E_DIR"
-echo "  Config Path: $CONFIG_PATH"
-echo "  Fault Injector URL: $FAULT_INJECTOR_URL"
-echo "  Test Timeout: $TIMEOUT"
+echo "  Repository Root: $REPO_ROOT" >&2
+echo "  E2E Directory: $E2E_DIR" >&2
+echo "  Config Path: $CONFIG_PATH" >&2
+echo "  Fault Injector URL: $FAULT_INJECTOR_URL" >&2
+echo "  Test Timeout: $TIMEOUT" >&2
 if [[ -n "$RUN_PATTERN" ]]; then
-    echo "  Test Pattern: $RUN_PATTERN"
+    echo "  Test Pattern: $RUN_PATTERN" >&2
 fi
-echo ""
+echo "" >&2
 
 # Validate fault injector connectivity
 log_info "Checking fault injector connectivity..."
@@ -186,11 +185,11 @@ fi
 # Show what would be executed in dry-run mode
 if [[ "$DRY_RUN" == true ]]; then
     log_info "Dry run mode - would execute:"
-    echo "  cd $REPO_ROOT"
-    echo "  export REDIS_ENDPOINTS_CONFIG_PATH=\"$CONFIG_PATH\""
-    echo "  export FAULT_INJECTION_API_URL=\"$FAULT_INJECTOR_URL\""
-    echo "  export E2E_SCENARIO_TESTS=\"true\""
-    echo "  $TEST_CMD"
+    echo "  cd $REPO_ROOT" >&2
+    echo "  export REDIS_ENDPOINTS_CONFIG_PATH=\"$CONFIG_PATH\"" >&2
+    echo "  export FAULT_INJECTION_API_URL=\"$FAULT_INJECTOR_URL\"" >&2
+    echo "  export E2E_SCENARIO_TESTS=\"true\"" >&2
+    echo "  $TEST_CMD" >&2
     exit 0
 fi
 
@@ -200,14 +199,14 @@ cd "$REPO_ROOT"
 # Run the tests
 log_info "Starting E2E tests..."
 log_info "Command: $TEST_CMD"
-echo ""
+echo "" >&2
 
 if eval "$TEST_CMD"; then
-    echo ""
+    echo "" >&2
     log_success "All E2E tests completed successfully!"
     exit 0
 else
-    echo ""
+    echo "" >&2
     log_error "E2E tests failed!"
     log_info "Check the test output above for details"
     exit 1

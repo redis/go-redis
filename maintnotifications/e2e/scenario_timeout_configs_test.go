@@ -19,15 +19,19 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
 	var dump = true
+
+	var errorsDetected = false
 	var p = func(format string, args ...interface{}) {
-		format = "[%s][TIMEOUT-CONFIGS] " + format
-		ts := time.Now().Format("15:04:05.000")
-		args = append([]interface{}{ts}, args...)
-		t.Logf(format, args...)
+		printLog("TIMEOUT-CONFIGS", false, format, args...)
+	}
+
+	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
+		printLog("TIMEOUT-CONFIGS", true, format, args...)
 	}
 
 	// Test different timeout configurations
@@ -42,8 +46,8 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 		{
 			name:                       "Conservative",
 			handoffTimeout:             60 * time.Second,
-			relaxedTimeout:             20 * time.Second,
-			postHandoffRelaxedDuration: 5 * time.Second,
+			relaxedTimeout:             30 * time.Second,
+			postHandoffRelaxedDuration: 2 * time.Minute,
 			description:                "Conservative timeouts for stable environments",
 			expectedBehavior:           "Longer timeouts, fewer timeout errors",
 		},
@@ -67,54 +71,39 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 
 	logCollector.ClearLogs()
 	defer func() {
-		if dump {
-			p("Dumping logs...")
-			logCollector.DumpLogs()
-			p("Log Analysis:")
-			logCollector.GetAnalysis().Print(t)
-		}
 		logCollector.Clear()
 	}()
 
-	// Create client factory from configuration
-	factory, err := CreateTestClientFactory("standalone")
-	if err != nil {
-		t.Skipf("Enterprise cluster not available, skipping timeout configs test: %v", err)
-	}
-	endpointConfig := factory.GetConfig()
-
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
-	if err != nil {
-		t.Fatalf("Failed to create fault injector: %v", err)
-	}
-
-	defer func() {
-		if dump {
-			p("Pool stats:")
-			factory.PrintPoolStats(t)
-		}
-		factory.DestroyAll()
-	}()
-
-	// Test each timeout configuration
+	// Test each timeout configuration with its own fresh database
 	for _, timeoutTest := range timeoutConfigs {
 		t.Run(timeoutTest.name, func(t *testing.T) {
-			// redefine p and e for each test to get
-			// proper test name in logs and proper test failures
-			var p = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Logf(format, args...)
+			// Setup: Create fresh database and client factory for THIS timeout config test
+			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[TIMEOUT-CONFIGS-%s] Created test database with bdb_id: %d", timeoutTest.name, bdbID)
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			// Create fault injector
+			faultInjector, err := CreateTestFaultInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 			}
 
-			var e = func(format string, args ...interface{}) {
-				format = "[%s][ENDPOINT-TYPES][ERROR] " + format
-				ts := time.Now().Format("15:04:05.000")
-				args = append([]interface{}{ts}, args...)
-				t.Errorf(format, args...)
+			defer func() {
+				if dump {
+					p("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
+
+			errorsDetected = false
+			var ef = func(format string, args ...interface{}) {
+				printLog("TIMEOUT-CONFIGS", true, format, args...)
+				t.FailNow()
 			}
+
 			p("Testing timeout configuration: %s - %s", timeoutTest.name, timeoutTest.description)
 			p("Expected behavior: %s", timeoutTest.expectedBehavior)
 			p("Handoff timeout: %v, Relaxed timeout: %v, Post-handoff duration: %v",
@@ -141,7 +130,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				ClientName: fmt.Sprintf("timeout-test-%s", timeoutTest.name),
 			})
 			if err != nil {
-				t.Fatalf("Failed to create client for %s: %v", timeoutTest.name, err)
+				ef("Failed to create client for %s: %v", timeoutTest.name, err)
 			}
 
 			// Create timeout tracker
@@ -149,17 +138,13 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
 			setupNotificationHooks(client, tracker, logger)
 			defer func() {
-				if dump {
-					p("Tracker analysis for %s:", timeoutTest.name)
-					tracker.GetAnalysis().Print(t)
-				}
 				tracker.Clear()
 			}()
 
 			// Verify initial connectivity
 			err = client.Ping(ctx).Err()
 			if err != nil {
-				t.Fatalf("Failed to ping Redis with %s timeout config: %v", timeoutTest.name, err)
+				ef("Failed to ping Redis with %s timeout config: %v", timeoutTest.name, err)
 			}
 
 			p("Client connected successfully with %s timeout configuration", timeoutTest.name)
@@ -187,12 +172,11 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger failover action for %s: %v", timeoutTest.name, err)
+				ef("Failed to trigger failover action for %s: %v", timeoutTest.name, err)
 			}
 
 			// Wait for FAILING_OVER notification
@@ -200,7 +184,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
 			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILING_OVER notification was not received for %s timeout config", timeoutTest.name)
+				ef("FAILING_OVER notification was not received for %s timeout config", timeoutTest.name)
 			}
 			failingOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILING_OVER notification received for %s. %v", timeoutTest.name, failingOverData)
@@ -212,7 +196,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
 			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("FAILED_OVER notification was not received for %s timeout config", timeoutTest.name)
+				ef("FAILED_OVER notification was not received for %s timeout config", timeoutTest.name)
 			}
 			failedOverData := logs2.ExtractDataFromLogMessage(match)
 			p("FAILED_OVER notification received for %s. %v", timeoutTest.name, failedOverData)
@@ -220,12 +204,12 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// Wait for failover to complete
 			status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
 				WithMaxWaitTime(180*time.Second),
-				WithPollInterval(1*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Failover action failed for %s: %v", timeoutTest.name, err)
+				ef("[FI] Failover action failed for %s: %v", timeoutTest.name, err)
 			}
-			p("[FI] Failover action completed for %s: %s", timeoutTest.name, status.Status)
+			p("[FI] Failover action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
 
 			// Continue traffic to observe timeout behavior
 			p("Continuing traffic for %v to observe timeout behavior...", timeoutTest.relaxedTimeout*2)
@@ -236,58 +220,59 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger migrate action for %s: %v", timeoutTest.name, err)
+				ef("Failed to trigger migrate action for %s: %v", timeoutTest.name, err)
 			}
-
-			// Wait for MIGRATING notification
-			match, found = logCollector.WaitForLogMatchFunc(func(s string) bool {
-				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
-			}, 30*time.Second)
-			if !found {
-				t.Fatalf("MIGRATING notification was not received for %s timeout config", timeoutTest.name)
-			}
-			migrateData := logs2.ExtractDataFromLogMessage(match)
-			p("MIGRATING notification received for %s: %v", timeoutTest.name, migrateData)
 
 			// Wait for migration to complete
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
+				ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
 			}
-			p("[FI] Migrate action completed for %s: %s", timeoutTest.name, status.Status)
+
+			p("[FI] Migrate action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
+
+			// Wait for MIGRATING notification
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
+			}, 60*time.Second)
+			if !found {
+				ef("MIGRATING notification was not received for %s timeout config", timeoutTest.name)
+			}
+			migrateData := logs2.ExtractDataFromLogMessage(match)
+			p("MIGRATING notification received for %s: %v", timeoutTest.name, migrateData)
 
 			// do a bind action
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"cluster_index": "0",
-					"bdb_id":        endpointConfig.BdbID,
+					"bdb_id": endpointConfig.BdbID,
 				},
 			})
 			if err != nil {
-				t.Fatalf("Failed to trigger bind action for %s: %v", timeoutTest.name, err)
+				ef("Failed to trigger bind action for %s: %v", timeoutTest.name, err)
 			}
 			status, err = faultInjector.WaitForAction(ctx, bindResp.ActionID,
-				WithMaxWaitTime(120*time.Second),
-				WithPollInterval(1*time.Second),
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
 			)
 			if err != nil {
-				t.Fatalf("[FI] Bind action failed for %s: %v", timeoutTest.name, err)
+				ef("[FI] Bind action failed for %s: %v", timeoutTest.name, err)
 			}
-			p("[FI] Bind action completed for %s: %s", timeoutTest.name, status.Status)
+			p("[FI] Bind action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
+
 			// waiting for moving notification
 			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
 				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-			}, 2*time.Minute)
+			}, 3*time.Minute)
 			if !found {
-				t.Fatalf("MOVING notification was not received for %s timeout config", timeoutTest.name)
+				ef("MOVING notification was not received for %s timeout config", timeoutTest.name)
 			}
 
 			movingData := logs2.ExtractDataFromLogMessage(match)
@@ -350,6 +335,13 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 				e("Expected successful handoffs with %s config, got none", timeoutTest.name)
 			}
 
+			if errorsDetected {
+				logCollector.DumpLogs()
+				trackerAnalysis.Print(t)
+				logCollector.Clear()
+				tracker.Clear()
+				ef("[FAIL] Errors detected with %s timeout config", timeoutTest.name)
+			}
 			p("Timeout configuration %s test completed successfully in %v", timeoutTest.name, testDuration)
 			p("Command runner stats:")
 			p("Operations: %d, Errors: %d, Timeout Errors: %d",

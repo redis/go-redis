@@ -1,6 +1,9 @@
 package redisotel
 
 import (
+	"strings"
+
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -21,6 +24,7 @@ type config struct {
 
 	dbStmtEnabled bool
 	callerEnabled bool
+	filter        func(cmd redis.Cmder) bool
 
 	// Metrics options.
 
@@ -122,6 +126,37 @@ func WithCallerEnabled(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.callerEnabled = on
 	})
+}
+
+// WithCommandFilter allows filtering of commands when tracing to omit commands that may have sensitive details like
+// passwords.
+func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filter = filter
+	})
+}
+
+func BasicCommandFilter(cmd redis.Cmder) bool {
+	if strings.ToLower(cmd.Name()) == "auth" {
+		return true
+	}
+
+	if strings.ToLower(cmd.Name()) == "hello" {
+		if len(cmd.Args()) < 3 {
+			return false
+		}
+
+		arg, exists := cmd.Args()[2].(string)
+		if !exists {
+			return false
+		}
+
+		if strings.ToLower(arg) == "auth" {
+			return true
+		}
+	}
+
+	return false
 }
 
 //------------------------------------------------------------------------------

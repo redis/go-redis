@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,15 @@ func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
 
 					cr.operationCount.Add(1)
 					if err != nil {
+						if err == redis.ErrClosed || strings.Contains(err.Error(), "client is closed") {
+							select {
+							case <-cr.stopCh:
+								return
+							default:
+							}
+							return
+						}
+
 						fmt.Printf("Error: %v\n", err)
 						cr.errorCount.Add(1)
 
