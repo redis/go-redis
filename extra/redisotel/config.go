@@ -187,6 +187,12 @@ func DefaultCommandFilter(cmd redis.Cmder) bool {
 	return false
 }
 
+// BasicCommandFilter filters out AUTH commands from tracing.
+// Deprecated: use DefaultCommandFilter instead.
+func BasicCommandFilter(cmd redis.Cmder) bool {
+	return DefaultCommandFilter(cmd)
+}
+
 //------------------------------------------------------------------------------
 
 type MetricsOption interface {
