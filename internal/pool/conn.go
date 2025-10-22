@@ -170,17 +170,34 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 // Usable
 
 // CompareAndSwapUsable atomically compares and swaps the usable flag (lock-free).
+//
+// This is used by background operations (handoff, re-auth) to acquire exclusive
+// access to a connection. The operation sets usable to false, preventing the pool
+// from returning the connection to clients.
+//
+// Returns true if the swap was successful (old value matched), false otherwise.
 func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	return cn.usable.CompareAndSwap(old, new)
 }
 
 // IsUsable returns true if the connection is safe to use for new commands (lock-free).
+//
+// A connection is "usable" when it's in a stable state and can be returned to clients.
+// It becomes unusable during:
+//   - Initialization (before first use)
+//   - Handoff operations (network connection replacement)
+//   - Re-authentication (credential updates)
+//   - Other background operations that need exclusive access
 func (cn *Conn) IsUsable() bool {
 	return cn.usable.Load()
 }
 
 // SetUsable sets the usable flag for the connection (lock-free).
-// prefer CompareAndSwapUsable() when possible
+//
+// This should be called to mark a connection as usable after initialization or
+// to release it after a background operation completes.
+//
+// Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
 func (cn *Conn) SetUsable(usable bool) {
 	cn.usable.Store(usable)
 }
@@ -188,17 +205,31 @@ func (cn *Conn) SetUsable(usable bool) {
 // Used
 
 // CompareAndSwapUsed atomically compares and swaps the used flag (lock-free).
+//
+// This is the preferred method for acquiring a connection from the pool, as it
+// ensures that only one goroutine marks the connection as used.
+//
+// Returns true if the swap was successful (old value matched), false otherwise.
 func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 	return cn.used.CompareAndSwap(old, new)
 }
 
 // IsUsed returns true if the connection is currently in use (lock-free).
+//
+// A connection is "used" when it has been retrieved from the pool and is
+// actively processing a command. Background operations (like re-auth) should
+// wait until the connection is not used before executing commands.
 func (cn *Conn) IsUsed() bool {
 	return cn.used.Load()
 }
 
 // SetUsed sets the used flag for the connection (lock-free).
-// prefer CompareAndSwapUsed() when possible
+//
+// This should be called when returning a connection to the pool (set to false)
+// or when a single-connection pool retrieves its connection (set to true).
+//
+// Prefer CompareAndSwapUsed() when acquiring from a multi-connection pool to
+// avoid race conditions.
 func (cn *Conn) SetUsed(val bool) {
 	cn.used.Store(val)
 }

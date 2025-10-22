@@ -80,6 +80,9 @@ type Pooler interface {
 	Len() int
 	IdleLen() int
 	Stats() *Stats
+
+	// Size returns the maximum pool size (capacity).
+	// This is used by the streaming credentials manager to size the re-auth worker pool.
 	Size() int
 
 	AddPoolHook(hook PoolHook)
@@ -763,6 +766,10 @@ func (p *ConnPool) IdleLen() int {
 	return int(n)
 }
 
+// Size returns the maximum pool size (capacity).
+//
+// This is used by the streaming credentials manager to size the re-auth worker pool,
+// ensuring that re-auth operations don't exhaust the connection pool.
 func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }

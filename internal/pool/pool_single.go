@@ -79,6 +79,7 @@ func (p *SingleConnPool) IdleLen() int {
 	return 0
 }
 
+// Size returns the maximum pool size, which is always 1 for SingleConnPool.
 func (p *SingleConnPool) Size() int { return 1 }
 
 func (p *SingleConnPool) Stats() *Stats {

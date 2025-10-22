@@ -9,20 +9,55 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+// ReAuthPoolHook is a pool hook that manages background re-authentication of connections
+// when credentials change via a streaming credentials provider.
+//
+// The hook uses a semaphore-based worker pool to limit concurrent re-authentication
+// operations and prevent pool exhaustion. When credentials change, connections are
+// marked for re-authentication and processed asynchronously in the background.
+//
+// The re-authentication process:
+//  1. OnPut: When a connection is returned to the pool, check if it needs re-auth
+//  2. If yes, schedule it for background processing (move from shouldReAuth to scheduledReAuth)
+//  3. A worker goroutine acquires the connection (waits until it's not in use)
+//  4. Executes the re-auth function while holding the connection
+//  5. Releases the connection back to the pool
+//
+// The hook ensures that:
+//   - Only one re-auth operation runs per connection at a time
+//   - Connections are not used for commands during re-authentication
+//   - Re-auth operations timeout if they can't acquire the connection
+//   - Resources are properly cleaned up on connection removal
 type ReAuthPoolHook struct {
-	// conn id -> func() reauth func with error handling
+	// shouldReAuth maps connection ID to re-auth function
+	// Connections in this map need re-authentication but haven't been scheduled yet
 	shouldReAuth     map[uint64]func(error)
 	shouldReAuthLock sync.RWMutex
-	workers          chan struct{}
-	reAuthTimeout    time.Duration
-	// conn id -> bool
+
+	// workers is a semaphore channel limiting concurrent re-auth operations
+	// Initialized with poolSize tokens to prevent pool exhaustion
+	workers chan struct{}
+
+	// reAuthTimeout is the maximum time to wait for acquiring a connection for re-auth
+	reAuthTimeout time.Duration
+
+	// scheduledReAuth maps connection ID to scheduled status
+	// Connections in this map have a background worker attempting re-authentication
 	scheduledReAuth map[uint64]bool
 	scheduledLock   sync.RWMutex
 
-	// for cleanup
+	// manager is a back-reference for cleanup operations
 	manager *Manager
 }
 
+// NewReAuthPoolHook creates a new re-authentication pool hook.
+//
+// Parameters:
+//   - poolSize: Maximum number of concurrent re-auth operations (typically matches pool size)
+//   - reAuthTimeout: Maximum time to wait for acquiring a connection for re-authentication
+//
+// The poolSize parameter is used to initialize the worker semaphore, ensuring that
+// re-auth operations don't exhaust the connection pool.
 func NewReAuthPoolHook(poolSize int, reAuthTimeout time.Duration) *ReAuthPoolHook {
 	workers := make(chan struct{}, poolSize)
 	// Initialize the workers channel with tokens (semaphore pattern)
@@ -38,12 +73,34 @@ func NewReAuthPoolHook(poolSize int, reAuthTimeout time.Duration) *ReAuthPoolHoo
 	}
 }
 
+// MarkForReAuth marks a connection for re-authentication.
+//
+// This method is called when credentials change and a connection needs to be
+// re-authenticated. The actual re-authentication happens asynchronously when
+// the connection is returned to the pool (in OnPut).
+//
+// Parameters:
+//   - connID: The connection ID to mark for re-authentication
+//   - reAuthFn: Function to call for re-authentication, receives error if acquisition fails
+//
+// Thread-safe: Can be called concurrently from multiple goroutines.
 func (r *ReAuthPoolHook) MarkForReAuth(connID uint64, reAuthFn func(error)) {
 	r.shouldReAuthLock.Lock()
 	defer r.shouldReAuthLock.Unlock()
 	r.shouldReAuth[connID] = reAuthFn
 }
 
+// OnGet is called when a connection is retrieved from the pool.
+//
+// This hook checks if the connection needs re-authentication or has a scheduled
+// re-auth operation. If so, it rejects the connection (returns accept=false),
+// causing the pool to try another connection.
+//
+// Returns:
+//   - accept: false if connection needs re-auth, true otherwise
+//   - err: always nil (errors are not used in this hook)
+//
+// Thread-safe: Called concurrently by multiple goroutines getting connections.
 func (r *ReAuthPoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (accept bool, err error) {
 	connID := conn.GetID()
 	r.shouldReAuthLock.RLock()
@@ -67,6 +124,23 @@ func (r *ReAuthPoolHook) OnGet(_ context.Context, conn *pool.Conn, _ bool) (acce
 	return true, nil
 }
 
+// OnPut is called when a connection is returned to the pool.
+//
+// This hook checks if the connection needs re-authentication. If so, it schedules
+// a background goroutine to perform the re-auth asynchronously. The goroutine:
+//  1. Waits for a worker slot (semaphore)
+//  2. Acquires the connection (waits until not in use)
+//  3. Executes the re-auth function
+//  4. Releases the connection and worker slot
+//
+// The connection is always pooled (not removed) since re-auth happens in background.
+//
+// Returns:
+//   - shouldPool: always true (connection stays in pool during background re-auth)
+//   - shouldRemove: always false
+//   - err: always nil
+//
+// Thread-safe: Called concurrently by multiple goroutines returning connections.
 func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, error) {
 	if conn == nil {
 		// noop
@@ -158,6 +232,17 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 	return true, false, nil
 }
 
+// OnRemove is called when a connection is removed from the pool.
+//
+// This hook cleans up all state associated with the connection:
+//   - Removes from shouldReAuth map (pending re-auth)
+//   - Removes from scheduledReAuth map (active re-auth)
+//   - Removes credentials listener from manager
+//
+// This prevents memory leaks and ensures that removed connections don't have
+// lingering re-auth operations or listeners.
+//
+// Thread-safe: Called when connections are removed due to errors, timeouts, or pool closure.
 func (r *ReAuthPoolHook) OnRemove(_ context.Context, conn *pool.Conn, _ error) {
 	connID := conn.GetID()
 	r.shouldReAuthLock.Lock()
