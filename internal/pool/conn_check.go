@@ -3,14 +3,11 @@
 package pool
 
 import (
-	"errors"
 	"io"
 	"net"
 	"syscall"
 	"time"
 )
-
-var errUnexpectedRead = errors.New("unexpected read from socket")
 
 // connCheck checks if the connection is still alive and if there is data in the socket
 // it will try to peek at the next byte without consuming it since we may want to work with it
