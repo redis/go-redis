@@ -3,7 +3,6 @@ package pool_test
 import (
 	"bufio"
 	"context"
-	"net"
 	"unsafe"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -128,20 +127,26 @@ var _ = Describe("Buffer Size Configuration", func() {
 })
 
 // Helper functions to extract buffer sizes using unsafe pointers
+// The struct layout must match pool.Conn exactly to avoid checkptr violations.
+// checkptr is Go's pointer safety checker, which ensures that unsafe pointer
+// conversions are valid. If the struct layouts do not match exactly, this can
+// cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		usedAt  int64
-		netConn net.Conn
-		rd      *proto.Reader
-		bw      *bufio.Writer
-		wr      *proto.Writer
-		// ... other fields
+		id            uint64      // First field in pool.Conn
+		usedAt        int64       // Second field (atomic)
+		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		rd            *proto.Reader
+		bw            *bufio.Writer
+		wr            *proto.Writer
+		// We only need fields up to bw, so we can stop here
 	})(unsafe.Pointer(cn))
 
 	if cnPtr.bw == nil {
 		return -1
 	}
 
+	// bufio.Writer internal structure
 	bwPtr := (*struct {
 		err error
 		buf []byte
@@ -154,18 +159,20 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		usedAt  int64
-		netConn net.Conn
-		rd      *proto.Reader
-		bw      *bufio.Writer
-		wr      *proto.Writer
-		// ... other fields
+		id            uint64      // First field in pool.Conn
+		usedAt        int64       // Second field (atomic)
+		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		rd            *proto.Reader
+		bw            *bufio.Writer
+		wr            *proto.Writer
+		// We only need fields up to rd, so we can stop here
 	})(unsafe.Pointer(cn))
 
 	if cnPtr.rd == nil {
 		return -1
 	}
 
+	// proto.Reader internal structure
 	rdPtr := (*struct {
 		rd *bufio.Reader
 	})(unsafe.Pointer(cnPtr.rd))
@@ -174,6 +181,7 @@ func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 		return -1
 	}
 
+	// bufio.Reader internal structure
 	bufReaderPtr := (*struct {
 		buf          []byte
 		rd           interface{}

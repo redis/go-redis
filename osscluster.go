@@ -77,6 +77,10 @@ type ClusterOptions struct {
 	CredentialsProviderContext   func(ctx context.Context) (username string, password string, err error)
 	StreamingCredentialsProvider auth.StreamingCredentialsProvider
 
+	// MaxRetries is the maximum number of retries before giving up.
+	// For ClusterClient, retries are disabled by default (set to -1),
+	// because the cluster client handles all kinds of retries internally.
+	// This is intentional and differs from the standalone Options default.
 	MaxRetries      int
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration

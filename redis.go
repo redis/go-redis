@@ -11,6 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/auth/streaming"
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -224,6 +225,9 @@ type baseClient struct {
 	// Maintenance notifications manager
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
+
+	// streamingCredentialsManager is used to manage streaming credentials
+	streamingCredentialsManager *streaming.Manager
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -232,11 +236,12 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		opt:                       c.opt,
-		connPool:                  c.connPool,
-		onClose:                   c.onClose,
-		pushProcessor:             c.pushProcessor,
-		maintNotificationsManager: maintNotificationsManager,
+		opt:                         c.opt,
+		connPool:                    c.connPool,
+		onClose:                     c.onClose,
+		pushProcessor:               c.pushProcessor,
+		maintNotificationsManager:   maintNotificationsManager,
+		streamingCredentialsManager: c.streamingCredentialsManager,
 	}
 	return clone
 }
@@ -296,32 +301,30 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
-func (c *baseClient) newReAuthCredentialsListener(poolCn *pool.Conn) auth.CredentialsListener {
-	return auth.NewReAuthCredentialsListener(
-		c.reAuthConnection(poolCn),
-		c.onAuthenticationErr(poolCn),
-	)
-}
-
-func (c *baseClient) reAuthConnection(poolCn *pool.Conn) func(credentials auth.Credentials) error {
-	return func(credentials auth.Credentials) error {
+func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
+	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
 		username, password := credentials.BasicAuth()
+
+		// Use background context - timeout is handled by ReadTimeout in WithReader/WithWriter
 		ctx := context.Background()
+
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
-		// hooksMixin are intentionally empty here
-		cn := newConn(c.opt, connPool, nil)
+
+		// Pass hooks so that reauth commands are recorded/traced
+		cn := newConn(c.opt, connPool, &c.hooksMixin)
 
 		if username != "" {
 			err = cn.AuthACL(ctx, username, password).Err()
 		} else {
 			err = cn.Auth(ctx, password).Err()
 		}
+
 		return err
 	}
 }
-func (c *baseClient) onAuthenticationErr(poolCn *pool.Conn) func(err error) {
-	return func(err error) {
+func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
+	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
 			if isBadConn(err, false, c.opt.Addr) {
 				// Close the connection to force a reconnection.
@@ -372,13 +375,24 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
+		credListener, err := c.streamingCredentialsManager.Listener(
+			cn,
+			c.reAuthConnection(),
+			c.onAuthenticationErr(),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create credentials listener: %w", err)
+		}
+
 		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
-			Subscribe(c.newReAuthCredentialsListener(cn))
+			Subscribe(credListener)
 		if err != nil {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
 		}
+
 		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
 		cn.SetOnClose(unsubscribeFromCredentialsProvider)
+
 		username, password = credentials.BasicAuth()
 	} else if c.opt.CredentialsProviderContext != nil {
 		username, password, err = c.opt.CredentialsProviderContext(ctx)
@@ -496,7 +510,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	// mark the connection as usable and inited
+	// once returned to the pool as idle, this connection can be used by other clients
 	cn.SetUsable(true)
+	cn.SetUsed(false)
 	cn.Inited.Store(true)
 
 	// Set the connection initialization function for potential reconnections
@@ -950,6 +967,11 @@ func NewClient(opt *Options) *Client {
 	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
+
+	if opt.StreamingCredentialsProvider != nil {
+		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
+		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3

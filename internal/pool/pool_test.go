@@ -508,7 +508,8 @@ func TestDialerRetryConfiguration(t *testing.T) {
 		}
 
 		// Should have attempted 5 times (default DialerRetries = 5)
-		// There might be 1 additional attempt due to tryDial() recovery mechanism
+		// Note: There may be one additional attempt from tryDial() goroutine
+		// which is launched when dialErrorsNum reaches PoolSize
 		finalAttempts := atomic.LoadInt64(&attempts)
 		if finalAttempts < 5 {
 			t.Errorf("Expected at least 5 dial attempts (default), got %d", finalAttempts)

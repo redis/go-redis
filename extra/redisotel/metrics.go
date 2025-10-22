@@ -275,7 +275,7 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
 
-		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 		return conn, err
 	}
 }
@@ -293,7 +293,7 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
 		return err
 	}
@@ -314,7 +314,7 @@ func (mh *metricsHook) ProcessPipelineHook(
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
 
-		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributes(attrs...))
+		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
 		return err
 	}
