@@ -366,9 +366,20 @@ func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
-	if !cn.Inited.CompareAndSwap(false, true) {
+	if !cn.CompareAndSwapInited(false, true) {
 		return nil
 	}
+
+	defer func() {
+		// if the initialization did not complete successfully
+		// we need to mark the connection as not initialized
+		if cn.CompareAndSwapInitializing(true, false) {
+			internal.Logger.Printf(ctx, "redis: failed to initialize connection conn[%d]", cn.GetID())
+			cn.SetInited(false)
+		}
+	}()
+
+	cn.SetInitializing(true)
 	var err error
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(c.opt, connPool, &c.hooksMixin)
@@ -510,14 +521,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	// Set the connection initialization function for potential reconnections
+	cn.SetInitConnFunc(c.createInitConnFunc())
+
 	// mark the connection as usable and inited
 	// once returned to the pool as idle, this connection can be used by other clients
 	cn.SetUsable(true)
 	cn.SetUsed(false)
-	cn.Inited.Store(true)
-
-	// Set the connection initialization function for potential reconnections
-	cn.SetInitConnFunc(c.createInitConnFunc())
+	cn.SetInitializing(false)
 
 	if c.opt.OnConnect != nil {
 		return c.opt.OnConnect(ctx, conn)

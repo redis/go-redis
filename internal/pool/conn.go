@@ -83,13 +83,14 @@ type Conn struct {
 	// On handoff, the network connection is replaced, but the Conn struct is reused
 	// this flag will be set to false when the network connection is replaced and
 	// set to true after the new network connection is initialized
-	Inited atomic.Bool
+	inited atomic.Bool
 
-	pooled    bool
-	pubsub    bool
-	closed    atomic.Bool
-	createdAt time.Time
-	expiresAt time.Time
+	initializing atomic.Bool
+	pooled       bool
+	pubsub       bool
+	closed       atomic.Bool
+	createdAt    time.Time
+	expiresAt    time.Time
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 	// Using atomic operations for lock-free access to avoid mutex contention
@@ -306,7 +307,27 @@ func (cn *Conn) IsPubSub() bool {
 }
 
 func (cn *Conn) IsInited() bool {
-	return cn.Inited.Load()
+	return cn.inited.Load()
+}
+
+func (cn *Conn) SetInited(inited bool) {
+	cn.inited.Store(inited)
+}
+
+func (cn *Conn) CompareAndSwapInited(old, new bool) bool {
+	return cn.inited.CompareAndSwap(old, new)
+}
+
+func (cn *Conn) IsInitializing() bool {
+	return cn.initializing.Load()
+}
+
+func (cn *Conn) SetInitializing(initializing bool) {
+	cn.initializing.Store(initializing)
+}
+
+func (cn *Conn) CompareAndSwapInitializing(old, new bool) bool {
+	return cn.initializing.CompareAndSwap(old, new)
 }
 
 // SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
@@ -478,8 +499,17 @@ func (cn *Conn) GetNetConn() net.Conn {
 
 // SetNetConnAndInitConn replaces the underlying connection and executes the initialization.
 func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) error {
+	// max retries of 100ms * 20 = 2 second
+	maxRetries := 20
+	for cn.IsInitializing() || cn.IsUsed() {
+		time.Sleep(100 * time.Millisecond)
+		maxRetries--
+		if maxRetries <= 0 {
+			return fmt.Errorf("failed to set net conn after %d attempts due to high contention", maxRetries)
+		}
+	}
 	// New connection is not initialized yet
-	cn.Inited.Store(false)
+	cn.SetInited(false)
 	// Replace the underlying connection
 	cn.SetNetConn(netConn)
 	return cn.ExecuteInitConn(ctx)
