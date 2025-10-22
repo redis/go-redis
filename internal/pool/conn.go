@@ -78,13 +78,15 @@ type Conn struct {
 	// background operations that may execute commands, like re-authentication.
 	used atomic.Bool
 
-	// Inited flag to mark connection as initialized, this is almost the same as usable
+	// inited flag to mark connection as initialized, this is almost the same as usable
 	// but it is used to make sure we don't initialize a network connection twice
 	// On handoff, the network connection is replaced, but the Conn struct is reused
 	// this flag will be set to false when the network connection is replaced and
 	// set to true after the new network connection is initialized
 	inited atomic.Bool
 
+	// Initializing flag to mark connection as initializing
+	// This is used to prevent concurrent initialization of the network connection
 	initializing atomic.Bool
 	pooled       bool
 	pubsub       bool
