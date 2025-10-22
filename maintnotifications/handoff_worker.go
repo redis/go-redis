@@ -378,8 +378,12 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 }
 
 // performHandoffInternal performs the actual handoff logic (extracted for circuit breaker integration)
-func (hwm *handoffWorkerManager) performHandoffInternal(ctx context.Context, conn *pool.Conn, newEndpoint string, connID uint64) (shouldRetry bool, err error) {
-
+func (hwm *handoffWorkerManager) performHandoffInternal(
+	ctx context.Context,
+	conn *pool.Conn,
+	newEndpoint string,
+	connID uint64,
+) (shouldRetry bool, err error) {
 	retries := conn.IncrementAndGetHandoffRetries(1)
 	internal.Logger.Printf(ctx, logs.HandoffRetryAttempt(connID, retries, newEndpoint, conn.RemoteAddr().String()))
 	maxRetries := 3 // Default fallback
@@ -438,9 +442,14 @@ func (hwm *handoffWorkerManager) performHandoffInternal(ctx context.Context, con
 		}
 	}()
 
+	// Clear handoff state will:
+	// - set the connection as usable again
+	// - clear the handoff state (shouldHandoff, endpoint, seqID)
+	// - reset the handoff retries to 0
 	conn.ClearHandoffState()
 	internal.Logger.Printf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 
+	// successfully completed the handoff, no retry needed and no error
 	return false, nil
 }
 
@@ -472,7 +481,10 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 			internal.Logger.Printf(ctx, logs.RemovingConnectionFromPool(conn.GetID(), err))
 		}
 	} else {
-		conn.Close()
+		err := conn.Close() // Close the connection if no pool provided
+		if err != nil {
+			internal.Logger.Printf(ctx, "redis: failed to close connection: %v", err)
+		}
 		if internal.LogLevel.WarnOrAbove() {
 			internal.Logger.Printf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID(), err))
 		}

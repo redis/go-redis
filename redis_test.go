@@ -854,24 +854,34 @@ var _ = Describe("Credentials Provider Priority", func() {
 				credentials: initialCreds,
 				updates:     updatesChan,
 			},
+			PoolSize: 1, // Force single connection to ensure reauth is tested
 		}
 
 		client = redis.NewClient(opt)
 		client.AddHook(recorder.Hook())
 		// wrongpass
 		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
+		time.Sleep(10 * time.Millisecond)
 		Expect(recorder.Contains("AUTH initial_user")).To(BeTrue())
 
 		// Update credentials
 		opt.StreamingCredentialsProvider.(*mockStreamingProvider).updates <- updatedCreds
-		// wrongpass
-		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
-		Expect(recorder.Contains("AUTH updated_user")).To(BeTrue())
+
+		// Wait for reauth to complete and verify updated credentials are used
+		// We need to keep trying Ping until we see the updated AUTH command
+		// because the reauth happens asynchronously
+		Eventually(func() bool {
+			// wrongpass
+			_ = client.Ping(context.Background()).Err()
+			return recorder.Contains("AUTH updated_user")
+		}, "1s", "50ms").Should(BeTrue())
+
 		close(updatesChan)
 	})
 })
 
 type mockStreamingProvider struct {
+	mu          sync.RWMutex
 	credentials auth.Credentials
 	err         error
 	updates     chan auth.Credentials
@@ -882,21 +892,50 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 		return nil, nil, m.err
 	}
 
+	if listener == nil {
+		return nil, nil, errors.New("listener cannot be nil")
+	}
+
+	// Create a done channel to stop the goroutine
+	done := make(chan struct{})
+
 	// Start goroutine to handle updates
 	go func() {
-		for creds := range m.updates {
-			m.credentials = creds
-			listener.OnNext(creds)
+		defer func() {
+			if r := recover(); r != nil {
+				// this is just a mock:
+				// allow panics to be caught without crashing
+			}
+		}()
+
+		for {
+			select {
+			case <-done:
+				return
+			case creds, ok := <-m.updates:
+				if !ok {
+					return
+				}
+				m.mu.Lock()
+				m.credentials = creds
+				m.mu.Unlock()
+				listener.OnNext(creds)
+			}
 		}
 	}()
 
-	return m.credentials, func() (err error) {
+	m.mu.RLock()
+	currentCreds := m.credentials
+	m.mu.RUnlock()
+
+	return currentCreds, func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				// this is just a mock:
 				// allow multiple closes from multiple listeners
 			}
 		}()
+		close(done)
 		return
 	}, nil
 }

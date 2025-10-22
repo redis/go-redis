@@ -24,6 +24,9 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
+	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -77,6 +80,10 @@ type Pooler interface {
 	Len() int
 	IdleLen() int
 	Stats() *Stats
+
+	// Size returns the maximum pool size (capacity).
+	// This is used by the streaming credentials manager to size the re-auth worker pool.
+	Size() int
 
 	AddPoolHook(hook PoolHook)
 	RemovePoolHook(hook PoolHook)
@@ -236,6 +243,7 @@ func (p *ConnPool) addIdleConn() error {
 	if err != nil {
 		return err
 	}
+
 	// Mark connection as usable after successful creation
 	// This is essential for normal pool operations
 	cn.SetUsable(true)
@@ -277,6 +285,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	// Mark connection as usable after successful creation
 	// This is essential for normal pool operations
 	cn.SetUsable(true)
@@ -428,6 +437,13 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	now := time.Now()
 	attempts := 0
+
+	// Get hooks manager once for this getConn call for performance.
+	// Note: Hooks added/removed during this call won't be reflected.
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
 	for {
 		if attempts >= getAttempts {
 			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
@@ -454,15 +470,17 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the hooks system
-		p.hookManagerMu.RLock()
-		hookManager := p.hookManager
-		p.hookManagerMu.RUnlock()
-
 		if hookManager != nil {
-			if err := hookManager.ProcessOnGet(ctx, cn, false); err != nil {
+			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
+			if err != nil {
 				internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
-				// Failed to process connection, discard it
 				_ = p.CloseConn(cn)
+				continue
+			}
+			if !acceptConn {
+				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+				p.Put(ctx, cn)
+				cn = nil
 				continue
 			}
 		}
@@ -480,14 +498,13 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Process connection using the hooks system
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
-
 	if hookManager != nil {
-		if err := hookManager.ProcessOnGet(ctx, newcn, true); err != nil {
+		acceptConn, err := hookManager.ProcessOnGet(ctx, newcn, true)
+		// both errors and accept=false mean a hook rejected the connection
+		// this should not happen with a new connection, but we handle it gracefully
+		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
-			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection by hook: %v", err)
+			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}
@@ -567,9 +584,12 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		if cn.IsUsable() {
-			p.idleConnsLen.Add(-1)
-			break
+		if cn.CompareAndSwapUsed(false, true) {
+			if cn.IsUsable() {
+				p.idleConnsLen.Add(-1)
+				break
+			}
+			cn.SetUsed(false)
 		}
 
 		// Connection is not usable, put it back in the pool
@@ -664,6 +684,11 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldCloseConn = true
 	}
 
+	// if the connection is not going to be closed, mark it as not used
+	if !shouldCloseConn {
+		cn.SetUsed(false)
+	}
+
 	p.freeTurn()
 
 	if shouldCloseConn {
@@ -671,7 +696,15 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	}
 }
 
-func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
+func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+	p.hookManagerMu.RLock()
+	hookManager := p.hookManager
+	p.hookManagerMu.RUnlock()
+
+	if hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, cn, reason)
+	}
+
 	p.removeConnWithLock(cn)
 
 	p.freeTurn()
@@ -731,6 +764,14 @@ func (p *ConnPool) IdleLen() int {
 	n := p.idleConnsLen.Load()
 	p.connsMu.Unlock()
 	return int(n)
+}
+
+// Size returns the maximum pool size (capacity).
+//
+// This is used by the streaming credentials manager to size the re-auth worker pool,
+// ensuring that re-auth operations don't exhaust the connection pool.
+func (p *ConnPool) Size() int {
+	return int(p.cfg.PoolSize)
 }
 
 func (p *ConnPool) Stats() *Stats {
