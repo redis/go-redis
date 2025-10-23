@@ -11,6 +11,13 @@ import (
 
 // ConnState represents the connection state in the state machine.
 // States are designed to be lightweight and fast to check.
+//
+// State Transitions:
+//   CREATED → INITIALIZING → IDLE ⇄ IN_USE
+//                              ↓
+//                          UNUSABLE (handoff/reauth)
+//                              ↓
+//                           IDLE/CLOSED
 type ConnState uint32
 
 const (
@@ -20,11 +27,15 @@ const (
 	// StateInitializing - Connection initialization in progress
 	StateInitializing
 
-	// StateReady - Connection ready for use
-	StateReady
+	// StateIdle - Connection initialized and idle in pool, ready to be acquired
+	StateIdle
 
-	// StateReauthInProgress - Reauth actively being processed
-	StateReauthInProgress
+	// StateInUse - Connection actively processing a command (retrieved from pool)
+	StateInUse
+
+	// StateUnusable - Connection temporarily unusable due to background operation
+	// (handoff, reauth, etc.). Cannot be acquired from pool.
+	StateUnusable
 
 	// StateClosed - Connection closed
 	StateClosed
@@ -37,10 +48,12 @@ func (s ConnState) String() string {
 		return "CREATED"
 	case StateInitializing:
 		return "INITIALIZING"
-	case StateReady:
-		return "READY"
-	case StateReauthInProgress:
-		return "REAUTH_IN_PROGRESS"
+	case StateIdle:
+		return "IDLE"
+	case StateInUse:
+		return "IN_USE"
+	case StateUnusable:
+		return "UNUSABLE"
 	case StateClosed:
 		return "CLOSED"
 	default:

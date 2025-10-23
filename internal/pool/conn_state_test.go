@@ -10,7 +10,7 @@ import (
 
 func TestConnStateMachine_GetState(t *testing.T) {
 	sm := NewConnStateMachine()
-	
+
 	if state := sm.GetState(); state != StateCreated {
 		t.Errorf("expected initial state to be CREATED, got %s", state)
 	}
@@ -18,16 +18,16 @@ func TestConnStateMachine_GetState(t *testing.T) {
 
 func TestConnStateMachine_Transition(t *testing.T) {
 	sm := NewConnStateMachine()
-	
+
 	// Unconditional transition
 	sm.Transition(StateInitializing)
 	if state := sm.GetState(); state != StateInitializing {
 		t.Errorf("expected state to be INITIALIZING, got %s", state)
 	}
-	
-	sm.Transition(StateReady)
-	if state := sm.GetState(); state != StateReady {
-		t.Errorf("expected state to be READY, got %s", state)
+
+	sm.Transition(StateIdle)
+	if state := sm.GetState(); state != StateIdle {
+		t.Errorf("expected state to be IDLE, got %s", state)
 	}
 }
 
@@ -47,42 +47,42 @@ func TestConnStateMachine_TryTransition(t *testing.T) {
 			expectError:  false,
 		},
 		{
-			name:         "invalid transition from CREATED to READY",
+			name:         "invalid transition from CREATED to IDLE",
 			initialState: StateCreated,
 			validStates:  []ConnState{StateInitializing},
-			targetState:  StateReady,
+			targetState:  StateIdle,
 			expectError:  true,
 		},
 		{
 			name:         "transition to same state",
-			initialState: StateReady,
-			validStates:  []ConnState{StateReady},
-			targetState:  StateReady,
+			initialState: StateIdle,
+			validStates:  []ConnState{StateIdle},
+			targetState:  StateIdle,
 			expectError:  false,
 		},
 		{
 			name:         "multiple valid from states",
-			initialState: StateReady,
-			validStates:  []ConnState{StateInitializing, StateReady, StateReauthInProgress},
-			targetState:  StateReauthInProgress,
+			initialState: StateIdle,
+			validStates:  []ConnState{StateInitializing, StateIdle, StateUnusable},
+			targetState:  StateUnusable,
 			expectError:  false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			sm := NewConnStateMachine()
 			sm.Transition(tt.initialState)
-			
+
 			err := sm.TryTransition(tt.validStates, tt.targetState)
-			
+
 			if tt.expectError && err == nil {
 				t.Error("expected error but got none")
 			}
 			if !tt.expectError && err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-			
+
 			if !tt.expectError {
 				if state := sm.GetState(); state != tt.targetState {
 					t.Errorf("expected state %s, got %s", tt.targetState, state)
@@ -94,17 +94,17 @@ func TestConnStateMachine_TryTransition(t *testing.T) {
 
 func TestConnStateMachine_AwaitAndTransition_FastPath(t *testing.T) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	ctx := context.Background()
 
 	// Fast path: already in valid state
-	err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateReauthInProgress)
+	err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 
-	if state := sm.GetState(); state != StateReauthInProgress {
+	if state := sm.GetState(); state != StateUnusable {
 		t.Errorf("expected state REAUTH_IN_PROGRESS, got %s", state)
 	}
 }
@@ -112,12 +112,12 @@ func TestConnStateMachine_AwaitAndTransition_FastPath(t *testing.T) {
 func TestConnStateMachine_AwaitAndTransition_Timeout(t *testing.T) {
 	sm := NewConnStateMachine()
 	sm.Transition(StateCreated)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
 	// Wait for a state that will never come
-	err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateReauthInProgress)
+	err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
 	if err == nil {
 		t.Error("expected timeout error but got none")
 	}
@@ -150,7 +150,7 @@ func TestConnStateMachine_AwaitAndTransition_FIFO(t *testing.T) {
 			startBarrier.Wait()
 
 			ctx := context.Background()
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateReady)
+			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateIdle)
 			if err != nil {
 				t.Errorf("waiter %d got error: %v", waiterID, err)
 				return
@@ -161,7 +161,7 @@ func TestConnStateMachine_AwaitAndTransition_FIFO(t *testing.T) {
 			orderMu.Unlock()
 
 			// Transition back to READY for next waiter
-			sm.Transition(StateReady)
+			sm.Transition(StateIdle)
 		}()
 	}
 
@@ -169,7 +169,7 @@ func TestConnStateMachine_AwaitAndTransition_FIFO(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Transition to READY to start processing waiters
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	// Wait for all waiters to complete
 	wg.Wait()
@@ -191,7 +191,7 @@ func TestConnStateMachine_AwaitAndTransition_FIFO(t *testing.T) {
 
 func TestConnStateMachine_ConcurrentAccess(t *testing.T) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	const numGoroutines = 100
 	const numIterations = 100
@@ -206,11 +206,11 @@ func TestConnStateMachine_ConcurrentAccess(t *testing.T) {
 
 			for j := 0; j < numIterations; j++ {
 				// Try to transition from READY to REAUTH_IN_PROGRESS
-				err := sm.TryTransition([]ConnState{StateReady}, StateReauthInProgress)
+				err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
 				if err == nil {
 					successCount.Add(1)
 					// Transition back to READY
-					sm.Transition(StateReady)
+					sm.Transition(StateIdle)
 				}
 
 				// Read state (hot path)
@@ -238,8 +238,9 @@ func TestConnStateMachine_StateString(t *testing.T) {
 	}{
 		{StateCreated, "CREATED"},
 		{StateInitializing, "INITIALIZING"},
-		{StateReady, "READY"},
-		{StateReauthInProgress, "REAUTH_IN_PROGRESS"},
+		{StateIdle, "IDLE"},
+		{StateInUse, "IN_USE"},
+		{StateUnusable, "UNUSABLE"},
 		{StateClosed, "CLOSED"},
 		{ConnState(999), "UNKNOWN(999)"},
 	}
@@ -255,8 +256,8 @@ func TestConnStateMachine_StateString(t *testing.T) {
 
 func BenchmarkConnStateMachine_GetState(b *testing.B) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
-	
+	sm.Transition(StateIdle)
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = sm.GetState()
@@ -265,7 +266,7 @@ func BenchmarkConnStateMachine_GetState(b *testing.B) {
 
 func TestConnStateMachine_PreventsConcurrentInitialization(t *testing.T) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	const numGoroutines = 10
 	var inInitializing atomic.Int32
@@ -286,7 +287,7 @@ func TestConnStateMachine_PreventsConcurrentInitialization(t *testing.T) {
 			startBarrier.Wait()
 
 			// Try to transition to INITIALIZING
-			err := sm.TryTransition([]ConnState{StateReady}, StateInitializing)
+			err := sm.TryTransition([]ConnState{StateIdle}, StateInitializing)
 			if err == nil {
 				successCount.Add(1)
 
@@ -310,7 +311,7 @@ func TestConnStateMachine_PreventsConcurrentInitialization(t *testing.T) {
 				inInitializing.Add(-1)
 
 				// Transition back to READY
-				sm.Transition(StateReady)
+				sm.Transition(StateIdle)
 			} else {
 				t.Logf("Goroutine %d: failed to enter INITIALIZING - %v", id, err)
 			}
@@ -329,7 +330,7 @@ func TestConnStateMachine_PreventsConcurrentInitialization(t *testing.T) {
 
 func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	const numGoroutines = 5
 	var completedCount atomic.Int32
@@ -352,7 +353,7 @@ func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T)
 			ctx := context.Background()
 
 			// Try to transition to INITIALIZING - should wait if another is initializing
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateInitializing)
+			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -369,7 +370,7 @@ func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T)
 			time.Sleep(10 * time.Millisecond)
 
 			// Transition back to READY
-			sm.Transition(StateReady)
+			sm.Transition(StateIdle)
 
 			completedCount.Add(1)
 			t.Logf("Goroutine %d: completed initialization (total=%d)", id, completedCount.Load())
@@ -384,7 +385,7 @@ func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T)
 	}
 
 	// Final state should be READY
-	if sm.GetState() != StateReady {
+	if sm.GetState() != StateIdle {
 		t.Errorf("expected final state READY, got %s", sm.GetState())
 	}
 
@@ -418,7 +419,7 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 			ctx := context.Background()
 
 			// This should queue in FIFO order
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateInitializing)
+			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -432,7 +433,7 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 			t.Logf("Goroutine %d: executed (position %d)", id, len(executionOrder))
 
 			// Transition back to READY to allow next waiter
-			sm.Transition(StateReady)
+			sm.Transition(StateIdle)
 		}(i)
 	}
 
@@ -440,7 +441,7 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Transition to READY to start processing the queue
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	wg.Wait()
 
@@ -456,7 +457,7 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 
 func TestConnStateMachine_FIFOWithFastPath(t *testing.T) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady) // Start in READY so fast path is available
+	sm.Transition(StateIdle) // Start in READY so fast path is available
 
 	const numGoroutines = 10
 	var executionOrder []int
@@ -481,7 +482,7 @@ func TestConnStateMachine_FIFOWithFastPath(t *testing.T) {
 			ctx := context.Background()
 
 			// This might use fast path (CAS) or slow path (queue)
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateReady}, StateInitializing)
+			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -498,7 +499,7 @@ func TestConnStateMachine_FIFOWithFastPath(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 
 			// Transition back to READY to allow next waiter
-			sm.Transition(StateReady)
+			sm.Transition(StateIdle)
 		}(i)
 	}
 
@@ -523,12 +524,211 @@ func TestConnStateMachine_FIFOWithFastPath(t *testing.T) {
 
 func BenchmarkConnStateMachine_TryTransition(b *testing.B) {
 	sm := NewConnStateMachine()
-	sm.Transition(StateReady)
+	sm.Transition(StateIdle)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sm.TryTransition([]ConnState{StateReady}, StateReauthInProgress)
-		sm.Transition(StateReady)
+		_ = sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
+		sm.Transition(StateIdle)
 	}
 }
+
+
+
+func TestConnStateMachine_IdleInUseTransitions(t *testing.T) {
+	sm := NewConnStateMachine()
+
+	// Initialize to IDLE state
+	sm.Transition(StateInitializing)
+	sm.Transition(StateIdle)
+
+	// Test IDLE → IN_USE transition
+	err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
+	if err != nil {
+		t.Errorf("failed to transition from IDLE to IN_USE: %v", err)
+	}
+	if state := sm.GetState(); state != StateInUse {
+		t.Errorf("expected state IN_USE, got %s", state)
+	}
+
+	// Test IN_USE → IDLE transition
+	err = sm.TryTransition([]ConnState{StateInUse}, StateIdle)
+	if err != nil {
+		t.Errorf("failed to transition from IN_USE to IDLE: %v", err)
+	}
+	if state := sm.GetState(); state != StateIdle {
+		t.Errorf("expected state IDLE, got %s", state)
+	}
+
+	// Test concurrent acquisition (only one should succeed)
+	sm.Transition(StateIdle)
+
+	var successCount atomic.Int32
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
+			if err == nil {
+				successCount.Add(1)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if count := successCount.Load(); count != 1 {
+		t.Errorf("expected exactly 1 successful transition, got %d", count)
+	}
+
+	if state := sm.GetState(); state != StateInUse {
+		t.Errorf("expected final state IN_USE, got %s", state)
+	}
+}
+
+func TestConn_UsedMethods(t *testing.T) {
+	cn := NewConn(nil)
+
+	// Initialize connection to IDLE state
+	cn.stateMachine.Transition(StateInitializing)
+	cn.stateMachine.Transition(StateIdle)
+
+	// Test IsUsed - should be false when IDLE
+	if cn.IsUsed() {
+		t.Error("expected IsUsed to be false for IDLE connection")
+	}
+
+	// Test CompareAndSwapUsed - acquire connection
+	if !cn.CompareAndSwapUsed(false, true) {
+		t.Error("failed to acquire connection with CompareAndSwapUsed")
+	}
+
+	// Test IsUsed - should be true when IN_USE
+	if !cn.IsUsed() {
+		t.Error("expected IsUsed to be true for IN_USE connection")
+	}
+
+	// Test CompareAndSwapUsed - release connection
+	if !cn.CompareAndSwapUsed(true, false) {
+		t.Error("failed to release connection with CompareAndSwapUsed")
+	}
+
+	// Test IsUsed - should be false again
+	if cn.IsUsed() {
+		t.Error("expected IsUsed to be false after release")
+	}
+
+	// Test SetUsed
+	cn.SetUsed(true)
+	if !cn.IsUsed() {
+		t.Error("expected IsUsed to be true after SetUsed(true)")
+	}
+
+	cn.SetUsed(false)
+	if cn.IsUsed() {
+		t.Error("expected IsUsed to be false after SetUsed(false)")
+	}
+}
+
+
+func TestConnStateMachine_UnusableState(t *testing.T) {
+	sm := NewConnStateMachine()
+
+	// Initialize to IDLE state
+	sm.Transition(StateInitializing)
+	sm.Transition(StateIdle)
+
+	// Test IDLE → UNUSABLE transition (for background operations)
+	err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
+	if err != nil {
+		t.Errorf("failed to transition from IDLE to UNUSABLE: %v", err)
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
+	}
+
+	// Test UNUSABLE → IDLE transition (after background operation completes)
+	err = sm.TryTransition([]ConnState{StateUnusable}, StateIdle)
+	if err != nil {
+		t.Errorf("failed to transition from UNUSABLE to IDLE: %v", err)
+	}
+	if state := sm.GetState(); state != StateIdle {
+		t.Errorf("expected state IDLE, got %s", state)
+	}
+
+	// Test that we can transition from IN_USE to UNUSABLE if needed
+	// (e.g., for urgent handoff while connection is in use)
+	sm.Transition(StateInUse)
+	err = sm.TryTransition([]ConnState{StateInUse}, StateUnusable)
+	if err != nil {
+		t.Errorf("failed to transition from IN_USE to UNUSABLE: %v", err)
+	}
+	if state := sm.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
+	}
+
+	// Test UNUSABLE → INITIALIZING transition (for handoff)
+	sm.Transition(StateIdle)
+	sm.Transition(StateUnusable)
+	err = sm.TryTransition([]ConnState{StateUnusable}, StateInitializing)
+	if err != nil {
+		t.Errorf("failed to transition from UNUSABLE to INITIALIZING: %v", err)
+	}
+	if state := sm.GetState(); state != StateInitializing {
+		t.Errorf("expected state INITIALIZING, got %s", state)
+	}
+}
+
+func TestConn_UsableUnusable(t *testing.T) {
+	cn := NewConn(nil)
+
+	// Initialize connection to IDLE state
+	cn.stateMachine.Transition(StateInitializing)
+	cn.stateMachine.Transition(StateIdle)
+
+	// Test IsUsable - should be true when IDLE
+	if !cn.IsUsable() {
+		t.Error("expected IsUsable to be true for IDLE connection")
+	}
+
+	// Test CompareAndSwapUsable - make unusable for background operation
+	if !cn.CompareAndSwapUsable(true, false) {
+		t.Error("failed to make connection unusable with CompareAndSwapUsable")
+	}
+
+	// Verify state is UNUSABLE
+	if state := cn.stateMachine.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE, got %s", state)
+	}
+
+	// Test IsUsable - should be false when UNUSABLE
+	if cn.IsUsable() {
+		t.Error("expected IsUsable to be false for UNUSABLE connection")
+	}
+
+	// Test CompareAndSwapUsable - make usable again
+	if !cn.CompareAndSwapUsable(false, true) {
+		t.Error("failed to make connection usable with CompareAndSwapUsable")
+	}
+
+	// Verify state is IDLE
+	if state := cn.stateMachine.GetState(); state != StateIdle {
+		t.Errorf("expected state IDLE, got %s", state)
+	}
+
+	// Test SetUsable(false)
+	cn.SetUsable(false)
+	if state := cn.stateMachine.GetState(); state != StateUnusable {
+		t.Errorf("expected state UNUSABLE after SetUsable(false), got %s", state)
+	}
+
+	// Test SetUsable(true)
+	cn.SetUsable(true)
+	if state := cn.stateMachine.GetState(); state != StateIdle {
+		t.Errorf("expected state IDLE after SetUsable(true), got %s", state)
+	}
+}
+
 

@@ -182,9 +182,9 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			var err error
 			timeout := time.After(r.reAuthTimeout)
 
-			// Try to acquire the connection
-			// We need to ensure the connection is both Usable and not Used
-			// to prevent data races with concurrent operations
+			// Try to acquire the connection for re-authentication
+			// We need to ensure the connection is IDLE (not IN_USE) before transitioning to UNUSABLE
+			// This prevents re-authentication from interfering with active commands
 			const baseDelay = 10 * time.Microsecond
 			acquired := false
 			attempt := 0
@@ -196,15 +196,14 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 					reAuthFn(err)
 					return
 				default:
-					// Try to acquire: set Usable=false, then check Used
-					if conn.CompareAndSwapUsable(true, false) {
-						if !conn.IsUsed() {
+					// Try to atomically transition from IDLE to UNUSABLE
+					// This ensures we only acquire connections that are not actively in use
+					stateMachine := conn.GetStateMachine()
+					if stateMachine != nil {
+						err := stateMachine.TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+						if err == nil {
+							// Successfully acquired: connection was IDLE, now UNUSABLE
 							acquired = true
-						} else {
-							// Release Usable and retry with exponential backoff
-							// todo(ndyakov): think of a better way to do this without the need
-							// to release the connection, but just wait till it is not used
-							conn.SetUsable(true)
 						}
 					}
 					if !acquired {
@@ -222,8 +221,11 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 				reAuthFn(nil)
 			}
 
-			// Release the connection
-			conn.SetUsable(true)
+			// Release the connection: transition from UNUSABLE back to IDLE
+			stateMachine := conn.GetStateMachine()
+			if stateMachine != nil {
+				stateMachine.Transition(pool.StateIdle)
+			}
 		}()
 	}
 

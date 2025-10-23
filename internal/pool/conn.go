@@ -58,32 +58,19 @@ type Conn struct {
 	readerMu sync.RWMutex
 
 	// State machine for connection state management
-	// Replaces: usable, Inited
+	// Replaces: usable, Inited, used
 	// Provides thread-safe state transitions with FIFO waiting queue
+	// States: CREATED → INITIALIZING → IDLE ⇄ IN_USE
+	//                                    ↓
+	//                                UNUSABLE (handoff/reauth)
+	//                                    ↓
+	//                                IDLE/CLOSED
 	stateMachine *ConnStateMachine
 
 	// Handoff metadata - managed separately from state machine
 	// These are atomic for lock-free access during handoff operations
 	handoffStateAtomic  atomic.Value  // stores *HandoffState
 	handoffRetriesAtomic atomic.Uint32 // retry counter
-
-	// Design note:
-	// Why have both State Machine and Used?
-	// _State Machine_ tracks the connection lifecycle (CREATED, INITIALIZING, READY, REAUTH_*, CLOSED)
-	// and determines if the connection is safe for use by clients. A connection can be in the pool but not
-	// in a usable state (e.g. reauth in progress).
-	// _Used_ is used to mark a connection as used when a command is going to be processed on that connection.
-	// this is going to happen once the connection is picked from the pool.
-	//
-	// If a background operation needs to use the connection, it will transition to an in-progress state
-	// (e.g. REAUTH_IN_PROGRESS) and only use it when it is not marked as used.
-	// That way, the connection won't be used to send multiple commands at the same time and
-	// potentially corrupt the command stream.
-
-	// used flag to mark connection as used when a command is going to be
-	// processed on that connection. This is used to prevent a race condition with
-	// background operations that may execute commands, like re-authentication.
-	used atomic.Bool
 
 	pooled    bool
 	pubsub    bool
@@ -161,12 +148,12 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 // Returns true if the swap was successful (old value matched), false otherwise.
 //
 // Implementation note: This is a compatibility wrapper around the state machine.
-// It checks if the current state is "usable" (READY) and transitions accordingly.
+// It checks if the current state is "usable" (IDLE or IN_USE) and transitions accordingly.
 func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	currentState := cn.stateMachine.GetState()
 
 	// Check if current state matches the "old" usable value
-	currentUsable := (currentState == StateReady)
+	currentUsable := (currentState == StateIdle || currentState == StateInUse)
 	if currentUsable != old {
 		return false
 	}
@@ -178,18 +165,21 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 
 	// Transition based on new value
 	if new {
-		// Trying to make usable - transition to READY
-		// This should only work from certain states
+		// Trying to make usable - transition from UNUSABLE to IDLE
+		// This should only work from UNUSABLE or INITIALIZING states
 		err := cn.stateMachine.TryTransition(
-			[]ConnState{StateInitializing, StateReauthInProgress},
-			StateReady,
+			[]ConnState{StateInitializing, StateUnusable},
+			StateIdle,
 		)
 		return err == nil
 	} else {
-		// Trying to make unusable - this is typically for acquiring the connection
-		// for background operations. We don't transition here, just return false
-		// since the caller should use proper state transitions.
-		return false
+		// Trying to make unusable - transition from IDLE to UNUSABLE
+		// This is typically for acquiring the connection for background operations
+		err := cn.stateMachine.TryTransition(
+			[]ConnState{StateIdle},
+			StateUnusable,
+		)
+		return err == nil
 	}
 }
 
@@ -203,8 +193,9 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 //   - Other background operations that need exclusive access
 func (cn *Conn) IsUsable() bool {
 	state := cn.stateMachine.GetState()
-	// Only READY state is considered usable
-	return state == StateReady
+	// IDLE and IN_USE states are considered usable
+	// (IN_USE means it's usable but currently acquired by someone)
+	return state == StateIdle || state == StateInUse
 }
 
 // SetUsable sets the usable flag for the connection (lock-free).
@@ -215,13 +206,11 @@ func (cn *Conn) IsUsable() bool {
 // Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
 func (cn *Conn) SetUsable(usable bool) {
 	if usable {
-		// Transition to READY state
-		cn.stateMachine.Transition(StateReady)
+		// Transition to IDLE state (ready to be acquired)
+		cn.stateMachine.Transition(StateIdle)
 	} else {
-		// This is ambiguous - we don't know which "unusable" state to transition to
-		// For now, we'll just log a warning and not transition
-		// Callers should use proper state machine transitions instead
-		internal.Logger.Printf(context.Background(), "SetUsable(false) called on conn[%d] - use state machine transitions instead", cn.id)
+		// Transition to UNUSABLE state (for background operations)
+		cn.stateMachine.Transition(StateUnusable)
 	}
 }
 
@@ -233,16 +222,33 @@ func (cn *Conn) IsInited() bool {
 	return state != StateCreated && state != StateInitializing && state != StateClosed
 }
 
-// Used
+// Used - State machine based implementation
 
 // CompareAndSwapUsed atomically compares and swaps the used flag (lock-free).
 //
 // This is the preferred method for acquiring a connection from the pool, as it
 // ensures that only one goroutine marks the connection as used.
 //
+// Implementation: Uses state machine transitions IDLE ⇄ IN_USE
+//
 // Returns true if the swap was successful (old value matched), false otherwise.
 func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
-	return cn.used.CompareAndSwap(old, new)
+	if old == new {
+		// No change needed
+		currentState := cn.stateMachine.GetState()
+		currentUsed := (currentState == StateInUse)
+		return currentUsed == old
+	}
+
+	if !old && new {
+		// Acquiring: IDLE → IN_USE
+		err := cn.stateMachine.TryTransition([]ConnState{StateIdle}, StateInUse)
+		return err == nil
+	} else {
+		// Releasing: IN_USE → IDLE
+		err := cn.stateMachine.TryTransition([]ConnState{StateInUse}, StateIdle)
+		return err == nil
+	}
 }
 
 // IsUsed returns true if the connection is currently in use (lock-free).
@@ -251,7 +257,7 @@ func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 // actively processing a command. Background operations (like re-auth) should
 // wait until the connection is not used before executing commands.
 func (cn *Conn) IsUsed() bool {
-	return cn.used.Load()
+	return cn.stateMachine.GetState() == StateInUse
 }
 
 // SetUsed sets the used flag for the connection (lock-free).
@@ -262,7 +268,11 @@ func (cn *Conn) IsUsed() bool {
 // Prefer CompareAndSwapUsed() when acquiring from a multi-connection pool to
 // avoid race conditions.
 func (cn *Conn) SetUsed(val bool) {
-	cn.used.Store(val)
+	if val {
+		cn.stateMachine.Transition(StateInUse)
+	} else {
+		cn.stateMachine.Transition(StateIdle)
+	}
 }
 
 // getNetConn returns the current network connection using atomic load (lock-free).
@@ -514,11 +524,11 @@ func (cn *Conn) GetNetConn() net.Conn {
 // If another goroutine is currently initializing, this will wait for it to complete.
 func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) error {
 	// Wait for and transition to INITIALIZING state - this prevents concurrent initializations
-	// Valid from states: CREATED (first init), READY (handoff/reconnect), REAUTH_IN_PROGRESS (after reauth)
+	// Valid from states: CREATED (first init), IDLE (reconnect), UNUSABLE (handoff/reauth)
 	// If another goroutine is initializing, we'll wait for it to finish
 	err := cn.stateMachine.AwaitAndTransition(
 		ctx,
-		[]ConnState{StateCreated, StateReady, StateReauthInProgress},
+		[]ConnState{StateCreated, StateIdle, StateUnusable},
 		StateInitializing,
 	)
 	if err != nil {
@@ -536,8 +546,8 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 		return initErr
 	}
 
-	// Initialization succeeded - transition to READY
-	cn.stateMachine.Transition(StateReady)
+	// Initialization succeeded - transition to IDLE (ready to be acquired)
+	cn.stateMachine.Transition(StateIdle)
 	return nil
 }
 
