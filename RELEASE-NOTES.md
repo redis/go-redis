@@ -1,5 +1,64 @@
 # Release Notes
 
+# 9.16.0 (2025-10-23)
+
+## 🚀 Highlights
+
+### Maintenance Notifications Support
+
+This release introduces comprehensive support for Redis maintenance notifications, enabling applications to handle server maintenance events gracefully. The new `maintnotifications` package provides:
+
+- **RESP3 Push Notifications**: Full support for Redis RESP3 protocol push notifications
+- **Connection Handoff**: Automatic connection migration during server maintenance with configurable retry policies and circuit breakers
+- **Graceful Degradation**: Configurable timeout relaxation during maintenance windows to prevent false failures
+- **Event-Driven Architecture**: Background workers with on-demand scaling for efficient handoff processing
+- **Production-Ready**: Comprehensive E2E testing framework and monitoring capabilities
+
+For detailed usage examples and configuration options, see the [maintenance notifications documentation](maintnotifications/README.md).
+
+## ✨ New Features
+
+- **Trace Filtering**: Add support for filtering traces for specific commands, including pipeline operations and dial operations ([#3519](https://github.com/redis/go-redis/pull/3519), [#3550](https://github.com/redis/go-redis/pull/3550))
+  - New `TraceCmdFilter` option to selectively trace commands
+  - Reduces overhead by excluding high-frequency or low-value commands from traces
+
+## 🐛 Bug Fixes
+
+- **Pipeline Error Handling**: Fix issue where pipeline repeatedly sets the same error ([#3525](https://github.com/redis/go-redis/pull/3525))
+- **Connection Pool**: Ensure re-authentication does not interfere with connection handoff operations ([#3547](https://github.com/redis/go-redis/pull/3547))
+
+## 🔧 Improvements
+
+- **Hash Commands**: Update hash command implementations ([#3523](https://github.com/redis/go-redis/pull/3523))
+- **OpenTelemetry**: Use `metric.WithAttributeSet` to avoid unnecessary attribute copying in redisotel ([#3552](https://github.com/redis/go-redis/pull/3552))
+
+## 📚 Documentation
+
+- **Cluster Client**: Add explanation for why `MaxRetries` is disabled for `ClusterClient` ([#3551](https://github.com/redis/go-redis/pull/3551))
+
+## 🧪 Testing & Infrastructure
+
+- **E2E Testing**: Upgrade E2E testing framework with improved reliability and coverage ([#3541](https://github.com/redis/go-redis/pull/3541))
+- **Release Process**: Improved resiliency of the release process ([#3530](https://github.com/redis/go-redis/pull/3530))
+
+## 📦 Dependencies
+
+- Bump `rojopolis/spellcheck-github-actions` from 0.51.0 to 0.52.0 ([#3520](https://github.com/redis/go-redis/pull/3520))
+- Bump `github/codeql-action` from 3 to 4 ([#3544](https://github.com/redis/go-redis/pull/3544))
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@ndyakov](https://github.com/ndyakov), [@htemelski-redis](https://github.com/htemelski-redis), [@Sovietaced](https://github.com/Sovietaced), [@Udhayarajan](https://github.com/Udhayarajan), [@boekkooi-impossiblecloud](https://github.com/boekkooi-impossiblecloud), [@Pika-Gopher](https://github.com/Pika-Gopher), [@cxljs](https://github.com/cxljs), [@huiyifyj](https://github.com/huiyifyj), [@omid-h70](https://github.com/omid-h70)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.14.0...v9.16.0
+
+
+# 9.15.0 was accidentally released. Please use version 9.16.0 instead.
+
 # 9.15.0-beta.3 (2025-09-26)
 
 ## Highlights

@@ -63,38 +63,5 @@ client := redis.NewClient(&redis.Options{
 3. Active operations transfer to new connections
 4. Old connections close gracefully
 
-## Supported Notifications
 
-- `MOVING` - Slot moving to new node
-- `MIGRATING` - Slot in migration state
-- `MIGRATED` - Migration completed
-- `FAILING_OVER` - Node failing over
-- `FAILED_OVER` - Failover completed
-
-## Hooks (Optional)
-
-Monitor and customize maintenance notification operations:
-
-```go
-type NotificationHook interface {
-    PreHook(ctx, notificationCtx, notificationType, notification) ([]interface{}, bool)
-    PostHook(ctx, notificationCtx, notificationType, notification, result)
-}
-
-// Add custom hook
-manager.AddNotificationHook(&MyHook{})
-```
-
-### Metrics Hook Example
-
-```go
-// Create metrics hook
-metricsHook := maintnotifications.NewMetricsHook()
-manager.AddNotificationHook(metricsHook)
-
-// Access collected metrics
-metrics := metricsHook.GetMetrics()
-fmt.Printf("Notification counts: %v\n", metrics["notification_counts"])
-fmt.Printf("Processing times: %v\n", metrics["processing_times"])
-fmt.Printf("Error counts: %v\n", metrics["error_counts"])
-```
+## For more information, see [FEATURES](FEATURES.md)
