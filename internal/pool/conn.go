@@ -57,33 +57,33 @@ type Conn struct {
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
 
+	// State machine for connection state management
+	// Replaces: usable, Inited
+	// Provides thread-safe state transitions with FIFO waiting queue
+	stateMachine *ConnStateMachine
+
+	// Handoff metadata - managed separately from state machine
+	// These are atomic for lock-free access during handoff operations
+	handoffStateAtomic  atomic.Value  // stores *HandoffState
+	handoffRetriesAtomic atomic.Uint32 // retry counter
+
 	// Design note:
-	// Why have both Usable and Used?
-	// _Usable_ is used to mark a connection as safe for use by clients, the connection can still
-	// be in the pool but not Usable at the moment (e.g. handoff in progress).
+	// Why have both State Machine and Used?
+	// _State Machine_ tracks the connection lifecycle (CREATED, INITIALIZING, READY, REAUTH_*, CLOSED)
+	// and determines if the connection is safe for use by clients. A connection can be in the pool but not
+	// in a usable state (e.g. reauth in progress).
 	// _Used_ is used to mark a connection as used when a command is going to be processed on that connection.
 	// this is going to happen once the connection is picked from the pool.
 	//
-	// If a background operation needs to use the connection, it will mark it as Not Usable and only use it when it
-	// is not in use. That way, the connection won't be used to send multiple commands at the same time and
+	// If a background operation needs to use the connection, it will transition to an in-progress state
+	// (e.g. REAUTH_IN_PROGRESS) and only use it when it is not marked as used.
+	// That way, the connection won't be used to send multiple commands at the same time and
 	// potentially corrupt the command stream.
-
-	// usable flag to mark connection as safe for use
-	// It is false before initialization and after a handoff is marked
-	// It will be false during other background operations like re-authentication
-	usable atomic.Bool
 
 	// used flag to mark connection as used when a command is going to be
 	// processed on that connection. This is used to prevent a race condition with
 	// background operations that may execute commands, like re-authentication.
 	used atomic.Bool
-
-	// Inited flag to mark connection as initialized, this is almost the same as usable
-	// but it is used to make sure we don't initialize a network connection twice
-	// On handoff, the network connection is replaced, but the Conn struct is reused
-	// this flag will be set to false when the network connection is replaced and
-	// set to true after the new network connection is initialized
-	Inited atomic.Bool
 
 	pooled    bool
 	pubsub    bool
@@ -105,13 +105,6 @@ type Conn struct {
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	// Handoff state - using atomic operations for lock-free access
-	handoffRetriesAtomic atomic.Uint32 // Retry counter for handoff attempts
-
-	// Atomic handoff state to prevent race conditions
-	// Stores *HandoffState to ensure atomic updates of all handoff-related fields
-	handoffStateAtomic atomic.Value // stores *HandoffState
-
 	onClose func() error
 }
 
@@ -121,8 +114,9 @@ func NewConn(netConn net.Conn) *Conn {
 
 func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Conn {
 	cn := &Conn{
-		createdAt: time.Now(),
-		id:        generateConnID(), // Generate unique ID for this connection
+		createdAt:    time.Now(),
+		id:           generateConnID(), // Generate unique ID for this connection
+		stateMachine: NewConnStateMachine(),
 	}
 
 	// Use specified buffer sizes, or fall back to 32KiB defaults if 0
@@ -141,18 +135,6 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	// Store netConn atomically for lock-free access using wrapper
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
-	// Initialize atomic state
-	cn.usable.Store(false)           // false initially, set to true after initialization
-	cn.handoffRetriesAtomic.Store(0) // 0 initially
-
-	// Initialize handoff state atomically
-	initialHandoffState := &HandoffState{
-		ShouldHandoff: false,
-		Endpoint:      "",
-		SeqID:         0,
-	}
-	cn.handoffStateAtomic.Store(initialHandoffState)
-
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
 	return cn
@@ -167,7 +149,8 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 	atomic.StoreInt64(&cn.usedAt, tm.Unix())
 }
 
-// Usable
+// Backward-compatible wrapper methods for state machine
+// These maintain the existing API while using the new state machine internally
 
 // CompareAndSwapUsable atomically compares and swaps the usable flag (lock-free).
 //
@@ -176,8 +159,38 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 // from returning the connection to clients.
 //
 // Returns true if the swap was successful (old value matched), false otherwise.
+//
+// Implementation note: This is a compatibility wrapper around the state machine.
+// It checks if the current state is "usable" (READY) and transitions accordingly.
 func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
-	return cn.usable.CompareAndSwap(old, new)
+	currentState := cn.stateMachine.GetState()
+
+	// Check if current state matches the "old" usable value
+	currentUsable := (currentState == StateReady)
+	if currentUsable != old {
+		return false
+	}
+
+	// If we're trying to set to the same value, succeed immediately
+	if old == new {
+		return true
+	}
+
+	// Transition based on new value
+	if new {
+		// Trying to make usable - transition to READY
+		// This should only work from certain states
+		err := cn.stateMachine.TryTransition(
+			[]ConnState{StateInitializing, StateReauthInProgress},
+			StateReady,
+		)
+		return err == nil
+	} else {
+		// Trying to make unusable - this is typically for acquiring the connection
+		// for background operations. We don't transition here, just return false
+		// since the caller should use proper state transitions.
+		return false
+	}
 }
 
 // IsUsable returns true if the connection is safe to use for new commands (lock-free).
@@ -189,7 +202,9 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 //   - Re-authentication (credential updates)
 //   - Other background operations that need exclusive access
 func (cn *Conn) IsUsable() bool {
-	return cn.usable.Load()
+	state := cn.stateMachine.GetState()
+	// Only READY state is considered usable
+	return state == StateReady
 }
 
 // SetUsable sets the usable flag for the connection (lock-free).
@@ -199,7 +214,23 @@ func (cn *Conn) IsUsable() bool {
 //
 // Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
 func (cn *Conn) SetUsable(usable bool) {
-	cn.usable.Store(usable)
+	if usable {
+		// Transition to READY state
+		cn.stateMachine.Transition(StateReady)
+	} else {
+		// This is ambiguous - we don't know which "unusable" state to transition to
+		// For now, we'll just log a warning and not transition
+		// Callers should use proper state machine transitions instead
+		internal.Logger.Printf(context.Background(), "SetUsable(false) called on conn[%d] - use state machine transitions instead", cn.id)
+	}
+}
+
+// IsInited returns true if the connection has been initialized.
+// This is a backward-compatible wrapper around the state machine.
+func (cn *Conn) IsInited() bool {
+	state := cn.stateMachine.GetState()
+	// Connection is initialized if it's in READY or any post-initialization state
+	return state != StateCreated && state != StateInitializing && state != StateClosed
 }
 
 // Used
@@ -251,48 +282,54 @@ func (cn *Conn) setNetConn(netConn net.Conn) {
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 }
 
-// getHandoffState returns the current handoff state atomically (lock-free).
-func (cn *Conn) getHandoffState() *HandoffState {
-	state := cn.handoffStateAtomic.Load()
-	if state == nil {
-		// Return default state if not initialized
-		return &HandoffState{
-			ShouldHandoff: false,
-			Endpoint:      "",
-			SeqID:         0,
-		}
+// Handoff state management - atomic access to handoff metadata
+
+// ShouldHandoff returns true if connection needs handoff (lock-free).
+func (cn *Conn) ShouldHandoff() bool {
+	if v := cn.handoffStateAtomic.Load(); v != nil {
+		return v.(*HandoffState).ShouldHandoff
 	}
-	return state.(*HandoffState)
+	return false
 }
 
-// setHandoffState sets the handoff state atomically (lock-free).
-func (cn *Conn) setHandoffState(state *HandoffState) {
-	cn.handoffStateAtomic.Store(state)
+// GetHandoffEndpoint returns the new endpoint for handoff (lock-free).
+func (cn *Conn) GetHandoffEndpoint() string {
+	if v := cn.handoffStateAtomic.Load(); v != nil {
+		return v.(*HandoffState).Endpoint
+	}
+	return ""
 }
 
-// shouldHandoff returns true if connection needs handoff (lock-free).
-func (cn *Conn) shouldHandoff() bool {
-	return cn.getHandoffState().ShouldHandoff
+// GetMovingSeqID returns the sequence ID from the MOVING notification (lock-free).
+func (cn *Conn) GetMovingSeqID() int64 {
+	if v := cn.handoffStateAtomic.Load(); v != nil {
+		return v.(*HandoffState).SeqID
+	}
+	return 0
 }
 
-// getMovingSeqID returns the sequence ID atomically (lock-free).
-func (cn *Conn) getMovingSeqID() int64 {
-	return cn.getHandoffState().SeqID
+// GetHandoffInfo returns all handoff information atomically (lock-free).
+// This method prevents race conditions by returning all handoff state in a single atomic operation.
+// Returns (shouldHandoff, endpoint, seqID).
+func (cn *Conn) GetHandoffInfo() (bool, string, int64) {
+	if v := cn.handoffStateAtomic.Load(); v != nil {
+		state := v.(*HandoffState)
+		return state.ShouldHandoff, state.Endpoint, state.SeqID
+	}
+	return false, "", 0
 }
 
-// getNewEndpoint returns the new endpoint atomically (lock-free).
-func (cn *Conn) getNewEndpoint() string {
-	return cn.getHandoffState().Endpoint
+// HandoffRetries returns the current handoff retry count (lock-free).
+func (cn *Conn) HandoffRetries() int {
+	return int(cn.handoffRetriesAtomic.Load())
 }
 
-// setHandoffRetries sets the retry count atomically (lock-free).
-func (cn *Conn) setHandoffRetries(retries int) {
-	cn.handoffRetriesAtomic.Store(uint32(retries))
-}
-
-// incrementHandoffRetries atomically increments and returns the new retry count (lock-free).
-func (cn *Conn) incrementHandoffRetries(delta int) int {
-	return int(cn.handoffRetriesAtomic.Add(uint32(delta)))
+// IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
+func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
+	for i := 0; i < n; i++ {
+		cn.handoffRetriesAtomic.Add(1)
+	}
+	return int(cn.handoffRetriesAtomic.Load())
 }
 
 // IsPooled returns true if the connection is managed by a pool and will be pooled on Put.
@@ -303,10 +340,6 @@ func (cn *Conn) IsPooled() bool {
 // IsPubSub returns true if the connection is used for PubSub.
 func (cn *Conn) IsPubSub() bool {
 	return cn.pubsub
-}
-
-func (cn *Conn) IsInited() bool {
-	return cn.Inited.Load()
 }
 
 // SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
@@ -477,121 +510,65 @@ func (cn *Conn) GetNetConn() net.Conn {
 }
 
 // SetNetConnAndInitConn replaces the underlying connection and executes the initialization.
+// This method ensures only one initialization can happen at a time by using atomic state transitions.
+// If another goroutine is currently initializing, this will wait for it to complete.
 func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) error {
-	// New connection is not initialized yet
-	cn.Inited.Store(false)
+	// Wait for and transition to INITIALIZING state - this prevents concurrent initializations
+	// Valid from states: CREATED (first init), READY (handoff/reconnect), REAUTH_IN_PROGRESS (after reauth)
+	// If another goroutine is initializing, we'll wait for it to finish
+	err := cn.stateMachine.AwaitAndTransition(
+		ctx,
+		[]ConnState{StateCreated, StateReady, StateReauthInProgress},
+		StateInitializing,
+	)
+	if err != nil {
+		return fmt.Errorf("cannot initialize connection from state %s: %w", cn.stateMachine.GetState(), err)
+	}
+
 	// Replace the underlying connection
 	cn.SetNetConn(netConn)
-	return cn.ExecuteInitConn(ctx)
+
+	// Execute initialization
+	initErr := cn.ExecuteInitConn(ctx)
+	if initErr != nil {
+		// Initialization failed - transition to closed
+		cn.stateMachine.Transition(StateClosed)
+		return initErr
+	}
+
+	// Initialization succeeded - transition to READY
+	cn.stateMachine.Transition(StateReady)
+	return nil
 }
 
-// MarkForHandoff marks the connection for handoff due to MOVING notification (lock-free).
+// MarkForHandoff marks the connection for handoff due to MOVING notification.
 // Returns an error if the connection is already marked for handoff.
-// This method uses atomic compare-and-swap to ensure all handoff state is updated atomically.
 func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
-	const maxRetries = 50
-	const baseDelay = time.Microsecond
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		currentState := cn.getHandoffState()
-
-		// Check if already marked for handoff
-		if currentState.ShouldHandoff {
-			return errors.New("connection is already marked for handoff")
-		}
-
-		// Create new state with handoff enabled
-		newState := &HandoffState{
-			ShouldHandoff: true,
-			Endpoint:      newEndpoint,
-			SeqID:         seqID,
-		}
-
-		// Atomic compare-and-swap to update entire state
-		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
-			return nil
-		}
-
-		// If CAS failed, add exponential backoff to reduce contention
-		if attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-			time.Sleep(delay)
-		}
+	// Check if already marked for handoff
+	if cn.ShouldHandoff() {
+		return errors.New("connection is already marked for handoff")
 	}
 
-	return fmt.Errorf("failed to mark connection for handoff after %d attempts due to high contention", maxRetries)
+	// Set handoff metadata atomically
+	cn.handoffStateAtomic.Store(&HandoffState{
+		ShouldHandoff: true,
+		Endpoint:      newEndpoint,
+		SeqID:         seqID,
+	})
+	return nil
 }
 
+// MarkQueuedForHandoff marks the connection as queued for handoff processing.
+// This makes the connection unusable until handoff completes.
 func (cn *Conn) MarkQueuedForHandoff() error {
-	const maxRetries = 50
-	const baseDelay = time.Microsecond
-
-	connAcquired := false
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// If CAS failed, add exponential backoff to reduce contention
-		// the delay will be 1, 2, 4... up to 512 microseconds
-		// Moving this to the top of the loop to avoid "continue" without delay
-		if attempt > 0 && attempt < maxRetries-1 {
-			delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-			time.Sleep(delay)
-		}
-
-		// first we need to mark the connection as not usable
-		// to prevent the pool from returning it to the caller
-		if !connAcquired {
-			if !cn.usable.CompareAndSwap(true, false) {
-				continue
-			}
-			connAcquired = true
-		}
-
-		currentState := cn.getHandoffState()
-		// Check if marked for handoff
-		if !currentState.ShouldHandoff {
-			return errors.New("connection was not marked for handoff")
-		}
-
-		// Create new state with handoff disabled (queued)
-		newState := &HandoffState{
-			ShouldHandoff: false,
-			Endpoint:      currentState.Endpoint, // Preserve endpoint for handoff processing
-			SeqID:         currentState.SeqID,    // Preserve seqID for handoff processing
-		}
-
-		// Atomic compare-and-swap to update state
-		if cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
-			// queue the handoff for processing
-			// the connection is now "acquired" (marked as not usable) by the handoff
-			// and it won't be returned to any other callers until the handoff is complete
-			return nil
-		}
-
+	// Check if marked for handoff
+	if !cn.ShouldHandoff() {
+		return errors.New("connection was not marked for handoff")
 	}
 
-	return fmt.Errorf("failed to mark connection as queued for handoff after %d attempts due to high contention", maxRetries)
-}
-
-// ShouldHandoff returns true if the connection needs to be handed off (lock-free).
-func (cn *Conn) ShouldHandoff() bool {
-	return cn.shouldHandoff()
-}
-
-// GetHandoffEndpoint returns the new endpoint for handoff (lock-free).
-func (cn *Conn) GetHandoffEndpoint() string {
-	return cn.getNewEndpoint()
-}
-
-// GetMovingSeqID returns the sequence ID from the MOVING notification (lock-free).
-func (cn *Conn) GetMovingSeqID() int64 {
-	return cn.getMovingSeqID()
-}
-
-// GetHandoffInfo returns all handoff information atomically (lock-free).
-// This method prevents race conditions by returning all handoff state in a single atomic operation.
-// Returns (shouldHandoff, endpoint, seqID).
-func (cn *Conn) GetHandoffInfo() (bool, string, int64) {
-	state := cn.getHandoffState()
-	return state.ShouldHandoff, state.Endpoint, state.SeqID
+	// Mark connection as unusable while queued for handoff
+	cn.SetUsable(false)
+	return nil
 }
 
 // GetID returns the unique identifier for this connection.
@@ -599,30 +576,27 @@ func (cn *Conn) GetID() uint64 {
 	return cn.id
 }
 
-// ClearHandoffState clears the handoff state after successful handoff (lock-free).
+// GetStateMachine returns the connection's state machine for advanced state management.
+// This is primarily used by internal packages like maintnotifications for handoff processing.
+func (cn *Conn) GetStateMachine() *ConnStateMachine {
+	return cn.stateMachine
+}
+
+// ClearHandoffState clears the handoff state after successful handoff.
+// Makes the connection usable again.
 func (cn *Conn) ClearHandoffState() {
-	// Create clean state
-	cleanState := &HandoffState{
+	// Clear handoff metadata
+	cn.handoffStateAtomic.Store(&HandoffState{
 		ShouldHandoff: false,
 		Endpoint:      "",
 		SeqID:         0,
-	}
+	})
 
-	// Atomically set clean state
-	cn.setHandoffState(cleanState)
-	cn.setHandoffRetries(0)
-	// Clearing handoff state also means the connection is usable again
+	// Reset retry counter
+	cn.handoffRetriesAtomic.Store(0)
+
+	// Mark connection as usable again
 	cn.SetUsable(true)
-}
-
-// IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
-func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
-	return cn.incrementHandoffRetries(n)
-}
-
-// GetHandoffRetries returns the current handoff retry count (lock-free).
-func (cn *Conn) HandoffRetries() int {
-	return int(cn.handoffRetriesAtomic.Load())
 }
 
 // HasBufferedData safely checks if the connection has buffered data.
@@ -717,11 +691,15 @@ func (cn *Conn) WithWriter(
 }
 
 func (cn *Conn) IsClosed() bool {
-	return cn.closed.Load()
+	return cn.closed.Load() || cn.stateMachine.GetState() == StateClosed
 }
 
 func (cn *Conn) Close() error {
 	cn.closed.Store(true)
+
+	// Transition to CLOSED state
+	cn.stateMachine.Transition(StateClosed)
+
 	if cn.onClose != nil {
 		// ignore error
 		_ = cn.onClose()

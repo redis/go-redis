@@ -1,0 +1,255 @@
+package pool
+
+import (
+	"container/list"
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+)
+
+// ConnState represents the connection state in the state machine.
+// States are designed to be lightweight and fast to check.
+type ConnState uint32
+
+const (
+	// StateCreated - Connection just created, not yet initialized
+	StateCreated ConnState = iota
+
+	// StateInitializing - Connection initialization in progress
+	StateInitializing
+
+	// StateReady - Connection ready for use
+	StateReady
+
+	// StateReauthInProgress - Reauth actively being processed
+	StateReauthInProgress
+
+	// StateClosed - Connection closed
+	StateClosed
+)
+
+// String returns a human-readable string representation of the state.
+func (s ConnState) String() string {
+	switch s {
+	case StateCreated:
+		return "CREATED"
+	case StateInitializing:
+		return "INITIALIZING"
+	case StateReady:
+		return "READY"
+	case StateReauthInProgress:
+		return "REAUTH_IN_PROGRESS"
+	case StateClosed:
+		return "CLOSED"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", s)
+	}
+}
+
+var (
+	// ErrInvalidStateTransition is returned when a state transition is not allowed
+	ErrInvalidStateTransition = errors.New("invalid state transition")
+
+	// ErrStateMachineClosed is returned when operating on a closed state machine
+	ErrStateMachineClosed = errors.New("state machine is closed")
+
+	// ErrTimeout is returned when a state transition times out
+	ErrTimeout = errors.New("state transition timeout")
+)
+
+// waiter represents a goroutine waiting for a state transition.
+// Designed for minimal allocations and fast processing.
+type waiter struct {
+	validStates map[ConnState]struct{} // States we're waiting for
+	targetState ConnState              // State to transition to
+	done        chan error             // Signaled when transition completes or times out
+}
+
+// ConnStateMachine manages connection state transitions with FIFO waiting queue.
+// Optimized for:
+// - Lock-free reads (hot path)
+// - Minimal allocations
+// - Fast state transitions
+// - FIFO fairness for waiters
+// Note: Handoff metadata (endpoint, seqID, retries) is managed separately in the Conn struct.
+type ConnStateMachine struct {
+	// Current state - atomic for lock-free reads
+	state atomic.Uint32
+
+	// FIFO queue for waiters - only locked during waiter add/remove/notify
+	mu      sync.Mutex
+	waiters *list.List // List of *waiter
+}
+
+// NewConnStateMachine creates a new connection state machine.
+// Initial state is StateCreated.
+func NewConnStateMachine() *ConnStateMachine {
+	sm := &ConnStateMachine{
+		waiters: list.New(),
+	}
+	sm.state.Store(uint32(StateCreated))
+	return sm
+}
+
+// GetState returns the current state (lock-free read).
+// This is the hot path - optimized for zero allocations and minimal overhead.
+func (sm *ConnStateMachine) GetState() ConnState {
+	return ConnState(sm.state.Load())
+}
+
+// TryTransition attempts an immediate state transition without waiting.
+// Returns ErrInvalidStateTransition if current state is not in validFromStates.
+// This is faster than AwaitAndTransition when you don't need to wait.
+// Uses compare-and-swap to atomically transition, preventing concurrent transitions.
+// This method does NOT wait - it fails immediately if the transition cannot be performed.
+//
+// Performance: Zero allocations on success path (hot path).
+func (sm *ConnStateMachine) TryTransition(validFromStates []ConnState, targetState ConnState) error {
+	// Try each valid from state with CAS
+	// This ensures only ONE goroutine can successfully transition at a time
+	for _, fromState := range validFromStates {
+		// Fast path: check if we're already in target state
+		if fromState == targetState && sm.GetState() == targetState {
+			return nil
+		}
+
+		// Try to atomically swap from fromState to targetState
+		// If successful, we won the race and can proceed
+		if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
+			// Success! We transitioned atomically
+			// Notify any waiters
+			sm.notifyWaiters()
+			return nil
+		}
+	}
+
+	// All CAS attempts failed - state is not valid for this transition
+	// Note: This error path allocates, but it's the exceptional case
+	currentState := sm.GetState()
+	return fmt.Errorf("%w: cannot transition from %s to %s (valid from: %v)",
+		ErrInvalidStateTransition, currentState, targetState, validFromStates)
+}
+
+// Transition unconditionally transitions to the target state.
+// Use with caution - prefer AwaitAndTransition or TryTransition for safety.
+// This is useful for error paths or when you know the transition is valid.
+func (sm *ConnStateMachine) Transition(targetState ConnState) {
+	sm.state.Store(uint32(targetState))
+	sm.notifyWaiters()
+}
+
+// AwaitAndTransition waits for the connection to reach one of the valid states,
+// then atomically transitions to the target state.
+// Returns error if timeout expires or context is cancelled.
+//
+// This method implements FIFO fairness - the first caller to wait gets priority
+// when the state becomes available.
+//
+// Performance notes:
+// - If already in a valid state, this is very fast (no allocation, no waiting)
+// - If waiting is required, allocates one waiter struct and one channel
+func (sm *ConnStateMachine) AwaitAndTransition(
+	ctx context.Context,
+	validFromStates []ConnState,
+	targetState ConnState,
+) error {
+	// Fast path: try immediate transition with CAS to prevent race conditions
+	for _, fromState := range validFromStates {
+		// Check if we're already in target state
+		if fromState == targetState && sm.GetState() == targetState {
+			return nil
+		}
+
+		// Try to atomically swap from fromState to targetState
+		if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
+			// Success! We transitioned atomically
+			sm.notifyWaiters()
+			return nil
+		}
+	}
+
+	// Fast path failed - check if we should wait or fail
+	currentState := sm.GetState()
+
+	// Check if closed
+	if currentState == StateClosed {
+		return ErrStateMachineClosed
+	}
+
+	// Slow path: need to wait for state change
+	// Create waiter with valid states map for fast lookup
+	validStatesMap := make(map[ConnState]struct{}, len(validFromStates))
+	for _, s := range validFromStates {
+		validStatesMap[s] = struct{}{}
+	}
+
+	w := &waiter{
+		validStates: validStatesMap,
+		targetState: targetState,
+		done:        make(chan error, 1), // Buffered to avoid goroutine leak
+	}
+
+	// Add to FIFO queue
+	sm.mu.Lock()
+	elem := sm.waiters.PushBack(w)
+	sm.mu.Unlock()
+
+	// Wait for state change or timeout
+	select {
+	case <-ctx.Done():
+		// Timeout or cancellation - remove from queue
+		sm.mu.Lock()
+		sm.waiters.Remove(elem)
+		sm.mu.Unlock()
+		return ctx.Err()
+	case err := <-w.done:
+		return err
+	}
+}
+
+// notifyWaiters checks if any waiters can proceed and notifies them in FIFO order.
+// This is called after every state transition.
+func (sm *ConnStateMachine) notifyWaiters() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.waiters.Len() == 0 {
+		return
+	}
+
+	// Process waiters in FIFO order until no more can be processed
+	// We loop instead of recursing to avoid stack overflow and mutex issues
+	for {
+		currentState := sm.GetState()
+		processed := false
+
+		// Find the first waiter that can proceed
+		for elem := sm.waiters.Front(); elem != nil; elem = elem.Next() {
+			w := elem.Value.(*waiter)
+
+			// Check if current state is valid for this waiter
+			if _, valid := w.validStates[currentState]; valid {
+				// Remove from queue
+				sm.waiters.Remove(elem)
+
+				// Perform transition
+				sm.state.Store(uint32(w.targetState))
+
+				// Notify waiter (non-blocking due to buffered channel)
+				w.done <- nil
+
+				// Mark that we processed a waiter and break to check for more
+				processed = true
+				break
+			}
+		}
+
+		// If we didn't process any waiter, we're done
+		if !processed {
+			break
+		}
+	}
+}
+

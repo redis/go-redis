@@ -255,6 +255,13 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
 	// Get handoff info atomically to prevent race conditions
 	shouldHandoff, endpoint, seqID := conn.GetHandoffInfo()
+
+	// Special case: empty endpoint means clear handoff state
+	if endpoint == "" {
+		conn.ClearHandoffState()
+		return nil
+	}
+
 	// on retries the connection will not be marked for handoff, but it will have retries > 0
 	// if shouldHandoff is false and retries is 0, then we are not retrying and not do a handoff
 	if !shouldHandoff && conn.HandoffRetries() == 0 {
@@ -475,6 +482,10 @@ func (hwm *handoffWorkerManager) createEndpointDialer(endpoint string) func(cont
 func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, request HandoffRequest, err error) {
 	pooler := request.Pool
 	conn := request.Conn
+
+	// Clear handoff state before closing
+	conn.ClearHandoffState()
+
 	if pooler != nil {
 		pooler.Remove(ctx, conn, err)
 		if internal.LogLevel.WarnOrAbove() {
