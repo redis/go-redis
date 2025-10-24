@@ -349,10 +349,7 @@ func (cn *Conn) HandoffRetries() int {
 
 // IncrementAndGetHandoffRetries atomically increments and returns handoff retries (lock-free).
 func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
-	for i := 0; i < n; i++ {
-		cn.handoffRetriesAtomic.Add(1)
-	}
-	return int(cn.handoffRetriesAtomic.Load())
+	return int(cn.handoffRetriesAtomic.Add(uint32(n)))
 }
 
 // IsPooled returns true if the connection is managed by a pool and will be pooled on Put.
