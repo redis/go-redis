@@ -210,7 +210,7 @@ func (cn *Conn) IsUsable() bool {
 // This should be called to mark a connection as usable after initialization or
 // to release it after a background operation completes.
 //
-// Prefer CompareAndSwapUsed() when acquiring exclusive access to avoid race conditions.
+// Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
 func (cn *Conn) SetUsable(usable bool) {
 	if usable {
 		// Transition to IDLE state (ready to be acquired)
