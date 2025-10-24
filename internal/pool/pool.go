@@ -244,9 +244,9 @@ func (p *ConnPool) addIdleConn() error {
 		return err
 	}
 
-	// Mark connection as usable after successful creation
-	// This is essential for normal pool operations
-	cn.SetUsable(true)
+	// NOTE: Connection is in CREATED state and will be initialized by redis.go:initConn()
+	// when first acquired from the pool. Do NOT transition to IDLE here - that happens
+	// after initialization completes.
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
@@ -286,9 +286,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, err
 	}
 
-	// Mark connection as usable after successful creation
-	// This is essential for normal pool operations
-	cn.SetUsable(true)
+	// NOTE: Connection is in CREATED state and will be initialized by redis.go:initConn()
+	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
+	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
 
 	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > int32(p.cfg.MaxActiveConns) {
 		_ = cn.Close()
@@ -584,15 +584,17 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		if cn.CompareAndSwapUsed(false, true) {
-			if cn.IsUsable() {
-				p.idleConnsLen.Add(-1)
-				break
-			}
-			cn.SetUsed(false)
+		// Try to atomically transition to IN_USE using state machine
+		// Accept both CREATED (uninitialized) and IDLE (initialized) states
+		_, err := cn.GetStateMachine().TryTransition([]ConnState{StateCreated, StateIdle}, StateInUse)
+		if err == nil {
+			// Successfully acquired the connection
+			p.idleConnsLen.Add(-1)
+			break
 		}
 
-		// Connection is not usable, put it back in the pool
+		// Connection is not in a valid state (might be UNUSABLE for re-auth, INITIALIZING, etc.)
+		// Put it back in the pool
 		if p.cfg.PoolFIFO {
 			// FIFO: put at end (will be picked up last since we pop from front)
 			p.idleConns = append(p.idleConns, cn)
@@ -661,6 +663,11 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	var shouldCloseConn bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
+		// Transition to IDLE state BEFORE adding to pool
+		// This prevents race condition where another goroutine could acquire
+		// a connection that's still in IN_USE state
+		cn.GetStateMachine().Transition(StateIdle)
+
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
 		if !cn.IsUsable() {
@@ -682,11 +689,6 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	} else {
 		p.removeConnWithLock(cn)
 		shouldCloseConn = true
-	}
-
-	// if the connection is not going to be closed, mark it as not used
-	if !shouldCloseConn {
-		cn.SetUsed(false)
 	}
 
 	p.freeTurn()

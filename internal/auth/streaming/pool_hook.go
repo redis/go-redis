@@ -200,7 +200,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 					// This ensures we only acquire connections that are not actively in use
 					stateMachine := conn.GetStateMachine()
 					if stateMachine != nil {
-						err := stateMachine.TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+						_, err := stateMachine.TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 						if err == nil {
 							// Successfully acquired: connection was IDLE, now UNUSABLE
 							acquired = true

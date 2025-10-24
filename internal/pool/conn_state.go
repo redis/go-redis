@@ -113,19 +113,20 @@ func (sm *ConnStateMachine) GetState() ConnState {
 }
 
 // TryTransition attempts an immediate state transition without waiting.
-// Returns ErrInvalidStateTransition if current state is not in validFromStates.
+// Returns the current state after the transition attempt and an error if the transition failed.
+// The returned state is the CURRENT state (after the attempt), not the previous state.
 // This is faster than AwaitAndTransition when you don't need to wait.
 // Uses compare-and-swap to atomically transition, preventing concurrent transitions.
 // This method does NOT wait - it fails immediately if the transition cannot be performed.
 //
 // Performance: Zero allocations on success path (hot path).
-func (sm *ConnStateMachine) TryTransition(validFromStates []ConnState, targetState ConnState) error {
+func (sm *ConnStateMachine) TryTransition(validFromStates []ConnState, targetState ConnState) (ConnState, error) {
 	// Try each valid from state with CAS
 	// This ensures only ONE goroutine can successfully transition at a time
 	for _, fromState := range validFromStates {
 		// Fast path: check if we're already in target state
 		if fromState == targetState && sm.GetState() == targetState {
-			return nil
+			return targetState, nil
 		}
 
 		// Try to atomically swap from fromState to targetState
@@ -134,14 +135,15 @@ func (sm *ConnStateMachine) TryTransition(validFromStates []ConnState, targetSta
 			// Success! We transitioned atomically
 			// Notify any waiters
 			sm.notifyWaiters()
-			return nil
+			return targetState, nil
 		}
 	}
 
 	// All CAS attempts failed - state is not valid for this transition
+	// Return the current state so caller can decide what to do
 	// Note: This error path allocates, but it's the exceptional case
 	currentState := sm.GetState()
-	return fmt.Errorf("%w: cannot transition from %s to %s (valid from: %v)",
+	return currentState, fmt.Errorf("%w: cannot transition from %s to %s (valid from: %v)",
 		ErrInvalidStateTransition, currentState, targetState, validFromStates)
 }
 
@@ -155,6 +157,8 @@ func (sm *ConnStateMachine) Transition(targetState ConnState) {
 
 // AwaitAndTransition waits for the connection to reach one of the valid states,
 // then atomically transitions to the target state.
+// Returns the current state after the transition attempt and an error if the operation failed.
+// The returned state is the CURRENT state (after the attempt), not the previous state.
 // Returns error if timeout expires or context is cancelled.
 //
 // This method implements FIFO fairness - the first caller to wait gets priority
@@ -167,19 +171,19 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 	ctx context.Context,
 	validFromStates []ConnState,
 	targetState ConnState,
-) error {
+) (ConnState, error) {
 	// Fast path: try immediate transition with CAS to prevent race conditions
 	for _, fromState := range validFromStates {
 		// Check if we're already in target state
 		if fromState == targetState && sm.GetState() == targetState {
-			return nil
+			return targetState, nil
 		}
 
 		// Try to atomically swap from fromState to targetState
 		if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
 			// Success! We transitioned atomically
 			sm.notifyWaiters()
-			return nil
+			return targetState, nil
 		}
 	}
 
@@ -188,7 +192,7 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 
 	// Check if closed
 	if currentState == StateClosed {
-		return ErrStateMachineClosed
+		return currentState, ErrStateMachineClosed
 	}
 
 	// Slow path: need to wait for state change
@@ -216,9 +220,10 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 		sm.mu.Lock()
 		sm.waiters.Remove(elem)
 		sm.mu.Unlock()
-		return ctx.Err()
+		return sm.GetState(), ctx.Err()
 	case err := <-w.done:
-		return err
+		// Transition completed (or failed)
+		return sm.GetState(), err
 	}
 }
 
@@ -235,27 +240,35 @@ func (sm *ConnStateMachine) notifyWaiters() {
 	// Process waiters in FIFO order until no more can be processed
 	// We loop instead of recursing to avoid stack overflow and mutex issues
 	for {
-		currentState := sm.GetState()
 		processed := false
 
 		// Find the first waiter that can proceed
 		for elem := sm.waiters.Front(); elem != nil; elem = elem.Next() {
 			w := elem.Value.(*waiter)
 
+			// Read current state inside the loop to get the latest value
+			currentState := sm.GetState()
+
 			// Check if current state is valid for this waiter
 			if _, valid := w.validStates[currentState]; valid {
-				// Remove from queue
+				// Remove from queue first
 				sm.waiters.Remove(elem)
 
-				// Perform transition
-				sm.state.Store(uint32(w.targetState))
-
-				// Notify waiter (non-blocking due to buffered channel)
-				w.done <- nil
-
-				// Mark that we processed a waiter and break to check for more
-				processed = true
-				break
+				// Use CAS to ensure state hasn't changed since we checked
+				// This prevents race condition where another thread changes state
+				// between our check and our transition
+				if sm.state.CompareAndSwap(uint32(currentState), uint32(w.targetState)) {
+					// Successfully transitioned - notify waiter
+					w.done <- nil
+					processed = true
+					break
+				} else {
+					// State changed - re-add waiter to front of queue and retry
+					sm.waiters.PushFront(w)
+					// Continue to next iteration to re-read state
+					processed = true
+					break
+				}
 			}
 		}
 

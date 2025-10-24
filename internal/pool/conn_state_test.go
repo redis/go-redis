@@ -74,7 +74,7 @@ func TestConnStateMachine_TryTransition(t *testing.T) {
 			sm := NewConnStateMachine()
 			sm.Transition(tt.initialState)
 
-			err := sm.TryTransition(tt.validStates, tt.targetState)
+			_, err := sm.TryTransition(tt.validStates, tt.targetState)
 
 			if tt.expectError && err == nil {
 				t.Error("expected error but got none")
@@ -99,7 +99,7 @@ func TestConnStateMachine_AwaitAndTransition_FastPath(t *testing.T) {
 	ctx := context.Background()
 
 	// Fast path: already in valid state
-	err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
+	_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestConnStateMachine_AwaitAndTransition_Timeout(t *testing.T) {
 	defer cancel()
 
 	// Wait for a state that will never come
-	err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
+	_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateUnusable)
 	if err == nil {
 		t.Error("expected timeout error but got none")
 	}
@@ -150,7 +150,7 @@ func TestConnStateMachine_AwaitAndTransition_FIFO(t *testing.T) {
 			startBarrier.Wait()
 
 			ctx := context.Background()
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateIdle)
+			_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateIdle)
 			if err != nil {
 				t.Errorf("waiter %d got error: %v", waiterID, err)
 				return
@@ -206,7 +206,7 @@ func TestConnStateMachine_ConcurrentAccess(t *testing.T) {
 
 			for j := 0; j < numIterations; j++ {
 				// Try to transition from READY to REAUTH_IN_PROGRESS
-				err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
+				_, err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
 				if err == nil {
 					successCount.Add(1)
 					// Transition back to READY
@@ -287,7 +287,7 @@ func TestConnStateMachine_PreventsConcurrentInitialization(t *testing.T) {
 			startBarrier.Wait()
 
 			// Try to transition to INITIALIZING
-			err := sm.TryTransition([]ConnState{StateIdle}, StateInitializing)
+			_, err := sm.TryTransition([]ConnState{StateIdle}, StateInitializing)
 			if err == nil {
 				successCount.Add(1)
 
@@ -353,7 +353,7 @@ func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T)
 			ctx := context.Background()
 
 			// Try to transition to INITIALIZING - should wait if another is initializing
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
+			_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -419,7 +419,7 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 			ctx := context.Background()
 
 			// This should queue in FIFO order
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
+			_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -482,7 +482,7 @@ func TestConnStateMachine_FIFOWithFastPath(t *testing.T) {
 			ctx := context.Background()
 
 			// This might use fast path (CAS) or slow path (queue)
-			err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
+			_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
 			if err != nil {
 				t.Errorf("Goroutine %d: failed to transition: %v", id, err)
 				return
@@ -528,7 +528,7 @@ func BenchmarkConnStateMachine_TryTransition(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
+		_, _ = sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
 		sm.Transition(StateIdle)
 	}
 }
@@ -543,7 +543,7 @@ func TestConnStateMachine_IdleInUseTransitions(t *testing.T) {
 	sm.Transition(StateIdle)
 
 	// Test IDLE → IN_USE transition
-	err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
+	_, err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
 	if err != nil {
 		t.Errorf("failed to transition from IDLE to IN_USE: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestConnStateMachine_IdleInUseTransitions(t *testing.T) {
 	}
 
 	// Test IN_USE → IDLE transition
-	err = sm.TryTransition([]ConnState{StateInUse}, StateIdle)
+	_, err = sm.TryTransition([]ConnState{StateInUse}, StateIdle)
 	if err != nil {
 		t.Errorf("failed to transition from IN_USE to IDLE: %v", err)
 	}
@@ -570,7 +570,7 @@ func TestConnStateMachine_IdleInUseTransitions(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
+			_, err := sm.TryTransition([]ConnState{StateIdle}, StateInUse)
 			if err == nil {
 				successCount.Add(1)
 			}
@@ -641,7 +641,7 @@ func TestConnStateMachine_UnusableState(t *testing.T) {
 	sm.Transition(StateIdle)
 
 	// Test IDLE → UNUSABLE transition (for background operations)
-	err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
+	_, err := sm.TryTransition([]ConnState{StateIdle}, StateUnusable)
 	if err != nil {
 		t.Errorf("failed to transition from IDLE to UNUSABLE: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestConnStateMachine_UnusableState(t *testing.T) {
 	}
 
 	// Test UNUSABLE → IDLE transition (after background operation completes)
-	err = sm.TryTransition([]ConnState{StateUnusable}, StateIdle)
+	_, err = sm.TryTransition([]ConnState{StateUnusable}, StateIdle)
 	if err != nil {
 		t.Errorf("failed to transition from UNUSABLE to IDLE: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestConnStateMachine_UnusableState(t *testing.T) {
 	// Test that we can transition from IN_USE to UNUSABLE if needed
 	// (e.g., for urgent handoff while connection is in use)
 	sm.Transition(StateInUse)
-	err = sm.TryTransition([]ConnState{StateInUse}, StateUnusable)
+	_, err = sm.TryTransition([]ConnState{StateInUse}, StateUnusable)
 	if err != nil {
 		t.Errorf("failed to transition from IN_USE to UNUSABLE: %v", err)
 	}
@@ -672,7 +672,7 @@ func TestConnStateMachine_UnusableState(t *testing.T) {
 	// Test UNUSABLE → INITIALIZING transition (for handoff)
 	sm.Transition(StateIdle)
 	sm.Transition(StateUnusable)
-	err = sm.TryTransition([]ConnState{StateUnusable}, StateInitializing)
+	_, err = sm.TryTransition([]ConnState{StateUnusable}, StateInitializing)
 	if err != nil {
 		t.Errorf("failed to transition from UNUSABLE to INITIALIZING: %v", err)
 	}

@@ -167,7 +167,7 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	if new {
 		// Trying to make usable - transition from UNUSABLE to IDLE
 		// This should only work from UNUSABLE or INITIALIZING states
-		err := cn.stateMachine.TryTransition(
+		_, err := cn.stateMachine.TryTransition(
 			[]ConnState{StateInitializing, StateUnusable},
 			StateIdle,
 		)
@@ -175,7 +175,7 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	} else {
 		// Trying to make unusable - transition from IDLE to UNUSABLE
 		// This is typically for acquiring the connection for background operations
-		err := cn.stateMachine.TryTransition(
+		_, err := cn.stateMachine.TryTransition(
 			[]ConnState{StateIdle},
 			StateUnusable,
 		)
@@ -200,10 +200,13 @@ func (cn *Conn) IsUsable() bool {
 
 // SetUsable sets the usable flag for the connection (lock-free).
 //
+// Deprecated: Use GetStateMachine().Transition() directly for better state management.
+// This method is kept for backwards compatibility.
+//
 // This should be called to mark a connection as usable after initialization or
 // to release it after a background operation completes.
 //
-// Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
+// Prefer CompareAndSwapUsed() when acquiring exclusive access to avoid race conditions.
 func (cn *Conn) SetUsable(usable bool) {
 	if usable {
 		// Transition to IDLE state (ready to be acquired)
@@ -226,6 +229,9 @@ func (cn *Conn) IsInited() bool {
 
 // CompareAndSwapUsed atomically compares and swaps the used flag (lock-free).
 //
+// Deprecated: Use GetStateMachine().TryTransition() directly for better state management.
+// This method is kept for backwards compatibility.
+//
 // This is the preferred method for acquiring a connection from the pool, as it
 // ensures that only one goroutine marks the connection as used.
 //
@@ -242,16 +248,19 @@ func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 
 	if !old && new {
 		// Acquiring: IDLE → IN_USE
-		err := cn.stateMachine.TryTransition([]ConnState{StateIdle}, StateInUse)
+		_, err := cn.stateMachine.TryTransition([]ConnState{StateIdle}, StateInUse)
 		return err == nil
 	} else {
 		// Releasing: IN_USE → IDLE
-		err := cn.stateMachine.TryTransition([]ConnState{StateInUse}, StateIdle)
+		_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse}, StateIdle)
 		return err == nil
 	}
 }
 
 // IsUsed returns true if the connection is currently in use (lock-free).
+//
+// Deprecated: Use GetStateMachine().GetState() == StateInUse directly for better clarity.
+// This method is kept for backwards compatibility.
 //
 // A connection is "used" when it has been retrieved from the pool and is
 // actively processing a command. Background operations (like re-auth) should
@@ -526,28 +535,32 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 	// Wait for and transition to INITIALIZING state - this prevents concurrent initializations
 	// Valid from states: CREATED (first init), IDLE (reconnect), UNUSABLE (handoff/reauth)
 	// If another goroutine is initializing, we'll wait for it to finish
-	err := cn.stateMachine.AwaitAndTransition(
-		ctx,
+	// Add 1ms timeout to prevent indefinite blocking
+	waitCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+	defer cancel()
+
+	finalState, err := cn.stateMachine.AwaitAndTransition(
+		waitCtx,
 		[]ConnState{StateCreated, StateIdle, StateUnusable},
 		StateInitializing,
 	)
 	if err != nil {
-		return fmt.Errorf("cannot initialize connection from state %s: %w", cn.stateMachine.GetState(), err)
+		return fmt.Errorf("cannot initialize connection from state %s: %w", finalState, err)
 	}
 
 	// Replace the underlying connection
 	cn.SetNetConn(netConn)
 
 	// Execute initialization
+	// NOTE: ExecuteInitConn (via baseClient.initConn) will transition to IDLE on success
+	// or CLOSED on failure. We don't need to do it here.
 	initErr := cn.ExecuteInitConn(ctx)
 	if initErr != nil {
-		// Initialization failed - transition to closed
-		cn.stateMachine.Transition(StateClosed)
+		// ExecuteInitConn already transitioned to CLOSED, just return the error
 		return initErr
 	}
 
-	// Initialization succeeded - transition to IDLE (ready to be acquired)
-	cn.stateMachine.Transition(StateIdle)
+	// ExecuteInitConn already transitioned to IDLE
 	return nil
 }
 
@@ -577,7 +590,8 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	}
 
 	// Mark connection as unusable while queued for handoff
-	cn.SetUsable(false)
+	// Use state machine directly instead of deprecated SetUsable
+	cn.stateMachine.Transition(StateUnusable)
 	return nil
 }
 
@@ -606,7 +620,8 @@ func (cn *Conn) ClearHandoffState() {
 	cn.handoffRetriesAtomic.Store(0)
 
 	// Mark connection as usable again
-	cn.SetUsable(true)
+	// Use state machine directly instead of deprecated SetUsable
+	cn.stateMachine.Transition(StateIdle)
 }
 
 // HasBufferedData safely checks if the connection has buffered data.

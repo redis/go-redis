@@ -366,28 +366,82 @@ func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
 }
 
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
-	if !cn.Inited.CompareAndSwap(false, true) {
+	// This function is called in two scenarios:
+	// 1. First-time init: Connection is in CREATED state (from pool.Get())
+	//    - We need to transition CREATED → INITIALIZING and do the initialization
+	//    - If another goroutine is already initializing, we WAIT for it to finish
+	// 2. Re-initialization: Connection is in INITIALIZING state (from SetNetConnAndInitConn())
+	//    - We're already in INITIALIZING, so just proceed with initialization
+
+	currentState := cn.GetStateMachine().GetState()
+
+	// Fast path: Check if already initialized (IDLE or IN_USE)
+	if currentState == pool.StateIdle || currentState == pool.StateInUse {
 		return nil
 	}
-	var err error
+
+	// If in CREATED state, try to transition to INITIALIZING
+	if currentState == pool.StateCreated {
+		finalState, err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateCreated}, pool.StateInitializing)
+		if err != nil {
+			// Another goroutine is initializing or connection is in unexpected state
+			// Check what state we're in now
+			if finalState == pool.StateIdle || finalState == pool.StateInUse {
+				// Already initialized by another goroutine
+				return nil
+			}
+
+			if finalState == pool.StateInitializing {
+				// Another goroutine is initializing - WAIT for it to complete
+				// Use AwaitAndTransition to wait for IDLE or IN_USE state
+				// Add 1ms timeout to prevent indefinite blocking
+				waitCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+				defer cancel()
+
+				finalState, err := cn.GetStateMachine().AwaitAndTransition(
+					waitCtx,
+					[]pool.ConnState{pool.StateIdle, pool.StateInUse},
+					pool.StateIdle, // Target is IDLE (but we're already there, so this is a no-op)
+				)
+				if err != nil {
+					return err
+				}
+				// Verify we're now initialized
+				if finalState == pool.StateIdle || finalState == pool.StateInUse {
+					return nil
+				}
+				// Unexpected state after waiting
+				return fmt.Errorf("connection in unexpected state after initialization: %s", finalState)
+			}
+
+			// Unexpected state (CLOSED, UNUSABLE, etc.)
+			return err
+		}
+	}
+
+	// At this point, we're in INITIALIZING state and we own the initialization
+	// If we fail, we must transition to CLOSED
+	var initErr error
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(c.opt, connPool, &c.hooksMixin)
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
-		credListener, err := c.streamingCredentialsManager.Listener(
+		credListener, initErr := c.streamingCredentialsManager.Listener(
 			cn,
 			c.reAuthConnection(),
 			c.onAuthenticationErr(),
 		)
-		if err != nil {
-			return fmt.Errorf("failed to create credentials listener: %w", err)
+		if initErr != nil {
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return fmt.Errorf("failed to create credentials listener: %w", initErr)
 		}
 
-		credentials, unsubscribeFromCredentialsProvider, err := c.opt.StreamingCredentialsProvider.
+		credentials, unsubscribeFromCredentialsProvider, initErr := c.opt.StreamingCredentialsProvider.
 			Subscribe(credListener)
-		if err != nil {
-			return fmt.Errorf("failed to subscribe to streaming credentials: %w", err)
+		if initErr != nil {
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return fmt.Errorf("failed to subscribe to streaming credentials: %w", initErr)
 		}
 
 		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
@@ -395,9 +449,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		username, password = credentials.BasicAuth()
 	} else if c.opt.CredentialsProviderContext != nil {
-		username, password, err = c.opt.CredentialsProviderContext(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get credentials from context provider: %w", err)
+		username, password, initErr = c.opt.CredentialsProviderContext(ctx)
+		if initErr != nil {
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return fmt.Errorf("failed to get credentials from context provider: %w", initErr)
 		}
 	} else if c.opt.CredentialsProvider != nil {
 		username, password = c.opt.CredentialsProvider()
@@ -407,9 +462,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
-	if err = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); err == nil {
+	if initErr = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); initErr == nil {
 		// Authentication successful with HELLO command
-	} else if !isRedisError(err) {
+	} else if !isRedisError(initErr) {
 		// When the server responds with the RESP protocol and the result is not a normal
 		// execution result of the HELLO command, we consider it to be an indication that
 		// the server does not support the HELLO command.
@@ -417,20 +472,22 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// or it could be DragonflyDB or a third-party redis-proxy. They all respond
 		// with different error string results for unsupported commands, making it
 		// difficult to rely on error strings to determine all results.
-		return err
+		cn.GetStateMachine().Transition(pool.StateClosed)
+		return initErr
 	} else if password != "" {
 		// Try legacy AUTH command if HELLO failed
 		if username != "" {
-			err = conn.AuthACL(ctx, username, password).Err()
+			initErr = conn.AuthACL(ctx, username, password).Err()
 		} else {
-			err = conn.Auth(ctx, password).Err()
+			initErr = conn.Auth(ctx, password).Err()
 		}
-		if err != nil {
-			return fmt.Errorf("failed to authenticate: %w", err)
+		if initErr != nil {
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return fmt.Errorf("failed to authenticate: %w", initErr)
 		}
 	}
 
-	_, err = conn.Pipelined(ctx, func(pipe Pipeliner) error {
+	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
@@ -445,8 +502,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("failed to initialize connection options: %w", err)
+	if initErr != nil {
+		cn.GetStateMachine().Transition(pool.StateClosed)
+		return fmt.Errorf("failed to initialize connection options: %w", initErr)
 	}
 
 	// Enable maintnotifications if maintnotifications are configured
@@ -465,6 +523,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		if maintNotifHandshakeErr != nil {
 			if !isRedisError(maintNotifHandshakeErr) {
 				// if not redis error, fail the connection
+				cn.GetStateMachine().Transition(pool.StateClosed)
 				return maintNotifHandshakeErr
 			}
 			c.optLock.Lock()
@@ -473,15 +532,16 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			case maintnotifications.ModeEnabled:
 				// enabled mode, fail the connection
 				c.optLock.Unlock()
+				cn.GetStateMachine().Transition(pool.StateClosed)
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
 				internal.Logger.Printf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
 				c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
 				c.optLock.Unlock()
 				// auto mode, disable maintnotifications and continue
-				if err := c.disableMaintNotificationsUpgrades(); err != nil {
+				if initErr := c.disableMaintNotificationsUpgrades(); initErr != nil {
 					// Log error but continue - auto mode should be resilient
-					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", err)
+					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", initErr)
 				}
 			}
 		} else {
@@ -505,22 +565,31 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		p.ClientSetInfo(ctx, WithLibraryVersion(libVer))
 		// Handle network errors (e.g. timeouts) in CLIENT SETINFO to avoid
 		// out of order responses later on.
-		if _, err = p.Exec(ctx); err != nil && !isRedisError(err) {
-			return err
+		if _, initErr = p.Exec(ctx); initErr != nil && !isRedisError(initErr) {
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return initErr
 		}
 	}
 
-	// mark the connection as usable and inited
-	// once returned to the pool as idle, this connection can be used by other clients
-	cn.SetUsable(true)
-	cn.SetUsed(false)
-	cn.Inited.Store(true)
-
 	// Set the connection initialization function for potential reconnections
+	// This must be set before transitioning to IDLE so that handoff/reauth can use it
 	cn.SetInitConnFunc(c.createInitConnFunc())
 
+	// Initialization succeeded - transition to IDLE state
+	// This marks the connection as initialized and ready for use
+	// NOTE: The connection is still owned by the calling goroutine at this point
+	// and won't be available to other goroutines until it's Put() back into the pool
+	cn.GetStateMachine().Transition(pool.StateIdle)
+
+	// Call OnConnect hook if configured
+	// The connection is in IDLE state but still owned by this goroutine
+	// If OnConnect needs to send commands, it can use the connection safely
 	if c.opt.OnConnect != nil {
-		return c.opt.OnConnect(ctx, conn)
+		if initErr = c.opt.OnConnect(ctx, conn); initErr != nil {
+			// OnConnect failed - transition to closed
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			return initErr
+		}
 	}
 
 	return nil

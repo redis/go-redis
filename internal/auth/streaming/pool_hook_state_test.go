@@ -30,7 +30,7 @@ func TestReAuthOnlyWhenIdle(t *testing.T) {
 	}
 	
 	// Try to transition to UNUSABLE (for reauth) - should fail
-	err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+	_, err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 	if err == nil {
 		t.Error("Expected error when trying to transition IN_USE → UNUSABLE, but got none")
 	}
@@ -51,7 +51,7 @@ func TestReAuthOnlyWhenIdle(t *testing.T) {
 	}
 	
 	// Now try to transition to UNUSABLE - should succeed
-	err = cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+	_, err = cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 	if err != nil {
 		t.Errorf("Failed to transition IDLE → UNUSABLE: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestReAuthWaitsForConnectionToBeIdle(t *testing.T) {
 			default:
 				reAuthAttempts.Add(1)
 				// Try to atomically transition from IDLE to UNUSABLE
-				err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+				_, err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 				if err == nil {
 					// Successfully acquired
 					acquired = true
@@ -185,7 +185,7 @@ func TestConcurrentReAuthAndUsage(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 50; i++ {
 			// Try to acquire for re-auth
-			err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+			_, err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 			if err == nil {
 				reAuthCount.Add(1)
 				// Simulate re-auth work
@@ -228,7 +228,7 @@ func TestReAuthRespectsClosed(t *testing.T) {
 	cn.GetStateMachine().Transition(pool.StateClosed)
 	
 	// Try to transition to UNUSABLE - should fail
-	err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+	_, err := cn.GetStateMachine().TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
 	if err == nil {
 		t.Error("Expected error when trying to transition CLOSED → UNUSABLE, but got none")
 	}
