@@ -302,7 +302,7 @@ func createValidPushNotification(notificationName, data string) *bytes.Buffer {
 		// Single element notification
 		buf.WriteString(">1\r\n")
 		if simpleOrString {
-			fmt.Fprint(buf, defMsg)
+			fmt.Fprintf(buf, "+%s\r\n", notificationName)
 		} else {
 			fmt.Fprint(buf, defMsg)
 		}
