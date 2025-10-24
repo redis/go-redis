@@ -124,6 +124,13 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 
 	cn.wr = proto.NewWriter(cn.bw)
 	cn.SetUsedAt(time.Now())
+	// Initialize handoff state atomically
+	initialHandoffState := &HandoffState{
+		ShouldHandoff: false,
+		Endpoint:      "",
+		SeqID:         0,
+	}
+	cn.handoffStateAtomic.Store(initialHandoffState)
 	return cn
 }
 
@@ -149,6 +156,7 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 //
 // Implementation note: This is a compatibility wrapper around the state machine.
 // It checks if the current state is "usable" (IDLE or IN_USE) and transitions accordingly.
+// Deprecated: Use GetStateMachine().TryTransition() directly for better state management.
 func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	currentState := cn.stateMachine.GetState()
 
@@ -211,6 +219,7 @@ func (cn *Conn) IsUsable() bool {
 // to release it after a background operation completes.
 //
 // Prefer CompareAndSwapUsable() when acquiring exclusive access to avoid race conditions.
+// Deprecated: Use GetStateMachine().Transition() directly for better state management.
 func (cn *Conn) SetUsable(usable bool) {
 	if usable {
 		// Transition to IDLE state (ready to be acquired)
@@ -232,8 +241,6 @@ func (cn *Conn) IsInited() bool {
 // Used - State machine based implementation
 
 // CompareAndSwapUsed atomically compares and swaps the used flag (lock-free).
-//
-// Deprecated: Use GetStateMachine().TryTransition() directly for better state management.
 // This method is kept for backwards compatibility.
 //
 // This is the preferred method for acquiring a connection from the pool, as it
@@ -242,6 +249,7 @@ func (cn *Conn) IsInited() bool {
 // Implementation: Uses state machine transitions IDLE ⇄ IN_USE
 //
 // Returns true if the swap was successful (old value matched), false otherwise.
+// Deprecated: Use GetStateMachine().TryTransition() directly for better state management.
 func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 	if old == new {
 		// No change needed
@@ -280,6 +288,7 @@ func (cn *Conn) IsUsed() bool {
 //
 // Prefer CompareAndSwapUsed() when acquiring from a multi-connection pool to
 // avoid race conditions.
+// Deprecated: Use GetStateMachine().Transition() directly for better state management.
 func (cn *Conn) SetUsed(val bool) {
 	if val {
 		cn.stateMachine.Transition(StateInUse)
@@ -623,9 +632,15 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// The connection is typically in IN_USE state when OnPut is called (normal Put flow)
 	// But in some edge cases or tests, it might already be in IDLE state
 	// The pool will detect this state change and preserve it (not overwrite with IDLE)
-	_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle}, StateUnusable)
+	finalState, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle}, StateUnusable)
 	if err != nil {
-		// Restore the original state if transition fails
+		// Check if already in UNUSABLE state (race condition or retry)
+		// ShouldHandoff should be false now, but check just in case
+		if finalState == StateUnusable && !cn.ShouldHandoff() {
+			// Already unusable - this is fine, keep the new handoff state
+			return nil
+		}
+		// Restore the original state if transition fails for other reasons
 		cn.handoffStateAtomic.Store(currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
