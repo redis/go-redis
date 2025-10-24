@@ -14,7 +14,7 @@ type NotificationHandlerContext struct {
 	// - *redis.Client
 	// - *redis.ClusterClient
 	// - *redis.Conn
-	Client interface{}
+	Client any
 
 	// ConnPool is the connection pool from which the connection was obtained.
 	// It is interface to both allow for future expansion and to avoid
@@ -23,21 +23,21 @@ type NotificationHandlerContext struct {
 	// - *pool.ConnPool
 	// - *pool.SingleConnPool
 	// - *pool.StickyConnPool
-	ConnPool interface{}
+	ConnPool any
 
 	// PubSub is the PubSub instance that received the notification.
 	// It is interface to both allow for future expansion and to avoid
 	// circular dependencies. The developer is responsible for type assertion.
 	// It can be one of the following types:
 	// - *redis.PubSub
-	PubSub interface{}
+	PubSub any
 
 	// Conn is the specific connection on which the notification was received.
 	// It is interface to both allow for future expansion and to avoid
 	// circular dependencies. The developer is responsible for type assertion.
 	// It can be one of the following types:
 	// - *pool.Conn
-	Conn interface{}
+	Conn any
 
 	// IsBlocking indicates if the notification was received on a blocking connection.
 	IsBlocking bool

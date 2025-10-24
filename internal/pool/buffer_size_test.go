@@ -129,9 +129,9 @@ var _ = Describe("Buffer Size Configuration", func() {
 // cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64 // First field in pool.Conn
+		usedAt        int64  // Second field (atomic)
+		netConnAtomic any    // atomic.Value (any has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -147,7 +147,7 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 		err error
 		buf []byte
 		n   int
-		wr  interface{}
+		wr  any
 	})(unsafe.Pointer(cnPtr.bw))
 
 	return len(bwPtr.buf)
@@ -155,9 +155,9 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64 // First field in pool.Conn
+		usedAt        int64  // Second field (atomic)
+		netConnAtomic any    // atomic.Value (any has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -180,7 +180,7 @@ func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	// bufio.Reader internal structure
 	bufReaderPtr := (*struct {
 		buf          []byte
-		rd           interface{}
+		rd           any
 		r, w         int
 		err          error
 		lastByte     int

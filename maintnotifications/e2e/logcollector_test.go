@@ -99,7 +99,7 @@ type MatchFunc struct {
 	done      func()
 }
 
-func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {
+func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...any) {
 	tlc.mu.Lock()
 	defer tlc.mu.Unlock()
 	lstr := fmt.Sprintf(format, v...)

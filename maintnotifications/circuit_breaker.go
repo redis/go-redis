@@ -268,7 +268,7 @@ func (cbm *CircuitBreakerManager) GetCircuitBreaker(endpoint string) *CircuitBre
 // GetAllStats returns statistics for all circuit breakers
 func (cbm *CircuitBreakerManager) GetAllStats() []CircuitBreakerStats {
 	var stats []CircuitBreakerStats
-	cbm.breakers.Range(func(key, value interface{}) bool {
+	cbm.breakers.Range(func(key, value any) bool {
 		entry := value.(*CircuitBreakerEntry)
 		stats = append(stats, entry.breaker.GetStats())
 		return true
@@ -305,7 +305,7 @@ func (cbm *CircuitBreakerManager) cleanup() {
 	var toDelete []string
 	count := 0
 
-	cbm.breakers.Range(func(key, value interface{}) bool {
+	cbm.breakers.Range(func(key, value any) bool {
 		endpoint := key.(string)
 		entry := value.(*CircuitBreakerEntry)
 
@@ -339,7 +339,7 @@ func (cbm *CircuitBreakerManager) Shutdown() {
 
 // Reset resets all circuit breakers (useful for testing)
 func (cbm *CircuitBreakerManager) Reset() {
-	cbm.breakers.Range(func(key, value interface{}) bool {
+	cbm.breakers.Range(func(key, value any) bool {
 		entry := value.(*CircuitBreakerEntry)
 		breaker := entry.breaker
 		breaker.state.Store(int32(CircuitBreakerClosed))

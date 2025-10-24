@@ -9,7 +9,7 @@ import (
 )
 
 // appendJSONIfDebug appends JSON data to a message only if the global log level is Debug
-func appendJSONIfDebug(message string, data map[string]interface{}) string {
+func appendJSONIfDebug(message string, data map[string]any) string {
 	if internal.LogLevel.DebugOrAbove() {
 		jsonData, _ := json.Marshal(data)
 		return fmt.Sprintf("%s %s", message, string(jsonData))
@@ -130,7 +130,7 @@ const (
 
 func HandoffStarted(connID uint64, newEndpoint string) string {
 	message := fmt.Sprintf("conn[%d] %s to %s", connID, HandoffStartedMessage, newEndpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": newEndpoint,
 	})
@@ -138,7 +138,7 @@ func HandoffStarted(connID uint64, newEndpoint string) string {
 
 func HandoffFailed(connID uint64, newEndpoint string, attempt int, maxAttempts int, err error) string {
 	message := fmt.Sprintf("conn[%d] %s to %s (attempt %d/%d): %v", connID, HandoffFailedMessage, newEndpoint, attempt, maxAttempts, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":      connID,
 		"endpoint":    newEndpoint,
 		"attempt":     attempt,
@@ -149,16 +149,16 @@ func HandoffFailed(connID uint64, newEndpoint string, attempt int, maxAttempts i
 
 func HandoffSucceeded(connID uint64, newEndpoint string) string {
 	message := fmt.Sprintf("conn[%d] %s to %s", connID, HandoffSuccessMessage, newEndpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": newEndpoint,
 	})
 }
 
 // Timeout-related log functions
-func RelaxedTimeoutDueToNotification(connID uint64, notificationType string, timeout interface{}) string {
+func RelaxedTimeoutDueToNotification(connID uint64, notificationType string, timeout any) string {
 	message := fmt.Sprintf("conn[%d] %s %s (%v)", connID, RelaxedTimeoutDueToNotificationMessage, notificationType, timeout)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":           connID,
 		"notificationType": notificationType,
 		"timeout":          fmt.Sprintf("%v", timeout),
@@ -167,14 +167,14 @@ func RelaxedTimeoutDueToNotification(connID uint64, notificationType string, tim
 
 func UnrelaxedTimeout(connID uint64) string {
 	message := fmt.Sprintf("conn[%d] %s", connID, UnrelaxedTimeoutMessage)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 	})
 }
 
 func UnrelaxedTimeoutAfterDeadline(connID uint64) string {
 	message := fmt.Sprintf("conn[%d] %s", connID, UnrelaxedTimeoutAfterDeadlineMessage)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 	})
 }
@@ -182,7 +182,7 @@ func UnrelaxedTimeoutAfterDeadline(connID uint64) string {
 // Handoff queue and marking functions
 func HandoffQueueFull(queueLen, queueCap int) string {
 	message := fmt.Sprintf("%s (%d/%d), cannot queue new handoff requests - consider increasing HandoffQueueSize or MaxWorkers in configuration", HandoffQueueFullMessage, queueLen, queueCap)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"queueLen": queueLen,
 		"queueCap": queueCap,
 	})
@@ -190,7 +190,7 @@ func HandoffQueueFull(queueLen, queueCap int) string {
 
 func FailedToQueueHandoff(connID uint64, err error) string {
 	message := fmt.Sprintf("conn[%d] %s: %v", connID, FailedToQueueHandoffMessage, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"error":  err.Error(),
 	})
@@ -198,7 +198,7 @@ func FailedToQueueHandoff(connID uint64, err error) string {
 
 func FailedToMarkForHandoff(connID uint64, err error) string {
 	message := fmt.Sprintf("conn[%d] %s: %v", connID, FailedToMarkForHandoffMessage, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"error":  err.Error(),
 	})
@@ -206,7 +206,7 @@ func FailedToMarkForHandoff(connID uint64, err error) string {
 
 func FailedToDialNewEndpoint(connID uint64, endpoint string, err error) string {
 	message := fmt.Sprintf("conn[%d] %s %s: %v", connID, FailedToDialNewEndpointMessage, endpoint, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": endpoint,
 		"error":    err.Error(),
@@ -215,7 +215,7 @@ func FailedToDialNewEndpoint(connID uint64, endpoint string, err error) string {
 
 func ReachedMaxHandoffRetries(connID uint64, endpoint string, maxRetries int) string {
 	message := fmt.Sprintf("conn[%d] %s to %s (max retries: %d)", connID, ReachedMaxHandoffRetriesMessage, endpoint, maxRetries)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":     connID,
 		"endpoint":   endpoint,
 		"maxRetries": maxRetries,
@@ -223,9 +223,9 @@ func ReachedMaxHandoffRetries(connID uint64, endpoint string, maxRetries int) st
 }
 
 // Notification processing functions
-func ProcessingNotification(connID uint64, seqID int64, notificationType string, notification interface{}) string {
+func ProcessingNotification(connID uint64, seqID int64, notificationType string, notification any) string {
 	message := fmt.Sprintf("conn[%d] seqID[%d] %s %s: %v", connID, seqID, ProcessingNotificationMessage, notificationType, notification)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":           connID,
 		"seqID":            seqID,
 		"notificationType": notificationType,
@@ -233,9 +233,9 @@ func ProcessingNotification(connID uint64, seqID int64, notificationType string,
 	})
 }
 
-func ProcessingNotificationFailed(connID uint64, notificationType string, err error, notification interface{}) string {
+func ProcessingNotificationFailed(connID uint64, notificationType string, err error, notification any) string {
 	message := fmt.Sprintf("conn[%d] %s %s: %v - %v", connID, ProcessingNotificationFailedMessage, notificationType, err, notification)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":           connID,
 		"notificationType": notificationType,
 		"error":            err.Error(),
@@ -245,7 +245,7 @@ func ProcessingNotificationFailed(connID uint64, notificationType string, err er
 
 func ProcessingNotificationSucceeded(connID uint64, notificationType string) string {
 	message := fmt.Sprintf("conn[%d] %s %s", connID, ProcessingNotificationSucceededMessage, notificationType)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":           connID,
 		"notificationType": notificationType,
 	})
@@ -254,7 +254,7 @@ func ProcessingNotificationSucceeded(connID uint64, notificationType string) str
 // Moving operation tracking functions
 func DuplicateMovingOperation(connID uint64, endpoint string, seqID int64) string {
 	message := fmt.Sprintf("conn[%d] %s for %s seqID[%d]", connID, DuplicateMovingOperationMessage, endpoint, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": endpoint,
 		"seqID":    seqID,
@@ -263,7 +263,7 @@ func DuplicateMovingOperation(connID uint64, endpoint string, seqID int64) strin
 
 func TrackingMovingOperation(connID uint64, endpoint string, seqID int64) string {
 	message := fmt.Sprintf("conn[%d] %s for %s seqID[%d]", connID, TrackingMovingOperationMessage, endpoint, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": endpoint,
 		"seqID":    seqID,
@@ -272,7 +272,7 @@ func TrackingMovingOperation(connID uint64, endpoint string, seqID int64) string
 
 func UntrackingMovingOperation(connID uint64, seqID int64) string {
 	message := fmt.Sprintf("conn[%d] %s seqID[%d]", connID, UntrackingMovingOperationMessage, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"seqID":  seqID,
 	})
@@ -280,7 +280,7 @@ func UntrackingMovingOperation(connID uint64, seqID int64) string {
 
 func OperationNotTracked(connID uint64, seqID int64) string {
 	message := fmt.Sprintf("conn[%d] %s seqID[%d]", connID, OperationNotTrackedMessage, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"seqID":  seqID,
 	})
@@ -289,7 +289,7 @@ func OperationNotTracked(connID uint64, seqID int64) string {
 // Connection pool functions
 func RemovingConnectionFromPool(connID uint64, reason error) string {
 	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, RemovingConnectionFromPoolMessage, reason)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"reason": reason.Error(),
 	})
@@ -297,7 +297,7 @@ func RemovingConnectionFromPool(connID uint64, reason error) string {
 
 func NoPoolProvidedCannotRemove(connID uint64, reason error) string {
 	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, NoPoolProvidedMessageCannotRemoveMessage, reason)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 		"reason": reason.Error(),
 	})
@@ -306,7 +306,7 @@ func NoPoolProvidedCannotRemove(connID uint64, reason error) string {
 // Circuit breaker functions
 func CircuitBreakerOpen(connID uint64, endpoint string) string {
 	message := fmt.Sprintf("conn[%d] %s for %s", connID, CircuitBreakerOpenMessage, endpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":   connID,
 		"endpoint": endpoint,
 	})
@@ -315,7 +315,7 @@ func CircuitBreakerOpen(connID uint64, endpoint string) string {
 // Additional handoff functions for specific cases
 func ConnectionNotMarkedForHandoff(connID uint64) string {
 	message := fmt.Sprintf("conn[%d] %s", connID, ConnectionNotMarkedForHandoffMessage)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 	})
 }
@@ -326,7 +326,7 @@ func ConnectionNotMarkedForHandoffError(connID uint64) string {
 
 func HandoffRetryAttempt(connID uint64, retries int, newEndpoint string, oldEndpoint string) string {
 	message := fmt.Sprintf("conn[%d] Retry %d: %s to %s(was %s)", connID, retries, HandoffRetryAttemptMessage, newEndpoint, oldEndpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":      connID,
 		"retries":     retries,
 		"newEndpoint": newEndpoint,
@@ -336,66 +336,66 @@ func HandoffRetryAttempt(connID uint64, retries int, newEndpoint string, oldEndp
 
 func CannotQueueHandoffForRetry(err error) string {
 	message := fmt.Sprintf("%s: %v", CannotQueueHandoffForRetryMessage, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"error": err.Error(),
 	})
 }
 
 // Validation and error functions
-func InvalidNotificationFormat(notification interface{}) string {
+func InvalidNotificationFormat(notification any) string {
 	message := fmt.Sprintf("%s: %v", InvalidNotificationFormatMessage, notification)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notification": fmt.Sprintf("%v", notification),
 	})
 }
 
-func InvalidNotificationTypeFormat(notificationType interface{}) string {
+func InvalidNotificationTypeFormat(notificationType any) string {
 	message := fmt.Sprintf("%s: %v", InvalidNotificationTypeFormatMessage, notificationType)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": fmt.Sprintf("%v", notificationType),
 	})
 }
 
 // InvalidNotification creates a log message for invalid notifications of any type
-func InvalidNotification(notificationType string, notification interface{}) string {
+func InvalidNotification(notificationType string, notification any) string {
 	message := fmt.Sprintf("invalid %s notification: %v", notificationType, notification)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 		"notification":     fmt.Sprintf("%v", notification),
 	})
 }
 
-func InvalidSeqIDInMovingNotification(seqID interface{}) string {
+func InvalidSeqIDInMovingNotification(seqID any) string {
 	message := fmt.Sprintf("%s: %v", InvalidSeqIDInMovingNotificationMessage, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"seqID": fmt.Sprintf("%v", seqID),
 	})
 }
 
-func InvalidTimeSInMovingNotification(timeS interface{}) string {
+func InvalidTimeSInMovingNotification(timeS any) string {
 	message := fmt.Sprintf("%s: %v", InvalidTimeSInMovingNotificationMessage, timeS)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"timeS": fmt.Sprintf("%v", timeS),
 	})
 }
 
-func InvalidNewEndpointInMovingNotification(newEndpoint interface{}) string {
+func InvalidNewEndpointInMovingNotification(newEndpoint any) string {
 	message := fmt.Sprintf("%s: %v", InvalidNewEndpointInMovingNotificationMessage, newEndpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"newEndpoint": fmt.Sprintf("%v", newEndpoint),
 	})
 }
 
 func NoConnectionInHandlerContext(notificationType string) string {
 	message := fmt.Sprintf("%s for %s notification", NoConnectionInHandlerContextMessage, notificationType)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 	})
 }
 
-func InvalidConnectionTypeInHandlerContext(notificationType string, conn interface{}, handlerCtx interface{}) string {
+func InvalidConnectionTypeInHandlerContext(notificationType string, conn any, handlerCtx any) string {
 	message := fmt.Sprintf("%s for %s notification - %T %#v", InvalidConnectionTypeInHandlerContextMessage, notificationType, conn, handlerCtx)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 		"connType":         fmt.Sprintf("%T", conn),
 	})
@@ -403,127 +403,127 @@ func InvalidConnectionTypeInHandlerContext(notificationType string, conn interfa
 
 func SchedulingHandoffToCurrentEndpoint(connID uint64, seconds float64) string {
 	message := fmt.Sprintf("conn[%d] %s in %v seconds", connID, SchedulingHandoffToCurrentEndpointMessage, seconds)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":  connID,
 		"seconds": seconds,
 	})
 }
 
 func ManagerNotInitialized() string {
-	return appendJSONIfDebug(ManagerNotInitializedMessage, map[string]interface{}{})
+	return appendJSONIfDebug(ManagerNotInitializedMessage, map[string]any{})
 }
 
 func FailedToRegisterHandler(notificationType string, err error) string {
 	message := fmt.Sprintf("%s for %s: %v", FailedToRegisterHandlerMessage, notificationType, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 		"error":            err.Error(),
 	})
 }
 
 func ShutdownError() string {
-	return appendJSONIfDebug(ShutdownErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(ShutdownErrorMessage, map[string]any{})
 }
 
 // Configuration validation error functions
 func InvalidRelaxedTimeoutError() string {
-	return appendJSONIfDebug(InvalidRelaxedTimeoutErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidRelaxedTimeoutErrorMessage, map[string]any{})
 }
 
 func InvalidHandoffTimeoutError() string {
-	return appendJSONIfDebug(InvalidHandoffTimeoutErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidHandoffTimeoutErrorMessage, map[string]any{})
 }
 
 func InvalidHandoffWorkersError() string {
-	return appendJSONIfDebug(InvalidHandoffWorkersErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidHandoffWorkersErrorMessage, map[string]any{})
 }
 
 func InvalidHandoffQueueSizeError() string {
-	return appendJSONIfDebug(InvalidHandoffQueueSizeErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidHandoffQueueSizeErrorMessage, map[string]any{})
 }
 
 func InvalidPostHandoffRelaxedDurationError() string {
-	return appendJSONIfDebug(InvalidPostHandoffRelaxedDurationErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidPostHandoffRelaxedDurationErrorMessage, map[string]any{})
 }
 
 func InvalidEndpointTypeError() string {
-	return appendJSONIfDebug(InvalidEndpointTypeErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidEndpointTypeErrorMessage, map[string]any{})
 }
 
 func InvalidMaintNotificationsError() string {
-	return appendJSONIfDebug(InvalidMaintNotificationsErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidMaintNotificationsErrorMessage, map[string]any{})
 }
 
 func InvalidHandoffRetriesError() string {
-	return appendJSONIfDebug(InvalidHandoffRetriesErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidHandoffRetriesErrorMessage, map[string]any{})
 }
 
 func InvalidClientError() string {
-	return appendJSONIfDebug(InvalidClientErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidClientErrorMessage, map[string]any{})
 }
 
 func InvalidNotificationError() string {
-	return appendJSONIfDebug(InvalidNotificationErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidNotificationErrorMessage, map[string]any{})
 }
 
 func MaxHandoffRetriesReachedError() string {
-	return appendJSONIfDebug(MaxHandoffRetriesReachedErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(MaxHandoffRetriesReachedErrorMessage, map[string]any{})
 }
 
 func HandoffQueueFullError() string {
-	return appendJSONIfDebug(HandoffQueueFullErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(HandoffQueueFullErrorMessage, map[string]any{})
 }
 
 func InvalidCircuitBreakerFailureThresholdError() string {
-	return appendJSONIfDebug(InvalidCircuitBreakerFailureThresholdErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidCircuitBreakerFailureThresholdErrorMessage, map[string]any{})
 }
 
 func InvalidCircuitBreakerResetTimeoutError() string {
-	return appendJSONIfDebug(InvalidCircuitBreakerResetTimeoutErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidCircuitBreakerResetTimeoutErrorMessage, map[string]any{})
 }
 
 func InvalidCircuitBreakerMaxRequestsError() string {
-	return appendJSONIfDebug(InvalidCircuitBreakerMaxRequestsErrorMessage, map[string]interface{}{})
+	return appendJSONIfDebug(InvalidCircuitBreakerMaxRequestsErrorMessage, map[string]any{})
 }
 
 // Configuration and debug functions
 func DebugLoggingEnabled() string {
-	return appendJSONIfDebug(DebugLoggingEnabledMessage, map[string]interface{}{})
+	return appendJSONIfDebug(DebugLoggingEnabledMessage, map[string]any{})
 }
 
-func ConfigDebug(config interface{}) string {
+func ConfigDebug(config any) string {
 	message := fmt.Sprintf("%s: %+v", ConfigDebugMessage, config)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"config": fmt.Sprintf("%+v", config),
 	})
 }
 
 // Handoff worker functions
 func WorkerExitingDueToShutdown() string {
-	return appendJSONIfDebug(WorkerExitingDueToShutdownMessage, map[string]interface{}{})
+	return appendJSONIfDebug(WorkerExitingDueToShutdownMessage, map[string]any{})
 }
 
 func WorkerExitingDueToShutdownWhileProcessing() string {
-	return appendJSONIfDebug(WorkerExitingDueToShutdownWhileProcessingMessage, map[string]interface{}{})
+	return appendJSONIfDebug(WorkerExitingDueToShutdownWhileProcessingMessage, map[string]any{})
 }
 
-func WorkerPanicRecovered(panicValue interface{}) string {
+func WorkerPanicRecovered(panicValue any) string {
 	message := fmt.Sprintf("%s: %v", WorkerPanicRecoveredMessage, panicValue)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"panic": fmt.Sprintf("%v", panicValue),
 	})
 }
 
-func WorkerExitingDueToInactivityTimeout(timeout interface{}) string {
+func WorkerExitingDueToInactivityTimeout(timeout any) string {
 	message := fmt.Sprintf("%s (%v)", WorkerExitingDueToInactivityTimeoutMessage, timeout)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"timeout": fmt.Sprintf("%v", timeout),
 	})
 }
 
-func ApplyingRelaxedTimeoutDueToPostHandoff(connID uint64, timeout interface{}, until string) string {
+func ApplyingRelaxedTimeoutDueToPostHandoff(connID uint64, timeout any, until string) string {
 	message := fmt.Sprintf("conn[%d] %s (%v) until %s", connID, ApplyingRelaxedTimeoutDueToPostHandoffMessage, timeout, until)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID":  connID,
 		"timeout": fmt.Sprintf("%v", timeout),
 		"until":   until,
@@ -533,7 +533,7 @@ func ApplyingRelaxedTimeoutDueToPostHandoff(connID uint64, timeout interface{}, 
 // Example hooks functions
 func MetricsHookProcessingNotification(notificationType string, connID uint64) string {
 	message := fmt.Sprintf("%s %s notification on conn[%d]", MetricsHookProcessingNotificationMessage, notificationType, connID)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 		"connID":           connID,
 	})
@@ -541,7 +541,7 @@ func MetricsHookProcessingNotification(notificationType string, connID uint64) s
 
 func MetricsHookRecordedError(notificationType string, connID uint64, err error) string {
 	message := fmt.Sprintf("%s for %s notification on conn[%d]: %v", MetricsHookRecordedErrorMessage, notificationType, connID, err)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"notificationType": notificationType,
 		"connID":           connID,
 		"error":            err.Error(),
@@ -551,7 +551,7 @@ func MetricsHookRecordedError(notificationType string, connID uint64, err error)
 // Pool hook functions
 func MarkedForHandoff(connID uint64) string {
 	message := fmt.Sprintf("conn[%d] %s", connID, MarkedForHandoffMessage)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"connID": connID,
 	})
 }
@@ -559,14 +559,14 @@ func MarkedForHandoff(connID uint64) string {
 // Circuit breaker additional functions
 func CircuitBreakerTransitioningToHalfOpen(endpoint string) string {
 	message := fmt.Sprintf("%s for %s", CircuitBreakerTransitioningToHalfOpenMessage, endpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"endpoint": endpoint,
 	})
 }
 
 func CircuitBreakerOpened(endpoint string, failures int64) string {
 	message := fmt.Sprintf("%s for endpoint %s after %d failures", CircuitBreakerOpenedMessage, endpoint, failures)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"endpoint": endpoint,
 		"failures": failures,
 	})
@@ -574,14 +574,14 @@ func CircuitBreakerOpened(endpoint string, failures int64) string {
 
 func CircuitBreakerReopened(endpoint string) string {
 	message := fmt.Sprintf("%s for endpoint %s due to failure in half-open state", CircuitBreakerReopenedMessage, endpoint)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"endpoint": endpoint,
 	})
 }
 
 func CircuitBreakerClosed(endpoint string, successes int64) string {
 	message := fmt.Sprintf("%s for endpoint %s after %d successful requests", CircuitBreakerClosedMessage, endpoint, successes)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"endpoint":  endpoint,
 		"successes": successes,
 	})
@@ -589,7 +589,7 @@ func CircuitBreakerClosed(endpoint string, successes int64) string {
 
 func CircuitBreakerCleanup(removed int, total int) string {
 	message := fmt.Sprintf("%s removed %d/%d entries", CircuitBreakerCleanupMessage, removed, total)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	return appendJSONIfDebug(message, map[string]any{
 		"removed": removed,
 		"total":   total,
 	})
@@ -598,9 +598,9 @@ func CircuitBreakerCleanup(removed int, total int) string {
 // ExtractDataFromLogMessage extracts structured data from maintnotifications log messages
 // Returns a map containing the parsed key-value pairs from the structured data section
 // Example: "conn[123] handoff started to localhost:6379 {"connID":123,"endpoint":"localhost:6379"}"
-// Returns: map[string]interface{}{"connID": 123, "endpoint": "localhost:6379"}
-func ExtractDataFromLogMessage(logMessage string) map[string]interface{} {
-	result := make(map[string]interface{})
+// Returns: map[string]any{"connID": 123, "endpoint": "localhost:6379"}
+func ExtractDataFromLogMessage(logMessage string) map[string]any {
+	result := make(map[string]any)
 
 	// Find the JSON data section at the end of the message
 	re := regexp.MustCompile(`(\{.*\})$`)
@@ -615,7 +615,7 @@ func ExtractDataFromLogMessage(logMessage string) map[string]interface{} {
 	}
 
 	// Parse the JSON directly
-	var jsonResult map[string]interface{}
+	var jsonResult map[string]any
 	if err := json.Unmarshal([]byte(jsonStr), &jsonResult); err == nil {
 		return jsonResult
 	}

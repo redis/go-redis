@@ -25,7 +25,7 @@ func (mc *MockClient) GetPushProcessor() interfaces.NotificationProcessor {
 // MockPushProcessor implements interfaces.NotificationProcessor for testing
 type MockPushProcessor struct{}
 
-func (mpp *MockPushProcessor) RegisterHandler(notificationType string, handler interface{}, protected bool) error {
+func (mpp *MockPushProcessor) RegisterHandler(notificationType string, handler any, protected bool) error {
 	return nil
 }
 
@@ -33,7 +33,7 @@ func (mpp *MockPushProcessor) UnregisterHandler(pushNotificationName string) err
 	return nil
 }
 
-func (mpp *MockPushProcessor) GetHandler(pushNotificationName string) interface{} {
+func (mpp *MockPushProcessor) GetHandler(pushNotificationName string) any {
 	return nil
 }
 

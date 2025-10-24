@@ -38,7 +38,7 @@ func NewMetricsHook() *MetricsHook {
 }
 
 // PreHook records the start time for processing metrics.
-func (mh *MetricsHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (mh *MetricsHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any) ([]any, bool) {
 	mh.NotificationCounts[notificationType]++
 
 	// Log connection information if available
@@ -54,7 +54,7 @@ func (mh *MetricsHook) PreHook(ctx context.Context, notificationCtx push.Notific
 }
 
 // PostHook records processing completion and any errors.
-func (mh *MetricsHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+func (mh *MetricsHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any, result error) {
 	// Calculate processing duration
 	if startTime, ok := ctx.Value(startTimeKey).(time.Time); ok {
 		duration := time.Since(startTime)
@@ -73,8 +73,8 @@ func (mh *MetricsHook) PostHook(ctx context.Context, notificationCtx push.Notifi
 }
 
 // GetMetrics returns a summary of collected metrics.
-func (mh *MetricsHook) GetMetrics() map[string]interface{} {
-	return map[string]interface{}{
+func (mh *MetricsHook) GetMetrics() map[string]any {
+	return map[string]any{
 		"notification_counts": mh.NotificationCounts,
 		"processing_times":    mh.ProcessingTimes,
 		"error_counts":        mh.ErrorCounts,

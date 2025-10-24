@@ -40,16 +40,16 @@ func TestPushNotifications(t *testing.T) {
 	var status *ActionStatusResponse
 	var errorsDetected = false
 
-	var p = func(format string, args ...interface{}) {
+	var p = func(format string, args ...any) {
 		printLog("PUSH-NOTIFICATIONS", false, format, args...)
 	}
 
-	var e = func(format string, args ...interface{}) {
+	var e = func(format string, args ...any) {
 		errorsDetected = true
 		printLog("PUSH-NOTIFICATIONS", true, format, args...)
 	}
 
-	var ef = func(format string, args ...interface{}) {
+	var ef = func(format string, args ...any) {
 		printLog("PUSH-NOTIFICATIONS", true, format, args...)
 		t.FailNow()
 	}
@@ -127,7 +127,7 @@ func TestPushNotifications(t *testing.T) {
 	p("Triggering failover action to generate push notifications...")
 	failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "failover",
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"bdb_id": endpointConfig.BdbID,
 		},
 	})
@@ -178,7 +178,7 @@ func TestPushNotifications(t *testing.T) {
 	p("Triggering migrate action to generate push notifications...")
 	migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "migrate",
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"bdb_id": endpointConfig.BdbID,
 		},
 	})
@@ -238,7 +238,7 @@ func TestPushNotifications(t *testing.T) {
 
 	bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 		Type: "bind",
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"bdb_id": endpointConfig.BdbID,
 		},
 	})

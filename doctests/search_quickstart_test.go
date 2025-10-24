@@ -11,8 +11,8 @@ import (
 
 // HIDE_END
 
-var bicycles = []interface{}{
-	map[string]interface{}{
+var bicycles = []any{
+	map[string]any{
 		"brand": "Velorim",
 		"model": "Jigger",
 		"price": 270,
@@ -24,7 +24,7 @@ var bicycles = []interface{}{
 			"raring to go.",
 		"condition": "new",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Bicyk",
 		"model": "Hillcraft",
 		"price": 1200,
@@ -35,7 +35,7 @@ var bicycles = []interface{}{
 			" they need!",
 		"condition": "used",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Nord",
 		"model": "Chook air 5",
 		"price": 815,
@@ -47,7 +47,7 @@ var bicycles = []interface{}{
 			" safety on the trails.",
 		"condition": "used",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Eva",
 		"model": "Eva 291",
 		"price": 3400,
@@ -62,7 +62,7 @@ var bicycles = []interface{}{
 			"aluminum frame and fast-rolling 29-inch wheels. Yippee!",
 		"condition": "used",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Noka Bikes",
 		"model": "Kahuna",
 		"price": 3200,
@@ -75,7 +75,7 @@ var bicycles = []interface{}{
 			"colourway.",
 		"condition": "used",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Breakout",
 		"model": "XBN 2.1 Alloy",
 		"price": 810,
@@ -86,7 +86,7 @@ var bicycles = []interface{}{
 			" break the bank and delivers craved performance.",
 		"condition": "new",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "ScramBikes",
 		"model": "WattBike",
 		"price": 2300,
@@ -99,7 +99,7 @@ var bicycles = []interface{}{
 			" and normal bike modes.",
 		"condition": "new",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "Peaknetic",
 		"model": "Secto",
 		"price": 430,
@@ -120,7 +120,7 @@ var bicycles = []interface{}{
 			" flashlight, bell, or phone holder.",
 		"condition": "new",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"brand": "nHill",
 		"model": "Summit",
 		"price": 1200,
@@ -136,7 +136,7 @@ var bicycles = []interface{}{
 			" for money.",
 		"condition": "new",
 	},
-	map[string]interface{}{
+	map[string]any{
 		"model": "ThrillCycle",
 		"brand": "BikeShind",
 		"price": 815,
@@ -188,7 +188,7 @@ func ExampleClient_search_qs() {
 
 	_, err := rdb.FTCreate(ctx, "idx:bicycle",
 		&redis.FTCreateOptions{
-			Prefix: []interface{}{"bicycle:"},
+			Prefix: []any{"bicycle:"},
 			OnJSON: true,
 		},
 		schema...,

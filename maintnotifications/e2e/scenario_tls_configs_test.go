@@ -25,11 +25,11 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 
 	var dump = true
 	var errorsDetected = false
-	var p = func(format string, args ...interface{}) {
+	var p = func(format string, args ...any) {
 		printLog("TLS-CONFIGS", false, format, args...)
 	}
 
-	var e = func(format string, args ...interface{}) {
+	var e = func(format string, args ...any) {
 		errorsDetected = true
 		printLog("TLS-CONFIGS", true, format, args...)
 	}
@@ -95,7 +95,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			}()
 
 			errorsDetected = false
-			var ef = func(format string, args ...interface{}) {
+			var ef = func(format string, args ...any) {
 				printLog("TLS-CONFIGS", true, format, args...)
 				t.FailNow()
 			}
@@ -173,7 +173,7 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 			p("Testing migration with %s TLS configuration...", tlsTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})

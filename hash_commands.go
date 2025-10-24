@@ -20,11 +20,11 @@ type HashCmdable interface {
 	HKeys(ctx context.Context, key string) *StringSliceCmd
 	HLen(ctx context.Context, key string) *IntCmd
 	HMGet(ctx context.Context, key string, fields ...string) *SliceCmd
-	HSet(ctx context.Context, key string, values ...interface{}) *IntCmd
-	HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd
+	HSet(ctx context.Context, key string, values ...any) *IntCmd
+	HMSet(ctx context.Context, key string, values ...any) *BoolCmd
 	HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd
 	HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd
-	HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd
+	HSetNX(ctx context.Context, key, field string, value any) *BoolCmd
 	HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd
 	HVals(ctx context.Context, key string) *StringSliceCmd
@@ -47,7 +47,7 @@ type HashCmdable interface {
 }
 
 func (c cmdable) HDel(ctx context.Context, key string, fields ...string) *IntCmd {
-	args := make([]interface{}, 2+len(fields))
+	args := make([]any, 2+len(fields))
 	args[0] = "hdel"
 	args[1] = key
 	for i, field := range fields {
@@ -101,9 +101,9 @@ func (c cmdable) HLen(ctx context.Context, key string) *IntCmd {
 }
 
 // HMGet returns the values for the specified fields in the hash stored at key.
-// It returns an interface{} to distinguish between empty string and nil value.
+// It returns an any to distinguish between empty string and nil value.
 func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *SliceCmd {
-	args := make([]interface{}, 2+len(fields))
+	args := make([]any, 2+len(fields))
 	args[0] = "hmget"
 	args[1] = key
 	for i, field := range fields {
@@ -120,7 +120,7 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 //
 //   - HSet(ctx, "myhash", []string{"key1", "value1", "key2", "value2"})
 //
-//   - HSet(ctx, "myhash", map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - HSet(ctx, "myhash", map[string]any{"key1": "value1", "key2": "value2"})
 //
 //     Playing struct With "redis" tag.
 //     type MyHash struct { Key1 string `redis:"key1"`; Key2 int `redis:"key2"` }
@@ -138,8 +138,8 @@ func (c cmdable) HMGet(ctx context.Context, key string, fields ...string) *Slice
 // redis-docs: https://redis.io/commands/hset (Starting with Redis version 4.0.0: Accepts multiple field and value arguments.)
 // If you are using a Struct type and the number of fields is greater than one,
 // you will receive an error similar to "ERR wrong number of arguments", you can use HMSet as a substitute.
-func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *IntCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) HSet(ctx context.Context, key string, values ...any) *IntCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "hset"
 	args[1] = key
 	args = appendArgs(args, values)
@@ -149,8 +149,8 @@ func (c cmdable) HSet(ctx context.Context, key string, values ...interface{}) *I
 }
 
 // HMSet is a deprecated version of HSet left for compatibility with Redis 3.
-func (c cmdable) HMSet(ctx context.Context, key string, values ...interface{}) *BoolCmd {
-	args := make([]interface{}, 2, 2+len(values))
+func (c cmdable) HMSet(ctx context.Context, key string, values ...any) *BoolCmd {
+	args := make([]any, 2, 2+len(values))
 	args[0] = "hmset"
 	args[1] = key
 	args = appendArgs(args, values)
@@ -159,7 +159,7 @@ func (c cmdable) HMSet(ctx context.Context, key string, values ...interface{}) *
 	return cmd
 }
 
-func (c cmdable) HSetNX(ctx context.Context, key, field string, value interface{}) *BoolCmd {
+func (c cmdable) HSetNX(ctx context.Context, key, field string, value any) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "hsetnx", key, field, value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -186,7 +186,7 @@ func (c cmdable) HRandFieldWithValues(ctx context.Context, key string, count int
 }
 
 func (c cmdable) HScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"hscan", key, cursor}
+	args := []any{"hscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
 	}
@@ -207,7 +207,7 @@ func (c cmdable) HStrLen(ctx context.Context, key, field string) *IntCmd {
 	return cmd
 }
 func (c cmdable) HScanNoValues(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"hscan", key, cursor}
+	args := []any{"hscan", key, cursor}
 	if match != "" {
 		args = append(args, "match", match)
 	}
@@ -237,7 +237,7 @@ type HExpireArgs struct {
 //
 // [HEXPIRE Documentation]: https://redis.io/commands/hexpire/
 func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
+	args := []any{"HEXPIRE", key, formatSec(ctx, expiration), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -255,7 +255,7 @@ func (c cmdable) HExpire(ctx context.Context, key string, expiration time.Durati
 //
 // [HEXPIRE Documentation]: https://redis.io/commands/hexpire/
 func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRE", key, formatSec(ctx, expiration)}
+	args := []any{"HEXPIRE", key, formatSec(ctx, expiration)}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
@@ -287,7 +287,7 @@ func (c cmdable) HExpireWithArgs(ctx context.Context, key string, expiration tim
 //
 // [HPEXPIRE Documentation]: https://redis.io/commands/hpexpire/
 func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Duration, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration), "FIELDS", len(fields)}
+	args := []any{"HPEXPIRE", key, formatMs(ctx, expiration), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -305,7 +305,7 @@ func (c cmdable) HPExpire(ctx context.Context, key string, expiration time.Durat
 //
 // [HPEXPIRE Documentation]: https://redis.io/commands/hpexpire/
 func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration time.Duration, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIRE", key, formatMs(ctx, expiration)}
+	args := []any{"HPEXPIRE", key, formatMs(ctx, expiration)}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
@@ -338,7 +338,7 @@ func (c cmdable) HPExpireWithArgs(ctx context.Context, key string, expiration ti
 // [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
 
-	args := []interface{}{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
+	args := []any{"HEXPIREAT", key, tm.Unix(), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -349,7 +349,7 @@ func (c cmdable) HExpireAt(ctx context.Context, key string, tm time.Time, fields
 }
 
 func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIREAT", key, tm.Unix()}
+	args := []any{"HEXPIREAT", key, tm.Unix()}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
@@ -380,7 +380,7 @@ func (c cmdable) HExpireAtWithArgs(ctx context.Context, key string, tm time.Time
 //
 // [HExpireAt Documentation]: https://redis.io/commands/hexpireat/
 func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
+	args := []any{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond), "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -391,7 +391,7 @@ func (c cmdable) HPExpireAt(ctx context.Context, key string, tm time.Time, field
 }
 
 func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Time, expirationArgs HExpireArgs, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond)}
+	args := []any{"HPEXPIREAT", key, tm.UnixNano() / int64(time.Millisecond)}
 
 	// only if one argument is true, we can add it to the args
 	// if more than one argument is true, it will cause an error
@@ -423,7 +423,7 @@ func (c cmdable) HPExpireAtWithArgs(ctx context.Context, key string, tm time.Tim
 //
 // [HPersist Documentation]: https://redis.io/commands/hpersist/
 func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPERSIST", key, "FIELDS", len(fields)}
+	args := []any{"HPERSIST", key, "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -442,7 +442,7 @@ func (c cmdable) HPersist(ctx context.Context, key string, fields ...string) *In
 // [HExpireTime Documentation]: https://redis.io/commands/hexpiretime/
 // For more information - https://redis.io/commands/hexpiretime/
 func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HEXPIRETIME", key, "FIELDS", len(fields)}
+	args := []any{"HEXPIRETIME", key, "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -461,7 +461,7 @@ func (c cmdable) HExpireTime(ctx context.Context, key string, fields ...string) 
 // [HExpireTime Documentation]: https://redis.io/commands/hexpiretime/
 // For more information - https://redis.io/commands/hexpiretime/
 func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPEXPIRETIME", key, "FIELDS", len(fields)}
+	args := []any{"HPEXPIRETIME", key, "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -479,7 +479,7 @@ func (c cmdable) HPExpireTime(ctx context.Context, key string, fields ...string)
 //
 // [HTTL Documentation]: https://redis.io/commands/httl/
 func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HTTL", key, "FIELDS", len(fields)}
+	args := []any{"HTTL", key, "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -498,7 +498,7 @@ func (c cmdable) HTTL(ctx context.Context, key string, fields ...string) *IntSli
 // [HPTTL Documentation]: https://redis.io/commands/hpttl/
 // For more information - https://redis.io/commands/hpttl/
 func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSliceCmd {
-	args := []interface{}{"HPTTL", key, "FIELDS", len(fields)}
+	args := []any{"HPTTL", key, "FIELDS", len(fields)}
 
 	for _, field := range fields {
 		args = append(args, field)
@@ -509,7 +509,7 @@ func (c cmdable) HPTTL(ctx context.Context, key string, fields ...string) *IntSl
 }
 
 func (c cmdable) HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd {
-	args := []interface{}{"HGETDEL", key, "FIELDS", len(fields)}
+	args := []any{"HGETDEL", key, "FIELDS", len(fields)}
 	for _, field := range fields {
 		args = append(args, field)
 	}
@@ -519,7 +519,7 @@ func (c cmdable) HGetDel(ctx context.Context, key string, fields ...string) *Str
 }
 
 func (c cmdable) HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd {
-	args := []interface{}{"HGETEX", key, "FIELDS", len(fields)}
+	args := []any{"HGETEX", key, "FIELDS", len(fields)}
 	for _, field := range fields {
 		args = append(args, field)
 	}
@@ -545,7 +545,7 @@ type HGetEXOptions struct {
 }
 
 func (c cmdable) HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd {
-	args := []interface{}{"HGETEX", key}
+	args := []any{"HGETEX", key}
 	if options.ExpirationType != "" {
 		args = append(args, string(options.ExpirationType))
 		if options.ExpirationType != HGetEXExpirationPERSIST {
@@ -587,7 +587,7 @@ type HSetEXOptions struct {
 }
 
 func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...string) *IntCmd {
-	args := []interface{}{"HSETEX", key, "FIELDS", len(fieldsAndValues) / 2}
+	args := []any{"HSETEX", key, "FIELDS", len(fieldsAndValues) / 2}
 	for _, field := range fieldsAndValues {
 		args = append(args, field)
 	}
@@ -598,7 +598,7 @@ func (c cmdable) HSetEX(ctx context.Context, key string, fieldsAndValues ...stri
 }
 
 func (c cmdable) HSetEXWithArgs(ctx context.Context, key string, options *HSetEXOptions, fieldsAndValues ...string) *IntCmd {
-	args := []interface{}{"HSETEX", key}
+	args := []any{"HSETEX", key}
 	if options.Condition != "" {
 		args = append(args, string(options.Condition))
 	}

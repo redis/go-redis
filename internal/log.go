@@ -11,14 +11,14 @@ import (
 // Add more standardized approach with log levels and configurability
 
 type Logging interface {
-	Printf(ctx context.Context, format string, v ...interface{})
+	Printf(ctx context.Context, format string, v ...any)
 }
 
 type DefaultLogger struct {
 	log *log.Logger
 }
 
-func (l *DefaultLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+func (l *DefaultLogger) Printf(ctx context.Context, format string, v ...any) {
 	_ = l.log.Output(2, fmt.Sprintf(format, v...))
 }
 

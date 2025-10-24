@@ -54,7 +54,7 @@ func (b *SearchBuilder) WithSortKeys() *SearchBuilder {
 }
 
 // Filter adds a FILTER clause: FILTER <field> <min> <max>.
-func (b *SearchBuilder) Filter(field string, min, max interface{}) *SearchBuilder {
+func (b *SearchBuilder) Filter(field string, min, max any) *SearchBuilder {
 	b.options.Filters = append(b.options.Filters, FTSearchFilter{
 		FieldName: field,
 		Min:       min,
@@ -76,13 +76,13 @@ func (b *SearchBuilder) GeoFilter(field string, lon, lat, radius float64, unit s
 }
 
 // InKeys restricts the search to the given keys.
-func (b *SearchBuilder) InKeys(keys ...interface{}) *SearchBuilder {
+func (b *SearchBuilder) InKeys(keys ...any) *SearchBuilder {
 	b.options.InKeys = append(b.options.InKeys, keys...)
 	return b
 }
 
 // InFields restricts the search to the given fields.
-func (b *SearchBuilder) InFields(fields ...interface{}) *SearchBuilder {
+func (b *SearchBuilder) InFields(fields ...any) *SearchBuilder {
 	b.options.InFields = append(b.options.InFields, fields...)
 	return b
 }
@@ -166,18 +166,18 @@ func (b *SearchBuilder) WithSortByCount() *SearchBuilder {
 }
 
 // Param adds a single PARAMS <k> <v>.
-func (b *SearchBuilder) Param(key string, value interface{}) *SearchBuilder {
+func (b *SearchBuilder) Param(key string, value any) *SearchBuilder {
 	if b.options.Params == nil {
-		b.options.Params = make(map[string]interface{}, 1)
+		b.options.Params = make(map[string]any, 1)
 	}
 	b.options.Params[key] = value
 	return b
 }
 
 // ParamsMap adds multiple PARAMS at once.
-func (b *SearchBuilder) ParamsMap(p map[string]interface{}) *SearchBuilder {
+func (b *SearchBuilder) ParamsMap(p map[string]any) *SearchBuilder {
 	if b.options.Params == nil {
-		b.options.Params = make(map[string]interface{}, len(p))
+		b.options.Params = make(map[string]any, len(p))
 	}
 	for k, v := range p {
 		b.options.Params[k] = v
@@ -270,7 +270,7 @@ func (b *AggregateBuilder) Apply(field string, alias ...string) *AggregateBuilde
 }
 
 // GroupBy starts a new GROUPBY <fields...> clause.
-func (b *AggregateBuilder) GroupBy(fields ...interface{}) *AggregateBuilder {
+func (b *AggregateBuilder) GroupBy(fields ...any) *AggregateBuilder {
 	b.options.GroupBy = append(b.options.GroupBy, FTAggregateGroupBy{
 		Fields: fields,
 	})
@@ -278,7 +278,7 @@ func (b *AggregateBuilder) GroupBy(fields ...interface{}) *AggregateBuilder {
 }
 
 // Reduce adds a REDUCE <fn> [<#args> <args...>] clause to the *last* GROUPBY.
-func (b *AggregateBuilder) Reduce(fn SearchAggregator, args ...interface{}) *AggregateBuilder {
+func (b *AggregateBuilder) Reduce(fn SearchAggregator, args ...any) *AggregateBuilder {
 	if len(b.options.GroupBy) == 0 {
 		// no GROUPBY yet — nothing to attach to
 		return b
@@ -292,7 +292,7 @@ func (b *AggregateBuilder) Reduce(fn SearchAggregator, args ...interface{}) *Agg
 }
 
 // ReduceAs does the same but also sets an alias: REDUCE <fn> … AS <alias>
-func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...interface{}) *AggregateBuilder {
+func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...any) *AggregateBuilder {
 	if len(b.options.GroupBy) == 0 {
 		return b
 	}
@@ -336,9 +336,9 @@ func (b *AggregateBuilder) WithCursor(count, maxIdle int) *AggregateBuilder {
 }
 
 // Params adds PARAMS <k v> pairs.
-func (b *AggregateBuilder) Params(p map[string]interface{}) *AggregateBuilder {
+func (b *AggregateBuilder) Params(p map[string]any) *AggregateBuilder {
 	if b.options.Params == nil {
-		b.options.Params = make(map[string]interface{}, len(p))
+		b.options.Params = make(map[string]any, len(p))
 	}
 	for k, v := range p {
 		b.options.Params[k] = v
@@ -384,7 +384,7 @@ func (b *CreateIndexBuilder) OnHash() *CreateIndexBuilder { b.options.OnHash = t
 func (b *CreateIndexBuilder) OnJSON() *CreateIndexBuilder { b.options.OnJSON = true; return b }
 
 // Prefix sets PREFIX.
-func (b *CreateIndexBuilder) Prefix(prefixes ...interface{}) *CreateIndexBuilder {
+func (b *CreateIndexBuilder) Prefix(prefixes ...any) *CreateIndexBuilder {
 	b.options.Prefix = prefixes
 	return b
 }
@@ -444,7 +444,7 @@ func (b *CreateIndexBuilder) NoFields() *CreateIndexBuilder { b.options.NoFields
 func (b *CreateIndexBuilder) NoFreqs() *CreateIndexBuilder { b.options.NoFreqs = true; return b }
 
 // StopWords sets STOPWORDS.
-func (b *CreateIndexBuilder) StopWords(words ...interface{}) *CreateIndexBuilder {
+func (b *CreateIndexBuilder) StopWords(words ...any) *CreateIndexBuilder {
 	b.options.StopWords = words
 	return b
 }
@@ -627,7 +627,7 @@ func (c *Client) NewSpellCheckBuilder(ctx context.Context, index, query string) 
 func (b *SpellCheckBuilder) Distance(d int) *SpellCheckBuilder { b.options.Distance = d; return b }
 
 // Terms sets INCLUDE or EXCLUDE terms.
-func (b *SpellCheckBuilder) Terms(include bool, dictionary string, terms ...interface{}) *SpellCheckBuilder {
+func (b *SpellCheckBuilder) Terms(include bool, dictionary string, terms ...any) *SpellCheckBuilder {
 	if b.options.Terms == nil {
 		b.options.Terms = &FTSpellCheckTerms{}
 	}
@@ -659,7 +659,7 @@ type DictBuilder struct {
 	c      *Client
 	ctx    context.Context
 	dict   string
-	terms  []interface{}
+	terms  []any
 	action string // add|del|dump
 }
 
@@ -676,14 +676,14 @@ func (b *DictBuilder) Action(action string) *DictBuilder {
 }
 
 // Add sets the action to "add" and requires terms.
-func (b *DictBuilder) Add(terms ...interface{}) *DictBuilder {
+func (b *DictBuilder) Add(terms ...any) *DictBuilder {
 	b.action = "add"
 	b.terms = terms
 	return b
 }
 
 // Del sets the action to "del" and requires terms.
-func (b *DictBuilder) Del(terms ...interface{}) *DictBuilder {
+func (b *DictBuilder) Del(terms ...any) *DictBuilder {
 	b.action = "del"
 	b.terms = terms
 	return b
@@ -696,7 +696,7 @@ func (b *DictBuilder) Dump() *DictBuilder {
 }
 
 // Run executes the configured dictionary command.
-func (b *DictBuilder) Run() (interface{}, error) {
+func (b *DictBuilder) Run() (any, error) {
 	switch b.action {
 	case "add":
 		cmd := b.c.FTDictAdd(b.ctx, b.dict, b.terms...)
@@ -777,7 +777,7 @@ func (b *CursorBuilder) Del() *CursorBuilder {
 func (b *CursorBuilder) Count(count int) *CursorBuilder { b.count = count; return b }
 
 // Run executes the cursor command.
-func (b *CursorBuilder) Run() (interface{}, error) {
+func (b *CursorBuilder) Run() (any, error) {
 	switch b.action {
 	case "read":
 		cmd := b.c.FTCursorRead(b.ctx, b.index, int(b.cursorId), b.count)
@@ -798,14 +798,14 @@ type SynUpdateBuilder struct {
 	c       *Client
 	ctx     context.Context
 	index   string
-	groupId interface{}
+	groupId any
 	options *FTSynUpdateOptions
-	terms   []interface{}
+	terms   []any
 }
 
 // NewSynUpdateBuilder creates a new SynUpdateBuilder for FT.SYNUPDATE commands.
 // EXPERIMENTAL: this API is subject to change, use with caution.
-func (c *Client) NewSynUpdateBuilder(ctx context.Context, index string, groupId interface{}) *SynUpdateBuilder {
+func (c *Client) NewSynUpdateBuilder(ctx context.Context, index string, groupId any) *SynUpdateBuilder {
 	return &SynUpdateBuilder{c: c, ctx: ctx, index: index, groupId: groupId, options: &FTSynUpdateOptions{}}
 }
 
@@ -816,7 +816,7 @@ func (b *SynUpdateBuilder) SkipInitialScan() *SynUpdateBuilder {
 }
 
 // Terms adds synonyms to the group.
-func (b *SynUpdateBuilder) Terms(terms ...interface{}) *SynUpdateBuilder { b.terms = terms; return b }
+func (b *SynUpdateBuilder) Terms(terms ...any) *SynUpdateBuilder { b.terms = terms; return b }
 
 // Run executes FT.SYNUPDATE.
 func (b *SynUpdateBuilder) Run() (string, error) {

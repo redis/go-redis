@@ -133,7 +133,7 @@ func ExampleClient_timeseries_add() {
 	// REMOVE_END
 
 	// STEP_START madd
-	res1, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res1, err := rdb.TSMAdd(ctx, [][]any{
 		{"thermometer:1", 1, 9.2},
 		{"thermometer:1", 2, 9.9},
 		{"thermometer:2", 2, 10.3},
@@ -186,7 +186,7 @@ func ExampleClient_timeseries_range() {
 
 	fmt.Println(res1) // >>> OK
 
-	res2, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res2, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:1", 0, 18},
 		{"rg:1", 1, 14},
 		{"rg:1", 2, 22},
@@ -356,7 +356,7 @@ func ExampleClient_timeseries_query_multi() {
 
 	fmt.Println(res22) // >>> OK
 
-	res23, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res23, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 0, 1.8},
 		{"rg:3", 0, 0.9},
 		{"rg:4", 0, 25},
@@ -367,7 +367,7 @@ func ExampleClient_timeseries_query_multi() {
 
 	fmt.Println(res23) // >>> [0 0 0]
 
-	res24, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res24, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 1, 2.1},
 		{"rg:3", 1, 0.77},
 		{"rg:4", 1, 18},
@@ -378,7 +378,7 @@ func ExampleClient_timeseries_query_multi() {
 
 	fmt.Println(res24) // >>> [1 1 1]
 
-	res25, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res25, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 2, 2.3},
 		{"rg:3", 2, 1.1},
 		{"rg:4", 2, 21},
@@ -389,7 +389,7 @@ func ExampleClient_timeseries_query_multi() {
 
 	fmt.Println(res25) // >>> [2 2 2]
 
-	res26, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res26, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 3, 1.9},
 		{"rg:3", 3, 0.81},
 		{"rg:4", 3, 19},
@@ -400,7 +400,7 @@ func ExampleClient_timeseries_query_multi() {
 
 	fmt.Println(res26) // >>> [3 3 3]
 
-	res27, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res27, err := rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 4, 1.78},
 		{"rg:3", 4, 0.74},
 		{"rg:4", 4, 23},
@@ -421,7 +421,7 @@ func ExampleClient_timeseries_query_multi() {
 	sort.Strings(res28Keys)
 
 	for _, k := range res28Keys {
-		labels := res28[k][0].(map[interface{}]interface{})
+		labels := res28[k][0].(map[any]any)
 
 		labelKeys := make([]string, 0, len(labels))
 
@@ -450,7 +450,7 @@ func ExampleClient_timeseries_query_multi() {
 		ctx,
 		[]string{"location=us"},
 		&redis.TSMGetOptions{
-			SelectedLabels: []interface{}{"unit"},
+			SelectedLabels: []any{"unit"},
 		},
 	).Result()
 	if err != nil {
@@ -461,7 +461,7 @@ func ExampleClient_timeseries_query_multi() {
 	sort.Strings(res29Keys)
 
 	for _, k := range res29Keys {
-		labels := res29[k][0].(map[interface{}]interface{})
+		labels := res29[k][0].(map[any]any)
 
 		labelKeys := make([]string, 0, len(labels))
 
@@ -509,7 +509,7 @@ func ExampleClient_timeseries_query_multi() {
 	sort.Strings(res30Keys)
 
 	for _, k := range res30Keys {
-		labels := res30[k][0].(map[interface{}]interface{})
+		labels := res30[k][0].(map[any]any)
 		labelKeys := make([]string, 0, len(labels))
 
 		for lk := range labels {
@@ -543,7 +543,7 @@ func ExampleClient_timeseries_query_multi() {
 		3,
 		[]string{"unit=(cm,mm)"},
 		&redis.TSMRevRangeOptions{
-			SelectedLabels: []interface{}{"location"},
+			SelectedLabels: []any{"location"},
 		},
 	).Result()
 	if err != nil {
@@ -554,7 +554,7 @@ func ExampleClient_timeseries_query_multi() {
 	sort.Strings(res31Keys)
 
 	for _, k := range res31Keys {
-		labels := res31[k][0].(map[interface{}]interface{})
+		labels := res31[k][0].(map[any]any)
 		labelKeys := make([]string, 0, len(labels))
 
 		for lk := range labels {
@@ -639,7 +639,7 @@ func ExampleClient_timeseries_aggregation() {
 		panic(err)
 	}
 
-	_, err = rdb.TSMAdd(ctx, [][]interface{}{
+	_, err = rdb.TSMAdd(ctx, [][]any{
 		{"rg:2", 0, 1.8},
 		{"rg:2", 1, 2.1},
 		{"rg:2", 2, 2.3},
@@ -695,7 +695,7 @@ func ExampleClient_timeseries_agg_bucket() {
 
 	fmt.Println(res1) // >>> OK
 
-	res2, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res2, err := rdb.TSMAdd(ctx, [][]any{
 		{"sensor3", 10, 1000},
 		{"sensor3", 20, 2000},
 		{"sensor3", 30, 3000},
@@ -805,7 +805,7 @@ func ExampleClient_timeseries_aggmulti() {
 
 	fmt.Println(res40) // >>> OK
 
-	res41, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res41, err := rdb.TSMAdd(ctx, [][]any{
 		{"wind:1", 1, 12},
 		{"wind:2", 1, 18},
 		{"wind:3", 1, 5},
@@ -817,7 +817,7 @@ func ExampleClient_timeseries_aggmulti() {
 
 	fmt.Println(res41) // >>> [1 1 1 1]
 
-	res42, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res42, err := rdb.TSMAdd(ctx, [][]any{
 		{"wind:1", 2, 14},
 		{"wind:2", 2, 21},
 		{"wind:3", 2, 4},
@@ -829,7 +829,7 @@ func ExampleClient_timeseries_aggmulti() {
 
 	fmt.Println(res42) // >>> [2 2 2 2]
 
-	res43, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res43, err := rdb.TSMAdd(ctx, [][]any{
 		{"wind:1", 3, 10},
 		{"wind:2", 3, 24},
 		{"wind:3", 3, 8},
@@ -861,7 +861,7 @@ func ExampleClient_timeseries_aggmulti() {
 	sort.Strings(res44Keys)
 
 	for _, k := range res44Keys {
-		labels := res44[k][0].(map[interface{}]interface{})
+		labels := res44[k][0].(map[any]any)
 		labelKeys := make([]string, 0, len(labels))
 
 		for lk := range labels {
@@ -909,7 +909,7 @@ func ExampleClient_timeseries_aggmulti() {
 	sort.Strings(res45Keys)
 
 	for _, k := range res45Keys {
-		labels := res45[k][0].(map[interface{}]interface{})
+		labels := res45[k][0].(map[any]any)
 		labelKeys := make([]string, 0, len(labels))
 
 		for lk := range labels {
@@ -1019,7 +1019,7 @@ func ExampleClient_timeseries_compaction() {
 	// STEP_END
 
 	// STEP_START comp_add
-	res50, err := rdb.TSMAdd(ctx, [][]interface{}{
+	res50, err := rdb.TSMAdd(ctx, [][]any{
 		{"hyg:1", 0, 75},
 		{"hyg:1", 1, 77},
 		{"hyg:1", 2, 78},
@@ -1083,7 +1083,7 @@ func ExampleClient_timeseries_delete() {
 	rdb.Del(ctx, "thermometer:1")
 	// Setup initial data
 	rdb.TSCreate(ctx, "thermometer:1")
-	rdb.TSMAdd(ctx, [][]interface{}{
+	rdb.TSMAdd(ctx, [][]any{
 		{"thermometer:1", 1, 9.2},
 		{"thermometer:1", 2, 9.9},
 	})

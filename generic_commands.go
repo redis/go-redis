@@ -49,7 +49,7 @@ type GenericCmdable interface {
 }
 
 func (c cmdable) Del(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "del"
 	for i, key := range keys {
 		args[1+i] = key
@@ -60,7 +60,7 @@ func (c cmdable) Del(ctx context.Context, keys ...string) *IntCmd {
 }
 
 func (c cmdable) Unlink(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "unlink"
 	for i, key := range keys {
 		args[1+i] = key
@@ -77,7 +77,7 @@ func (c cmdable) Dump(ctx context.Context, key string) *StringCmd {
 }
 
 func (c cmdable) Exists(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "exists"
 	for i, key := range keys {
 		args[1+i] = key
@@ -110,7 +110,7 @@ func (c cmdable) ExpireLT(ctx context.Context, key string, expiration time.Durat
 func (c cmdable) expire(
 	ctx context.Context, key string, expiration time.Duration, mode string,
 ) *BoolCmd {
-	args := make([]interface{}, 3, 4)
+	args := make([]any, 3, 4)
 	args[0] = "expire"
 	args[1] = key
 	args[2] = formatSec(ctx, expiration)
@@ -272,8 +272,8 @@ type Sort struct {
 	Alpha         bool
 }
 
-func (sort *Sort) args(command, key string) []interface{} {
-	args := []interface{}{command, key}
+func (sort *Sort) args(command, key string) []any {
+	args := []any{command, key}
 
 	if sort.By != "" {
 		args = append(args, "by", sort.By)
@@ -322,7 +322,7 @@ func (c cmdable) SortInterfaces(ctx context.Context, key string, sort *Sort) *Sl
 }
 
 func (c cmdable) Touch(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, len(keys)+1)
+	args := make([]any, len(keys)+1)
 	args[0] = "touch"
 	for i, key := range keys {
 		args[i+1] = key
@@ -345,7 +345,7 @@ func (c cmdable) Type(ctx context.Context, key string) *StatusCmd {
 }
 
 func (c cmdable) Copy(ctx context.Context, sourceKey, destKey string, db int, replace bool) *IntCmd {
-	args := []interface{}{"copy", sourceKey, destKey, "DB", db}
+	args := []any{"copy", sourceKey, destKey, "DB", db}
 	if replace {
 		args = append(args, "REPLACE")
 	}
@@ -357,7 +357,7 @@ func (c cmdable) Copy(ctx context.Context, sourceKey, destKey string, db int, re
 //------------------------------------------------------------------------------
 
 func (c cmdable) Scan(ctx context.Context, cursor uint64, match string, count int64) *ScanCmd {
-	args := []interface{}{"scan", cursor}
+	args := []any{"scan", cursor}
 	if match != "" {
 		args = append(args, "match", match)
 	}
@@ -373,7 +373,7 @@ func (c cmdable) Scan(ctx context.Context, cursor uint64, match string, count in
 }
 
 func (c cmdable) ScanType(ctx context.Context, cursor uint64, match string, count int64, keyType string) *ScanCmd {
-	args := []interface{}{"scan", cursor}
+	args := []any{"scan", cursor}
 	if match != "" {
 		args = append(args, "match", match)
 	}

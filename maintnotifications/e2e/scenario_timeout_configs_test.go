@@ -25,11 +25,11 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	var dump = true
 
 	var errorsDetected = false
-	var p = func(format string, args ...interface{}) {
+	var p = func(format string, args ...any) {
 		printLog("TIMEOUT-CONFIGS", false, format, args...)
 	}
 
-	var e = func(format string, args ...interface{}) {
+	var e = func(format string, args ...any) {
 		errorsDetected = true
 		printLog("TIMEOUT-CONFIGS", true, format, args...)
 	}
@@ -99,7 +99,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			}()
 
 			errorsDetected = false
-			var ef = func(format string, args ...interface{}) {
+			var ef = func(format string, args ...any) {
 				printLog("TIMEOUT-CONFIGS", true, format, args...)
 				t.FailNow()
 			}
@@ -171,7 +171,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			p("Testing failover with %s timeout configuration...", timeoutTest.name)
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})
@@ -219,7 +219,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			p("Testing migration with %s timeout configuration...", timeoutTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})
@@ -251,7 +251,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// do a bind action
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})

@@ -11,9 +11,9 @@ import (
 // NotificationProcessor is (most probably) a push.NotificationProcessor
 // forward declaration to avoid circular imports
 type NotificationProcessor interface {
-	RegisterHandler(pushNotificationName string, handler interface{}, protected bool) error
+	RegisterHandler(pushNotificationName string, handler any, protected bool) error
 	UnregisterHandler(pushNotificationName string) error
-	GetHandler(pushNotificationName string) interface{}
+	GetHandler(pushNotificationName string) any
 }
 
 // ClientInterface defines the interface that clients must implement for maintnotifications upgrades.

@@ -50,7 +50,7 @@ func min(a, b int) int {
 	return b
 }
 
-func printLog(group string, isError bool, format string, args ...interface{}) {
+func printLog(group string, isError bool, format string, args ...any) {
 	_, filename, line, _ := runtime.Caller(2)
 	filename = filepath.Base(filename)
 	finalFormat := "%s:%d [%s][%s] " + format + "\n"
@@ -58,7 +58,7 @@ func printLog(group string, isError bool, format string, args ...interface{}) {
 		finalFormat = "%s:%d [%s][%s][ERROR] " + format + "\n"
 	}
 	ts := time.Now().Format("15:04:05.000")
-	args = append([]interface{}{filename, line, ts, group}, args...)
+	args = append([]any{filename, line, ts, group}, args...)
 	fmt.Printf(finalFormat, args...)
 }
 

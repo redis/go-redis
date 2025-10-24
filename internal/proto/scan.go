@@ -13,7 +13,7 @@ import (
 // Scan parses bytes `b` to `v` with appropriate type.
 //
 //nolint:gocyclo
-func Scan(b []byte, v interface{}) error {
+func Scan(b []byte, v any) error {
 	switch v := v.(type) {
 	case nil:
 		return fmt.Errorf("redis: Scan(nil)")
@@ -126,7 +126,7 @@ func Scan(b []byte, v interface{}) error {
 	}
 }
 
-func ScanSlice(data []string, slice interface{}) error {
+func ScanSlice(data []string, slice any) error {
 	v := reflect.ValueOf(slice)
 	if !v.IsValid() {
 		return fmt.Errorf("redis: ScanSlice(nil)")

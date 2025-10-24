@@ -62,7 +62,7 @@ func (p *PubSubPool) UntrackConn(cn *Conn) {
 
 func (p *PubSubPool) Close() error {
 	p.closed.Store(true)
-	p.activeConns.Range(func(key, value interface{}) bool {
+	p.activeConns.Range(func(key, value any) bool {
 		cn := value.(*Conn)
 		_ = cn.Close()
 		return true

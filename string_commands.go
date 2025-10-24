@@ -11,7 +11,7 @@ type StringCmdable interface {
 	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
-	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
+	GetSet(ctx context.Context, key string, value any) *StringCmd
 	GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd
 	GetDel(ctx context.Context, key string) *StringCmd
 	Incr(ctx context.Context, key string) *IntCmd
@@ -19,13 +19,13 @@ type StringCmdable interface {
 	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
 	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
 	MGet(ctx context.Context, keys ...string) *SliceCmd
-	MSet(ctx context.Context, values ...interface{}) *StatusCmd
-	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
-	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
-	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
+	MSet(ctx context.Context, values ...any) *StatusCmd
+	MSetNX(ctx context.Context, values ...any) *BoolCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *StatusCmd
+	SetArgs(ctx context.Context, key string, value any, a SetArgs) *StatusCmd
+	SetEx(ctx context.Context, key string, value any, expiration time.Duration) *StatusCmd
+	SetNX(ctx context.Context, key string, value any, expiration time.Duration) *BoolCmd
+	SetXX(ctx context.Context, key string, value any, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
 	StrLen(ctx context.Context, key string) *IntCmd
 }
@@ -61,7 +61,7 @@ func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) *St
 	return cmd
 }
 
-func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
+func (c cmdable) GetSet(ctx context.Context, key string, value any) *StringCmd {
 	cmd := NewStringCmd(ctx, "getset", key, value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -70,7 +70,7 @@ func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *Str
 // GetEx An expiration of zero removes the TTL associated with the key (i.e. GETEX key persist).
 // Requires Redis >= 6.2.0.
 func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd {
-	args := make([]interface{}, 0, 4)
+	args := make([]any, 0, 4)
 	args = append(args, "getex", key)
 	if expiration > 0 {
 		if usePrecise(expiration) {
@@ -119,7 +119,7 @@ func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
 }
 
 func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
-	args := make([]interface{}, 1+len(keys))
+	args := make([]any, 1+len(keys))
 	args[0] = "mget"
 	for i, key := range keys {
 		args[1+i] = key
@@ -132,10 +132,10 @@ func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
 // MSet is like Set but accepts multiple values:
 //   - MSet("key1", "value1", "key2", "value2")
 //   - MSet([]string{"key1", "value1", "key2", "value2"})
-//   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSet(map[string]any{"key1": "value1", "key2": "value2"})
 //   - MSet(struct), For struct types, see HSet description.
-func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
-	args := make([]interface{}, 1, 1+len(values))
+func (c cmdable) MSet(ctx context.Context, values ...any) *StatusCmd {
+	args := make([]any, 1, 1+len(values))
 	args[0] = "mset"
 	args = appendArgs(args, values)
 	cmd := NewStatusCmd(ctx, args...)
@@ -146,10 +146,10 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 // MSetNX is like SetNX but accepts multiple values:
 //   - MSetNX("key1", "value1", "key2", "value2")
 //   - MSetNX([]string{"key1", "value1", "key2", "value2"})
-//   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
+//   - MSetNX(map[string]any{"key1": "value1", "key2": "value2"})
 //   - MSetNX(struct), For struct types, see HSet description.
-func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
-	args := make([]interface{}, 1, 1+len(values))
+func (c cmdable) MSetNX(ctx context.Context, values ...any) *BoolCmd {
+	args := make([]any, 1, 1+len(values))
 	args[0] = "msetnx"
 	args = appendArgs(args, values)
 	cmd := NewBoolCmd(ctx, args...)
@@ -163,8 +163,8 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 3, 5)
+func (c cmdable) Set(ctx context.Context, key string, value any, expiration time.Duration) *StatusCmd {
+	args := make([]any, 3, 5)
 	args[0] = "set"
 	args[1] = key
 	args[2] = value
@@ -203,8 +203,8 @@ type SetArgs struct {
 // SetArgs supports all the options that the SET command supports.
 // It is the alternative to the Set function when you want
 // to have more control over the options.
-func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd {
-	args := []interface{}{"set", key, value}
+func (c cmdable) SetArgs(ctx context.Context, key string, value any, a SetArgs) *StatusCmd {
+	args := []any{"set", key, value}
 
 	if a.KeepTTL {
 		args = append(args, "keepttl")
@@ -235,7 +235,7 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 }
 
 // SetEx Redis `SETEx key expiration value` command.
-func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetEx(ctx context.Context, key string, value any, expiration time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
 	_ = c(ctx, cmd)
 	return cmd
@@ -246,7 +246,7 @@ func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expir
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
+func (c cmdable) SetNX(ctx context.Context, key string, value any, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
 	case 0:
@@ -271,7 +271,7 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
+func (c cmdable) SetXX(ctx context.Context, key string, value any, expiration time.Duration) *BoolCmd {
 	var cmd *BoolCmd
 	switch expiration {
 	case 0:

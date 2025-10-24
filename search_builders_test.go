@@ -457,7 +457,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res1.Docs[0].ID).To(Equal("doc1"))
 
 		// Test with multiple params using ParamsMap
-		params := map[string]interface{}{
+		params := map[string]any{
 			"name1": "Bob",
 			"name2": "Carol",
 		}
@@ -596,7 +596,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 		Expect(res.Total).To(BeNumerically(">=", 1))
 
 		res2, err := client.NewSearchBuilder(ctx, "idx_complex", "@category:{$cat} @price:[$min $max]").
-			ParamsMap(map[string]interface{}{
+			ParamsMap(map[string]any{
 				"cat": "electronics",
 				"min": 150,
 				"max": 300,

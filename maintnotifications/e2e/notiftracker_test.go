@@ -25,9 +25,9 @@ type DiagnosticsEvent struct {
 
 	Error error `json:"error"`
 
-	Pre       bool                   `json:"pre"`
-	Timestamp time.Time              `json:"timestamp"`
-	Details   map[string]interface{} `json:"details"`
+	Pre       bool           `json:"pre"`
+	Timestamp time.Time      `json:"timestamp"`
+	Details   map[string]any `json:"details"`
 }
 
 // TrackingNotificationsHook is a notification hook that tracks notifications
@@ -81,8 +81,9 @@ func (tnh *TrackingNotificationsHook) Clear() {
 	tnh.migratedCount.Store(0)
 	tnh.failingOverCount.Store(0)
 }
+
 // wait for notification in prehook
-func (tnh *TrackingNotificationsHook) FindOrWaitForNotification(notificationType string, timeout time.Duration) (notification []interface{}, found bool) {
+func (tnh *TrackingNotificationsHook) FindOrWaitForNotification(notificationType string, timeout time.Duration) (notification []any, found bool) {
 	if notification, found := tnh.FindNotification(notificationType); found {
 		return notification, true
 	}
@@ -102,19 +103,19 @@ func (tnh *TrackingNotificationsHook) FindOrWaitForNotification(notificationType
 	}
 }
 
-func (tnh *TrackingNotificationsHook) FindNotification(notificationType string) (notification []interface{}, found bool) {
+func (tnh *TrackingNotificationsHook) FindNotification(notificationType string) (notification []any, found bool) {
 	tnh.mutex.RLock()
 	defer tnh.mutex.RUnlock()
 	for _, event := range tnh.diagnosticsLog {
 		if event.Type == notificationType {
-			return event.Details["notification"].([]interface{}), true
+			return event.Details["notification"].([]any), true
 		}
 	}
 	return nil, false
 }
 
 // PreHook captures timeout-related events before processing
-func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any) ([]any, bool) {
 	tnh.increaseNotificationCount(notificationType)
 	tnh.storeDiagnosticsEvent(notificationType, notification, notificationCtx)
 	tnh.increaseRelaxedTimeoutCount(notificationType)
@@ -128,7 +129,7 @@ func (tnh *TrackingNotificationsHook) getConnID(notificationCtx push.Notificatio
 	return 0
 }
 
-func (tnh *TrackingNotificationsHook) getSeqID(notification []interface{}) int64 {
+func (tnh *TrackingNotificationsHook) getSeqID(notification []any) int64 {
 	seqID, ok := notification[1].(int64)
 	if !ok {
 		return 0
@@ -137,7 +138,7 @@ func (tnh *TrackingNotificationsHook) getSeqID(notification []interface{}) int64
 }
 
 // PostHook captures the result after processing push notification
-func (tnh *TrackingNotificationsHook) PostHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, err error) {
+func (tnh *TrackingNotificationsHook) PostHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any, err error) {
 	if err != nil {
 		event := DiagnosticsEvent{
 			Type:      notificationType + "_ERROR",
@@ -145,7 +146,7 @@ func (tnh *TrackingNotificationsHook) PostHook(_ context.Context, notificationCt
 			SeqID:     tnh.getSeqID(notification),
 			Error:     err,
 			Timestamp: time.Now(),
-			Details: map[string]interface{}{
+			Details: map[string]any{
 				"notification": notification,
 				"context":      "post-hook",
 			},
@@ -158,7 +159,7 @@ func (tnh *TrackingNotificationsHook) PostHook(_ context.Context, notificationCt
 	}
 }
 
-func (tnh *TrackingNotificationsHook) storeDiagnosticsEvent(notificationType string, notification []interface{}, notificationCtx push.NotificationHandlerContext) {
+func (tnh *TrackingNotificationsHook) storeDiagnosticsEvent(notificationType string, notification []any, notificationCtx push.NotificationHandlerContext) {
 	connID := tnh.getConnID(notificationCtx)
 	event := DiagnosticsEvent{
 		Type:      notificationType,
@@ -166,7 +167,7 @@ func (tnh *TrackingNotificationsHook) storeDiagnosticsEvent(notificationType str
 		SeqID:     tnh.getSeqID(notification),
 		Pre:       true,
 		Timestamp: time.Now(),
-		Details: map[string]interface{}{
+		Details: map[string]any{
 			"notification": notification,
 			"context":      "pre-hook",
 		},
