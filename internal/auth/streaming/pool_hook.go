@@ -7,6 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // ReAuthPoolHook is a pool hook that manages background re-authentication of connections
@@ -166,7 +167,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			defer func() {
 				if rec := recover(); rec != nil {
 					// once again - safety first
-					internal.Logger.Printf(context.Background(), "panic in reauth worker: %v", rec)
+					logging.LoggerWithLevel().Errorf(context.Background(), "panic in reauth worker: %v", rec)
 				}
 				r.scheduledLock.Lock()
 				delete(r.scheduledReAuth, connID)

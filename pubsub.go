@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -141,6 +142,16 @@ func mapKeys(m map[string]struct{}) []string {
 	return s
 }
 
+// logger is a wrapper around the logger to log messages with context.
+//
+// it uses the client logger if set, otherwise it uses the global logger.
+func (c *PubSub) logger() *logging.LoggerWrapper {
+	if c.opt != nil && c.opt.Logger != nil {
+		return logging.NewLoggerWrapper(c.opt.Logger)
+	}
+	return logging.LoggerWithLevel()
+}
+
 func (c *PubSub) _subscribe(
 	ctx context.Context, cn *pool.Conn, redisCmd string, channels []string,
 ) error {
@@ -190,7 +201,7 @@ func (c *PubSub) reconnect(ctx context.Context, reason error) {
 			// Update the address in the options
 			oldAddr := c.cn.RemoteAddr().String()
 			c.opt.Addr = newEndpoint
-			internal.Logger.Printf(ctx, "pubsub: reconnecting to new endpoint %s (was %s)", newEndpoint, oldAddr)
+			c.logger().Infof(ctx, "pubsub: reconnecting to new endpoint %s (was %s)", newEndpoint, oldAddr)
 		}
 	}
 	_ = c.closeTheCn(reason)
@@ -475,7 +486,7 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			// Log the error but don't fail the command execution
 			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
+			c.logger().Errorf(ctx, "push: conn[%d] error processing pending notifications before reading reply: %v", cn.GetID(), err)
 		}
 		return c.cmd.readReply(rd)
 	})
@@ -634,6 +645,9 @@ func WithChannelSendTimeout(d time.Duration) ChannelOption {
 type channel struct {
 	pubSub *PubSub
 
+	// Optional logger for logging channel-related messages.
+	Logger logging.LoggerWithLevelI
+
 	msgCh chan *Message
 	allCh chan interface{}
 	ping  chan struct{}
@@ -733,12 +747,10 @@ func (c *channel) initMsgChan() {
 						<-timer.C
 					}
 				case <-timer.C:
-					internal.Logger.Printf(
-						ctx, "redis: %v channel is full for %s (message is dropped)",
-						c, c.chanSendTimeout)
+					c.logger().Errorf(ctx, "redis: %v channel is full for %s (message is dropped)", c, c.chanSendTimeout)
 				}
 			default:
-				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
+				c.logger().Errorf(ctx, "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
@@ -787,13 +799,19 @@ func (c *channel) initAllChan() {
 						<-timer.C
 					}
 				case <-timer.C:
-					internal.Logger.Printf(
-						ctx, "redis: %v channel is full for %s (message is dropped)",
+					c.logger().Errorf(ctx, "redis: %v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
-				internal.Logger.Printf(ctx, "redis: unknown message type: %T", msg)
+				c.logger().Errorf(ctx, "redis: unknown message type: %T", msg)
 			}
 		}
 	}()
+}
+
+func (c *channel) logger() *logging.LoggerWrapper {
+	if c.Logger != nil {
+		return logging.NewLoggerWrapper(c.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
