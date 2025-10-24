@@ -39,7 +39,9 @@ func (m *mockAddr) String() string  { return m.addr }
 func createMockPoolConnection() *pool.Conn {
 	mockNetConn := &mockNetConn{addr: "test:6379"}
 	conn := pool.NewConn(mockNetConn)
-	conn.SetUsable(true) // Make connection usable for testing
+	conn.SetUsable(true) // Make connection usable for testing (transitions to IDLE)
+	// Simulate real flow: connection is acquired (IDLE → IN_USE) before OnPut is called
+	conn.SetUsed(true) // Transition to IN_USE state
 	return conn
 }
 
@@ -686,7 +688,7 @@ func TestConnectionHook(t *testing.T) {
 			t.Errorf("OnPut should succeed: %v", err)
 		}
 		if !shouldPool || shouldRemove {
-			t.Error("Connection should be pooled after handoff")
+			t.Errorf("Connection should be pooled after handoff (shouldPool=%v, shouldRemove=%v)", shouldPool, shouldRemove)
 		}
 
 		// Wait for handoff to complete

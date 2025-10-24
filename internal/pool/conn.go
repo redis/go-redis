@@ -583,15 +583,22 @@ func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
 
 // MarkQueuedForHandoff marks the connection as queued for handoff processing.
 // This makes the connection unusable until handoff completes.
+// This is called from OnPut hook, where the connection is typically in IN_USE state.
+// The pool will preserve the UNUSABLE state and not overwrite it with IDLE.
 func (cn *Conn) MarkQueuedForHandoff() error {
 	// Check if marked for handoff
 	if !cn.ShouldHandoff() {
 		return errors.New("connection was not marked for handoff")
 	}
 
-	// Mark connection as unusable while queued for handoff
-	// Use state machine directly instead of deprecated SetUsable
-	cn.stateMachine.Transition(StateUnusable)
+	// Transition to UNUSABLE from either IN_USE (normal flow) or IDLE (edge cases/tests)
+	// The connection is typically in IN_USE state when OnPut is called (normal Put flow)
+	// But in some edge cases or tests, it might already be in IDLE state
+	// The pool will detect this state change and preserve it (not overwrite with IDLE)
+	_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle}, StateUnusable)
+	if err != nil {
+		return fmt.Errorf("failed to mark connection as unusable: %w", err)
+	}
 	return nil
 }
 

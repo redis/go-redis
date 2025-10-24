@@ -663,10 +663,17 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	var shouldCloseConn bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
-		// Transition to IDLE state BEFORE adding to pool
-		// This prevents race condition where another goroutine could acquire
-		// a connection that's still in IN_USE state
-		cn.GetStateMachine().Transition(StateIdle)
+		// Try to transition to IDLE state BEFORE adding to pool
+		// Only transition if connection is still IN_USE (hooks might have changed state)
+		// This prevents:
+		// 1. Race condition where another goroutine could acquire a connection that's still in IN_USE state
+		// 2. Overwriting state changes made by hooks (e.g., IN_USE → UNUSABLE for handoff)
+		currentState, err := cn.GetStateMachine().TryTransition([]ConnState{StateInUse}, StateIdle)
+		if err != nil {
+			// Hook changed the state (e.g., to UNUSABLE for handoff)
+			// Keep the state set by the hook and pool the connection anyway
+			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
+		}
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
