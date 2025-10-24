@@ -144,7 +144,7 @@ func TestRegistry(t *testing.T) {
 	t.Run("NewRegistry", func(t *testing.T) {
 		registry := NewRegistry()
 		if registry == nil {
-			t.Error("NewRegistry should not return nil")
+			t.Fatal("NewRegistry should not return nil")
 		}
 
 		if registry.handlers == nil {
@@ -407,7 +407,7 @@ func TestProcessor(t *testing.T) {
 	t.Run("NewProcessor", func(t *testing.T) {
 		processor := NewProcessor()
 		if processor == nil {
-			t.Error("NewProcessor should not return nil")
+			t.Fatal("NewProcessor should not return nil")
 		}
 
 		if processor.registry == nil {
