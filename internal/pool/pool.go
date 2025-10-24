@@ -119,6 +119,9 @@ type Options struct {
 	// DialerRetryTimeout is the backoff duration between retry attempts.
 	// Default: 100ms
 	DialerRetryTimeout time.Duration
+
+	// Optional logger for connection pool operations.
+	Logger internal.LoggerWithLevel
 }
 
 type lastDialErrorWrap struct {
@@ -257,7 +260,7 @@ func (p *ConnPool) checkMinIdleConns() {
 						p.idleConnsLen.Add(-1)
 
 						p.freeTurn()
-						internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+						p.logger().Errorf(context.Background(), "addIdleConn panic: %+v", err)
 					}
 				}()
 
@@ -419,7 +422,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return cn, nil
 	}
 
-	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
+	p.logger().Errorf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
 	// All retries failed - handle error tracking
 	p.setLastDialError(lastErr)
 	if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
@@ -513,10 +516,10 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
 			if err != nil || !acceptConn {
 				if err != nil {
-					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
+					p.logger().Errorf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
 					_ = p.CloseConn(cn)
 				} else {
-					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+					p.logger().Errorf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
 					p.putConnWithoutTurn(ctx, cn)
@@ -544,7 +547,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		// this should not happen with a new connection, but we handle it gracefully
 		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
-			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
+			p.logger().Errorf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			_ = p.CloseConn(newcn)
 			return nil, err
 		}
@@ -587,7 +590,7 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 				if !freeTurnCalled {
 					p.freeTurn()
 				}
-				internal.Logger.Printf(context.Background(), "queuedNewConn panic: %+v", err)
+				p.logger().Errorf(ctx, "queuedNewConn panic: %+v", err)
 			}
 		}()
 
@@ -731,7 +734,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 	// If we exhausted all attempts without finding a usable connection, return nil
 	if attempts > 1 && attempts >= maxAttempts && int32(attempts) >= p.poolSize.Load() {
-		internal.Logger.Printf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
+		p.logger().Errorf(context.Background(), "redis: connection pool: failed to get a usable connection after %d attempts", attempts)
 		return nil, nil
 	}
 
@@ -760,7 +763,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// Peek at the reply type to check if it's a push notification
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
-			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
+			p.logger().Errorf(ctx, "Conn has unread data (not push notification), removing it")
 			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
@@ -773,7 +776,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
-			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
+			p.logger().Errorf(ctx, "Connection hook error: %v", err)
 			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
@@ -806,12 +809,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			case StateUnusable:
 				// expected state, don't log it
 			case StateClosed:
-				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
+				p.logger().Errorf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
 				shouldCloseConn = true
 				p.removeConnWithLock(cn)
 			default:
 				// Pool as-is
-				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
+				p.logger().Warnf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
 			}
 		}
 
@@ -1028,7 +1031,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
-				internal.Logger.Printf(
+				p.logger().Infof(
 					context.Background(),
 					"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
 					cn.GetID(),
@@ -1050,4 +1053,12 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	// Only update UsedAt if connection is healthy (avoids unnecessary atomic store)
 	cn.SetUsedAtNs(nowNs)
 	return true
+}
+
+func (p *ConnPool) logger() internal.LoggerWithLevel {
+	if p.cfg.Logger != nil {
+		return p.cfg.Logger
+	}
+
+	return internal.LegacyLoggerWithLevel
 }

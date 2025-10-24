@@ -148,6 +148,9 @@ type ClusterOptions struct {
 	// If nil, maintnotifications upgrades are in "auto" mode and will be enabled if the server supports it.
 	// The ClusterClient does not directly work with maintnotifications, it is up to the clients in the Nodes map to work with maintnotifications.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// Logger is an optional logger for logging cluster-related messages.
+	Logger internal.LoggerWithLevel
 }
 
 func (opt *ClusterOptions) init() {
@@ -390,6 +393,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		UnstableResp3:             opt.UnstableResp3,
 		MaintNotificationsConfig:  maintNotificationsConfig,
 		PushNotificationProcessor: opt.PushNotificationProcessor,
+
+		Logger: opt.Logger,
 	}
 }
 
@@ -703,6 +708,14 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 	return c.GetOrCreate(addrs[n])
 }
 
+func (c *clusterNodes) logger() internal.LoggerWithLevel {
+	if c.opt.Logger != nil {
+		return c.opt.Logger
+	} else {
+		return internal.LegacyLoggerWithLevel
+	}
+}
+
 //------------------------------------------------------------------------------
 
 type clusterSlot struct {
@@ -900,12 +913,12 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 
 	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
 	if minLatency < maximumNodeLatency && closestNode != nil {
-		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
+		c.nodes.logger().Errorf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
 		return closestNode, nil
 	}
 
 	// If all nodes are having the maximum latency(all pings are failing) - return a random node across the cluster
-	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
+	c.nodes.logger().Errorf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
 	return c.nodes.Random()
 }
 
@@ -1740,7 +1753,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		// Log the error but don't fail the command execution
 		// Push notification processing errors shouldn't break normal Redis operations
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	if err := statusCmd.readReply(rd); err != nil {
 		return err
@@ -1751,7 +1764,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			// Log the error but don't fail the command execution
 			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := statusCmd.readReply(rd)
 		if err != nil {
@@ -1770,7 +1783,7 @@ func (c *ClusterClient) txPipelineReadQueued(
 	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		// Log the error but don't fail the command execution
 		// Push notification processing errors shouldn't break normal Redis operations
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
@@ -2022,13 +2035,13 @@ func (c *ClusterClient) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, 
 func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	cmdsInfo, err := c.cmdsInfoCache.Get(ctx)
 	if err != nil {
-		internal.Logger.Printf(context.TODO(), "getting command info: %s", err)
+		c.logger().Errorf(ctx, "getting command info: %s", err)
 		return nil
 	}
 
 	info := cmdsInfo[name]
 	if info == nil {
-		internal.Logger.Printf(context.TODO(), "info for cmd=%s not found", name)
+		c.logger().Errorf(ctx, "info for cmd=%s not found", name)
 	}
 	return info
 }
@@ -2124,6 +2137,14 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
+}
+
+func (c *ClusterClient) logger() internal.LoggerWithLevel {
+	if c.opt.Logger != nil {
+		return c.opt.Logger
+	} else {
+		return internal.LegacyLoggerWithLevel
+	}
 }
 
 func appendIfNotExist[T comparable](vals []T, newVal T) []T {

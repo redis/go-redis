@@ -128,6 +128,9 @@ type Config struct {
 	// After this many retries, the connection will be removed from the pool.
 	// Default: 3
 	MaxHandoffRetries int
+
+	// Logger is an optional custom logger for maintenance notifications.
+	Logger internal.LoggerWithLevel
 }
 
 func (c *Config) IsEnabled() bool {
@@ -312,10 +315,9 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
 	}
 
-	if internal.LogLevel.DebugOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.DebugLoggingEnabled())
-		internal.Logger.Printf(context.Background(), logs.ConfigDebug(result))
-	}
+	c.logger().Debugf(context.Background(), logs.DebugLoggingEnabled())
+	c.logger().Debugf(context.Background(), logs.ConfigDebug(result))
+
 	return result
 }
 
@@ -341,6 +343,8 @@ func (c *Config) Clone() *Config {
 
 		// Configuration fields
 		MaxHandoffRetries: c.MaxHandoffRetries,
+
+		Logger: c.Logger,
 	}
 }
 
@@ -363,6 +367,13 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 	if c.MaxWorkers < 1 {
 		c.MaxWorkers = 1
 	}
+}
+
+func (c *Config) logger() internal.LoggerWithLevel {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return internal.LegacyLoggerWithLevel
 }
 
 // DetectEndpointType automatically detects the appropriate endpoint type

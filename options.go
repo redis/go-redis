@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -267,6 +268,10 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// Logger is the logger used by the client for logging.
+	// If none is provided, the global logger [internal.LegacyLoggerWithLevel] is used.
+	Logger internal.LoggerWithLevel
 }
 
 func (opt *Options) init() {

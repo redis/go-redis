@@ -77,3 +77,66 @@ func (l LogLevelT) InfoOrAbove() bool {
 func (l LogLevelT) DebugOrAbove() bool {
 	return l >= LogLevelDebug
 }
+
+// LoggerWithLevel is a logger interface with leveled logging methods.
+//
+// This interface can be implemented by custom loggers to provide leveled logging.
+type LoggerWithLevel interface {
+	// Infof logs an info level message
+	Infof(ctx context.Context, format string, v ...interface{})
+
+	// Warnf logs a warning level message
+	Warnf(ctx context.Context, format string, v ...interface{})
+
+	// Debugf logs a debug level message
+	Debugf(ctx context.Context, format string, v ...interface{})
+
+	// Errorf logs an error level message
+	Errorf(ctx context.Context, format string, v ...interface{})
+
+	// Enabled reports whether the given log level is enabled in the logger
+	Enabled(ctx context.Context, level LogLevelT) bool
+}
+
+// legacyLoggerAdapter is a logger that implements LoggerWithLevel interface
+// using the global [Logger] and [LogLevel] variables.
+type legacyLoggerAdapter struct{}
+
+func (l *legacyLoggerAdapter) Infof(ctx context.Context, format string, v ...interface{}) {
+	if LogLevel.InfoOrAbove() {
+		Logger.Printf(ctx, format, v...)
+	}
+}
+
+func (l *legacyLoggerAdapter) Warnf(ctx context.Context, format string, v ...interface{}) {
+	if LogLevel.WarnOrAbove() {
+		Logger.Printf(ctx, format, v...)
+	}
+}
+
+func (l *legacyLoggerAdapter) Debugf(ctx context.Context, format string, v ...interface{}) {
+	if LogLevel.DebugOrAbove() {
+		Logger.Printf(ctx, format, v...)
+	}
+}
+
+func (l legacyLoggerAdapter) Errorf(ctx context.Context, format string, v ...interface{}) {
+	Logger.Printf(ctx, format, v...)
+}
+
+func (l legacyLoggerAdapter) Enabled(_ context.Context, level LogLevelT) bool {
+	switch level {
+	case LogLevelWarn:
+		return LogLevel.WarnOrAbove()
+	case LogLevelInfo:
+		return LogLevel.InfoOrAbove()
+	case LogLevelDebug:
+		return LogLevel.DebugOrAbove()
+	case LogLevelError:
+		fallthrough
+	default:
+		return true
+	}
+}
+
+var LegacyLoggerWithLevel LoggerWithLevel = &legacyLoggerAdapter{}
