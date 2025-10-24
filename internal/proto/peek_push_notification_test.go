@@ -295,25 +295,26 @@ func createValidPushNotification(notificationName, data string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
 
 	simpleOrString := rand.Intn(2) == 0
+	defMsg := fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName)
 
 	if data == "" {
 
 		// Single element notification
 		buf.WriteString(">1\r\n")
 		if simpleOrString {
-			buf.WriteString(fmt.Sprintf("+%s\r\n", notificationName))
+			fmt.Fprint(buf, defMsg)
 		} else {
-			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+			fmt.Fprint(buf, defMsg)
 		}
 	} else {
 		// Two element notification
 		buf.WriteString(">2\r\n")
 		if simpleOrString {
-			buf.WriteString(fmt.Sprintf("+%s\r\n", notificationName))
-			buf.WriteString(fmt.Sprintf("+%s\r\n", data))
+			fmt.Fprintf(buf, "+%s\r\n", notificationName)
+			fmt.Fprintf(buf, "+%s\r\n", data)
 		} else {
-			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
-			buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+			fmt.Fprint(buf, defMsg)
+			fmt.Fprint(buf, defMsg)
 		}
 	}
 
@@ -333,14 +334,14 @@ func createPushNotificationWithArgs(notificationName string, args ...string) *by
 	buf := &bytes.Buffer{}
 
 	totalElements := 1 + len(args)
-	buf.WriteString(fmt.Sprintf(">%d\r\n", totalElements))
+	fmt.Fprintf(buf, ">%d\r\n", totalElements)
 
 	// Write notification name
-	buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+	fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(notificationName), notificationName)
 
 	// Write arguments
 	for _, arg := range args {
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+		fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(arg), arg)
 	}
 
 	return buf
@@ -350,7 +351,7 @@ func createPushNotificationWithArgs(notificationName string, args ...string) *by
 func createSingleElementPushNotification(notificationName string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
 	buf.WriteString(">1\r\n")
-	buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationName), notificationName))
+	fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(notificationName), notificationName)
 	return buf
 }
 

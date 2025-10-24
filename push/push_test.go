@@ -837,14 +837,14 @@ func createFakeRESP3PushNotification(notificationType string, args ...string) *b
 
 	// RESP3 Push notification format: ><len>\r\n<elements>\r\n
 	totalElements := 1 + len(args) // notification type + arguments
-	buf.WriteString(fmt.Sprintf(">%d\r\n", totalElements))
+	fmt.Fprintf(buf, ">%d\r\n", totalElements)
 
 	// Write notification type as bulk string
-	buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(notificationType), notificationType))
+	fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(notificationType), notificationType)
 
 	// Write arguments as bulk strings
 	for _, arg := range args {
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))
+		fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(arg), arg)
 	}
 
 	return buf
@@ -868,11 +868,11 @@ func createFakeRESP3Array(elements ...string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
 
 	// RESP3 Array format: *<len>\r\n<elements>\r\n
-	buf.WriteString(fmt.Sprintf("*%d\r\n", len(elements)))
+	fmt.Fprintf(buf, "*%d\r\n", len(elements))
 
 	// Write elements as bulk strings
 	for _, element := range elements {
-		buf.WriteString(fmt.Sprintf("$%d\r\n%s\r\n", len(element), element))
+		fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(element), element)
 	}
 
 	return buf
@@ -881,7 +881,7 @@ func createFakeRESP3Array(elements ...string) *bytes.Buffer {
 // createFakeRESP3Error creates a fake RESP3 error
 func createFakeRESP3Error(message string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
-	buf.WriteString(fmt.Sprintf("-%s\r\n", message))
+	fmt.Fprintf(buf, "-%s\r\n", message)
 	return buf
 }
 
