@@ -593,9 +593,30 @@ func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
 // This is called from OnPut hook, where the connection is typically in IN_USE state.
 // The pool will preserve the UNUSABLE state and not overwrite it with IDLE.
 func (cn *Conn) MarkQueuedForHandoff() error {
-	// Check if marked for handoff
-	if !cn.ShouldHandoff() {
+	// Get current handoff state
+	currentState := cn.handoffStateAtomic.Load()
+	if currentState == nil {
 		return errors.New("connection was not marked for handoff")
+	}
+
+	state := currentState.(*HandoffState)
+	if !state.ShouldHandoff {
+		return errors.New("connection was not marked for handoff")
+	}
+
+	// Create new state with ShouldHandoff=false but preserve endpoint and seqID
+	// This prevents the connection from being queued multiple times while still
+	// allowing the worker to access the handoff metadata
+	newState := &HandoffState{
+		ShouldHandoff: false,
+		Endpoint:      state.Endpoint, // Preserve endpoint for handoff processing
+		SeqID:         state.SeqID,    // Preserve seqID for handoff processing
+	}
+
+	// Atomic compare-and-swap to update state
+	if !cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
+		// State changed between load and CAS - retry or return error
+		return errors.New("handoff state changed during marking")
 	}
 
 	// Transition to UNUSABLE from either IN_USE (normal flow) or IDLE (edge cases/tests)
@@ -604,6 +625,8 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// The pool will detect this state change and preserve it (not overwrite with IDLE)
 	_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle}, StateUnusable)
 	if err != nil {
+		// Restore the original state if transition fails
+		cn.handoffStateAtomic.Store(currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
 	return nil

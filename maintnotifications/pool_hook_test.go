@@ -245,15 +245,14 @@ func TestConnectionHook(t *testing.T) {
 		processor := NewPoolHook(baseDialer, "tcp", config, nil)
 		defer processor.Shutdown(context.Background())
 
+		// Create a mock pool that tracks removals
+		mockPool := &mockPool{removedConnections: make(map[uint64]bool)}
+		processor.SetPool(mockPool)
+
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
-
-		// Set a mock initialization function
-		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
-			return nil
-		})
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
@@ -261,20 +260,20 @@ func TestConnectionHook(t *testing.T) {
 			t.Errorf("OnPut should not error with empty endpoint: %v", err)
 		}
 
-		// Should pool the connection (empty endpoint triggers handoff to current endpoint)
+		// Should pool the connection (handoff will be queued and fail in worker)
 		if !shouldPool {
 			t.Error("Connection should be pooled when handoff is queued")
 		}
 		if shouldRemove {
-			t.Error("Connection should not be removed when handoff is queued")
+			t.Error("Connection should not be removed immediately")
 		}
 
-		// Wait for handoff to complete
+		// Wait for worker to process and fail
 		time.Sleep(100 * time.Millisecond)
 
-		// After handoff completes, state should be cleared
-		if conn.ShouldHandoff() {
-			t.Error("Connection should not be marked for handoff after handoff completes")
+		// Connection should be removed from pool after handoff fails
+		if !mockPool.WasRemoved(conn.GetID()) {
+			t.Error("Connection should be removed from pool after empty endpoint handoff fails")
 		}
 	})
 
@@ -404,12 +403,14 @@ func TestConnectionHook(t *testing.T) {
 		// Simulate a pending handoff by marking for handoff and queuing
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets ShouldHandoff=false, state=UNUSABLE)
 
 		ctx := context.Background()
 		acceptCon, err := processor.OnGet(ctx, conn, false)
-		if err != ErrConnectionMarkedForHandoffWithState {
-			t.Errorf("Expected ErrConnectionMarkedForHandoffWithState, got %v", err)
+		// After MarkQueuedForHandoff, ShouldHandoff() returns false, so we get ErrConnectionMarkedForHandoff
+		// (from IsUsable() check) instead of ErrConnectionMarkedForHandoffWithState
+		if err != ErrConnectionMarkedForHandoff {
+			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
 		}
 		if acceptCon {
 			t.Error("Connection should not be accepted when marked for handoff")
@@ -433,7 +434,7 @@ func TestConnectionHook(t *testing.T) {
 		// Test adding to pending map
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets ShouldHandoff=false, state=UNUSABLE)
 
 		if _, pending := processor.GetPendingMap().Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending map")
@@ -442,8 +443,9 @@ func TestConnectionHook(t *testing.T) {
 		// Test OnGet with pending handoff
 		ctx := context.Background()
 		acceptCon, err := processor.OnGet(ctx, conn, false)
-		if err != ErrConnectionMarkedForHandoffWithState {
-			t.Errorf("Should return ErrConnectionMarkedForHandoffWithState for pending connection, got %v", err)
+		// After MarkQueuedForHandoff, ShouldHandoff() returns false, so we get ErrConnectionMarkedForHandoff
+		if err != ErrConnectionMarkedForHandoff {
+			t.Errorf("Should return ErrConnectionMarkedForHandoff for pending connection, got %v", err)
 		}
 		if acceptCon {
 			t.Error("Should not accept connection with pending handoff")
