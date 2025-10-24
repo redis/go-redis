@@ -256,12 +256,6 @@ func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
 	// Get handoff info atomically to prevent race conditions
 	shouldHandoff, endpoint, seqID := conn.GetHandoffInfo()
 
-	// Special case: empty endpoint means clear handoff state
-	if endpoint == "" {
-		conn.ClearHandoffState()
-		return nil
-	}
-
 	// on retries the connection will not be marked for handoff, but it will have retries > 0
 	// if shouldHandoff is false and retries is 0, then we are not retrying and not do a handoff
 	if !shouldHandoff && conn.HandoffRetries() == 0 {

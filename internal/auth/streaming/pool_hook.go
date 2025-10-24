@@ -179,40 +179,27 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 				r.workers <- struct{}{}
 			}()
 
-			var err error
-			timeout := time.After(r.reAuthTimeout)
+			// Create timeout context for connection acquisition
+			// This prevents indefinite waiting if the connection is stuck
+			ctx, cancel := context.WithTimeout(context.Background(), r.reAuthTimeout)
+			defer cancel()
 
 			// Try to acquire the connection for re-authentication
 			// We need to ensure the connection is IDLE (not IN_USE) before transitioning to UNUSABLE
 			// This prevents re-authentication from interfering with active commands
-			const baseDelay = 10 * time.Microsecond
-			acquired := false
-			attempt := 0
-			for !acquired {
-				select {
-				case <-timeout:
-					// Timeout occurred, cannot acquire connection
-					err = pool.ErrConnUnusableTimeout
-					reAuthFn(err)
-					return
-				default:
-					// Try to atomically transition from IDLE to UNUSABLE
-					// This ensures we only acquire connections that are not actively in use
-					stateMachine := conn.GetStateMachine()
-					if stateMachine != nil {
-						_, err := stateMachine.TryTransition([]pool.ConnState{pool.StateIdle}, pool.StateUnusable)
-						if err == nil {
-							// Successfully acquired: connection was IDLE, now UNUSABLE
-							acquired = true
-						}
-					}
-					if !acquired {
-						// Exponential backoff: 10, 20, 40, 80... up to 5120 microseconds
-						delay := baseDelay * time.Duration(1<<uint(attempt%10)) // Cap exponential growth
-						time.Sleep(delay)
-						attempt++
-					}
-				}
+			// Use AwaitAndTransition to wait for the connection to become IDLE
+			stateMachine := conn.GetStateMachine()
+			if stateMachine == nil {
+				// No state machine - should not happen, but handle gracefully
+				reAuthFn(pool.ErrConnUnusableTimeout)
+				return
+			}
+
+			_, err := stateMachine.AwaitAndTransition(ctx, []pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+			if err != nil {
+				// Timeout or other error occurred, cannot acquire connection
+				reAuthFn(err)
+				return
 			}
 
 			// safety first
@@ -222,10 +209,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			}
 
 			// Release the connection: transition from UNUSABLE back to IDLE
-			stateMachine := conn.GetStateMachine()
-			if stateMachine != nil {
-				stateMachine.Transition(pool.StateIdle)
-			}
+			stateMachine.Transition(pool.StateIdle)
 		}()
 	}
 

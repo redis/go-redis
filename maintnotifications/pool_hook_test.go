@@ -391,8 +391,8 @@ func TestConnectionHook(t *testing.T) {
 
 		ctx := context.Background()
 		acceptCon, err := processor.OnGet(ctx, conn, false)
-		if err != ErrConnectionMarkedForHandoff {
-			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
+		if err != ErrConnectionMarkedForHandoffWithState {
+			t.Errorf("Expected ErrConnectionMarkedForHandoffWithState, got %v", err)
 		}
 		if acceptCon {
 			t.Error("Connection should not be accepted when marked for handoff")
@@ -425,8 +425,8 @@ func TestConnectionHook(t *testing.T) {
 		// Test OnGet with pending handoff
 		ctx := context.Background()
 		acceptCon, err := processor.OnGet(ctx, conn, false)
-		if err != ErrConnectionMarkedForHandoff {
-			t.Error("Should return ErrConnectionMarkedForHandoff for pending connection")
+		if err != ErrConnectionMarkedForHandoffWithState {
+			t.Errorf("Should return ErrConnectionMarkedForHandoffWithState for pending connection, got %v", err)
 		}
 		if acceptCon {
 			t.Error("Should not accept connection with pending handoff")
@@ -678,8 +678,8 @@ func TestConnectionHook(t *testing.T) {
 		if err == nil {
 			t.Error("OnGet should fail for connection marked for handoff")
 		}
-		if err != ErrConnectionMarkedForHandoff {
-			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
+		if err != ErrConnectionMarkedForHandoffWithState {
+			t.Errorf("Expected ErrConnectionMarkedForHandoffWithState, got %v", err)
 		}
 		if acceptConn {
 			t.Error("Connection should not be accepted when marked for handoff")
