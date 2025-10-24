@@ -175,8 +175,6 @@ func (hwm *handoffWorkerManager) onDemandWorker() {
 
 // processHandoffRequest processes a single handoff request
 func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
-	// Remove from pending map
-	defer hwm.pending.Delete(request.Conn.GetID())
 	if internal.LogLevel.InfoOrAbove() {
 		internal.Logger.Printf(context.Background(), logs.HandoffStarted(request.Conn.GetID(), request.Endpoint))
 	}
@@ -228,16 +226,24 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 				}
 				internal.Logger.Printf(context.Background(), logs.HandoffFailed(request.ConnID, request.Endpoint, currentRetries, maxRetries, err))
 			}
+			// Schedule retry - keep connection in pending map until retry is queued
 			time.AfterFunc(afterTime, func() {
 				if err := hwm.queueHandoff(request.Conn); err != nil {
 					if internal.LogLevel.WarnOrAbove() {
 						internal.Logger.Printf(context.Background(), logs.CannotQueueHandoffForRetry(err))
 					}
+					// Failed to queue retry - remove from pending and close connection
+					hwm.pending.Delete(request.Conn.GetID())
 					hwm.closeConnFromRequest(context.Background(), request, err)
+				} else {
+					// Successfully queued retry - remove from pending (will be re-added by queueHandoff)
+					hwm.pending.Delete(request.Conn.GetID())
 				}
 			})
 			return
 		} else {
+			// Won't retry - remove from pending and close connection
+			hwm.pending.Delete(request.Conn.GetID())
 			go hwm.closeConnFromRequest(ctx, request, err)
 		}
 
@@ -247,6 +253,9 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 		if hwm.poolHook.operationsManager != nil {
 			hwm.poolHook.operationsManager.UntrackOperationWithConnID(seqID, connID)
 		}
+	} else {
+		// Success - remove from pending map
+		hwm.pending.Delete(request.Conn.GetID())
 	}
 }
 
