@@ -593,8 +593,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 			break
 		}
 
-		// Connection is not in a valid state (might be UNUSABLE for re-auth, INITIALIZING, etc.)
-		// Put it back in the pool
+		// Connection is not in a valid state (might be UNUSABLE for handoff/re-auth, INITIALIZING, etc.)
+		// Put it back in the pool and try the next one
 		if p.cfg.PoolFIFO {
 			// FIFO: put at end (will be picked up last since we pop from front)
 			p.idleConns = append(p.idleConns, cn)

@@ -40,9 +40,13 @@ var (
 var (
 	// ErrConnectionMarkedForHandoff is returned when a connection is marked for handoff
 	// and should not be used until the handoff is complete
-	ErrConnectionMarkedForHandoff = errors.New("" + logs.ConnectionMarkedForHandoffErrorMessage)
+	ErrConnectionMarkedForHandoff = errors.New(logs.ConnectionMarkedForHandoffErrorMessage)
+
+	// ErrConnectionMarkedForHandoffWithState is returned when a connection is marked for handoff
+	// and should not be used until the handoff is complete
+	ErrConnectionMarkedForHandoffWithState = errors.New(logs.ConnectionMarkedForHandoffErrorMessage + " with state.")
 	// ErrConnectionInvalidHandoffState is returned when a connection is in an invalid state for handoff
-	ErrConnectionInvalidHandoffState = errors.New("" + logs.ConnectionInvalidHandoffStateErrorMessage)
+	ErrConnectionInvalidHandoffState = errors.New(logs.ConnectionInvalidHandoffStateErrorMessage)
 )
 
 // general errors

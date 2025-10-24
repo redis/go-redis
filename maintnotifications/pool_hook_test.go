@@ -626,19 +626,20 @@ func TestConnectionHook(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create a new connection without setting it usable
+		// Create a new connection
 		mockNetConn := &mockNetConn{addr: "test:6379"}
 		conn := pool.NewConn(mockNetConn)
 
-		// Initially, connection should not be usable (not initialized)
-		if conn.IsUsable() {
-			t.Error("New connection should not be usable before initialization")
+		// New connections in CREATED state are usable (they pass OnGet() before initialization)
+		// The initialization happens AFTER OnGet() in the client code
+		if !conn.IsUsable() {
+			t.Error("New connection should be usable (CREATED state is usable)")
 		}
 
-		// Simulate initialization by setting usable to true
-		conn.SetUsable(true)
+		// Simulate initialization by transitioning to IDLE
+		conn.GetStateMachine().Transition(pool.StateIdle)
 		if !conn.IsUsable() {
-			t.Error("Connection should be usable after initialization")
+			t.Error("Connection should be usable after initialization (IDLE state)")
 		}
 
 		// OnGet should succeed for usable connection
@@ -669,12 +670,14 @@ func TestConnectionHook(t *testing.T) {
 			t.Error("Connection should be marked for handoff")
 		}
 
-		// OnGet should fail for connection marked for handoff
+		// OnGet should FAIL for connection marked for handoff
+		// Even though the connection is still in a usable state, the metadata indicates
+		// it should be handed off, so we reject it to prevent using a connection that
+		// will be moved to a different endpoint
 		acceptConn, err = processor.OnGet(ctx, conn, false)
 		if err == nil {
 			t.Error("OnGet should fail for connection marked for handoff")
 		}
-
 		if err != ErrConnectionMarkedForHandoff {
 			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
 		}

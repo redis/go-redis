@@ -187,15 +187,19 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 //
 // A connection is "usable" when it's in a stable state and can be returned to clients.
 // It becomes unusable during:
-//   - Initialization (before first use)
 //   - Handoff operations (network connection replacement)
 //   - Re-authentication (credential updates)
 //   - Other background operations that need exclusive access
+//
+// Note: CREATED state is considered usable because new connections need to pass OnGet() hook
+// before initialization. The initialization happens after OnGet() in the client code.
 func (cn *Conn) IsUsable() bool {
 	state := cn.stateMachine.GetState()
-	// IDLE and IN_USE states are considered usable
-	// (IN_USE means it's usable but currently acquired by someone)
-	return state == StateIdle || state == StateInUse
+	// CREATED, IDLE, and IN_USE states are considered usable
+	// CREATED: new connection, not yet initialized (will be initialized by client)
+	// IDLE: initialized and ready to be acquired
+	// IN_USE: usable but currently acquired by someone
+	return state == StateCreated || state == StateIdle || state == StateInUse
 }
 
 // SetUsable sets the usable flag for the connection (lock-free).
@@ -566,6 +570,8 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 
 // MarkForHandoff marks the connection for handoff due to MOVING notification.
 // Returns an error if the connection is already marked for handoff.
+// Note: This only sets metadata - the connection state is not changed until OnPut.
+// This allows the current user to finish using the connection before handoff.
 func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
 	// Check if already marked for handoff
 	if cn.ShouldHandoff() {
