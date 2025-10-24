@@ -69,7 +69,7 @@ type Conn struct {
 
 	// Handoff metadata - managed separately from state machine
 	// These are atomic for lock-free access during handoff operations
-	handoffStateAtomic  atomic.Value  // stores *HandoffState
+	handoffStateAtomic   atomic.Value  // stores *HandoffState
 	handoffRetriesAtomic atomic.Uint32 // retry counter
 
 	pooled    bool
@@ -536,10 +536,14 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 	// Wait for and transition to INITIALIZING state - this prevents concurrent initializations
 	// Valid from states: CREATED (first init), IDLE (reconnect), UNUSABLE (handoff/reauth)
 	// If another goroutine is initializing, we'll wait for it to finish
-	// Add 1ms timeout to prevent indefinite blocking
-	waitCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+	// if the context has a deadline, use that, otherwise use the connection read (relaxed) timeout
+	// which should be set during handoff. If it is not set, use a 5 second default
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(cn.getEffectiveReadTimeout(5 * time.Second))
+	}
+	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-
 	finalState, err := cn.stateMachine.AwaitAndTransition(
 		waitCtx,
 		[]ConnState{StateCreated, StateIdle, StateUnusable},

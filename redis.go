@@ -394,8 +394,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			if finalState == pool.StateInitializing {
 				// Another goroutine is initializing - WAIT for it to complete
 				// Use AwaitAndTransition to wait for IDLE or IN_USE state
-				// Add 1ms timeout to prevent indefinite blocking
-				waitCtx, cancel := context.WithTimeout(ctx, time.Millisecond)
+				// use DialTimeout as the timeout for the wait
+				waitCtx, cancel := context.WithTimeout(ctx, c.opt.DialTimeout)
 				defer cancel()
 
 				finalState, err := cn.GetStateMachine().AwaitAndTransition(
