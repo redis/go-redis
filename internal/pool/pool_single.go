@@ -72,6 +72,12 @@ func (p *SingleConnPool) Remove(_ context.Context, cn *Conn, reason error) {
 	p.stickyErr = reason
 }
 
+// RemoveWithoutTurn has the same behavior as Remove for SingleConnPool
+// since SingleConnPool doesn't use a turn-based queue system.
+func (p *SingleConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error) {
+	p.Remove(ctx, cn, reason)
+}
+
 func (p *SingleConnPool) Close() error {
 	p.cn = nil
 	p.stickyErr = ErrClosed

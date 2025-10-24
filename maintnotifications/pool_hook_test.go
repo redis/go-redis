@@ -75,6 +75,11 @@ func (mp *mockPool) Remove(ctx context.Context, conn *pool.Conn, reason error) {
 	mp.removedConnections[conn.GetID()] = true
 }
 
+func (mp *mockPool) RemoveWithoutTurn(ctx context.Context, conn *pool.Conn, reason error) {
+	// For mock pool, same behavior as Remove since we don't have a turn-based queue
+	mp.Remove(ctx, conn, reason)
+}
+
 // WasRemoved safely checks if a connection was removed from the pool
 func (mp *mockPool) WasRemoved(connID uint64) bool {
 	mp.mu.Lock()

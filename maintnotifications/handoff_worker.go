@@ -481,7 +481,11 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	conn.ClearHandoffState()
 
 	if pooler != nil {
-		pooler.Remove(ctx, conn, err)
+		// Use RemoveWithoutTurn instead of Remove to avoid freeing a turn that we don't have.
+		// The handoff worker doesn't call Get(), so it doesn't have a turn to free.
+		// Remove() is meant to be called after Get() and frees a turn.
+		// RemoveWithoutTurn() removes and closes the connection without affecting the queue.
+		pooler.RemoveWithoutTurn(ctx, conn, err)
 		if internal.LogLevel.WarnOrAbove() {
 			internal.Logger.Printf(ctx, logs.RemovingConnectionFromPool(conn.GetID(), err))
 		}

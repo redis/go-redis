@@ -77,6 +77,12 @@ type Pooler interface {
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
+	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+	// This should be used when removing a connection from a context that didn't acquire
+	// a turn via Get() (e.g., background workers, cleanup tasks).
+	// For normal removal after Get(), use Remove() instead.
+	RemoveWithoutTurn(context.Context, *Conn, error)
+
 	Len() int
 	IdleLen() int
 	Stats() *Stats
@@ -479,7 +485,9 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			}
 			if !acceptConn {
 				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
-				p.Put(ctx, cn)
+				// Return connection to pool without freeing the turn that this Get() call holds.
+				// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
+				p.putConnWithoutTurn(ctx, cn)
 				cn = nil
 				continue
 			}
@@ -615,6 +623,18 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, true)
+}
+
+// putConnWithoutTurn is an internal method that puts a connection back to the pool
+// without freeing a turn. This is used when returning a rejected connection from
+// within Get(), where the turn is still held by the Get() call.
+func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, false)
+}
+
+// putConn is the internal implementation of Put that optionally frees a turn.
+func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Process connection using the hooks system
 	shouldPool := true
 	shouldRemove := false
@@ -625,7 +645,8 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
 			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
-			p.Remove(ctx, cn, err)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
+			return
 		}
 		// It's a push notification, allow pooling (client will handle it)
 	}
@@ -638,25 +659,25 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
-			p.Remove(ctx, cn, err)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
 	}
 
 	// If hooks say to remove the connection, do so
 	if shouldRemove {
-		p.Remove(ctx, cn, errors.New("hook requested removal"))
+		p.removeConnInternal(ctx, cn, errors.New("hook requested removal"), freeTurn)
 		return
 	}
 
 	// If processor says not to pool the connection, remove it
 	if !shouldPool {
-		p.Remove(ctx, cn, errors.New("hook requested no pooling"))
+		p.removeConnInternal(ctx, cn, errors.New("hook requested no pooling"), freeTurn)
 		return
 	}
 
 	if !cn.pooled {
-		p.Remove(ctx, cn, errors.New("connection not pooled"))
+		p.removeConnInternal(ctx, cn, errors.New("connection not pooled"), freeTurn)
 		return
 	}
 
@@ -698,7 +719,9 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldCloseConn = true
 	}
 
-	p.freeTurn()
+	if freeTurn {
+		p.freeTurn()
+	}
 
 	if shouldCloseConn {
 		_ = p.closeConn(cn)
@@ -706,6 +729,19 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+	p.removeConnInternal(ctx, cn, reason, true)
+}
+
+// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+// This should be used when removing a connection from a context that didn't acquire
+// a turn via Get() (e.g., background workers, cleanup tasks).
+// For normal removal after Get(), use Remove() instead.
+func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error) {
+	p.removeConnInternal(ctx, cn, reason, false)
+}
+
+// removeConnInternal is the internal implementation of Remove that optionally frees a turn.
+func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
 	p.hookManagerMu.RLock()
 	hookManager := p.hookManager
 	p.hookManagerMu.RUnlock()
@@ -716,7 +752,9 @@ func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 
 	p.removeConnWithLock(cn)
 
-	p.freeTurn()
+	if freeTurn {
+		p.freeTurn()
+	}
 
 	_ = p.closeConn(cn)
 

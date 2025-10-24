@@ -91,6 +91,7 @@ func (m *mockPooler) CloseConn(*pool.Conn) error                      { return n
 func (m *mockPooler) Get(ctx context.Context) (*pool.Conn, error)     { return nil, nil }
 func (m *mockPooler) Put(ctx context.Context, conn *pool.Conn)        {}
 func (m *mockPooler) Remove(ctx context.Context, conn *pool.Conn, reason error) {}
+func (m *mockPooler) RemoveWithoutTurn(ctx context.Context, conn *pool.Conn, reason error) {}
 func (m *mockPooler) Len() int                                        { return 0 }
 func (m *mockPooler) IdleLen() int                                    { return 0 }
 func (m *mockPooler) Stats() *pool.Stats                              { return &pool.Stats{} }
