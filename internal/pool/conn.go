@@ -628,11 +628,11 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 		return errors.New("handoff state changed during marking")
 	}
 
-	// Transition to UNUSABLE from either IN_USE (normal flow) or IDLE (edge cases/tests)
+	// Transition to UNUSABLE from IN_USE (normal flow), IDLE (edge cases), or CREATED (tests/uninitialized)
 	// The connection is typically in IN_USE state when OnPut is called (normal Put flow)
-	// But in some edge cases or tests, it might already be in IDLE state
+	// But in some edge cases or tests, it might be in IDLE or CREATED state
 	// The pool will detect this state change and preserve it (not overwrite with IDLE)
-	finalState, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle}, StateUnusable)
+	finalState, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle, StateCreated}, StateUnusable)
 	if err != nil {
 		// Check if already in UNUSABLE state (race condition or retry)
 		// ShouldHandoff should be false now, but check just in case

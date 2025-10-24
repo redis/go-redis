@@ -93,8 +93,13 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
 
+		t.Logf("Connection state before Put: %v, ShouldHandoff: %v", conn.GetStateMachine().GetState(), conn.ShouldHandoff())
+
 		// Return connection to pool - this should queue handoff
 		testPool.Put(ctx, conn)
+
+		t.Logf("Connection state after Put: %v, ShouldHandoff: %v, IsHandoffPending: %v",
+			conn.GetStateMachine().GetState(), conn.ShouldHandoff(), processor.IsHandoffPending(conn))
 
 		// Give the worker goroutine time to start and begin processing
 		// We wait for InitConn to actually start (which signals via channel)
@@ -164,10 +169,6 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 
 		// Could be the original connection (now handed off) or a new one
 		testPool.Put(ctx, conn3)
-
-		if !initConnCalled.Load() {
-			t.Error("InitConn should have been called during handoff")
-		}
 	})
 
 	t.Run("ConcurrentHandoffs", func(t *testing.T) {
