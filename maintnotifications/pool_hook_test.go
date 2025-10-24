@@ -235,11 +235,25 @@ func TestConnectionHook(t *testing.T) {
 	})
 
 	t.Run("EmptyEndpoint", func(t *testing.T) {
-		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
+		config := &Config{
+			Mode:              ModeAuto,
+			EndpointType:      EndpointTypeAuto,
+			MaxWorkers:        1,
+			HandoffQueueSize:  10,
+			MaxHandoffRetries: 3,
+		}
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
+		defer processor.Shutdown(context.Background())
+
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
+
+		// Set a mock initialization function
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
+			return nil
+		})
 
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
@@ -247,17 +261,20 @@ func TestConnectionHook(t *testing.T) {
 			t.Errorf("OnPut should not error with empty endpoint: %v", err)
 		}
 
-		// Should pool the connection (empty endpoint clears state)
+		// Should pool the connection (empty endpoint triggers handoff to current endpoint)
 		if !shouldPool {
-			t.Error("Connection should be pooled after clearing empty endpoint")
+			t.Error("Connection should be pooled when handoff is queued")
 		}
 		if shouldRemove {
-			t.Error("Connection should not be removed after clearing empty endpoint")
+			t.Error("Connection should not be removed when handoff is queued")
 		}
 
-		// State should be cleared
+		// Wait for handoff to complete
+		time.Sleep(100 * time.Millisecond)
+
+		// After handoff completes, state should be cleared
 		if conn.ShouldHandoff() {
-			t.Error("Connection should not be marked for handoff after clearing empty endpoint")
+			t.Error("Connection should not be marked for handoff after handoff completes")
 		}
 	})
 

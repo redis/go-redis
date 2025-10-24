@@ -349,7 +349,13 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 
 	newEndpoint := conn.GetHandoffEndpoint()
 	if newEndpoint == "" {
-		return false, ErrConnectionInvalidHandoffState
+		// Empty endpoint means handoff to current endpoint (reconnect)
+		// Use the current connection's remote address
+		if conn.RemoteAddr() != nil {
+			newEndpoint = conn.RemoteAddr().String()
+		} else {
+			return false, ErrConnectionInvalidHandoffState
+		}
 	}
 
 	// Use circuit breaker to protect against failing endpoints
