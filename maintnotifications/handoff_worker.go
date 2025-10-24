@@ -121,7 +121,7 @@ func (hwm *handoffWorkerManager) onDemandWorker() {
 	defer func() {
 		// Handle panics to ensure proper cleanup
 		if r := recover(); r != nil {
-			internal.Logger.Printf(context.Background(), logs.WorkerPanicRecovered(r))
+			hwm.logf(context.Background(), logs.WorkerPanicRecovered(r))
 		}
 
 		// Decrement active worker count when exiting
@@ -146,13 +146,13 @@ func (hwm *handoffWorkerManager) onDemandWorker() {
 		select {
 		case <-hwm.shutdown:
 			if internal.LogLevel.InfoOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.WorkerExitingDueToShutdown())
+				hwm.logf(context.Background(), logs.WorkerExitingDueToShutdown())
 			}
 			return
 		case <-timer.C:
 			// Worker has been idle for too long, exit to save resources
 			if internal.LogLevel.InfoOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.WorkerExitingDueToInactivityTimeout(hwm.workerTimeout))
+				hwm.logf(context.Background(), logs.WorkerExitingDueToInactivityTimeout(hwm.workerTimeout))
 			}
 			return
 		case request := <-hwm.handoffQueue:
@@ -160,7 +160,7 @@ func (hwm *handoffWorkerManager) onDemandWorker() {
 			select {
 			case <-hwm.shutdown:
 				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.WorkerExitingDueToShutdownWhileProcessing())
+					hwm.logf(context.Background(), logs.WorkerExitingDueToShutdownWhileProcessing())
 				}
 				// Clean up the request before exiting
 				hwm.pending.Delete(request.ConnID)
@@ -178,7 +178,7 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 	// Remove from pending map
 	defer hwm.pending.Delete(request.Conn.GetID())
 	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.HandoffStarted(request.Conn.GetID(), request.Endpoint))
+		hwm.logf(context.Background(), logs.HandoffStarted(request.Conn.GetID(), request.Endpoint))
 	}
 
 	// Create a context with handoff timeout from config
@@ -226,12 +226,12 @@ func (hwm *handoffWorkerManager) processHandoffRequest(request HandoffRequest) {
 				if hwm.config != nil {
 					maxRetries = hwm.config.MaxHandoffRetries
 				}
-				internal.Logger.Printf(context.Background(), logs.HandoffFailed(request.ConnID, request.Endpoint, currentRetries, maxRetries, err))
+				hwm.logf(context.Background(), logs.HandoffFailed(request.ConnID, request.Endpoint, currentRetries, maxRetries, err))
 			}
 			time.AfterFunc(afterTime, func() {
 				if err := hwm.queueHandoff(request.Conn); err != nil {
 					if internal.LogLevel.WarnOrAbove() {
-						internal.Logger.Printf(context.Background(), logs.CannotQueueHandoffForRetry(err))
+						hwm.logf(context.Background(), logs.CannotQueueHandoffForRetry(err))
 					}
 					hwm.closeConnFromRequest(context.Background(), request, err)
 				}
@@ -259,7 +259,7 @@ func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
 	// if shouldHandoff is false and retries is 0, then we are not retrying and not do a handoff
 	if !shouldHandoff && conn.HandoffRetries() == 0 {
 		if internal.LogLevel.InfoOrAbove() {
-			internal.Logger.Printf(context.Background(), logs.ConnectionNotMarkedForHandoff(conn.GetID()))
+			hwm.logf(context.Background(), logs.ConnectionNotMarkedForHandoff(conn.GetID()))
 		}
 		return errors.New(logs.ConnectionNotMarkedForHandoffError(conn.GetID()))
 	}
@@ -302,7 +302,7 @@ func (hwm *handoffWorkerManager) queueHandoff(conn *pool.Conn) error {
 				queueLen := len(hwm.handoffQueue)
 				queueCap := cap(hwm.handoffQueue)
 				if internal.LogLevel.WarnOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.HandoffQueueFull(queueLen, queueCap))
+					hwm.logf(context.Background(), logs.HandoffQueueFull(queueLen, queueCap))
 				}
 			}
 		}
@@ -356,7 +356,7 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 
 	// Check if circuit breaker is open before attempting handoff
 	if circuitBreaker.IsOpen() {
-		internal.Logger.Printf(ctx, logs.CircuitBreakerOpen(connID, newEndpoint))
+		hwm.logf(ctx, logs.CircuitBreakerOpen(connID, newEndpoint))
 		return false, ErrCircuitBreakerOpen // Don't retry when circuit breaker is open
 	}
 
@@ -385,7 +385,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	connID uint64,
 ) (shouldRetry bool, err error) {
 	retries := conn.IncrementAndGetHandoffRetries(1)
-	internal.Logger.Printf(ctx, logs.HandoffRetryAttempt(connID, retries, newEndpoint, conn.RemoteAddr().String()))
+	hwm.logf(ctx, logs.HandoffRetryAttempt(connID, retries, newEndpoint, conn.RemoteAddr().String()))
 	maxRetries := 3 // Default fallback
 	if hwm.config != nil {
 		maxRetries = hwm.config.MaxHandoffRetries
@@ -393,7 +393,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 
 	if retries > maxRetries {
 		if internal.LogLevel.WarnOrAbove() {
-			internal.Logger.Printf(ctx, logs.ReachedMaxHandoffRetries(connID, newEndpoint, maxRetries))
+			hwm.logf(ctx, logs.ReachedMaxHandoffRetries(connID, newEndpoint, maxRetries))
 		}
 		// won't retry on ErrMaxHandoffRetriesReached
 		return false, ErrMaxHandoffRetriesReached
@@ -405,7 +405,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	// Create new connection to the new endpoint
 	newNetConn, err := endpointDialer(ctx)
 	if err != nil {
-		internal.Logger.Printf(ctx, logs.FailedToDialNewEndpoint(connID, newEndpoint, err))
+		hwm.logf(ctx, logs.FailedToDialNewEndpoint(connID, newEndpoint, err))
 		// will retry
 		// Maybe a network error - retry after a delay
 		return true, err
@@ -425,7 +425,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
 
 		if internal.LogLevel.InfoOrAbove() {
-			internal.Logger.Printf(context.Background(), logs.ApplyingRelaxedTimeoutDueToPostHandoff(connID, relaxedTimeout, deadline.Format("15:04:05.000")))
+			hwm.logf(context.Background(), logs.ApplyingRelaxedTimeoutDueToPostHandoff(connID, relaxedTimeout, deadline.Format("15:04:05.000")))
 		}
 	}
 
@@ -447,7 +447,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	// - clear the handoff state (shouldHandoff, endpoint, seqID)
 	// - reset the handoff retries to 0
 	conn.ClearHandoffState()
-	internal.Logger.Printf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
+	hwm.logf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 
 	// successfully completed the handoff, no retry needed and no error
 	return false, nil
@@ -478,15 +478,23 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	if pooler != nil {
 		pooler.Remove(ctx, conn, err)
 		if internal.LogLevel.WarnOrAbove() {
-			internal.Logger.Printf(ctx, logs.RemovingConnectionFromPool(conn.GetID(), err))
+			hwm.logf(ctx, logs.RemovingConnectionFromPool(conn.GetID(), err))
 		}
 	} else {
 		err := conn.Close() // Close the connection if no pool provided
 		if err != nil {
-			internal.Logger.Printf(ctx, "redis: failed to close connection: %v", err)
+			hwm.logf(ctx, "redis: failed to close connection: %v", err)
 		}
 		if internal.LogLevel.WarnOrAbove() {
-			internal.Logger.Printf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID(), err))
+			hwm.logf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID(), err))
 		}
 	}
+}
+
+func (hwm *handoffWorkerManager) logf(ctx context.Context, format string, args ...interface{}) {
+	logger := internal.Logger
+	if hwm.config != nil && hwm.config.Logger != nil {
+		logger = *hwm.config.Logger
+	}
+	logger.Printf(ctx, format, args...)
 }
