@@ -400,8 +400,13 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 	var executionOrder []int
 	var orderMu sync.Mutex
 	var wg sync.WaitGroup
-	var startBarrier sync.WaitGroup
-	startBarrier.Add(numGoroutines)
+
+	// Use channels to ensure deterministic queueing order
+	// Each goroutine waits for the previous one to queue before it queues
+	queuedChannels := make([]chan struct{}, numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		queuedChannels[i] = make(chan struct{})
+	}
 
 	// Launch goroutines that will all wait
 	for i := 0; i < numGoroutines; i++ {
@@ -409,14 +414,18 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 
-			// Wait for all goroutines to be ready
-			startBarrier.Done()
-			startBarrier.Wait()
+			// Wait for previous goroutine to queue (except for goroutine 0)
+			if id > 0 {
+				<-queuedChannels[id-1]
+			}
 
-			// Small stagger to ensure queue order
-			time.Sleep(time.Duration(id) * time.Millisecond)
+			// Small delay to ensure the previous goroutine's AwaitAndTransition has been called
+			time.Sleep(5 * time.Millisecond)
 
 			ctx := context.Background()
+
+			// Signal that we're about to queue
+			close(queuedChannels[id])
 
 			// This should queue in FIFO order
 			_, err := sm.AwaitAndTransition(ctx, []ConnState{StateIdle}, StateInitializing)
@@ -437,7 +446,8 @@ func TestConnStateMachine_FIFOOrdering(t *testing.T) {
 		}(i)
 	}
 
-	// Wait a bit for all goroutines to queue up
+	// Wait for all goroutines to queue up
+	<-queuedChannels[numGoroutines-1]
 	time.Sleep(50 * time.Millisecond)
 
 	// Transition to READY to start processing the queue

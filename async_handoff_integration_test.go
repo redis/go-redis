@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/logging"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // mockNetConn implements net.Conn for testing
@@ -80,7 +80,7 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 		var initConnCalled atomic.Bool
 		initConnStarted := make(chan struct{})
 		initConnFunc := func(ctx context.Context, cn *pool.Conn) error {
-			close(initConnStarted) // Signal that InitConn has started
+			close(initConnStarted)            // Signal that InitConn has started
 			time.Sleep(50 * time.Millisecond) // Add delay to keep handoff pending
 			initConnCalled.Store(true)
 			return nil
@@ -164,6 +164,10 @@ func TestEventDrivenHandoffIntegration(t *testing.T) {
 
 		// Could be the original connection (now handed off) or a new one
 		testPool.Put(ctx, conn3)
+
+		if !initConnCalled.Load() {
+			t.Error("InitConn should have been called during handoff")
+		}
 	})
 
 	t.Run("ConcurrentHandoffs", func(t *testing.T) {
