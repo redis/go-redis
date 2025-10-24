@@ -95,7 +95,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 		t.Run("NotPushNotification", func(t *testing.T) {
 			// Test with regular array instead of push notification
 			buf := &bytes.Buffer{}
-			buf.WriteString("*2\r\n$6\r\nMOVING\r\n$4\r\ndata\r\n")
+			fmt.Fprint(buf, "*2\r\n$6\r\nMOVING\r\n$4\r\ndata\r\n")
 			reader := NewReader(buf)
 
 			_, err := reader.PeekPushNotificationName()
@@ -112,7 +112,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 		t.Run("InsufficientData", func(t *testing.T) {
 			// Test with buffer smaller than peek size - this might panic due to bounds checking
 			buf := &bytes.Buffer{}
-			buf.WriteString(">")
+			fmt.Fprint(buf, ">")
 			reader := NewReader(buf)
 
 			func() {
@@ -146,7 +146,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 				t.Run(fmt.Sprintf("Type_%c", respType), func(t *testing.T) {
 					buf := &bytes.Buffer{}
 					buf.WriteByte(respType)
-					buf.WriteString("test data that fills the buffer completely")
+					fmt.Fprint(buf, "test data that fills the buffer completely")
 					reader := NewReader(buf)
 
 					_, err := reader.PeekPushNotificationName()
@@ -167,7 +167,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 		t.Run("ZeroLengthArray", func(t *testing.T) {
 			// Create push notification with zero elements: >0\r\n
 			buf := &bytes.Buffer{}
-			buf.WriteString(">0\r\npadding_data_to_fill_buffer_completely")
+			fmt.Fprint(buf, ">0\r\npadding_data_to_fill_buffer_completely")
 			reader := NewReader(buf)
 
 			_, err := reader.PeekPushNotificationName()
@@ -209,7 +209,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 			for _, tc := range corruptedCases {
 				t.Run(tc.name, func(t *testing.T) {
 					buf := &bytes.Buffer{}
-					buf.WriteString(tc.data)
+					fmt.Fprint(buf, tc.data)
 					reader := NewReader(buf)
 
 					// Some corrupted data might not error but return unexpected results
@@ -230,7 +230,7 @@ func TestPeekPushNotificationName(t *testing.T) {
 			// Create buffer that is exactly 36 bytes (the peek window size)
 			buf := &bytes.Buffer{}
 			// ">1\r\n$4\r\nTEST\r\n" = 14 bytes, need 22 more
-			buf.WriteString(">1\r\n$4\r\nTEST\r\n1234567890123456789012")
+			fmt.Fprint(buf, ">1\r\n$4\r\nTEST\r\n1234567890123456789012")
 			if buf.Len() != 36 {
 				t.Errorf("Expected buffer length 36, got %d", buf.Len())
 			}
@@ -300,7 +300,7 @@ func createValidPushNotification(notificationName, data string) *bytes.Buffer {
 	if data == "" {
 
 		// Single element notification
-		buf.WriteString(">1\r\n")
+		fmt.Fprint(buf, ">1\r\n")
 		if simpleOrString {
 			fmt.Fprintf(buf, "+%s\r\n", notificationName)
 		} else {
@@ -308,7 +308,7 @@ func createValidPushNotification(notificationName, data string) *bytes.Buffer {
 		}
 	} else {
 		// Two element notification
-		buf.WriteString(">2\r\n")
+		fmt.Fprint(buf, ">2\r\n")
 		if simpleOrString {
 			fmt.Fprintf(buf, "+%s\r\n", notificationName)
 			fmt.Fprintf(buf, "+%s\r\n", data)
@@ -350,7 +350,7 @@ func createPushNotificationWithArgs(notificationName string, args ...string) *by
 // createSingleElementPushNotification creates a push notification with single element
 func createSingleElementPushNotification(notificationName string) *bytes.Buffer {
 	buf := &bytes.Buffer{}
-	buf.WriteString(">1\r\n")
+	fmt.Fprint(buf, ">1\r\n")
 	fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(notificationName), notificationName)
 	return buf
 }

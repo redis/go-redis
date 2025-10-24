@@ -1117,7 +1117,7 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 
 		// Create fake RESP3 push notification with no elements
 		buf := &bytes.Buffer{}
-		buf.WriteString(">0\r\n") // Empty push notification
+		fmt.Fprint(buf, ">0\r\n") // Empty push notification
 		reader := createReaderWithPrimedBuffer(buf)
 
 		ctx := context.Background()
@@ -1154,9 +1154,9 @@ func TestProcessorWithFakeBuffer(t *testing.T) {
 
 		// Create fake RESP3 push notification with integer as first element
 		buf := &bytes.Buffer{}
-		buf.WriteString(">2\r\n")         // 2 elements
-		buf.WriteString(":123\r\n")       // Integer instead of string
-		buf.WriteString("$4\r\ndata\r\n") // String data
+		fmt.Fprint(buf, ">2\r\n")         // 2 elements
+		fmt.Fprint(buf, ":123\r\n")       // Integer instead of string
+		fmt.Fprint(buf, "$4\r\ndata\r\n") // String data
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
@@ -1273,8 +1273,8 @@ func TestVoidProcessorWithFakeBuffer(t *testing.T) {
 
 		// Create invalid RESP3 data
 		buf := &bytes.Buffer{}
-		buf.WriteString(">1\r\n")      // Push notification with 1 element
-		buf.WriteString("invalid\r\n") // Invalid format (should be $<len>\r\n<data>\r\n)
+		fmt.Fprint(buf, ">1\r\n")      // Push notification with 1 element
+		fmt.Fprint(buf, "invalid\r\n") // Invalid format (should be $<len>\r\n<data>\r\n)
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
@@ -1332,9 +1332,9 @@ func TestProcessorErrorHandling(t *testing.T) {
 
 		// Create buffer with corrupted RESP3 data
 		buf := &bytes.Buffer{}
-		buf.WriteString(">2\r\n")           // Says 2 elements
-		buf.WriteString("$6\r\nMOVING\r\n") // First element OK
-		buf.WriteString("corrupted")        // Second element corrupted (no proper format)
+		fmt.Fprint(buf, ">2\r\n")           // Says 2 elements
+		fmt.Fprint(buf, "$6\r\nMOVING\r\n") // First element OK
+		fmt.Fprint(buf, "corrupted")        // Second element corrupted (no proper format)
 		reader := proto.NewReader(buf)
 
 		ctx := context.Background()
@@ -1360,8 +1360,8 @@ func TestProcessorErrorHandling(t *testing.T) {
 
 		// Create buffer with partial RESP3 data
 		buf := &bytes.Buffer{}
-		buf.WriteString(">2\r\n")           // Says 2 elements
-		buf.WriteString("$6\r\nMOVING\r\n") // First element OK
+		fmt.Fprint(buf, ">2\r\n")           // Says 2 elements
+		fmt.Fprint(buf, "$6\r\nMOVING\r\n") // First element OK
 		// Missing second element
 		reader := proto.NewReader(buf)
 
