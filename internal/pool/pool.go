@@ -693,9 +693,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		if err != nil {
 			// Hook changed the state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
-			if internal.Logger.Enabled(ctx, internal.LogLevelDebug) {
-				internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
-			}
+			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
 		}
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
