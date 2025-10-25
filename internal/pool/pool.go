@@ -696,7 +696,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// Hot path optimization: try fast IN_USE → IDLE transition
 		// This is a single CAS operation, as fast as the old atomic bool
 		sm := cn.GetStateMachine()
-		if !sm.TryTransitionFast(StateInUse, StateIdle) {
+		transitionedToIdle := sm.TryTransitionFast(StateInUse, StateIdle)
+
+		if !transitionedToIdle {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
 			currentState := sm.GetState()
@@ -705,7 +707,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
-		if !cn.IsUsable() {
+		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
+		if !transitionedToIdle && !cn.IsUsable() {
 			if p.cfg.PoolFIFO {
 				p.connsMu.Lock()
 				p.idleConns = append(p.idleConns, cn)
