@@ -154,6 +154,8 @@ type RingOptions struct {
 	DisableIdentity bool
 	IdentitySuffix  string
 	UnstableResp3   bool
+
+	Logger *internal.Logging
 }
 
 func (opt *RingOptions) init() {
@@ -345,7 +347,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 	cleanup := func(shards map[string]*ringShard) {
 		for addr, shard := range shards {
 			if err := shard.Client.Close(); err != nil {
-				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
+				c.logf(context.Background(), "shard.Close %s failed: %s", addr, err)
 			}
 		}
 	}
@@ -490,7 +492,7 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 			for _, shard := range c.List() {
 				isUp := c.opt.HeartbeatFn(ctx, shard.Client)
 				if shard.Vote(isUp) {
-					internal.Logger.Printf(ctx, "ring shard state changed: %s", shard)
+					c.logf(ctx, "ring shard state changed: %s", shard)
 					rebalance = true
 				}
 			}
@@ -557,6 +559,14 @@ func (c *ringSharding) Close() error {
 	c.numShard = 0
 
 	return firstErr
+}
+
+func (c *ringSharding) logf(ctx context.Context, format string, args ...any) {
+	logger := internal.Logger
+	if c.opt.Logger != nil {
+		logger = *c.opt.Logger
+	}
+	logger.Printf(ctx, format, args...)
 }
 
 //------------------------------------------------------------------------------

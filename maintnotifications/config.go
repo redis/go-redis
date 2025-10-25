@@ -128,6 +128,9 @@ type Config struct {
 	// After this many retries, the connection will be removed from the pool.
 	// Default: 3
 	MaxHandoffRetries int
+
+	// Logger is an optional custom logger for maintenance notifications.
+	Logger *internal.Logging
 }
 
 func (c *Config) IsEnabled() bool {
@@ -341,6 +344,8 @@ func (c *Config) Clone() *Config {
 
 		// Configuration fields
 		MaxHandoffRetries: c.MaxHandoffRetries,
+
+		Logger: c.Logger,
 	}
 }
 

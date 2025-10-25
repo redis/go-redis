@@ -150,7 +150,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 
 	if err := ph.workerManager.queueHandoff(conn); err != nil {
 		// Failed to queue handoff, remove the connection
-		internal.Logger.Printf(ctx, logs.FailedToQueueHandoff(conn.GetID(), err))
+		ph.logf(ctx, logs.FailedToQueueHandoff(conn.GetID(), err))
 		// Don't pool, remove connection, no error to caller
 		return false, true, nil
 	}
@@ -170,7 +170,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 		// Other error - remove the connection
 		return false, true, nil
 	}
-	internal.Logger.Printf(ctx, logs.MarkedForHandoff(conn.GetID()))
+	ph.logf(ctx, logs.MarkedForHandoff(conn.GetID()))
 	return true, false, nil
 }
 
@@ -181,4 +181,12 @@ func (ph *PoolHook) OnRemove(_ context.Context, _ *pool.Conn, _ error) {
 // Shutdown gracefully shuts down the processor, waiting for workers to complete
 func (ph *PoolHook) Shutdown(ctx context.Context) error {
 	return ph.workerManager.shutdownWorkers(ctx)
+}
+
+func (ph *PoolHook) logf(ctx context.Context, format string, args ...interface{}) {
+	logger := internal.Logger
+	if ph.config != nil && ph.config.Logger != nil {
+		logger = *ph.config.Logger
+	}
+	logger.Printf(ctx, format, args...)
 }

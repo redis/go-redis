@@ -103,7 +103,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 				cb.requests.Store(0)
 				cb.successes.Store(0)
 				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
+					cb.logf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
 				}
 				// Fall through to half-open logic
 			} else {
@@ -145,7 +145,7 @@ func (cb *CircuitBreaker) recordFailure() {
 		if failures >= int64(cb.failureThreshold) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerClosed), int32(CircuitBreakerOpen)) {
 				if internal.LogLevel.WarnOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
+					cb.logf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
 				}
 			}
 		}
@@ -153,7 +153,7 @@ func (cb *CircuitBreaker) recordFailure() {
 		// Any failure in half-open state immediately opens the circuit
 		if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerOpen)) {
 			if internal.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
+				cb.logf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
 			}
 		}
 	}
@@ -177,7 +177,7 @@ func (cb *CircuitBreaker) recordSuccess() {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerClosed)) {
 				cb.failures.Store(0)
 				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
+					cb.logf(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
 				}
 			}
 		}
@@ -200,6 +200,14 @@ func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
 		LastFailureTime: time.Unix(cb.lastFailureTime.Load(), 0),
 		LastSuccessTime: time.Unix(cb.lastSuccessTime.Load(), 0),
 	}
+}
+
+func (cb *CircuitBreaker) logf(ctx context.Context, format string, args ...interface{}) {
+	logger := internal.Logger
+	if cb.config != nil && cb.config.Logger != nil {
+		logger = *cb.config.Logger
+	}
+	logger.Printf(ctx, format, args...)
 }
 
 // CircuitBreakerStats provides statistics about a circuit breaker
@@ -326,7 +334,7 @@ func (cbm *CircuitBreakerManager) cleanup() {
 
 	// Log cleanup results
 	if len(toDelete) > 0 && internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
+		cbm.logf(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
 	}
 
 	cbm.lastCleanup.Store(now.Unix())
@@ -350,4 +358,12 @@ func (cbm *CircuitBreakerManager) Reset() {
 		breaker.lastSuccessTime.Store(0)
 		return true
 	})
+}
+
+func (cbm *CircuitBreakerManager) logf(ctx context.Context, format string, args ...interface{}) {
+	logger := internal.Logger
+	if cbm.config != nil && cbm.config.Logger != nil {
+		logger = *cbm.config.Logger
+	}
+	logger.Printf(ctx, format, args...)
 }
