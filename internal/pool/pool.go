@@ -132,7 +132,9 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
-	queue chan struct{}
+	// Fast atomic semaphore for connection limiting
+	// Replaces the old channel-based queue for better performance
+	semaphore *fastSemaphore
 
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
@@ -158,7 +160,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg: opt,
 
-		queue:     make(chan struct{}, opt.PoolSize),
+		semaphore: newFastSemaphore(opt.PoolSize),
 		conns:     make(map[uint64]*Conn),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
@@ -223,31 +225,32 @@ func (p *ConnPool) checkMinIdleConns() {
 	// Only create idle connections if we haven't reached the total pool size limit
 	// MinIdleConns should be a subset of PoolSize, not additional connections
 	for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
-		select {
-		case p.queue <- struct{}{}:
-			p.poolSize.Add(1)
-			p.idleConnsLen.Add(1)
-			go func() {
-				defer func() {
-					if err := recover(); err != nil {
-						p.poolSize.Add(-1)
-						p.idleConnsLen.Add(-1)
-
-						p.freeTurn()
-						internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
-					}
-				}()
-
-				err := p.addIdleConn()
-				if err != nil && err != ErrClosed {
-					p.poolSize.Add(-1)
-					p.idleConnsLen.Add(-1)
-				}
-				p.freeTurn()
-			}()
-		default:
+		// Try to acquire a semaphore token
+		if !p.semaphore.tryAcquire() {
+			// Semaphore is full, can't create more connections
 			return
 		}
+
+		p.poolSize.Add(1)
+		p.idleConnsLen.Add(1)
+		go func() {
+			defer func() {
+				if err := recover(); err != nil {
+					p.poolSize.Add(-1)
+					p.idleConnsLen.Add(-1)
+
+					p.freeTurn()
+					internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+				}
+			}()
+
+			err := p.addIdleConn()
+			if err != nil && err != ErrClosed {
+				p.poolSize.Add(-1)
+				p.idleConnsLen.Add(-1)
+			}
+			p.freeTurn()
+		}()
 	}
 }
 
@@ -528,44 +531,35 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
+	// Fast path: check context first
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
 
-	select {
-	case p.queue <- struct{}{}:
+	// Fast path: try to acquire without blocking
+	if p.semaphore.tryAcquire() {
 		return nil
-	default:
 	}
 
+	// Slow path: need to wait
 	start := time.Now()
-	timer := timers.Get().(*time.Timer)
-	defer timers.Put(timer)
-	timer.Reset(p.cfg.PoolTimeout)
+	err := p.semaphore.acquire(ctx, p.cfg.PoolTimeout)
 
-	select {
-	case <-ctx.Done():
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return ctx.Err()
-	case p.queue <- struct{}{}:
+	if err == nil {
+		// Successfully acquired after waiting
 		p.waitDurationNs.Add(time.Now().UnixNano() - start.UnixNano())
 		atomic.AddUint32(&p.stats.WaitCount, 1)
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return nil
-	case <-timer.C:
+	} else if err == ErrPoolTimeout {
 		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return ErrPoolTimeout
 	}
+
+	return err
 }
 
 func (p *ConnPool) freeTurn() {
-	<-p.queue
+	p.semaphore.release()
 }
 
 func (p *ConnPool) popIdle() (*Conn, error) {
