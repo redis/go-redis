@@ -105,7 +105,7 @@ func TestConnStateMachine_AwaitAndTransition_FastPath(t *testing.T) {
 	}
 
 	if state := sm.GetState(); state != StateUnusable {
-		t.Errorf("expected state REAUTH_IN_PROGRESS, got %s", state)
+		t.Errorf("expected state UNUSABLE, got %s", state)
 	}
 }
 
@@ -384,9 +384,9 @@ func TestConnStateMachine_AwaitAndTransitionWaitsForInitialization(t *testing.T)
 		t.Errorf("expected %d completions, got %d", numGoroutines, completedCount.Load())
 	}
 
-	// Final state should be READY
+	// Final state should be IDLE
 	if sm.GetState() != StateIdle {
-		t.Errorf("expected final state READY, got %s", sm.GetState())
+		t.Errorf("expected final state IDLE, got %s", sm.GetState())
 	}
 
 	t.Logf("Execution order: %v", executionOrder)

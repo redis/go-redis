@@ -116,6 +116,8 @@ func NewConnStateMachine() *ConnStateMachine {
 
 // GetState returns the current state (lock-free read).
 // This is the hot path - optimized for zero allocations and minimal overhead.
+// Note: Zero allocations applies to state reads; converting the returned state to a string
+// (via String()) may allocate if the state is unknown.
 func (sm *ConnStateMachine) GetState() ConnState {
 	return ConnState(sm.state.Load())
 }

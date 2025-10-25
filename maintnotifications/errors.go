@@ -62,7 +62,7 @@ var (
 // circuit breaker errors
 var (
 	// ErrCircuitBreakerOpen is returned when the circuit breaker is open
-	ErrCircuitBreakerOpen = errors.New("" + logs.CircuitBreakerOpenErrorMessage)
+	ErrCircuitBreakerOpen = errors.New(logs.CircuitBreakerOpenErrorMessage)
 )
 
 // circuit breaker configuration errors

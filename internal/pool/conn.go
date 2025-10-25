@@ -234,7 +234,7 @@ func (cn *Conn) SetUsable(usable bool) {
 // This is a backward-compatible wrapper around the state machine.
 func (cn *Conn) IsInited() bool {
 	state := cn.stateMachine.GetState()
-	// Connection is initialized if it's in READY or any post-initialization state
+	// Connection is initialized if it's in IDLE or any post-initialization state
 	return state != StateCreated && state != StateInitializing && state != StateClosed
 }
 
