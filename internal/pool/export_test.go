@@ -20,5 +20,5 @@ func (p *ConnPool) CheckMinIdleConns() {
 }
 
 func (p *ConnPool) QueueLen() int {
-	return len(p.queue)
+	return int(p.semaphore.Len())
 }

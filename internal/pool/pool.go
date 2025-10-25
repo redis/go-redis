@@ -45,14 +45,6 @@ var (
 	noExpiration = maxTime
 )
 
-var timers = sync.Pool{
-	New: func() interface{} {
-		t := time.NewTimer(time.Hour)
-		t.Stop()
-		return t
-	},
-}
-
 // Stats contains pool state information and accumulated stats.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
@@ -132,7 +124,9 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
-	queue chan struct{}
+	// Fast atomic semaphore for connection limiting
+	// Replaces the old channel-based queue for better performance
+	semaphore *internal.FastSemaphore
 
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
@@ -148,8 +142,8 @@ type ConnPool struct {
 	_closed uint32 // atomic
 
 	// Pool hooks manager for flexible connection processing
-	hookManagerMu sync.RWMutex
-	hookManager   *PoolHookManager
+	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
+	hookManager atomic.Pointer[PoolHookManager]
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -158,7 +152,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg: opt,
 
-		queue:     make(chan struct{}, opt.PoolSize),
+		semaphore: internal.NewFastSemaphore(opt.PoolSize),
 		conns:     make(map[uint64]*Conn),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
@@ -176,27 +170,37 @@ func NewConnPool(opt *Options) *ConnPool {
 
 // initializeHooks sets up the pool hooks system.
 func (p *ConnPool) initializeHooks() {
-	p.hookManager = NewPoolHookManager()
+	manager := NewPoolHookManager()
+	p.hookManager.Store(manager)
 }
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
-	p.hookManagerMu.Lock()
-	defer p.hookManagerMu.Unlock()
-
-	if p.hookManager == nil {
+	// Lock-free read of current manager
+	manager := p.hookManager.Load()
+	if manager == nil {
 		p.initializeHooks()
+		manager = p.hookManager.Load()
 	}
-	p.hookManager.AddHook(hook)
+
+	// Create new manager with added hook
+	newManager := manager.Clone()
+	newManager.AddHook(hook)
+
+	// Atomically swap to new manager
+	p.hookManager.Store(newManager)
 }
 
 // RemovePoolHook removes a pool hook from the pool.
 func (p *ConnPool) RemovePoolHook(hook PoolHook) {
-	p.hookManagerMu.Lock()
-	defer p.hookManagerMu.Unlock()
+	manager := p.hookManager.Load()
+	if manager != nil {
+		// Create new manager with removed hook
+		newManager := manager.Clone()
+		newManager.RemoveHook(hook)
 
-	if p.hookManager != nil {
-		p.hookManager.RemoveHook(hook)
+		// Atomically swap to new manager
+		p.hookManager.Store(newManager)
 	}
 }
 
@@ -213,31 +217,32 @@ func (p *ConnPool) checkMinIdleConns() {
 	// Only create idle connections if we haven't reached the total pool size limit
 	// MinIdleConns should be a subset of PoolSize, not additional connections
 	for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
-		select {
-		case p.queue <- struct{}{}:
-			p.poolSize.Add(1)
-			p.idleConnsLen.Add(1)
-			go func() {
-				defer func() {
-					if err := recover(); err != nil {
-						p.poolSize.Add(-1)
-						p.idleConnsLen.Add(-1)
-
-						p.freeTurn()
-						internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
-					}
-				}()
-
-				err := p.addIdleConn()
-				if err != nil && err != ErrClosed {
-					p.poolSize.Add(-1)
-					p.idleConnsLen.Add(-1)
-				}
-				p.freeTurn()
-			}()
-		default:
+		// Try to acquire a semaphore token
+		if !p.semaphore.TryAcquire() {
+			// Semaphore is full, can't create more connections
 			return
 		}
+
+		p.poolSize.Add(1)
+		p.idleConnsLen.Add(1)
+		go func() {
+			defer func() {
+				if err := recover(); err != nil {
+					p.poolSize.Add(-1)
+					p.idleConnsLen.Add(-1)
+
+					p.freeTurn()
+					internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+				}
+			}()
+
+			err := p.addIdleConn()
+			if err != nil && err != ErrClosed {
+				p.poolSize.Add(-1)
+				p.idleConnsLen.Add(-1)
+			}
+			p.freeTurn()
+		}()
 	}
 }
 
@@ -281,7 +286,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= int32(p.cfg.MaxActiveConns) {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= p.cfg.MaxActiveConns {
 		return nil, ErrPoolExhausted
 	}
 
@@ -296,7 +301,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
 	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > int32(p.cfg.MaxActiveConns) {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > p.cfg.MaxActiveConns {
 		_ = cn.Close()
 		return nil, ErrPoolExhausted
 	}
@@ -444,11 +449,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	now := time.Now()
 	attempts := 0
 
-	// Get hooks manager once for this getConn call for performance.
-	// Note: Hooks added/removed during this call won't be reflected.
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	for {
 		if attempts >= getAttempts {
@@ -476,19 +478,20 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the hooks system
+		// Combine error and rejection checks to reduce branches
 		if hookManager != nil {
 			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
-			if err != nil {
-				internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
-				_ = p.CloseConn(cn)
-				continue
-			}
-			if !acceptConn {
-				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
-				// Return connection to pool without freeing the turn that this Get() call holds.
-				// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
-				p.putConnWithoutTurn(ctx, cn)
-				cn = nil
+			if err != nil || !acceptConn {
+				if err != nil {
+					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
+					_ = p.CloseConn(cn)
+				} else {
+					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+					// Return connection to pool without freeing the turn that this Get() call holds.
+					// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
+					p.putConnWithoutTurn(ctx, cn)
+					cn = nil
+				}
 				continue
 			}
 		}
@@ -521,44 +524,36 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
+	// Fast path: check context first
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
 
-	select {
-	case p.queue <- struct{}{}:
+	// Fast path: try to acquire without blocking
+	if p.semaphore.TryAcquire() {
 		return nil
-	default:
 	}
 
+	// Slow path: need to wait
 	start := time.Now()
-	timer := timers.Get().(*time.Timer)
-	defer timers.Put(timer)
-	timer.Reset(p.cfg.PoolTimeout)
+	err := p.semaphore.Acquire(ctx, p.cfg.PoolTimeout, ErrPoolTimeout)
 
-	select {
-	case <-ctx.Done():
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return ctx.Err()
-	case p.queue <- struct{}{}:
+	switch err {
+	case nil:
+		// Successfully acquired after waiting
 		p.waitDurationNs.Add(time.Now().UnixNano() - start.UnixNano())
 		atomic.AddUint32(&p.stats.WaitCount, 1)
-		if !timer.Stop() {
-			<-timer.C
-		}
-		return nil
-	case <-timer.C:
+	case ErrPoolTimeout:
 		atomic.AddUint32(&p.stats.Timeouts, 1)
-		return ErrPoolTimeout
 	}
+
+	return err
 }
 
 func (p *ConnPool) freeTurn() {
-	<-p.queue
+	p.semaphore.Release()
 }
 
 func (p *ConnPool) popIdle() (*Conn, error) {
@@ -592,14 +587,15 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		// Try to atomically transition to IN_USE using state machine
-		// Accept both CREATED (uninitialized) and IDLE (initialized) states
-		_, err := cn.GetStateMachine().TryTransition([]ConnState{StateCreated, StateIdle}, StateInUse)
-		if err == nil {
+		// Hot path optimization: try IDLE → IN_USE or CREATED → IN_USE transition
+		// Using inline TryAcquire() method for better performance (avoids pointer dereference)
+		if cn.TryAcquire() {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
 			break
 		}
+
+		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it
 
 		// Connection is not in a valid state (might be UNUSABLE for handoff/re-auth, INITIALIZING, etc.)
 		// Put it back in the pool and try the next one
@@ -651,9 +647,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// It's a push notification, allow pooling (client will handle it)
 	}
 
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
@@ -664,15 +659,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	}
 
-	// If hooks say to remove the connection, do so
-	if shouldRemove {
+	// Combine all removal checks into one - reduces branches
+	if shouldRemove || !shouldPool {
 		p.removeConnInternal(ctx, cn, errors.New("hook requested removal"), freeTurn)
-		return
-	}
-
-	// If processor says not to pool the connection, remove it
-	if !shouldPool {
-		p.removeConnInternal(ctx, cn, errors.New("hook requested no pooling"), freeTurn)
 		return
 	}
 
@@ -684,21 +673,21 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	var shouldCloseConn bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
-		// Try to transition to IDLE state BEFORE adding to pool
-		// Only transition if connection is still IN_USE (hooks might have changed state)
-		// This prevents:
-		// 1. Race condition where another goroutine could acquire a connection that's still in IN_USE state
-		// 2. Overwriting state changes made by hooks (e.g., IN_USE → UNUSABLE for handoff)
-		currentState, err := cn.GetStateMachine().TryTransition([]ConnState{StateInUse}, StateIdle)
-		if err != nil {
-			// Hook changed the state (e.g., to UNUSABLE for handoff)
+		// Hot path optimization: try fast IN_USE → IDLE transition
+		// Using inline Release() method for better performance (avoids pointer dereference)
+		transitionedToIdle := cn.Release()
+
+		if !transitionedToIdle {
+			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
+			currentState := cn.GetStateMachine().GetState()
 			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
 		}
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
-		if !cn.IsUsable() {
+		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
+		if !transitionedToIdle && !cn.IsUsable() {
 			if p.cfg.PoolFIFO {
 				p.connsMu.Lock()
 				p.idleConns = append(p.idleConns, cn)
@@ -742,9 +731,8 @@ func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error
 
 // removeConnInternal is the internal implementation of Remove that optionally frees a turn.
 func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	if hookManager != nil {
 		hookManager.ProcessOnRemove(ctx, cn, reason)
