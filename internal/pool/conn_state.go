@@ -41,6 +41,14 @@ const (
 	StateClosed
 )
 
+// Predefined state slices to avoid allocations in hot paths
+var (
+	validFromInUse              = []ConnState{StateInUse}
+	validFromCreatedOrIdle      = []ConnState{StateCreated, StateIdle}
+	validFromCreatedOrInUse     = []ConnState{StateCreated, StateInUse}
+	validFromCreatedInUseOrIdle = []ConnState{StateCreated, StateInUse, StateIdle}
+)
+
 // String returns a human-readable string representation of the state.
 func (s ConnState) String() string {
 	switch s {

@@ -202,26 +202,29 @@ func TestPoolWithHooks(t *testing.T) {
 	pool.AddPoolHook(testHook)
 
 	// Verify hooks are initialized
-	if pool.hookManager == nil {
+	manager := pool.hookManager.Load()
+	if manager == nil {
 		t.Error("Expected hookManager to be initialized")
 	}
 
-	if pool.hookManager.GetHookCount() != 1 {
-		t.Errorf("Expected 1 hook in pool, got %d", pool.hookManager.GetHookCount())
+	if manager.GetHookCount() != 1 {
+		t.Errorf("Expected 1 hook in pool, got %d", manager.GetHookCount())
 	}
 
 	// Test adding hook to pool
 	additionalHook := &TestHook{ShouldPool: true, ShouldAccept: true}
 	pool.AddPoolHook(additionalHook)
 
-	if pool.hookManager.GetHookCount() != 2 {
-		t.Errorf("Expected 2 hooks after adding, got %d", pool.hookManager.GetHookCount())
+	manager = pool.hookManager.Load()
+	if manager.GetHookCount() != 2 {
+		t.Errorf("Expected 2 hooks after adding, got %d", manager.GetHookCount())
 	}
 
 	// Test removing hook from pool
 	pool.RemovePoolHook(additionalHook)
 
-	if pool.hookManager.GetHookCount() != 1 {
-		t.Errorf("Expected 1 hook after removing, got %d", pool.hookManager.GetHookCount())
+	manager = pool.hookManager.Load()
+	if manager.GetHookCount() != 1 {
+		t.Errorf("Expected 1 hook after removing, got %d", manager.GetHookCount())
 	}
 }

@@ -148,8 +148,8 @@ type ConnPool struct {
 	_closed uint32 // atomic
 
 	// Pool hooks manager for flexible connection processing
-	hookManagerMu sync.RWMutex
-	hookManager   *PoolHookManager
+	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
+	hookManager atomic.Pointer[PoolHookManager]
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -176,27 +176,37 @@ func NewConnPool(opt *Options) *ConnPool {
 
 // initializeHooks sets up the pool hooks system.
 func (p *ConnPool) initializeHooks() {
-	p.hookManager = NewPoolHookManager()
+	manager := NewPoolHookManager()
+	p.hookManager.Store(manager)
 }
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
-	p.hookManagerMu.Lock()
-	defer p.hookManagerMu.Unlock()
-
-	if p.hookManager == nil {
+	// Lock-free read of current manager
+	manager := p.hookManager.Load()
+	if manager == nil {
 		p.initializeHooks()
+		manager = p.hookManager.Load()
 	}
-	p.hookManager.AddHook(hook)
+
+	// Create new manager with added hook
+	newManager := manager.Clone()
+	newManager.AddHook(hook)
+
+	// Atomically swap to new manager
+	p.hookManager.Store(newManager)
 }
 
 // RemovePoolHook removes a pool hook from the pool.
 func (p *ConnPool) RemovePoolHook(hook PoolHook) {
-	p.hookManagerMu.Lock()
-	defer p.hookManagerMu.Unlock()
+	manager := p.hookManager.Load()
+	if manager != nil {
+		// Create new manager with removed hook
+		newManager := manager.Clone()
+		newManager.RemoveHook(hook)
 
-	if p.hookManager != nil {
-		p.hookManager.RemoveHook(hook)
+		// Atomically swap to new manager
+		p.hookManager.Store(newManager)
 	}
 }
 
@@ -444,11 +454,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	now := time.Now()
 	attempts := 0
 
-	// Get hooks manager once for this getConn call for performance.
-	// Note: Hooks added/removed during this call won't be reflected.
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	for {
 		if attempts >= getAttempts {
@@ -651,9 +658,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// It's a push notification, allow pooling (client will handle it)
 	}
 
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	if hookManager != nil {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
@@ -742,9 +748,8 @@ func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error
 
 // removeConnInternal is the internal implementation of Remove that optionally frees a turn.
 func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
-	p.hookManagerMu.RLock()
-	hookManager := p.hookManager
-	p.hookManagerMu.RUnlock()
+	// Lock-free atomic read - no mutex overhead!
+	hookManager := p.hookManager.Load()
 
 	if hookManager != nil {
 		hookManager.ProcessOnRemove(ctx, cn, reason)
