@@ -125,14 +125,3 @@ func (s *fastSemaphore) release() {
 		// No waiters, that's fine
 	}
 }
-
-// len returns the current number of acquired tokens.
-func (s *fastSemaphore) len() int32 {
-	return s.count.Load()
-}
-
-// cap returns the maximum capacity of the semaphore.
-func (s *fastSemaphore) cap() int32 {
-	return s.max
-}
-

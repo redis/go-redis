@@ -486,19 +486,20 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		// Process connection using the hooks system
+		// Combine error and rejection checks to reduce branches
 		if hookManager != nil {
 			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
-			if err != nil {
-				internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
-				_ = p.CloseConn(cn)
-				continue
-			}
-			if !acceptConn {
-				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
-				// Return connection to pool without freeing the turn that this Get() call holds.
-				// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
-				p.putConnWithoutTurn(ctx, cn)
-				cn = nil
+			if err != nil || !acceptConn {
+				if err != nil {
+					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
+					_ = p.CloseConn(cn)
+				} else {
+					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+					// Return connection to pool without freeing the turn that this Get() call holds.
+					// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
+					p.putConnWithoutTurn(ctx, cn)
+					cn = nil
+				}
 				continue
 			}
 		}
@@ -547,11 +548,12 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	start := time.Now()
 	err := p.semaphore.acquire(ctx, p.cfg.PoolTimeout)
 
-	if err == nil {
+	switch err {
+	case nil:
 		// Successfully acquired after waiting
 		p.waitDurationNs.Add(time.Now().UnixNano() - start.UnixNano())
 		atomic.AddUint32(&p.stats.WaitCount, 1)
-	} else if err == ErrPoolTimeout {
+	case ErrPoolTimeout:
 		atomic.AddUint32(&p.stats.Timeouts, 1)
 	}
 
@@ -665,15 +667,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	}
 
-	// If hooks say to remove the connection, do so
-	if shouldRemove {
+	// Combine all removal checks into one - reduces branches
+	if shouldRemove || !shouldPool {
 		p.removeConnInternal(ctx, cn, errors.New("hook requested removal"), freeTurn)
-		return
-	}
-
-	// If processor says not to pool the connection, remove it
-	if !shouldPool {
-		p.removeConnInternal(ctx, cn, errors.New("hook requested no pooling"), freeTurn)
 		return
 	}
 
