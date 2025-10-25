@@ -599,19 +599,12 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		// Hot path optimization: try fast IDLE → IN_USE transition first
-		// This is a single CAS operation, as fast as the old atomic bool
+		// Hot path optimization: try IDLE → IN_USE or CREATED → IN_USE transition
+		// Most connections will be IDLE (1 CAS), new connections will be CREATED (2 CAS)
+		// We inline both attempts to avoid function call overhead
 		sm := cn.GetStateMachine()
-		if sm.TryTransitionFast(StateIdle, StateInUse) {
-			// Successfully acquired the connection (common case)
-			p.idleConnsLen.Add(-1)
-			break
-		}
-
-		// Fast path failed - connection might be CREATED (uninitialized) or UNUSABLE (handoff/reauth)
-		// Try CREATED → IN_USE for new connections
-		if sm.TryTransitionFast(StateCreated, StateInUse) {
-			// Successfully acquired uninitialized connection
+		if sm.TryTransitionFast(StateIdle, StateInUse) || sm.TryTransitionFast(StateCreated, StateInUse) {
+			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
 			break
 		}
