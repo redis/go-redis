@@ -125,11 +125,13 @@ func TestWantConn_cancel_NotDone(t *testing.T) {
 		result: make(chan wantConnResult, 1),
 	}
 
-	// Create a mock pool
-	pool := &ConnPool{}
-
 	// Test cancel when not done
-	w.cancel(context.Background(), pool)
+	cn := w.cancel()
+
+	// Should return nil since no connection was not delivered
+	if cn != nil {
+		t.Errorf("cancel()= %v, want nil when no connection delivered", cn)
+	}
 
 	// Check that wantConn is marked as done
 	if !w.done {
@@ -163,13 +165,13 @@ func TestWantConn_cancel_AlreadyDone(t *testing.T) {
 	testErr := errors.New("test error")
 	w.result <- wantConnResult{cn: nil, err: testErr}
 
-	// Create a mock pool
-	pool := &ConnPool{
-		cfg: &Options{},
-	}
-
 	// Test cancel when already done
-	w.cancel(context.Background(), pool)
+	cn := w.cancel()
+
+	// Should return nil since the result had no connection
+	if cn != nil {
+		t.Errorf("cancel()= %v, want nil when result had no connection", cn)
+	}
 
 	// Check that wantConn remains done
 	if !w.done {

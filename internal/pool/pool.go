@@ -536,7 +536,10 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 	var err error
 	defer func() {
 		if err != nil {
-			w.cancel(ctx, p)
+			if cn := w.cancel(); cn != nil {
+				p.putIdleConn(ctx, cn)
+				p.freeTurn()
+			}
 		}
 	}()
 
@@ -563,6 +566,7 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 			return
 		} else if cnErr == nil && !delivered {
 			p.putIdleConn(dialCtx, cn)
+			p.freeTurn()
 			freeTurnCalled = true
 		} else {
 			p.freeTurn()
@@ -604,8 +608,6 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
 	// poolSize is increased in newConn
 	p.idleConns = append(p.idleConns, cn)
 	p.idleConnsLen.Add(1)
-
-	p.freeTurn()
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {

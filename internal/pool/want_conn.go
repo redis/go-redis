@@ -37,7 +37,7 @@ func (w *wantConn) tryDeliver(cn *Conn, err error) bool {
 	return true
 }
 
-func (w *wantConn) cancel(ctx context.Context, p *ConnPool) {
+func (w *wantConn) cancel() *Conn {
 	w.mu.Lock()
 	var cn *Conn
 	if w.done {
@@ -54,9 +54,7 @@ func (w *wantConn) cancel(ctx context.Context, p *ConnPool) {
 	w.ctx = nil
 	w.mu.Unlock()
 
-	if cn != nil {
-		p.putIdleConn(ctx, cn)
-	}
+	return cn
 }
 
 type wantConnResult struct {

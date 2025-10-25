@@ -604,6 +604,11 @@ var _ = Describe("queuedNewConn", func() {
 
 		// Wait for first request to complete
 		<-done1
+
+		// Verify all turns are released after requests complete
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "All turns should be released after requests complete")
 	})
 
 	It("should handle context cancellation while waiting for connection result", func() {
@@ -646,8 +651,19 @@ var _ = Describe("queuedNewConn", func() {
 		<-done
 		Expect(err2).To(Equal(context.DeadlineExceeded))
 
+		// Verify turn state - background goroutine may still hold turn
+		// Note: Background connection creation will complete and release turn
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(1), "Only conn1's turn should be held")
+
 		// Clean up - release the first connection
 		testPool.Put(ctx, conn1)
+
+		// Verify all turns are released after cleanup
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "All turns should be released after cleanup")
 	})
 
 	It("should handle dial failures gracefully", func() {
@@ -668,6 +684,11 @@ var _ = Describe("queuedNewConn", func() {
 		_, err := testPool.Get(ctx)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("dial failed"))
+
+		// Verify turn is released after dial failure
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "Turn should be released after dial failure")
 	})
 
 	It("should handle connection creation success with normal delivery", func() {
@@ -909,6 +930,112 @@ var _ = Describe("queuedNewConn", func() {
 
 		// Cleanup
 		testPool.Put(context.Background(), conn2)
+
+		// Verify turn is released after putIdleConn path completes
+		// This is critical: ensures freeTurn() was called in the putIdleConn branch
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"Turn should be released after putIdleConn path completes")
+	})
+
+	It("should not leak turn when delivering connection via putIdleConn", func() {
+		// This test verifies that freeTurn() is called when putIdleConn successfully
+		// delivers a connection to another waiting request
+		//
+		// Scenario:
+		// 1. Request A: timeout 150ms, connection creation takes 200ms
+		// 2. Request B: timeout 500ms, connection creation takes 400ms
+		// 3. Both requests enter dialsQueue and start async connection creation
+		// 4. Request A times out at 150ms
+		// 5. Request A's connection completes at 200ms
+		// 6. putIdleConn delivers Request A's connection to Request B
+		// 7. queuedNewConn must call freeTurn()
+		// 8. Check: QueueLen should be 1 (only B holding turn), not 2 (A's turn leaked)
+
+		callCount := int32(0)
+
+		controlledDialer := func(ctx context.Context) (net.Conn, error) {
+			count := atomic.AddInt32(&callCount, 1)
+			if count == 1 {
+				// Request A's connection: takes 200ms
+				time.Sleep(200 * time.Millisecond)
+			} else {
+				// Request B's connection: takes 400ms (longer, so A's connection is used)
+				time.Sleep(400 * time.Millisecond)
+			}
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             controlledDialer,
+			PoolSize:           2, // Allows both requests to get turns
+			MaxConcurrentDials: 2, // Allows both connections to be created simultaneously
+			DialTimeout:        500 * time.Millisecond,
+			PoolTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Verify initial state
+		Expect(testPool.QueueLen()).To(Equal(0))
+
+		// Request A: Short timeout (150ms), connection takes 200ms
+		reqADone := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+			shortCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+			defer cancel()
+			_, err := testPool.Get(shortCtx)
+			reqADone <- err
+		}()
+
+		// Wait for Request A to acquire turn and enter dialsQueue
+		time.Sleep(50 * time.Millisecond)
+		Expect(testPool.QueueLen()).To(Equal(1), "Request A should occupy turn")
+
+		// Request B: Long timeout (500ms), will receive Request A's connection
+		reqBDone := make(chan struct{})
+		var reqBConn *pool.Conn
+		var reqBErr error
+		go func() {
+			defer GinkgoRecover()
+			longCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+			reqBConn, reqBErr = testPool.Get(longCtx)
+			close(reqBDone)
+		}()
+
+		// Wait for Request B to acquire turn and enter dialsQueue
+		time.Sleep(50 * time.Millisecond)
+		Expect(testPool.QueueLen()).To(Equal(2), "Both requests should occupy turns")
+
+		// Request A times out at 150ms
+		reqAErr := <-reqADone
+		Expect(reqAErr).To(HaveOccurred(), "Request A should timeout")
+
+		// Request A's connection completes at 200ms
+		// putIdleConn delivers it to Request B via tryDeliver
+		// queuedNewConn MUST call freeTurn() to release Request A's turn
+		<-reqBDone
+		Expect(reqBErr).NotTo(HaveOccurred(), "Request B should receive Request A's connection")
+		Expect(reqBConn).NotTo(BeNil())
+
+		// CRITICAL CHECK: Turn leak detection
+		// After Request B receives connection from putIdleConn:
+		// - Request A's turn SHOULD be released (via freeTurn)
+		// - Request B's turn is still held (will release on Put)
+		// Expected QueueLen: 1 (only Request B)
+		// If Bug exists (missing freeTurn): QueueLen: 2 (Request A's turn leaked)
+		time.Sleep(100 * time.Millisecond) // Allow time for turn release
+		currentQueueLen := testPool.QueueLen()
+
+		Expect(currentQueueLen).To(Equal(1),
+			"QueueLen should be 1 (only Request B holding turn). "+
+				"If it's 2, Request A's turn leaked due to missing freeTurn()")
+
+		// Cleanup
+		testPool.Put(ctx, reqBConn)
+		Eventually(func() int { return testPool.QueueLen() }, "500ms").Should(Equal(0))
 	})
 })
 
