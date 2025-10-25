@@ -260,11 +260,13 @@ func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 
 	if !old && new {
 		// Acquiring: IDLE → IN_USE
-		_, err := cn.stateMachine.TryTransition([]ConnState{StateIdle}, StateInUse)
+		// Use predefined slice to avoid allocation
+		_, err := cn.stateMachine.TryTransition(validFromCreatedOrIdle, StateInUse)
 		return err == nil
 	} else {
 		// Releasing: IN_USE → IDLE
-		_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse}, StateIdle)
+		// Use predefined slice to avoid allocation
+		_, err := cn.stateMachine.TryTransition(validFromInUse, StateIdle)
 		return err == nil
 	}
 }
@@ -632,7 +634,8 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// The connection is typically in IN_USE state when OnPut is called (normal Put flow)
 	// But in some edge cases or tests, it might be in IDLE or CREATED state
 	// The pool will detect this state change and preserve it (not overwrite with IDLE)
-	finalState, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle, StateCreated}, StateUnusable)
+	// Use predefined slice to avoid allocation
+	finalState, err := cn.stateMachine.TryTransition(validFromCreatedInUseOrIdle, StateUnusable)
 	if err != nil {
 		// Check if already in UNUSABLE state (race condition or retry)
 		// ShouldHandoff should be false now, but check just in case

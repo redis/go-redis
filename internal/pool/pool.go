@@ -601,7 +601,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 
 		// Try to atomically transition to IN_USE using state machine
 		// Accept both CREATED (uninitialized) and IDLE (initialized) states
-		_, err := cn.GetStateMachine().TryTransition([]ConnState{StateCreated, StateIdle}, StateInUse)
+		// Use predefined slice to avoid allocation
+		_, err := cn.GetStateMachine().TryTransition(validFromCreatedOrIdle, StateInUse)
 		if err == nil {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
@@ -695,7 +696,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// This prevents:
 		// 1. Race condition where another goroutine could acquire a connection that's still in IN_USE state
 		// 2. Overwriting state changes made by hooks (e.g., IN_USE → UNUSABLE for handoff)
-		currentState, err := cn.GetStateMachine().TryTransition([]ConnState{StateInUse}, StateIdle)
+		// Use predefined slice to avoid allocation
+		currentState, err := cn.GetStateMachine().TryTransition(validFromInUse, StateIdle)
 		if err != nil {
 			// Hook changed the state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
