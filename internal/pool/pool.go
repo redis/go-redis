@@ -599,15 +599,24 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		// Try to atomically transition to IN_USE using state machine
-		// Accept both CREATED (uninitialized) and IDLE (initialized) states
-		// Use predefined slice to avoid allocation
-		_, err := cn.GetStateMachine().TryTransition(validFromCreatedOrIdle, StateInUse)
-		if err == nil {
-			// Successfully acquired the connection
+		// Hot path optimization: try fast IDLE → IN_USE transition first
+		// This is a single CAS operation, as fast as the old atomic bool
+		sm := cn.GetStateMachine()
+		if sm.TryTransitionFast(StateIdle, StateInUse) {
+			// Successfully acquired the connection (common case)
 			p.idleConnsLen.Add(-1)
 			break
 		}
+
+		// Fast path failed - connection might be CREATED (uninitialized) or UNUSABLE (handoff/reauth)
+		// Try CREATED → IN_USE for new connections
+		if sm.TryTransitionFast(StateCreated, StateInUse) {
+			// Successfully acquired uninitialized connection
+			p.idleConnsLen.Add(-1)
+			break
+		}
+
+		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it
 
 		// Connection is not in a valid state (might be UNUSABLE for handoff/re-auth, INITIALIZING, etc.)
 		// Put it back in the pool and try the next one
@@ -691,16 +700,13 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	var shouldCloseConn bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
-		// Try to transition to IDLE state BEFORE adding to pool
-		// Only transition if connection is still IN_USE (hooks might have changed state)
-		// This prevents:
-		// 1. Race condition where another goroutine could acquire a connection that's still in IN_USE state
-		// 2. Overwriting state changes made by hooks (e.g., IN_USE → UNUSABLE for handoff)
-		// Use predefined slice to avoid allocation
-		currentState, err := cn.GetStateMachine().TryTransition(validFromInUse, StateIdle)
-		if err != nil {
-			// Hook changed the state (e.g., to UNUSABLE for handoff)
+		// Hot path optimization: try fast IN_USE → IDLE transition
+		// This is a single CAS operation, as fast as the old atomic bool
+		sm := cn.GetStateMachine()
+		if !sm.TryTransitionFast(StateInUse, StateIdle) {
+			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
+			currentState := sm.GetState()
 			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
 		}
 

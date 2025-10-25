@@ -121,6 +121,20 @@ func (sm *ConnStateMachine) GetState() ConnState {
 	return ConnState(sm.state.Load())
 }
 
+// TryTransitionFast is an optimized version for the hot path (Get/Put operations).
+// It only handles simple IDLE ⇄ IN_USE transitions without waiter notification.
+// This is safe because:
+// 1. Get/Put don't need to wait for state changes
+// 2. Background operations (handoff/reauth) use UNUSABLE state, which this won't match
+// 3. If a background operation is in progress (state is UNUSABLE), this fails fast
+//
+// Returns true if transition succeeded, false otherwise.
+// Use this for performance-critical paths where you don't need error details.
+func (sm *ConnStateMachine) TryTransitionFast(fromState, targetState ConnState) bool {
+	// Single CAS operation - as fast as the old atomic bool!
+	return sm.state.CompareAndSwap(uint32(fromState), uint32(targetState))
+}
+
 // TryTransition attempts an immediate state transition without waiting.
 // Returns the current state after the transition attempt and an error if the transition failed.
 // The returned state is the CURRENT state (after the attempt), not the previous state.
