@@ -77,6 +77,12 @@ type Pooler interface {
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
+	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+	// This should be used when removing a connection from a context that didn't acquire
+	// a turn via Get() (e.g., background workers, cleanup tasks).
+	// For normal removal after Get(), use Remove() instead.
+	RemoveWithoutTurn(context.Context, *Conn, error)
+
 	Len() int
 	IdleLen() int
 	Stats() *Stats
@@ -244,9 +250,9 @@ func (p *ConnPool) addIdleConn() error {
 		return err
 	}
 
-	// Mark connection as usable after successful creation
-	// This is essential for normal pool operations
-	cn.SetUsable(true)
+	// NOTE: Connection is in CREATED state and will be initialized by redis.go:initConn()
+	// when first acquired from the pool. Do NOT transition to IDLE here - that happens
+	// after initialization completes.
 
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
@@ -286,9 +292,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, err
 	}
 
-	// Mark connection as usable after successful creation
-	// This is essential for normal pool operations
-	cn.SetUsable(true)
+	// NOTE: Connection is in CREATED state and will be initialized by redis.go:initConn()
+	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
+	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
 
 	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > int32(p.cfg.MaxActiveConns) {
 		_ = cn.Close()
@@ -479,7 +485,9 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			}
 			if !acceptConn {
 				internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
-				p.Put(ctx, cn)
+				// Return connection to pool without freeing the turn that this Get() call holds.
+				// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
+				p.putConnWithoutTurn(ctx, cn)
 				cn = nil
 				continue
 			}
@@ -584,15 +592,17 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		}
 		attempts++
 
-		if cn.CompareAndSwapUsed(false, true) {
-			if cn.IsUsable() {
-				p.idleConnsLen.Add(-1)
-				break
-			}
-			cn.SetUsed(false)
+		// Try to atomically transition to IN_USE using state machine
+		// Accept both CREATED (uninitialized) and IDLE (initialized) states
+		_, err := cn.GetStateMachine().TryTransition([]ConnState{StateCreated, StateIdle}, StateInUse)
+		if err == nil {
+			// Successfully acquired the connection
+			p.idleConnsLen.Add(-1)
+			break
 		}
 
-		// Connection is not usable, put it back in the pool
+		// Connection is not in a valid state (might be UNUSABLE for handoff/re-auth, INITIALIZING, etc.)
+		// Put it back in the pool and try the next one
 		if p.cfg.PoolFIFO {
 			// FIFO: put at end (will be picked up last since we pop from front)
 			p.idleConns = append(p.idleConns, cn)
@@ -613,6 +623,18 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 }
 
 func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, true)
+}
+
+// putConnWithoutTurn is an internal method that puts a connection back to the pool
+// without freeing a turn. This is used when returning a rejected connection from
+// within Get(), where the turn is still held by the Get() call.
+func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
+	p.putConn(ctx, cn, false)
+}
+
+// putConn is the internal implementation of Put that optionally frees a turn.
+func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	// Process connection using the hooks system
 	shouldPool := true
 	shouldRemove := false
@@ -623,7 +645,8 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
 			// Not a push notification or error peeking, remove connection
 			internal.Logger.Printf(ctx, "Conn has unread data (not push notification), removing it")
-			p.Remove(ctx, cn, err)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
+			return
 		}
 		// It's a push notification, allow pooling (client will handle it)
 	}
@@ -636,31 +659,43 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldPool, shouldRemove, err = hookManager.ProcessOnPut(ctx, cn)
 		if err != nil {
 			internal.Logger.Printf(ctx, "Connection hook error: %v", err)
-			p.Remove(ctx, cn, err)
+			p.removeConnInternal(ctx, cn, err, freeTurn)
 			return
 		}
 	}
 
 	// If hooks say to remove the connection, do so
 	if shouldRemove {
-		p.Remove(ctx, cn, errors.New("hook requested removal"))
+		p.removeConnInternal(ctx, cn, errors.New("hook requested removal"), freeTurn)
 		return
 	}
 
 	// If processor says not to pool the connection, remove it
 	if !shouldPool {
-		p.Remove(ctx, cn, errors.New("hook requested no pooling"))
+		p.removeConnInternal(ctx, cn, errors.New("hook requested no pooling"), freeTurn)
 		return
 	}
 
 	if !cn.pooled {
-		p.Remove(ctx, cn, errors.New("connection not pooled"))
+		p.removeConnInternal(ctx, cn, errors.New("connection not pooled"), freeTurn)
 		return
 	}
 
 	var shouldCloseConn bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
+		// Try to transition to IDLE state BEFORE adding to pool
+		// Only transition if connection is still IN_USE (hooks might have changed state)
+		// This prevents:
+		// 1. Race condition where another goroutine could acquire a connection that's still in IN_USE state
+		// 2. Overwriting state changes made by hooks (e.g., IN_USE → UNUSABLE for handoff)
+		currentState, err := cn.GetStateMachine().TryTransition([]ConnState{StateInUse}, StateIdle)
+		if err != nil {
+			// Hook changed the state (e.g., to UNUSABLE for handoff)
+			// Keep the state set by the hook and pool the connection anyway
+			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
+		}
+
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
 		if !cn.IsUsable() {
@@ -684,12 +719,9 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 		shouldCloseConn = true
 	}
 
-	// if the connection is not going to be closed, mark it as not used
-	if !shouldCloseConn {
-		cn.SetUsed(false)
+	if freeTurn {
+		p.freeTurn()
 	}
-
-	p.freeTurn()
 
 	if shouldCloseConn {
 		_ = p.closeConn(cn)
@@ -697,6 +729,19 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
+	p.removeConnInternal(ctx, cn, reason, true)
+}
+
+// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+// This should be used when removing a connection from a context that didn't acquire
+// a turn via Get() (e.g., background workers, cleanup tasks).
+// For normal removal after Get(), use Remove() instead.
+func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error) {
+	p.removeConnInternal(ctx, cn, reason, false)
+}
+
+// removeConnInternal is the internal implementation of Remove that optionally frees a turn.
+func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
 	p.hookManagerMu.RLock()
 	hookManager := p.hookManager
 	p.hookManagerMu.RUnlock()
@@ -707,7 +752,9 @@ func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 
 	p.removeConnWithLock(cn)
 
-	p.freeTurn()
+	if freeTurn {
+		p.freeTurn()
+	}
 
 	_ = p.closeConn(cn)
 
