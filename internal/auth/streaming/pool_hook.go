@@ -34,9 +34,10 @@ type ReAuthPoolHook struct {
 	shouldReAuth     map[uint64]func(error)
 	shouldReAuthLock sync.RWMutex
 
-	// workers is a semaphore channel limiting concurrent re-auth operations
+	// workers is a semaphore limiting concurrent re-auth operations
 	// Initialized with poolSize tokens to prevent pool exhaustion
-	workers chan struct{}
+	// Uses FastSemaphore for consistency and better performance
+	workers *internal.FastSemaphore
 
 	// reAuthTimeout is the maximum time to wait for acquiring a connection for re-auth
 	reAuthTimeout time.Duration
@@ -59,16 +60,10 @@ type ReAuthPoolHook struct {
 // The poolSize parameter is used to initialize the worker semaphore, ensuring that
 // re-auth operations don't exhaust the connection pool.
 func NewReAuthPoolHook(poolSize int, reAuthTimeout time.Duration) *ReAuthPoolHook {
-	workers := make(chan struct{}, poolSize)
-	// Initialize the workers channel with tokens (semaphore pattern)
-	for i := 0; i < poolSize; i++ {
-		workers <- struct{}{}
-	}
-
 	return &ReAuthPoolHook{
 		shouldReAuth:    make(map[uint64]func(error)),
 		scheduledReAuth: make(map[uint64]bool),
-		workers:         workers,
+		workers:         internal.NewFastSemaphore(int32(poolSize)),
 		reAuthTimeout:   reAuthTimeout,
 	}
 }
@@ -162,10 +157,10 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 		r.scheduledLock.Unlock()
 		r.shouldReAuthLock.Unlock()
 		go func() {
-			<-r.workers
+			r.workers.AcquireBlocking()
 			// safety first
 			if conn == nil || (conn != nil && conn.IsClosed()) {
-				r.workers <- struct{}{}
+				r.workers.Release()
 				return
 			}
 			defer func() {
@@ -176,7 +171,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 				r.scheduledLock.Lock()
 				delete(r.scheduledReAuth, connID)
 				r.scheduledLock.Unlock()
-				r.workers <- struct{}{}
+				r.workers.Release()
 			}()
 
 			// Create timeout context for connection acquisition

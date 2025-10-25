@@ -1,12 +1,21 @@
-package pool
+package internal
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// fastSemaphore is a high-performance semaphore implementation using atomic operations.
+var timers = sync.Pool{
+	New: func() interface{} {
+		t := time.NewTimer(time.Hour)
+		t.Stop()
+		return t
+	},
+}
+
+// FastSemaphore is a high-performance semaphore implementation using atomic operations.
 // It's optimized for the fast path (no blocking) while still supporting timeouts and context cancellation.
 //
 // Performance characteristics:
@@ -18,7 +27,7 @@ import (
 // 1. The fast path avoids channel operations entirely (no scheduler involvement)
 // 2. Atomic operations are much cheaper than channel send/receive
 // 3. Better CPU cache behavior (no channel buffer allocation)
-type fastSemaphore struct {
+type FastSemaphore struct {
 	// Current number of acquired tokens (atomic)
 	count atomic.Int32
 
@@ -30,19 +39,19 @@ type fastSemaphore struct {
 	waitCh chan struct{}
 }
 
-// newFastSemaphore creates a new fast semaphore with the given capacity.
-func newFastSemaphore(capacity int32) *fastSemaphore {
-	return &fastSemaphore{
+// NewFastSemaphore creates a new fast semaphore with the given capacity.
+func NewFastSemaphore(capacity int32) *FastSemaphore {
+	return &FastSemaphore{
 		max:    capacity,
 		waitCh: make(chan struct{}, capacity),
 	}
 }
 
-// tryAcquire attempts to acquire a token without blocking.
+// TryAcquire attempts to acquire a token without blocking.
 // Returns true if successful, false if the semaphore is full.
 //
 // This is the fast path - just a single CAS operation.
-func (s *fastSemaphore) tryAcquire() bool {
+func (s *FastSemaphore) TryAcquire() bool {
 	for {
 		current := s.count.Load()
 		if current >= s.max {
@@ -55,13 +64,14 @@ func (s *fastSemaphore) tryAcquire() bool {
 	}
 }
 
-// acquire acquires a token, blocking if necessary until one is available or the context is cancelled.
+// Acquire acquires a token, blocking if necessary until one is available or the context is cancelled.
 // Returns an error if the context is cancelled or the timeout expires.
+// Returns timeoutErr when the timeout expires.
 //
 // Performance optimization:
 // 1. First try fast path (no blocking)
 // 2. If that fails, fall back to channel-based waiting
-func (s *fastSemaphore) acquire(ctx context.Context, timeout time.Duration) error {
+func (s *FastSemaphore) Acquire(ctx context.Context, timeout time.Duration, timeoutErr error) error {
 	// Fast path: try to acquire without blocking
 	select {
 	case <-ctx.Done():
@@ -70,7 +80,7 @@ func (s *fastSemaphore) acquire(ctx context.Context, timeout time.Duration) erro
 	}
 
 	// Try fast acquire first
-	if s.tryAcquire() {
+	if s.TryAcquire() {
 		return nil
 	}
 
@@ -92,7 +102,7 @@ func (s *fastSemaphore) acquire(ctx context.Context, timeout time.Duration) erro
 
 		case <-s.waitCh:
 			// Someone released a token, try to acquire it
-			if s.tryAcquire() {
+			if s.TryAcquire() {
 				if !timer.Stop() {
 					<-timer.C
 				}
@@ -101,19 +111,38 @@ func (s *fastSemaphore) acquire(ctx context.Context, timeout time.Duration) erro
 			// Failed to acquire (race with another goroutine), continue waiting
 
 		case <-timer.C:
-			return ErrPoolTimeout
+			return timeoutErr
 		}
 
 		// Periodically check if we can acquire (handles race conditions)
 		if time.Since(start) > timeout {
-			return ErrPoolTimeout
+			return timeoutErr
 		}
 	}
 }
 
-// release releases a token back to the semaphore.
+// AcquireBlocking acquires a token, blocking indefinitely until one is available.
+// This is useful for cases where you don't need timeout or context cancellation.
+// Returns immediately if a token is available (fast path).
+func (s *FastSemaphore) AcquireBlocking() {
+	// Try fast path first
+	if s.TryAcquire() {
+		return
+	}
+
+	// Slow path: wait for a token
+	for {
+		<-s.waitCh
+		if s.TryAcquire() {
+			return
+		}
+		// Failed to acquire (race with another goroutine), continue waiting
+	}
+}
+
+// Release releases a token back to the semaphore.
 // This wakes up one waiting goroutine if any are blocked.
-func (s *fastSemaphore) release() {
+func (s *FastSemaphore) Release() {
 	s.count.Add(-1)
 
 	// Try to wake up a waiter (non-blocking)
@@ -125,3 +154,10 @@ func (s *fastSemaphore) release() {
 		// No waiters, that's fine
 	}
 }
+
+// Len returns the current number of acquired tokens.
+// Used by tests to check semaphore state.
+func (s *FastSemaphore) Len() int32 {
+	return s.count.Load()
+}
+

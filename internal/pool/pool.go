@@ -134,7 +134,7 @@ type ConnPool struct {
 
 	// Fast atomic semaphore for connection limiting
 	// Replaces the old channel-based queue for better performance
-	semaphore *fastSemaphore
+	semaphore *internal.FastSemaphore
 
 	connsMu   sync.Mutex
 	conns     map[uint64]*Conn
@@ -160,7 +160,7 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg: opt,
 
-		semaphore: newFastSemaphore(opt.PoolSize),
+		semaphore: internal.NewFastSemaphore(opt.PoolSize),
 		conns:     make(map[uint64]*Conn),
 		idleConns: make([]*Conn, 0, opt.PoolSize),
 	}
@@ -226,7 +226,7 @@ func (p *ConnPool) checkMinIdleConns() {
 	// MinIdleConns should be a subset of PoolSize, not additional connections
 	for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
 		// Try to acquire a semaphore token
-		if !p.semaphore.tryAcquire() {
+		if !p.semaphore.TryAcquire() {
 			// Semaphore is full, can't create more connections
 			return
 		}
@@ -540,13 +540,13 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	}
 
 	// Fast path: try to acquire without blocking
-	if p.semaphore.tryAcquire() {
+	if p.semaphore.TryAcquire() {
 		return nil
 	}
 
 	// Slow path: need to wait
 	start := time.Now()
-	err := p.semaphore.acquire(ctx, p.cfg.PoolTimeout)
+	err := p.semaphore.Acquire(ctx, p.cfg.PoolTimeout, ErrPoolTimeout)
 
 	switch err {
 	case nil:
@@ -561,7 +561,7 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 }
 
 func (p *ConnPool) freeTurn() {
-	p.semaphore.release()
+	p.semaphore.Release()
 }
 
 func (p *ConnPool) popIdle() (*Conn, error) {
