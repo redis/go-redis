@@ -105,7 +105,7 @@ func TestConnStateMachine_AwaitAndTransition_FastPath(t *testing.T) {
 	}
 
 	if state := sm.GetState(); state != StateUnusable {
-		t.Errorf("expected state REAUTH_IN_PROGRESS, got %s", state)
+		t.Errorf("expected state UNUSABLE, got %s", state)
 	}
 }
 
