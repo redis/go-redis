@@ -250,7 +250,8 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 		return sm.GetState(), ctx.Err()
 	case err := <-w.done:
 		// Transition completed (or failed)
-		// Note: waiterCount is decremented in notifyWaiters when waiter is removed
+		// Note: waiterCount is decremented either in notifyWaiters (when the waiter is notified and removed)
+		// or here (on timeout/cancellation).
 		return sm.GetState(), err
 	}
 }
