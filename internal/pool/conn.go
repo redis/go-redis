@@ -20,6 +20,8 @@ var noDeadline = time.Time{}
 // Global atomic counter for connection IDs
 var connIDCounter uint64
 
+var errUnexpectedRead = errors.New("unexpected read from socket")
+
 // HandoffState represents the atomic state for connection handoffs
 // This struct is stored atomically to prevent race conditions between
 // checking handoff status and reading handoff parameters
