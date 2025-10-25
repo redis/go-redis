@@ -661,6 +661,35 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 	return cn.stateMachine
 }
 
+// TryAcquire attempts to acquire the connection for use.
+// This is an optimized inline method for the hot path (Get operation).
+//
+// It tries to transition from IDLE → IN_USE or CREATED → IN_USE.
+// Returns true if the connection was successfully acquired, false otherwise.
+//
+// Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
+// because it avoids the extra pointer dereference and allows better inlining.
+func (cn *Conn) TryAcquire() bool {
+	// Inline the hot path - try IDLE → IN_USE first (most common case)
+	// Then try CREATED → IN_USE (new connections)
+	// The || operator short-circuits, so only 1 CAS in the common case
+	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
+		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateInUse))
+}
+
+// Release releases the connection back to the pool.
+// This is an optimized inline method for the hot path (Put operation).
+//
+// It tries to transition from IN_USE → IDLE.
+// Returns true if the connection was successfully released, false otherwise.
+//
+// Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
+// because it avoids the extra pointer dereference and allows better inlining.
+func (cn *Conn) Release() bool {
+	// Inline the hot path - single CAS operation
+	return cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(StateIdle))
+}
+
 // ClearHandoffState clears the handoff state after successful handoff.
 // Makes the connection usable again.
 func (cn *Conn) ClearHandoffState() {

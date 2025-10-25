@@ -594,10 +594,8 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 		attempts++
 
 		// Hot path optimization: try IDLE → IN_USE or CREATED → IN_USE transition
-		// Most connections will be IDLE (1 CAS), new connections will be CREATED (2 CAS)
-		// We inline both attempts to avoid function call overhead
-		sm := cn.GetStateMachine()
-		if sm.TryTransitionFast(StateIdle, StateInUse) || sm.TryTransitionFast(StateCreated, StateInUse) {
+		// Using inline TryAcquire() method for better performance (avoids pointer dereference)
+		if cn.TryAcquire() {
 			// Successfully acquired the connection
 			p.idleConnsLen.Add(-1)
 			break
@@ -688,14 +686,13 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
 		// Hot path optimization: try fast IN_USE → IDLE transition
-		// This is a single CAS operation, as fast as the old atomic bool
-		sm := cn.GetStateMachine()
-		transitionedToIdle := sm.TryTransitionFast(StateInUse, StateIdle)
+		// Using inline Release() method for better performance (avoids pointer dereference)
+		transitionedToIdle := cn.Release()
 
 		if !transitionedToIdle {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
-			currentState := sm.GetState()
+			currentState := cn.GetStateMachine().GetState()
 			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
 		}
 
