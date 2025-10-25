@@ -133,17 +133,15 @@ func (sm *ConnStateMachine) TryTransition(validFromStates []ConnState, targetSta
 	// Try each valid from state with CAS
 	// This ensures only ONE goroutine can successfully transition at a time
 	for _, fromState := range validFromStates {
-		// Fast path: check if we're already in target state
-		if fromState == targetState && sm.GetState() == targetState {
-			return targetState, nil
-		}
-
 		// Try to atomically swap from fromState to targetState
 		// If successful, we won the race and can proceed
 		if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
 			// Success! We transitioned atomically
-			// Notify any waiters
-			sm.notifyWaiters()
+			// Hot path optimization: only check for waiters if transition succeeded
+			// This avoids atomic load on every Get/Put when no waiters exist
+			if sm.waiterCount.Load() > 0 {
+				sm.notifyWaiters()
+			}
 			return targetState, nil
 		}
 	}
