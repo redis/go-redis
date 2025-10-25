@@ -100,8 +100,9 @@ type ConnStateMachine struct {
 	state atomic.Uint32
 
 	// FIFO queue for waiters - only locked during waiter add/remove/notify
-	mu      sync.Mutex
-	waiters *list.List // List of *waiter
+	mu          sync.Mutex
+	waiters     *list.List // List of *waiter
+	waiterCount atomic.Int32 // Fast lock-free check for waiters (avoids mutex in hot path)
 }
 
 // NewConnStateMachine creates a new connection state machine.
@@ -219,6 +220,7 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 	// Add to FIFO queue
 	sm.mu.Lock()
 	elem := sm.waiters.PushBack(w)
+	sm.waiterCount.Add(1)
 	sm.mu.Unlock()
 
 	// Wait for state change or timeout
@@ -227,10 +229,12 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 		// Timeout or cancellation - remove from queue
 		sm.mu.Lock()
 		sm.waiters.Remove(elem)
+		sm.waiterCount.Add(-1)
 		sm.mu.Unlock()
 		return sm.GetState(), ctx.Err()
 	case err := <-w.done:
 		// Transition completed (or failed)
+		// Note: waiterCount is decremented in notifyWaiters when waiter is removed
 		return sm.GetState(), err
 	}
 }
@@ -238,9 +242,16 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 // notifyWaiters checks if any waiters can proceed and notifies them in FIFO order.
 // This is called after every state transition.
 func (sm *ConnStateMachine) notifyWaiters() {
+	// Fast path: check atomic counter without acquiring lock
+	// This eliminates mutex overhead in the common case (no waiters)
+	if sm.waiterCount.Load() == 0 {
+		return
+	}
+
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	// Double-check after acquiring lock (waiters might have been processed)
 	if sm.waiters.Len() == 0 {
 		return
 	}
@@ -261,6 +272,7 @@ func (sm *ConnStateMachine) notifyWaiters() {
 			if _, valid := w.validStates[currentState]; valid {
 				// Remove from queue first
 				sm.waiters.Remove(elem)
+				sm.waiterCount.Add(-1)
 
 				// Use CAS to ensure state hasn't changed since we checked
 				// This prevents race condition where another thread changes state
@@ -273,6 +285,7 @@ func (sm *ConnStateMachine) notifyWaiters() {
 				} else {
 					// State changed - re-add waiter to front of queue and retry
 					sm.waiters.PushFront(w)
+					sm.waiterCount.Add(1)
 					// Continue to next iteration to re-read state
 					processed = true
 					break
