@@ -160,4 +160,3 @@ func (s *FastSemaphore) Release() {
 func (s *FastSemaphore) Len() int32 {
 	return s.count.Load()
 }
-
