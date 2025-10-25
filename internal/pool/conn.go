@@ -664,14 +664,17 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 // TryAcquire attempts to acquire the connection for use.
 // This is an optimized inline method for the hot path (Get operation).
 //
-// It tries to transition from IDLE → IN_USE or CREATED → IN_USE.
+// It tries to transition from IDLE -> IN_USE or CREATED -> IN_USE.
 // Returns true if the connection was successfully acquired, false otherwise.
 //
 // Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
-// because it avoids the extra pointer dereference and allows better inlining.
+//
+// NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
+// methods. This breaks encapsulation but is necessary for performance.
+// The IDLE->IN_USE and CREATED->IN_USE transitions don't need
+// waiter notification, and benchmarks show 1-3% improvement. If the state machine ever
+// needs to notify waiters on these transitions, update this to use TryTransitionFast().
 func (cn *Conn) TryAcquire() bool {
-	// Inline the hot path - try IDLE → IN_USE first (most common case)
-	// Then try CREATED → IN_USE (new connections)
 	// The || operator short-circuits, so only 1 CAS in the common case
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
 		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateInUse))
@@ -680,11 +683,15 @@ func (cn *Conn) TryAcquire() bool {
 // Release releases the connection back to the pool.
 // This is an optimized inline method for the hot path (Put operation).
 //
-// It tries to transition from IN_USE → IDLE.
+// It tries to transition from IN_USE -> IDLE.
 // Returns true if the connection was successfully released, false otherwise.
 //
-// Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
-// because it avoids the extra pointer dereference and allows better inlining.
+// Performance: This is faster than calling GetStateMachine() + TryTransitionFast().
+//
+// NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
+// methods. This breaks encapsulation but is necessary for performance.
+// If the state machine ever needs to notify waiters
+// on this transition, update this to use TryTransitionFast().
 func (cn *Conn) Release() bool {
 	// Inline the hot path - single CAS operation
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(StateIdle))

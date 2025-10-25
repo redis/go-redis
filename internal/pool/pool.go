@@ -286,7 +286,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= int32(p.cfg.MaxActiveConns) {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= p.cfg.MaxActiveConns {
 		return nil, ErrPoolExhausted
 	}
 
@@ -301,7 +301,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// when first used. Do NOT transition to IDLE here - that happens after initialization completes.
 	// The state machine flow is: CREATED → INITIALIZING (in initConn) → IDLE (after init success)
 
-	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > int32(p.cfg.MaxActiveConns) {
+	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() > p.cfg.MaxActiveConns {
 		_ = cn.Close()
 		return nil, ErrPoolExhausted
 	}
