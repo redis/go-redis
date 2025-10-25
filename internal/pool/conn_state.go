@@ -45,7 +45,6 @@ const (
 var (
 	validFromInUse              = []ConnState{StateInUse}
 	validFromCreatedOrIdle      = []ConnState{StateCreated, StateIdle}
-	validFromCreatedOrInUse     = []ConnState{StateCreated, StateInUse}
 	validFromCreatedInUseOrIdle = []ConnState{StateCreated, StateInUse, StateIdle}
 )
 
