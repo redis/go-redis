@@ -865,36 +865,53 @@ func (p *ConnPool) Close() error {
 }
 
 func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
-	// slight optimization, check expiresAt first.
-	if cn.expiresAt.Before(now) {
-		return false
+	// Performance optimization: check conditions from cheapest to most expensive,
+	// and from most likely to fail to least likely to fail.
+
+	// Only fails if ConnMaxLifetime is set AND connection is old.
+	// Most pools don't set ConnMaxLifetime, so this rarely fails.
+	if p.cfg.ConnMaxLifetime > 0 {
+		if cn.expiresAt.Before(now) {
+			return false // Connection has exceeded max lifetime
+		}
 	}
 
-	// Check if connection has exceeded idle timeout
-	if p.cfg.ConnMaxIdleTime > 0 && now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
-		return false
+	// Most pools set ConnMaxIdleTime, and idle connections are common.
+	// Checking this first allows us to fail fast without expensive syscalls.
+	if p.cfg.ConnMaxIdleTime > 0 {
+		if now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
+			return false // Connection has been idle too long
+		}
 	}
 
-	cn.SetUsedAt(now)
-	// Check basic connection health
-	// Use GetNetConn() to safely access netConn and avoid data races
+	// Only run this if the cheap checks passed.
 	if err := connCheck(cn.getNetConn()); err != nil {
 		// If there's unexpected data, it might be push notifications (RESP3)
-		// However, push notification processing is now handled by the client
-		// before WithReader to ensure proper context is available to handlers
 		if p.cfg.PushNotificationsEnabled && err == errUnexpectedRead {
-			// we know that there is something in the buffer, so peek at the next reply type without
-			// the potential to block
+			// Peek at the reply type to check if it's a push notification
 			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
-				internal.Logger.Printf(context.Background(), "push: conn[%d] has buffered data, likely push notifications - will be processed by client", cn.GetID())
-				return true // Connection is healthy, client will handle notifications
+				internal.Logger.Printf(
+					context.Background(),
+					"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
+					cn.GetID(),
+				)
+
+				// Update timestamp for healthy connection
+				cn.SetUsedAt(now)
+
+				// Connection is healthy, client will handle notifications
+				return true
 			}
-			return false // Unexpected data, not push notifications, connection is unhealthy
-		} else {
+			// Not a push notification - treat as unhealthy
 			return false
 		}
+		// Connection failed health check
+		return false
 	}
+
+	// Only update UsedAt if connection is healthy (avoids unnecessary atomic store)
+	cn.SetUsedAt(now)
 	return true
 }

@@ -1,3 +1,4 @@
+// Package pool implements the pool management
 package pool
 
 import (
@@ -79,6 +80,7 @@ type Conn struct {
 	expiresAt time.Time
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
+
 	// Using atomic operations for lock-free access to avoid mutex contention
 	relaxedReadTimeoutNs  atomic.Int64 // time.Duration as nanoseconds
 	relaxedWriteTimeoutNs atomic.Int64 // time.Duration as nanoseconds
@@ -839,6 +841,8 @@ func (cn *Conn) MaybeHasData() bool {
 	return false
 }
 
+// deadline computes the effective deadline time based on context and timeout.
+// It updates the usedAt timestamp to now.
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	tm := time.Now()
 	cn.SetUsedAt(tm)
