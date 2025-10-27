@@ -24,6 +24,9 @@ type ConnInfo interface {
 type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo)
+
+	// RecordConnectionStateChange records when a connection changes state (e.g., idle -> used)
+	RecordConnectionStateChange(ctx context.Context, cn ConnInfo, fromState, toState string)
 }
 
 // SetOTelRecorder sets the global OpenTelemetry recorder.
@@ -53,5 +56,14 @@ func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, durat
 		}
 		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, connInfo)
 	}
+}
+
+func (a *otelRecorderAdapter) RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string) {
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordConnectionStateChange(ctx, connInfo, fromState, toState)
 }
 

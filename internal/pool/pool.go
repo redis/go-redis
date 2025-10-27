@@ -24,6 +24,9 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	// Global callback for connection state changes (set by otel package)
+	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -41,6 +44,12 @@ var (
 	maxTime      = minTime.Add(1<<63 - 1)
 	noExpiration = maxTime
 )
+
+// SetConnectionStateChangeCallback sets the global callback for connection state changes.
+// This is called by the otel package to register metrics recording.
+func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
+	connectionStateChangeCallback = fn
+}
 
 var timers = sync.Pool{
 	New: func() interface{} {
@@ -468,6 +477,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
+
+		// Notify metrics: connection moved from idle to used
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "idle", "used")
+		}
+
 		return cn, nil
 	}
 
@@ -492,6 +507,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			return nil, err
 		}
 	}
+
+	// Notify metrics: new connection is created and used
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, newcn, "", "used")
+	}
+
 	return newcn, nil
 }
 
@@ -659,9 +680,19 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 			p.connsMu.Unlock()
 		}
 		p.idleConnsLen.Add(1)
+
+		// Notify metrics: connection moved from used to idle
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "used", "idle")
+		}
 	} else {
 		p.removeConnWithLock(cn)
 		shouldCloseConn = true
+
+		// Notify metrics: connection removed (used -> nothing)
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "used", "")
+		}
 	}
 
 	p.freeTurn()
@@ -671,10 +702,15 @@ func (p *ConnPool) Put(ctx context.Context, cn *Conn) {
 	}
 }
 
-func (p *ConnPool) Remove(_ context.Context, cn *Conn, reason error) {
+func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 	p.removeConnWithLock(cn)
 
 	p.freeTurn()
+
+	// Notify metrics: connection removed (assume from used state)
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, cn, "used", "")
+	}
 
 	_ = p.closeConn(cn)
 

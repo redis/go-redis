@@ -125,9 +125,20 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 		return fmt.Errorf("failed to create operation duration histogram: %w", err)
 	}
 
+	// Create synchronous UpDownCounter for connection count
+	connectionCount, err := meter.Int64UpDownCounter(
+		"db.client.connection.count",
+		metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
+		metric.WithUnit("{connection}"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create connection count metric: %w", err)
+	}
+
 	// Create recorder
 	recorder := &metricsRecorder{
 		operationDuration: operationDuration,
+		connectionCount:   connectionCount,
 		serverAddr:        serverAddr,
 		serverPort:        serverPort,
 		dbIndex:           dbIndex,
