@@ -323,6 +323,7 @@ var _ = Describe("Client", func() {
 		cn, err = client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
+		Expect(cn.UsedAt().UnixNano()).To(BeNumerically(">", createdAt.UnixNano()))
 		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())
 	})
 

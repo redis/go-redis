@@ -127,9 +127,11 @@ func benchmarkHSETOperationsConcurrent(b *testing.B, rdb *redis.Client, ctx cont
 		// Perform the specified number of HSET operations
 
 		wg := sync.WaitGroup{}
-		wg.Add(operations)
 		timesCh := make(chan time.Duration, operations)
+		errCh := make(chan error, operations)
+
 		for j := 0; j < operations; j++ {
+			wg.Add(1)
 			go func(j int) {
 				defer wg.Done()
 				field := fmt.Sprintf("field_%d", j)
@@ -137,15 +139,24 @@ func benchmarkHSETOperationsConcurrent(b *testing.B, rdb *redis.Client, ctx cont
 
 				err := rdb.HSet(ctx, hashKey, field, value).Err()
 				if err != nil {
-					b.Fatalf("HSET operation failed: %v", err)
+					errCh <- err
+					return
 				}
 				timesCh <- time.Since(startTime)
 			}(j)
-			wg.Wait()
-			close(timesCh)
-			for d := range timesCh {
-				totalTimes = append(totalTimes, d)
-			}
+		}
+
+		wg.Wait()
+		close(timesCh)
+		close(errCh)
+
+		// Check for errors
+		for err := range errCh {
+			b.Errorf("HSET operation failed: %v", err)
+		}
+
+		for d := range timesCh {
+			totalTimes = append(totalTimes, d)
 		}
 	}
 
@@ -206,7 +217,7 @@ func BenchmarkHSET_Concurrent(b *testing.B) {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     "localhost:6379",
 		DB:       0,
-		PoolSize: 1000,
+		PoolSize: 100,
 	})
 	defer rdb.Close()
 
@@ -220,7 +231,8 @@ func BenchmarkHSET_Concurrent(b *testing.B) {
 		rdb.FlushDB(ctx)
 	}()
 
-	scales := []int{1, 10, 100, 1000, 10000, 100000}
+	// Reduced scales to avoid overwhelming the system with too many concurrent goroutines
+	scales := []int{1, 10, 100, 1000}
 
 	for _, scale := range scales {
 		b.Run(fmt.Sprintf("HSET_%d_operations_concurrent", scale), func(b *testing.B) {
