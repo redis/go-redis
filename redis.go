@@ -1175,6 +1175,28 @@ func (c *Client) TxPipeline() Pipeliner {
 	return &pipe
 }
 
+// AutoPipeline creates a new autopipeliner that automatically batches commands.
+// Commands are automatically flushed based on batch size and time interval.
+// The autopipeliner must be closed when done to flush pending commands.
+//
+// Example:
+//
+//	ap := client.AutoPipeline()
+//	defer ap.Close()
+//
+//	for i := 0; i < 1000; i++ {
+//	    ap.Do(ctx, "SET", fmt.Sprintf("key%d", i), i)
+//	}
+//
+// Note: AutoPipeline requires AutoPipelineConfig to be set in Options.
+// If not set, this will panic.
+func (c *Client) AutoPipeline() *AutoPipeliner {
+	if c.opt.AutoPipelineConfig == nil {
+		c.opt.AutoPipelineConfig = DefaultAutoPipelineConfig()
+	}
+	return NewAutoPipeliner(c, c.opt.AutoPipelineConfig)
+}
+
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,

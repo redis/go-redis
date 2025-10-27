@@ -166,6 +166,7 @@ func isEmptyValue(v reflect.Value) bool {
 }
 
 type Cmdable interface {
+	AutoPipeline() *AutoPipeliner
 	Pipeline() Pipeliner
 	Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error)
 

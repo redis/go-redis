@@ -126,6 +126,8 @@ type UniversalOptions struct {
 
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	AutoPipelineConfig *AutoPipelineConfig
 }
 
 // Cluster returns cluster options created from the universal options.

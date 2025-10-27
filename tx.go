@@ -139,6 +139,10 @@ func (c *Tx) TxPipeline() Pipeliner {
 	return &pipe
 }
 
+func (c *Tx) AutoPipeline() *AutoPipeliner {
+	return nil
+}
+
 func wrapMultiExec(ctx context.Context, cmds []Cmder) []Cmder {
 	if len(cmds) == 0 {
 		panic("not reached")

@@ -264,6 +264,12 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// AutoPipelineConfig enables automatic pipelining of commands.
+	// When set, commands will be automatically batched and sent in pipelines
+	// to reduce network round-trips and improve throughput.
+	// If nil, autopipelining is disabled.
+	AutoPipelineConfig *AutoPipelineConfig
 }
 
 func (opt *Options) init() {

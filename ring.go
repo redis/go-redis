@@ -793,6 +793,10 @@ func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 	return c.Pipeline().Pipelined(ctx, fn)
 }
 
+func (c *Ring) AutoPipeline() *AutoPipeliner {
+	return nil
+}
+
 func (c *Ring) Pipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: pipelineExecer(c.processPipelineHook),

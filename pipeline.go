@@ -123,6 +123,10 @@ func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }
 
+func (c *Pipeline) AutoPipeline() *AutoPipeliner {
+	return nil
+}
+
 func (c *Pipeline) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipelined(ctx, fn)
 }

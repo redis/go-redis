@@ -684,13 +684,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// Using inline Release() method for better performance (avoids pointer dereference)
 		transitionedToIdle := cn.Release()
 
-		if !transitionedToIdle {
-			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
-			// Keep the state set by the hook and pool the connection anyway
-			currentState := cn.GetStateMachine().GetState()
-			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
-		}
-
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
 		// put them at the opposite end of the queue
 		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
