@@ -101,7 +101,11 @@ func benchmarkHSETOperations(b *testing.B, rdb *redis.Client, ctx context.Contex
 	avgTimePerOp := b.Elapsed().Nanoseconds() / int64(operations*b.N)
 	b.ReportMetric(float64(avgTimePerOp), "ns/op")
 	// report average time in milliseconds from totalTimes
-	avgTimePerOpMs := totalTimes[0].Milliseconds() / int64(len(totalTimes))
+	sumTime := time.Duration(0)
+	for _, t := range totalTimes {
+		sumTime += t
+	}
+	avgTimePerOpMs := sumTime.Milliseconds() / int64(len(totalTimes))
 	b.ReportMetric(float64(avgTimePerOpMs), "ms")
 }
 
@@ -135,7 +139,7 @@ func benchmarkHSETOperationsConcurrent(b *testing.B, rdb *redis.Client, ctx cont
 				if err != nil {
 					b.Fatalf("HSET operation failed: %v", err)
 				}
-				timesCh <- time.Since(startTime))
+				timesCh <- time.Since(startTime)
 			}(j)
 			wg.Wait()
 			close(timesCh)
@@ -156,7 +160,12 @@ func benchmarkHSETOperationsConcurrent(b *testing.B, rdb *redis.Client, ctx cont
 	avgTimePerOp := b.Elapsed().Nanoseconds() / int64(operations*b.N)
 	b.ReportMetric(float64(avgTimePerOp), "ns/op")
 	// report average time in milliseconds from totalTimes
-	avgTimePerOpMs := totalTimes[0].Milliseconds() / int64(len(totalTimes))
+
+	sumTime := time.Duration(0)
+	for _, t := range totalTimes {
+		sumTime += t
+	}
+	avgTimePerOpMs := sumTime.Milliseconds() / int64(len(totalTimes))
 	b.ReportMetric(float64(avgTimePerOpMs), "ms")
 }
 
@@ -195,8 +204,8 @@ func BenchmarkHSET_Concurrent(b *testing.B) {
 
 	// Setup Redis client
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   0,
+		Addr:     "localhost:6379",
+		DB:       0,
 		PoolSize: 1000,
 	})
 	defer rdb.Close()
@@ -263,7 +272,11 @@ func benchmarkHSETPipelined(b *testing.B, rdb *redis.Client, ctx context.Context
 	avgTimePerOp := b.Elapsed().Nanoseconds() / int64(operations*b.N)
 	b.ReportMetric(float64(avgTimePerOp), "ns/op")
 	// report average time in milliseconds from totalTimes
-	avgTimePerOpMs := totalTimes[0].Milliseconds() / int64(len(totalTimes))
+	sumTime := time.Duration(0)
+	for _, t := range totalTimes {
+		sumTime += t
+	}
+	avgTimePerOpMs := sumTime.Milliseconds() / int64(len(totalTimes))
 	b.ReportMetric(float64(avgTimePerOpMs), "ms")
 }
 
