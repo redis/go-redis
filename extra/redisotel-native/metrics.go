@@ -21,8 +21,9 @@ const (
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration metric.Float64Histogram
+	connectionCount   metric.Int64UpDownCounter
 
-	// Client configuration for attributes
+	// Client configuration for attributes (used for operation metrics only)
 	serverAddr string
 	serverPort string
 	dbIndex    string
@@ -266,4 +267,60 @@ func formatDBIndex(db int) string {
 		return ""
 	}
 	return strconv.Itoa(db)
+}
+
+// RecordConnectionStateChange records a change in connection state
+// This is called from the pool when connections transition between states
+func (r *metricsRecorder) RecordConnectionStateChange(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	fromState, toState string,
+) {
+	if r.connectionCount == nil {
+		return
+	}
+
+	// Extract server address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+
+	// Build base attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system", "redis"),
+		attribute.String("server.address", serverAddr),
+	}
+
+	// Add server.port if not default
+	if serverPort != "" && serverPort != "6379" {
+		attrs = append(attrs, attribute.String("server.port", serverPort))
+	}
+
+	// Decrement old state (if not empty)
+	if fromState != "" {
+		fromAttrs := append([]attribute.KeyValue{}, attrs...)
+		fromAttrs = append(fromAttrs, attribute.String("state", fromState))
+		r.connectionCount.Add(ctx, -1, metric.WithAttributes(fromAttrs...))
+	}
+
+	// Increment new state
+	if toState != "" {
+		toAttrs := append([]attribute.KeyValue{}, attrs...)
+		toAttrs = append(toAttrs, attribute.String("state", toState))
+		r.connectionCount.Add(ctx, 1, metric.WithAttributes(toAttrs...))
+	}
+}
+
+// extractServerInfo extracts server address and port from connection info
+func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
+	if cn == nil {
+		return "", ""
+	}
+
+	remoteAddr := cn.RemoteAddr()
+	if remoteAddr == nil {
+		return "", ""
+	}
+
+	addrStr := remoteAddr.String()
+	host, portStr := parseAddr(addrStr)
+	return host, portStr
 }
