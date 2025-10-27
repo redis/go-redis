@@ -603,6 +603,7 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 	// Execute initialization
 	// NOTE: ExecuteInitConn (via baseClient.initConn) will transition to IDLE on success
 	// or CLOSED on failure. We don't need to do it here.
+	// NOTE: Initconn returns conn in IDLE state
 	initErr := cn.ExecuteInitConn(ctx)
 	if initErr != nil {
 		// ExecuteInitConn already transitioned to CLOSED, just return the error
@@ -745,6 +746,7 @@ func (cn *Conn) ClearHandoffState() {
 
 	// Mark connection as usable again
 	// Use state machine directly instead of deprecated SetUsable
+	// probably done by initConn
 	cn.stateMachine.Transition(StateIdle)
 }
 

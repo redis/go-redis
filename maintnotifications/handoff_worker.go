@@ -456,6 +456,8 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	// - set the connection as usable again
 	// - clear the handoff state (shouldHandoff, endpoint, seqID)
 	// - reset the handoff retries to 0
+	// Note: Theoretically there may be a short window where the connection is in the pool
+	// and IDLE (initConn completed) but still has handoff state set.
 	conn.ClearHandoffState()
 	internal.Logger.Printf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 

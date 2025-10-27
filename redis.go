@@ -298,6 +298,12 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
+	// initConn will transition to IDLE state, so we need to acquire it
+	// before returning it to the user.
+	if !cn.TryAcquire() {
+		return nil, fmt.Errorf("redis: connection is not usable")
+	}
+
 	return cn, nil
 }
 
