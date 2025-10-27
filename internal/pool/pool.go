@@ -684,11 +684,22 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// Using inline Release() method for better performance (avoids pointer dereference)
 		transitionedToIdle := cn.Release()
 
+		// Handle unexpected state changes
 		if !transitionedToIdle {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
 			currentState := cn.GetStateMachine().GetState()
-			internal.Logger.Printf(ctx, "Connection state changed by hook to %v, pooling as-is", currentState)
+			switch currentState {
+			case StateUnusable:
+				// expected state, don't log it
+			case StateClosed:
+				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
+				shouldCloseConn = true
+				p.removeConnWithLock(cn)
+			default:
+				// Pool as-is
+				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
+			}
 		}
 
 		// unusable conns are expected to become usable at some point (background process is reconnecting them)
@@ -704,15 +715,16 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				p.idleConns = append([]*Conn{cn}, p.idleConns...)
 				p.connsMu.Unlock()
 			}
-		} else {
+			p.idleConnsLen.Add(1)
+		} else if !shouldCloseConn {
 			p.connsMu.Lock()
 			p.idleConns = append(p.idleConns, cn)
 			p.connsMu.Unlock()
+			p.idleConnsLen.Add(1)
 		}
-		p.idleConnsLen.Add(1)
 	} else {
-		p.removeConnWithLock(cn)
 		shouldCloseConn = true
+		p.removeConnWithLock(cn)
 	}
 
 	if freeTurn {
