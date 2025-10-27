@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-var timers = sync.Pool{
+var semTimers = sync.Pool{
 	New: func() interface{} {
 		t := time.NewTimer(time.Hour)
 		t.Stop()
@@ -15,7 +15,7 @@ var timers = sync.Pool{
 	},
 }
 
-// FastSemaphore is a high-performance semaphore implementation using atomic operations.
+// FastSemaphore is a counting semaphore implementation using atomic operations.
 // It's optimized for the fast path (no blocking) while still supporting timeouts and context cancellation.
 //
 // Performance characteristics:
@@ -26,7 +26,6 @@ var timers = sync.Pool{
 // This is significantly faster than a pure channel-based semaphore because:
 // 1. The fast path avoids channel operations entirely (no scheduler involvement)
 // 2. Atomic operations are much cheaper than channel send/receive
-// 3. Better CPU cache behavior (no channel buffer allocation)
 type FastSemaphore struct {
 	// Current number of acquired tokens (atomic)
 	count atomic.Int32
@@ -86,8 +85,8 @@ func (s *FastSemaphore) Acquire(ctx context.Context, timeout time.Duration, time
 
 	// Fast path failed, need to wait
 	// Use timer pool to avoid allocation
-	timer := timers.Get().(*time.Timer)
-	defer timers.Put(timer)
+	timer := semTimers.Get().(*time.Timer)
+	defer semTimers.Put(timer)
 	timer.Reset(timeout)
 
 	start := time.Now()
