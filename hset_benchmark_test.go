@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -104,6 +105,61 @@ func benchmarkHSETOperations(b *testing.B, rdb *redis.Client, ctx context.Contex
 	b.ReportMetric(float64(avgTimePerOpMs), "ms")
 }
 
+// benchmarkHSETOperationsConcurrent performs the actual HSET benchmark for a given scale
+func benchmarkHSETOperationsConcurrent(b *testing.B, rdb *redis.Client, ctx context.Context, operations int) {
+	hashKey := fmt.Sprintf("benchmark_hash_%d", operations)
+
+	b.ResetTimer()
+	b.StartTimer()
+	totalTimes := []time.Duration{}
+
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		// Clean up the hash before each iteration
+		rdb.Del(ctx, hashKey)
+		b.StartTimer()
+
+		startTime := time.Now()
+		// Perform the specified number of HSET operations
+
+		wg := sync.WaitGroup{}
+		wg.Add(operations)
+		timesCh := make(chan time.Duration, operations)
+		for j := 0; j < operations; j++ {
+			go func(j int) {
+				defer wg.Done()
+				field := fmt.Sprintf("field_%d", j)
+				value := fmt.Sprintf("value_%d", j)
+
+				err := rdb.HSet(ctx, hashKey, field, value).Err()
+				if err != nil {
+					b.Fatalf("HSET operation failed: %v", err)
+				}
+				timesCh <- time.Since(startTime))
+			}(j)
+			wg.Wait()
+			close(timesCh)
+			for d := range timesCh {
+				totalTimes = append(totalTimes, d)
+			}
+		}
+	}
+
+	// Stop the timer to calculate metrics
+	b.StopTimer()
+
+	// Report operations per second
+	opsPerSec := float64(operations*b.N) / b.Elapsed().Seconds()
+	b.ReportMetric(opsPerSec, "ops/sec")
+
+	// Report average time per operation
+	avgTimePerOp := b.Elapsed().Nanoseconds() / int64(operations*b.N)
+	b.ReportMetric(float64(avgTimePerOp), "ns/op")
+	// report average time in milliseconds from totalTimes
+	avgTimePerOpMs := totalTimes[0].Milliseconds() / int64(len(totalTimes))
+	b.ReportMetric(float64(avgTimePerOpMs), "ms")
+}
+
 // BenchmarkHSETPipelined benchmarks HSET operations using pipelining for better performance
 func BenchmarkHSETPipelined(b *testing.B) {
 	ctx := context.Background()
@@ -130,6 +186,36 @@ func BenchmarkHSETPipelined(b *testing.B) {
 	for _, scale := range scales {
 		b.Run(fmt.Sprintf("HSET_Pipelined_%d_operations", scale), func(b *testing.B) {
 			benchmarkHSETPipelined(b, rdb, ctx, scale)
+		})
+	}
+}
+
+func BenchmarkHSET_Concurrent(b *testing.B) {
+	ctx := context.Background()
+
+	// Setup Redis client
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+		DB:   0,
+		PoolSize: 1000,
+	})
+	defer rdb.Close()
+
+	// Test connection
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		b.Skipf("Redis server not available: %v", err)
+	}
+
+	// Clean up before and after tests
+	defer func() {
+		rdb.FlushDB(ctx)
+	}()
+
+	scales := []int{1, 10, 100, 1000, 10000, 100000}
+
+	for _, scale := range scales {
+		b.Run(fmt.Sprintf("HSET_%d_operations_concurrent", scale), func(b *testing.B) {
+			benchmarkHSETOperationsConcurrent(b, rdb, ctx, scale)
 		})
 	}
 }
