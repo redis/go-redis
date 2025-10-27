@@ -370,9 +370,17 @@ func BenchmarkPeekPushNotificationName(b *testing.B) {
 			buf := createValidPushNotification(tc.notification, "data")
 			data := buf.Bytes()
 
+			// Reuse both bytes.Reader and proto.Reader to avoid allocations
+			bytesReader := bytes.NewReader(data)
+			reader := NewReader(bytesReader)
+
 			b.ResetTimer()
+			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				reader := NewReader(bytes.NewReader(data))
+				// Reset the bytes.Reader to the beginning without allocating
+				bytesReader.Reset(data)
+				// Reset the proto.Reader to reuse the bufio buffer
+				reader.Reset(bytesReader)
 				_, err := reader.PeekPushNotificationName()
 				if err != nil {
 					b.Errorf("PeekPushNotificationName should not error: %v", err)

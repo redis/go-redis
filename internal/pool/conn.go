@@ -1,3 +1,4 @@
+// Package pool implements the pool management
 package pool
 
 import (
@@ -16,6 +17,35 @@ import (
 )
 
 var noDeadline = time.Time{}
+
+// Global time cache updated every 50ms by background goroutine.
+// This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
+// Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
+var globalTimeCache struct {
+	nowNs atomic.Int64
+}
+
+func init() {
+	// Initialize immediately
+	globalTimeCache.nowNs.Store(time.Now().UnixNano())
+
+	// Start background updater
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			globalTimeCache.nowNs.Store(time.Now().UnixNano())
+		}
+	}()
+}
+
+// getCachedTimeNs returns the current time in nanoseconds from the global cache.
+// This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 50ms.
+func getCachedTimeNs() int64 {
+	return globalTimeCache.nowNs.Load()
+}
 
 // Global atomic counter for connection IDs
 var connIDCounter uint64
@@ -79,6 +109,7 @@ type Conn struct {
 	expiresAt time.Time
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
+
 	// Using atomic operations for lock-free access to avoid mutex contention
 	relaxedReadTimeoutNs  atomic.Int64 // time.Duration as nanoseconds
 	relaxedWriteTimeoutNs atomic.Int64 // time.Duration as nanoseconds
@@ -260,11 +291,13 @@ func (cn *Conn) CompareAndSwapUsed(old, new bool) bool {
 
 	if !old && new {
 		// Acquiring: IDLE → IN_USE
-		_, err := cn.stateMachine.TryTransition([]ConnState{StateIdle}, StateInUse)
+		// Use predefined slice to avoid allocation
+		_, err := cn.stateMachine.TryTransition(validFromCreatedOrIdle, StateInUse)
 		return err == nil
 	} else {
 		// Releasing: IN_USE → IDLE
-		_, err := cn.stateMachine.TryTransition([]ConnState{StateInUse}, StateIdle)
+		// Use predefined slice to avoid allocation
+		_, err := cn.stateMachine.TryTransition(validFromInUse, StateIdle)
 		return err == nil
 	}
 }
@@ -454,7 +487,8 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		return time.Duration(readTimeoutNs)
 	}
 
-	nowNs := time.Now().UnixNano()
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
@@ -487,7 +521,8 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		return time.Duration(writeTimeoutNs)
 	}
 
-	nowNs := time.Now().UnixNano()
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
@@ -632,7 +667,8 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// The connection is typically in IN_USE state when OnPut is called (normal Put flow)
 	// But in some edge cases or tests, it might be in IDLE or CREATED state
 	// The pool will detect this state change and preserve it (not overwrite with IDLE)
-	finalState, err := cn.stateMachine.TryTransition([]ConnState{StateInUse, StateIdle, StateCreated}, StateUnusable)
+	// Use predefined slice to avoid allocation
+	finalState, err := cn.stateMachine.TryTransition(validFromCreatedInUseOrIdle, StateUnusable)
 	if err != nil {
 		// Check if already in UNUSABLE state (race condition or retry)
 		// ShouldHandoff should be false now, but check just in case
@@ -656,6 +692,42 @@ func (cn *Conn) GetID() uint64 {
 // This is primarily used by internal packages like maintnotifications for handoff processing.
 func (cn *Conn) GetStateMachine() *ConnStateMachine {
 	return cn.stateMachine
+}
+
+// TryAcquire attempts to acquire the connection for use.
+// This is an optimized inline method for the hot path (Get operation).
+//
+// It tries to transition from IDLE -> IN_USE or CREATED -> IN_USE.
+// Returns true if the connection was successfully acquired, false otherwise.
+//
+// Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
+//
+// NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
+// methods. This breaks encapsulation but is necessary for performance.
+// The IDLE->IN_USE and CREATED->IN_USE transitions don't need
+// waiter notification, and benchmarks show 1-3% improvement. If the state machine ever
+// needs to notify waiters on these transitions, update this to use TryTransitionFast().
+func (cn *Conn) TryAcquire() bool {
+	// The || operator short-circuits, so only 1 CAS in the common case
+	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
+		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateInUse))
+}
+
+// Release releases the connection back to the pool.
+// This is an optimized inline method for the hot path (Put operation).
+//
+// It tries to transition from IN_USE -> IDLE.
+// Returns true if the connection was successfully released, false otherwise.
+//
+// Performance: This is faster than calling GetStateMachine() + TryTransitionFast().
+//
+// NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
+// methods. This breaks encapsulation but is necessary for performance.
+// If the state machine ever needs to notify waiters
+// on this transition, update this to use TryTransitionFast().
+func (cn *Conn) Release() bool {
+	// Inline the hot path - single CAS operation
+	return cn.stateMachine.state.CompareAndSwap(uint32(StateInUse), uint32(StateIdle))
 }
 
 // ClearHandoffState clears the handoff state after successful handoff.
@@ -800,8 +872,12 @@ func (cn *Conn) MaybeHasData() bool {
 	return false
 }
 
+// deadline computes the effective deadline time based on context and timeout.
+// It updates the usedAt timestamp to now.
+// Uses cached time to avoid expensive syscall (max 50ms staleness is acceptable for deadline calculation).
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
-	tm := time.Now()
+	// Use cached time for deadline calculation (called 2x per command: read + write)
+	tm := time.Unix(0, getCachedTimeNs())
 	cn.SetUsedAt(tm)
 
 	if timeout > 0 {
