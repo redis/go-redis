@@ -1036,9 +1036,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.state = newClusterStateHolder(c.loadState)
 
-	dynamicResolver := c.NewDynamicResolver()
-	dynamicResolver.SetFallbackResolver(NewDefaultCommandPolicyResolver())
-	c.SetCommandInfoResolver(dynamicResolver)
+	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
 	c.cmdable = c.Process
 	c.initHooks(hooks{
@@ -2109,6 +2107,7 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	if info == nil {
 		internal.Logger.Printf(cmdInfoCtx, "info for cmd=%s not found", name)
 	}
+
 	return info
 }
 

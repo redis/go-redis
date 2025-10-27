@@ -27,7 +27,7 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 	}
 
 	if policy == nil {
-		return c.executeDefault(ctx, cmd, node)
+		return c.executeDefault(ctx, cmd, policy, node)
 	}
 	switch policy.Request {
 	case routing.ReqAllNodes:
@@ -39,22 +39,40 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 	case routing.ReqSpecial:
 		return c.executeSpecialCommand(ctx, cmd, policy, node)
 	default:
-		return c.executeDefault(ctx, cmd, node)
+		return c.executeDefault(ctx, cmd, policy, node)
 	}
 }
 
 // executeDefault handles standard command routing based on keys
-func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, node *clusterNode) error {
+func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy, node *clusterNode) error {
 	if c.hasKeys(cmd) {
 		// execute on key based shard
 		return node.Client.Process(ctx, cmd)
 	}
+	if policy != nil {
+
+		fmt.Println(policy.Tips)
+		if c.readOnlyEnabled() && policy.IsReadOnly() {
+			fmt.Println("will execute on arbitrary node")
+			return c.executeOnArbitraryNode(ctx, cmd)
+		}
+	}
+
 	return c.executeOnArbitraryShard(ctx, cmd)
 }
 
 // executeOnArbitraryShard routes command to an arbitrary shard
 func (c *ClusterClient) executeOnArbitraryShard(ctx context.Context, cmd Cmder) error {
 	node := c.pickArbitraryShard(ctx)
+	if node == nil {
+		return errClusterNoNodes
+	}
+	return node.Client.Process(ctx, cmd)
+}
+
+// executeOnArbitraryNode routes command to an arbitrary node
+func (c *ClusterClient) executeOnArbitraryNode(ctx context.Context, cmd Cmder) error {
+	node := c.pickArbitraryNode(ctx)
 	if node == nil {
 		return errClusterNoNodes
 	}
@@ -252,7 +270,7 @@ func (c *ClusterClient) executeSpecialCommand(ctx context.Context, cmd Cmder, po
 	case "ft.cursor":
 		return c.executeCursorCommand(ctx, cmd)
 	default:
-		return c.executeDefault(ctx, cmd, node)
+		return c.executeDefault(ctx, cmd, policy, node)
 	}
 }
 
@@ -479,10 +497,27 @@ func (c *ClusterClient) pickArbitraryShard(ctx context.Context) *clusterNode {
 	return state.Masters[idx]
 }
 
+// pickArbitraryNode selects a master or slave shard using the configured ShardPicker
+func (c *ClusterClient) pickArbitraryNode(ctx context.Context) *clusterNode {
+	state, err := c.state.Get(ctx)
+	if err != nil || len(state.Masters) == 0 {
+		return nil
+	}
+
+	allNodes := append(state.Masters, state.Slaves...)
+
+	idx := c.opt.ShardPicker.Next(len(allNodes))
+	return allNodes[idx]
+}
+
 // hasKeys checks if a command operates on keys
 func (c *ClusterClient) hasKeys(cmd Cmder) bool {
 	firstKeyPos := cmdFirstKeyPos(cmd)
 	return firstKeyPos > 0
+}
+
+func (c *ClusterClient) readOnlyEnabled() bool {
+	return c.opt.ReadOnly
 }
 
 // setCommandValue sets the aggregated value on a command using the enum-based approach

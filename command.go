@@ -4363,6 +4363,9 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 			}
 
 			rawTips := make(map[string]string, tipsLen)
+			if cmdInfo.ReadOnly {
+				rawTips[routing.ReadOnlyCMD] = ""
+			}
 			for f := 0; f < tipsLen; f++ {
 				tip, err := rd.ReadString()
 				if err != nil {

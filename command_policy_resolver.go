@@ -21,10 +21,16 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"search": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"aggregate": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"dictadd": {
 			Request:  routing.ReqDefault,
@@ -33,6 +39,9 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"dictdump": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"dictdel": {
 			Request:  routing.ReqDefault,
@@ -41,10 +50,16 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"suglen": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultHashSlot,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"cursor": {
 			Request:  routing.ReqSpecial,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"sugadd": {
 			Request:  routing.ReqDefault,
@@ -53,6 +68,9 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"sugget": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultHashSlot,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"sugdel": {
 			Request:  routing.ReqDefault,
@@ -61,14 +79,23 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"spellcheck": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"explain": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"explaincli": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"aliasadd": {
 			Request:  routing.ReqDefault,
@@ -85,14 +112,23 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"info": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"tagvals": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"syndump": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"synupdate": {
 			Request:  routing.ReqDefault,
@@ -101,6 +137,9 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 		"profile": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
 		},
 		"alter": {
 			Request:  routing.ReqDefault,

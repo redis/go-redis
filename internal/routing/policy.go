@@ -19,6 +19,10 @@ const (
 	ReqSpecial
 )
 
+const (
+	ReadOnlyCMD string = "readonly"
+)
+
 func (p RequestPolicy) String() string {
 	switch p {
 	case ReqDefault:
@@ -132,4 +136,10 @@ type CommandPolicy struct {
 
 func (p *CommandPolicy) CanBeUsedInPipeline() bool {
 	return p.Request != ReqAllNodes && p.Request != ReqAllShards && p.Request != ReqMultiShard
+}
+
+func (p *CommandPolicy) IsReadOnly() bool {
+	_, readOnly := p.Tips[ReadOnlyCMD]
+	fmt.Println(readOnly)
+	return readOnly
 }
