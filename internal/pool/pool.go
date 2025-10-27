@@ -27,6 +27,12 @@ var (
 	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
 	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
 
+	// errHookRequestedRemoval is returned when a hook requests connection removal.
+	errHookRequestedRemoval = errors.New("hook requested removal")
+
+	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
+	errConnNotPooled = errors.New("connection not pooled")
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -446,7 +452,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		return nil, err
 	}
 
-	now := time.Now()
+	// Use cached time for health checks (max 50ms staleness is acceptable)
+	now := time.Unix(0, getCachedTimeNs())
 	attempts := 0
 
 	// Lock-free atomic read - no mutex overhead!
@@ -661,12 +668,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 	// Combine all removal checks into one - reduces branches
 	if shouldRemove || !shouldPool {
-		p.removeConnInternal(ctx, cn, errors.New("hook requested removal"), freeTurn)
+		p.removeConnInternal(ctx, cn, errHookRequestedRemoval, freeTurn)
 		return
 	}
 
 	if !cn.pooled {
-		p.removeConnInternal(ctx, cn, errors.New("connection not pooled"), freeTurn)
+		p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
 		return
 	}
 

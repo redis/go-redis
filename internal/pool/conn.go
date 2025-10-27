@@ -18,6 +18,35 @@ import (
 
 var noDeadline = time.Time{}
 
+// Global time cache updated every 50ms by background goroutine.
+// This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
+// Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
+var globalTimeCache struct {
+	nowNs atomic.Int64
+}
+
+func init() {
+	// Initialize immediately
+	globalTimeCache.nowNs.Store(time.Now().UnixNano())
+
+	// Start background updater
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			globalTimeCache.nowNs.Store(time.Now().UnixNano())
+		}
+	}()
+}
+
+// getCachedTimeNs returns the current time in nanoseconds from the global cache.
+// This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 50ms.
+func getCachedTimeNs() int64 {
+	return globalTimeCache.nowNs.Load()
+}
+
 // Global atomic counter for connection IDs
 var connIDCounter uint64
 
@@ -458,7 +487,8 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		return time.Duration(readTimeoutNs)
 	}
 
-	nowNs := time.Now().UnixNano()
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
@@ -491,7 +521,8 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		return time.Duration(writeTimeoutNs)
 	}
 
-	nowNs := time.Now().UnixNano()
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
@@ -843,8 +874,10 @@ func (cn *Conn) MaybeHasData() bool {
 
 // deadline computes the effective deadline time based on context and timeout.
 // It updates the usedAt timestamp to now.
+// Uses cached time to avoid expensive syscall (max 50ms staleness is acceptable for deadline calculation).
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
-	tm := time.Now()
+	// Use cached time for deadline calculation (called 2x per command: read + write)
+	tm := time.Unix(0, getCachedTimeNs())
 	cn.SetUsedAt(tm)
 
 	if timeout > 0 {
