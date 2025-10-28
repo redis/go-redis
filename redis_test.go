@@ -245,6 +245,52 @@ var _ = Describe("Client", func() {
 		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 	})
 
+	It("should initialize idle connections created by MinIdleConns", func() {
+		opt := redisOptions()
+		opt.MinIdleConns = 5
+		opt.Password = "asdf" // Set password to require AUTH
+		opt.DB = 1            // Set DB to require SELECT
+
+		db := redis.NewClient(opt)
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		// Wait for minIdle connections to be created
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify that idle connections were created
+		stats := db.PoolStats()
+		Expect(stats.IdleConns).To(BeNumerically(">=", 5))
+
+		// Now use these connections - they should be properly initialized
+		// If they're not initialized, we'll get NOAUTH or WRONGDB errors
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				// Each goroutine performs multiple operations
+				for j := 0; j < 5; j++ {
+					key := fmt.Sprintf("test_key_%d_%d", id, j)
+					err := db.Set(ctx, key, "value", 0).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					val, err := db.Get(ctx, key).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(val).To(Equal("value"))
+
+					err = db.Del(ctx, key).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		// Verify no errors occurred
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd(ctx, "PING")
 		_ = client.Process(ctx, cmd)

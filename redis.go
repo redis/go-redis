@@ -1351,13 +1351,39 @@ func (c *Conn) TxPipeline() Pipeliner {
 
 // processPushNotifications processes all pending push notifications on a connection
 // This ensures that cluster topology changes are handled immediately before the connection is used
-// This method should be called by the client before using WithReader for command execution
+// This method should be called by the client before using WithWriter for command execution
+//
+// Performance optimization: Skip the expensive MaybeHasData() syscall if a health check
+// was performed recently (within 5 seconds). The health check already verified the connection
+// is healthy and checked for unexpected data (push notifications).
 func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn) error {
 	// Only process push notifications for RESP3 connections with a processor
-	// Also check if there is any data to read before processing
-	// Which is an optimization on UNIX systems where MaybeHasData is a syscall
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+
+	// Performance optimization: Skip MaybeHasData() syscall if health check was recent
+	// If the connection was health-checked within the last 5 seconds, we can skip the
+	// expensive syscall since the health check already verified no unexpected data.
+	// This is safe because:
+	// 1. Health check (connCheck) uses the same syscall (Recvfrom with MSG_PEEK)
+	// 2. If push notifications arrived, they would have been detected by health check
+	// 3. 5 seconds is short enough that connection state is still fresh
+	// 4. Push notifications will be processed by the next WithReader call
+	lastHealthCheckNs := cn.UsedAtNs()
+	if lastHealthCheckNs > 0 {
+		// Use pool's cached time to avoid expensive time.Now() syscall
+		nowNs := pool.GetCachedTimeNs()
+		if nowNs-lastHealthCheckNs < int64(5*time.Second) {
+			// Recent health check confirmed no unexpected data, skip the syscall
+			return nil
+		}
+	}
+
+	// Check if there is any data to read before processing
+	// This is an optimization on UNIX systems where MaybeHasData is a syscall
 	// On Windows, MaybeHasData always returns true, so this check is a no-op
-	if c.opt.Protocol != 3 || c.pushProcessor == nil || !cn.MaybeHasData() {
+	if !cn.MaybeHasData() {
 		return nil
 	}
 
