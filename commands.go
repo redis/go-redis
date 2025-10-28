@@ -693,7 +693,9 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 	args := []interface{}{"memory", "usage", key}
 	if len(samples) > 0 {
 		if len(samples) != 1 {
-			panic("MemoryUsage expects single sample count")
+			cmd := NewIntCmd(ctx)
+			cmd.SetErr(errors.New("MemoryUsage expects single sample count"))
+			return cmd
 		}
 		args = append(args, "SAMPLES", samples[0])
 	}

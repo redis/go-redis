@@ -735,6 +735,9 @@ var _ = Describe("Commands", func() {
 			n, err = client.MemoryUsage(ctx, "foo", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).NotTo(BeZero())
+
+			_, err = client.MemoryUsage(ctx, "foo", 0, 1).Result()
+			Expect(err).Should(MatchError("MemoryUsage expects single sample count"))
 		})
 	})
 
@@ -1598,6 +1601,9 @@ var _ = Describe("Commands", func() {
 			pos, err = client.BitPos(ctx, "mykey", 0, 0, 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pos).To(Equal(int64(-1)))
+
+			_, err = client.BitPos(ctx, "mykey", 0, 0, 0, 0, 0).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should BitPosSpan", func() {
@@ -1635,6 +1641,9 @@ var _ = Describe("Commands", func() {
 			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4", 13).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nn).To(Equal([]int64{0, 15, 15, 14}))
+
+			_, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4").Result()
+			Expect(err).Should(MatchError("BitFieldRO: invalid number of arguments, must be even"))
 		})
 
 		It("should Decr", func() {
@@ -5254,6 +5263,9 @@ var _ = Describe("Commands", func() {
 				Score:  1,
 				Member: "one",
 			}}))
+
+			_, err = client.ZPopMax(ctx, "zset", 10, 11).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should ZPopMin", func() {
@@ -5321,6 +5333,9 @@ var _ = Describe("Commands", func() {
 				Score:  3,
 				Member: "three",
 			}}))
+
+			_, err = client.ZPopMin(ctx, "zset", 10, 11).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should ZRange", func() {

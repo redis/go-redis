@@ -86,7 +86,7 @@ func benchmarkHSETOperations(b *testing.B, rdb *redis.Client, ctx context.Contex
 				b.Fatalf("HSET operation failed: %v", err)
 			}
 		}
-		totalTimes = append(totalTimes, time.Now().Sub(startTime))
+		totalTimes = append(totalTimes, time.Since(startTime))
 	}
 
 	// Stop the timer to calculate metrics
@@ -164,7 +164,7 @@ func benchmarkHSETPipelined(b *testing.B, rdb *redis.Client, ctx context.Context
 		if err != nil {
 			b.Fatalf("Pipeline execution failed: %v", err)
 		}
-		totalTimes = append(totalTimes, time.Now().Sub(startTime))
+		totalTimes = append(totalTimes, time.Since(startTime))
 	}
 
 	b.StopTimer()
