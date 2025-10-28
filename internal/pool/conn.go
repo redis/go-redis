@@ -699,20 +699,22 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 // TryAcquire attempts to acquire the connection for use.
 // This is an optimized inline method for the hot path (Get operation).
 //
-// It tries to transition from IDLE -> IN_USE or CREATED -> IN_USE.
+// It tries to transition from IDLE -> IN_USE or CREATED -> CREATED.
 // Returns true if the connection was successfully acquired, false otherwise.
+// The CREATED->CREATED is done so we can keep the state correct for later
+// initialization of the connection in initConn.
 //
 // Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
 //
 // NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
 // methods. This breaks encapsulation but is necessary for performance.
-// The IDLE->IN_USE and CREATED->IN_USE transitions don't need
+// The IDLE->IN_USE and CREATED->CREATED transitions don't need
 // waiter notification, and benchmarks show 1-3% improvement. If the state machine ever
 // needs to notify waiters on these transitions, update this to use TryTransitionFast().
 func (cn *Conn) TryAcquire() bool {
 	// The || operator short-circuits, so only 1 CAS in the common case
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
-		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateInUse))
+		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateCreated))
 }
 
 // Release releases the connection back to the pool.

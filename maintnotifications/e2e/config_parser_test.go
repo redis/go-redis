@@ -319,6 +319,7 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 	}
 
 	var client redis.UniversalClient
+	var opts interface{}
 
 	// Determine if this is a cluster configuration
 	if len(cf.config.Endpoints) > 1 || cf.isClusterEndpoint() {
@@ -349,6 +350,7 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 			}
 		}
 
+		opts = clusterOptions
 		client = redis.NewClusterClient(clusterOptions)
 	} else {
 		// Create single client
@@ -379,7 +381,12 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 			}
 		}
 
+		opts = clientOptions
 		client = redis.NewClient(clientOptions)
+	}
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		return nil, fmt.Errorf("failed to connect to Redis: %w\nOptions: %+v", err, opts)
 	}
 
 	// Store the client
@@ -831,7 +838,6 @@ func (m *TestDatabaseManager) DeleteDatabase(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to trigger database deletion: %w", err)
 	}
-
 
 	// Wait for deletion to complete
 	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
