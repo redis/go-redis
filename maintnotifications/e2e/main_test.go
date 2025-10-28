@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/logging"
@@ -11,6 +12,8 @@ import (
 
 // Global log collector
 var logCollector *TestLogCollector
+
+const defaultTestTimeout = 30 * time.Minute
 
 // Global fault injector client
 var faultInjector *FaultInjectorClient
