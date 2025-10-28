@@ -19,7 +19,7 @@ func TestPushNotifications(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 
 	// Setup: Create fresh database and client factory for this test
@@ -395,8 +395,9 @@ func TestPushNotifications(t *testing.T) {
 
 	p("Executing commands and collecting logs for analysis... This will take 30 seconds...")
 	go commandsRunner.FireCommandsUntilStop(ctx)
-	time.Sleep(30 * time.Second)
+	time.Sleep(time.Minute)
 	commandsRunner.Stop()
+	time.Sleep(time.Minute)
 	allLogsAnalysis := logCollector.GetAnalysis()
 	trackerAnalysis := tracker.GetAnalysis()
 
