@@ -25,10 +25,9 @@ runs:
         
         # Mapping of redis version to redis testing containers
         declare -A redis_version_mapping=(
+          ["8.4.x"]="8.4-RC1-pre"
           ["8.2.x"]="8.2.1-pre"
           ["8.0.x"]="8.0.2"
-          ["7.4.x"]="rs-7.4.0-v5"
-          ["7.2.x"]="rs-7.2.0-v17"
         )
         
         if [[ -v redis_version_mapping[$REDIS_VERSION] ]]; then
