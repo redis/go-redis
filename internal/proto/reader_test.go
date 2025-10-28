@@ -2,6 +2,7 @@ package proto_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestReader_ReadLine(t *testing.T) {
 func benchmarkParseReply(b *testing.B, reply string, wanterr bool) {
 	buf := new(bytes.Buffer)
 	for i := 0; i < b.N; i++ {
-		buf.WriteString(reply)
+		fmt.Fprint(buf, reply)
 	}
 	p := proto.NewReader(buf)
 	b.ResetTimer()
