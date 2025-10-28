@@ -18,9 +18,9 @@ import (
 
 var noDeadline = time.Time{}
 
-// Global time cache updated every 50ms by background goroutine.
+// Global time cache updated every 100ms by background goroutine.
 // This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
-// Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
+// Max staleness: 100ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
 var globalTimeCache struct {
 	nowNs atomic.Int64
 }
@@ -31,7 +31,7 @@ func init() {
 
 	// Start background updater
 	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
 		for range ticker.C {
@@ -41,10 +41,18 @@ func init() {
 }
 
 // getCachedTimeNs returns the current time in nanoseconds from the global cache.
-// This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
-// Max staleness: 50ms.
+// This is updated every 100ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 100ms.
 func getCachedTimeNs() int64 {
 	return globalTimeCache.nowNs.Load()
+}
+
+// GetCachedTimeNs returns the current time in nanoseconds from the global cache.
+// This is updated every 100ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 100ms.
+// Exported for use by other packages that need fast time access.
+func GetCachedTimeNs() int64 {
+	return getCachedTimeNs()
 }
 
 // Global atomic counter for connection IDs
@@ -169,6 +177,9 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 func (cn *Conn) UsedAt() time.Time {
 	unixNano := atomic.LoadInt64(&cn.usedAt)
 	return time.Unix(0, unixNano)
+}
+func (cn *Conn) UsedAtNs() int64 {
+	return atomic.LoadInt64(&cn.usedAt)
 }
 
 func (cn *Conn) SetUsedAt(tm time.Time) {
@@ -488,7 +499,7 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		return time.Duration(readTimeoutNs)
 	}
 
-	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	// Use cached time to avoid expensive syscall (max 100ms staleness is acceptable for timeout checks)
 	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
@@ -522,7 +533,7 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		return time.Duration(writeTimeoutNs)
 	}
 
-	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
+	// Use cached time to avoid expensive syscall (max 100ms staleness is acceptable for timeout checks)
 	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
@@ -699,20 +710,22 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 // TryAcquire attempts to acquire the connection for use.
 // This is an optimized inline method for the hot path (Get operation).
 //
-// It tries to transition from IDLE -> IN_USE or CREATED -> IN_USE.
+// It tries to transition from IDLE -> IN_USE or CREATED -> CREATED.
 // Returns true if the connection was successfully acquired, false otherwise.
+// The CREATED->CREATED is done so we can keep the state correct for later
+// initialization of the connection in initConn.
 //
 // Performance: This is faster than calling GetStateMachine() + TryTransitionFast()
 //
 // NOTE: We directly access cn.stateMachine.state here instead of using the state machine's
 // methods. This breaks encapsulation but is necessary for performance.
-// The IDLE->IN_USE and CREATED->IN_USE transitions don't need
+// The IDLE->IN_USE and CREATED->CREATED transitions don't need
 // waiter notification, and benchmarks show 1-3% improvement. If the state machine ever
 // needs to notify waiters on these transitions, update this to use TryTransitionFast().
 func (cn *Conn) TryAcquire() bool {
 	// The || operator short-circuits, so only 1 CAS in the common case
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
-		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateInUse))
+		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateCreated))
 }
 
 // Release releases the connection back to the pool.
@@ -877,7 +890,7 @@ func (cn *Conn) MaybeHasData() bool {
 
 // deadline computes the effective deadline time based on context and timeout.
 // It updates the usedAt timestamp to now.
-// Uses cached time to avoid expensive syscall (max 50ms staleness is acceptable for deadline calculation).
+// Uses cached time to avoid expensive syscall (max 100ms staleness is acceptable for deadline calculation).
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	// Use cached time for deadline calculation (called 2x per command: read + write)
 	tm := time.Unix(0, getCachedTimeNs())

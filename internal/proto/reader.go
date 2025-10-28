@@ -8,12 +8,15 @@ import (
 	"math"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
-// DefaultBufferSize is the default size for read/write buffers (32 KiB).
-const DefaultBufferSize = 32 * 1024
+// DefaultBufferSize is the default size for read/write buffers (64 KiB).
+// This is a balance between memory usage and performance.
+// For high-throughput scenarios, consider using 512 KiB.
+const DefaultBufferSize = 64 * 1024
 
 // redis resp protocol data type.
 const (
@@ -54,6 +57,15 @@ func ParseErrorReply(line []byte) error {
 }
 
 //------------------------------------------------------------------------------
+
+// Buffer pool for string reply parsing to reduce allocations
+var stringReplyBufPool = sync.Pool{
+	New: func() interface{} {
+		// Start with 2KB buffer - will grow as needed
+		b := make([]byte, 2*1024)
+		return &b
+	},
+}
 
 type Reader struct {
 	rd *bufio.Reader
@@ -314,13 +326,34 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b := make([]byte, n+2)
-	_, err = io.ReadFull(r.rd, b)
+	// Get buffer from pool
+	bufPtr := stringReplyBufPool.Get().(*[]byte)
+	buf := *bufPtr
+
+	// Resize if needed (grow capacity if buffer is too small)
+	if cap(buf) < n+2 {
+		buf = make([]byte, n+2)
+	} else {
+		buf = buf[:n+2]
+	}
+
+	_, err = io.ReadFull(r.rd, buf)
 	if err != nil {
+		// Return buffer to pool even on error
+		*bufPtr = buf
+		stringReplyBufPool.Put(bufPtr)
 		return "", err
 	}
 
-	return util.BytesToString(b[:n]), nil
+	// Must copy to string since we're returning the buffer to pool
+	// This is still faster than allocating a new []byte every time
+	result := string(buf[:n])
+
+	// Return buffer to pool
+	*bufPtr = buf
+	stringReplyBufPool.Put(bufPtr)
+
+	return result, nil
 }
 
 func (r *Reader) readVerb(line []byte) (string, error) {
@@ -471,7 +504,8 @@ func (r *Reader) ReadString() (string, error) {
 
 	switch line[0] {
 	case RespStatus, RespInt, RespFloat:
-		return string(line[1:]), nil
+		// Use BytesToString for zero-copy conversion when possible
+		return util.BytesToString(line[1:]), nil
 	case RespString:
 		return r.readStringReply(line)
 	case RespBool:

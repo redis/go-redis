@@ -256,6 +256,7 @@ var (
 	_ Cmdable = (*Ring)(nil)
 	_ Cmdable = (*ClusterClient)(nil)
 	_ Cmdable = (*Pipeline)(nil)
+	_ Cmdable = (*AutoPipeliner)(nil)
 )
 
 type cmdable func(ctx context.Context, cmd Cmder) error

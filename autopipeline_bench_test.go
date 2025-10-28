@@ -42,20 +42,20 @@ func BenchmarkManualPipeline(b *testing.B) {
 	const batchSize = 100
 
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i += batchSize {
 		pipe := client.Pipeline()
-		
+
 		end := i + batchSize
 		if end > b.N {
 			end = b.N
 		}
-		
+
 		for j := i; j < end; j++ {
 			key := fmt.Sprintf("key%d", j)
 			pipe.Set(ctx, key, j, 0)
 		}
-		
+
 		if _, err := pipe.Exec(ctx); err != nil {
 			b.Fatal(err)
 		}
@@ -87,7 +87,7 @@ func BenchmarkAutoPipeline(b *testing.B) {
 			i++
 		}
 	})
-	
+
 	b.StopTimer()
 	// Wait for final flush
 	time.Sleep(50 * time.Millisecond)
@@ -165,7 +165,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 			defer ap.Close()
 
 			b.ResetTimer()
-			
+
 			var wg sync.WaitGroup
 			commandsPerGoroutine := b.N / bm.goroutines
 			if commandsPerGoroutine == 0 {
@@ -183,7 +183,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 				}(g)
 			}
 			wg.Wait()
-			
+
 			b.StopTimer()
 			time.Sleep(50 * time.Millisecond)
 		})
@@ -215,7 +215,7 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 				key := fmt.Sprintf("key%d", i)
 				ap.Do(ctx, "SET", key, i)
 			}
-			
+
 			b.StopTimer()
 			time.Sleep(50 * time.Millisecond)
 		})
@@ -252,7 +252,7 @@ func BenchmarkAutoPipelineFlushIntervals(b *testing.B) {
 				key := fmt.Sprintf("key%d", i)
 				ap.Do(ctx, "SET", key, i)
 			}
-			
+
 			b.StopTimer()
 			time.Sleep(100 * time.Millisecond)
 		})
@@ -272,12 +272,12 @@ func BenchmarkThroughput(b *testing.B) {
 		defer client.Close()
 
 		b.ResetTimer()
-		
+
 		var wg sync.WaitGroup
 		var count int64
-		
+
 		deadline := time.Now().Add(duration)
-		
+
 		wg.Add(numGoroutines)
 		for g := 0; g < numGoroutines; g++ {
 			go func(goroutineID int) {
@@ -295,7 +295,7 @@ func BenchmarkThroughput(b *testing.B) {
 			}(g)
 		}
 		wg.Wait()
-		
+
 		b.ReportMetric(float64(count)/duration.Seconds(), "ops/sec")
 	})
 
@@ -311,12 +311,12 @@ func BenchmarkThroughput(b *testing.B) {
 		defer ap.Close()
 
 		b.ResetTimer()
-		
+
 		var wg sync.WaitGroup
 		var count int64
-		
+
 		deadline := time.Now().Add(duration)
-		
+
 		wg.Add(numGoroutines)
 		for g := 0; g < numGoroutines; g++ {
 			go func(goroutineID int) {
@@ -331,11 +331,200 @@ func BenchmarkThroughput(b *testing.B) {
 			}(g)
 		}
 		wg.Wait()
-		
+
 		b.StopTimer()
 		time.Sleep(100 * time.Millisecond)
-		
+
 		b.ReportMetric(float64(count)/duration.Seconds(), "ops/sec")
 	})
 }
 
+
+
+// BenchmarkRingBufferVsSliceQueue compares ring buffer with legacy slice queue
+func BenchmarkRingBufferVsSliceQueue(b *testing.B) {
+	b.Run("RingBuffer", func(b *testing.B) {
+		ctx := context.Background()
+		client := redis.NewClient(&redis.Options{
+			Addr: ":6379",
+			AutoPipelineConfig: &redis.AutoPipelineConfig{
+				MaxBatchSize:         50,
+				FlushInterval:        time.Millisecond,
+				MaxConcurrentBatches: 10,
+				UseRingBuffer:        true,
+				RingBufferSize:       1024,
+			},
+		})
+		defer client.Close()
+
+		ap := client.AutoPipeline()
+		defer ap.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				key := fmt.Sprintf("key%d", i)
+				ap.Do(ctx, "SET", key, i)
+				i++
+			}
+		})
+	})
+
+	b.Run("SliceQueue", func(b *testing.B) {
+		ctx := context.Background()
+		client := redis.NewClient(&redis.Options{
+			Addr: ":6379",
+			AutoPipelineConfig: &redis.AutoPipelineConfig{
+				MaxBatchSize:         50,
+				FlushInterval:        time.Millisecond,
+				MaxConcurrentBatches: 10,
+				UseRingBuffer:        false, // Use legacy slice queue
+			},
+		})
+		defer client.Close()
+
+		ap := client.AutoPipeline()
+		defer ap.Close()
+
+		b.ResetTimer()
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				key := fmt.Sprintf("key%d", i)
+				ap.Do(ctx, "SET", key, i)
+				i++
+			}
+		})
+	})
+}
+
+// BenchmarkMaxFlushDelay benchmarks different MaxFlushDelay values
+func BenchmarkMaxFlushDelay(b *testing.B) {
+	delays := []time.Duration{
+		0,
+		50 * time.Microsecond,
+		100 * time.Microsecond,
+		200 * time.Microsecond,
+	}
+
+	for _, delay := range delays {
+		b.Run(fmt.Sprintf("delay_%dus", delay.Microseconds()), func(b *testing.B) {
+			ctx := context.Background()
+			client := redis.NewClient(&redis.Options{
+				Addr: ":6379",
+				AutoPipelineConfig: &redis.AutoPipelineConfig{
+					MaxBatchSize:         50,
+					FlushInterval:        time.Millisecond,
+					MaxConcurrentBatches: 10,
+					UseRingBuffer:        true,
+					RingBufferSize:       1024,
+					MaxFlushDelay:        delay,
+				},
+			})
+			defer client.Close()
+
+			ap := client.AutoPipeline()
+			defer ap.Close()
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					key := fmt.Sprintf("key%d", i)
+					ap.Do(ctx, "SET", key, i)
+					i++
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkBufferSizes benchmarks different buffer sizes
+func BenchmarkBufferSizes(b *testing.B) {
+	bufferSizes := []int{
+		32 * 1024,  // 32 KiB
+		64 * 1024,  // 64 KiB (default)
+		128 * 1024, // 128 KiB
+		256 * 1024, // 256 KiB
+		512 * 1024, // 512 KiB
+	}
+
+	for _, size := range bufferSizes {
+		b.Run(fmt.Sprintf("buffer_%dKiB", size/1024), func(b *testing.B) {
+			ctx := context.Background()
+			client := redis.NewClient(&redis.Options{
+				Addr:            ":6379",
+				ReadBufferSize:  size,
+				WriteBufferSize: size,
+				AutoPipelineConfig: &redis.AutoPipelineConfig{
+					MaxBatchSize:         50,
+					FlushInterval:        time.Millisecond,
+					MaxConcurrentBatches: 10,
+					UseRingBuffer:        true,
+					RingBufferSize:       1024,
+				},
+			})
+			defer client.Close()
+
+			ap := client.AutoPipeline()
+			defer ap.Close()
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					key := fmt.Sprintf("key%d", i)
+					ap.Do(ctx, "SET", key, i)
+					i++
+				}
+			})
+		})
+	}
+}
+
+// BenchmarkRingBufferSizes benchmarks different ring buffer sizes
+func BenchmarkRingBufferSizes(b *testing.B) {
+	ringSizes := []int{
+		256,
+		512,
+		1024, // default
+		2048,
+		4096,
+	}
+
+	for _, size := range ringSizes {
+		b.Run(fmt.Sprintf("ring_%d", size), func(b *testing.B) {
+			ctx := context.Background()
+			client := redis.NewClient(&redis.Options{
+				Addr: ":6379",
+				AutoPipelineConfig: &redis.AutoPipelineConfig{
+					MaxBatchSize:         50,
+					FlushInterval:        time.Millisecond,
+					MaxConcurrentBatches: 10,
+					UseRingBuffer:        true,
+					RingBufferSize:       size,
+				},
+			})
+			defer client.Close()
+
+			ap := client.AutoPipeline()
+			defer ap.Close()
+
+			b.ResetTimer()
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				i := 0
+				for pb.Next() {
+					key := fmt.Sprintf("key%d", i)
+					ap.Do(ctx, "SET", key, i)
+					i++
+				}
+			})
+		})
+	}
+}

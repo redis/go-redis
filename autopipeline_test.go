@@ -446,3 +446,73 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 	}
 }
 
+
+// TestAutoPipelineSingleCommandNoBlock verifies that single commands don't block
+func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{
+		Addr:               ":6379",
+		AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
+	})
+	defer client.Close()
+
+	ap := client.AutoPipeline()
+	defer ap.Close()
+
+	start := time.Now()
+	cmd := ap.Do(ctx, "PING")
+	err := cmd.Err()
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Command failed: %v", err)
+	}
+
+	// The command is wrapped in autoPipelineCmd, so we can't directly access Val()
+	// Just check that it completed without error
+	t.Logf("Command completed successfully")
+
+	// Single command should complete within 50ms (adaptive delay is 10ms)
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("Single command took too long: %v (should be < 50ms)", elapsed)
+	}
+
+	t.Logf("Single command completed in %v", elapsed)
+}
+
+// TestAutoPipelineSequentialSingleThread verifies sequential single-threaded execution
+func TestAutoPipelineSequentialSingleThread(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{
+		Addr:               ":6379",
+		AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
+	})
+	defer client.Close()
+
+	ap := client.AutoPipeline()
+	defer ap.Close()
+
+	// Execute 10 commands sequentially in a single thread
+	start := time.Now()
+	for i := 0; i < 10; i++ {
+		key := fmt.Sprintf("test:key:%d", i)
+		t.Logf("Sending command %d", i)
+		cmd := ap.Do(ctx, "SET", key, i)
+		t.Logf("Waiting for command %d to complete", i)
+		err := cmd.Err()
+		if err != nil {
+			t.Fatalf("Command %d failed: %v", i, err)
+		}
+		t.Logf("Command %d completed", i)
+	}
+	elapsed := time.Since(start)
+
+	// Should complete reasonably fast (< 100ms for 10 commands)
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("10 sequential commands took too long: %v (should be < 100ms)", elapsed)
+	}
+
+	t.Logf("10 sequential commands completed in %v (avg: %v per command)", elapsed, elapsed/10)
+}
+
+
