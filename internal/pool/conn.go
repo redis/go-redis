@@ -131,8 +131,9 @@ func NewConn(netConn net.Conn) *Conn {
 }
 
 func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Conn {
+	now := time.Now()
 	cn := &Conn{
-		createdAt:    time.Now(),
+		createdAt:    now,
 		id:           generateConnID(), // Generate unique ID for this connection
 		stateMachine: NewConnStateMachine(),
 	}
@@ -154,7 +155,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 	cn.netConnAtomic.Store(&atomicNetConn{conn: netConn})
 
 	cn.wr = proto.NewWriter(cn.bw)
-	cn.SetUsedAt(time.Now())
+	cn.SetUsedAt(now)
 	// Initialize handoff state atomically
 	initialHandoffState := &HandoffState{
 		ShouldHandoff: false,
@@ -166,12 +167,12 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 }
 
 func (cn *Conn) UsedAt() time.Time {
-	unix := atomic.LoadInt64(&cn.usedAt)
-	return time.Unix(unix, 0)
+	unixNano := atomic.LoadInt64(&cn.usedAt)
+	return time.Unix(0, unixNano)
 }
 
 func (cn *Conn) SetUsedAt(tm time.Time) {
-	atomic.StoreInt64(&cn.usedAt, tm.Unix())
+	atomic.StoreInt64(&cn.usedAt, tm.UnixNano())
 }
 
 // Backward-compatible wrapper methods for state machine
