@@ -800,8 +800,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 		p.poolSize.Add(-1)
 		// this can be idle conn
 		for idx, ic := range p.idleConns {
-			if ic.GetID() == cid {
-				internal.Logger.Printf(context.Background(), "redis: connection pool: removing idle conn[%d]", cid)
+			if ic == cn {
 				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
 				p.idleConnsLen.Add(-1)
 				break
