@@ -29,6 +29,8 @@ type SearchCmdable interface {
 	FTDropIndexWithArgs(ctx context.Context, index string, options *FTDropIndexOptions) *StatusCmd
 	FTExplain(ctx context.Context, index string, query string) *StringCmd
 	FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd
+	FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd
+	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd
 	FTInfo(ctx context.Context, index string) *FTInfoCmd
 	FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd
 	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd
@@ -342,6 +344,85 @@ type FTSearchOptions struct {
 	Params    map[string]interface{}
 	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	DialectVersion int
+}
+
+// FTHybridCombineMethod represents the fusion method for combining search and vector results
+type FTHybridCombineMethod string
+
+const (
+	FTHybridCombineRRF      FTHybridCombineMethod = "RRF"
+	FTHybridCombineLinear   FTHybridCombineMethod = "LINEAR"
+	FTHybridCombineFunction FTHybridCombineMethod = "FUNCTION"
+)
+
+// FTHybridSearchExpression represents a search expression in hybrid search
+type FTHybridSearchExpression struct {
+	Query        string
+	Scorer       string
+	ScorerParams []interface{}
+	YieldScoreAs string
+}
+
+// FTHybridVectorExpression represents a vector expression in hybrid search
+type FTHybridVectorExpression struct {
+	VectorField  string
+	VectorData   Vector
+	Method       string // KNN or RANGE
+	MethodParams []interface{}
+	Filter       string
+	YieldScoreAs string
+}
+
+// FTHybridCombineOptions represents options for result fusion
+type FTHybridCombineOptions struct {
+	Method       FTHybridCombineMethod
+	Count        int
+	Window       int     // For RRF
+	Constant     float64 // For RRF
+	Alpha        float64 // For LINEAR
+	Beta         float64 // For LINEAR
+	YieldScoreAs string
+}
+
+// FTHybridGroupBy represents GROUP BY functionality
+type FTHybridGroupBy struct {
+	Count        int
+	Fields       []string
+	ReduceFunc   string
+	ReduceCount  int
+	ReduceParams []interface{}
+}
+
+// FTHybridApply represents APPLY functionality
+type FTHybridApply struct {
+	Expression string
+	AsField    string
+}
+
+// FTHybridWithCursor represents cursor configuration for hybrid search
+type FTHybridWithCursor struct {
+	Count   int // Number of results to return per cursor read
+	MaxIdle int // Maximum idle time in milliseconds before cursor is automatically deleted
+}
+
+// FTHybridOptions hold options that can be passed to the FT.HYBRID command
+type FTHybridOptions struct {
+	CountExpressions  int                        // Number of search/vector expressions
+	SearchExpressions []FTHybridSearchExpression // Multiple search expressions
+	VectorExpressions []FTHybridVectorExpression // Multiple vector expressions
+	Combine           *FTHybridCombineOptions    // Fusion step options
+	Load              []string                   // Projected fields
+	GroupBy           *FTHybridGroupBy           // Aggregation grouping
+	Apply             []FTHybridApply            // Field transformations
+	SortBy            []FTSearchSortBy           // Reuse from FTSearch
+	Filter            string                     // Post-filter expression
+	LimitOffset       int                        // Result limiting
+	Limit             int
+	Params            map[string]interface{} // Parameter substitution
+	ExplainScore      bool                   // Include score explanations
+	Timeout           int                    // Runtime timeout
+	WithCursor        bool                   // Enable cursor support for large result sets
+	WithCursorOptions *FTHybridWithCursor    // Cursor configuration options
 }
 
 type FTSynDumpResult struct {
@@ -1819,6 +1900,70 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
+// FTHybridResult represents the result of a hybrid search operation
+type FTHybridResult struct {
+	Total int
+	Docs  []Document
+}
+
+type FTHybridCmd struct {
+	baseCmd
+	val     FTHybridResult
+	options *FTHybridOptions
+}
+
+func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
+	return &FTHybridCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		options: options,
+	}
+}
+
+func (cmd *FTHybridCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
+	cmd.val = val
+}
+
+func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTHybridCmd) Val() FTHybridResult {
+	return cmd.val
+}
+
+func (cmd *FTHybridCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
+
+func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadSlice()
+	if err != nil {
+		return err
+	}
+	// Parse hybrid search results similarly to FT.SEARCH
+	// We can reuse the FTSearch parser since the result format should be similar
+	searchResult, err := parseFTSearch(data, false, true, false, false)
+	if err != nil {
+		return err
+	}
+	cmd.val = FTHybridResult{
+		Total: searchResult.Total,
+		Docs:  searchResult.Docs,
+	}
+	return nil
+}
+
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
@@ -2188,6 +2333,193 @@ func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroup
 // [FT.TAGVALS]: (https://redis.io/commands/ft.tagvals/)
 func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT.TAGVALS", index, field)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FTHybrid - Executes a hybrid search combining full-text search and vector similarity
+// The 'index' parameter specifies the index to search, 'searchExpr' is the search query,
+// 'vectorField' is the name of the vector field, and 'vectorData' is the vector to search with.
+func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd {
+	options := &FTHybridOptions{
+		CountExpressions: 2,
+		SearchExpressions: []FTHybridSearchExpression{
+			{Query: searchExpr},
+		},
+		VectorExpressions: []FTHybridVectorExpression{
+			{VectorField: vectorField, VectorData: vectorData},
+		},
+	}
+	return c.FTHybridWithArgs(ctx, index, options)
+}
+
+// FTHybridWithArgs - Executes a hybrid search with advanced options
+func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
+	args := []interface{}{"FT.HYBRID", index}
+
+	if options != nil {
+		// Add count expressions if specified
+		if options.CountExpressions > 0 {
+			args = append(args, options.CountExpressions)
+		} else {
+			// Default to 2 expressions (1 search + 1 vector)
+			args = append(args, 2)
+		}
+
+		// Add search expressions
+		for _, searchExpr := range options.SearchExpressions {
+			args = append(args, "SEARCH", searchExpr.Query)
+
+			if searchExpr.Scorer != "" {
+				args = append(args, "SCORER", searchExpr.Scorer)
+				if len(searchExpr.ScorerParams) > 0 {
+					args = append(args, searchExpr.ScorerParams...)
+				}
+			}
+
+			if searchExpr.YieldScoreAs != "" {
+				args = append(args, "YIELD_SCORE_AS", searchExpr.YieldScoreAs)
+			}
+		}
+
+		// Add vector expressions
+		for _, vectorExpr := range options.VectorExpressions {
+			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
+			args = append(args, vectorExpr.VectorData.Value()...)
+
+			if vectorExpr.Method != "" {
+				args = append(args, vectorExpr.Method)
+				if len(vectorExpr.MethodParams) > 0 {
+					args = append(args, vectorExpr.MethodParams...)
+				}
+			}
+
+			if vectorExpr.Filter != "" {
+				args = append(args, "FILTER", vectorExpr.Filter)
+			}
+
+			if vectorExpr.YieldScoreAs != "" {
+				args = append(args, "YIELD_SCORE_AS", vectorExpr.YieldScoreAs)
+			}
+		}
+
+		// Add combine/fusion options
+		if options.Combine != nil {
+			args = append(args, "COMBINE", string(options.Combine.Method))
+
+			if options.Combine.Count > 0 {
+				args = append(args, options.Combine.Count)
+			}
+
+			switch options.Combine.Method {
+			case FTHybridCombineRRF:
+				if options.Combine.Window > 0 {
+					args = append(args, "WINDOW", options.Combine.Window)
+				}
+				if options.Combine.Constant > 0 {
+					args = append(args, "CONSTANT", options.Combine.Constant)
+				}
+			case FTHybridCombineLinear:
+				if options.Combine.Alpha > 0 {
+					args = append(args, "ALPHA", options.Combine.Alpha)
+				}
+				if options.Combine.Beta > 0 {
+					args = append(args, "BETA", options.Combine.Beta)
+				}
+			}
+
+			if options.Combine.YieldScoreAs != "" {
+				args = append(args, "YIELD_SCORE_AS", options.Combine.YieldScoreAs)
+			}
+		}
+
+		// Add LOAD (projected fields)
+		if len(options.Load) > 0 {
+			args = append(args, "LOAD", len(options.Load))
+			for _, field := range options.Load {
+				args = append(args, field)
+			}
+		}
+
+		// Add GROUPBY
+		if options.GroupBy != nil {
+			args = append(args, "GROUPBY", options.GroupBy.Count)
+			for _, field := range options.GroupBy.Fields {
+				args = append(args, field)
+			}
+			if options.GroupBy.ReduceFunc != "" {
+				args = append(args, "REDUCE", options.GroupBy.ReduceFunc, options.GroupBy.ReduceCount)
+				args = append(args, options.GroupBy.ReduceParams...)
+			}
+		}
+
+		// Add APPLY transformations
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Expression, "AS", apply.AsField)
+		}
+
+		// Add SORTBY
+		if len(options.SortBy) > 0 {
+			args = append(args, "SORTBY", len(options.SortBy))
+			for _, sortBy := range options.SortBy {
+				args = append(args, sortBy.FieldName)
+				if sortBy.Asc && sortBy.Desc {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: ASC and DESC are mutually exclusive"))
+					return cmd
+				}
+				if sortBy.Asc {
+					args = append(args, "ASC")
+				}
+				if sortBy.Desc {
+					args = append(args, "DESC")
+				}
+			}
+		}
+
+		// Add FILTER (post-filter)
+		if options.Filter != "" {
+			args = append(args, "FILTER", options.Filter)
+		}
+
+		// Add LIMIT
+		if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		}
+
+		// Add PARAMS
+		if len(options.Params) > 0 {
+			args = append(args, "PARAMS", len(options.Params)*2)
+			for key, value := range options.Params {
+				args = append(args, key, value)
+			}
+		}
+
+		// Add EXPLAINSCORE
+		if options.ExplainScore {
+			args = append(args, "EXPLAINSCORE")
+		}
+
+		// Add TIMEOUT
+		if options.Timeout > 0 {
+			args = append(args, "TIMEOUT", options.Timeout)
+		}
+
+		// Add WITHCURSOR support
+		if options.WithCursor {
+			args = append(args, "WITHCURSOR")
+			if options.WithCursorOptions != nil {
+				if options.WithCursorOptions.Count > 0 {
+					args = append(args, "COUNT", options.WithCursorOptions.Count)
+				}
+				if options.WithCursorOptions.MaxIdle > 0 {
+					args = append(args, "MAXIDLE", options.WithCursorOptions.MaxIdle)
+				}
+			}
+		}
+	}
+
+	cmd := newFTHybridCmd(ctx, options, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
