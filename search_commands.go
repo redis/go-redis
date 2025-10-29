@@ -1901,10 +1901,7 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 }
 
 // FTHybridResult represents the result of a hybrid search operation
-type FTHybridResult struct {
-	Total int
-	Docs  []Document
-}
+type FTHybridResult = FTSearchResult
 
 type FTHybridCmd struct {
 	baseCmd
@@ -1957,6 +1954,7 @@ func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
+
 	cmd.val = FTHybridResult{
 		Total: searchResult.Total,
 		Docs:  searchResult.Docs,

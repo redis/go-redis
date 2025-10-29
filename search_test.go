@@ -3628,6 +3628,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform basic hybrid search", Label("search", "fthybrid"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			// Basic hybrid search combining text and vector search
 			searchQuery := "@color:{red} OR @color:{green}"
 			vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
@@ -3646,6 +3647,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			// Test with TFIDF scorer
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
@@ -3680,6 +3682,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			// This query won't have results from search, so we can validate vector filter
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
@@ -3720,6 +3723,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3742,6 +3746,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3766,6 +3771,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3793,6 +3799,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3820,6 +3827,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3859,6 +3867,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with parameters", Label("search", "fthybrid", "params"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			params := map[string]interface{}{
 				"$vector":   encodeFloat32Vector([]float32{1, 2, 7, 6}),
 				"$discount": 0.1,
@@ -3899,6 +3908,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3920,6 +3930,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		})
 
 		It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
+			SkipBeforeRedisVersion(8.4, "no support")
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
