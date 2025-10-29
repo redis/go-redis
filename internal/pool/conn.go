@@ -81,7 +81,8 @@ type Conn struct {
 	// Connection identifier for unique tracking
 	id uint64
 
-	usedAt int64 // atomic
+	usedAt    atomic.Int64
+	lastPutAt atomic.Int64
 
 	// Lock-free netConn access using atomic.Value
 	// Contains *atomicNetConn wrapper, accessed atomically for better performance
@@ -175,15 +176,24 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 }
 
 func (cn *Conn) UsedAt() time.Time {
-	unixNano := atomic.LoadInt64(&cn.usedAt)
-	return time.Unix(0, unixNano)
+	return time.Unix(0, cn.usedAt.Load())
 }
-func (cn *Conn) UsedAtNs() int64 {
-	return atomic.LoadInt64(&cn.usedAt)
+func (cn *Conn) SetUsedAt(tm time.Time) {
+	cn.usedAt.Store(tm.UnixNano())
 }
 
-func (cn *Conn) SetUsedAt(tm time.Time) {
-	atomic.StoreInt64(&cn.usedAt, tm.UnixNano())
+func (cn *Conn) UsedAtNs() int64 {
+	return cn.usedAt.Load()
+}
+func (cn *Conn) SetUsedAtNs(ns int64) {
+	cn.usedAt.Store(ns)
+}
+
+func (cn *Conn) LastPutAtNs() int64 {
+	return cn.lastPutAt.Load()
+}
+func (cn *Conn) SetLastPutAtNs(ns int64) {
+	cn.lastPutAt.Store(ns)
 }
 
 // Backward-compatible wrapper methods for state machine

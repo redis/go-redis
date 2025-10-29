@@ -461,7 +461,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Use cached time for health checks (max 50ms staleness is acceptable)
-	now := time.Unix(0, getCachedTimeNs())
+	nowNs := getCachedTimeNs()
 	attempts := 0
 
 	// Lock-free atomic read - no mutex overhead!
@@ -487,7 +487,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			break
 		}
 
-		if !p.isHealthyConn(cn, now) {
+		if !p.isHealthyConn(cn, nowNs) {
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -742,6 +742,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if shouldCloseConn {
 		_ = p.closeConn(cn)
 	}
+
+	cn.SetLastPutAtNs(getCachedTimeNs())
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
@@ -891,14 +893,14 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
-func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
+func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	// Performance optimization: check conditions from cheapest to most expensive,
 	// and from most likely to fail to least likely to fail.
 
 	// Only fails if ConnMaxLifetime is set AND connection is old.
 	// Most pools don't set ConnMaxLifetime, so this rarely fails.
 	if p.cfg.ConnMaxLifetime > 0 {
-		if cn.expiresAt.Before(now) {
+		if cn.expiresAt.UnixNano() < nowNs {
 			return false // Connection has exceeded max lifetime
 		}
 	}
@@ -906,7 +908,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	// Most pools set ConnMaxIdleTime, and idle connections are common.
 	// Checking this first allows us to fail fast without expensive syscalls.
 	if p.cfg.ConnMaxIdleTime > 0 {
-		if now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
+		if nowNs-cn.UsedAtNs() >= int64(p.cfg.ConnMaxIdleTime) {
 			return false // Connection has been idle too long
 		}
 	}
@@ -926,7 +928,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 				)
 
 				// Update timestamp for healthy connection
-				cn.SetUsedAt(now)
+				cn.SetUsedAtNs(nowNs)
 
 				// Connection is healthy, client will handle notifications
 				return true
@@ -939,6 +941,6 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	}
 
 	// Only update UsedAt if connection is healthy (avoids unnecessary atomic store)
-	cn.SetUsedAt(now)
+	cn.SetUsedAtNs(nowNs)
 	return true
 }
