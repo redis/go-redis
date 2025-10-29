@@ -83,14 +83,14 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 			})
 
 			b.ResetTimer()
-
+			rmvErr := errors.New("Bench test remove")
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
 					cn, err := connPool.Get(ctx)
 					if err != nil {
 						b.Fatal(err)
 					}
-					connPool.Remove(ctx, cn, errors.New("Bench test remove"))
+					connPool.Remove(ctx, cn, rmvErr)
 				}
 			})
 		})
