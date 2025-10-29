@@ -247,9 +247,19 @@ var _ = Describe("Client", func() {
 
 	It("should initialize idle connections created by MinIdleConns", func() {
 		opt := redisOptions()
+		passwrd := "asdf"
+		db0 := redis.NewClient(opt)
+		// set password
+		err := db0.Do(ctx, "CONFIG", "SET", "requirepass", passwrd).Err()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			err = db0.Do(ctx, "CONFIG", "SET", "requirepass", "").Err()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(db0.Close()).NotTo(HaveOccurred())
+		}()
 		opt.MinIdleConns = 5
-		opt.Password = "asdf" // Set password to require AUTH
-		opt.DB = 1            // Set DB to require SELECT
+		opt.Password = passwrd
+		opt.DB = 1 // Set DB to require SELECT
 
 		db := redis.NewClient(opt)
 		defer func() {
