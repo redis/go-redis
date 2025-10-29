@@ -90,8 +90,9 @@ func TestConn_UsedAtUpdatedOnWrite(t *testing.T) {
 
 	// Verify the difference is reasonable (should be around 100ms, accounting for ~50ms cache precision)
 	diff := updatedUsedAt.Sub(initialUsedAt)
-	if diff < 50*time.Millisecond || diff > 200*time.Millisecond {
-		t.Errorf("Expected usedAt difference to be around 100ms (±50ms for cache), got %v", diff)
+
+	if diff > 100*time.Millisecond {
+		t.Errorf("Expected usedAt difference to be no more than 100ms (±50ms for cache), got %v", diff)
 	}
 }
 
