@@ -245,7 +245,7 @@ var _ = Describe("Client", func() {
 		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 	})
 
-	It("should initialize idle connections created by MinIdleConns", func() {
+	It("should initialize idle connections created by MinIdleConns", Label("NonRedisEnterprise"), func() {
 		opt := redisOptions()
 		passwrd := "asdf"
 		db0 := redis.NewClient(opt)
