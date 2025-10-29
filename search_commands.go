@@ -1955,10 +1955,8 @@ func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 
-	cmd.val = FTHybridResult{
-		Total: searchResult.Total,
-		Docs:  searchResult.Docs,
-	}
+	// FTSearchResult and FTHybridResult are aliases
+	cmd.val = searchResult
 	return nil
 }
 
