@@ -50,10 +50,7 @@ func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, policy *r
 		return node.Client.Process(ctx, cmd)
 	}
 	if policy != nil {
-
-		fmt.Println(policy.Tips)
 		if c.readOnlyEnabled() && policy.IsReadOnly() {
-			fmt.Println("will execute on arbitrary node")
 			return c.executeOnArbitraryNode(ctx, cmd)
 		}
 	}

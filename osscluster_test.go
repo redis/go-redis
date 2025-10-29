@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -1602,7 +1601,6 @@ var _ = Describe("ClusterClient timeout", func() {
 				return nil
 			})
 			Expect(err).To(HaveOccurred())
-			fmt.Println("qko greshki male", reflect.TypeOf(err).String(), reflect.TypeOf(err).Kind().String())
 			Expect(err.(net.Error).Timeout()).To(BeTrue())
 		})
 

@@ -140,6 +140,5 @@ func (p *CommandPolicy) CanBeUsedInPipeline() bool {
 
 func (p *CommandPolicy) IsReadOnly() bool {
 	_, readOnly := p.Tips[ReadOnlyCMD]
-	fmt.Println(readOnly)
 	return readOnly
 }
