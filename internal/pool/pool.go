@@ -86,6 +86,12 @@ type Pooler interface {
 	AddPoolHook(hook PoolHook)
 	RemovePoolHook(hook PoolHook)
 
+	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+	// This should be used when removing a connection from a context that didn't acquire
+	// a turn via Get() (e.g., background workers, cleanup tasks).
+	// For normal removal after Get(), use Remove() instead.
+	RemoveWithoutTurn(context.Context, *Conn, error)
+
 	Close() error
 }
 
@@ -163,10 +169,10 @@ func NewConnPool(opt *Options) *ConnPool {
 	//semSize = opt.PoolSize
 
 	p := &ConnPool{
-		cfg:       opt,
-		semaphore: internal.NewFastSemaphore(semSize),
+		cfg:             opt,
+		semaphore:       internal.NewFastSemaphore(semSize),
 		queue:           make(chan struct{}, opt.PoolSize),
-		conns:     		 make(map[uint64]*Conn),
+		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
 		idleConns:       make([]*Conn, 0, opt.PoolSize),
