@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -271,9 +272,10 @@ func (mh *metricsHook) DialHook(hook redis.DialHook) redis.DialHook {
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+1)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
 		mh.createTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 		return conn, err
@@ -288,10 +290,11 @@ func (mh *metricsHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+3)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "command"))
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
 		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
@@ -309,10 +312,11 @@ func (mh *metricsHook) ProcessPipelineHook(
 
 		dur := time.Since(start)
 
-		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+		attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+3)
 		attrs = append(attrs, mh.attrs...)
 		attrs = append(attrs, attribute.String("type", "pipeline"))
 		attrs = append(attrs, statusAttr(err))
+		attrs = append(attrs, errorTypeAttribute(err))
 
 		mh.useTime.Record(ctx, milliseconds(dur), metric.WithAttributeSet(attribute.NewSet(attrs...)))
 
@@ -329,4 +333,17 @@ func statusAttr(err error) attribute.KeyValue {
 		return attribute.String("status", "error")
 	}
 	return attribute.String("status", "ok")
+}
+
+func errorTypeAttribute(err error) attribute.KeyValue {
+	switch {
+	case err == nil:
+		return attribute.String("error_type", "none")
+	case errors.Is(err, context.Canceled):
+		return attribute.String("error_type", "context_canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return attribute.String("error_type", "context_timeout")
+	default:
+		return attribute.String("error_type", "other")
+	}
 }
