@@ -436,33 +436,35 @@ func TestPushNotifications(t *testing.T) {
 			e("No logs found for connection %d", connID)
 		}
 	}
+	// checks are tracker >= logs since the tracker only tracks client1
+	// logs include all clients (and some of them start logging even before all hooks are setup)
+	// for example for idle connections if they receive a notification before the hook is setup
+	// the action (i.e. relaxing timeouts) will be logged, but the notification will not be tracked and maybe wont be logged
 
 	// validate number of notifications in tracker matches number of notifications in logs
 	// allow for more moving in the logs since we started a second client
 	if trackerAnalysis.TotalNotifications > allLogsAnalysis.TotalNotifications {
-		e("Expected %d or more notifications, got %d", trackerAnalysis.TotalNotifications, allLogsAnalysis.TotalNotifications)
+		e("Expected at least %d or more notifications, got %d", trackerAnalysis.TotalNotifications, allLogsAnalysis.TotalNotifications)
 	}
 
-	// and per type
-	// allow for more moving in the logs since we started a second client
 	if trackerAnalysis.MovingCount > allLogsAnalysis.MovingCount {
-		e("Expected %d or more MOVING notifications, got %d", trackerAnalysis.MovingCount, allLogsAnalysis.MovingCount)
+		e("Expected at least %d or more MOVING notifications, got %d", trackerAnalysis.MovingCount, allLogsAnalysis.MovingCount)
 	}
 
-	if trackerAnalysis.MigratingCount != allLogsAnalysis.MigratingCount {
-		e("Expected %d MIGRATING notifications, got %d", trackerAnalysis.MigratingCount, allLogsAnalysis.MigratingCount)
+	if trackerAnalysis.MigratingCount > allLogsAnalysis.MigratingCount {
+		e("Expected at least %d MIGRATING notifications, got %d", trackerAnalysis.MigratingCount, allLogsAnalysis.MigratingCount)
 	}
 
-	if trackerAnalysis.MigratedCount != allLogsAnalysis.MigratedCount {
-		e("Expected %d MIGRATED notifications, got %d", trackerAnalysis.MigratedCount, allLogsAnalysis.MigratedCount)
+	if trackerAnalysis.MigratedCount > allLogsAnalysis.MigratedCount {
+		e("Expected at least %d MIGRATED notifications, got %d", trackerAnalysis.MigratedCount, allLogsAnalysis.MigratedCount)
 	}
 
-	if trackerAnalysis.FailingOverCount != allLogsAnalysis.FailingOverCount {
-		e("Expected %d FAILING_OVER notifications, got %d", trackerAnalysis.FailingOverCount, allLogsAnalysis.FailingOverCount)
+	if trackerAnalysis.FailingOverCount > allLogsAnalysis.FailingOverCount {
+		e("Expected at least %d FAILING_OVER notifications, got %d", trackerAnalysis.FailingOverCount, allLogsAnalysis.FailingOverCount)
 	}
 
-	if trackerAnalysis.FailedOverCount != allLogsAnalysis.FailedOverCount {
-		e("Expected %d FAILED_OVER notifications, got %d", trackerAnalysis.FailedOverCount, allLogsAnalysis.FailedOverCount)
+	if trackerAnalysis.FailedOverCount > allLogsAnalysis.FailedOverCount {
+		e("Expected at least %d FAILED_OVER notifications, got %d", trackerAnalysis.FailedOverCount, allLogsAnalysis.FailedOverCount)
 	}
 
 	if trackerAnalysis.UnexpectedNotificationCount != allLogsAnalysis.UnexpectedCount {
@@ -470,11 +472,11 @@ func TestPushNotifications(t *testing.T) {
 	}
 
 	// unrelaxed (and relaxed) after moving wont be tracked by the hook, so we have to exclude it
-	if trackerAnalysis.UnrelaxedTimeoutCount != allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving {
-		e("Expected %d unrelaxed timeouts, got %d", trackerAnalysis.UnrelaxedTimeoutCount, allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving)
+	if trackerAnalysis.UnrelaxedTimeoutCount > allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving {
+		e("Expected at least %d unrelaxed timeouts, got %d", trackerAnalysis.UnrelaxedTimeoutCount, allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving)
 	}
-	if trackerAnalysis.RelaxedTimeoutCount != allLogsAnalysis.RelaxedTimeoutCount-allLogsAnalysis.RelaxedPostHandoffCount {
-		e("Expected %d relaxed timeouts, got %d", trackerAnalysis.RelaxedTimeoutCount, allLogsAnalysis.RelaxedTimeoutCount)
+	if trackerAnalysis.RelaxedTimeoutCount > allLogsAnalysis.RelaxedTimeoutCount-allLogsAnalysis.RelaxedPostHandoffCount {
+		e("Expected at least %d relaxed timeouts, got %d", trackerAnalysis.RelaxedTimeoutCount, allLogsAnalysis.RelaxedTimeoutCount-allLogsAnalysis.RelaxedPostHandoffCount)
 	}
 
 	// validate all handoffs succeeded
