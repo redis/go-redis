@@ -2182,15 +2182,6 @@ func (c *ClusterClient) NewDynamicResolver() *commandInfoResolver {
 	}
 }
 
-func appendUniqueNode(nodes []*clusterNode, node *clusterNode) []*clusterNode {
-	for _, n := range nodes {
-		if n == node {
-			return nodes
-		}
-	}
-	return append(nodes, node)
-}
-
 func appendIfNotExist[T comparable](vals []T, newVal T) []T {
 	for _, v := range vals {
 		if v == newVal {
