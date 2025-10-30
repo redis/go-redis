@@ -1156,35 +1156,35 @@ func (cmd *StringCmd) Bool() (bool, error) {
 	if cmd.err != nil {
 		return false, cmd.err
 	}
-	return strconv.ParseBool(cmd.Val())
+	return strconv.ParseBool(cmd.val)
 }
 
 func (cmd *StringCmd) Int() (int, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
-	return strconv.Atoi(cmd.Val())
+	return strconv.Atoi(cmd.val)
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
-	return strconv.ParseInt(cmd.Val(), 10, 64)
+	return strconv.ParseInt(cmd.val, 10, 64)
 }
 
 func (cmd *StringCmd) Uint64() (uint64, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
-	return strconv.ParseUint(cmd.Val(), 10, 64)
+	return strconv.ParseUint(cmd.val, 10, 64)
 }
 
 func (cmd *StringCmd) Float32() (float32, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
-	f, err := strconv.ParseFloat(cmd.Val(), 32)
+	f, err := strconv.ParseFloat(cmd.val, 32)
 	if err != nil {
 		return 0, err
 	}
@@ -1195,14 +1195,14 @@ func (cmd *StringCmd) Float64() (float64, error) {
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
-	return strconv.ParseFloat(cmd.Val(), 64)
+	return strconv.ParseFloat(cmd.val, 64)
 }
 
 func (cmd *StringCmd) Time() (time.Time, error) {
 	if cmd.err != nil {
 		return time.Time{}, cmd.err
 	}
-	return time.Parse(time.RFC3339Nano, cmd.Val())
+	return time.Parse(time.RFC3339Nano, cmd.val)
 }
 
 func (cmd *StringCmd) Scan(val interface{}) error {
@@ -1381,7 +1381,7 @@ func (cmd *StringSliceCmd) String() string {
 }
 
 func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
-	return proto.ScanSlice(cmd.Val(), container)
+	return proto.ScanSlice(cmd.val, container)
 }
 
 func (cmd *StringSliceCmd) readReply(rd *proto.Reader) error {

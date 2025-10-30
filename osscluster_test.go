@@ -515,8 +515,8 @@ var _ = Describe("ClusterClient", func() {
 				})
 
 				It("should work with missing keys", func() {
-					pipe.Set(ctx, "A", "A_value", 0)
-					pipe.Set(ctx, "C", "C_value", 0)
+					pipe.Set(ctx, "A{s}", "A_value", 0)
+					pipe.Set(ctx, "C{s}", "C_value", 0)
 					_, err := pipe.Exec(ctx)
 					Expect(err).NotTo(HaveOccurred())
 
