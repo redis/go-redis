@@ -75,12 +75,6 @@ type Pooler interface {
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
-	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
-	// This should be used when removing a connection from a context that didn't acquire
-	// a turn via Get() (e.g., background workers, cleanup tasks).
-	// For normal removal after Get(), use Remove() instead.
-	RemoveWithoutTurn(context.Context, *Conn, error)
-
 	Len() int
 	IdleLen() int
 	Stats() *Stats
@@ -102,6 +96,7 @@ type Options struct {
 
 	PoolFIFO                 bool
 	PoolSize                 int32
+	MaxConcurrentDials       int
 	DialTimeout              time.Duration
 	PoolTimeout              time.Duration
 	MinIdleConns             int32
@@ -130,6 +125,9 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
+	queue           chan struct{}
+	dialsInProgress chan struct{}
+	dialsQueue      *wantConnQueue
 	// Fast atomic semaphore for connection limiting
 	// Replaces the old channel-based queue for better performance
 	semaphore *internal.FastSemaphore
@@ -167,8 +165,11 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg:       opt,
 		semaphore: internal.NewFastSemaphore(semSize),
-		conns:     make(map[uint64]*Conn),
-		idleConns: make([]*Conn, 0, opt.PoolSize),
+		queue:           make(chan struct{}, opt.PoolSize),
+		conns:     		 make(map[uint64]*Conn),
+		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
+		dialsQueue:      newWantConnQueue(),
+		idleConns:       make([]*Conn, 0, opt.PoolSize),
 	}
 
 	// Only create MinIdleConns if explicitly requested (> 0)
@@ -517,9 +518,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.newConn(ctx, true)
+	newcn, err := p.queuedNewConn(ctx)
 	if err != nil {
-		p.freeTurn()
 		return nil, err
 	}
 
@@ -536,6 +536,97 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 	}
 	return newcn, nil
+}
+
+func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
+	select {
+	case p.dialsInProgress <- struct{}{}:
+		// Got permission, proceed to create connection
+	case <-ctx.Done():
+		p.freeTurn()
+		return nil, ctx.Err()
+	}
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
+
+	w := &wantConn{
+		ctx:       dialCtx,
+		cancelCtx: cancel,
+		result:    make(chan wantConnResult, 1),
+	}
+	var err error
+	defer func() {
+		if err != nil {
+			if cn := w.cancel(); cn != nil {
+				p.putIdleConn(ctx, cn)
+				p.freeTurn()
+			}
+		}
+	}()
+
+	p.dialsQueue.enqueue(w)
+
+	go func(w *wantConn) {
+		var freeTurnCalled bool
+		defer func() {
+			if err := recover(); err != nil {
+				if !freeTurnCalled {
+					p.freeTurn()
+				}
+				internal.Logger.Printf(context.Background(), "queuedNewConn panic: %+v", err)
+			}
+		}()
+
+		defer w.cancelCtx()
+		defer func() { <-p.dialsInProgress }() // Release connection creation permission
+
+		dialCtx := w.getCtxForDial()
+		cn, cnErr := p.newConn(dialCtx, true)
+		delivered := w.tryDeliver(cn, cnErr)
+		if cnErr == nil && delivered {
+			return
+		} else if cnErr == nil && !delivered {
+			p.putIdleConn(dialCtx, cn)
+			p.freeTurn()
+			freeTurnCalled = true
+		} else {
+			p.freeTurn()
+			freeTurnCalled = true
+		}
+	}(w)
+
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+		return nil, err
+	case result := <-w.result:
+		err = result.err
+		return result.cn, err
+	}
+}
+
+func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
+	for {
+		w, ok := p.dialsQueue.dequeue()
+		if !ok {
+			break
+		}
+		if w.tryDeliver(cn, nil) {
+			return
+		}
+	}
+
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	if p.closed() {
+		_ = cn.Close()
+		return
+	}
+
+	// poolSize is increased in newConn
+	p.idleConns = append(p.idleConns, cn)
+	p.idleConnsLen.Add(1)
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
