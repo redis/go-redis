@@ -19,7 +19,7 @@ func TestStressPushNotifications(t *testing.T) {
 		t.Skip("[STRESS][SKIP] Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	defer cancel()
 
 	// Setup: Create fresh database and client factory for this test

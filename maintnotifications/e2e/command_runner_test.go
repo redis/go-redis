@@ -20,6 +20,7 @@ type CommandRunnerStats struct {
 
 // CommandRunner provides utilities for running commands during tests
 type CommandRunner struct {
+	executing      atomic.Bool
 	client         redis.UniversalClient
 	stopCh         chan struct{}
 	operationCount atomic.Int64
@@ -56,6 +57,10 @@ func (cr *CommandRunner) Close() {
 
 // FireCommandsUntilStop runs commands continuously until stop signal
 func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
+	if !cr.executing.CompareAndSwap(false, true) {
+		return
+	}
+	defer cr.executing.Store(false)
 	fmt.Printf("[CR] Starting command runner...\n")
 	defer fmt.Printf("[CR] Command runner stopped\n")
 	// High frequency for timeout testing

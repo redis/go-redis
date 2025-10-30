@@ -140,3 +140,16 @@ func (phm *PoolHookManager) GetHooks() []PoolHook {
 	copy(hooks, phm.hooks)
 	return hooks
 }
+
+// Clone creates a copy of the hook manager with the same hooks.
+// This is used for lock-free atomic updates of the hook manager.
+func (phm *PoolHookManager) Clone() *PoolHookManager {
+	phm.hooksMu.RLock()
+	defer phm.hooksMu.RUnlock()
+
+	newManager := &PoolHookManager{
+		hooks: make([]PoolHook, len(phm.hooks)),
+	}
+	copy(newManager.hooks, phm.hooks)
+	return newManager
+}

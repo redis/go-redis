@@ -30,7 +30,7 @@ func connCheck(conn net.Conn) error {
 
 	var sysErr error
 
-	if err := rawConn.Read(func(fd uintptr) bool {
+	if err := rawConn.Control(func(fd uintptr) {
 		var buf [1]byte
 		// Use MSG_PEEK to peek at data without consuming it
 		n, _, err := syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
@@ -45,7 +45,6 @@ func connCheck(conn net.Conn) error {
 		default:
 			sysErr = err
 		}
-		return true
 	}); err != nil {
 		return err
 	}
