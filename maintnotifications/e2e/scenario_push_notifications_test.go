@@ -297,12 +297,6 @@ func TestPushNotifications(t *testing.T) {
 		// once moving is received, start a second client commands runner
 		p("Starting commands on second client")
 		go commandsRunner2.FireCommandsUntilStop(ctx)
-		defer func() {
-			// stop the second runner
-			commandsRunner2.Stop()
-			// destroy the second client
-			factory.Destroy("push-notification-client-2")
-		}()
 
 		p("Waiting for MOVING notification on second client")
 		matchNotif, fnd := tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
@@ -393,11 +387,15 @@ func TestPushNotifications(t *testing.T) {
 
 	p("MOVING notification test completed successfully")
 
-	p("Executing commands and collecting logs for analysis... This will take 30 seconds...")
+	p("Executing commands and collecting logs for analysis... ")
 	go commandsRunner.FireCommandsUntilStop(ctx)
-	time.Sleep(time.Minute)
+	go commandsRunner2.FireCommandsUntilStop(ctx)
+	go commandsRunner3.FireCommandsUntilStop(ctx)
+	time.Sleep(30 * time.Second)
 	commandsRunner.Stop()
-	time.Sleep(time.Minute)
+	commandsRunner2.Stop()
+	commandsRunner3.Stop()
+	time.Sleep(5 * time.Minute)
 	allLogsAnalysis := logCollector.GetAnalysis()
 	trackerAnalysis := tracker.GetAnalysis()
 
@@ -473,7 +471,7 @@ func TestPushNotifications(t *testing.T) {
 
 	// unrelaxed (and relaxed) after moving wont be tracked by the hook, so we have to exclude it
 	if trackerAnalysis.UnrelaxedTimeoutCount != allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving {
-		e("Expected %d unrelaxed timeouts, got %d", trackerAnalysis.UnrelaxedTimeoutCount, allLogsAnalysis.UnrelaxedTimeoutCount)
+		e("Expected %d unrelaxed timeouts, got %d", trackerAnalysis.UnrelaxedTimeoutCount, allLogsAnalysis.UnrelaxedTimeoutCount-allLogsAnalysis.UnrelaxedAfterMoving)
 	}
 	if trackerAnalysis.RelaxedTimeoutCount != allLogsAnalysis.RelaxedTimeoutCount-allLogsAnalysis.RelaxedPostHandoffCount {
 		e("Expected %d relaxed timeouts, got %d", trackerAnalysis.RelaxedTimeoutCount, allLogsAnalysis.RelaxedTimeoutCount)
