@@ -75,12 +75,6 @@ type Pooler interface {
 	Put(context.Context, *Conn)
 	Remove(context.Context, *Conn, error)
 
-	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
-	// This should be used when removing a connection from a context that didn't acquire
-	// a turn via Get() (e.g., background workers, cleanup tasks).
-	// For normal removal after Get(), use Remove() instead.
-	RemoveWithoutTurn(context.Context, *Conn, error)
-
 	Len() int
 	IdleLen() int
 	Stats() *Stats
@@ -92,6 +86,12 @@ type Pooler interface {
 	AddPoolHook(hook PoolHook)
 	RemovePoolHook(hook PoolHook)
 
+	// RemoveWithoutTurn removes a connection from the pool without freeing a turn.
+	// This should be used when removing a connection from a context that didn't acquire
+	// a turn via Get() (e.g., background workers, cleanup tasks).
+	// For normal removal after Get(), use Remove() instead.
+	RemoveWithoutTurn(context.Context, *Conn, error)
+
 	Close() error
 }
 
@@ -102,6 +102,7 @@ type Options struct {
 
 	PoolFIFO                 bool
 	PoolSize                 int32
+	MaxConcurrentDials       int
 	DialTimeout              time.Duration
 	PoolTimeout              time.Duration
 	MinIdleConns             int32
@@ -130,6 +131,9 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
+	queue           chan struct{}
+	dialsInProgress chan struct{}
+	dialsQueue      *wantConnQueue
 	// Fast atomic semaphore for connection limiting
 	// Replaces the old channel-based queue for better performance
 	semaphore *internal.FastSemaphore
@@ -165,10 +169,13 @@ func NewConnPool(opt *Options) *ConnPool {
 	//semSize = opt.PoolSize
 
 	p := &ConnPool{
-		cfg:       opt,
-		semaphore: internal.NewFastSemaphore(semSize),
-		conns:     make(map[uint64]*Conn),
-		idleConns: make([]*Conn, 0, opt.PoolSize),
+		cfg:             opt,
+		semaphore:       internal.NewFastSemaphore(semSize),
+		queue:           make(chan struct{}, opt.PoolSize),
+		conns:           make(map[uint64]*Conn),
+		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
+		dialsQueue:      newWantConnQueue(),
+		idleConns:       make([]*Conn, 0, opt.PoolSize),
 	}
 
 	// Only create MinIdleConns if explicitly requested (> 0)
@@ -461,7 +468,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Use cached time for health checks (max 50ms staleness is acceptable)
-	now := time.Unix(0, getCachedTimeNs())
+	nowNs := getCachedTimeNs()
 	attempts := 0
 
 	// Lock-free atomic read - no mutex overhead!
@@ -487,7 +494,7 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			break
 		}
 
-		if !p.isHealthyConn(cn, now) {
+		if !p.isHealthyConn(cn, nowNs) {
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -517,9 +524,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.newConn(ctx, true)
+	newcn, err := p.queuedNewConn(ctx)
 	if err != nil {
-		p.freeTurn()
 		return nil, err
 	}
 
@@ -536,6 +542,97 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 	}
 	return newcn, nil
+}
+
+func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
+	select {
+	case p.dialsInProgress <- struct{}{}:
+		// Got permission, proceed to create connection
+	case <-ctx.Done():
+		p.freeTurn()
+		return nil, ctx.Err()
+	}
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
+
+	w := &wantConn{
+		ctx:       dialCtx,
+		cancelCtx: cancel,
+		result:    make(chan wantConnResult, 1),
+	}
+	var err error
+	defer func() {
+		if err != nil {
+			if cn := w.cancel(); cn != nil {
+				p.putIdleConn(ctx, cn)
+				p.freeTurn()
+			}
+		}
+	}()
+
+	p.dialsQueue.enqueue(w)
+
+	go func(w *wantConn) {
+		var freeTurnCalled bool
+		defer func() {
+			if err := recover(); err != nil {
+				if !freeTurnCalled {
+					p.freeTurn()
+				}
+				internal.Logger.Printf(context.Background(), "queuedNewConn panic: %+v", err)
+			}
+		}()
+
+		defer w.cancelCtx()
+		defer func() { <-p.dialsInProgress }() // Release connection creation permission
+
+		dialCtx := w.getCtxForDial()
+		cn, cnErr := p.newConn(dialCtx, true)
+		delivered := w.tryDeliver(cn, cnErr)
+		if cnErr == nil && delivered {
+			return
+		} else if cnErr == nil && !delivered {
+			p.putIdleConn(dialCtx, cn)
+			p.freeTurn()
+			freeTurnCalled = true
+		} else {
+			p.freeTurn()
+			freeTurnCalled = true
+		}
+	}(w)
+
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+		return nil, err
+	case result := <-w.result:
+		err = result.err
+		return result.cn, err
+	}
+}
+
+func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
+	for {
+		w, ok := p.dialsQueue.dequeue()
+		if !ok {
+			break
+		}
+		if w.tryDeliver(cn, nil) {
+			return
+		}
+	}
+
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+
+	if p.closed() {
+		_ = cn.Close()
+		return
+	}
+
+	// poolSize is increased in newConn
+	p.idleConns = append(p.idleConns, cn)
+	p.idleConnsLen.Add(1)
 }
 
 func (p *ConnPool) waitTurn(ctx context.Context) error {
@@ -742,6 +839,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	if shouldCloseConn {
 		_ = p.closeConn(cn)
 	}
+
+	cn.SetLastPutAtNs(getCachedTimeNs())
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
@@ -798,8 +897,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 		p.poolSize.Add(-1)
 		// this can be idle conn
 		for idx, ic := range p.idleConns {
-			if ic.GetID() == cid {
-				internal.Logger.Printf(context.Background(), "redis: connection pool: removing idle conn[%d]", cid)
+			if ic == cn {
 				p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
 				p.idleConnsLen.Add(-1)
 				break
@@ -891,14 +989,14 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
-func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
+func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	// Performance optimization: check conditions from cheapest to most expensive,
 	// and from most likely to fail to least likely to fail.
 
 	// Only fails if ConnMaxLifetime is set AND connection is old.
 	// Most pools don't set ConnMaxLifetime, so this rarely fails.
 	if p.cfg.ConnMaxLifetime > 0 {
-		if cn.expiresAt.Before(now) {
+		if cn.expiresAt.UnixNano() < nowNs {
 			return false // Connection has exceeded max lifetime
 		}
 	}
@@ -906,7 +1004,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	// Most pools set ConnMaxIdleTime, and idle connections are common.
 	// Checking this first allows us to fail fast without expensive syscalls.
 	if p.cfg.ConnMaxIdleTime > 0 {
-		if now.Sub(cn.UsedAt()) >= p.cfg.ConnMaxIdleTime {
+		if nowNs-cn.UsedAtNs() >= int64(p.cfg.ConnMaxIdleTime) {
 			return false // Connection has been idle too long
 		}
 	}
@@ -926,7 +1024,7 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 				)
 
 				// Update timestamp for healthy connection
-				cn.SetUsedAt(now)
+				cn.SetUsedAtNs(nowNs)
 
 				// Connection is healthy, client will handle notifications
 				return true
@@ -939,6 +1037,6 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	}
 
 	// Only update UsedAt if connection is healthy (avoids unnecessary atomic store)
-	cn.SetUsedAt(now)
+	cn.SetUsedAtNs(nowNs)
 	return true
 }

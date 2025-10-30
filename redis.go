@@ -1181,28 +1181,6 @@ func (c *Client) TxPipeline() Pipeliner {
 	return &pipe
 }
 
-// AutoPipeline creates a new autopipeliner that automatically batches commands.
-// Commands are automatically flushed based on batch size and time interval.
-// The autopipeliner must be closed when done to flush pending commands.
-//
-// Example:
-//
-//	ap := client.AutoPipeline()
-//	defer ap.Close()
-//
-//	for i := 0; i < 1000; i++ {
-//	    ap.Do(ctx, "SET", fmt.Sprintf("key%d", i), i)
-//	}
-//
-// Note: AutoPipeline requires AutoPipelineConfig to be set in Options.
-// If not set, this will panic.
-func (c *Client) AutoPipeline() *AutoPipeliner {
-	if c.opt.AutoPipelineConfig == nil {
-		c.opt.AutoPipelineConfig = DefaultAutoPipelineConfig()
-	}
-	return NewAutoPipeliner(c, c.opt.AutoPipelineConfig)
-}
-
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
 		opt: c.opt,
@@ -1388,11 +1366,13 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 	// If the connection was health-checked within the last 5 seconds, we can skip the
 	// expensive syscall since the health check already verified no unexpected data.
 	// This is safe because:
+	// 0. lastHealthCheckNs is set in pool/conn.go:putConn() after a successful health check
 	// 1. Health check (connCheck) uses the same syscall (Recvfrom with MSG_PEEK)
 	// 2. If push notifications arrived, they would have been detected by health check
 	// 3. 5 seconds is short enough that connection state is still fresh
 	// 4. Push notifications will be processed by the next WithReader call
-	lastHealthCheckNs := cn.UsedAtNs()
+	// used it is set on getConn, so we should use another timer (lastPutAt?)
+	lastHealthCheckNs := cn.LastPutAtNs()
 	if lastHealthCheckNs > 0 {
 		// Use pool's cached time to avoid expensive time.Now() syscall
 		nowNs := pool.GetCachedTimeNs()

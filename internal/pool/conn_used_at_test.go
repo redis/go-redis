@@ -22,7 +22,7 @@ func TestConn_UsedAtUpdatedOnRead(t *testing.T) {
 	// Get initial usedAt time
 	initialUsedAt := cn.UsedAt()
 
-	// Wait at least 100ms to ensure time difference (usedAt has ~50ms precision from cached time)
+	// Wait at least 50ms to ensure time difference (usedAt has ~50ms precision from cached time)
 	time.Sleep(100 * time.Millisecond)
 
 	// Simulate a read operation by calling WithReader
@@ -45,10 +45,10 @@ func TestConn_UsedAtUpdatedOnRead(t *testing.T) {
 			initialUsedAt, updatedUsedAt)
 	}
 
-	// Verify the difference is reasonable (should be around 100ms, accounting for ~50ms cache precision)
+	// Verify the difference is reasonable (should be around 50ms, accounting for ~50ms cache precision)
 	diff := updatedUsedAt.Sub(initialUsedAt)
 	if diff < 50*time.Millisecond || diff > 200*time.Millisecond {
-		t.Errorf("Expected usedAt difference to be around 100ms (±50ms for cache), got %v", diff)
+		t.Errorf("Expected usedAt difference to be around 50ms (±50ms for cache), got %v", diff)
 	}
 }
 
@@ -90,8 +90,10 @@ func TestConn_UsedAtUpdatedOnWrite(t *testing.T) {
 
 	// Verify the difference is reasonable (should be around 100ms, accounting for ~50ms cache precision)
 	diff := updatedUsedAt.Sub(initialUsedAt)
-	if diff < 50*time.Millisecond || diff > 200*time.Millisecond {
-		t.Errorf("Expected usedAt difference to be around 100ms (±50ms for cache), got %v", diff)
+
+	// 50 ms is the cache precision, so we allow up to 110ms difference
+	if diff < 45*time.Millisecond || diff > 155*time.Millisecond {
+		t.Errorf("Expected usedAt difference to be around 100 (±50ms for cache) (+-5ms for sleep precision), got %v", diff)
 	}
 }
 

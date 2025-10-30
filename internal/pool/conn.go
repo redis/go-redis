@@ -55,6 +55,43 @@ func GetCachedTimeNs() int64 {
 	return getCachedTimeNs()
 }
 
+// Global time cache updated every 50ms by background goroutine.
+// This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
+// Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
+var globalTimeCache struct {
+	nowNs atomic.Int64
+}
+
+func init() {
+	// Initialize immediately
+	globalTimeCache.nowNs.Store(time.Now().UnixNano())
+
+	// Start background updater
+	go func() {
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			globalTimeCache.nowNs.Store(time.Now().UnixNano())
+		}
+	}()
+}
+
+// getCachedTimeNs returns the current time in nanoseconds from the global cache.
+// This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 50ms.
+func getCachedTimeNs() int64 {
+	return globalTimeCache.nowNs.Load()
+}
+
+// GetCachedTimeNs returns the current time in nanoseconds from the global cache.
+// This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
+// Max staleness: 50ms.
+// Exported for use by other packages that need fast time access.
+func GetCachedTimeNs() int64 {
+	return getCachedTimeNs()
+}
+
 // Global atomic counter for connection IDs
 var connIDCounter uint64
 
@@ -81,7 +118,8 @@ type Conn struct {
 	// Connection identifier for unique tracking
 	id uint64
 
-	usedAt int64 // atomic
+	usedAt    atomic.Int64
+	lastPutAt atomic.Int64
 
 	// Lock-free netConn access using atomic.Value
 	// Contains *atomicNetConn wrapper, accessed atomically for better performance
@@ -175,15 +213,24 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 }
 
 func (cn *Conn) UsedAt() time.Time {
-	unixNano := atomic.LoadInt64(&cn.usedAt)
-	return time.Unix(0, unixNano)
+	return time.Unix(0, cn.usedAt.Load())
 }
-func (cn *Conn) UsedAtNs() int64 {
-	return atomic.LoadInt64(&cn.usedAt)
+func (cn *Conn) SetUsedAt(tm time.Time) {
+	cn.usedAt.Store(tm.UnixNano())
 }
 
-func (cn *Conn) SetUsedAt(tm time.Time) {
-	atomic.StoreInt64(&cn.usedAt, tm.UnixNano())
+func (cn *Conn) UsedAtNs() int64 {
+	return cn.usedAt.Load()
+}
+func (cn *Conn) SetUsedAtNs(ns int64) {
+	cn.usedAt.Store(ns)
+}
+
+func (cn *Conn) LastPutAtNs() int64 {
+	return cn.lastPutAt.Load()
+}
+func (cn *Conn) SetLastPutAtNs(ns int64) {
+	cn.lastPutAt.Store(ns)
 }
 
 // Backward-compatible wrapper methods for state machine
@@ -499,7 +546,7 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		return time.Duration(readTimeoutNs)
 	}
 
-	// Use cached time to avoid expensive syscall (max 100ms staleness is acceptable for timeout checks)
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
 	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
@@ -533,7 +580,7 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		return time.Duration(writeTimeoutNs)
 	}
 
-	// Use cached time to avoid expensive syscall (max 100ms staleness is acceptable for timeout checks)
+	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
 	nowNs := getCachedTimeNs()
 	// Check if deadline has passed
 	if nowNs < deadlineNs {
@@ -725,7 +772,7 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 func (cn *Conn) TryAcquire() bool {
 	// The || operator short-circuits, so only 1 CAS in the common case
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
-		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateCreated))
+		cn.stateMachine.state.Load() == uint32(StateCreated)
 }
 
 // Release releases the connection back to the pool.
@@ -829,19 +876,18 @@ func (cn *Conn) WithWriter(
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveWriteTimeout(timeout)
 
-		// Always set write deadline, even if getNetConn() returns nil
-		// This prevents write operations from hanging indefinitely
+		// Set write deadline on the connection
 		if netConn := cn.getNetConn(); netConn != nil {
 			if err := netConn.SetWriteDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
 				return err
 			}
 		} else {
-			// If getNetConn() returns nil, we still need to respect the timeout
-			// Return an error to prevent indefinite blocking
+			// Connection is not available - return error
 			return fmt.Errorf("redis: conn[%d] not available for write operation", cn.GetID())
 		}
 	}
 
+	// Reset the buffered writer if needed, should not happen
 	if cn.bw.Buffered() > 0 {
 		if netConn := cn.getNetConn(); netConn != nil {
 			cn.bw.Reset(netConn)
@@ -890,11 +936,12 @@ func (cn *Conn) MaybeHasData() bool {
 
 // deadline computes the effective deadline time based on context and timeout.
 // It updates the usedAt timestamp to now.
-// Uses cached time to avoid expensive syscall (max 100ms staleness is acceptable for deadline calculation).
+// Uses cached time to avoid expensive syscall (max 50ms staleness is acceptable for deadline calculation).
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	// Use cached time for deadline calculation (called 2x per command: read + write)
-	tm := time.Unix(0, getCachedTimeNs())
-	cn.SetUsedAt(tm)
+	nowNs := getCachedTimeNs()
+	cn.SetUsedAtNs(nowNs)
+	tm := time.Unix(0, nowNs)
 
 	if timeout > 0 {
 		tm = tm.Add(timeout)
