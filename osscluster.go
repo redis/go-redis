@@ -1432,7 +1432,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
 				)
 			}
-			slot := c.cmdSlot(ctx, cmd)
+			slot := c.cmdSlot(cmd, -1)
 			node, err := c.slotReadOnlyNode(state, slot)
 			if err != nil {
 				return err
@@ -1452,7 +1452,7 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
 			)
 		}
-		slot := c.cmdSlot(ctx, cmd)
+		slot := c.cmdSlot(cmd, -1)
 		node, err := state.slotMasterNode(slot)
 		if err != nil {
 			return err
@@ -1557,53 +1557,6 @@ func (c *ClusterClient) pipelineReadCmds(
 	return nil
 }
 
-// Legacy functions needed for transaction pipeline processing
-func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmds []Cmder) error {
-	state, err := c.state.Get(ctx)
-	if err != nil {
-		return err
-	}
-
-	preferredRandomSlot := -1
-	if c.opt.ReadOnly && c.cmdsAreReadOnly(ctx, cmds) {
-		for _, cmd := range cmds {
-			slot := c.cmdSlot(cmd, preferredRandomSlot)
-			if preferredRandomSlot == -1 {
-				preferredRandomSlot = slot
-			}
-			node, err := c.slotReadOnlyNode(state, slot)
-			if err != nil {
-				return err
-			}
-			cmdsMap.Add(node, cmd)
-		}
-		return nil
-	}
-
-	for _, cmd := range cmds {
-		slot := c.cmdSlot(cmd, preferredRandomSlot)
-		if preferredRandomSlot == -1 {
-			preferredRandomSlot = slot
-		}
-		node, err := state.slotMasterNode(slot)
-		if err != nil {
-			return err
-		}
-		cmdsMap.Add(node, cmd)
-	}
-	return nil
-}
-
-func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool {
-	for _, cmd := range cmds {
-		cmdInfo := c.cmdInfo(ctx, cmd.Name())
-		if cmdInfo == nil || !cmdInfo.ReadOnly {
-			return false
-		}
-	}
-	return true
-}
-
 func (c *ClusterClient) checkMovedErr(
 	ctx context.Context, cmd Cmder, err error, failedCmds *cmdsMap,
 ) bool {
@@ -1661,7 +1614,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 		return err
 	}
 
-	keyedCmdsBySlot := c.slottedKeyedCommands(cmds)
+	keyedCmdsBySlot := c.slottedKeyedCommands(ctx, cmds)
 	slot := -1
 	switch len(keyedCmdsBySlot) {
 	case 0:
@@ -1715,7 +1668,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 
 // slottedKeyedCommands returns a map of slot to commands taking into account
 // only commands that have keys.
-func (c *ClusterClient) slottedKeyedCommands(cmds []Cmder) map[int][]Cmder {
+func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsSlots := map[int][]Cmder{}
 
 	preferredRandomSlot := -1
@@ -2111,13 +2064,13 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	return info
 }
 
-func (c *ClusterClient) cmdSlot(cmd Cmder, preferredRandomSlot int) int {
+func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
 
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd), preferredRandomSlot)
+	return cmdSlot(cmd, cmdFirstKeyPos(cmd), prefferedSlot)
 }
 
 func cmdSlot(cmd Cmder, pos int, preferredRandomSlot int) int {

@@ -66,7 +66,6 @@ var keylessCommands = map[string]struct{}{
 	"unsubscribe":  {},
 	"unwatch":      {},
 }
-type CmdType = routing.CmdType
 
 // CmdTyper interface for getting command type
 type CmdTyper interface {
@@ -151,7 +150,6 @@ const (
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
 )
->>>>>>> b6633bf9 (centralize cluster command routing in osscluster_router.go and refactor osscluster.go (#6))
 
 type (
 	CmdTypeXAutoClaimValue struct {
@@ -6993,6 +6991,14 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 
 	return nil
 }
+
+func (cmd *VectorScoreSliceCmd) Clone() Cmder {
+	return &VectorScoreSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel
