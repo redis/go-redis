@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -29,7 +30,11 @@ const (
 	minLatencyMeasurementInterval = 10 * time.Second
 )
 
-var errClusterNoNodes = fmt.Errorf("redis: cluster has no nodes")
+var (
+	errClusterNoNodes = errors.New("redis: cluster has no nodes")
+	errNoWatchKeys    = errors.New("redis: Watch requires at least one key")
+	errWatchCrosslot  = errors.New("redis: Watch requires all keys to be in the same slot")
+)
 
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
@@ -1838,14 +1843,13 @@ func (c *ClusterClient) cmdsMoved(
 
 func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	if len(keys) == 0 {
-		return fmt.Errorf("redis: Watch requires at least one key")
+		return errNoWatchKeys
 	}
 
 	slot := hashtag.Slot(keys[0])
 	for _, key := range keys[1:] {
 		if hashtag.Slot(key) != slot {
-			err := fmt.Errorf("redis: Watch requires all keys to be in the same slot")
-			return err
+			return errWatchCrosslot
 		}
 	}
 

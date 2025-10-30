@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,6 +11,14 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/routing"
+)
+
+var (
+	errInvalidCmdPointer         = errors.New("redis: invalid command pointer")
+	errNoCmdsToAggregate         = errors.New("redis: no commands to aggregate")
+	errNoResToAggregate          = errors.New("redis: no results to aggregate")
+	errInvalidCursorCmdArgsCount = errors.New("redis: FT.CURSOR command requires at least 3 arguments")
+	errInvalidCursorIdType       = errors.New("redis: invalid cursor ID type")
 )
 
 // slotResult represents the result of executing a command on a specific slot
@@ -275,12 +284,12 @@ func (c *ClusterClient) executeSpecialCommand(ctx context.Context, cmd Cmder, po
 func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder) error {
 	args := cmd.Args()
 	if len(args) < 4 {
-		return fmt.Errorf("redis: FT.CURSOR command requires at least 3 arguments")
+		return errInvalidCursorCmdArgsCount
 	}
 
 	cursorID, ok := args[3].(string)
 	if !ok {
-		return fmt.Errorf("redis: invalid cursor ID type")
+		return errInvalidCursorIdType
 	}
 
 	// Route based on cursor ID to maintain stickiness
@@ -394,7 +403,7 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 // aggregateKeyedValues aggregates individual key-value pairs while preserving key order
 func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]routing.AggregatorResErr, keyOrder []string, policy *routing.CommandPolicy) error {
 	if len(keyedResults) == 0 {
-		return fmt.Errorf("redis: no results to aggregate")
+		return errNoResToAggregate
 	}
 
 	aggregator := c.createAggregator(policy, cmd, true)
@@ -419,7 +428,7 @@ func (c *ClusterClient) aggregateKeyedValues(cmd Cmder, keyedResults map[string]
 // aggregateResponses aggregates multiple shard responses
 func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *routing.CommandPolicy) error {
 	if len(cmds) == 0 {
-		return fmt.Errorf("redis: no commands to aggregate")
+		return errNoCmdsToAggregate
 	}
 
 	if len(cmds) == 1 {
@@ -958,7 +967,7 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 func (c *ClusterClient) setCommandValueReflection(cmd Cmder, value interface{}) error {
 	cmdValue := reflect.ValueOf(cmd)
 	if cmdValue.Kind() != reflect.Ptr || cmdValue.IsNil() {
-		return fmt.Errorf("redis: invalid command pointer")
+		return errInvalidCmdPointer
 	}
 
 	setValMethod := cmdValue.MethodByName("SetVal")
