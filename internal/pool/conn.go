@@ -902,8 +902,9 @@ func (cn *Conn) MaybeHasData() bool {
 // Uses cached time to avoid expensive syscall (max 50ms staleness is acceptable for deadline calculation).
 func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	// Use cached time for deadline calculation (called 2x per command: read + write)
-	tm := time.Unix(0, getCachedTimeNs())
-	cn.SetUsedAt(tm)
+	nowNs := getCachedTimeNs()
+	cn.SetUsedAtNs(nowNs)
+	tm := time.Unix(0, nowNs)
 
 	if timeout > 0 {
 		tm = tm.Add(timeout)

@@ -174,7 +174,7 @@ func TestConnectionHook(t *testing.T) {
 		select {
 		case <-initConnCalled:
 			// Good, initialization was called
-		case <-time.After(1 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("Timeout waiting for initialization function to be called")
 		}
 

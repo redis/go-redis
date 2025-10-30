@@ -391,11 +391,11 @@ func TestPushNotifications(t *testing.T) {
 	go commandsRunner.FireCommandsUntilStop(ctx)
 	go commandsRunner2.FireCommandsUntilStop(ctx)
 	go commandsRunner3.FireCommandsUntilStop(ctx)
-	time.Sleep(30 * time.Second)
+	time.Sleep(2 * time.Minute)
 	commandsRunner.Stop()
 	commandsRunner2.Stop()
 	commandsRunner3.Stop()
-	time.Sleep(5 * time.Minute)
+	time.Sleep(1 * time.Minute)
 	allLogsAnalysis := logCollector.GetAnalysis()
 	trackerAnalysis := tracker.GetAnalysis()
 
