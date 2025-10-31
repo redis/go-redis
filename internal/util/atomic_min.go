@@ -10,7 +10,8 @@ Adapted from the modified atomic_max, but with inverted logic
 
 import (
 	"math"
-	"sync/atomic"
+
+	"go.uber.org/atomic"
 )
 
 // AtomicMin is a thread-safe Min container
@@ -21,7 +22,7 @@ import (
 type AtomicMin struct {
 
 	// value is current Min
-	value atomic.Int64
+	value atomic.Float64
 	// whether [AtomicMin.Value] has been invoked
 	// with value equal or greater to threshold
 	hasValue atomic.Bool
@@ -31,7 +32,7 @@ type AtomicMin struct {
 //   - if threshold is not used, AtomicMin is initialization-free
 func NewAtomicMin() (atomicMin *AtomicMin) {
 	m := AtomicMin{}
-	m.value.Store(math.MaxInt64)
+	m.value.Store(math.MaxFloat64)
 	return &m
 }
 
@@ -43,14 +44,14 @@ func NewAtomicMin() (atomicMin *AtomicMin) {
 //   - upon return, Min and Min1 are guaranteed to reflect the invocation
 //   - the return order of concurrent Value invocations is not guaranteed
 //   - Thread-safe
-func (m *AtomicMin) Value(value int64) (isNewMin bool) {
-	//  math.MaxInt64 as Min case
+func (m *AtomicMin) Value(value float64) (isNewMin bool) {
+	//  math.MaxFloat64 as Min case
 	var hasValue0 = m.hasValue.Load()
-	if value == math.MaxInt64 {
+	if value == math.MaxFloat64 {
 		if !hasValue0 {
 			isNewMin = m.hasValue.CompareAndSwap(false, true)
 		}
-		return // math.MaxInt64 as Min: isNewMin true for first 0 writer
+		return // math.MaxFloat64 as Min: isNewMin true for first 0 writer
 	}
 
 	// check against present value
@@ -81,7 +82,7 @@ func (m *AtomicMin) Value(value int64) (isNewMin bool) {
 //   - hasValue true indicates that value reflects a Value invocation
 //   - hasValue false: value is zero-value
 //   - Thread-safe
-func (m *AtomicMin) Min() (value int64, hasValue bool) {
+func (m *AtomicMin) Min() (value float64, hasValue bool) {
 	if hasValue = m.hasValue.Load(); !hasValue {
 		return
 	}
@@ -92,4 +93,4 @@ func (m *AtomicMin) Min() (value int64, hasValue bool) {
 // Min1 returns current Minimum whether zero-value or set by Value
 //   - threshold is ignored
 //   - Thread-safe
-func (m *AtomicMin) Min1() (value int64) { return m.value.Load() }
+func (m *AtomicMin) Min1() (value float64) { return m.value.Load() }

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"math"
 	"sync"
+
 	"sync/atomic"
 
 	"github.com/redis/go-redis/v9/internal/util"
+	uberAtomic "go.uber.org/atomic"
 )
 
 var (
@@ -214,7 +216,7 @@ func (a *OneSucceededAggregator) Result() (interface{}, error) {
 // AggSumAggregator sums numeric replies from all shards.
 type AggSumAggregator struct {
 	err atomic.Value
-	res int64
+	res uberAtomic.Float64
 }
 
 func (a *AggSumAggregator) Add(result interface{}, err error) error {
@@ -223,12 +225,12 @@ func (a *AggSumAggregator) Add(result interface{}, err error) error {
 	}
 
 	if result != nil {
-		val, err := toInt64(result)
+		val, err := toFloat64(result)
 		if err != nil {
 			a.err.CompareAndSwap(nil, err)
 			return err
 		}
-		atomic.AddInt64(&a.res, val)
+		a.res.Add(val)
 	}
 
 	return nil
@@ -277,7 +279,7 @@ func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
 }
 
 func (a *AggSumAggregator) Result() (interface{}, error) {
-	res, err := atomic.LoadInt64(&a.res), a.err.Load()
+	res, err := a.res.Load(), a.err.Load()
 	if err != nil {
 		return nil, err.(error)
 	}
@@ -297,13 +299,13 @@ func (a *AggMinAggregator) Add(result interface{}, err error) error {
 		return nil
 	}
 
-	intVal, e := toInt64(result)
+	floatVal, e := toFloat64(result)
 	if e != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
 
-	a.res.Value(intVal)
+	a.res.Value(floatVal)
 
 	return nil
 }
@@ -337,7 +339,7 @@ func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error)
 }
 
 func (a *AggMinAggregator) BatchSlice(results []AggregatorResErr) error {
-	min := int64(math.MaxInt64)
+	min := float64(math.MaxFloat64)
 
 	for _, res := range results {
 		if res.Err != nil {
@@ -345,14 +347,14 @@ func (a *AggMinAggregator) BatchSlice(results []AggregatorResErr) error {
 			return nil
 		}
 
-		resInt, err := toInt64(res.Result)
+		floatVal, err := toFloat64(res.Result)
 		if err != nil {
 			_ = a.Add(nil, res.Err)
 			return nil
 		}
 
-		if resInt < min {
-			min = resInt
+		if floatVal < min {
+			min = floatVal
 		}
 
 	}
@@ -385,13 +387,13 @@ func (a *AggMaxAggregator) Add(result interface{}, err error) error {
 		return nil
 	}
 
-	intVal, e := toInt64(result)
+	floatVal, e := toFloat64(result)
 	if e != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
 	}
 
-	a.res.Value(intVal)
+	a.res.Value(floatVal)
 
 	return nil
 }
@@ -647,6 +649,27 @@ func toInt64(val interface{}) (int64, error) {
 		return int64(v), nil
 	default:
 		return 0, fmt.Errorf("cannot convert %T to int64", val)
+	}
+}
+
+func toFloat64(val interface{}) (float64, error) {
+	if val == nil {
+		return 0, nil
+	}
+
+	switch v := val.(type) {
+	case float64:
+		return v, nil
+	case int:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case float32:
+		return float64(v), nil
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", val)
 	}
 }
 

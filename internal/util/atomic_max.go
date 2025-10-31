@@ -3,14 +3,15 @@
 ISC License
 
 Modified by htemelski-redis
-Removed the treshold, adapted it to work with int64
+Removed the treshold, adapted it to work with float64
 */
 
 package util
 
 import (
 	"math"
-	"sync/atomic"
+
+	"go.uber.org/atomic"
 )
 
 // AtomicMax is a thread-safe max container
@@ -22,7 +23,7 @@ import (
 type AtomicMax struct {
 
 	// value is current max
-	value atomic.Int64
+	value atomic.Float64
 	// whether [AtomicMax.Value] has been invoked
 	// with value equal or greater to threshold
 	hasValue atomic.Bool
@@ -32,7 +33,7 @@ type AtomicMax struct {
 //   - if threshold is not used, AtomicMax is initialization-free
 func NewAtomicMax() (atomicMax *AtomicMax) {
 	m := AtomicMax{}
-	m.value.Store(math.MinInt64)
+	m.value.Store((-math.MaxFloat64))
 	return &m
 }
 
@@ -44,14 +45,14 @@ func NewAtomicMax() (atomicMax *AtomicMax) {
 //   - upon return, Max and Max1 are guaranteed to reflect the invocation
 //   - the return order of concurrent Value invocations is not guaranteed
 //   - Thread-safe
-func (m *AtomicMax) Value(value int64) (isNewMax bool) {
-	//  math.MinInt64 as max case
+func (m *AtomicMax) Value(value float64) (isNewMax bool) {
+	//  -math.MaxFloat64 as max case
 	var hasValue0 = m.hasValue.Load()
-	if value == math.MinInt64 {
+	if value == (-math.MaxFloat64) {
 		if !hasValue0 {
 			isNewMax = m.hasValue.CompareAndSwap(false, true)
 		}
-		return // math.MinInt64 as max: isNewMax true for first 0 writer
+		return // -math.MaxFloat64 as max: isNewMax true for first 0 writer
 	}
 
 	// check against present value
@@ -82,7 +83,7 @@ func (m *AtomicMax) Value(value int64) (isNewMax bool) {
 //   - hasValue true indicates that value reflects a Value invocation
 //   - hasValue false: value is zero-value
 //   - Thread-safe
-func (m *AtomicMax) Max() (value int64, hasValue bool) {
+func (m *AtomicMax) Max() (value float64, hasValue bool) {
 	if hasValue = m.hasValue.Load(); !hasValue {
 		return
 	}
@@ -93,4 +94,4 @@ func (m *AtomicMax) Max() (value int64, hasValue bool) {
 // Max1 returns current maximum whether zero-value or set by Value
 //   - threshold is ignored
 //   - Thread-safe
-func (m *AtomicMax) Max1() (value int64) { return m.value.Load() }
+func (m *AtomicMax) Max1() (value float64) { return m.value.Load() }
