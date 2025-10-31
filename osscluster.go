@@ -1020,6 +1020,7 @@ type ClusterClient struct {
 	nodes         *clusterNodes
 	state         *clusterStateHolder
 	cmdsInfoCache *cmdsInfoCache
+	autopipeliner *AutoPipeliner
 	cmdable
 	hooksMixin
 }
@@ -1049,6 +1050,14 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	})
 
 	return c
+}
+
+func (c *ClusterClient) WithAutoPipeline() AutoPipelinedClient {
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner
+	}
+	c.autopipeliner = c.AutoPipeline()
+	return c.autopipeliner
 }
 
 // Options returns read-only Options that were used to create the client.

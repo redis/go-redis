@@ -16,7 +16,7 @@ func TestAutoPipelineSequential(t *testing.T) {
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         10,
-			FlushInterval:        50 * time.Millisecond,
+			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})
@@ -64,7 +64,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         1000, // Large batch size
-			FlushInterval:        20 * time.Millisecond, // Rely on timer
+			MaxFlushDelay:        20 * time.Millisecond, // Rely on timer
 			MaxConcurrentBatches: 5,
 		},
 	})
@@ -111,7 +111,7 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         5,
-			FlushInterval:        50 * time.Millisecond,
+			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})

@@ -24,7 +24,7 @@ var _ = Describe("AutoPipeline", func() {
 			Addr: redisAddr,
 			AutoPipelineConfig: &redis.AutoPipelineConfig{
 				MaxBatchSize:         10,
-				FlushInterval:        50 * time.Millisecond,
+				MaxFlushDelay:        50 * time.Millisecond,
 				MaxConcurrentBatches: 5,
 			},
 		})
@@ -235,7 +235,7 @@ var _ = Describe("AutoPipeline", func() {
 			Addr: redisAddr,
 			AutoPipelineConfig: &redis.AutoPipelineConfig{
 				MaxBatchSize:         5,
-				FlushInterval:        10 * time.Millisecond,
+				MaxFlushDelay:        10 * time.Millisecond,
 				MaxConcurrentBatches: 2,
 			},
 		})
@@ -296,7 +296,7 @@ func TestAutoPipelineBasic(t *testing.T) {
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         10,
-			FlushInterval:        50 * time.Millisecond,
+			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})
@@ -338,14 +338,14 @@ func TestAutoPipelineBasic(t *testing.T) {
 	}
 }
 
-func TestAutoPipelineFlushInterval(t *testing.T) {
+func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         1000, // Large batch size so only timer triggers flush
-			FlushInterval:        50 * time.Millisecond,
+			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})

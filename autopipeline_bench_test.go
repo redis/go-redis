@@ -69,7 +69,7 @@ func BenchmarkAutoPipeline(b *testing.B) {
 		Addr: ":6379",
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         100,
-			FlushInterval:        10 * time.Millisecond,
+			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 10,
 		},
 	})
@@ -155,7 +155,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 				Addr: ":6379",
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         100,
-					FlushInterval:        10 * time.Millisecond,
+					MaxFlushDelay:        10 * time.Millisecond,
 					MaxConcurrentBatches: 10,
 				},
 			})
@@ -201,7 +201,7 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 				Addr: ":6379",
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         batchSize,
-					FlushInterval:        10 * time.Millisecond,
+					MaxFlushDelay:        10 * time.Millisecond,
 					MaxConcurrentBatches: 10,
 				},
 			})
@@ -222,23 +222,23 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 	}
 }
 
-// BenchmarkAutoPipelineFlushIntervals tests different flush intervals
-func BenchmarkAutoPipelineFlushIntervals(b *testing.B) {
-	intervals := []time.Duration{
+// BenchmarkAutoPipelineMaxFlushDelays tests different max flush delays
+func BenchmarkAutoPipelineMaxFlushDelays(b *testing.B) {
+	delays := []time.Duration{
 		1 * time.Millisecond,
 		5 * time.Millisecond,
 		10 * time.Millisecond,
 		50 * time.Millisecond,
 	}
 
-	for _, interval := range intervals {
-		b.Run(fmt.Sprintf("interval=%s", interval), func(b *testing.B) {
+	for _, delay := range delays {
+		b.Run(fmt.Sprintf("delay=%s", delay), func(b *testing.B) {
 			ctx := context.Background()
 			client := redis.NewClient(&redis.Options{
 				Addr: ":6379",
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         100,
-					FlushInterval:        interval,
+					MaxFlushDelay:        delay,
 					MaxConcurrentBatches: 10,
 				},
 			})
@@ -349,10 +349,8 @@ func BenchmarkRingBufferVsSliceQueue(b *testing.B) {
 			Addr: ":6379",
 			AutoPipelineConfig: &redis.AutoPipelineConfig{
 				MaxBatchSize:         50,
-				FlushInterval:        time.Millisecond,
+				MaxFlushDelay:        time.Millisecond,
 				MaxConcurrentBatches: 10,
-				UseRingBuffer:        true,
-				RingBufferSize:       1024,
 			},
 		})
 		defer client.Close()
@@ -378,9 +376,8 @@ func BenchmarkRingBufferVsSliceQueue(b *testing.B) {
 			Addr: ":6379",
 			AutoPipelineConfig: &redis.AutoPipelineConfig{
 				MaxBatchSize:         50,
-				FlushInterval:        time.Millisecond,
+				MaxFlushDelay:        time.Millisecond,
 				MaxConcurrentBatches: 10,
-				UseRingBuffer:        false, // Use legacy slice queue
 			},
 		})
 		defer client.Close()
@@ -417,11 +414,8 @@ func BenchmarkMaxFlushDelay(b *testing.B) {
 				Addr: ":6379",
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         50,
-					FlushInterval:        time.Millisecond,
-					MaxConcurrentBatches: 10,
-					UseRingBuffer:        true,
-					RingBufferSize:       1024,
 					MaxFlushDelay:        delay,
+					MaxConcurrentBatches: 10,
 				},
 			})
 			defer client.Close()
@@ -462,10 +456,8 @@ func BenchmarkBufferSizes(b *testing.B) {
 				WriteBufferSize: size,
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         50,
-					FlushInterval:        time.Millisecond,
+					MaxFlushDelay:        time.Millisecond,
 					MaxConcurrentBatches: 10,
-					UseRingBuffer:        true,
-					RingBufferSize:       1024,
 				},
 			})
 			defer client.Close()
@@ -487,27 +479,25 @@ func BenchmarkBufferSizes(b *testing.B) {
 	}
 }
 
-// BenchmarkRingBufferSizes benchmarks different ring buffer sizes
-func BenchmarkRingBufferSizes(b *testing.B) {
-	ringSizes := []int{
-		256,
-		512,
-		1024, // default
-		2048,
-		4096,
+// BenchmarkAutoPipelineMaxBatchSizes benchmarks different max batch sizes
+func BenchmarkAutoPipelineMaxBatchSizes(b *testing.B) {
+	batchSizes := []int{
+		10,
+		50,  // default
+		100,
+		200,
+		500,
 	}
 
-	for _, size := range ringSizes {
-		b.Run(fmt.Sprintf("ring_%d", size), func(b *testing.B) {
+	for _, size := range batchSizes {
+		b.Run(fmt.Sprintf("batch_%d", size), func(b *testing.B) {
 			ctx := context.Background()
 			client := redis.NewClient(&redis.Options{
 				Addr: ":6379",
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
-					MaxBatchSize:         50,
-					FlushInterval:        time.Millisecond,
+					MaxBatchSize:         size,
+					MaxFlushDelay:        time.Millisecond,
 					MaxConcurrentBatches: 10,
-					UseRingBuffer:        true,
-					RingBufferSize:       size,
 				},
 			})
 			defer client.Close()

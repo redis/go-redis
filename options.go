@@ -281,6 +281,9 @@ type Options struct {
 	// to reduce network round-trips and improve throughput.
 	// If nil, autopipelining is disabled.
 	AutoPipelineConfig *AutoPipelineConfig
+
+	// AutoPipelineEnabled enables automatic pipelining of commands.
+	AutoPipelineEnabled bool
 }
 
 func (opt *Options) init() {

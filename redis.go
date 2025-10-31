@@ -208,6 +208,12 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 	return hs.current.txPipeline(ctx, cmds)
 }
 
+// ------------------------------------------------------------------------------
+type AutoPipelinedClient interface {
+	Cmdable
+	Close() error
+}
+
 //------------------------------------------------------------------------------
 
 type baseClient struct {
@@ -1007,6 +1013,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 type Client struct {
 	*baseClient
 	cmdable
+	autopipeliner *AutoPipeliner
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -1081,6 +1088,16 @@ func (c *Client) init() {
 		pipeline:   c.baseClient.processPipeline,
 		txPipeline: c.baseClient.processTxPipeline,
 	})
+}
+
+func (c *Client) WithAutoPipeline() AutoPipelinedClient {
+	if c.autopipeliner != nil {
+		if !c.autopipeliner.closed.Load() {
+			return c.autopipeliner
+		}
+	}
+	c.autopipeliner = c.AutoPipeline()
+	return c.autopipeliner
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
@@ -1163,6 +1180,37 @@ func (c *Client) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// AutoPipeline creates a new autopipeliner that automatically batches commands.
+// Commands are automatically flushed based on batch size and time interval.
+// The autopipeliner must be closed when done to flush pending commands.
+//
+// Example:
+//
+//	ap := client.AutoPipeline()
+//	defer ap.Close()
+//
+//	var wg sync.WaitGroup
+//	for i := 0; i < 1000; i++ {
+//	    wg.Add(1)
+//	    go func(idx int) {
+//	        defer wg.Done()
+//	        ap.Do(ctx, "SET", fmt.Sprintf("key%d", idx), idx)
+//	    }(i)
+//	}
+//	wg.Wait()
+//
+// Note: AutoPipeline requires AutoPipelineConfig to be set in Options.
+// If not set, default configuration will be used.
+func (c *Client) AutoPipeline() *AutoPipeliner {
+	if c.autopipeliner != nil {
+		return c.autopipeliner
+	}
+	if c.opt.AutoPipelineConfig == nil {
+		c.opt.AutoPipelineConfig = DefaultAutoPipelineConfig()
+	}
+	return NewAutoPipeliner(c, c.opt.AutoPipelineConfig)
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

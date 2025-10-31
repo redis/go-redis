@@ -17,7 +17,7 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 		Addrs: []string{":7000", ":7001", ":7002"},
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         10,
-			FlushInterval:        50 * time.Millisecond,
+			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})
@@ -66,7 +66,7 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 		Addrs: []string{":7000", ":7001", ":7002"},
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         50,
-			FlushInterval:        10 * time.Millisecond,
+			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 10,
 		},
 	})
@@ -121,7 +121,7 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		Addrs: []string{":7000", ":7001", ":7002"},
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         20,
-			FlushInterval:        10 * time.Millisecond,
+			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 5,
 		},
 	})

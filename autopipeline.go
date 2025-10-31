@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal"
 )
 
 // AutoPipelineConfig configures the autopipelining behavior.
@@ -13,29 +15,10 @@ type AutoPipelineConfig struct {
 	// Default: 100
 	MaxBatchSize int
 
-	// FlushInterval is the maximum time to wait before flushing pending commands.
-	// Default: 10ms
-	FlushInterval time.Duration
-
 	// MaxConcurrentBatches is the maximum number of concurrent pipeline executions.
 	// This prevents overwhelming the server with too many concurrent pipelines.
 	// Default: 10
 	MaxConcurrentBatches int
-
-	// UseRingBuffer enables the high-performance ring buffer queue.
-	// When enabled, uses a pre-allocated ring buffer with lock-free enqueue
-	// instead of the slice-based queue. This provides:
-	// - 6x faster enqueue operations
-	// - 100% reduction in allocations during enqueue
-	// - Better performance under high concurrency
-	// Default: true (enabled)
-	UseRingBuffer bool
-
-	// RingBufferSize is the size of the ring buffer queue.
-	// Only used when UseRingBuffer is true.
-	// Must be a power of 2 for optimal performance (will be rounded up if not).
-	// Default: 1024
-	RingBufferSize int
 
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
 	// A small delay (e.g., 100μs) can significantly reduce CPU usage by allowing
@@ -56,25 +39,107 @@ type AutoPipelineConfig struct {
 func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         50,
-		FlushInterval:        time.Millisecond,
 		MaxConcurrentBatches: 10,
-		UseRingBuffer:        true, // Enable ring buffer by default
-		RingBufferSize:       1024,
 		MaxFlushDelay:        0, // No delay by default (lowest latency)
 	}
 }
 
-// pipelinerClient is an interface for clients that support pipelining.
+// cmdableClient is an interface for clients that support pipelining.
 // Both Client and ClusterClient implement this interface.
-type pipelinerClient interface {
+type cmdableClient interface {
+	Cmdable
 	Process(ctx context.Context, cmd Cmder) error
-	Pipeline() Pipeliner
 }
 
 // queuedCmd wraps a command with a done channel for completion notification
 type queuedCmd struct {
 	cmd  Cmder
 	done chan struct{}
+}
+
+// doneChanPool is a sync.Pool for done channels to reduce allocations
+// We use buffered channels so we can signal completion without blocking
+var doneChanPool = sync.Pool{
+	New: func() interface{} {
+		return make(chan struct{}, 1)
+	},
+}
+
+// getDoneChan gets a done channel from the pool
+func getDoneChan() chan struct{} {
+	ch := doneChanPool.Get().(chan struct{})
+	// Make sure the channel is empty
+	select {
+	case <-ch:
+	default:
+	}
+	return ch
+}
+
+// putDoneChan returns a done channel to the pool after draining it
+func putDoneChan(ch chan struct{}) {
+	// Drain the channel completely
+	for {
+		select {
+		case <-ch:
+		default:
+			doneChanPool.Put(ch)
+			return
+		}
+	}
+}
+
+// queuedCmdPool is a sync.Pool for queuedCmd to reduce allocations
+var queuedCmdPool = sync.Pool{
+	New: func() interface{} {
+		return &queuedCmd{}
+	},
+}
+
+// getQueuedCmd gets a queuedCmd from the pool and initializes it
+func getQueuedCmd(cmd Cmder) *queuedCmd {
+	qc := queuedCmdPool.Get().(*queuedCmd)
+	qc.cmd = cmd
+	qc.done = getDoneChan()
+	return qc
+}
+
+// putQueuedCmd returns a queuedCmd to the pool after clearing it
+func putQueuedCmd(qc *queuedCmd) {
+	qc.cmd = nil
+	if qc.done != nil {
+		putDoneChan(qc.done)
+		qc.done = nil
+	}
+	queuedCmdPool.Put(qc)
+}
+
+// queueSlicePool is a sync.Pool for queue slices to reduce allocations
+var queueSlicePool = sync.Pool{
+	New: func() interface{} {
+		// Create a slice with capacity for typical batch size
+		return make([]*queuedCmd, 0, 100)
+	},
+}
+
+// getQueueSlice gets a queue slice from the pool
+func getQueueSlice(capacity int) []*queuedCmd {
+	slice := queueSlicePool.Get().([]*queuedCmd)
+	// Clear the slice but keep capacity
+	slice = slice[:0]
+	// If the capacity is too small, allocate a new one
+	if cap(slice) < capacity {
+		return make([]*queuedCmd, 0, capacity)
+	}
+	return slice
+}
+
+// putQueueSlice returns a queue slice to the pool
+func putQueueSlice(slice []*queuedCmd) {
+	// Only pool slices that aren't too large (avoid memory bloat)
+	if cap(slice) <= 1000 {
+		queueSlicePool.Put(slice)
+	}
 }
 
 // autoPipelineCmd wraps a command and blocks on result access until execution completes.
@@ -100,7 +165,6 @@ func (c *autoPipelineCmd) String() string {
 // 1. Collecting commands from multiple goroutines into a shared queue
 // 2. Automatically flushing the queue when:
 //   - The batch size reaches MaxBatchSize
-//   - The flush interval (FlushInterval) expires
 //
 // 3. Executing batched commands using Redis pipelining
 //
@@ -116,34 +180,41 @@ func (c *autoPipelineCmd) String() string {
 type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 
-	pipeliner pipelinerClient
+	pipeliner cmdableClient
 	config    *AutoPipelineConfig
 
 	// Command queue - either slice-based or ring buffer
 	mu       sync.Mutex
-	queue    []*queuedCmd      // Slice-based queue (legacy)
-	ring     *autoPipelineRing // Ring buffer queue (high-performance)
-	queueLen atomic.Int32      // Fast path check without lock
+	queue    []*queuedCmd // Slice-based queue (legacy)
+	queueLen atomic.Int32 // Fast path check without lock
 
 	// Flush control
 	flushCh chan struct{} // Signal to flush immediately
 
 	// Concurrency control
-	sem chan struct{} // Semaphore for concurrent batch limit
+	sem *internal.FastSemaphore // Semaphore for concurrent batch limit
 
 	// Lifecycle
-	ctx                 context.Context
-	cancel              context.CancelFunc
-	wg                  sync.WaitGroup
-	closed              atomic.Bool
-	cachedFlushInterval atomic.Int64
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	closed atomic.Bool
 }
 
 // NewAutoPipeliner creates a new autopipeliner for the given client.
 // The client can be either *Client or *ClusterClient.
-func NewAutoPipeliner(pipeliner pipelinerClient, config *AutoPipelineConfig) *AutoPipeliner {
+func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) *AutoPipeliner {
 	if config == nil {
 		config = DefaultAutoPipelineConfig()
+	}
+
+	// Apply defaults for zero values
+	if config.MaxBatchSize <= 0 {
+		config.MaxBatchSize = 50
+	}
+
+	if config.MaxConcurrentBatches <= 0 {
+		config.MaxConcurrentBatches = 10
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -152,20 +223,16 @@ func NewAutoPipeliner(pipeliner pipelinerClient, config *AutoPipelineConfig) *Au
 		pipeliner: pipeliner,
 		config:    config,
 		flushCh:   make(chan struct{}, 1),
-		sem:       make(chan struct{}, config.MaxConcurrentBatches),
+		sem:       internal.NewFastSemaphore(int32(config.MaxConcurrentBatches)),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
 
-	// Initialize cmdable to route all commands through Process
-	ap.cmdable = ap.Process
+	// Initialize cmdable to route all commands through processAndBlock
+	ap.cmdable = ap.processAndBlock
 
 	// Initialize queue based on configuration
-	if config.UseRingBuffer {
-		ap.ring = newAutoPipelineRing(config.RingBufferSize)
-	} else {
-		ap.queue = make([]*queuedCmd, 0, config.MaxBatchSize)
-	}
+	ap.queue = getQueueSlice(config.MaxBatchSize)
 
 	// Start background flusher
 	ap.wg.Add(1)
@@ -223,28 +290,41 @@ func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 	return nil
 }
 
+// processAndBlock is used by the cmdable interface.
+// It queues the command and blocks until execution completes.
+// This allows typed methods like Get(), Set(), etc. to work correctly with autopipelining.
+func (ap *AutoPipeliner) processAndBlock(ctx context.Context, cmd Cmder) error {
+	// Check if this is a blocking command (has read timeout set)
+	// Blocking commands like BLPOP, BRPOP, BZMPOP should not be autopipelined
+	if cmd.readTimeout() != nil {
+		// Execute blocking commands directly without autopipelining
+		return ap.pipeliner.Process(ctx, cmd)
+	}
+
+	done := ap.process(ctx, cmd)
+
+	// Block until the command is executed
+	<-done
+
+	return cmd.Err()
+}
+
+// closedChan is a reusable closed channel for error cases
+var closedChan = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
 // process is the internal method that queues a command and returns its done channel.
 func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
 	if ap.closed.Load() {
 		cmd.SetErr(ErrClosed)
-		closedCh := make(chan struct{})
-		close(closedCh)
-		return closedCh
+		return closedChan
 	}
 
-	// Use ring buffer if enabled
-	if ap.config.UseRingBuffer {
-		done := ap.ring.putOne(cmd)
-		// putOne will signal the flusher via condition variable if needed
-		return done
-	}
-
-	// Legacy slice-based queue
-	// Create queued command with done channel
-	qc := &queuedCmd{
-		cmd:  cmd,
-		done: make(chan struct{}),
-	}
+	// Get queued command from pool
+	qc := getQueuedCmd(cmd)
 
 	// Fast path: try to acquire lock without blocking
 	if ap.mu.TryLock() {
@@ -268,12 +348,11 @@ func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{}
 	ap.queueLen.Store(int32(queueLen))
 	ap.mu.Unlock()
 
-	// Always signal the flusher (non-blocking)
+	// always signal the flusher (non-blocking)
 	select {
 	case ap.flushCh <- struct{}{}:
 	default:
 	}
-
 	return qc.done
 }
 
@@ -308,11 +387,6 @@ func (ap *AutoPipeliner) Close() error {
 	// Cancel context to stop flusher
 	ap.cancel()
 
-	// Wake up flusher if it's waiting
-	if ap.config.UseRingBuffer {
-		ap.ring.wakeAll()
-	}
-
 	// Wait for flusher to finish
 	ap.wg.Wait()
 
@@ -322,106 +396,8 @@ func (ap *AutoPipeliner) Close() error {
 // flusher is the background goroutine that flushes batches.
 func (ap *AutoPipeliner) flusher() {
 	defer ap.wg.Done()
-
-	if !ap.config.UseRingBuffer {
-		// Legacy slice-based flusher
-		ap.flusherSlice()
-		return
-	}
-
-	// Ring buffer flusher
-	var (
-		cmds      = make([]Cmder, 0, ap.config.MaxBatchSize)
-		doneChans = make([]chan struct{}, 0, ap.config.MaxBatchSize)
-	)
-
-	for {
-		// Try to get next command (non-blocking)
-		cmd, done := ap.ring.nextWriteCmd()
-
-		if cmd == nil {
-			// No command available
-			// If we have buffered commands, execute them first
-			if len(cmds) > 0 {
-				ap.executeBatch(cmds, doneChans)
-				cmds = cmds[:0]
-				doneChans = doneChans[:0]
-			}
-
-			// Check for shutdown before blocking
-			select {
-			case <-ap.ctx.Done():
-				return
-			default:
-			}
-
-			// Wait for next command (blocking)
-			// This will be woken up by wakeAll() during shutdown
-			cmd, done = ap.ring.waitForWrite()
-
-			// If nil, ring is closed
-			if cmd == nil {
-				return
-			}
-		}
-
-		// Add command to batch
-		cmds = append(cmds, cmd)
-		doneChans = append(doneChans, done)
-
-		// Execute batch if full
-		if len(cmds) >= ap.config.MaxBatchSize {
-			ap.executeBatch(cmds, doneChans)
-			cmds = cmds[:0]
-			doneChans = doneChans[:0]
-		}
-	}
-}
-
-// executeBatch executes a batch of commands.
-func (ap *AutoPipeliner) executeBatch(cmds []Cmder, doneChans []chan struct{}) {
-	if len(cmds) == 0 {
-		return
-	}
-
-	// Acquire semaphore (limit concurrent batches)
-	select {
-	case ap.sem <- struct{}{}:
-		defer func() {
-			<-ap.sem
-		}()
-	case <-ap.ctx.Done():
-		// Context cancelled, set error on all commands and notify
-		for i, cmd := range cmds {
-			cmd.SetErr(ErrClosed)
-			doneChans[i] <- struct{}{} // Send signal instead of close
-			ap.ring.finishCmd()
-		}
-		return
-	}
-
-	// Fast path for single command
-	if len(cmds) == 1 {
-		_ = ap.pipeliner.Process(context.Background(), cmds[0])
-		doneChans[0] <- struct{}{} // Send signal instead of close
-		ap.ring.finishCmd()
-		return
-	}
-
-	// Execute pipeline for multiple commands
-	pipe := ap.pipeliner.Pipeline()
-	for _, cmd := range cmds {
-		_ = pipe.Process(context.Background(), cmd)
-	}
-
-	// Execute and wait for completion
-	_, _ = pipe.Exec(context.Background())
-
-	// Notify completion and finish slots
-	for _, done := range doneChans {
-		done <- struct{}{} // Send signal instead of close
-		ap.ring.finishCmd()
-	}
+	ap.flusherSlice()
+	return
 }
 
 // flusherSlice is the legacy slice-based flusher.
@@ -441,6 +417,9 @@ func (ap *AutoPipeliner) flusherSlice() {
 		for {
 			select {
 			case <-ap.flushCh:
+				if ap.Len() >= ap.config.MaxBatchSize {
+					goto drained
+				}
 			default:
 				goto drained
 			}
@@ -465,8 +444,6 @@ func (ap *AutoPipeliner) flusherSlice() {
 	}
 }
 
-
-
 // flushBatchSlice flushes commands from the slice-based queue (legacy).
 func (ap *AutoPipeliner) flushBatchSlice() {
 	// Get commands from queue
@@ -479,33 +456,43 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 
 	// Take ownership of current queue
 	queuedCmds := ap.queue
-	ap.queue = make([]*queuedCmd, 0, ap.config.MaxBatchSize)
+	ap.queue = getQueueSlice(ap.config.MaxBatchSize)
 	ap.queueLen.Store(0)
 	ap.mu.Unlock()
 
 	// Acquire semaphore (limit concurrent batches)
-	select {
-	case ap.sem <- struct{}{}:
-		defer func() {
-			<-ap.sem
-		}()
-	case <-ap.ctx.Done():
-		// Context cancelled, set error on all commands and notify
-		for _, qc := range queuedCmds {
-			qc.cmd.SetErr(ErrClosed)
-			close(qc.done)
+	// Try fast path first
+	if !ap.sem.TryAcquire() {
+		// Fast path failed, need to wait
+		// essentially, this is a blocking call
+		err := ap.sem.Acquire(ap.ctx, 5*time.Second, context.DeadlineExceeded)
+		if err != nil {
+			// Context cancelled, set error on all commands and notify
+			for _, qc := range queuedCmds {
+				qc.cmd.SetErr(ErrClosed)
+				// Signal completion by sending to buffered channel
+				qc.done <- struct{}{}
+				putQueuedCmd(qc)
+			}
+			putQueueSlice(queuedCmds)
+			return
 		}
-		return
 	}
 
 	if len(queuedCmds) == 0 {
+		ap.sem.Release()
 		return
 	}
 
 	// Fast path for single command
 	if len(queuedCmds) == 1 {
-		_ = ap.pipeliner.Process(context.Background(), queuedCmds[0].cmd)
-		close(queuedCmds[0].done)
+		qc := queuedCmds[0]
+		_ = ap.pipeliner.Process(context.Background(), qc.cmd)
+		// Signal completion by sending to buffered channel
+		qc.done <- struct{}{}
+		ap.sem.Release()
+		putQueuedCmd(qc)
+		putQueueSlice(queuedCmds)
 		return
 	}
 
@@ -521,15 +508,16 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 	// IMPORTANT: Only notify after pipeline execution is complete
 	// This ensures command results are fully populated before waiters proceed
 	for _, qc := range queuedCmds {
-		close(qc.done)
+		// Signal completion by sending to buffered channel
+		qc.done <- struct{}{}
+		putQueuedCmd(qc)
 	}
+	ap.sem.Release()
+	putQueueSlice(queuedCmds)
 }
 
 // Len returns the current number of queued commands.
 func (ap *AutoPipeliner) Len() int {
-	if ap.config.UseRingBuffer {
-		return ap.ring.len()
-	}
 	return int(ap.queueLen.Load())
 }
 
@@ -559,17 +547,7 @@ func (ap *AutoPipeliner) Pipelined(ctx context.Context, fn func(Pipeliner) error
 // Note: This uses the underlying client's TxPipeline if available (Client, Ring, ClusterClient).
 // For other clients, this will panic.
 func (ap *AutoPipeliner) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
-	// Try to get TxPipeline from the underlying client
-	// This works for Client, Ring, and ClusterClient
-	type txPipeliner interface {
-		TxPipeline() Pipeliner
-	}
-
-	if txp, ok := ap.pipeliner.(txPipeliner); ok {
-		return txp.TxPipeline().Pipelined(ctx, fn)
-	}
-
-	panic("redis: TxPipelined not supported by this client type")
+	return ap.pipeliner.TxPipeline().Pipelined(ctx, fn)
 }
 
 // TxPipeline returns a new transaction pipeline that uses the underlying pipeliner.
@@ -578,15 +556,8 @@ func (ap *AutoPipeliner) TxPipelined(ctx context.Context, fn func(Pipeliner) err
 // Note: This uses the underlying client's TxPipeline if available (Client, Ring, ClusterClient).
 // For other clients, this will panic.
 func (ap *AutoPipeliner) TxPipeline() Pipeliner {
-	// Try to get TxPipeline from the underlying client
-	// This works for Client, Ring, and ClusterClient
-	type txPipeliner interface {
-		TxPipeline() Pipeliner
-	}
-
-	if txp, ok := ap.pipeliner.(txPipeliner); ok {
-		return txp.TxPipeline()
-	}
-
-	panic("redis: TxPipeline not supported by this client type")
+	return ap.pipeliner.TxPipeline()
 }
+
+// validate AutoPipeliner implements Cmdable
+var _ Cmdable = (*AutoPipeliner)(nil)
