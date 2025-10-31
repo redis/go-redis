@@ -1175,11 +1175,11 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 }
 
 func (c *Client) Pipeline() Pipeliner {
-	pipe := Pipeline{
-		exec: pipelineExecer(c.processPipelineHook),
-	}
+	pipe := pipelinePool.Get().(*Pipeline)
+	pipe.exec = pipelineExecer(c.processPipelineHook)
+	pipe.cmds = getCmdSlice()
 	pipe.init()
-	return &pipe
+	return pipe
 }
 
 // AutoPipeline creates a new autopipeliner that automatically batches commands.

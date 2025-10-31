@@ -50,7 +50,7 @@ func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCm
 
 // Get Redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
-	cmd := NewStringCmd(ctx, "get", key)
+	cmd := newStringCmd2(ctx, "get", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -164,21 +164,29 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
-	args := make([]interface{}, 3, 5)
-	args[0] = "set"
-	args[1] = key
-	args[2] = value
-	if expiration > 0 {
-		if usePrecise(expiration) {
-			args = append(args, "px", formatMs(ctx, expiration))
-		} else {
-			args = append(args, "ex", formatSec(ctx, expiration))
+	var cmd *StatusCmd
+
+	// Fast path: no expiration (most common case)
+	if expiration == 0 {
+		cmd = newStatusCmd3(ctx, "set", key, value)
+	} else {
+		// Slow path: with expiration
+		args := make([]interface{}, 3, 5)
+		args[0] = "set"
+		args[1] = key
+		args[2] = value
+		if expiration > 0 {
+			if usePrecise(expiration) {
+				args = append(args, "px", formatMs(ctx, expiration))
+			} else {
+				args = append(args, "ex", formatSec(ctx, expiration))
+			}
+		} else if expiration == KeepTTL {
+			args = append(args, "keepttl")
 		}
-	} else if expiration == KeepTTL {
-		args = append(args, "keepttl")
+		cmd = NewStatusCmd(ctx, args...)
 	}
 
-	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

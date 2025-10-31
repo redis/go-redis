@@ -68,7 +68,7 @@ var doneChanPool = sync.Pool{
 // getDoneChan gets a done channel from the pool
 func getDoneChan() chan struct{} {
 	ch := doneChanPool.Get().(chan struct{})
-	// Make sure the channel is empty
+	// Make sure the channel is empty (drain any leftover signals)
 	select {
 	case <-ch:
 	default:
@@ -76,17 +76,15 @@ func getDoneChan() chan struct{} {
 	return ch
 }
 
-// putDoneChan returns a done channel to the pool after draining it
+// putDoneChan returns a done channel to the pool
+// The channel should be drained before being returned
 func putDoneChan(ch chan struct{}) {
 	// Drain the channel completely
-	for {
-		select {
-		case <-ch:
-		default:
-			doneChanPool.Put(ch)
-			return
-		}
+	select {
+	case <-ch:
+	default:
 	}
+	doneChanPool.Put(ch)
 }
 
 // queuedCmdPool is a sync.Pool for queuedCmd to reduce allocations
@@ -106,11 +104,9 @@ func getQueuedCmd(cmd Cmder) *queuedCmd {
 
 // putQueuedCmd returns a queuedCmd to the pool after clearing it
 func putQueuedCmd(qc *queuedCmd) {
+	putDoneChan(qc.done)
 	qc.cmd = nil
-	if qc.done != nil {
-		putDoneChan(qc.done)
-		qc.done = nil
-	}
+	qc.done = nil
 	queuedCmdPool.Put(qc)
 }
 
@@ -138,24 +134,12 @@ func getQueueSlice(capacity int) []*queuedCmd {
 func putQueueSlice(slice []*queuedCmd) {
 	// Only pool slices that aren't too large (avoid memory bloat)
 	if cap(slice) <= 1000 {
-		queueSlicePool.Put(slice)
+		// Clear all pointers to avoid holding references
+		for i := range slice {
+			slice[i] = nil
+		}
+		queueSlicePool.Put(slice[:0])
 	}
-}
-
-// autoPipelineCmd wraps a command and blocks on result access until execution completes.
-type autoPipelineCmd struct {
-	Cmder
-	done <-chan struct{}
-}
-
-func (c *autoPipelineCmd) Err() error {
-	<-c.done
-	return c.Cmder.Err()
-}
-
-func (c *autoPipelineCmd) String() string {
-	<-c.done
-	return c.Cmder.String()
 }
 
 // AutoPipeliner automatically batches commands and executes them in pipelines.
@@ -259,16 +243,8 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 		return cmd
 	}
 
-	// Check if this is a blocking command (has read timeout set)
-	// Blocking commands like BLPOP, BRPOP, BZMPOP should not be autopipelined
-	if cmd.readTimeout() != nil {
-		// Execute blocking commands directly without autopipelining
-		_ = ap.pipeliner.Process(ctx, cmd)
-		return cmd
-	}
-
-	done := ap.process(ctx, cmd)
-	return &autoPipelineCmd{Cmder: cmd, done: done}
+	_ = ap.processAndBlock(ctx, cmd)
+	return cmd
 }
 
 // Process queues a command for autopipelined execution and returns immediately.
@@ -279,15 +255,7 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 //
 // For sequential usage, use Do() instead.
 func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
-	// Check if this is a blocking command (has read timeout set)
-	// Blocking commands like BLPOP, BRPOP, BZMPOP should not be autopipelined
-	if cmd.readTimeout() != nil {
-		// Execute blocking commands directly without autopipelining
-		return ap.pipeliner.Process(ctx, cmd)
-	}
-
-	_ = ap.process(ctx, cmd)
-	return nil
+	return ap.processAndBlock(ctx, cmd)
 }
 
 // processAndBlock is used by the cmdable interface.
@@ -301,10 +269,13 @@ func (ap *AutoPipeliner) processAndBlock(ctx context.Context, cmd Cmder) error {
 		return ap.pipeliner.Process(ctx, cmd)
 	}
 
-	done := ap.process(ctx, cmd)
+	qc := ap.processWithQueuedCmd(ctx, cmd)
 
 	// Block until the command is executed
-	<-done
+	<-qc.done
+
+	// Return the queuedCmd (and the done channel) back to the pool
+	putQueuedCmd(qc)
 
 	return cmd.Err()
 }
@@ -316,11 +287,17 @@ var closedChan = func() chan struct{} {
 	return ch
 }()
 
-// process is the internal method that queues a command and returns its done channel.
-func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
+// closedQueuedCmd is a reusable queuedCmd for error cases
+var closedQueuedCmd = &queuedCmd{
+	done: closedChan,
+}
+
+// processWithQueuedCmd is the internal method that queues a command and returns the queuedCmd.
+// The caller is responsible for returning the queuedCmd to the pool after use.
+func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *queuedCmd {
 	if ap.closed.Load() {
 		cmd.SetErr(ErrClosed)
-		return closedChan
+		return closedQueuedCmd
 	}
 
 	// Get queued command from pool
@@ -338,7 +315,7 @@ func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{}
 		case ap.flushCh <- struct{}{}:
 		default:
 		}
-		return qc.done
+		return qc
 	}
 
 	// Slow path: lock is contended, wait for it
@@ -353,29 +330,12 @@ func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{}
 	case ap.flushCh <- struct{}{}:
 	default:
 	}
-	return qc.done
+	return qc
 }
 
-// Flush immediately flushes all pending commands.
-// This is useful when you want to ensure all commands are executed
-// before proceeding (e.g., before closing the autopipeliner).
-func (ap *AutoPipeliner) Flush(ctx context.Context) error {
-	if ap.closed.Load() {
-		return ErrClosed
-	}
-
-	// Signal flush
-	select {
-	case ap.flushCh <- struct{}{}:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	// Wait a bit for the flush to complete
-	// This is a best-effort approach
-	time.Sleep(time.Millisecond)
-
-	return nil
+// process is the internal method that queues a command and returns its done channel.
+func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
+	return ap.processWithQueuedCmd(ctx, cmd).done
 }
 
 // Close stops the autopipeliner and flushes any pending commands.
@@ -472,7 +432,6 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 				qc.cmd.SetErr(ErrClosed)
 				// Signal completion by sending to buffered channel
 				qc.done <- struct{}{}
-				putQueuedCmd(qc)
 			}
 			putQueueSlice(queuedCmds)
 			return
@@ -491,26 +450,23 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		// Signal completion by sending to buffered channel
 		qc.done <- struct{}{}
 		ap.sem.Release()
-		putQueuedCmd(qc)
 		putQueueSlice(queuedCmds)
 		return
 	}
 
-	// Execute pipeline for multiple commands
-	pipe := ap.pipeliner.Pipeline()
+	// Use Pipeline directly instead of Pipelined to avoid closure overhead
+	pipe := ap.Pipeline()
+	// Process all commands in a pipeline
 	for _, qc := range queuedCmds {
 		_ = pipe.Process(context.Background(), qc.cmd)
 	}
-
-	// Execute and wait for completion
 	_, _ = pipe.Exec(context.Background())
 
 	// IMPORTANT: Only notify after pipeline execution is complete
 	// This ensures command results are fully populated before waiters proceed
 	for _, qc := range queuedCmds {
-		// Signal completion by sending to buffered channel
+		// Signal completion by sending to buffered channel (non-blocking)
 		qc.done <- struct{}{}
-		putQueuedCmd(qc)
 	}
 	ap.sem.Release()
 	putQueueSlice(queuedCmds)
