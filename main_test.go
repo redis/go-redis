@@ -107,6 +107,7 @@ var _ = BeforeSuite(func() {
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
+
 	}
 
 	redisPort = redisStackPort

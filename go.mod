@@ -9,6 +9,8 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
 )
 
+require go.uber.org/atomic v1.11.0
+
 retract (
 	v9.15.1 // This version is used to retract v9.15.0
 	v9.15.0 // This version was accidentally released. It is identical to 9.15.0-beta.2
