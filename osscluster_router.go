@@ -558,6 +558,8 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		if c, ok := cmd.(*IntCmd); ok {
 			if v, ok := value.(int64); ok {
 				c.SetVal(v)
+			} else if v, ok := value.(float64); ok {
+				c.SetVal(int64(v))
 			}
 		}
 	case CmdTypeBool:
@@ -582,6 +584,12 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		if c, ok := cmd.(*IntSliceCmd); ok {
 			if v, ok := value.([]int64); ok {
 				c.SetVal(v)
+			} else if v, ok := value.([]float64); ok {
+				els := len(v)
+				intSlc := make([]int, els)
+				for i := range v {
+					intSlc[i] = int(v[i])
+				}
 			}
 		}
 	case CmdTypeFloatSlice:
