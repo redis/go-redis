@@ -199,6 +199,25 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientKillByFilter with kill myself", func() {
+			opt := redisOptions()
+			opt.ClientName = "killmyid"
+			db := redis.NewClient(opt)
+
+			defer func() {
+				Expect(db.Close()).NotTo(HaveOccurred())
+			}()
+
+			myid := db.ClientID(ctx).Val()
+			killed := client.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
+			Expect(killed.Err()).NotTo(HaveOccurred())
+			Expect(killed.Val()).To(BeNumerically("==", 1))
+
+			val, err := client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
+		})
+
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			var s []string
