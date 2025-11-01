@@ -92,6 +92,21 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res).To(HaveLen(1))
 		Expect(res[0]).To(ContainSubstring("default"))
+
+		res, err = client.ACLUsers(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(HaveLen(1))
+		Expect(res[0]).To(Equal("default"))
+
+		res1, err := client.ACLWhoAmI(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res1).To(Equal("default"))
+	})
+
+	It("gen password", func() {
+		password, err := client.ACLGenPass(ctx, 0).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).NotTo(BeEmpty())
 	})
 
 	It("setuser and deluser", func() {
