@@ -20,21 +20,6 @@ type AutoPipelineConfig struct {
 	// Default: 10
 	MaxConcurrentBatches int
 
-	// UseRingBuffer enables the high-performance ring buffer queue.
-	// When enabled, uses a pre-allocated ring buffer with lock-free enqueue
-	// instead of the slice-based queue. This provides:
-	// - 6x faster enqueue operations
-	// - 100% reduction in allocations during enqueue
-	// - Better performance under high concurrency
-	// Default: true (enabled)
-	UseRingBuffer bool
-
-	// RingBufferSize is the size of the ring buffer queue.
-	// Only used when UseRingBuffer is true.
-	// Must be a power of 2 for optimal performance (will be rounded up if not).
-	// Default: 1024
-	RingBufferSize int
-
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
 	// A small delay (e.g., 100μs) can significantly reduce CPU usage by allowing
 	// more commands to batch together, at the cost of slightly higher latency.
@@ -55,8 +40,6 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         50,
 		MaxConcurrentBatches: 10,
-		UseRingBuffer:        true, // Enable ring buffer by default
-		RingBufferSize:       1024,
 		MaxFlushDelay:        0, // No delay by default (lowest latency)
 	}
 }
@@ -184,11 +167,10 @@ type AutoPipeliner struct {
 	pipeliner cmdableClient
 	config    *AutoPipelineConfig
 
-	// Command queue - either slice-based or ring buffer
+	// Command queue
 	mu       sync.Mutex
-	queue    []*queuedCmd      // Slice-based queue (legacy)
-	ring     *autoPipelineRing // Ring buffer queue (high-performance)
-	queueLen atomic.Int32      // Fast path check without lock
+	queue    []*queuedCmd // Slice-based queue
+	queueLen atomic.Int32 // Fast path check without lock
 
 	// Flush control
 	flushCh chan struct{} // Signal to flush immediately
@@ -233,12 +215,8 @@ func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) *Auto
 	// Initialize cmdable to route all commands through processAndBlock
 	ap.cmdable = ap.processAndBlock
 
-	// Initialize queue based on configuration
-	if config.UseRingBuffer {
-		ap.ring = newAutoPipelineRing(config.RingBufferSize)
-	} else {
-		ap.queue = getQueueSlice(config.MaxBatchSize)
-	}
+	// Initialize queue
+	ap.queue = getQueueSlice(config.MaxBatchSize)
 
 	// Start background flusher
 	ap.wg.Add(1)
@@ -314,12 +292,6 @@ var closedQueuedCmd = &queuedCmd{
 	done: closedChan,
 }
 
-// ringQueuedCmd is a queuedCmd wrapper for ring buffer (not pooled)
-type ringQueuedCmd struct {
-	cmd  Cmder
-	done <-chan struct{}
-}
-
 // processWithQueuedCmd is the internal method that queues a command and returns the queuedCmd.
 // The caller is responsible for returning the queuedCmd to the pool after use.
 func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *queuedCmd {
@@ -328,19 +300,6 @@ func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *q
 		return closedQueuedCmd
 	}
 
-	// Use ring buffer if enabled
-	if ap.config.UseRingBuffer {
-		done := ap.ring.putOne(cmd)
-		// putOne will signal the flusher via condition variable if needed
-		// For ring buffer, we create a simple wrapper (not pooled)
-		// The done channel is managed by the ring buffer
-		return &queuedCmd{
-			cmd:  cmd,
-			done: done,
-		}
-	}
-
-	// Legacy slice-based queue
 	// Get queued command from pool
 	qc := getQueuedCmd(cmd)
 
@@ -388,11 +347,6 @@ func (ap *AutoPipeliner) Close() error {
 	// Cancel context to stop flusher
 	ap.cancel()
 
-	// Wake up flusher if it's waiting
-	if ap.config.UseRingBuffer {
-		ap.ring.wakeAll()
-	}
-
 	// Wait for flusher to finish
 	ap.wg.Wait()
 
@@ -402,19 +356,6 @@ func (ap *AutoPipeliner) Close() error {
 // flusher is the background goroutine that flushes batches.
 func (ap *AutoPipeliner) flusher() {
 	defer ap.wg.Done()
-
-	if !ap.config.UseRingBuffer {
-		// Legacy slice-based flusher
-		ap.flusherSlice()
-		return
-	}
-
-	// Ring buffer flusher
-	ap.flusherRing()
-}
-
-// flusherSlice is the legacy slice-based flusher.
-func (ap *AutoPipeliner) flusherSlice() {
 	for {
 		// Wait for a command to arrive
 		select {
@@ -457,122 +398,21 @@ func (ap *AutoPipeliner) flusherSlice() {
 	}
 }
 
-// flusherRing is the ring buffer flusher.
-func (ap *AutoPipeliner) flusherRing() {
-	var (
-		cmds      = make([]Cmder, 0, ap.config.MaxBatchSize)
-		doneChans = make([]chan struct{}, 0, ap.config.MaxBatchSize)
-		positions = make([]uint32, 0, ap.config.MaxBatchSize)
-	)
-
-	for {
-		// Try to get next command (non-blocking)
-		cmd, done, pos := ap.ring.nextWriteCmd()
-
-		if cmd == nil {
-			// No command available
-			// If we have buffered commands, execute them first
-			if len(cmds) > 0 {
-				ap.executeBatch(cmds, doneChans, positions)
-				cmds = cmds[:0]
-				doneChans = doneChans[:0]
-				positions = positions[:0]
-			}
-
-			// Check for shutdown before blocking
-			select {
-			case <-ap.ctx.Done():
-				return
-			default:
-			}
-
-			// Wait for next command (blocking)
-			// This will be woken up by wakeAll() during shutdown
-			cmd, done, pos = ap.ring.waitForWrite()
-
-			// If nil, ring is closed
-			if cmd == nil {
-				return
-			}
-		}
-
-		// Add command to batch
-		cmds = append(cmds, cmd)
-		doneChans = append(doneChans, done)
-		positions = append(positions, pos)
-
-		// Execute batch if full
-		if len(cmds) >= ap.config.MaxBatchSize {
-			ap.executeBatch(cmds, doneChans, positions)
-			cmds = cmds[:0]
-			doneChans = doneChans[:0]
-			positions = positions[:0]
-		}
-	}
-}
-
-// executeBatch executes a batch of commands.
-func (ap *AutoPipeliner) executeBatch(cmds []Cmder, doneChans []chan struct{}, positions []uint32) {
-	if len(cmds) == 0 {
-		return
-	}
-
-	// Acquire semaphore (limit concurrent batches)
-	// Try fast path first
-	if !ap.sem.TryAcquire() {
-		// Fast path failed, need to wait
-		err := ap.sem.Acquire(ap.ctx, 5*time.Second, context.DeadlineExceeded)
-		if err != nil {
-			// Context cancelled, set error on all commands and notify
-			for i, cmd := range cmds {
-				cmd.SetErr(ErrClosed)
-				doneChans[i] <- struct{}{} // Send signal instead of close
-				ap.ring.finishCmd(positions[i])
-			}
-			return
-		}
-	}
-
-	// Fast path for single command
-	if len(cmds) == 1 {
-		_ = ap.pipeliner.Process(context.Background(), cmds[0])
-		doneChans[0] <- struct{}{} // Send signal instead of close
-		ap.ring.finishCmd(positions[0])
-		ap.sem.Release()
-		return
-	}
-	// Execute pipeline for multiple commands
-	pipe := ap.pipeliner.Pipeline()
-	for _, cmd := range cmds {
-		_ = pipe.Process(context.Background(), cmd)
-	}
-
-	// Execute and wait for completion
-	_, _ = pipe.Exec(context.Background())
-
-	// Notify completion and finish slots
-	for i, done := range doneChans {
-		done <- struct{}{} // Send signal instead of close
-		ap.ring.finishCmd(positions[i])
-	}
-	ap.sem.Release()
-}
-
-// flushBatchSlice flushes commands from the slice-based queue (legacy).
+// flushBatchSlice flushes commands from the slice-based queue.
 func (ap *AutoPipeliner) flushBatchSlice() {
 	// Get commands from queue
 	ap.mu.Lock()
 	if len(ap.queue) == 0 {
-		ap.queueLen.Store(0)
 		ap.mu.Unlock()
+		ap.queueLen.Store(0)
 		return
 	}
 
 	// Take ownership of current queue
 	queuedCmds := ap.queue
 	ap.queue = getQueueSlice(ap.config.MaxBatchSize)
-	ap.queueLen.Store(0)
 	ap.mu.Unlock()
+	ap.queueLen.Store(0)
 
 	// Acquire semaphore (limit concurrent batches)
 	// Try fast path first
@@ -630,9 +470,6 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 
 // Len returns the current number of queued commands.
 func (ap *AutoPipeliner) Len() int {
-	if ap.config.UseRingBuffer {
-		return ap.ring.len()
-	}
 	return int(ap.queueLen.Load())
 }
 

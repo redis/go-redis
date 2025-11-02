@@ -78,8 +78,6 @@ func TestPipelineBufferSizesWithAutoPipeline(t *testing.T) {
 		AutoPipelineConfig: &redis.AutoPipelineConfig{
 			MaxBatchSize:         10,
 			MaxConcurrentBatches: 2,
-			UseRingBuffer:        true,
-			RingBufferSize:       64,
 		},
 	})
 	defer client.Close()
