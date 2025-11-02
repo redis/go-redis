@@ -16,7 +16,6 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
-	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -807,27 +806,15 @@ func (c *sentinelFailover) RandomReplicaAddr(ctx context.Context) (string, error
 }
 
 func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
-	c.mu.RLock()
-	sentinel := c.sentinel
-	c.mu.RUnlock()
-
-	if sentinel != nil {
-		addr, err := c.getMasterAddr(ctx, sentinel)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return "", err
-			}
-			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
-				c.opt.MasterName, err)
-		} else {
-			return addr, nil
-		}
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// short circuit
+	if c.sentinel == nil && len(c.sentinelAddrs) == 0 {
+		return "", errors.New("redis: either of sentinel client or sentinels address must be configured")
+	}
+
+	// use existing sentinel, if provided, to get master addr
 	if c.sentinel != nil {
 		addr, err := c.getMasterAddr(ctx, c.sentinel)
 		if err != nil {
@@ -843,6 +830,12 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		}
 	}
 
+	// fallback to querying sentinels in configuration
+	// short circuit if no sentinels configured
+	if len(c.sentinelAddrs) == 0 {
+		return "", errors.New("redis: no sentinels configured")
+	}
+
 	var (
 		masterAddr string
 		wg         sync.WaitGroup
@@ -853,11 +846,24 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// track all created sentinel clients for cleanup
+	sentinelClients := make([]*SentinelClient, len(c.sentinelAddrs))
+	var selectedIdx int = -1
+	defer func() {
+		// Close all unused sentinel clients
+		for i, cli := range sentinelClients {
+			if cli != nil && i != selectedIdx {
+				_ = cli.Close()
+			}
+		}
+	}()
+
 	for i, sentinelAddr := range c.sentinelAddrs {
 		wg.Add(1)
 		go func(i int, addr string) {
 			defer wg.Done()
 			sentinelCli := NewSentinelClient(c.opt.sentinelOptions(addr))
+			sentinelClients[i] = sentinelCli
 			addrVal, err := sentinelCli.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
 			if err != nil {
 				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
@@ -866,19 +872,30 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				errCh <- err
 				return
 			}
+			var shouldCancel bool
 			once.Do(func() {
+				if len(addrVal) < 2 {
+					internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q returned insufficient data: %v", addr, c.opt.MasterName, addrVal)
+					_ = sentinelCli.Close()
+					errCh <- fmt.Errorf("redis: insufficient master address data from sentinel: %v", addrVal)
+					return
+				}
 				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
 				// Push working sentinel to the top
 				c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
 				c.setSentinel(ctx, sentinelCli)
 				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
-				cancel()
+				shouldCancel = true
 			})
+			if shouldCancel {
+				cancel()
+			}
 		}(i, sentinelAddr)
 	}
 
 	wg.Wait()
 	close(errCh)
+
 	if masterAddr != "" {
 		return masterAddr, nil
 	}
@@ -886,20 +903,27 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	for err := range errCh {
 		errs = append(errs, err)
 	}
+	if len(errs) == 0 {
+		errs = append(errs, errors.New("redis: no sentinels available"))
+	}
 	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %s", joinErrors(errs))
 }
 
 func joinErrors(errs []error) string {
+	if len(errs) == 0 {
+		return ""
+	}
 	if len(errs) == 1 {
 		return errs[0].Error()
 	}
 
-	b := []byte(errs[0].Error())
+	var b strings.Builder
+	b.WriteString(errs[0].Error())
 	for _, err := range errs[1:] {
-		b = append(b, '\n')
-		b = append(b, err.Error()...)
+		b.WriteByte('\n')
+		b.WriteString(err.Error())
 	}
-	return util.BytesToString(b)
+	return b.String()
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
