@@ -165,6 +165,60 @@ type Options struct {
 	// default: 64 KiB (65536 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// ReadBufferSize buffers.
+	//
+	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	//
+	// Example:
+	//   client := redis.NewClient(&redis.Options{
+	//       Addr:                    "localhost:6379",
+	//       ReadBufferSize:          64 * 1024,   // 64 KiB for regular commands
+	//       PipelineReadBufferSize:  512 * 1024,  // 512 KiB for pipelining
+	//       PipelineWriteBufferSize: 512 * 1024,
+	//   })
+	//
+	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
+	//   - Without pipeline pool: 100 conns × 1 MiB = 100 MB (if all use 512 KiB buffers)
+	//   - With pipeline pool: (100 × 128 KiB) + (10 × 1 MiB) = 22.8 MB (77% savings)
+	//
+	// default: 0 (use ReadBufferSize)
+	PipelineReadBufferSize int
+
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// WriteBufferSize buffers.
+	//
+	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	//
+	// default: 0 (use WriteBufferSize)
+	PipelineWriteBufferSize int
+
+	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
+	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	//
+	// Pipelining typically needs fewer connections than regular operations because
+	// batching reduces connection contention. A smaller pool saves memory while
+	// maintaining high throughput.
+	//
+	// If not set (0), defaults to 10 connections.
+	//
+	// default: 10
+	PipelinePoolSize int
+
 	// PoolFIFO type of connection pool.
 	//
 	//	- true for FIFO pool

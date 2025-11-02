@@ -64,7 +64,8 @@ type Stats struct {
 	IdleConns  uint32 // number of idle connections in the pool
 	StaleConns uint32 // number of stale connections removed from the pool
 
-	PubSubStats PubSubStats
+	PubSubStats   PubSubStats
+	PipelineStats *Stats // stats for the separate pipeline pool (if configured)
 }
 
 type Pooler interface {
