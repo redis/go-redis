@@ -216,8 +216,8 @@ func ExampleClient_racefrance1() {
 	// REMOVE_END
 
 	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
-	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]}]}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0}]
+	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7] 0 0}]}]
 	// 4
 }
 
@@ -467,13 +467,13 @@ func ExampleClient_racefrance2() {
 	// STEP_END
 
 	// Output:
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]}]
-	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
-	// [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0} {1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7] 0 0} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9] 0 0}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0}]
+	// [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0}]
+	// [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7] 0 0} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9] 0 0}]
 	// []
-	// [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
-	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]}]
+	// [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9] 0 0}]
+	// [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0}]}]
 }
 
 func ExampleClient_xgroupcreate() {
@@ -999,18 +999,18 @@ func ExampleClient_raceitaly() {
 	// REMOVE_END
 
 	// Output:
-	// [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// [{race:italy [{1692632639151-0 map[rider:Castilla] 0 0}]}]
 	// 1
 	// [{race:italy []}]
-	// [{race:italy [{1692632647899-0 map[rider:Royce]} {1692632662819-0 map[rider:Sam-Bodden]}]}]
+	// [{race:italy [{1692632647899-0 map[rider:Royce] 0 0} {1692632662819-0 map[rider:Sam-Bodden] 0 0}]}]
 	// &{2 1692632647899-0 1692632662819-0 map[Bob:2]}
-	// [{1692632647899-0 map[rider:Royce]}]
-	// [{1692632647899-0 map[rider:Royce]}]
-	// [{1692632647899-0 map[rider:Royce]}]
+	// [{1692632647899-0 map[rider:Royce] 0 0}]
+	// [{1692632647899-0 map[rider:Royce] 0 0}]
+	// [{1692632647899-0 map[rider:Royce] 0 0}]
 	// 1692632662819-0
 	// []
 	// 0-0
-	// &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla]} {1692632678249-0 map[rider:Norem]} 1692632639151-0}
+	// &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla] 0 0} {1692632678249-0 map[rider:Norem] 0 0} 1692632639151-0}
 	// [{italy_riders 3 2 1692632662819-0 3 2}]
 	// 2
 	// 0
@@ -1085,7 +1085,7 @@ func ExampleClient_xdel() {
 	// STEP_END
 
 	// Output:
-	// [{1692633198206-0 map[rider:Wood]} {1692633208557-0 map[rider:Henshaw]}]
+	// [{1692633198206-0 map[rider:Wood] 0 0} {1692633208557-0 map[rider:Henshaw] 0 0}]
 	// 1
-	// [{1692633198206-0 map[rider:Wood]}]
+	// [{1692633198206-0 map[rider:Wood] 0 0}]
 }
