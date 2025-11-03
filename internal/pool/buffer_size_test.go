@@ -24,9 +24,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 	It("should use default buffer sizes when not specified", func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:      dummyDialer,
-			PoolSize:    int32(1),
-			PoolTimeout: 1000,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -46,11 +47,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 		customWriteSize := 64 * 1024 // 64KB
 
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        int32(1),
-			PoolTimeout:     1000,
-			ReadBufferSize:  customReadSize,
-			WriteBufferSize: customWriteSize,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
+			ReadBufferSize:     customReadSize,
+			WriteBufferSize:    customWriteSize,
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -67,11 +69,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 	It("should handle zero buffer sizes by using defaults", func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        int32(1),
-			PoolTimeout:     1000,
-			ReadBufferSize:  0, // Should use default
-			WriteBufferSize: 0, // Should use default
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
+			ReadBufferSize:     0, // Should use default
+			WriteBufferSize:    0, // Should use default
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -103,9 +106,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 		// Test the scenario where someone creates a pool directly (like in tests)
 		// without setting ReadBufferSize and WriteBufferSize
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:      dummyDialer,
-			PoolSize:    int32(1),
-			PoolTimeout: 1000,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
 			// ReadBufferSize and WriteBufferSize are not set (will be 0)
 		})
 
