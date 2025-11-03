@@ -848,7 +848,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 
 	// track all created sentinel clients for cleanup
 	sentinelClients := make([]*SentinelClient, len(c.sentinelAddrs))
-	var selectedIdx int = -1
+	var selectedIdx = -1
 	defer func() {
 		// Close all unused sentinel clients
 		for i, cli := range sentinelClients {
