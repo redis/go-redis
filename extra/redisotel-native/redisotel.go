@@ -135,13 +135,24 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 		return fmt.Errorf("failed to create connection count metric: %w", err)
 	}
 
+	// Create histogram for connection creation time
+	connectionCreateTime, err := meter.Float64Histogram(
+		"db.client.connection.create_time",
+		metric.WithDescription("The time it took to create a new connection"),
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create connection create time histogram: %w", err)
+	}
+
 	// Create recorder
 	recorder := &metricsRecorder{
-		operationDuration: operationDuration,
-		connectionCount:   connectionCount,
-		serverAddr:        serverAddr,
-		serverPort:        serverPort,
-		dbIndex:           dbIndex,
+		operationDuration:    operationDuration,
+		connectionCount:      connectionCount,
+		connectionCreateTime: connectionCreateTime,
+		serverAddr:           serverAddr,
+		serverPort:           serverPort,
+		dbIndex:              dbIndex,
 	}
 
 	// Register global recorder

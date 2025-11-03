@@ -5,7 +5,9 @@ package main
 import (
 	"context"
 	"log"
+	"math/rand"
 	"strconv"
+	"sync"
 	"time"
 
 	redisotel "github.com/redis/go-redis/extra/redisotel-native/v9"
@@ -73,16 +75,47 @@ func main() {
 	// STEP_START redis_operations
 	// Execute Redis operations - metrics are automatically collected
 	log.Println("Executing Redis operations...")
-	for i := range 100 {
-		if err := rdb.Set(ctx, "key"+strconv.Itoa(i), "value", 0).Err(); err != nil {
+	var wg sync.WaitGroup
+	wg.Add(50)
+	for i := range 50 {
+		go func(i int) {
+			defer wg.Done()
+
+			for j := range 10 {
+				if err := rdb.Set(ctx, "key"+strconv.Itoa(i*10+j), "value", 0).Err(); err != nil {
+					log.Printf("Error setting key: %v", err)
+				}
+				time.Sleep(time.Millisecond * time.Duration(rand.Intn(400)))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	wg.Add(10)
+	for i := range 10 {
+		go func(i int) {
+			defer wg.Done()
+
+			for j := range 10 {
+				if err := rdb.Set(ctx, "key"+strconv.Itoa(i*10+j), "value", 0).Err(); err != nil {
+					log.Printf("Error setting key: %v", err)
+				}
+				time.Sleep(time.Millisecond * time.Duration(rand.Intn(400)))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	for j := range 10 {
+		if err := rdb.Set(ctx, "key"+strconv.Itoa(j), "value", 0).Err(); err != nil {
 			log.Printf("Error setting key: %v", err)
 		}
-		time.Sleep(time.Millisecond * 100)
+		time.Sleep(time.Millisecond * time.Duration(rand.Intn(400)))
 	}
+
 	log.Println("Operations complete. Waiting for metrics to be exported...")
 
 	// Wait for metrics to be exported
 	time.Sleep(15 * time.Second)
 	// STEP_END
 }
-

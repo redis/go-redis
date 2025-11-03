@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,9 @@ var (
 	// Global callback for connection state changes (set by otel package)
 	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
 
+	// Global callback for connection creation time (set by otel package)
+	connectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -49,6 +53,12 @@ var (
 // This is called by the otel package to register metrics recording.
 func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
 	connectionStateChangeCallback = fn
+}
+
+// SetConnectionCreateTimeCallback sets the global callback for connection creation time.
+// This is called by the otel package to register metrics recording.
+func SetConnectionCreateTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
+	connectionCreateTimeCallback = fn
 }
 
 var timers = sync.Pool{
@@ -321,6 +331,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+	// Start measuring connection creation time
+	startTime := time.Now()
+
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -368,6 +381,12 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
 		} else {
 			cn.expiresAt = noExpiration
+		}
+
+		// Record connection creation time
+		if connectionCreateTimeCallback != nil {
+			duration := time.Since(startTime)
+			connectionCreateTimeCallback(ctx, duration, cn)
 		}
 
 		return cn, nil

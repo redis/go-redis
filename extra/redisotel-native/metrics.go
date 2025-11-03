@@ -20,8 +20,9 @@ const (
 
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
-	operationDuration metric.Float64Histogram
-	connectionCount   metric.Int64UpDownCounter
+	operationDuration    metric.Float64Histogram
+	connectionCount      metric.Int64UpDownCounter
+	connectionCreateTime metric.Float64Histogram
 
 	// Client configuration for attributes (used for operation metrics only)
 	serverAddr string
@@ -323,4 +324,43 @@ func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
 	addrStr := remoteAddr.String()
 	host, portStr := parseAddr(addrStr)
 	return host, portStr
+}
+
+// RecordConnectionCreateTime records the time it took to create a new connection
+func (r *metricsRecorder) RecordConnectionCreateTime(
+	ctx context.Context,
+	duration time.Duration,
+	cn redis.ConnInfo,
+) {
+	if r.connectionCreateTime == nil {
+		return
+	}
+
+	// Convert duration to seconds (OTel convention)
+	durationSeconds := duration.Seconds()
+
+	// Extract server address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+	}
+
+	// Add server.port if not default
+	if serverPort != "" && serverPort != "6379" {
+		attrs = append(attrs, attribute.String("server.port", serverPort))
+	}
+
+	// Add pool name (using server.address:server.port format)
+	poolName := serverAddr
+	if serverPort != "" && serverPort != "6379" {
+		poolName = fmt.Sprintf("%s:%s", serverAddr, serverPort)
+	}
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+
+	// Record the histogram
+	r.connectionCreateTime.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }

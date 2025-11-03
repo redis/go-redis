@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
@@ -27,6 +28,9 @@ type OTelRecorder interface {
 
 	// RecordConnectionStateChange records when a connection changes state (e.g., idle -> used)
 	RecordConnectionStateChange(ctx context.Context, cn ConnInfo, fromState, toState string)
+
+	// RecordConnectionCreateTime records the time it took to create a new connection
+	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn ConnInfo)
 }
 
 // SetOTelRecorder sets the global OpenTelemetry recorder.
@@ -67,3 +71,14 @@ func (a *otelRecorderAdapter) RecordConnectionStateChange(ctx context.Context, c
 	a.recorder.RecordConnectionStateChange(ctx, connInfo, fromState, toState)
 }
 
+func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+
+	fmt.Println("RecordConnectionCreateTime---")
+
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordConnectionCreateTime(ctx, duration, connInfo)
+}

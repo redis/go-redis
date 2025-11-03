@@ -24,6 +24,9 @@ type Recorder interface {
 
 	// RecordConnectionStateChange records when a connection changes state
 	RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string)
+
+	// RecordConnectionCreateTime records the time it took to create a new connection
+	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
 }
 
 // Global recorder instance (initialized by extra/redisotel-native)
@@ -33,8 +36,9 @@ var globalRecorder Recorder = noopRecorder{}
 func SetGlobalRecorder(r Recorder) {
 	if r == nil {
 		globalRecorder = noopRecorder{}
-		// Unregister pool callback
+		// Unregister pool callbacks
 		pool.SetConnectionStateChangeCallback(nil)
+		pool.SetConnectionCreateTimeCallback(nil)
 		return
 	}
 	globalRecorder = r
@@ -42,6 +46,11 @@ func SetGlobalRecorder(r Recorder) {
 	// Register pool callback to forward state changes to recorder
 	pool.SetConnectionStateChangeCallback(func(ctx context.Context, cn *pool.Conn, fromState, toState string) {
 		globalRecorder.RecordConnectionStateChange(ctx, cn, fromState, toState)
+	})
+
+	// Register pool callback to forward connection creation time to recorder
+	pool.SetConnectionCreateTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+		globalRecorder.RecordConnectionCreateTime(ctx, duration, cn)
 	})
 }
 
@@ -57,8 +66,15 @@ func RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, 
 	globalRecorder.RecordConnectionStateChange(ctx, cn, fromState, toState)
 }
 
+// RecordConnectionCreateTime records the time it took to create a new connection.
+// This is called from pool.go when a new connection is successfully created.
+func RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+	globalRecorder.RecordConnectionCreateTime(ctx, duration, cn)
+}
+
 // noopRecorder is a no-op implementation (zero overhead when metrics disabled)
 type noopRecorder struct{}
 
 func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn) {}
 func (noopRecorder) RecordConnectionStateChange(context.Context, *pool.Conn, string, string)       {}
+func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn)         {}
