@@ -33,6 +33,18 @@ type AutoPipelineConfig struct {
 	// while adding only ~100μs average latency per command.
 	// Default: 0 (no delay)
 	MaxFlushDelay time.Duration
+
+	// AdaptiveDelay enables smart delay calculation based on queue fill level.
+	// When enabled, the delay is automatically adjusted:
+	// - Queue ≥75% full: No delay (flush immediately to prevent overflow)
+	// - Queue ≥50% full: 25% of MaxFlushDelay (queue filling up)
+	// - Queue ≥25% full: 50% of MaxFlushDelay (moderate load)
+	// - Queue <25% full: 100% of MaxFlushDelay (low load, maximize batching)
+	//
+	// This provides automatic adaptation to varying load patterns without
+	// manual tuning. Uses integer-only arithmetic for optimal performance.
+	// Default: false (use fixed MaxFlushDelay)
+	AdaptiveDelay bool
 }
 
 // DefaultAutoPipelineConfig returns the default autopipelining configuration.
@@ -179,10 +191,11 @@ type AutoPipeliner struct {
 	sem *internal.FastSemaphore // Semaphore for concurrent batch limit
 
 	// Lifecycle
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	closed atomic.Bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup // Tracks flusher goroutine
+	batchWg   sync.WaitGroup // Tracks batch execution goroutines
+	closed    atomic.Bool
 }
 
 // NewAutoPipeliner creates a new autopipeliner for the given client.
@@ -350,6 +363,9 @@ func (ap *AutoPipeliner) Close() error {
 	// Wait for flusher to finish
 	ap.wg.Wait()
 
+	// Wait for all batch execution goroutines to finish
+	ap.batchWg.Wait()
+
 	return nil
 }
 
@@ -391,8 +407,12 @@ func (ap *AutoPipeliner) flusher() {
 
 			ap.flushBatchSlice()
 
-			if ap.config.MaxFlushDelay > 0 && ap.Len() > 0 {
-				time.Sleep(ap.config.MaxFlushDelay)
+			// Apply delay if configured and queue still has items
+			if ap.Len() > 0 {
+				delay := ap.calculateDelay()
+				if delay > 0 {
+					time.Sleep(delay)
+				}
 			}
 		}
 	}
@@ -408,11 +428,30 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		return
 	}
 
-	// Take ownership of current queue
-	queuedCmds := ap.queue
-	ap.queue = getQueueSlice(ap.config.MaxBatchSize)
+	// Take up to MaxBatchSize commands from the queue
+	var queuedCmds []*queuedCmd
+	queueLen := len(ap.queue)
+	batchSize := ap.config.MaxBatchSize
+
+	if queueLen <= batchSize {
+		// Take all commands
+		queuedCmds = ap.queue
+		ap.queue = getQueueSlice(batchSize)
+		ap.queueLen.Store(0)
+	} else {
+		// Take only MaxBatchSize commands, leave the rest in the queue
+		// Allocate a new slice for the batch
+		queuedCmds = make([]*queuedCmd, batchSize)
+		copy(queuedCmds, ap.queue[:batchSize])
+
+		// Create a new queue with the remaining commands
+		remaining := queueLen - batchSize
+		newQueue := make([]*queuedCmd, remaining)
+		copy(newQueue, ap.queue[batchSize:])
+		ap.queue = newQueue
+		ap.queueLen.Store(int32(remaining))
+	}
 	ap.mu.Unlock()
-	ap.queueLen.Store(0)
 
 	// Acquire semaphore (limit concurrent batches)
 	// Try fast path first
@@ -448,7 +487,14 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		return
 	}
 
+	// Track this goroutine in the batchWg so Close() waits for it
+	// IMPORTANT: Add to WaitGroup AFTER semaphore is acquired to avoid deadlock
+	ap.batchWg.Add(1)
 	go func() {
+		defer ap.batchWg.Done()
+		defer ap.sem.Release()
+		defer putQueueSlice(queuedCmds)
+
 		// Use Pipeline directly instead of Pipelined to avoid closure overhead
 		pipe := ap.Pipeline()
 		// Process all commands in a pipeline
@@ -463,14 +509,55 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 			// Signal completion by sending to buffered channel (non-blocking)
 			qc.done <- struct{}{}
 		}
-		ap.sem.Release()
-		putQueueSlice(queuedCmds)
 	}()
 }
 
 // Len returns the current number of queued commands.
 func (ap *AutoPipeliner) Len() int {
 	return int(ap.queueLen.Load())
+}
+
+// calculateDelay calculates the delay based on current queue length.
+// Uses integer-only arithmetic for optimal performance (no float operations).
+// Returns 0 if MaxFlushDelay is 0.
+func (ap *AutoPipeliner) calculateDelay() time.Duration {
+	maxDelay := ap.config.MaxFlushDelay
+	if maxDelay == 0 {
+		return 0
+	}
+
+	// If adaptive delay is disabled, return fixed delay
+	if !ap.config.AdaptiveDelay {
+		return maxDelay
+	}
+
+	// Get current queue length
+	queueLen := ap.Len()
+	if queueLen == 0 {
+		return 0
+	}
+
+	maxBatch := ap.config.MaxBatchSize
+
+	// Use integer arithmetic to avoid float operations
+	// Calculate thresholds: 75%, 50%, 25% of maxBatch
+	// Multiply by 4 to avoid division: queueLen * 4 vs maxBatch * 3 (75%)
+	//
+	// Adaptive delay strategy:
+	// - ≥75% full: No delay (flush immediately to prevent overflow)
+	// - ≥50% full: 25% of max delay (queue filling up)
+	// - ≥25% full: 50% of max delay (moderate load)
+	// - <25% full: 100% of max delay (low load, maximize batching)
+	switch {
+	case queueLen*4 >= maxBatch*3: // queueLen >= 75% of maxBatch
+		return 0 // Flush immediately
+	case queueLen*2 >= maxBatch: // queueLen >= 50% of maxBatch
+		return maxDelay >> 2 // Divide by 4 using bit shift (faster)
+	case queueLen*4 >= maxBatch: // queueLen >= 25% of maxBatch
+		return maxDelay >> 1 // Divide by 2 using bit shift (faster)
+	default:
+		return maxDelay
+	}
 }
 
 // Pipeline returns a new pipeline that uses the underlying pipeliner.
