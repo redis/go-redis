@@ -203,17 +203,21 @@ var _ = Describe("Commands", func() {
 			opt := redisOptions()
 			opt.ClientName = "killmyid"
 			db := redis.NewClient(opt)
+			Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
 
 			defer func() {
 				Expect(db.Close()).NotTo(HaveOccurred())
 			}()
+			val, err := client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=killmyid"))
 
 			myid := db.ClientID(ctx).Val()
 			killed := client.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
 			Expect(killed.Err()).NotTo(HaveOccurred())
 			Expect(killed.Val()).To(BeNumerically("==", 1))
 
-			val, err := client.ClientList(ctx).Result()
+			val, err = client.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
 		})
