@@ -476,7 +476,9 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	for {
 		if attempts >= getAttempts {
-			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
+			// Disabling logging here as it's too noisy.
+			// TODO: Enable when we have a better logging solution for log levels
+			//internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
 			break
 		}
 		attempts++
