@@ -469,19 +469,11 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	// Use cached time for health checks (max 50ms staleness is acceptable)
 	nowNs := getCachedTimeNs()
-	attempts := 0
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
-	for {
-		if attempts >= getAttempts {
-			// Disabling logging here as it's too noisy.
-			// TODO: Enable when we have a better logging solution for log levels
-			//internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
-			break
-		}
-		attempts++
+	for attempts := 0; attempts < getAttempts; attempts++ {
 
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
