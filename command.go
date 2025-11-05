@@ -4508,25 +4508,24 @@ func parseCommandPolicies(commandInfoTips map[string]string) *routing.CommandPol
 	req := routing.ReqDefault
 	resp := routing.RespAllSucceeded
 
-	if commandInfoTips != nil {
-		if v, ok := commandInfoTips[requestPolicy]; ok {
+
+	tips := make(map[string]string, len(commandInfoTips))
+	for k, v := range commandInfoTips {
+		if k == requestPolicy {
 			if p, err := routing.ParseRequestPolicy(v); err == nil {
 				req = p
 			}
+			continue
 		}
-		if v, ok := commandInfoTips[responsePolicy]; ok {
+		if k == responsePolicy {
 			if p, err := routing.ParseResponsePolicy(v); err == nil {
 				resp = p
 			}
-		}
-	}
-	tips := make(map[string]string, len(commandInfoTips))
-	for k, v := range commandInfoTips {
-		if k == requestPolicy || k == responsePolicy {
 			continue
 		}
 		tips[k] = v
 	}
+
 	return &routing.CommandPolicy{Request: req, Response: resp, Tips: tips}
 }
 
