@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -900,14 +901,12 @@ func joinErrors(errs []error) string {
 	if len(errs) == 1 {
 		return errs[0].Error()
 	}
-
-	var b strings.Builder
-	b.WriteString(errs[0].Error())
+	b := []byte(errs[0].Error())
 	for _, err := range errs[1:] {
-		b.WriteByte('\n')
-		b.WriteString(err.Error())
+		b = append(b, '\n')
+		b = append(b, err.Error()...)
 	}
-	return b.String()
+	return util.BytesToString(b)
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
