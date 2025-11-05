@@ -211,6 +211,8 @@ type Cmdable interface {
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
+	SlowLogLen(ctx context.Context) *IntCmd
+	SlowLogReset(ctx context.Context) *StatusCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
@@ -671,6 +673,18 @@ func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 
 func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
 	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", num)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SlowLogLen(ctx context.Context) *IntCmd {
+	cmd := NewIntCmd(ctx, "slowlog", "len")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) SlowLogReset(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "slowlog", "reset")
 	_ = c(ctx, cmd)
 	return cmd
 }
