@@ -159,18 +159,9 @@ type ConnPool struct {
 var _ Pooler = (*ConnPool)(nil)
 
 func NewConnPool(opt *Options) *ConnPool {
-	semSize := opt.PoolSize
-	if opt.MaxActiveConns > 0 && opt.MaxActiveConns < opt.PoolSize {
-		if opt.MaxActiveConns < opt.PoolSize {
-			opt.MaxActiveConns = opt.PoolSize
-		}
-		semSize = opt.MaxActiveConns
-	}
-	//semSize = opt.PoolSize
-
 	p := &ConnPool{
 		cfg:             opt,
-		semaphore:       internal.NewFastSemaphore(semSize),
+		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
 		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
