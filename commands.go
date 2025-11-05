@@ -214,6 +214,8 @@ type Cmdable interface {
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
+	Latency(ctx context.Context) *LatencyCmd
+	LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
@@ -669,6 +671,22 @@ func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 
 func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
 	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", num)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) Latency(ctx context.Context) *LatencyCmd {
+	cmd := NewLatencyCmd(ctx, "latency", "latest")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd {
+	args := make([]interface{}, 2+len(events))
+	args[0] = "latency"
+	args[1] = "reset"
+	copy(args[2:], events)
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
