@@ -8181,7 +8181,7 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 
-		It("returns the number of slow queries", func() {
+		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
 			// Reset slowlog
 			err := client.SlowLogReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
