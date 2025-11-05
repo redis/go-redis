@@ -9,6 +9,9 @@ type StringCmdable interface {
 	Append(ctx context.Context, key, value string) *IntCmd
 	Decr(ctx context.Context, key string) *IntCmd
 	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
+	DelEx(ctx context.Context, key string, matchValue string) *IntCmd
+	DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
+	Digest(ctx context.Context, key string) *StringCmd
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
@@ -24,6 +27,8 @@ type StringCmdable interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
 	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
+	SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -44,6 +49,68 @@ func (c cmdable) Decr(ctx context.Context, key string) *IntCmd {
 
 func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCmd {
 	cmd := NewIntCmd(ctx, "decrby", key, decrement)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// DelExArgs provides arguments for the DelExArgs function.
+type DelExArgs struct {
+	// Mode can be `IFEQ`, `IFNE`, `IFDEQ`, or `IFDNE`.
+	Mode string
+
+	// MatchValue is used with IFEQ/IFNE modes for compare-and-delete operations.
+	// - IFEQ: only delete if current value equals MatchValue
+	// - IFNE: only delete if current value does not equal MatchValue
+	MatchValue string
+
+	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-delete.
+	// - IFDEQ: only delete if current value's digest equals MatchDigest
+	// - IFDNE: only delete if current value's digest does not equal MatchDigest
+	MatchDigest string
+}
+
+// DelEx Redis `DELEX key IFEQ match-value` command.
+// Compare-and-delete: only deletes the key if the current value equals matchValue.
+//
+// Returns the number of keys that were removed (0 or 1).
+func (c cmdable) DelEx(ctx context.Context, key string, matchValue string) *IntCmd {
+	cmd := NewIntCmd(ctx, "delex", key, "ifeq", matchValue)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// DelExArgs Redis `DELEX key [IFEQ|IFNE|IFDEQ|IFDNE] match-value` command.
+// Compare-and-delete with flexible conditions.
+//
+// Returns the number of keys that were removed (0 or 1).
+func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd {
+	args := []interface{}{"delex", key}
+
+	if a.Mode != "" {
+		args = append(args, a.Mode)
+
+		// Add match value/digest based on mode
+		switch a.Mode {
+		case "ifeq", "IFEQ", "ifne", "IFNE":
+			if a.MatchValue != "" {
+				args = append(args, a.MatchValue)
+			}
+		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
+			if a.MatchDigest != "" {
+				args = append(args, a.MatchDigest)
+			}
+		}
+	}
+
+	cmd := NewIntCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// Digest Redis `DIGEST key` command.
+// Returns the hex digest of the specified key's value.
+func (c cmdable) Digest(ctx context.Context, key string) *StringCmd {
+	cmd := NewStringCmd(ctx, "digest", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -185,8 +252,18 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 
 // SetArgs provides arguments for the SetArgs function.
 type SetArgs struct {
-	// Mode can be `NX` or `XX` or empty.
+	// Mode can be `NX`, `XX`, `IFEQ`, `IFNE`, `IFDEQ`, `IFDNE` or empty.
 	Mode string
+
+	// MatchValue is used with IFEQ/IFNE modes for compare-and-set operations.
+	// - IFEQ: only set if current value equals MatchValue
+	// - IFNE: only set if current value does not equal MatchValue
+	MatchValue string
+
+	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-set.
+	// - IFDEQ: only set if current value's digest equals MatchDigest
+	// - IFDNE: only set if current value's digest does not equal MatchDigest
+	MatchDigest string
 
 	// Zero `TTL` or `Expiration` means that the key has no expiration time.
 	TTL      time.Duration
@@ -223,6 +300,18 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 
 	if a.Mode != "" {
 		args = append(args, a.Mode)
+
+		// Add match value/digest for CAS modes
+		switch a.Mode {
+		case "ifeq", "IFEQ", "ifne", "IFNE":
+			if a.MatchValue != "" {
+				args = append(args, a.MatchValue)
+			}
+		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
+			if a.MatchDigest != "" {
+				args = append(args, a.MatchDigest)
+			}
+		}
 	}
 
 	if a.Get {
@@ -286,6 +375,56 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 		}
 	}
 
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFEQ Redis `SET key value [expiration] IFEQ match-value` command.
+// Compare-and-set: only sets the value if the current value equals matchValue.
+//
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifeq", matchValue)
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFNE Redis `SET key value [expiration] IFNE match-value` command.
+// Compare-and-set: only sets the value if the current value does not equal matchValue.
+//
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifne", matchValue)
+
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
