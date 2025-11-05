@@ -21,6 +21,7 @@ type StringCmdable interface {
 	MGet(ctx context.Context, keys ...string) *SliceCmd
 	MSet(ctx context.Context, values ...interface{}) *StatusCmd
 	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
+	MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
 	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
@@ -112,6 +113,35 @@ func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) *Fl
 	return cmd
 }
 
+type SetCondition string
+
+const (
+	// NX only set the keys and their expiration if none exist
+	NX SetCondition = "NX"
+	// XX only set the keys and their expiration if all already exist
+	XX SetCondition = "XX"
+)
+
+type ExpirationMode string
+
+const (
+	// EX sets expiration in seconds
+	EX ExpirationMode = "EX"
+	// PX sets expiration in milliseconds
+	PX ExpirationMode = "PX"
+	// EXAT sets expiration as Unix timestamp in seconds
+	EXAT ExpirationMode = "EXAT"
+	// PXAT sets expiration as Unix timestamp in milliseconds
+	PXAT ExpirationMode = "PXAT"
+	// KEEPTTL keeps the existing TTL
+	KEEPTTL ExpirationMode = "KEEPTTL"
+)
+
+type ExpirationOption struct {
+	Mode  ExpirationMode
+	Value int64
+}
+
 func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
 	cmd := NewLCSCmd(ctx, q)
 	_ = c(ctx, cmd)
@@ -153,6 +183,49 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
 	args[0] = "msetnx"
 	args = appendArgs(args, values)
 	cmd := NewBoolCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+type MSetEXArgs struct {
+	Condition  SetCondition
+	Expiration *ExpirationOption
+}
+
+// MSetEX sets the given keys to their respective values.
+// This command is an extension of the MSETNX that adds expiration and XX options.
+// Available since Redis 8.4
+// Important: When this method is used with Cluster clients, all keys
+// must be in the same hash slot, otherwise CROSSSLOT error will be returned.
+// For more information, see https://redis.io/commands/msetex
+func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd {
+	expandedArgs := appendArgs([]interface{}{}, values)
+	numkeys := len(expandedArgs) / 2
+
+	cmdArgs := make([]interface{}, 0, 2+len(expandedArgs)+3)
+	cmdArgs = append(cmdArgs, "msetex", numkeys)
+	cmdArgs = append(cmdArgs, expandedArgs...)
+
+	if args.Condition != "" {
+		cmdArgs = append(cmdArgs, string(args.Condition))
+	}
+
+	if args.Expiration != nil {
+		switch args.Expiration.Mode {
+		case EX:
+			cmdArgs = append(cmdArgs, "ex", args.Expiration.Value)
+		case PX:
+			cmdArgs = append(cmdArgs, "px", args.Expiration.Value)
+		case EXAT:
+			cmdArgs = append(cmdArgs, "exat", args.Expiration.Value)
+		case PXAT:
+			cmdArgs = append(cmdArgs, "pxat", args.Expiration.Value)
+		case KEEPTTL:
+			cmdArgs = append(cmdArgs, "keepttl")
+		}
+	}
+
+	cmd := NewIntCmd(ctx, cmdArgs...)
 	_ = c(ctx, cmd)
 	return cmd
 }
