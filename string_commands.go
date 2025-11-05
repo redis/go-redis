@@ -9,7 +9,7 @@ type StringCmdable interface {
 	Append(ctx context.Context, key, value string) *IntCmd
 	Decr(ctx context.Context, key string) *IntCmd
 	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
-	DelEx(ctx context.Context, key string, matchValue string) *IntCmd
+	DelEx(ctx context.Context, key string, matchValue interface{}) *IntCmd
 	DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 	Digest(ctx context.Context, key string) *StringCmd
 	Get(ctx context.Context, key string) *StringCmd
@@ -28,10 +28,10 @@ type StringCmdable interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
 	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
-	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd
-	SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
-	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd
+	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
+	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
+	SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
+	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
 	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
 	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd
 	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
@@ -68,7 +68,7 @@ type DelExArgs struct {
 	// MatchValue is used with IFEQ/IFNE modes for compare-and-delete operations.
 	// - IFEQ: only delete if current value equals MatchValue
 	// - IFNE: only delete if current value does not equal MatchValue
-	MatchValue string
+	MatchValue interface{}
 
 	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-delete.
 	// - IFDEQ: only delete if current value's digest equals MatchDigest
@@ -80,7 +80,7 @@ type DelExArgs struct {
 // Compare-and-delete: only deletes the key if the current value equals matchValue.
 //
 // Returns the number of keys that were removed (0 or 1).
-func (c cmdable) DelEx(ctx context.Context, key string, matchValue string) *IntCmd {
+func (c cmdable) DelEx(ctx context.Context, key string, matchValue interface{}) *IntCmd {
 	cmd := NewIntCmd(ctx, "delex", key, "ifeq", matchValue)
 	_ = c(ctx, cmd)
 	return cmd
@@ -99,7 +99,7 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 		// Add match value/digest based on mode
 		switch a.Mode {
 		case "ifeq", "IFEQ", "ifne", "IFNE":
-			if a.MatchValue != "" {
+			if a.MatchValue != nil {
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
@@ -337,7 +337,7 @@ type SetArgs struct {
 	// MatchValue is used with IFEQ/IFNE modes for compare-and-set operations.
 	// - IFEQ: only set if current value equals MatchValue
 	// - IFNE: only set if current value does not equal MatchValue
-	MatchValue string
+	MatchValue interface{}
 
 	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-set.
 	// - IFDEQ: only set if current value's digest equals MatchDigest
@@ -383,7 +383,7 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 		// Add match value/digest for CAS modes
 		switch a.Mode {
 		case "ifeq", "IFEQ", "ifne", "IFNE":
-			if a.MatchValue != "" {
+			if a.MatchValue != nil {
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
@@ -464,7 +464,7 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 // Returns "OK" on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -491,7 +491,7 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 // Returns the previous value on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -517,7 +517,7 @@ func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, 
 // Returns "OK" on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -544,7 +544,7 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 // Returns the previous value on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
