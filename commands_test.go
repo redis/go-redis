@@ -2890,8 +2890,14 @@ var _ = Describe("Commands", func() {
 			err := client.Set(ctx, "key", "value1", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
+			// Get digest of a different value to use as wrong digest
+			err = client.Set(ctx, "temp-key", "different-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			wrongDigest := client.Digest(ctx, "temp-key")
+			Expect(wrongDigest.Err()).NotTo(HaveOccurred())
+
 			// Try to update with wrong digest
-			result := client.SetIFDEQ(ctx, "key", "value2", "wrong-digest", 0)
+			result := client.SetIFDEQ(ctx, "key", "value2", wrongDigest.Val(), 0)
 			Expect(result.Err()).To(Equal(redis.Nil))
 
 			// Verify value was NOT updated
@@ -2929,8 +2935,14 @@ var _ = Describe("Commands", func() {
 			err := client.Set(ctx, "key", "value1", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Update with wrong digest (should succeed because digest doesn't match)
-			result := client.SetIFDNE(ctx, "key", "value2", "wrong-digest", 0)
+			// Get digest of a different value
+			err = client.Set(ctx, "temp-key", "different-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			differentDigest := client.Digest(ctx, "temp-key")
+			Expect(differentDigest.Err()).NotTo(HaveOccurred())
+
+			// Update with different digest (should succeed because digest doesn't match)
+			result := client.SetIFDNE(ctx, "key", "value2", differentDigest.Val(), 0)
 			Expect(result.Err()).NotTo(HaveOccurred())
 			Expect(result.Val()).To(Equal("OK"))
 
