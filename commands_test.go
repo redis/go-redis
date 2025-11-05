@@ -2825,6 +2825,142 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("processing"))
 		})
 
+		It("should SetIFEQGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "old-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update and get previous value
+			result := client.SetIFEQGet(ctx, "key", "new-value", "old-value", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("old-value"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("new-value"))
+		})
+
+		It("should SetIFNEGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "pending", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update and get previous value
+			result := client.SetIFNEGet(ctx, "key", "processing", "completed", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("pending"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("processing"))
+		})
+
+		It("should SetIFDEQ when digest matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Update using digest
+			result := client.SetIFDEQ(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDEQ fail when digest does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to update with wrong digest
+			result := client.SetIFDEQ(ctx, "key", "value2", "wrong-digest", 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value1"))
+		})
+
+		It("should SetIFDEQGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Update using digest and get previous value
+			result := client.SetIFDEQGet(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("value1"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDNE when digest does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update with wrong digest (should succeed because digest doesn't match)
+			result := client.SetIFDNE(ctx, "key", "value2", "wrong-digest", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDNE fail when digest matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Try to update but digest matches (should fail)
+			result := client.SetIFDNE(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value1"))
+		})
+
 		It("should SetRange", func() {
 			set := client.Set(ctx, "key", "Hello World", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())

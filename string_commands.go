@@ -29,7 +29,13 @@ type StringCmdable interface {
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
 	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
+	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd
 	SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd
+	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd
+	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
+	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd
+	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
+	SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -455,6 +461,7 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 // SetIFEQ Redis `SET key value [expiration] IFEQ match-value` command.
 // Compare-and-set: only sets the value if the current value equals matchValue.
 //
+// Returns "OK" on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
 func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
@@ -477,9 +484,37 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 	return cmd
 }
 
+// SetIFEQGet Redis `SET key value [expiration] IFEQ match-value GET` command.
+// Compare-and-set with GET: only sets the value if the current value equals matchValue,
+// and returns the previous value.
+//
+// Returns the previous value on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifeq", matchValue, "get")
+
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // SetIFNE Redis `SET key value [expiration] IFNE match-value` command.
 // Compare-and-set: only sets the value if the current value does not equal matchValue.
 //
+// Returns "OK" on success.
 // Returns nil if the operation was aborted due to condition not matching.
 // Zero expiration means the key has no expiration time.
 func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StatusCmd {
@@ -498,6 +533,139 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 	args = append(args, "ifne", matchValue)
 
 	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFNEGet Redis `SET key value [expiration] IFNE match-value GET` command.
+// Compare-and-set with GET: only sets the value if the current value does not equal matchValue,
+// and returns the previous value.
+//
+// Returns the previous value on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue string, expiration time.Duration) *StringCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifne", matchValue, "get")
+
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFDEQ Redis `SET key value [expiration] IFDEQ match-digest` command.
+// Compare-and-set using digest: only sets the value if the current value's digest equals matchDigest.
+//
+// Returns "OK" on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifdeq", matchDigest)
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFDEQGet Redis `SET key value [expiration] IFDEQ match-digest GET` command.
+// Compare-and-set using digest with GET: only sets the value if the current value's digest equals matchDigest,
+// and returns the previous value.
+//
+// Returns the previous value on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifdeq", matchDigest, "get")
+
+	cmd := NewStringCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFDNE Redis `SET key value [expiration] IFDNE match-digest` command.
+// Compare-and-set using digest: only sets the value if the current value's digest does not equal matchDigest.
+//
+// Returns "OK" on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifdne", matchDigest)
+
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetIFDNEGet Redis `SET key value [expiration] IFDNE match-digest GET` command.
+// Compare-and-set using digest with GET: only sets the value if the current value's digest does not equal matchDigest,
+// and returns the previous value.
+//
+// Returns the previous value on success.
+// Returns nil if the operation was aborted due to condition not matching.
+// Zero expiration means the key has no expiration time.
+func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd {
+	args := []interface{}{"set", key, value}
+
+	if expiration > 0 {
+		if usePrecise(expiration) {
+			args = append(args, "px", formatMs(ctx, expiration))
+		} else {
+			args = append(args, "ex", formatSec(ctx, expiration))
+		}
+	} else if expiration == KeepTTL {
+		args = append(args, "keepttl")
+	}
+
+	args = append(args, "ifdne", matchDigest, "get")
+
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
