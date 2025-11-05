@@ -735,7 +735,7 @@ func (cn *Conn) GetStateMachine() *ConnStateMachine {
 func (cn *Conn) TryAcquire() bool {
 	// The || operator short-circuits, so only 1 CAS in the common case
 	return cn.stateMachine.state.CompareAndSwap(uint32(StateIdle), uint32(StateInUse)) ||
-		cn.stateMachine.state.Load() == uint32(StateCreated)
+		cn.stateMachine.state.CompareAndSwap(uint32(StateCreated), uint32(StateCreated))
 }
 
 // Release releases the connection back to the pool.
