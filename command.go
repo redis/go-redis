@@ -3794,6 +3794,83 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 
 //-----------------------------------------------------------------------
 
+type Latency struct {
+	Name   string
+	Time   time.Time
+	Latest time.Duration
+	Max    time.Duration
+}
+
+type LatencyCmd struct {
+	baseCmd
+	val []Latency
+}
+
+var _ Cmder = (*LatencyCmd)(nil)
+
+func NewLatencyCmd(ctx context.Context, args ...interface{}) *LatencyCmd {
+	return &LatencyCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *LatencyCmd) SetVal(val []Latency) {
+	cmd.val = val
+}
+
+func (cmd *LatencyCmd) Val() []Latency {
+	return cmd.val
+}
+
+func (cmd *LatencyCmd) Result() ([]Latency, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *LatencyCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]Latency, n)
+	for i := 0; i < len(cmd.val); i++ {
+		nn, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if nn < 3 {
+			return fmt.Errorf("redis: got %d elements in latency get, expected at least 3", nn)
+		}
+		if cmd.val[i].Name, err = rd.ReadString(); err != nil {
+			return err
+		}
+		createdAt, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Time = time.Unix(createdAt, 0)
+		latest, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Latest = time.Duration(latest) * time.Millisecond
+		maximum, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Max = time.Duration(maximum) * time.Millisecond
+	}
+	return nil
+}
+
+//-----------------------------------------------------------------------
+
 type MapStringInterfaceCmd struct {
 	baseCmd
 

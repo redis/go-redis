@@ -8294,7 +8294,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("SlowLogGet", func() {
+	Describe("SlowLog", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
@@ -8310,6 +8310,114 @@ var _ = Describe("Commands", func() {
 			result, err := client.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Reset slowlog
+			err := client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			// first slowlog entry is the config set command itself
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// Set a key to trigger a slow query, and this is the second slowlog entry
+			client.Set(ctx, "test", "true", 0)
+			result, err := client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(2)))
+
+			// Reset slowlog
+			err = client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check if slowlog is empty, this is the first slowlog entry after reset
+			result, err = client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(1)))
+		})
+	})
+
+	Describe("Latency", Label("NonRedisEnterprise"), func() {
+		It("returns latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("reset all latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			result, err := client.Latency(ctx).Result()
+			// reset all latencies
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// get latency after reset
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			// create a new latency
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after create a new latency
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset all latencies again
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after reset again
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+
+		It("reset latencies by add event name args", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset latency by event name
+			err = client.LatencyReset(ctx, result[0].Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
 		})
 	})
 })
