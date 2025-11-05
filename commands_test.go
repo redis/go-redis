@@ -8313,7 +8313,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("Latency", func() {
+	Describe("Latency", Label("NonRedisEnterprise"), func() {
 		It("returns latencies", func() {
 			const key = "latency-monitor-threshold"
 
