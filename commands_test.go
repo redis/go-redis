@@ -8312,6 +8312,86 @@ var _ = Describe("Commands", func() {
 			Expect(len(result)).NotTo(BeZero())
 		})
 	})
+
+	Describe("Latency", func() {
+		It("returns latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("reset all latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			result, err := client.Latency(ctx).Result()
+			// reset all latencies
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// get latency after reset
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			// create a new latency
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after create a new latency
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset all latencies again
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after reset again
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+
+		It("reset latencies by add event name args", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset latency by event name
+			err = client.LatencyReset(ctx, result[0].Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+	})
 })
 
 type numberStruct struct {
