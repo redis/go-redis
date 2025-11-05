@@ -1607,6 +1607,12 @@ func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
 type XMessage struct {
 	ID     string
 	Values map[string]interface{}
+	// MillisElapsedFromDelivery is the number of milliseconds since the entry was last delivered.
+	// Only populated when using XREADGROUP with CLAIM argument for claimed entries.
+	MillisElapsedFromDelivery int64
+	// DeliveredCount is the number of times the entry was delivered.
+	// Only populated when using XREADGROUP with CLAIM argument for claimed entries.
+	DeliveredCount int64
 }
 
 type XMessageSliceCmd struct {
@@ -1663,8 +1669,14 @@ func readXMessageSlice(rd *proto.Reader) ([]XMessage, error) {
 }
 
 func readXMessage(rd *proto.Reader) (XMessage, error) {
-	if err := rd.ReadFixedArrayLen(2); err != nil {
+	// Read array length can be 2 or 4 (with CLAIM metadata)
+	n, err := rd.ReadArrayLen()
+	if err != nil {
 		return XMessage{}, err
+	}
+
+	if n != 2 && n != 4 {
+		return XMessage{}, fmt.Errorf("redis: got %d elements in the XMessage array, expected 2 or 4", n)
 	}
 
 	id, err := rd.ReadString()
@@ -1679,10 +1691,24 @@ func readXMessage(rd *proto.Reader) (XMessage, error) {
 		}
 	}
 
-	return XMessage{
+	msg := XMessage{
 		ID:     id,
 		Values: v,
-	}, nil
+	}
+
+	if n == 4 {
+		msg.MillisElapsedFromDelivery, err = rd.ReadInt()
+		if err != nil {
+			return XMessage{}, err
+		}
+
+		msg.DeliveredCount, err = rd.ReadInt()
+		if err != nil {
+			return XMessage{}, err
+		}
+	}
+
+	return msg, nil
 }
 
 func stringInterfaceMapParser(rd *proto.Reader) (map[string]interface{}, error) {

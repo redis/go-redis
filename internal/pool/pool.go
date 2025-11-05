@@ -160,18 +160,9 @@ type ConnPool struct {
 var _ Pooler = (*ConnPool)(nil)
 
 func NewConnPool(opt *Options) *ConnPool {
-	semSize := opt.PoolSize
-	if opt.MaxActiveConns > 0 && opt.MaxActiveConns < opt.PoolSize {
-		if opt.MaxActiveConns < opt.PoolSize {
-			opt.MaxActiveConns = opt.PoolSize
-		}
-		semSize = opt.MaxActiveConns
-	}
-	//semSize = opt.PoolSize
-
 	p := &ConnPool{
 		cfg:             opt,
-		semaphore:       internal.NewFastSemaphore(semSize),
+		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
 		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
@@ -470,17 +461,11 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	// Use cached time for health checks (max 50ms staleness is acceptable)
 	nowNs := getCachedTimeNs()
-	attempts := 0
 
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
-	for {
-		if attempts >= getAttempts {
-			internal.Logger.Printf(ctx, "redis: connection pool: was not able to get a healthy connection after %d attempts", attempts)
-			break
-		}
-		attempts++
+	for attempts := 0; attempts < getAttempts; attempts++ {
 
 		p.connsMu.Lock()
 		cn, err = p.popIdle()

@@ -553,7 +553,9 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				cn.GetStateMachine().Transition(pool.StateClosed)
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
-				internal.Logger.Printf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
+				// Disabling logging here as it's too noisy.
+				// TODO: Enable when we have a better logging solution for log levels
+				// internal.Logger.Printf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
 				c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
 				c.optLock.Unlock()
 				// auto mode, disable maintnotifications and continue

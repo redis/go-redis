@@ -71,10 +71,13 @@ func (phm *PoolHookManager) RemoveHook(hook PoolHook) {
 // ProcessOnGet calls all OnGet hooks in order.
 // If any hook returns an error, processing stops and the error is returned.
 func (phm *PoolHookManager) ProcessOnGet(ctx context.Context, conn *Conn, isNewConn bool) (acceptConn bool, err error) {
+	// Copy slice reference while holding lock (fast)
 	phm.hooksMu.RLock()
-	defer phm.hooksMu.RUnlock()
+	hooks := phm.hooks
+	phm.hooksMu.RUnlock()
 
-	for _, hook := range phm.hooks {
+	// Call hooks without holding lock (slow operations)
+	for _, hook := range hooks {
 		acceptConn, err := hook.OnGet(ctx, conn, isNewConn)
 		if err != nil {
 			return false, err
@@ -90,12 +93,15 @@ func (phm *PoolHookManager) ProcessOnGet(ctx context.Context, conn *Conn, isNewC
 // ProcessOnPut calls all OnPut hooks in order.
 // The first hook that returns shouldRemove=true or shouldPool=false will stop processing.
 func (phm *PoolHookManager) ProcessOnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error) {
+	// Copy slice reference while holding lock (fast)
 	phm.hooksMu.RLock()
-	defer phm.hooksMu.RUnlock()
+	hooks := phm.hooks
+	phm.hooksMu.RUnlock()
 
 	shouldPool = true // Default to pooling the connection
 
-	for _, hook := range phm.hooks {
+	// Call hooks without holding lock (slow operations)
+	for _, hook := range hooks {
 		hookShouldPool, hookShouldRemove, hookErr := hook.OnPut(ctx, conn)
 
 		if hookErr != nil {
@@ -117,9 +123,13 @@ func (phm *PoolHookManager) ProcessOnPut(ctx context.Context, conn *Conn) (shoul
 
 // ProcessOnRemove calls all OnRemove hooks in order.
 func (phm *PoolHookManager) ProcessOnRemove(ctx context.Context, conn *Conn, reason error) {
+	// Copy slice reference while holding lock (fast)
 	phm.hooksMu.RLock()
-	defer phm.hooksMu.RUnlock()
-	for _, hook := range phm.hooks {
+	hooks := phm.hooks
+	phm.hooksMu.RUnlock()
+
+	// Call hooks without holding lock (slow operations)
+	for _, hook := range hooks {
 		hook.OnRemove(ctx, conn, reason)
 	}
 }
