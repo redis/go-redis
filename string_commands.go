@@ -9,7 +9,6 @@ type StringCmdable interface {
 	Append(ctx context.Context, key, value string) *IntCmd
 	Decr(ctx context.Context, key string) *IntCmd
 	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
-	DelEx(ctx context.Context, key string, matchValue interface{}) *IntCmd
 	DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 	Digest(ctx context.Context, key string) *StringCmd
 	Get(ctx context.Context, key string) *StringCmd
@@ -74,16 +73,6 @@ type DelExArgs struct {
 	// - IFDEQ: only delete if current value's digest equals MatchDigest
 	// - IFDNE: only delete if current value's digest does not equal MatchDigest
 	MatchDigest string
-}
-
-// DelEx Redis `DELEX key IFEQ match-value` command.
-// Compare-and-delete: only deletes the key if the current value equals matchValue.
-//
-// Returns the number of keys that were removed (0 or 1).
-func (c cmdable) DelEx(ctx context.Context, key string, matchValue interface{}) *IntCmd {
-	cmd := NewIntCmd(ctx, "delex", key, "ifeq", matchValue)
-	_ = c(ctx, cmd)
-	return cmd
 }
 
 // DelExArgs Redis `DELEX key [IFEQ|IFNE|IFDEQ|IFDNE] match-value` command.

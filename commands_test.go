@@ -1796,7 +1796,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Err()).To(Equal(redis.Nil))
 		})
 
-		It("should DelEx when value matches", func() {
+		It("should DelExArgs when value matches", func() {
 			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
@@ -1804,7 +1804,10 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Delete only if value matches
-			deleted := client.DelEx(ctx, "lock", "token-123")
+			deleted := client.DelExArgs(ctx, "lock", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "token-123",
+			})
 			Expect(deleted.Err()).NotTo(HaveOccurred())
 			Expect(deleted.Val()).To(Equal(int64(1)))
 
@@ -1813,7 +1816,7 @@ var _ = Describe("Commands", func() {
 			Expect(get.Err()).To(Equal(redis.Nil))
 		})
 
-		It("should DelEx fail when value does not match", func() {
+		It("should DelExArgs fail when value does not match", func() {
 			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
@@ -1821,7 +1824,10 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Try to delete with wrong value
-			deleted := client.DelEx(ctx, "lock", "wrong-token")
+			deleted := client.DelExArgs(ctx, "lock", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "wrong-token",
+			})
 			Expect(deleted.Err()).NotTo(HaveOccurred())
 			Expect(deleted.Val()).To(Equal(int64(0)))
 
@@ -1831,11 +1837,14 @@ var _ = Describe("Commands", func() {
 			Expect(val).To(Equal("token-123"))
 		})
 
-		It("should DelEx on non-existent key", func() {
+		It("should DelExArgs on non-existent key", func() {
 			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
 
 			// Try to delete non-existent key
-			deleted := client.DelEx(ctx, "nonexistent", "any-value")
+			deleted := client.DelExArgs(ctx, "nonexistent", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "any-value",
+			})
 			Expect(deleted.Err()).NotTo(HaveOccurred())
 			Expect(deleted.Val()).To(Equal(int64(0)))
 		})
