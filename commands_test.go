@@ -1952,6 +1952,137 @@ var _ = Describe("Commands", func() {
 			Expect(mSetNX.Val()).To(Equal(true))
 		})
 
+		It("should MSetEX", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "hello1", "key2", "hello2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			// Verify keys were set
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("hello1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("hello2"))
+
+			// Verify TTL was set
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+			Expect(ttl1.Val()).To(BeNumerically("<=", 1*time.Second))
+
+			ttl2 := client.TTL(ctx, "key2")
+			Expect(ttl2.Err()).NotTo(HaveOccurred())
+			Expect(ttl2.Val()).To(BeNumerically(">", 0))
+			Expect(ttl2.Val()).To(BeNumerically("<=", 1*time.Second))
+		})
+
+		It("should MSetEX with NX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			client.Set(ctx, "key1", "existing", 0)
+
+			// Try to set with NX mode - should fail because key1 exists
+			args := redis.MSetEXArgs{
+				Condition: redis.NX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("existing"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).To(Equal(redis.Nil))
+
+			client.Del(ctx, "key1")
+
+			// Now try with NX mode when keys don't exist - should succeed
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 = client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 = client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+		})
+
+		It("should MSetEX with XX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			args := redis.MSetEXArgs{
+				Condition: redis.XX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			client.Set(ctx, "key1", "existing1", 0)
+			client.Set(ctx, "key2", "existing2", 0)
+
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+		})
+
+		It("should MSetEX with map", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, map[string]interface{}{
+				"key1": "value1",
+				"key2": "value2",
+			})
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("value1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("value2"))
+		})
+
 		It("should SetWithArgs with TTL", func() {
 			args := redis.SetArgs{
 				TTL: 500 * time.Millisecond,
@@ -8180,7 +8311,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("SlowLogGet", func() {
+	Describe("SlowLog", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
@@ -8196,6 +8327,114 @@ var _ = Describe("Commands", func() {
 			result, err := client.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Reset slowlog
+			err := client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			// first slowlog entry is the config set command itself
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// Set a key to trigger a slow query, and this is the second slowlog entry
+			client.Set(ctx, "test", "true", 0)
+			result, err := client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(2)))
+
+			// Reset slowlog
+			err = client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check if slowlog is empty, this is the first slowlog entry after reset
+			result, err = client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(1)))
+		})
+	})
+
+	Describe("Latency", Label("NonRedisEnterprise"), func() {
+		It("returns latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("reset all latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			result, err := client.Latency(ctx).Result()
+			// reset all latencies
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// get latency after reset
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			// create a new latency
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after create a new latency
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset all latencies again
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after reset again
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+
+		It("reset latencies by add event name args", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset latency by event name
+			err = client.LatencyReset(ctx, result[0].Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
 		})
 	})
 })
