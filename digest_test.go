@@ -2,13 +2,35 @@ package redis_test
 
 import (
 	"context"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
 )
 
+func init() {
+	// Initialize RedisVersion from environment variable for regular Go tests
+	// (Ginkgo tests initialize this in BeforeSuite)
+	if version := os.Getenv("REDIS_VERSION"); version != "" {
+		if v, err := strconv.ParseFloat(strings.Trim(version, "\""), 64); err == nil && v > 0 {
+			RedisVersion = v
+		}
+	}
+}
+
+// skipIfRedisBelow84 checks if Redis version is below 8.4 and skips the test if so
+func skipIfRedisBelow84(t *testing.T) {
+	if RedisVersion < 8.4 {
+		t.Skipf("Skipping test: Redis version %.1f < 8.4 (DIGEST command requires Redis 8.4+)", RedisVersion)
+	}
+}
+
 // TestDigestBasic validates that the Digest command returns a uint64 value
 func TestDigestBasic(t *testing.T) {
+	skipIfRedisBelow84(t)
+
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -51,6 +73,8 @@ func TestDigestBasic(t *testing.T) {
 
 // TestSetIFDEQWithDigest validates the SetIFDEQ command works with digests
 func TestSetIFDEQWithDigest(t *testing.T) {
+	skipIfRedisBelow84(t)
+
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -113,6 +137,8 @@ func TestSetIFDEQWithDigest(t *testing.T) {
 
 // TestSetIFDNEWithDigest validates the SetIFDNE command works with digests
 func TestSetIFDNEWithDigest(t *testing.T) {
+	skipIfRedisBelow84(t)
+
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
@@ -175,6 +201,8 @@ func TestSetIFDNEWithDigest(t *testing.T) {
 
 // TestDelExArgsWithDigest validates DelExArgs works with digest matching
 func TestDelExArgsWithDigest(t *testing.T) {
+	skipIfRedisBelow84(t)
+
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
