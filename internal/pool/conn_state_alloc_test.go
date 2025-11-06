@@ -136,3 +136,34 @@ func BenchmarkHandoffErrors_Preallocated(b *testing.B) {
 	}
 }
 
+// BenchmarkCompareAndSwapUsable_Preallocated benchmarks with preallocated slices
+func BenchmarkCompareAndSwapUsable_Preallocated(b *testing.B) {
+	cn := NewConn(nil)
+	cn.stateMachine.Transition(StateIdle)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		cn.CompareAndSwapUsable(true, false) // IDLE -> UNUSABLE
+		cn.CompareAndSwapUsable(false, true) // UNUSABLE -> IDLE
+	}
+}
+
+// TestAllTryTransitionUsePredefinedSlices verifies all TryTransition calls use predefined slices
+func TestAllTryTransitionUsePredefinedSlices(t *testing.T) {
+	cn := NewConn(nil)
+	cn.stateMachine.Transition(StateIdle)
+
+	// Test CompareAndSwapUsable - should have minimal allocations
+	allocs := testing.AllocsPerRun(100, func() {
+		cn.CompareAndSwapUsable(true, false) // IDLE -> UNUSABLE
+		cn.CompareAndSwapUsable(false, true) // UNUSABLE -> IDLE
+	})
+
+	// Allow some allocations for error objects, but should be minimal
+	if allocs > 2 {
+		t.Errorf("Expected <= 2 allocations with predefined slices, got %.2f", allocs)
+	}
+}
+

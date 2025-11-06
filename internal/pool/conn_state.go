@@ -49,6 +49,8 @@ var (
 	// For AwaitAndTransition calls
 	validFromCreatedIdleOrUnusable = []ConnState{StateCreated, StateIdle, StateUnusable}
 	validFromIdle                  = []ConnState{StateIdle}
+	// For CompareAndSwapUsable
+	validFromInitializingOrUnusable = []ConnState{StateInitializing, StateUnusable}
 )
 
 // Accessor functions for predefined slices to avoid allocations in external packages

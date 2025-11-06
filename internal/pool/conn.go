@@ -237,16 +237,18 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	if new {
 		// Trying to make usable - transition from UNUSABLE to IDLE
 		// This should only work from UNUSABLE or INITIALIZING states
+		// Use predefined slice to avoid allocation
 		_, err := cn.stateMachine.TryTransition(
-			[]ConnState{StateInitializing, StateUnusable},
+			validFromInitializingOrUnusable,
 			StateIdle,
 		)
 		return err == nil
 	} else {
 		// Trying to make unusable - transition from IDLE to UNUSABLE
 		// This is typically for acquiring the connection for background operations
+		// Use predefined slice to avoid allocation
 		_, err := cn.stateMachine.TryTransition(
-			[]ConnState{StateIdle},
+			validFromIdle,
 			StateUnusable,
 		)
 		return err == nil
