@@ -190,7 +190,8 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 				return
 			}
 
-			_, err := stateMachine.AwaitAndTransition(ctx, []pool.ConnState{pool.StateIdle}, pool.StateUnusable)
+			// Use predefined slice to avoid allocation
+			_, err := stateMachine.AwaitAndTransition(ctx, pool.ValidFromIdle(), pool.StateUnusable)
 			if err != nil {
 				// Timeout or other error occurred, cannot acquire connection
 				reAuthFn(err)
