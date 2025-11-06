@@ -531,16 +531,16 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	// If value is nil, it might mean ExtractCommandValue couldn't extract the value
 	// but the command might have executed successfully. In this case, don't set an error.
 	if value == nil {
-		// Check if the original command has an error - if not, the nil value is not an error
-		if cmd.Err() == nil {
-			// Command executed successfully but value extraction failed
-			// This is common for complex commands like CLUSTER SLOTS
-			// The command already has its result set correctly, so just return
-			return nil
+		// ExtractCommandValue returned nil - this means the command type is not supported
+		// in the aggregation flow. This is a programming error, not a runtime error.
+		if cmd.Err() != nil {
+			// Command already has an error, preserve it
+			return cmd.Err()
 		}
-		// If the command does have an error, set Nil error
-		cmd.SetErr(Nil)
-		return Nil
+		// Command executed successfully but we can't extract/set the aggregated value
+		// This indicates the command type needs to be added to ExtractCommandValue
+		return fmt.Errorf("redis: cannot aggregate command %s: unsupported command type %d",
+			cmd.Name(), cmd.GetCmdType())
 	}
 
 	switch cmd.GetCmdType() {
