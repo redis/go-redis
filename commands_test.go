@@ -199,6 +199,29 @@ var _ = Describe("Commands", func() {
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
 
+		It("should ClientKillByFilter with kill myself", func() {
+			opt := redisOptions()
+			opt.ClientName = "killmyid"
+			db := redis.NewClient(opt)
+			Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			defer func() {
+				Expect(db.Close()).NotTo(HaveOccurred())
+			}()
+			val, err := client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=killmyid"))
+
+			myid := db.ClientID(ctx).Val()
+			killed := client.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
+			Expect(killed.Err()).NotTo(HaveOccurred())
+			Expect(killed.Val()).To(BeNumerically("==", 1))
+
+			val, err = client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
+		})
+
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			var s []string
@@ -1910,6 +1933,137 @@ var _ = Describe("Commands", func() {
 			})
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(true))
+		})
+
+		It("should MSetEX", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "hello1", "key2", "hello2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			// Verify keys were set
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("hello1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("hello2"))
+
+			// Verify TTL was set
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+			Expect(ttl1.Val()).To(BeNumerically("<=", 1*time.Second))
+
+			ttl2 := client.TTL(ctx, "key2")
+			Expect(ttl2.Err()).NotTo(HaveOccurred())
+			Expect(ttl2.Val()).To(BeNumerically(">", 0))
+			Expect(ttl2.Val()).To(BeNumerically("<=", 1*time.Second))
+		})
+
+		It("should MSetEX with NX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			client.Set(ctx, "key1", "existing", 0)
+
+			// Try to set with NX mode - should fail because key1 exists
+			args := redis.MSetEXArgs{
+				Condition: redis.NX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("existing"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).To(Equal(redis.Nil))
+
+			client.Del(ctx, "key1")
+
+			// Now try with NX mode when keys don't exist - should succeed
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 = client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 = client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+		})
+
+		It("should MSetEX with XX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			args := redis.MSetEXArgs{
+				Condition: redis.XX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			client.Set(ctx, "key1", "existing1", 0)
+			client.Set(ctx, "key2", "existing2", 0)
+
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+		})
+
+		It("should MSetEX with map", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, map[string]interface{}{
+				"key1": "value1",
+				"key2": "value2",
+			})
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("value1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("value2"))
 		})
 
 		It("should SetWithArgs with TTL", func() {
@@ -6749,6 +6903,242 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
 			})
+
+			It("should XReadGroup with CLAIM argument", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer2",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+				Expect(res[0].Stream).To(Equal("stream"))
+
+				messages := res[0].Messages
+				Expect(len(messages)).To(BeNumerically(">=", 1))
+
+				for _, msg := range messages {
+					if msg.MillisElapsedFromDelivery > 0 {
+						Expect(msg.MillisElapsedFromDelivery).To(BeNumerically(">=", 50))
+						Expect(msg.DeliveredCount).To(BeNumerically(">=", 1))
+					}
+				}
+			})
+
+			It("should XReadGroup with CLAIM and COUNT", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer3",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+					Count:    2,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 && len(res[0].Messages) > 0 {
+					Expect(len(res[0].Messages)).To(BeNumerically("<=", 2))
+				}
+			})
+
+			It("should XReadGroup with CLAIM and NOACK", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer4",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+					NoAck:    true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 {
+					Expect(res[0].Stream).To(Equal("stream"))
+				}
+			})
+
+			It("should XReadGroup CLAIM empties PEL after acknowledgment", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer5",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 && len(res[0].Messages) > 0 {
+					ids := make([]string, len(res[0].Messages))
+					for i, msg := range res[0].Messages {
+						ids[i] = msg.ID
+					}
+
+					n, err := client.XAck(ctx, "stream", "group", ids...).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(n).To(BeNumerically(">=", 1))
+
+					pending, err := client.XPending(ctx, "stream", "group").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(pending.Count).To(BeNumerically("<", 3))
+				}
+			})
+
+			It("should XReadGroup backward compatibility without CLAIM", func() {
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer_compat",
+					Streams:  []string{"stream", "0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+				Expect(res[0].Stream).To(Equal("stream"))
+
+				for _, msg := range res[0].Messages {
+					Expect(msg.MillisElapsedFromDelivery).To(Equal(int64(0)))
+					Expect(msg.DeliveredCount).To(Equal(int64(0)))
+				}
+			})
+
+			It("should XReadGroup CLAIM with multiple streams", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "stream2",
+					ID:     "1-0",
+					Values: map[string]interface{}{"field1": "value1"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("1-0"))
+
+				id, err = client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "stream2",
+					ID:     "2-0",
+					Values: map[string]interface{}{"field2": "value2"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("2-0"))
+
+				err = client.XGroupCreate(ctx, "stream2", "group2", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group2",
+					Consumer: "consumer1",
+					Streams:  []string{"stream2", ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group2",
+					Consumer: "consumer2",
+					Streams:  []string{"stream2", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 {
+					Expect(res[0].Stream).To(Equal("stream2"))
+					if len(res[0].Messages) > 0 {
+						for _, msg := range res[0].Messages {
+							if msg.MillisElapsedFromDelivery > 0 {
+								Expect(msg.DeliveredCount).To(BeNumerically(">=", 1))
+							}
+						}
+					}
+				}
+			})
+
+			It("should XReadGroup CLAIM work consistently on RESP2 and RESP3", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				streamName := "stream-resp-test"
+				err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: streamName,
+					Values: map[string]interface{}{"field1": "value1"},
+				}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.XAdd(ctx, &redis.XAddArgs{
+					Stream: streamName,
+					Values: map[string]interface{}{"field2": "value2"},
+				}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				groupName := "resp-test-group"
+				err = client.XGroupCreate(ctx, streamName, groupName, "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer1",
+					Streams:  []string{streamName, ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				time.Sleep(100 * time.Millisecond)
+
+				// Test with RESP2 (protocol 2)
+				resp2Client := redis.NewClient(&redis.Options{
+					Addr:     redisAddr,
+					Protocol: 2,
+				})
+				defer resp2Client.Close()
+
+				resp2Result, err := resp2Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer2",
+					Streams:  []string{streamName, "0"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp2Result).To(HaveLen(1))
+
+				// Test with RESP3 (protocol 3)
+				resp3Client := redis.NewClient(&redis.Options{
+					Addr:     redisAddr,
+					Protocol: 3,
+				})
+				defer resp3Client.Close()
+
+				resp3Result, err := resp3Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer3",
+					Streams:  []string{streamName, "0"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp3Result).To(HaveLen(1))
+
+				Expect(len(resp2Result[0].Messages)).To(Equal(len(resp3Result[0].Messages)))
+
+				for i := range resp2Result[0].Messages {
+					msg2 := resp2Result[0].Messages[i]
+					msg3 := resp3Result[0].Messages[i]
+
+					Expect(msg2.ID).To(Equal(msg3.ID))
+
+					if msg2.MillisElapsedFromDelivery > 0 {
+						Expect(msg3.MillisElapsedFromDelivery).To(BeNumerically(">", 0))
+						Expect(msg2.DeliveredCount).To(Equal(msg3.DeliveredCount))
+					}
+				}
+			})
 		})
 
 		Describe("xinfo", func() {
@@ -7904,7 +8294,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("SlowLogGet", func() {
+	Describe("SlowLog", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
@@ -7920,6 +8310,114 @@ var _ = Describe("Commands", func() {
 			result, err := client.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Reset slowlog
+			err := client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			// first slowlog entry is the config set command itself
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// Set a key to trigger a slow query, and this is the second slowlog entry
+			client.Set(ctx, "test", "true", 0)
+			result, err := client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(2)))
+
+			// Reset slowlog
+			err = client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check if slowlog is empty, this is the first slowlog entry after reset
+			result, err = client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(1)))
+		})
+	})
+
+	Describe("Latency", Label("NonRedisEnterprise"), func() {
+		It("returns latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("reset all latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			result, err := client.Latency(ctx).Result()
+			// reset all latencies
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// get latency after reset
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			// create a new latency
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after create a new latency
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset all latencies again
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after reset again
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+
+		It("reset latencies by add event name args", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset latency by event name
+			err = client.LatencyReset(ctx, result[0].Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
 		})
 	})
 })
