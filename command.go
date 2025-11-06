@@ -698,6 +698,68 @@ func (cmd *IntCmd) readReply(rd *proto.Reader) (err error) {
 
 //------------------------------------------------------------------------------
 
+// DigestCmd is a command that returns a uint64 xxh3 hash digest.
+//
+// This command is specifically designed for the Redis DIGEST command,
+// which returns the xxh3 hash of a key's value as a hex string.
+// The hex string is automatically parsed to a uint64 value.
+//
+// The digest can be used for optimistic locking with SetIFDEQ, SetIFDNE,
+// and DelExArgs commands.
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/digest/
+type DigestCmd struct {
+	baseCmd
+
+	val uint64
+}
+
+var _ Cmder = (*DigestCmd)(nil)
+
+func NewDigestCmd(ctx context.Context, args ...interface{}) *DigestCmd {
+	return &DigestCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *DigestCmd) SetVal(val uint64) {
+	cmd.val = val
+}
+
+func (cmd *DigestCmd) Val() uint64 {
+	return cmd.val
+}
+
+func (cmd *DigestCmd) Result() (uint64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *DigestCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *DigestCmd) readReply(rd *proto.Reader) (err error) {
+	// Redis DIGEST command returns a hex string (e.g., "a1b2c3d4e5f67890")
+	// We parse it as a uint64 xxh3 hash value
+	var hexStr string
+	hexStr, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	// Parse hex string to uint64
+	cmd.val, err = strconv.ParseUint(hexStr, 16, 64)
+	return err
+}
+
+//------------------------------------------------------------------------------
+
 type IntSliceCmd struct {
 	baseCmd
 

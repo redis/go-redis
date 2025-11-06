@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -10,7 +11,7 @@ type StringCmdable interface {
 	Decr(ctx context.Context, key string) *IntCmd
 	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
 	DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
-	Digest(ctx context.Context, key string) *StringCmd
+	Digest(ctx context.Context, key string) *DigestCmd
 	Get(ctx context.Context, key string) *StringCmd
 	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
@@ -31,10 +32,10 @@ type StringCmdable interface {
 	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
 	SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
 	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
-	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
-	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd
-	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd
-	SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd
+	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd
+	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd
+	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd
+	SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd
 	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
 	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
@@ -72,7 +73,12 @@ type DelExArgs struct {
 	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-delete.
 	// - IFDEQ: only delete if current value's digest equals MatchDigest
 	// - IFDNE: only delete if current value's digest does not equal MatchDigest
-	MatchDigest string
+	//
+	// The digest is a uint64 xxh3 hash value.
+	//
+	// For examples of client-side digest generation, see:
+	// example/digest-optimistic-locking/
+	MatchDigest uint64
 }
 
 // DelExArgs Redis `DELEX key [IFEQ|IFNE|IFDEQ|IFDNE] match-value` command.
@@ -92,8 +98,8 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			if a.MatchDigest != "" {
-				args = append(args, a.MatchDigest)
+			if a.MatchDigest != 0 {
+				args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 			}
 		}
 	}
@@ -103,10 +109,17 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 	return cmd
 }
 
-// Digest Redis `DIGEST key` command.
-// Returns the hex digest of the specified key's value.
-func (c cmdable) Digest(ctx context.Context, key string) *StringCmd {
-	cmd := NewStringCmd(ctx, "digest", key)
+// Digest returns the xxh3 hash (uint64) of the specified key's value.
+//
+// The digest is a 64-bit xxh3 hash that can be used for optimistic locking
+// with SetIFDEQ, SetIFDNE, and DelExArgs commands.
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/digest/
+func (c cmdable) Digest(ctx context.Context, key string) *DigestCmd {
+	cmd := NewDigestCmd(ctx, "digest", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -331,7 +344,12 @@ type SetArgs struct {
 	// MatchDigest is used with IFDEQ/IFDNE modes for digest-based compare-and-set.
 	// - IFDEQ: only set if current value's digest equals MatchDigest
 	// - IFDNE: only set if current value's digest does not equal MatchDigest
-	MatchDigest string
+	//
+	// The digest is a uint64 xxh3 hash value.
+	//
+	// For examples of client-side digest generation, see:
+	// example/digest-optimistic-locking/
+	MatchDigest uint64
 
 	// Zero `TTL` or `Expiration` means that the key has no expiration time.
 	TTL      time.Duration
@@ -376,8 +394,8 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 				args = append(args, a.MatchValue)
 			}
 		case "ifdeq", "IFDEQ", "ifdne", "IFDNE":
-			if a.MatchDigest != "" {
-				args = append(args, a.MatchDigest)
+			if a.MatchDigest != 0 {
+				args = append(args, fmt.Sprintf("%016x", a.MatchDigest))
 			}
 		}
 	}
@@ -553,13 +571,20 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 	return cmd
 }
 
-// SetIFDEQ Redis `SET key value [expiration] IFDEQ match-digest` command.
-// Compare-and-set using digest: only sets the value if the current value's digest equals matchDigest.
+// SetIFDEQ sets the value only if the current value's digest equals matchDigest.
+//
+// This is a compare-and-set operation using xxh3 digest for optimistic locking.
+// The matchDigest parameter is a uint64 xxh3 hash value.
 //
 // Returns "OK" on success.
-// Returns nil if the operation was aborted due to condition not matching.
+// Returns redis.Nil if the digest doesn't match (value was modified).
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd {
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/set/
+func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -572,21 +597,28 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 		args = append(args, "keepttl")
 	}
 
-	args = append(args, "ifdeq", matchDigest)
+	args = append(args, "ifdeq", fmt.Sprintf("%016x", matchDigest))
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// SetIFDEQGet Redis `SET key value [expiration] IFDEQ match-digest GET` command.
-// Compare-and-set using digest with GET: only sets the value if the current value's digest equals matchDigest,
+// SetIFDEQGet sets the value only if the current value's digest equals matchDigest,
 // and returns the previous value.
 //
+// This is a compare-and-set operation using xxh3 digest for optimistic locking.
+// The matchDigest parameter is a uint64 xxh3 hash value.
+//
 // Returns the previous value on success.
-// Returns nil if the operation was aborted due to condition not matching.
+// Returns redis.Nil if the digest doesn't match (value was modified).
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd {
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/set/
+func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -599,20 +631,27 @@ func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{},
 		args = append(args, "keepttl")
 	}
 
-	args = append(args, "ifdeq", matchDigest, "get")
+	args = append(args, "ifdeq", fmt.Sprintf("%016x", matchDigest), "get")
 
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// SetIFDNE Redis `SET key value [expiration] IFDNE match-digest` command.
-// Compare-and-set using digest: only sets the value if the current value's digest does not equal matchDigest.
+// SetIFDNE sets the value only if the current value's digest does NOT equal matchDigest.
 //
-// Returns "OK" on success.
-// Returns nil if the operation was aborted due to condition not matching.
+// This is a compare-and-set operation using xxh3 digest for optimistic locking.
+// The matchDigest parameter is a uint64 xxh3 hash value.
+//
+// Returns "OK" on success (digest didn't match, value was set).
+// Returns redis.Nil if the digest matches (value was not modified).
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StatusCmd {
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/set/
+func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -625,21 +664,28 @@ func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, ma
 		args = append(args, "keepttl")
 	}
 
-	args = append(args, "ifdne", matchDigest)
+	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest))
 
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// SetIFDNEGet Redis `SET key value [expiration] IFDNE match-digest GET` command.
-// Compare-and-set using digest with GET: only sets the value if the current value's digest does not equal matchDigest,
+// SetIFDNEGet sets the value only if the current value's digest does NOT equal matchDigest,
 // and returns the previous value.
 //
-// Returns the previous value on success.
-// Returns nil if the operation was aborted due to condition not matching.
+// This is a compare-and-set operation using xxh3 digest for optimistic locking.
+// The matchDigest parameter is a uint64 xxh3 hash value.
+//
+// Returns the previous value on success (digest didn't match, value was set).
+// Returns redis.Nil if the digest matches (value was not modified).
 // Zero expiration means the key has no expiration time.
-func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest string, expiration time.Duration) *StringCmd {
+//
+// For examples of client-side digest generation and usage patterns, see:
+// example/digest-optimistic-locking/
+//
+// Redis 8.4+. See https://redis.io/commands/set/
+func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -652,7 +698,7 @@ func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{},
 		args = append(args, "keepttl")
 	}
 
-	args = append(args, "ifdne", matchDigest, "get")
+	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest), "get")
 
 	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)

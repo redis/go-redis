@@ -1920,10 +1920,10 @@ var _ = Describe("Commands", func() {
 			err := client.Set(ctx, "my-key", "my-value", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Get digest
+			// Get digest (returns uint64)
 			digest := client.Digest(ctx, "my-key")
 			Expect(digest.Err()).NotTo(HaveOccurred())
-			Expect(digest.Val()).NotTo(BeEmpty())
+			Expect(digest.Val()).NotTo(BeZero())
 
 			// Digest should be consistent
 			digest2 := client.Digest(ctx, "my-key")
