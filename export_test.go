@@ -106,3 +106,7 @@ func (c *ModuleLoadexConfig) ToArgs() []interface{} {
 func ShouldRetry(err error, retryTimeout bool) bool {
 	return shouldRetry(err, retryTimeout)
 }
+
+func JoinErrors(errs []error) string {
+	return joinErrors(errs)
+}
