@@ -31,11 +31,12 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(bm.poolSize),
-				PoolTimeout:     time.Second,
-				DialTimeout:     1 * time.Second,
-				ConnMaxIdleTime: time.Hour,
+				Dialer:             dummyDialer,
+				PoolSize:           int32(bm.poolSize),
+				MaxConcurrentDials: bm.poolSize,
+				PoolTimeout:        time.Second,
+				DialTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    time.Hour,
 			})
 
 			b.ResetTimer()
@@ -75,11 +76,12 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(bm.poolSize),
-				PoolTimeout:     time.Second,
-				DialTimeout:     1 * time.Second,
-				ConnMaxIdleTime: time.Hour,
+				Dialer:             dummyDialer,
+				PoolSize:           int32(bm.poolSize),
+				MaxConcurrentDials: bm.poolSize,
+				PoolTimeout:        time.Second,
+				DialTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    time.Hour,
 			})
 
 			b.ResetTimer()
