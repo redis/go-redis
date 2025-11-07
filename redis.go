@@ -1166,7 +1166,11 @@ func (c *Client) pubSub() *PubSub {
 func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.Subscribe(ctx, channels...)
+		err := pubsub.Subscribe(ctx, channels...)
+
+		if err != nil {
+			return nil
+		}
 	}
 	return pubsub
 }
@@ -1176,7 +1180,11 @@ func (c *Client) Subscribe(ctx context.Context, channels ...string) *PubSub {
 func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.PSubscribe(ctx, channels...)
+		err := pubsub.PSubscribe(ctx, channels...)
+
+		if err != nil {
+			return nil
+		}
 	}
 	return pubsub
 }
@@ -1186,7 +1194,11 @@ func (c *Client) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 func (c *Client) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
-		_ = pubsub.SSubscribe(ctx, channels...)
+		err := pubsub.SSubscribe(ctx, channels...)
+
+		if err != nil {
+			return nil
+		}
 	}
 	return pubsub
 }
