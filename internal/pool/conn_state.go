@@ -320,7 +320,8 @@ func (sm *ConnStateMachine) notifyWaiters() {
 					processed = true
 					break
 				} else {
-					// State changed - re-add waiter to front of queue and retry
+					// State changed - re-add waiter to front of queue to maintain FIFO ordering
+					// This waiter was first in line and should retain priority
 					sm.waiters.PushFront(w)
 					sm.waiterCount.Add(1)
 					// Continue to next iteration to re-read state
