@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker
@@ -194,11 +194,12 @@ func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
 	}
 }
 
-func (cb *CircuitBreaker) logger() internal.LoggerWithLevel {
+func (cb *CircuitBreaker) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if cb.config != nil && cb.config.Logger != nil {
-		return cb.config.Logger
+		logger = cb.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
 
 // CircuitBreakerStats provides statistics about a circuit breaker
@@ -351,9 +352,10 @@ func (cbm *CircuitBreakerManager) Reset() {
 	})
 }
 
-func (cbm *CircuitBreakerManager) logger() internal.LoggerWithLevel {
+func (cbm *CircuitBreakerManager) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if cbm.config != nil && cbm.config.Logger != nil {
-		return cbm.config.Logger
+		logger = cbm.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }

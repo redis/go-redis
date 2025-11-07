@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -150,7 +151,7 @@ type ClusterOptions struct {
 	MaintNotificationsConfig *maintnotifications.Config
 
 	// Logger is an optional logger for logging cluster-related messages.
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 func (opt *ClusterOptions) init() {
@@ -708,12 +709,12 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 	return c.GetOrCreate(addrs[n])
 }
 
-func (c *clusterNodes) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
-	} else {
-		return internal.LegacyLoggerWithLevel
+func (c *clusterNodes) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
+	return logger
 }
 
 //------------------------------------------------------------------------------
@@ -2139,12 +2140,12 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-func (c *ClusterClient) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
-	} else {
-		return internal.LegacyLoggerWithLevel
+func (c *ClusterClient) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
+	return logger
 }
 
 func appendIfNotExist[T comparable](vals []T, newVal T) []T {

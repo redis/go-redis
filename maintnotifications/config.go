@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // Mode represents the maintenance notifications mode
@@ -130,7 +130,7 @@ type Config struct {
 	MaxHandoffRetries int
 
 	// Logger is an optional custom logger for maintenance notifications.
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 func (c *Config) IsEnabled() bool {
@@ -369,11 +369,12 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 	}
 }
 
-func (c *Config) logger() internal.LoggerWithLevel {
+func (c *Config) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if c.Logger != nil {
-		return c.Logger
+		logger = c.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
 
 // DetectEndpointType automatically detects the appropriate endpoint type

@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -311,9 +311,10 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooks = append(hm.hooks, notificationHook)
 }
 
-func (hm *Manager) logger() internal.LoggerWithLevel {
+func (hm *Manager) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if hm.config != nil && hm.config.Logger != nil {
-		return hm.config.Logger
+		logger = hm.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }

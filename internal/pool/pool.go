@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var (
@@ -117,7 +118,7 @@ type Options struct {
 	DialerRetryTimeout time.Duration
 
 	// Optional logger for connection pool operations.
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 type lastDialErrorWrap struct {
@@ -965,10 +966,10 @@ func (p *ConnPool) isHealthyConn(cn *Conn, now time.Time) bool {
 	return true
 }
 
-func (p *ConnPool) logger() internal.LoggerWithLevel {
-	if p.cfg.Logger != nil {
-		return p.cfg.Logger
+func (p *ConnPool) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if p.cfg != nil && p.cfg.Logger != nil {
+		logger = p.cfg.Logger
 	}
-
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
