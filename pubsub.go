@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -144,12 +145,12 @@ func mapKeys(m map[string]struct{}) []string {
 // logger is a wrapper around the logger to log messages with context.
 //
 // it uses the client logger if set, otherwise it uses the global logger.
-func (c *PubSub) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
-	} else {
-		return internal.LegacyLoggerWithLevel
+func (c *PubSub) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
+	return logger
 }
 
 func (c *PubSub) _subscribe(
@@ -646,7 +647,7 @@ type channel struct {
 	pubSub *PubSub
 
 	// Optional logger for logging channel-related messages.
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 
 	msgCh chan *Message
 	allCh chan interface{}
@@ -809,10 +810,10 @@ func (c *channel) initAllChan() {
 	}()
 }
 
-func (c *channel) logger() internal.LoggerWithLevel {
+func (c *channel) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if c.Logger != nil {
-		return c.Logger
-	} else {
-		return internal.LegacyLoggerWithLevel
+		logger = c.Logger
 	}
+	return logger
 }

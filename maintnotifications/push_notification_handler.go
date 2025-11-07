@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -273,9 +274,10 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 	return nil
 }
 
-func (snh *NotificationHandler) logger() internal.LoggerWithLevel {
+func (snh *NotificationHandler) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if snh.manager != nil && snh.manager.config != nil && snh.manager.config.Logger != nil {
-		return snh.manager.config.Logger
+		logger = snh.manager.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }

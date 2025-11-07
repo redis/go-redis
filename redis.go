@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -230,7 +231,7 @@ type baseClient struct {
 	streamingCredentialsManager *streaming.Manager
 
 	// loggerWithLevel is used for logging
-	loggerWithLevel internal.LoggerWithLevel
+	loggerWithLevel *logging.CustomLogger
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -754,12 +755,12 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 
 // logger is a wrapper around the logger to log messages with context.
 // it uses the client logger if set, otherwise it uses the global logger.
-func (c *baseClient) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
-	} else {
-		return internal.LegacyLoggerWithLevel
+func (c *baseClient) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
+	return logger
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.

@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // OperationsManagerInterface defines the interface for completing handoff operations
@@ -181,9 +181,10 @@ func (ph *PoolHook) Shutdown(ctx context.Context) error {
 	return ph.workerManager.shutdownWorkers(ctx)
 }
 
-func (ph *PoolHook) logger() internal.LoggerWithLevel {
-	if ph.config.Logger != nil {
-		return ph.config.Logger
+func (ph *PoolHook) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if ph.config != nil && ph.config.Logger != nil {
+		logger = ph.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }

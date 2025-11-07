@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -155,7 +156,7 @@ type RingOptions struct {
 	IdentitySuffix  string
 	UnstableResp3   bool
 
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 func (opt *RingOptions) init() {
@@ -561,11 +562,12 @@ func (c *ringSharding) Close() error {
 	return firstErr
 }
 
-func (c *ringSharding) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
+func (c *ringSharding) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
 
 //------------------------------------------------------------------------------

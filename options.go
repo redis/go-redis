@@ -14,10 +14,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -271,7 +271,7 @@ type Options struct {
 
 	// Logger is the logger used by the client for logging.
 	// If none is provided, the global logger [internal.LegacyLoggerWithLevel] is used.
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 func (opt *Options) init() {
