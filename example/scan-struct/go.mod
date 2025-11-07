@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/example/scan-struct
 
-go 1.18
+go 1.23
 
 replace github.com/redis/go-redis/v9 => ../..
 
