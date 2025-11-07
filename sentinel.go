@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/internal/util"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -151,7 +151,7 @@ type FailoverOptions struct {
 	//MaintNotificationsConfig *maintnotifications.Config
 
 	// Optional logger for logging
-	Logger internal.LoggerWithLevel
+	Logger *logging.CustomLogger
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -1132,11 +1132,12 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 	}
 }
 
-func (c *sentinelFailover) logger() internal.LoggerWithLevel {
-	if c.opt.Logger != nil {
-		return c.opt.Logger
+func (c *sentinelFailover) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
 
 func contains(slice []string, str string) bool {

@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // handoffWorkerManager manages background workers and queue for connection handoffs
@@ -492,9 +493,10 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	}
 }
 
-func (hwm *handoffWorkerManager) logger() internal.LoggerWithLevel {
+func (hwm *handoffWorkerManager) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
 	if hwm.config != nil && hwm.config.Logger != nil {
-		return hwm.config.Logger
+		logger = hwm.config.Logger
 	}
-	return internal.LegacyLoggerWithLevel
+	return logger
 }
