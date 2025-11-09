@@ -317,12 +317,7 @@ func (cmd *IntPointerSliceCmd) Clone() Cmder {
 	var val []*int64
 	if cmd.val != nil {
 		val = make([]*int64, len(cmd.val))
-		for i, ptr := range cmd.val {
-			if ptr != nil {
-				newVal := *ptr
-				val[i] = &newVal
-			}
-		}
+		copy(val, cmd.val)
 	}
 	return &IntPointerSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
