@@ -926,6 +926,13 @@ func (cmd *DigestCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
+func (cmd *DigestCmd) Clone() Cmder {
+	return &DigestCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 func (cmd *DigestCmd) readReply(rd *proto.Reader) (err error) {
 	// Redis DIGEST command returns a hex string (e.g., "a1b2c3d4e5f67890")
 	// We parse it as a uint64 xxh3 hash value
