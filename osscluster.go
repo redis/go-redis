@@ -2098,6 +2098,16 @@ func (c *ClusterClient) cmdNode(
 		return nil, err
 	}
 
+	// For keyless commands (slot == -1), use ShardPicker to select a shard
+	// This respects the user's configured ShardPicker policy
+	if slot == -1 {
+		if len(state.Masters) == 0 {
+			return nil, errClusterNoNodes
+		}
+		idx := c.opt.ShardPicker.Next(len(state.Masters))
+		return state.Masters[idx], nil
+	}
+
 	if c.opt.ReadOnly {
 		cmdInfo := c.cmdInfo(ctx, cmdName)
 		if cmdInfo != nil && cmdInfo.ReadOnly {

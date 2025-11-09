@@ -54,25 +54,12 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 
 // executeDefault handles standard command routing based on keys
 func (c *ClusterClient) executeDefault(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy, node *clusterNode) error {
-	if c.hasKeys(cmd) {
-		// execute on key based shard
-		return node.Client.Process(ctx, cmd)
-	}
-	if policy != nil {
+	if policy != nil && !c.hasKeys(cmd) {
 		if c.readOnlyEnabled() && policy.IsReadOnly() {
 			return c.executeOnArbitraryNode(ctx, cmd)
 		}
 	}
 
-	return c.executeOnArbitraryShard(ctx, cmd)
-}
-
-// executeOnArbitraryShard routes command to an arbitrary shard
-func (c *ClusterClient) executeOnArbitraryShard(ctx context.Context, cmd Cmder) error {
-	node := c.pickArbitraryShard(ctx)
-	if node == nil {
-		return errClusterNoNodes
-	}
 	return node.Client.Process(ctx, cmd)
 }
 
@@ -490,17 +477,6 @@ func (c *ClusterClient) finishAggregation(cmd Cmder, aggregator routing.Response
 	}
 
 	return c.setCommandValue(cmd, finalValue)
-}
-
-// pickArbitraryShard selects a master shard using the configured ShardPicker
-func (c *ClusterClient) pickArbitraryShard(ctx context.Context) *clusterNode {
-	state, err := c.state.Get(ctx)
-	if err != nil || len(state.Masters) == 0 {
-		return nil
-	}
-
-	idx := c.opt.ShardPicker.Next(len(state.Masters))
-	return state.Masters[idx]
 }
 
 // pickArbitraryNode selects a master or slave shard using the configured ShardPicker
