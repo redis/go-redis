@@ -1923,7 +1923,7 @@ type FTHybridCmd struct {
 }
 
 func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
-	withCursor := false
+	var withCursor bool
 	if options != nil && options.WithCursor {
 		withCursor = true
 	}
