@@ -290,17 +290,9 @@ func (s *FastSemaphore) releaseToPool() {
 			continue
 		}
 
-		// We successfully claimed the waiter
-		// Check if it was cancelled after we claimed it (shouldn't happen, but check anyway)
-		if w.cancelled.Load() {
-			// Waiter was cancelled, but we claimed it first
-			// We need to release the token
-			close(w.ready) // Unblock the waiter
-			// Continue to try next waiter
-			continue
-		}
-
 		// We successfully claimed the waiter, transfer the token
+		// Even if it was cancelled, we must give it the token because we claimed it
+		// The waiter will call releaseToPool() if it was cancelled
 		close(w.ready)
 		return
 	}
@@ -330,17 +322,9 @@ func (s *FastSemaphore) Release() {
 			continue
 		}
 
-		// We successfully claimed the waiter
-		// Check if it was cancelled after we claimed it (shouldn't happen, but check anyway)
-		if w.cancelled.Load() {
-			// Waiter was cancelled, but we claimed it first
-			// We need to release the token
-			close(w.ready) // Unblock the waiter
-			// Continue to try next waiter
-			continue
-		}
-
 		// We successfully claimed the waiter, transfer the token
+		// Even if it was cancelled, we must give it the token because we claimed it
+		// The waiter will call releaseToPool() if it was cancelled
 		close(w.ready)
 		return
 	}
