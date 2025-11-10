@@ -3650,7 +3650,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
 			// Test with TFIDF scorer
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{
@@ -3687,7 +3687,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
 			// This query won't have results from search, so we can validate vector filter
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{none}"}, // This won't match anything
@@ -3729,7 +3729,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{none}"}, // This won't match anything
@@ -3754,7 +3754,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{none}"}, // This won't match anything
@@ -3781,7 +3781,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},
@@ -3811,7 +3811,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},
@@ -3839,7 +3839,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},
@@ -3886,7 +3886,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				"$discount": 0.1,
 			}
 
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},
@@ -3922,7 +3922,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},
@@ -3946,7 +3946,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 		It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
 			SkipBeforeRedisVersion(8.4, "no support")
-			options := &redis.FTHybridOptions{
+			options := &redis.FTHybridArgs{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
 					{Query: "@color:{red}"},

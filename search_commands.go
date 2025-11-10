@@ -30,7 +30,7 @@ type SearchCmdable interface {
 	FTExplain(ctx context.Context, index string, query string) *StringCmd
 	FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd
 	FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd
-	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd
+	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridArgs) *FTHybridCmd
 	FTInfo(ctx context.Context, index string) *FTInfoCmd
 	FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd
 	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd
@@ -405,8 +405,8 @@ type FTHybridWithCursor struct {
 	MaxIdle int // Maximum idle time in milliseconds before cursor is automatically deleted
 }
 
-// FTHybridOptions hold options that can be passed to the FT.HYBRID command
-type FTHybridOptions struct {
+// FTHybridArgs hold options that can be passed to the FT.HYBRID command
+type FTHybridArgs struct {
 	CountExpressions  int                        // Number of search/vector expressions
 	SearchExpressions []FTHybridSearchExpression // Multiple search expressions
 	VectorExpressions []FTHybridVectorExpression // Multiple vector expressions
@@ -1918,12 +1918,12 @@ type FTHybridCmd struct {
 	baseCmd
 	val        FTHybridResult
 	cursorVal  *FTHybridCursorResult
-	options    *FTHybridOptions
+	options    *FTHybridArgs
 	withCursor bool
 }
 
-func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
-	withCursor := false
+func newFTHybridCmd(ctx context.Context, options *FTHybridArgs, args ...interface{}) *FTHybridCmd {
+	var withCursor bool
 	if options != nil && options.WithCursor {
 		withCursor = true
 	}
@@ -2474,7 +2474,7 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 // 'vectorField' is the name of the vector field, and 'vectorData' is the vector to search with.
 // FTHybrid is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd {
-	options := &FTHybridOptions{
+	options := &FTHybridArgs{
 		CountExpressions: 2,
 		SearchExpressions: []FTHybridSearchExpression{
 			{Query: searchExpr},
@@ -2488,7 +2488,7 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
-func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
+func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridArgs) *FTHybridCmd {
 	args := []interface{}{"FT.HYBRID", index}
 
 	if options != nil {
