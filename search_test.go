@@ -3634,7 +3634,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
 
 			cmd := client.FTHybrid(ctx, "hybrid_idx", searchQuery, "embedding", &redis.VectorFP32{Val: vectorData})
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3670,7 +3670,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3703,7 +3703,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3745,7 +3745,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(Equal(3)) // Should return exactly K=3 results
@@ -3772,7 +3772,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3802,7 +3802,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3866,7 +3866,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))
@@ -3938,7 +3938,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(res.Results)).To(BeNumerically("<=", 2))
@@ -3973,7 +3973,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			}
 
 			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
-			fmt.Println(cmd.Args()...)
+
 			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.TotalResults).To(BeNumerically(">", 0))

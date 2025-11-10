@@ -1982,8 +1982,6 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 		}
 	}
 
-	fmt.Println("resultMap", resultMap)
-
 	// Handle cursor result
 	if withCursor {
 		searchCursorID, ok1 := resultMap["SEARCH"].(int64)
@@ -2084,7 +2082,7 @@ func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
-	fmt.Println("data", data)
+
 	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
 	if err != nil {
 		return err
