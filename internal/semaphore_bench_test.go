@@ -8,19 +8,26 @@ import (
 )
 
 // channelSemaphore is a simple semaphore using a buffered channel
+// The channel is pre-filled with tokens. Acquire = receive, Release = send.
+// This allows closing the channel to unblock all waiters.
 type channelSemaphore struct {
 	ch chan struct{}
 }
 
 func newChannelSemaphore(capacity int) *channelSemaphore {
+	ch := make(chan struct{}, capacity)
+	// Pre-fill with tokens
+	for i := 0; i < capacity; i++ {
+		ch <- struct{}{}
+	}
 	return &channelSemaphore{
-		ch: make(chan struct{}, capacity),
+		ch: ch,
 	}
 }
 
 func (s *channelSemaphore) TryAcquire() bool {
 	select {
-	case s.ch <- struct{}{}:
+	case <-s.ch:
 		return true
 	default:
 		return false
@@ -28,13 +35,28 @@ func (s *channelSemaphore) TryAcquire() bool {
 }
 
 func (s *channelSemaphore) Acquire(ctx context.Context, timeout time.Duration) error {
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// Try fast path first (no timer needed)
+	select {
+	case <-s.ch:
+		return nil
+	default:
+	}
+
+	// Slow path: need to wait with timeout
+	timer := semTimers.Get().(*time.Timer)
+	defer semTimers.Put(timer)
+	timer.Reset(timeout)
 
 	select {
-	case s.ch <- struct{}{}:
+	case <-s.ch:
+		if !timer.Stop() {
+			<-timer.C
+		}
 		return nil
 	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
 		return ctx.Err()
 	case <-timer.C:
 		return context.DeadlineExceeded
@@ -42,61 +64,15 @@ func (s *channelSemaphore) Acquire(ctx context.Context, timeout time.Duration) e
 }
 
 func (s *channelSemaphore) AcquireBlocking() {
-	s.ch <- struct{}{}
-}
-
-func (s *channelSemaphore) Release() {
 	<-s.ch
 }
 
-// Benchmarks for FastSemaphore
-
-func BenchmarkFastSemaphore_TryAcquire(b *testing.B) {
-	sem := NewFastSemaphore(100)
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			if sem.TryAcquire() {
-				sem.Release()
-			}
-		}
-	})
+func (s *channelSemaphore) Release() {
+	s.ch <- struct{}{}
 }
 
-func BenchmarkFastSemaphore_AcquireRelease(b *testing.B) {
-	sem := NewFastSemaphore(100)
-	ctx := context.Background()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
-			sem.Release()
-		}
-	})
-}
-
-func BenchmarkFastSemaphore_Contention(b *testing.B) {
-	sem := NewFastSemaphore(10) // Small capacity to create contention
-	ctx := context.Background()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
-			sem.Release()
-		}
-	})
-}
-
-func BenchmarkFastSemaphore_HighContention(b *testing.B) {
-	sem := NewFastSemaphore(1) // Very high contention
-	ctx := context.Background()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
-			sem.Release()
-		}
-	})
+func (s *channelSemaphore) Close() {
+	close(s.ch)
 }
 
 // Benchmarks for channelSemaphore
@@ -151,20 +127,6 @@ func BenchmarkChannelSemaphore_HighContention(b *testing.B) {
 
 // Benchmark with realistic workload (some work between acquire/release)
 
-func BenchmarkFastSemaphore_WithWork(b *testing.B) {
-	sem := NewFastSemaphore(10)
-	ctx := context.Background()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
-			// Simulate some work
-			_ = make([]byte, 64)
-			sem.Release()
-		}
-	})
-}
-
 func BenchmarkChannelSemaphore_WithWork(b *testing.B) {
 	sem := newChannelSemaphore(10)
 	ctx := context.Background()
@@ -180,37 +142,6 @@ func BenchmarkChannelSemaphore_WithWork(b *testing.B) {
 }
 
 // Benchmark mixed TryAcquire and Acquire
-
-func BenchmarkFastSemaphore_Mixed(b *testing.B) {
-	sem := NewFastSemaphore(10)
-	ctx := context.Background()
-	var wg sync.WaitGroup
-	
-	b.ResetTimer()
-	
-	// Half goroutines use TryAcquire
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < b.N/2; i++ {
-			if sem.TryAcquire() {
-				sem.Release()
-			}
-		}
-	}()
-	
-	// Half goroutines use Acquire
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < b.N/2; i++ {
-			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
-			sem.Release()
-		}
-	}()
-	
-	wg.Wait()
-}
 
 func BenchmarkChannelSemaphore_Mixed(b *testing.B) {
 	sem := newChannelSemaphore(10)
@@ -240,6 +171,101 @@ func BenchmarkChannelSemaphore_Mixed(b *testing.B) {
 		}
 	}()
 	
+	wg.Wait()
+}
+
+// Benchmarks for FIFOSemaphore
+
+func BenchmarkFIFOSemaphore_TryAcquire(b *testing.B) {
+	sem := NewFIFOSemaphore(100)
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if sem.TryAcquire() {
+				sem.Release()
+			}
+		}
+	})
+}
+
+func BenchmarkFIFOSemaphore_AcquireRelease(b *testing.B) {
+	sem := NewFIFOSemaphore(100)
+	ctx := context.Background()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
+			sem.Release()
+		}
+	})
+}
+
+func BenchmarkFIFOSemaphore_Contention(b *testing.B) {
+	sem := NewFIFOSemaphore(10) // Small capacity to create contention
+	ctx := context.Background()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
+			sem.Release()
+		}
+	})
+}
+
+func BenchmarkFIFOSemaphore_HighContention(b *testing.B) {
+	sem := NewFIFOSemaphore(1) // Very high contention
+	ctx := context.Background()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
+			sem.Release()
+		}
+	})
+}
+
+func BenchmarkFIFOSemaphore_WithWork(b *testing.B) {
+	sem := NewFIFOSemaphore(10)
+	ctx := context.Background()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
+			// Simulate some work
+			_ = make([]byte, 64)
+			sem.Release()
+		}
+	})
+}
+
+func BenchmarkFIFOSemaphore_Mixed(b *testing.B) {
+	sem := NewFIFOSemaphore(10)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	b.ResetTimer()
+
+	// Half goroutines use TryAcquire
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < b.N/2; i++ {
+			if sem.TryAcquire() {
+				sem.Release()
+			}
+		}
+	}()
+
+	// Half goroutines use Acquire
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < b.N/2; i++ {
+			sem.Acquire(ctx, time.Second, context.DeadlineExceeded)
+			sem.Release()
+		}
+	}()
+
 	wg.Wait()
 }
 

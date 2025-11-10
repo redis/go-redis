@@ -135,8 +135,8 @@ type ConnPool struct {
 	queue           chan struct{}
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
-	// Fast atomic semaphore for connection limiting
-	// Replaces the old channel-based queue for better performance
+	// Fast semaphore for connection limiting with eventual fairness
+	// Uses fast path optimization to avoid timer allocation when tokens are available
 	semaphore *internal.FastSemaphore
 
 	connsMu   sync.Mutex
