@@ -2336,6 +2336,7 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 // FTHybrid - Executes a hybrid search combining full-text search and vector similarity
 // The 'index' parameter specifies the index to search, 'searchExpr' is the search query,
 // 'vectorField' is the name of the vector field, and 'vectorData' is the vector to search with.
+// FTHybrid is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd {
 	options := &FTHybridOptions{
 		CountExpressions: 2,
@@ -2350,18 +2351,11 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 }
 
 // FTHybridWithArgs - Executes a hybrid search with advanced options
+// FTHybridWithArgs is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
 	args := []interface{}{"FT.HYBRID", index}
 
 	if options != nil {
-		// Add count expressions if specified
-		if options.CountExpressions > 0 {
-			args = append(args, options.CountExpressions)
-		} else {
-			// Default to 2 expressions (1 search + 1 vector)
-			args = append(args, 2)
-		}
-
 		// Add search expressions
 		for _, searchExpr := range options.SearchExpressions {
 			args = append(args, "SEARCH", searchExpr.Query)
