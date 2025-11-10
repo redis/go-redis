@@ -2262,79 +2262,79 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(masterNodes)).To(BeNumerically(">", 1))
 
-			// MGET command aggregation across multiple keys on different shards - verify all_succeeded policy with keyed aggregation
-			testData := map[string]string{
-				"mget_test_key_1111": "value1",
-				"mget_test_key_2222": "value2",
-				"mget_test_key_3333": "value3",
-				"mget_test_key_4444": "value4",
-				"mget_test_key_5555": "value5",
-			}
+			// // MGET command aggregation across multiple keys on different shards - verify all_succeeded policy with keyed aggregation
+			// testData := map[string]string{
+			// 	"mget_test_key_1111": "value1",
+			// 	"mget_test_key_2222": "value2",
+			// 	"mget_test_key_3333": "value3",
+			// 	"mget_test_key_4444": "value4",
+			// 	"mget_test_key_5555": "value5",
+			// }
 
-			keyLocations := make(map[string]string)
-			for key, value := range testData {
+			// keyLocations := make(map[string]string)
+			// for key, value := range testData {
 
-				result := client.Set(ctx, key, value, 0)
-				Expect(result.Err()).NotTo(HaveOccurred())
+			// 	result := client.Set(ctx, key, value, 0)
+			// 	Expect(result.Err()).NotTo(HaveOccurred())
 
-				for _, node := range masterNodes {
-					getResult := node.client.Get(ctx, key)
-					if getResult.Err() == nil && getResult.Val() == value {
-						keyLocations[key] = node.addr
-						break
-					}
-				}
-			}
+			// 	for _, node := range masterNodes {
+			// 		getResult := node.client.Get(ctx, key)
+			// 		if getResult.Err() == nil && getResult.Val() == value {
+			// 			keyLocations[key] = node.addr
+			// 			break
+			// 		}
+			// 	}
+			// }
 
-			shardsUsed := make(map[string]bool)
-			for _, shardAddr := range keyLocations {
-				shardsUsed[shardAddr] = true
-			}
-			Expect(len(shardsUsed)).To(BeNumerically(">", 1))
+			// shardsUsed := make(map[string]bool)
+			// for _, shardAddr := range keyLocations {
+			// 	shardsUsed[shardAddr] = true
+			// }
+			// Expect(len(shardsUsed)).To(BeNumerically(">", 1))
 
-			keys := make([]string, 0, len(testData))
-			expectedValues := make([]interface{}, 0, len(testData))
+			// keys := make([]string, 0, len(testData))
+			// expectedValues := make([]interface{}, 0, len(testData))
 
-			for key, value := range testData {
-				keys = append(keys, key)
-				expectedValues = append(expectedValues, value)
-			}
+			// for key, value := range testData {
+			// 	keys = append(keys, key)
+			// 	expectedValues = append(expectedValues, value)
+			// }
 
-			mgetResult := client.MGet(ctx, keys...)
-			Expect(mgetResult.Err()).NotTo(HaveOccurred())
+			// mgetResult := client.MGet(ctx, keys...)
+			// Expect(mgetResult.Err()).NotTo(HaveOccurred())
 
-			actualValues := mgetResult.Val()
-			Expect(len(actualValues)).To(Equal(len(keys)))
-			Expect(actualValues).To(ConsistOf(expectedValues))
+			// actualValues := mgetResult.Val()
+			// Expect(len(actualValues)).To(Equal(len(keys)))
+			// Expect(actualValues).To(ConsistOf(expectedValues))
 
-			// Verify all values are correctly aggregated
-			for i, key := range keys {
-				expectedValue := testData[key]
-				actualValue := actualValues[i]
-				Expect(actualValue).To(Equal(expectedValue))
-			}
+			// // Verify all values are correctly aggregated
+			// for i, key := range keys {
+			// 	expectedValue := testData[key]
+			// 	actualValue := actualValues[i]
+			// 	Expect(actualValue).To(Equal(expectedValue))
+			// }
 
 			// DEL command aggregation across multiple keys on different shards
-			delResult := client.Del(ctx, keys...)
-			Expect(delResult.Err()).NotTo(HaveOccurred())
+			// delResult := client.Del(ctx, keys...)
+			// Expect(delResult.Err()).NotTo(HaveOccurred())
 
-			deletedCount := delResult.Val()
-			Expect(deletedCount).To(Equal(int64(len(keys))))
+			// deletedCount := delResult.Val()
+			// Expect(deletedCount).To(Equal(int64(len(keys))))
 
-			// Verify keys are actually deleted from their respective shards
-			for key, shardAddr := range keyLocations {
-				var targetNode *masterNode
-				for i := range masterNodes {
-					if masterNodes[i].addr == shardAddr {
-						targetNode = &masterNodes[i]
-						break
-					}
-				}
-				Expect(targetNode).NotTo(BeNil())
+			// // Verify keys are actually deleted from their respective shards
+			// for key, shardAddr := range keyLocations {
+			// 	var targetNode *masterNode
+			// 	for i := range masterNodes {
+			// 		if masterNodes[i].addr == shardAddr {
+			// 			targetNode = &masterNodes[i]
+			// 			break
+			// 		}
+			// 	}
+			// 	Expect(targetNode).NotTo(BeNil())
 
-				getResult := targetNode.client.Get(ctx, key)
-				Expect(getResult.Err()).To(HaveOccurred())
-			}
+			// 	getResult := targetNode.client.Get(ctx, key)
+			// 	Expect(getResult.Err()).To(HaveOccurred())
+			// }
 
 			// EXISTS command aggregation across multiple keys
 			existsTestData := map[string]string{

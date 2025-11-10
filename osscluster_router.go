@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
@@ -352,34 +351,10 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 			firstErr = result.err
 		}
 		if result.cmd != nil && result.err == nil {
-			// For MGET, extract individual values from the array result
-			if strings.ToLower(cmd.Name()) == "mget" {
-				if sliceCmd, ok := result.cmd.(*SliceCmd); ok {
-					values := sliceCmd.Val()
-					err := sliceCmd.Err()
-					if len(values) == len(result.keys) {
-						for i, key := range result.keys {
-							keyedResults[key] = routing.AggregatorResErr{Result: values[i], Err: err}
-						}
-					} else {
-						// Fallback: map all keys to the entire result
-						for _, key := range result.keys {
-							keyedResults[key] = routing.AggregatorResErr{Result: values, Err: err}
-						}
-					}
-				} else {
-					// Fallback for non-SliceCmd results
-					value, err := ExtractCommandValue(result.cmd)
-					for _, key := range result.keys {
-						keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
-					}
-				}
-			} else {
-				// For other commands, map each key to the entire result
-				value, err := ExtractCommandValue(result.cmd)
-				for _, key := range result.keys {
-					keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
-				}
+			// For other commands, map each key to the entire result
+			value, err := ExtractCommandValue(result.cmd)
+			for _, key := range result.keys {
+				keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
 			}
 		}
 	}
@@ -450,12 +425,6 @@ func (c *ClusterClient) aggregateResponses(cmd Cmder, cmds []Cmder, policy *rout
 
 // createAggregator creates the appropriate response aggregator
 func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmder, isKeyed bool) routing.ResponseAggregator {
-	cmdName := strings.ToLower(cmd.Name())
-	// For MGET without policy, use keyed aggregator
-	if cmdName == "mget" {
-		return routing.NewDefaultAggregator(true)
-	}
-
 	if policy != nil {
 		return routing.NewResponseAggregator(policy.Response, cmd.Name())
 	}
