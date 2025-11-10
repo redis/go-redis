@@ -218,17 +218,20 @@ func (sm *ConnStateMachine) AwaitAndTransition(
 	targetState ConnState,
 ) (ConnState, error) {
 	// Fast path: try immediate transition with CAS to prevent race conditions
-	for _, fromState := range validFromStates {
-		// Check if we're already in target state
-		if fromState == targetState && sm.GetState() == targetState {
-			return targetState, nil
-		}
+	// BUT: only if there are no waiters in the queue (to maintain FIFO ordering)
+	if sm.waiterCount.Load() == 0 {
+		for _, fromState := range validFromStates {
+			// Check if we're already in target state
+			if fromState == targetState && sm.GetState() == targetState {
+				return targetState, nil
+			}
 
-		// Try to atomically swap from fromState to targetState
-		if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
-			// Success! We transitioned atomically
-			sm.notifyWaiters()
-			return targetState, nil
+			// Try to atomically swap from fromState to targetState
+			if sm.state.CompareAndSwap(uint32(fromState), uint32(targetState)) {
+				// Success! We transitioned atomically
+				sm.notifyWaiters()
+				return targetState, nil
+			}
 		}
 	}
 

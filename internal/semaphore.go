@@ -14,12 +14,6 @@ var semTimers = sync.Pool{
 	},
 }
 
-// waiter represents a goroutine waiting for a token.
-type waiter struct {
-	ready chan struct{}
-	next  *waiter
-}
-
 // FastSemaphore is a channel-based semaphore optimized for performance.
 // It uses a fast path that avoids timer allocation when tokens are available.
 // The channel is pre-filled with tokens: Acquire = receive, Release = send.
