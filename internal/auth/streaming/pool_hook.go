@@ -36,7 +36,7 @@ type ReAuthPoolHook struct {
 
 	// workers is a semaphore limiting concurrent re-auth operations
 	// Initialized with poolSize tokens to prevent pool exhaustion
-	// Uses FastSemaphore for consistency and better performance
+	// Uses FastSemaphore for better performance with eventual fairness
 	workers *internal.FastSemaphore
 
 	// reAuthTimeout is the maximum time to wait for acquiring a connection for re-auth
