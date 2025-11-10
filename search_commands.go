@@ -1901,21 +1901,39 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 }
 
 // FTHybridResult represents the result of a hybrid search operation
-type FTHybridResult = FTSearchResult
+type FTHybridResult struct {
+	TotalResults  int
+	Results       []map[string]interface{}
+	Warnings      []string
+	ExecutionTime float64
+}
+
+// FTHybridCursorResult represents cursor result for hybrid search
+type FTHybridCursorResult struct {
+	SearchCursorID int
+	VsimCursorID   int
+}
 
 type FTHybridCmd struct {
 	baseCmd
-	val     FTHybridResult
-	options *FTHybridOptions
+	val        FTHybridResult
+	cursorVal  *FTHybridCursorResult
+	options    *FTHybridOptions
+	withCursor bool
 }
 
 func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
+	withCursor := false
+	if options != nil && options.WithCursor {
+		withCursor = true
+	}
 	return &FTHybridCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
-		options: options,
+		options:    options,
+		withCursor: withCursor,
 	}
 }
 
@@ -1931,8 +1949,16 @@ func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
 	return cmd.val, cmd.err
 }
 
+func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	return cmd.cursorVal, cmd.err
+}
+
 func (cmd *FTHybridCmd) Val() FTHybridResult {
 	return cmd.val
+}
+
+func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	return cmd.cursorVal
 }
 
 func (cmd *FTHybridCmd) RawVal() interface{} {
@@ -1943,20 +1969,132 @@ func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
 	return cmd.rawVal, cmd.err
 }
 
+func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybridCursorResult, error) {
+	// Convert to map
+	resultMap := make(map[string]interface{})
+	for i := 0; i < len(data); i += 2 {
+		if i+1 < len(data) {
+			key, ok := data[i].(string)
+			if !ok {
+				return FTHybridResult{}, nil, fmt.Errorf("invalid key type at index %d", i)
+			}
+			resultMap[key] = data[i+1]
+		}
+	}
+
+	fmt.Println("resultMap", resultMap)
+
+	// Handle cursor result
+	if withCursor {
+		searchCursorID, ok1 := resultMap["SEARCH"].(int64)
+		vsimCursorID, ok2 := resultMap["VSIM"].(int64)
+		if !ok1 || !ok2 {
+			return FTHybridResult{}, nil, fmt.Errorf("invalid cursor result format")
+		}
+		return FTHybridResult{}, &FTHybridCursorResult{
+			SearchCursorID: int(searchCursorID),
+			VsimCursorID:   int(vsimCursorID),
+		}, nil
+	}
+
+	// Parse regular result
+	totalResults, ok := resultMap["total_results"].(int64)
+	if !ok {
+		return FTHybridResult{}, nil, fmt.Errorf("invalid total_results format")
+	}
+
+	resultsData, ok := resultMap["results"].([]interface{})
+	if !ok {
+		return FTHybridResult{}, nil, fmt.Errorf("invalid results format")
+	}
+
+	// Parse each result item
+	// In RESP3, the results are already parsed as maps
+	results := make([]map[string]interface{}, 0, len(resultsData))
+	for _, item := range resultsData {
+		// Try as map first (RESP3)
+		if itemMap, ok := item.(map[interface{}]interface{}); ok {
+			// Convert map[interface{}]interface{} to map[string]interface{}
+			convertedMap := make(map[string]interface{})
+			for k, v := range itemMap {
+				if keyStr, ok := k.(string); ok {
+					convertedMap[keyStr] = v
+				}
+			}
+			results = append(results, convertedMap)
+			continue
+		}
+
+		// Fallback to array format (RESP2)
+		itemData, ok := item.([]interface{})
+		if !ok {
+			return FTHybridResult{}, nil, fmt.Errorf("invalid result item format")
+		}
+
+		itemMap := make(map[string]interface{})
+		for i := 0; i < len(itemData); i += 2 {
+			if i+1 < len(itemData) {
+				key, ok := itemData[i].(string)
+				if !ok {
+					return FTHybridResult{}, nil, fmt.Errorf("invalid item key format")
+				}
+				itemMap[key] = itemData[i+1]
+			}
+		}
+		results = append(results, itemMap)
+	}
+
+	// Parse warnings (optional field)
+	warnings := make([]string, 0)
+	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+		for _, w := range warningsData {
+			if ws, ok := w.(string); ok {
+				warnings = append(warnings, ws)
+			}
+		}
+	}
+
+	// Parse execution time (optional field)
+	var executionTime float64
+	if execTimeVal, exists := resultMap["execution_time"]; exists {
+		switch v := execTimeVal.(type) {
+		case string:
+			var err error
+			executionTime, err = strconv.ParseFloat(v, 64)
+			if err != nil {
+				return FTHybridResult{}, nil, fmt.Errorf("invalid execution_time format: %v", err)
+			}
+		case float64:
+			executionTime = v
+		case int64:
+			executionTime = float64(v)
+		}
+	}
+
+	return FTHybridResult{
+		TotalResults:  int(totalResults),
+		Results:       results,
+		Warnings:      warnings,
+		ExecutionTime: executionTime,
+	}, nil, nil
+}
+
 func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 	data, err := rd.ReadSlice()
 	if err != nil {
 		return err
 	}
-	// Parse hybrid search results similarly to FT.SEARCH
-	// We can reuse the FTSearch parser since the result format should be similar
-	searchResult, err := parseFTSearch(data, false, true, false, false)
+	fmt.Println("data", data)
+	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
 	if err != nil {
 		return err
 	}
 
-	// FTSearchResult and FTHybridResult are aliases
-	cmd.val = searchResult
+	if cmd.withCursor {
+		cmd.cursorVal = cursorResult
+	} else {
+		cmd.val = result
+	}
 	return nil
 }
 
@@ -2375,11 +2513,23 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		// Add vector expressions
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
-			args = append(args, vectorExpr.VectorData.Value()...)
+
+			// For FT.HYBRID, we need to send just the raw vector bytes, not the Value() format
+			// Value() returns [format, data] but FT.HYBRID expects just the blob
+			vectorValue := vectorExpr.VectorData.Value()
+			if len(vectorValue) >= 2 {
+				// vectorValue is [format, data, ...] - we only want the data part
+				args = append(args, vectorValue[1])
+			} else {
+				// Fallback for unexpected format
+				args = append(args, vectorValue...)
+			}
 
 			if vectorExpr.Method != "" {
 				args = append(args, vectorExpr.Method)
 				if len(vectorExpr.MethodParams) > 0 {
+					// MethodParams should be key-value pairs, count them
+					args = append(args, len(vectorExpr.MethodParams))
 					args = append(args, vectorExpr.MethodParams...)
 				}
 			}
@@ -2395,31 +2545,35 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 
 		// Add combine/fusion options
 		if options.Combine != nil {
-			args = append(args, "COMBINE", string(options.Combine.Method))
-
-			if options.Combine.Count > 0 {
-				args = append(args, options.Combine.Count)
-			}
+			// Build combine parameters
+			combineParams := []interface{}{}
 
 			switch options.Combine.Method {
 			case FTHybridCombineRRF:
 				if options.Combine.Window > 0 {
-					args = append(args, "WINDOW", options.Combine.Window)
+					combineParams = append(combineParams, "WINDOW", options.Combine.Window)
 				}
 				if options.Combine.Constant > 0 {
-					args = append(args, "CONSTANT", options.Combine.Constant)
+					combineParams = append(combineParams, "CONSTANT", options.Combine.Constant)
 				}
 			case FTHybridCombineLinear:
 				if options.Combine.Alpha > 0 {
-					args = append(args, "ALPHA", options.Combine.Alpha)
+					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha)
 				}
 				if options.Combine.Beta > 0 {
-					args = append(args, "BETA", options.Combine.Beta)
+					combineParams = append(combineParams, "BETA", options.Combine.Beta)
 				}
 			}
 
 			if options.Combine.YieldScoreAs != "" {
-				args = append(args, "YIELD_SCORE_AS", options.Combine.YieldScoreAs)
+				combineParams = append(combineParams, "YIELD_SCORE_AS", options.Combine.YieldScoreAs)
+			}
+
+			// Add COMBINE with method and parameter count
+			args = append(args, "COMBINE", string(options.Combine.Method))
+			if len(combineParams) > 0 {
+				args = append(args, len(combineParams))
+				args = append(args, combineParams...)
 			}
 		}
 
@@ -2427,7 +2581,9 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		if len(options.Load) > 0 {
 			args = append(args, "LOAD", len(options.Load))
 			for _, field := range options.Load {
-				args = append(args, field)
+				// Redis requires field names in LOAD to be prefixed with '@' (or '$' for JSON paths).
+				// Tests pass plain field names (e.g. "description"), so add the '@' prefix here.
+				args = append(args, "@"+field)
 			}
 		}
 

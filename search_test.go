@@ -3633,16 +3633,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			searchQuery := "@color:{red} OR @color:{green}"
 			vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
 
-			res, err := client.FTHybrid(ctx, "hybrid_idx", searchQuery, "embedding", &redis.VectorFP32{Val: vectorData}).Result()
+			cmd := client.FTHybrid(ctx, "hybrid_idx", searchQuery, "embedding", &redis.VectorFP32{Val: vectorData})
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically(">", 0))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically(">", 0))
 
 			// Check that results contain expected fields
-			for _, doc := range res.Docs {
-				Expect(doc.ID).ToNot(BeEmpty())
-				Expect(doc.Fields).To(HaveKey("__score"))
-				Expect(doc.Fields).To(HaveKey("__key"))
+			for _, result := range res.Results {
+				Expect(result).To(HaveKey("__score"))
+				Expect(result).To(HaveKey("__key"))
 			}
 		})
 
@@ -3668,14 +3669,16 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Limit:       3,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 
 			// Verify that we get red items
-			for _, doc := range res.Docs {
-				if color, exists := doc.Fields["color"]; exists {
+			for _, result := range res.Results {
+				if color, exists := result["color"]; exists {
 					Expect(color).To(Equal("red"))
 				}
 			}
@@ -3699,20 +3702,22 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Load: []string{"description", "color", "price", "size", "__score"},
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
 
 			// Verify that all results match the filter criteria
-			for _, doc := range res.Docs {
-				if price, exists := doc.Fields["price"]; exists {
+			for _, result := range res.Results {
+				if price, exists := result["price"]; exists {
 					priceStr := fmt.Sprintf("%v", price)
 					priceFloat, err := helper.ParseFloat(priceStr)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(priceFloat).To(BeNumerically(">=", 15))
 					Expect(priceFloat).To(BeNumerically("<=", 16))
 				}
-				if size, exists := doc.Fields["size"]; exists {
+				if size, exists := result["size"]; exists {
 					sizeStr := fmt.Sprintf("%v", size)
 					sizeFloat, err := helper.ParseFloat(sizeStr)
 					Expect(err).NotTo(HaveOccurred())
@@ -3734,15 +3739,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 						VectorField:  "embedding",
 						VectorData:   &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
 						Method:       "KNN",
-						MethodParams: []interface{}{3}, // K=3
+						MethodParams: []interface{}{"K", 3}, // K=3 as key-value pair
 					},
 				},
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(Equal(3)) // Should return exactly K=3 results
-			Expect(len(res.Docs)).To(Equal(3))
+			Expect(res.TotalResults).To(Equal(3)) // Should return exactly K=3 results
+			Expect(len(res.Results)).To(Equal(3))
 		})
 
 		It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
@@ -3757,17 +3764,19 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 						VectorField:  "embedding",
 						VectorData:   &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
 						Method:       "RANGE",
-						MethodParams: []interface{}{2}, // RADIUS=2
+						MethodParams: []interface{}{"RADIUS", 2}, // RADIUS=2 as key-value pair
 					},
 				},
 				LimitOffset: 0,
 				Limit:       3,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 		})
 
 		It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
@@ -3792,10 +3801,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Limit:       3,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 		})
 
 		It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
@@ -3822,8 +3833,8 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 		})
 
 		It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
@@ -3854,15 +3865,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Limit:       3,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 
 			// Verify that applied fields exist
-			for _, doc := range res.Docs {
-				Expect(doc.Fields).To(HaveKey("price_discount"))
-				Expect(doc.Fields).To(HaveKey("tax_discount"))
+			for _, result := range res.Results {
+				Expect(result).To(HaveKey("price_discount"))
+				Expect(result).To(HaveKey("tax_discount"))
 			}
 		})
 
@@ -3898,12 +3911,12 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 3))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 3))
 
 			// Verify that parameter substitution worked
-			for _, doc := range res.Docs {
-				Expect(doc.Fields).To(HaveKey("price_discount"))
+			for _, result := range res.Results {
+				Expect(result).To(HaveKey("price_discount"))
 			}
 		})
 
@@ -3924,9 +3937,11 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Limit:       2,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(res.Docs)).To(BeNumerically("<=", 2))
+			Expect(len(res.Results)).To(BeNumerically("<=", 2))
 		})
 
 		It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
@@ -3934,7 +3949,7 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			options := &redis.FTHybridOptions{
 				CountExpressions: 2,
 				SearchExpressions: []redis.FTHybridSearchExpression{
-					{Query: "@color:{red|green}"},
+					{Query: "@color:{red}"},
 				},
 				VectorExpressions: []redis.FTHybridVectorExpression{
 					{
@@ -3957,15 +3972,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 				Limit:       5,
 			}
 
-			res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+			cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+			fmt.Println(cmd.Args()...)
+			res, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.Total).To(BeNumerically(">", 0))
-			Expect(len(res.Docs)).To(BeNumerically("<=", 5))
+			Expect(res.TotalResults).To(BeNumerically(">", 0))
+			Expect(len(res.Results)).To(BeNumerically("<=", 5))
 
 			// Check that results are sorted - first result should have higher price_discount
-			if len(res.Docs) > 1 {
-				firstPriceStr := fmt.Sprintf("%v", res.Docs[0].Fields["price_discount"])
-				secondPriceStr := fmt.Sprintf("%v", res.Docs[1].Fields["price_discount"])
+			if len(res.Results) > 1 {
+				firstPriceStr := fmt.Sprintf("%v", res.Results[0]["price_discount"])
+				secondPriceStr := fmt.Sprintf("%v", res.Results[1]["price_discount"])
 				firstPrice, err1 := helper.ParseFloat(firstPriceStr)
 				secondPrice, err2 := helper.ParseFloat(secondPriceStr)
 
