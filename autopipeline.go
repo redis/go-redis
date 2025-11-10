@@ -64,8 +64,9 @@ type cmdableClient interface {
 }
 
 // queuedCmd wraps a command with a done channel for completion notification
+// It embeds Cmder so it can be used directly as a Cmder
 type queuedCmd struct {
-	cmd  Cmder
+	Cmder
 	done chan struct{}
 }
 
@@ -109,7 +110,7 @@ var queuedCmdPool = sync.Pool{
 // getQueuedCmd gets a queuedCmd from the pool and initializes it
 func getQueuedCmd(cmd Cmder) *queuedCmd {
 	qc := queuedCmdPool.Get().(*queuedCmd)
-	qc.cmd = cmd
+	qc.Cmder = cmd
 	qc.done = getDoneChan()
 	return qc
 }
@@ -117,7 +118,7 @@ func getQueuedCmd(cmd Cmder) *queuedCmd {
 // putQueuedCmd returns a queuedCmd to the pool after clearing it
 func putQueuedCmd(qc *queuedCmd) {
 	putDoneChan(qc.done)
-	qc.cmd = nil
+	qc.Cmder = nil
 	qc.done = nil
 	queuedCmdPool.Put(qc)
 }
@@ -188,14 +189,14 @@ type AutoPipeliner struct {
 	flushCond *sync.Cond // Condition variable to signal flusher
 
 	// Concurrency control
-	sem *internal.FastSemaphore // Semaphore for concurrent batch limit
+	sem *internal.FIFOSemaphore // Semaphore for concurrent batch limit
 
 	// Lifecycle
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup // Tracks flusher goroutine
-	batchWg   sync.WaitGroup // Tracks batch execution goroutines
-	closed    atomic.Bool
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup // Tracks flusher goroutine
+	batchWg sync.WaitGroup // Tracks batch execution goroutines
+	closed  atomic.Bool
 }
 
 // NewAutoPipeliner creates a new autopipeliner for the given client.
@@ -219,7 +220,7 @@ func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) *Auto
 	ap := &AutoPipeliner{
 		pipeliner: pipeliner,
 		config:    config,
-		sem:       internal.NewFastSemaphore(int32(config.MaxConcurrentBatches)),
+		sem:       internal.NewFIFOSemaphore(int32(config.MaxConcurrentBatches)),
 		ctx:       ctx,
 		cancel:    cancel,
 	}
@@ -358,7 +359,10 @@ func (ap *AutoPipeliner) Close() error {
 	ap.cancel()
 
 	// Signal the flusher to wake up and check context
-	ap.flushCond.Signal()
+	// Use Broadcast instead of Signal to ensure wake-up even if multiple waiters
+	ap.flushCond.L.Lock()
+	ap.flushCond.Broadcast()
+	ap.flushCond.L.Unlock()
 
 	// Wait for flusher to finish
 	ap.wg.Wait()
@@ -383,8 +387,8 @@ func (ap *AutoPipeliner) flusher() {
 
 		// Check if context is cancelled
 		if ap.ctx.Err() != nil {
-			// Final flush before shutdown
-			ap.flushBatchSlice()
+			// Final flush before shutdown - use background context to avoid immediate cancellation
+			ap.flushBatchSliceShutdown()
 			return
 		}
 
@@ -392,7 +396,8 @@ func (ap *AutoPipeliner) flusher() {
 		for ap.Len() > 0 {
 			select {
 			case <-ap.ctx.Done():
-				ap.flushBatchSlice()
+				// Final flush before shutdown
+				ap.flushBatchSliceShutdown()
 				return
 			default:
 			}
@@ -432,16 +437,19 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		ap.queueLen.Store(0)
 	} else {
 		// Take only MaxBatchSize commands, leave the rest in the queue
-		// Allocate a new slice for the batch
-		queuedCmds = make([]*queuedCmd, batchSize)
-		copy(queuedCmds, ap.queue[:batchSize])
+		// Swap: take current queue as batch, create new queue with remaining
+		oldQueue := ap.queue
+		queuedCmds = oldQueue[:batchSize]
 
-		// Create a new queue with the remaining commands
+		// Create new queue with remaining commands
+		// We must copy because the batch slice will be cleared when returned to pool
 		remaining := queueLen - batchSize
-		newQueue := make([]*queuedCmd, remaining)
-		copy(newQueue, ap.queue[batchSize:])
-		ap.queue = newQueue
+		ap.queue = getQueueSlice(remaining)
+		ap.queue = append(ap.queue[:0], oldQueue[batchSize:]...)
 		ap.queueLen.Store(int32(remaining))
+
+		// Don't return oldQueue to pool yet - queuedCmds is using it
+		// It will be returned after batch execution via putQueueSlice(queuedCmds)
 	}
 	ap.mu.Unlock()
 
@@ -454,7 +462,7 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		if err != nil {
 			// Context cancelled, set error on all commands and notify
 			for _, qc := range queuedCmds {
-				qc.cmd.SetErr(ErrClosed)
+				qc.SetErr(ErrClosed)
 				// Signal completion by sending to buffered channel
 				qc.done <- struct{}{}
 			}
@@ -471,7 +479,11 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 	// Fast path for single command
 	if len(queuedCmds) == 1 {
 		qc := queuedCmds[0]
-		_ = ap.pipeliner.Process(context.Background(), qc.cmd)
+		// Use timeout context to prevent hanging
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// queuedCmd embeds Cmder, so we can use it directly
+		_ = ap.pipeliner.Process(ctx, qc)
+		cancel()
 		// Signal completion by sending to buffered channel
 		qc.done <- struct{}{}
 		ap.sem.Release()
@@ -487,13 +499,22 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		defer ap.sem.Release()
 		defer putQueueSlice(queuedCmds)
 
+		// Use a timeout context to prevent hanging forever
+		// This ensures Close() won't block indefinitely if Redis is unresponsive
+		// 5 seconds should be enough for most Redis operations
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
 		// Use Pipeline directly instead of Pipelined to avoid closure overhead
 		pipe := ap.Pipeline()
+		defer putPipeliner(pipe)
+
 		// Process all commands in a pipeline
+		// queuedCmd embeds Cmder, so we can use it directly
 		for _, qc := range queuedCmds {
-			_ = pipe.Process(context.Background(), qc.cmd)
+			_ = pipe.Process(ctx, qc)
 		}
-		_, _ = pipe.Exec(context.Background())
+		_, _ = pipe.Exec(ctx)
 
 		// IMPORTANT: Only notify after pipeline execution is complete
 		// This ensures command results are fully populated before waiters proceed
@@ -502,6 +523,73 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 			qc.done <- struct{}{}
 		}
 	}()
+}
+
+// flushBatchSliceShutdown flushes commands during shutdown.
+// Unlike flushBatchSlice, this doesn't use ap.ctx for semaphore acquisition
+// because ap.ctx is already cancelled during shutdown.
+// Executes synchronously to preserve command order.
+func (ap *AutoPipeliner) flushBatchSliceShutdown() {
+	// Flush all remaining commands synchronously to preserve order
+	for ap.Len() > 0 {
+		// Get commands from queue
+		ap.mu.Lock()
+		if len(ap.queue) == 0 {
+			ap.mu.Unlock()
+			ap.queueLen.Store(0)
+			return
+		}
+
+		// Take up to MaxBatchSize commands from the queue
+		var queuedCmds []*queuedCmd
+		queueLen := len(ap.queue)
+		batchSize := ap.config.MaxBatchSize
+
+		if queueLen <= batchSize {
+			// Take all commands
+			queuedCmds = ap.queue
+			ap.queue = getQueueSlice(batchSize)
+			ap.queueLen.Store(0)
+		} else {
+			// Take only MaxBatchSize commands, leave the rest in the queue
+			// Swap: take current queue as batch, create new queue with remaining
+			oldQueue := ap.queue
+			queuedCmds = oldQueue[:batchSize]
+
+			// Create new queue with remaining commands
+			// We must copy because the batch slice will be cleared when returned to pool
+			remaining := queueLen - batchSize
+			ap.queue = getQueueSlice(remaining)
+			ap.queue = append(ap.queue[:0], oldQueue[batchSize:]...)
+			ap.queueLen.Store(int32(remaining))
+
+			// Don't return oldQueue to pool yet - queuedCmds is using it
+			// It will be returned after batch execution via putQueueSlice(queuedCmds)
+		}
+		ap.mu.Unlock()
+
+		if len(queuedCmds) == 0 {
+			return
+		}
+
+		// Execute batch synchronously to preserve order
+		// Use a reasonable timeout - if Redis is unresponsive, fail fast
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		pipe := ap.Pipeline()
+		// queuedCmd embeds Cmder, so we can use it directly
+		for _, qc := range queuedCmds {
+			_ = pipe.Process(ctx, qc)
+		}
+		_, _ = pipe.Exec(ctx)
+		cancel()
+		putPipeliner(pipe)
+
+		// Signal completion
+		for _, qc := range queuedCmds {
+			qc.done <- struct{}{}
+		}
+		putQueueSlice(queuedCmds)
+	}
 }
 
 // Len returns the current number of queued commands.

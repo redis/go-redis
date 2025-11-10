@@ -167,6 +167,15 @@ func putPipeline(pipe *Pipeline) {
 	pipelinePool.Put(pipe)
 }
 
+// putPipeliner returns a Pipeliner to the pool for reuse (if it's a *Pipeline)
+func putPipeliner(pipe Pipeliner) {
+	if p, ok := pipe.(*Pipeline); ok {
+		putPipeline(p)
+	}
+}
+
+
+
 func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }
