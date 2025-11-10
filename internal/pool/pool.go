@@ -369,7 +369,8 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// when the timeout is reached, we should stop retrying
 	// but keep the lastErr to return to the caller
 	// instead of a generic context deadline exceeded error
-	for attempt := 0; (attempt < maxRetries) && shouldLoop; attempt++ {
+	attempt := 0
+	for attempt = 0; (attempt < maxRetries) && shouldLoop; attempt++ {
 		netConn, err := p.cfg.Dialer(ctx)
 		if err != nil {
 			lastErr = err
@@ -396,7 +397,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return cn, nil
 	}
 
-	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", maxRetries, lastErr)
+	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
 	// All retries failed - handle error tracking
 	p.setLastDialError(lastErr)
 	if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
