@@ -30,7 +30,7 @@ type SearchCmdable interface {
 	FTExplain(ctx context.Context, index string, query string) *StringCmd
 	FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd
 	FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd
-	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridArgs) *FTHybridCmd
+	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd
 	FTInfo(ctx context.Context, index string) *FTInfoCmd
 	FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd
 	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd
@@ -405,8 +405,8 @@ type FTHybridWithCursor struct {
 	MaxIdle int // Maximum idle time in milliseconds before cursor is automatically deleted
 }
 
-// FTHybridArgs hold options that can be passed to the FT.HYBRID command
-type FTHybridArgs struct {
+// FTHybridOptions hold options that can be passed to the FT.HYBRID command
+type FTHybridOptions struct {
 	CountExpressions  int                        // Number of search/vector expressions
 	SearchExpressions []FTHybridSearchExpression // Multiple search expressions
 	VectorExpressions []FTHybridVectorExpression // Multiple vector expressions
@@ -1918,12 +1918,12 @@ type FTHybridCmd struct {
 	baseCmd
 	val        FTHybridResult
 	cursorVal  *FTHybridCursorResult
-	options    *FTHybridArgs
+	options    *FTHybridOptions
 	withCursor bool
 }
 
-func newFTHybridCmd(ctx context.Context, options *FTHybridArgs, args ...interface{}) *FTHybridCmd {
-	var withCursor bool
+func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
+	withCursor := false
 	if options != nil && options.WithCursor {
 		withCursor = true
 	}
@@ -2007,23 +2007,27 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 	}
 
 	// Parse each result item
-	// In RESP3, the results are already parsed as maps
 	results := make([]map[string]interface{}, 0, len(resultsData))
 	for _, item := range resultsData {
-		// Try as map first (RESP3)
-		if itemMap, ok := item.(map[interface{}]interface{}); ok {
-			// Convert map[interface{}]interface{} to map[string]interface{}
-			convertedMap := make(map[string]interface{})
-			for k, v := range itemMap {
-				if keyStr, ok := k.(string); ok {
-					convertedMap[keyStr] = v
-				}
-			}
-			results = append(results, convertedMap)
+		// Try parsing as map[string]interface{} first (RESP3 format)
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			results = append(results, itemMap)
 			continue
 		}
 
-		// Fallback to array format (RESP2)
+		// Try parsing as map[interface{}]interface{} (alternative RESP3 format)
+		if rawMap, ok := item.(map[interface{}]interface{}); ok {
+			itemMap := make(map[string]interface{})
+			for k, v := range rawMap {
+				if keyStr, ok := k.(string); ok {
+					itemMap[keyStr] = v
+				}
+			}
+			results = append(results, itemMap)
+			continue
+		}
+
+		// Fall back to array format (RESP2 format - key-value pairs)
 		itemData, ok := item.([]interface{})
 		if !ok {
 			return FTHybridResult{}, nil, fmt.Errorf("invalid result item format")
@@ -2043,8 +2047,9 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 	}
 
 	// Parse warnings (optional field)
-	warnings := make([]string, 0)
+	var warnings []string
 	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+		warnings = make([]string, 0, len(warningsData))
 		for _, w := range warningsData {
 			if ws, ok := w.(string); ok {
 				warnings = append(warnings, ws)
@@ -2474,7 +2479,7 @@ func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *Str
 // 'vectorField' is the name of the vector field, and 'vectorData' is the vector to search with.
 // FTHybrid is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd {
-	options := &FTHybridArgs{
+	options := &FTHybridOptions{
 		CountExpressions: 2,
 		SearchExpressions: []FTHybridSearchExpression{
 			{Query: searchExpr},
@@ -2488,7 +2493,7 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
-func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridArgs) *FTHybridCmd {
+func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
 	args := []interface{}{"FT.HYBRID", index}
 
 	if options != nil {
@@ -2604,21 +2609,28 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 
 		// Add SORTBY
 		if len(options.SortBy) > 0 {
-			args = append(args, "SORTBY", len(options.SortBy))
+			sortByOptions := []interface{}{}
 			for _, sortBy := range options.SortBy {
-				args = append(args, sortBy.FieldName)
+				// Redis requires field names in SORTBY to be prefixed with '@' (or '$' for JSON paths)
+				fieldName := sortBy.FieldName
+				if fieldName != "" && fieldName[0] != '@' && fieldName[0] != '$' {
+					fieldName = "@" + fieldName
+				}
+				sortByOptions = append(sortByOptions, fieldName)
 				if sortBy.Asc && sortBy.Desc {
 					cmd := newFTHybridCmd(ctx, options, args...)
 					cmd.SetErr(fmt.Errorf("FT.HYBRID: ASC and DESC are mutually exclusive"))
 					return cmd
 				}
 				if sortBy.Asc {
-					args = append(args, "ASC")
+					sortByOptions = append(sortByOptions, "ASC")
 				}
 				if sortBy.Desc {
-					args = append(args, "DESC")
+					sortByOptions = append(sortByOptions, "DESC")
 				}
 			}
+			args = append(args, "SORTBY", len(sortByOptions))
+			args = append(args, sortByOptions...)
 		}
 
 		// Add FILTER (post-filter)
@@ -2635,6 +2647,8 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		if len(options.Params) > 0 {
 			args = append(args, "PARAMS", len(options.Params)*2)
 			for key, value := range options.Params {
+				// Parameter keys should already have '$' prefix from the user
+				// Don't add it again if it's already there
 				args = append(args, key, value)
 			}
 		}
