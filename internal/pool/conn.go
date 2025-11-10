@@ -18,6 +18,15 @@ import (
 
 var noDeadline = time.Time{}
 
+// Preallocated errors for hot paths to avoid allocations
+var (
+	errAlreadyMarkedForHandoff  = errors.New("connection is already marked for handoff")
+	errNotMarkedForHandoff      = errors.New("connection was not marked for handoff")
+	errHandoffStateChanged      = errors.New("handoff state changed during marking")
+	errConnectionNotAvailable   = errors.New("redis: connection not available")
+	errConnNotAvailableForWrite = errors.New("redis: connection not available for write operation")
+)
+
 // Global time cache updated every 50ms by background goroutine.
 // This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
 // Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
@@ -228,16 +237,18 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 	if new {
 		// Trying to make usable - transition from UNUSABLE to IDLE
 		// This should only work from UNUSABLE or INITIALIZING states
+		// Use predefined slice to avoid allocation
 		_, err := cn.stateMachine.TryTransition(
-			[]ConnState{StateInitializing, StateUnusable},
+			validFromInitializingOrUnusable,
 			StateIdle,
 		)
 		return err == nil
 	} else {
 		// Trying to make unusable - transition from IDLE to UNUSABLE
 		// This is typically for acquiring the connection for background operations
+		// Use predefined slice to avoid allocation
 		_, err := cn.stateMachine.TryTransition(
-			[]ConnState{StateIdle},
+			validFromIdle,
 			StateUnusable,
 		)
 		return err == nil
@@ -610,9 +621,10 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 	}
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	// Use predefined slice to avoid allocation
 	finalState, err := cn.stateMachine.AwaitAndTransition(
 		waitCtx,
-		[]ConnState{StateCreated, StateIdle, StateUnusable},
+		validFromCreatedIdleOrUnusable,
 		StateInitializing,
 	)
 	if err != nil {
@@ -643,7 +655,7 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 func (cn *Conn) MarkForHandoff(newEndpoint string, seqID int64) error {
 	// Check if already marked for handoff
 	if cn.ShouldHandoff() {
-		return errors.New("connection is already marked for handoff")
+		return errAlreadyMarkedForHandoff
 	}
 
 	// Set handoff metadata atomically
@@ -663,12 +675,12 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// Get current handoff state
 	currentState := cn.handoffStateAtomic.Load()
 	if currentState == nil {
-		return errors.New("connection was not marked for handoff")
+		return errNotMarkedForHandoff
 	}
 
 	state := currentState.(*HandoffState)
 	if !state.ShouldHandoff {
-		return errors.New("connection was not marked for handoff")
+		return errNotMarkedForHandoff
 	}
 
 	// Create new state with ShouldHandoff=false but preserve endpoint and seqID
@@ -683,7 +695,7 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 	// Atomic compare-and-swap to update state
 	if !cn.handoffStateAtomic.CompareAndSwap(currentState, newState) {
 		// State changed between load and CAS - retry or return error
-		return errors.New("handoff state changed during marking")
+		return errHandoffStateChanged
 	}
 
 	// Transition to UNUSABLE from IN_USE (normal flow), IDLE (edge cases), or CREATED (tests/uninitialized)
@@ -822,7 +834,7 @@ func (cn *Conn) WithReader(
 		// Get the connection directly from atomic storage
 		netConn := cn.getNetConn()
 		if netConn == nil {
-			return fmt.Errorf("redis: connection not available")
+			return errConnectionNotAvailable
 		}
 
 		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
@@ -845,8 +857,8 @@ func (cn *Conn) WithWriter(
 				return err
 			}
 		} else {
-			// Connection is not available - return error
-			return fmt.Errorf("redis: conn[%d] not available for write operation", cn.GetID())
+			// Connection is not available - return preallocated error
+			return errConnNotAvailableForWrite
 		}
 	}
 

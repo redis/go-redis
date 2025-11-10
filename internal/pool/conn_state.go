@@ -46,7 +46,27 @@ var (
 	validFromInUse              = []ConnState{StateInUse}
 	validFromCreatedOrIdle      = []ConnState{StateCreated, StateIdle}
 	validFromCreatedInUseOrIdle = []ConnState{StateCreated, StateInUse, StateIdle}
+	// For AwaitAndTransition calls
+	validFromCreatedIdleOrUnusable = []ConnState{StateCreated, StateIdle, StateUnusable}
+	validFromIdle                  = []ConnState{StateIdle}
+	// For CompareAndSwapUsable
+	validFromInitializingOrUnusable = []ConnState{StateInitializing, StateUnusable}
 )
+
+// Accessor functions for predefined slices to avoid allocations in external packages
+// These return the same slice instance, so they're zero-allocation
+
+// ValidFromIdle returns a predefined slice containing only StateIdle.
+// Use this to avoid allocations when calling AwaitAndTransition or TryTransition.
+func ValidFromIdle() []ConnState {
+	return validFromIdle
+}
+
+// ValidFromCreatedIdleOrUnusable returns a predefined slice for initialization transitions.
+// Use this to avoid allocations when calling AwaitAndTransition or TryTransition.
+func ValidFromCreatedIdleOrUnusable() []ConnState {
+	return validFromCreatedIdleOrUnusable
+}
 
 // String returns a human-readable string representation of the state.
 func (s ConnState) String() string {
@@ -300,7 +320,8 @@ func (sm *ConnStateMachine) notifyWaiters() {
 					processed = true
 					break
 				} else {
-					// State changed - re-add waiter to front of queue and retry
+					// State changed - re-add waiter to front of queue to maintain FIFO ordering
+					// This waiter was first in line and should retain priority
 					sm.waiters.PushFront(w)
 					sm.waiterCount.Add(1)
 					// Continue to next iteration to re-read state
