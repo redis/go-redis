@@ -511,6 +511,14 @@ type FTAttribute struct {
 	PhoneticMatcher string
 	CaseSensitive   bool
 	WithSuffixtrie  bool
+
+	// Vector specific attributes
+	Algorithm      string
+	DataType       string
+	Dim            int
+	DistanceMetric string
+	M              int
+	EFConstruction int
 }
 
 type CursorStats struct {
@@ -1387,18 +1395,22 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 				for i := 0; i < len(attrMap); i++ {
 					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" {
 						att.Attribute = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" {
 						att.Identifier = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "type" {
 						att.Type = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" {
 						att.Weight = internal.ToFloat(attrMap[i+1])
+						i++
 						continue
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "nostem" {
@@ -1427,6 +1439,38 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "withsuffixtrie" {
 						att.WithSuffixtrie = true
+						continue
+					}
+
+					// vector specific attributes
+					if internal.ToLower(internal.ToString(attrMap[i])) == "algorithm" {
+						att.Algorithm = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "data_type" {
+						att.DataType = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "dim" {
+						att.Dim = internal.ToInteger(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "distance_metric" {
+						att.DistanceMetric = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "m" {
+						att.M = internal.ToInteger(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "ef_construction" {
+						att.EFConstruction = internal.ToInteger(attrMap[i+1])
+						i++
 						continue
 					}
 

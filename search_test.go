@@ -3959,4 +3959,137 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 			Expect(res2).ToNot(BeEmpty())
 		}).ShouldNot(Panic())
 	})
+
+	It("should parse FTInfo response with vector fields", Label("search", "ftinfo"), func() {
+		// Create an index with multiple field types including vector
+		val, err := client.FTCreate(ctx, "rand:42d1f2820b3048b6bc783d4dcdb9094a",
+			&redis.FTCreateOptions{
+				Prefix: []interface{}{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
+			},
+			&redis.FieldSchema{
+				FieldName: "prompt",
+				FieldType: redis.SearchFieldTypeText,
+			},
+			&redis.FieldSchema{
+				FieldName: "response",
+				FieldType: redis.SearchFieldTypeText,
+			},
+			&redis.FieldSchema{
+				FieldName: "exact_digest",
+				FieldType: redis.SearchFieldTypeTag,
+				Separator: ",",
+			},
+			&redis.FieldSchema{
+				FieldName:  "prompt_vector",
+				FieldType:  redis.SearchFieldTypeVector,
+				VectorArgs: &redis.FTVectorArgs{HNSWOptions: &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 1536, DistanceMetric: "COSINE", MaxEdgesPerNode: 16, MaxAllowedEdgesPerNode: 64}},
+			},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "rand:42d1f2820b3048b6bc783d4dcdb9094a")
+
+		// Get FT.INFO
+		resInfo, err := client.FTInfo(ctx, "rand:42d1f2820b3048b6bc783d4dcdb9094a").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Validate index name
+		Expect(resInfo.IndexName).To(Equal("rand:42d1f2820b3048b6bc783d4dcdb9094a"))
+
+		// Validate index definition
+		Expect(resInfo.IndexDefinition.KeyType).To(Equal("HASH"))
+		Expect(resInfo.IndexDefinition.Prefixes).To(ContainElement("rand:42d1f2820b3048b6bc783d4dcdb9094a"))
+		Expect(resInfo.IndexDefinition.DefaultScore).To(Equal(float64(1)))
+
+		// Validate attributes
+		Expect(len(resInfo.Attributes)).To(Equal(4))
+
+		// Check prompt field (TEXT)
+		promptAttr := resInfo.Attributes[0]
+		Expect(promptAttr.Identifier).To(Equal("prompt"))
+		Expect(promptAttr.Attribute).To(Equal("prompt"))
+		Expect(promptAttr.Type).To(Equal("TEXT"))
+
+		// Check response field (TEXT)
+		responseAttr := resInfo.Attributes[1]
+		Expect(responseAttr.Identifier).To(Equal("response"))
+		Expect(responseAttr.Attribute).To(Equal("response"))
+		Expect(responseAttr.Type).To(Equal("TEXT"))
+
+		// Check exact_digest field (TAG)
+		tagAttr := resInfo.Attributes[2]
+		Expect(tagAttr.Identifier).To(Equal("exact_digest"))
+		Expect(tagAttr.Attribute).To(Equal("exact_digest"))
+		Expect(tagAttr.Type).To(Equal("TAG"))
+
+		// Check prompt_vector field (VECTOR)
+		vectorAttr := resInfo.Attributes[3]
+		Expect(vectorAttr.Identifier).To(Equal("prompt_vector"))
+		Expect(vectorAttr.Attribute).To(Equal("prompt_vector"))
+		Expect(vectorAttr.Type).To(Equal("VECTOR"))
+
+		// Validate numeric fields
+		Expect(resInfo.NumDocs).To(Equal(int64(0)))
+		Expect(resInfo.MaxDocID).To(Equal(int64(0)))
+		Expect(resInfo.NumTerms).To(Equal(int64(0)))
+		Expect(resInfo.NumRecords).To(Equal(int64(0)))
+		Expect(resInfo.Indexing).To(Equal(int64(0)))
+		Expect(resInfo.PercentIndexed).To(Equal(float64(1)))
+		Expect(resInfo.HashIndexingFailures).To(Equal(int64(0)))
+		Expect(resInfo.Cleaning).To(Equal(int64(0)))
+
+		// Validate memory stats
+		Expect(resInfo.InvertedSzMB).To(Equal(float64(0)))
+		Expect(resInfo.VectorIndexSzMB).To(Equal(float64(0)))
+		Expect(resInfo.TotalInvertedIndexBlocks).To(Equal(int64(0)))
+		Expect(resInfo.OffsetVectorsSzMB).To(Equal(float64(0)))
+		Expect(resInfo.DocTableSizeMB).To(BeNumerically(">", 0))
+		Expect(resInfo.SortableValuesSizeMB).To(Equal(float64(0)))
+		Expect(resInfo.TagOverheadSzMB).To(Equal(float64(0)))
+		Expect(resInfo.TextOverheadSzMB).To(Equal(float64(0)))
+		Expect(resInfo.TotalIndexMemorySzMB).To(BeNumerically(">", 0))
+		Expect(resInfo.GeoshapesSzMB).To(Equal(float64(0)))
+
+		// Validate average stats (should be "nan" for empty index)
+		Expect(resInfo.RecordsPerDocAvg).To(Equal("nan"))
+		Expect(resInfo.BytesPerRecordAvg).To(Equal("nan"))
+		Expect(resInfo.OffsetsPerTermAvg).To(Equal("nan"))
+		Expect(resInfo.OffsetBitsPerRecordAvg).To(Equal("nan"))
+
+		// Validate cursor stats
+		Expect(resInfo.CursorStats.GlobalIdle).To(Equal(int64(0)))
+		Expect(resInfo.CursorStats.GlobalTotal).To(Equal(int64(0)))
+		Expect(resInfo.CursorStats.IndexCapacity).To(BeNumerically(">=", 0))
+		Expect(resInfo.CursorStats.IndexTotal).To(Equal(int64(0)))
+
+		// Validate dialect stats
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_1"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_2"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_3"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_4"))
+
+		// Validate GC stats
+		Expect(resInfo.GCStats.BytesCollected).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.TotalMsRun).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.TotalCycles).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.AverageCycleTimeMs).To(Equal("nan"))
+		Expect(resInfo.GCStats.LastRunTimeMs).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.GCNumericTreesMissed).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.GCBlocksDenied).To(Equal(int64(0)))
+
+		// Validate Index Errors
+		Expect(resInfo.IndexErrors.IndexingFailures).To(Equal(int64(0)))
+		Expect(resInfo.IndexErrors.LastIndexingError).To(Equal("N/A"))
+		Expect(resInfo.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
+
+		// Validate field statistics
+		Expect(len(resInfo.FieldStatistics)).To(Equal(4))
+		for _, fieldStat := range resInfo.FieldStatistics {
+			Expect(fieldStat.Identifier).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
+			Expect(fieldStat.Attribute).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
+			Expect(fieldStat.IndexErrors.IndexingFailures).To(Equal(int64(0)))
+			Expect(fieldStat.IndexErrors.LastIndexingError).To(Equal("N/A"))
+			Expect(fieldStat.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
+		}
+	})
 })
