@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -363,11 +364,18 @@ type FTHybridSearchExpression struct {
 	YieldScoreAs string
 }
 
+type FTHybridVectorMethod = string
+
+const (
+	KNN   FTHybridCombineMethod = "KNN"
+	RANGE FTHybridCombineMethod = "RANGE"
+)
+
 // FTHybridVectorExpression represents a vector expression in hybrid search
 type FTHybridVectorExpression struct {
 	VectorField  string
 	VectorData   Vector
-	Method       string // KNN or RANGE
+	Method       FTHybridVectorMethod
 	MethodParams []interface{}
 	Filter       string
 	YieldScoreAs string
@@ -2585,7 +2593,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			args = append(args, "LOAD", len(options.Load))
 			for _, field := range options.Load {
 				// Redis requires field names in LOAD to be prefixed with '@' (or '$' for JSON paths).
-				// Tests pass plain field names (e.g. "description"), so add the '@' prefix here.
+				if strings.HasPrefix(field, "@") || strings.HasPrefix(field, "&") {
+					args = append(args, field)
+					continue
+				}
+				// If the field doesn't have a preffix, asume its a string and add '@'
 				args = append(args, "@"+field)
 			}
 		}
