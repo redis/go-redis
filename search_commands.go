@@ -1392,23 +1392,24 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 		for _, attr := range attributes {
 			if attrMap, ok := attr.([]interface{}); ok {
 				att := FTAttribute{}
-				for i := 0; i < len(attrMap); i++ {
-					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" {
+				attrLen := len(attrMap)
+				for i := 0; i < attrLen; i++ {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" && i+1 < attrLen {
 						att.Attribute = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" && i+1 < attrLen {
 						att.Identifier = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "type" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "type" && i+1 < attrLen {
 						att.Type = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" && i+1 < attrLen {
 						att.Weight = internal.ToFloat(attrMap[i+1])
 						i++
 						continue
@@ -1429,7 +1430,7 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						att.UNF = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" && i+1 < attrLen {
 						att.PhoneticMatcher = internal.ToString(attrMap[i+1])
 						continue
 					}
@@ -1443,32 +1444,32 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 					}
 
 					// vector specific attributes
-					if internal.ToLower(internal.ToString(attrMap[i])) == "algorithm" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "algorithm" && i+1 < attrLen {
 						att.Algorithm = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "data_type" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "data_type" && i+1 < attrLen {
 						att.DataType = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "dim" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "dim" && i+1 < attrLen {
 						att.Dim = internal.ToInteger(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "distance_metric" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "distance_metric" && i+1 < attrLen {
 						att.DistanceMetric = internal.ToString(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "m" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "m" && i+1 < attrLen {
 						att.M = internal.ToInteger(attrMap[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "ef_construction" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "ef_construction" && i+1 < attrLen {
 						att.EFConstruction = internal.ToInteger(attrMap[i+1])
 						i++
 						continue
