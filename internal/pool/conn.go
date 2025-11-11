@@ -27,28 +27,6 @@ var (
 	errConnNotAvailableForWrite = errors.New("redis: connection not available for write operation")
 )
 
-// Global time cache updated every 50ms by background goroutine.
-// This avoids expensive time.Now() syscalls in hot paths like getEffectiveReadTimeout.
-// Max staleness: 50ms, which is acceptable for timeout deadline checks (timeouts are typically 3-30 seconds).
-var globalTimeCache struct {
-	nowNs atomic.Int64
-}
-
-func init() {
-	// Initialize immediately
-	globalTimeCache.nowNs.Store(time.Now().UnixNano())
-
-	// Start background updater
-	go func() {
-		ticker := time.NewTicker(50 * time.Millisecond)
-		defer ticker.Stop()
-
-		for range ticker.C {
-			globalTimeCache.nowNs.Store(time.Now().UnixNano())
-		}
-	}()
-}
-
 // getCachedTimeNs returns the current time in nanoseconds from the global cache.
 // This is updated every 50ms by a background goroutine, avoiding expensive syscalls.
 // Max staleness: 50ms.

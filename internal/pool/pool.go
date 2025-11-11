@@ -177,6 +177,9 @@ func NewConnPool(opt *Options) *ConnPool {
 		p.connsMu.Unlock()
 	}
 
+	startGlobalTimeCache()
+	subscribeToGlobalTimeCache()
+
 	return p
 }
 
@@ -958,6 +961,9 @@ func (p *ConnPool) Close() error {
 	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
 		return ErrClosed
 	}
+
+	unsubscribeFromGlobalTimeCache()
+	stopGlobalTimeCache()
 
 	var firstErr error
 	p.connsMu.Lock()

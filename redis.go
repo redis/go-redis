@@ -1353,7 +1353,7 @@ func (c *Conn) TxPipeline() Pipeliner {
 
 // processPushNotifications processes all pending push notifications on a connection
 // This ensures that cluster topology changes are handled immediately before the connection is used
-// This method should be called by the client before using WithWriter for command execution
+// This method should be called by the client before using WithReader for command execution
 //
 // Performance optimization: Skip the expensive MaybeHasData() syscall if a health check
 // was performed recently (within 5 seconds). The health check already verified the connection
