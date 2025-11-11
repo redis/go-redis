@@ -243,16 +243,15 @@ func (cn *Conn) CompareAndSwapUsable(old, new bool) bool {
 			StateIdle,
 		)
 		return err == nil
-	} else {
-		// Trying to make unusable - transition from IDLE to UNUSABLE
-		// This is typically for acquiring the connection for background operations
-		// Use predefined slice to avoid allocation
-		_, err := cn.stateMachine.TryTransition(
-			validFromIdle,
-			StateUnusable,
-		)
-		return err == nil
 	}
+	// Trying to make unusable - transition from IDLE to UNUSABLE
+	// This is typically for acquiring the connection for background operations
+	// Use predefined slice to avoid allocation
+	_, err := cn.stateMachine.TryTransition(
+		validFromIdle,
+		StateUnusable,
+	)
+	return err == nil
 }
 
 // IsUsable returns true if the connection is safe to use for new commands (lock-free).
