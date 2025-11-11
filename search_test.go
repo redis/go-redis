@@ -3429,7 +3429,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
 				},
 			},
-			Load:        []string{"description", "color", "price", "size", "__score"},
+			Load:        []string{"@description", "@color", "@price", "@size", "@__score"},
 			LimitOffset: 0,
 			Limit:       3,
 		}
@@ -3463,7 +3463,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 					Filter:      "@price:[15 16] @size:[10 11]",
 				},
 			},
-			Load: []string{"description", "color", "price", "size", "__score"},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
 		}
 
 		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
@@ -3614,7 +3614,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
 				},
 			},
-			Load: []string{"description", "color", "price", "size", "__score"},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
 			Apply: []redis.FTHybridApply{
 				{
 					Expression: "@price - (@price * 0.1)",
@@ -3680,7 +3680,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
 				},
 			},
-			Load: []string{"color", "price"},
+			Load: []string{"@color", "@price"},
 			Apply: []redis.FTHybridApply{
 				{
 					Expression: "@price - (@price * 0.1)",
@@ -3688,8 +3688,8 @@ var _ = Describe("FT.HYBRID Commands", func() {
 				},
 			},
 			SortBy: []redis.FTSearchSortBy{
-				{FieldName: "price_discount", Desc: true},
-				{FieldName: "color", Asc: true},
+				{FieldName: "@price_discount", Desc: true},
+				{FieldName: "@color", Asc: true},
 			},
 			LimitOffset: 0,
 			Limit:       5,

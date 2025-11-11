@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -2592,13 +2591,7 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		if len(options.Load) > 0 {
 			args = append(args, "LOAD", len(options.Load))
 			for _, field := range options.Load {
-				// Redis requires field names in LOAD to be prefixed with '@' (or '$' for JSON paths).
-				if strings.HasPrefix(field, "@") || strings.HasPrefix(field, "&") {
-					args = append(args, field)
-					continue
-				}
-				// If the field doesn't have a preffix, asume its a string and add '@'
-				args = append(args, "@"+field)
+				args = append(args, field)
 			}
 		}
 
@@ -2623,12 +2616,7 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		if len(options.SortBy) > 0 {
 			sortByOptions := []interface{}{}
 			for _, sortBy := range options.SortBy {
-				// Redis requires field names in SORTBY to be prefixed with '@' (or '$' for JSON paths)
-				fieldName := sortBy.FieldName
-				if fieldName != "" && fieldName[0] != '@' && fieldName[0] != '$' {
-					fieldName = "@" + fieldName
-				}
-				sortByOptions = append(sortByOptions, fieldName)
+				sortByOptions = append(sortByOptions, sortBy.FieldName)
 				if sortBy.Asc && sortBy.Desc {
 					cmd := newFTHybridCmd(ctx, options, args...)
 					cmd.SetErr(fmt.Errorf("FT.HYBRID: ASC and DESC are mutually exclusive"))
