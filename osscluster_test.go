@@ -2464,20 +2464,20 @@ var _ = Describe("Command Tips tests", func() {
 		It("should route keyless commands to arbitrary shards using round robin", func() {
 			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
 
-			// Create a cluster client with ReadOnly enabled to allow keyless readonly commands
-			// to use ShardPicker for routing
-			opt := redisClusterOptions()
-			opt.ReadOnly = true
-			readOnlyClient := cluster.newClusterClient(ctx, opt)
-			defer readOnlyClient.Close()
+			// // Create a cluster client with ReadOnly enabled to allow keyless readonly commands
+			// // to use ShardPicker for routing
+			// opt := redisClusterOptions()
+			// opt.ReadOnly = true
+			// readOnlyClient := cluster.newClusterClient(ctx, opt)
+			// defer readOnlyClient.Close()
 
-			Eventually(func() error {
-				return readOnlyClient.Ping(ctx).Err()
-			}, 30*time.Second).ShouldNot(HaveOccurred())
+			// Eventually(func() error {
+			// 	return readOnlyClient.Ping(ctx).Err()
+			// }, 30*time.Second).ShouldNot(HaveOccurred())
 
 			var numMasters int
 			var numMastersMu sync.Mutex
-			err := readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 				numMastersMu.Lock()
 				numMasters++
 				numMastersMu.Unlock()
@@ -2486,7 +2486,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(numMasters).To(BeNumerically(">", 1))
 
-			err = readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			err = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 				return master.ConfigResetStat(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2495,7 +2495,7 @@ var _ = Describe("Command Tips tests", func() {
 			getEchoCounts := func() map[string]int {
 				echoCounts := make(map[string]int)
 				var echoCountsMu sync.Mutex
-				err := readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 					info := master.Info(ctx, "server")
 					Expect(info.Err()).NotTo(HaveOccurred())
 
@@ -2549,7 +2549,7 @@ var _ = Describe("Command Tips tests", func() {
 			}
 
 			// Single ECHO command should go to exactly one shard
-			result := readOnlyClient.Echo(ctx, "single_test")
+			result := client.Echo(ctx, "single_test")
 			Expect(result.Err()).NotTo(HaveOccurred())
 			Expect(result.Val()).To(Equal("single_test"))
 
@@ -2570,7 +2570,7 @@ var _ = Describe("Command Tips tests", func() {
 			numCommands := numMasters * 3
 
 			for i := 0; i < numCommands; i++ {
-				result := readOnlyClient.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
+				result := client.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
 				Expect(result.Err()).NotTo(HaveOccurred())
 				Expect(result.Val()).To(Equal(fmt.Sprintf("multi_test_%d", i)))
 			}
