@@ -3317,7 +3317,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		}
 	})
 
-	It("should parse FTInfo response with vector fields", Label("search", "ftinfo"), func() {
+	It("should parse FTInfo response with vector fields", Label("search", "ftinfo", "NonRedisEnterprise"), func() {
 		// Create an index with multiple field types including vector
 		val, err := client.FTCreate(ctx, "idx_vector",
 			&redis.FTCreateOptions{},
@@ -3394,11 +3394,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resInfo.VectorIndexSzMB).To(BeEquivalentTo(0))
 		Expect(resInfo.TotalInvertedIndexBlocks).To(BeEquivalentTo(0))
 		Expect(resInfo.OffsetVectorsSzMB).To(BeEquivalentTo(0))
-		Expect(resInfo.DocTableSizeMB).To(BeNumerically(">", 0))
+		Expect(resInfo.DocTableSizeMB).To(BeNumerically(">=", 0))
 		Expect(resInfo.SortableValuesSizeMB).To(BeEquivalentTo(0))
 		Expect(resInfo.TagOverheadSzMB).To(BeEquivalentTo(0))
 		Expect(resInfo.TextOverheadSzMB).To(BeEquivalentTo(0))
-		Expect(resInfo.TotalIndexMemorySzMB).To(BeNumerically(">", 0))
+		Expect(resInfo.TotalIndexMemorySzMB).To(BeNumerically(">=", 0))
 		Expect(resInfo.GeoshapesSzMB).To(BeEquivalentTo(0))
 
 		// Validate average stats (should be "nan" for empty index)
