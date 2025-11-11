@@ -2142,7 +2142,7 @@ var _ = Describe("Command Tips tests", func() {
 			commandPolicies := map[string]string{
 				"touch":         "agg_sum",
 				"flushall":      "all_succeeded",
-				"pfcount":       "all_succeeded",
+				"pfcount":       "default(hashslot)",
 				"exists":        "agg_sum",
 				"script exists": "agg_logical_and",
 				"wait":          "agg_min",
@@ -2241,7 +2241,6 @@ var _ = Describe("Command Tips tests", func() {
 
 		It("should properly aggregate responses from keyed commands executed on multiple shards", func() {
 			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
-
 			type masterNode struct {
 				client *redis.Client
 				addr   string
@@ -2262,79 +2261,54 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(masterNodes)).To(BeNumerically(">", 1))
 
-			// // MGET command aggregation across multiple keys on different shards - verify all_succeeded policy with keyed aggregation
-			// testData := map[string]string{
-			// 	"mget_test_key_1111": "value1",
-			// 	"mget_test_key_2222": "value2",
-			// 	"mget_test_key_3333": "value3",
-			// 	"mget_test_key_4444": "value4",
-			// 	"mget_test_key_5555": "value5",
-			// }
+			// MGET command with keys on different shards
+			testData := map[string]string{
+				"mget_test_key_1111": "value1",
+				"mget_test_key_2222": "value2",
+				"mget_test_key_3333": "value3",
+				"mget_test_key_4444": "value4",
+				"mget_test_key_5555": "value5",
+			}
 
-			// keyLocations := make(map[string]string)
-			// for key, value := range testData {
+			keyLocations := make(map[string]string)
+			for key, value := range testData {
+				result := client.Set(ctx, key, value, 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
 
-			// 	result := client.Set(ctx, key, value, 0)
-			// 	Expect(result.Err()).NotTo(HaveOccurred())
+				for _, node := range masterNodes {
+					getResult := node.client.Get(ctx, key)
+					if getResult.Err() == nil && getResult.Val() == value {
+						keyLocations[key] = node.addr
+						break
+					}
+				}
+			}
 
-			// 	for _, node := range masterNodes {
-			// 		getResult := node.client.Get(ctx, key)
-			// 		if getResult.Err() == nil && getResult.Val() == value {
-			// 			keyLocations[key] = node.addr
-			// 			break
-			// 		}
-			// 	}
-			// }
+			shardsUsed := make(map[string]bool)
+			for _, shardAddr := range keyLocations {
+				shardsUsed[shardAddr] = true
+			}
+			Expect(len(shardsUsed)).To(BeNumerically(">", 1))
 
-			// shardsUsed := make(map[string]bool)
-			// for _, shardAddr := range keyLocations {
-			// 	shardsUsed[shardAddr] = true
-			// }
-			// Expect(len(shardsUsed)).To(BeNumerically(">", 1))
+			keys := make([]string, 0, len(testData))
+			expectedValues := make([]interface{}, 0, len(testData))
+			for key, value := range testData {
+				keys = append(keys, key)
+				expectedValues = append(expectedValues, value)
+			}
 
-			// keys := make([]string, 0, len(testData))
-			// expectedValues := make([]interface{}, 0, len(testData))
+			mgetResult := client.MGet(ctx, keys...)
+			Expect(mgetResult.Err()).NotTo(HaveOccurred())
 
-			// for key, value := range testData {
-			// 	keys = append(keys, key)
-			// 	expectedValues = append(expectedValues, value)
-			// }
-
-			// mgetResult := client.MGet(ctx, keys...)
-			// Expect(mgetResult.Err()).NotTo(HaveOccurred())
-
-			// actualValues := mgetResult.Val()
-			// Expect(len(actualValues)).To(Equal(len(keys)))
-			// Expect(actualValues).To(ConsistOf(expectedValues))
-
-			// // Verify all values are correctly aggregated
-			// for i, key := range keys {
-			// 	expectedValue := testData[key]
-			// 	actualValue := actualValues[i]
-			// 	Expect(actualValue).To(Equal(expectedValue))
-			// }
-
-			// DEL command aggregation across multiple keys on different shards
-			// delResult := client.Del(ctx, keys...)
-			// Expect(delResult.Err()).NotTo(HaveOccurred())
-
-			// deletedCount := delResult.Val()
-			// Expect(deletedCount).To(Equal(int64(len(keys))))
-
-			// // Verify keys are actually deleted from their respective shards
-			// for key, shardAddr := range keyLocations {
-			// 	var targetNode *masterNode
-			// 	for i := range masterNodes {
-			// 		if masterNodes[i].addr == shardAddr {
-			// 			targetNode = &masterNodes[i]
-			// 			break
-			// 		}
-			// 	}
-			// 	Expect(targetNode).NotTo(BeNil())
-
-			// 	getResult := targetNode.client.Get(ctx, key)
-			// 	Expect(getResult.Err()).To(HaveOccurred())
-			// }
+			actualValues := mgetResult.Val()
+			Expect(len(actualValues)).To(Equal(len(expectedValues)))
+			for i, value := range actualValues {
+				if value != nil {
+					Expect(value).To(Equal(expectedValues[i]))
+				} else {
+					Expect(value).To(BeNil())
+				}
+			}
 
 			// EXISTS command aggregation across multiple keys
 			existsTestData := map[string]string{
@@ -2490,9 +2464,20 @@ var _ = Describe("Command Tips tests", func() {
 		It("should route keyless commands to arbitrary shards using round robin", func() {
 			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
 
+			// Create a cluster client with ReadOnly enabled to allow keyless readonly commands
+			// to use ShardPicker for routing
+			opt := redisClusterOptions()
+			opt.ReadOnly = true
+			readOnlyClient := cluster.newClusterClient(ctx, opt)
+			defer readOnlyClient.Close()
+
+			Eventually(func() error {
+				return readOnlyClient.Ping(ctx).Err()
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
 			var numMasters int
 			var numMastersMu sync.Mutex
-			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			err := readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 				numMastersMu.Lock()
 				numMasters++
 				numMastersMu.Unlock()
@@ -2501,7 +2486,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(numMasters).To(BeNumerically(">", 1))
 
-			err = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+			err = readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 				return master.ConfigResetStat(ctx).Err()
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -2510,7 +2495,7 @@ var _ = Describe("Command Tips tests", func() {
 			getEchoCounts := func() map[string]int {
 				echoCounts := make(map[string]int)
 				var echoCountsMu sync.Mutex
-				err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				err := readOnlyClient.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 					info := master.Info(ctx, "server")
 					Expect(info.Err()).NotTo(HaveOccurred())
 
@@ -2564,7 +2549,7 @@ var _ = Describe("Command Tips tests", func() {
 			}
 
 			// Single ECHO command should go to exactly one shard
-			result := client.Echo(ctx, "single_test")
+			result := readOnlyClient.Echo(ctx, "single_test")
 			Expect(result.Err()).NotTo(HaveOccurred())
 			Expect(result.Val()).To(Equal("single_test"))
 
@@ -2585,7 +2570,7 @@ var _ = Describe("Command Tips tests", func() {
 			numCommands := numMasters * 3
 
 			for i := 0; i < numCommands; i++ {
-				result := client.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
+				result := readOnlyClient.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
 				Expect(result.Err()).NotTo(HaveOccurred())
 				Expect(result.Val()).To(Equal(fmt.Sprintf("multi_test_%d", i)))
 			}

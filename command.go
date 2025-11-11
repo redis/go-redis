@@ -4474,7 +4474,7 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 					rawTips[k] = v
 				}
 			}
-			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips)
+			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips, cmdInfo.FirstKeyPos)
 
 			if err := rd.DiscardNext(); err != nil {
 				return err
@@ -4573,9 +4573,12 @@ func (c *cmdsInfoCache) Refresh() {
 const requestPolicy = "request_policy"
 const responsePolicy = "response_policy"
 
-func parseCommandPolicies(commandInfoTips map[string]string) *routing.CommandPolicy {
+func parseCommandPolicies(commandInfoTips map[string]string, firstKeyPos int8) *routing.CommandPolicy {
 	req := routing.ReqDefault
-	resp := routing.RespAllSucceeded
+	resp := routing.RespDefaultKeyless
+	if firstKeyPos > 0 {
+		resp = routing.RespDefaultHashSlot
+	}
 
 	tips := make(map[string]string, len(commandInfoTips))
 	for k, v := range commandInfoTips {

@@ -138,7 +138,7 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 		go func(slot int, keys []string) {
 			defer wg.Done()
 
-			node, err := c.cmdNode(ctx, cmd.Name(), slot)
+			node, err := c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
 			if err != nil {
 				results <- slotResult{nil, keys, err}
 				return
@@ -280,7 +280,7 @@ func (c *ClusterClient) executeCursorCommand(ctx context.Context, cmd Cmder) err
 
 	// Route based on cursor ID to maintain stickiness
 	slot := hashtag.Slot(cursorID)
-	node, err := c.cmdNode(ctx, cmd.Name(), slot)
+	node, err := c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
 	if err != nil {
 		return err
 	}
@@ -351,11 +351,28 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 			firstErr = result.err
 		}
 		if result.cmd != nil && result.err == nil {
-			// For other commands, map each key to the entire result
 			value, err := ExtractCommandValue(result.cmd)
-			for _, key := range result.keys {
-				keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
+
+			// Check if the result is a slice (e.g., from MGET)
+			if sliceValue, ok := value.([]interface{}); ok {
+				// Map each element to its corresponding key
+				for i, key := range result.keys {
+					if i < len(sliceValue) {
+						keyedResults[key] = routing.AggregatorResErr{Result: sliceValue[i], Err: err}
+					} else {
+						keyedResults[key] = routing.AggregatorResErr{Result: nil, Err: err}
+					}
+				}
+			} else {
+				// For non-slice results, map the entire result to each key
+				for _, key := range result.keys {
+					keyedResults[key] = routing.AggregatorResErr{Result: value, Err: err}
+				}
 			}
+		}
+
+		if result.err != nil {
+			firstErr = result.err
 		}
 	}
 

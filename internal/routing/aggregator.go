@@ -44,9 +44,9 @@ type AggregatorResErr struct {
 func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggregator {
 	switch policy {
 	case RespDefaultKeyless:
-		return &DefaultKeylessAggregator{}
+		return &DefaultKeylessAggregator{results: make([]interface{}, 0)}
 	case RespDefaultHashSlot:
-		return &DefaultKeyedAggregator{}
+		return &DefaultKeyedAggregator{results: make(map[string]interface{})}
 	case RespAllSucceeded:
 		return &AllSucceededAggregator{}
 	case RespOneSucceeded:

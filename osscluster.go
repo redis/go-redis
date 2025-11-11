@@ -121,6 +121,11 @@ type ClusterOptions struct {
 
 	TLSConfig *tls.Config
 
+	// DisableRoutingPolicies disables the request/response policy routing system.
+	// When disabled, all commands use the legacy routing behavior.
+	// Experimental. Will be removed when shard picker is fully implemented.
+	DisableRoutingPolicies bool
+
 	// DisableIndentity - Disable set-lib on connect.
 	//
 	// default: false
@@ -939,6 +944,29 @@ func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
 	return nodes[randomNodes[0]], nil
 }
 
+func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.ShardPicker) (*clusterNode, error) {
+	nodes := c.slotNodes(slot)
+	if len(nodes) == 0 {
+		return c.nodes.Random()
+	}
+
+	// nodes[0] is master, nodes[1:] are slaves
+	// First, try all slave nodes for this slot using ShardPicker order
+	slaves := nodes[1:]
+	if len(slaves) > 0 {
+		for i := 0; i < len(slaves); i++ {
+			idx := shardPicker.Next(len(slaves))
+			slave := slaves[idx]
+			if !slave.Failing() && !slave.Loading() {
+				return slave, nil
+			}
+		}
+	}
+
+	// All slaves are failing or loading - return master
+	return nodes[0], nil
+}
+
 func (c *clusterState) slotNodes(slot int) []*clusterNode {
 	i := sort.Search(len(c.slots), func(i int) bool {
 		return c.slots[i].end >= slot
@@ -1096,7 +1124,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if node == nil {
 			var err error
-			node, err = c.cmdNode(ctx, cmd.Name(), slot)
+			if !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+				node, err = c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
+			} else {
+				node, err = c.cmdNode(ctx, cmd.Name(), slot)
+			}
 			if err != nil {
 				return err
 			}
@@ -1109,8 +1141,11 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			_ = pipe.Process(ctx, cmd)
 			_, lastErr = pipe.Exec(ctx)
 		} else {
-			// Execute the command on the selected node
-			lastErr = c.routeAndRun(ctx, cmd, node)
+			if !c.opt.DisableRoutingPolicies {
+				lastErr = c.routeAndRun(ctx, cmd, node)
+			} else {
+				lastErr = node.Client.Process(ctx, cmd)
+			}
 		}
 
 		// If there is no error - we are done.
@@ -2098,13 +2133,33 @@ func (c *ClusterClient) cmdNode(
 		return nil, err
 	}
 
+	if c.opt.ReadOnly {
+		cmdInfo := c.cmdInfo(ctx, cmdName)
+		if cmdInfo != nil && cmdInfo.ReadOnly {
+			return c.slotReadOnlyNode(state, slot)
+		}
+	}
+	return state.slotMasterNode(slot)
+}
+
+func (c *ClusterClient) cmdNodeWithShardPicker(
+	ctx context.Context,
+	cmdName string,
+	slot int,
+	shardPicker routing.ShardPicker,
+) (*clusterNode, error) {
+	state, err := c.state.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	// For keyless commands (slot == -1), use ShardPicker to select a shard
 	// This respects the user's configured ShardPicker policy
 	if slot == -1 {
 		if len(state.Masters) == 0 {
 			return nil, errClusterNoNodes
 		}
-		idx := c.opt.ShardPicker.Next(len(state.Masters))
+		idx := shardPicker.Next(len(state.Masters))
 		return state.Masters[idx], nil
 	}
 
@@ -2124,6 +2179,11 @@ func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*cluste
 	if c.opt.RouteRandomly {
 		return state.slotRandomNode(slot)
 	}
+
+	if c.opt.ShardPicker != nil {
+		return state.slotShardPickerSlaveNode(slot, c.opt.ShardPicker)
+	}
+
 	return state.slotSlaveNode(slot)
 }
 
