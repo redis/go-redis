@@ -3380,26 +3380,26 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(vectorAttr.Type).To(Equal("VECTOR"))
 
 		// Validate numeric fields
-		Expect(resInfo.NumDocs).To(Equal(int64(0)))
-		Expect(resInfo.MaxDocID).To(Equal(int64(0)))
-		Expect(resInfo.NumTerms).To(Equal(int64(0)))
-		Expect(resInfo.NumRecords).To(Equal(int64(0)))
-		Expect(resInfo.Indexing).To(Equal(int64(0)))
-		Expect(resInfo.PercentIndexed).To(Equal(float64(1)))
-		Expect(resInfo.HashIndexingFailures).To(Equal(int64(0)))
-		Expect(resInfo.Cleaning).To(Equal(int64(0)))
+		Expect(resInfo.NumDocs).To(BeEquivalentTo(0))
+		Expect(resInfo.MaxDocID).To(BeEquivalentTo(0))
+		Expect(resInfo.NumTerms).To(BeEquivalentTo(0))
+		Expect(resInfo.NumRecords).To(BeEquivalentTo(0))
+		Expect(resInfo.Indexing).To(BeEquivalentTo(0))
+		Expect(resInfo.PercentIndexed).To(BeEquivalentTo(1))
+		Expect(resInfo.HashIndexingFailures).To(BeEquivalentTo(0))
+		Expect(resInfo.Cleaning).To(BeEquivalentTo(0))
 
 		// Validate memory stats
-		Expect(resInfo.InvertedSzMB).To(Equal(float64(0)))
-		Expect(resInfo.VectorIndexSzMB).To(Equal(float64(0)))
-		Expect(resInfo.TotalInvertedIndexBlocks).To(Equal(int64(0)))
-		Expect(resInfo.OffsetVectorsSzMB).To(Equal(float64(0)))
+		Expect(resInfo.InvertedSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.VectorIndexSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TotalInvertedIndexBlocks).To(BeEquivalentTo(0))
+		Expect(resInfo.OffsetVectorsSzMB).To(BeEquivalentTo(0))
 		Expect(resInfo.DocTableSizeMB).To(BeNumerically(">", 0))
-		Expect(resInfo.SortableValuesSizeMB).To(Equal(float64(0)))
-		Expect(resInfo.TagOverheadSzMB).To(Equal(float64(0)))
-		Expect(resInfo.TextOverheadSzMB).To(Equal(float64(0)))
+		Expect(resInfo.SortableValuesSizeMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TagOverheadSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TextOverheadSzMB).To(BeEquivalentTo(0))
 		Expect(resInfo.TotalIndexMemorySzMB).To(BeNumerically(">", 0))
-		Expect(resInfo.GeoshapesSzMB).To(Equal(float64(0)))
+		Expect(resInfo.GeoshapesSzMB).To(BeEquivalentTo(0))
 
 		// Validate average stats (should be "nan" for empty index)
 		Expect(resInfo.RecordsPerDocAvg).To(Equal("nan"))
@@ -3408,10 +3408,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resInfo.OffsetBitsPerRecordAvg).To(Equal("nan"))
 
 		// Validate cursor stats
-		Expect(resInfo.CursorStats.GlobalIdle).To(Equal(int64(0)))
-		Expect(resInfo.CursorStats.GlobalTotal).To(Equal(int64(0)))
+		Expect(resInfo.CursorStats.GlobalIdle).To(BeEquivalentTo(0))
+		Expect(resInfo.CursorStats.GlobalTotal).To(BeEquivalentTo(0))
 		Expect(resInfo.CursorStats.IndexCapacity).To(BeNumerically(">=", 0))
-		Expect(resInfo.CursorStats.IndexTotal).To(Equal(int64(0)))
+		Expect(resInfo.CursorStats.IndexTotal).To(BeEquivalentTo(0))
 
 		// Validate dialect stats
 		Expect(resInfo.DialectStats).To(HaveKey("dialect_1"))
@@ -3420,16 +3420,16 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(resInfo.DialectStats).To(HaveKey("dialect_4"))
 
 		// Validate GC stats
-		Expect(resInfo.GCStats.BytesCollected).To(Equal(int64(0)))
-		Expect(resInfo.GCStats.TotalMsRun).To(Equal(int64(0)))
-		Expect(resInfo.GCStats.TotalCycles).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.BytesCollected).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.TotalMsRun).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.TotalCycles).To(BeEquivalentTo(0))
 		Expect(resInfo.GCStats.AverageCycleTimeMs).To(Equal("nan"))
-		Expect(resInfo.GCStats.LastRunTimeMs).To(Equal(int64(0)))
-		Expect(resInfo.GCStats.GCNumericTreesMissed).To(Equal(int64(0)))
-		Expect(resInfo.GCStats.GCBlocksDenied).To(Equal(int64(0)))
+		Expect(resInfo.GCStats.LastRunTimeMs).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.GCNumericTreesMissed).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.GCBlocksDenied).To(BeEquivalentTo(0))
 
 		// Validate Index Errors
-		Expect(resInfo.IndexErrors.IndexingFailures).To(Equal(int64(0)))
+		Expect(resInfo.IndexErrors.IndexingFailures).To(BeEquivalentTo(0))
 		Expect(resInfo.IndexErrors.LastIndexingError).To(Equal("N/A"))
 		Expect(resInfo.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
 
@@ -3438,7 +3438,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		for _, fieldStat := range resInfo.FieldStatistics {
 			Expect(fieldStat.Identifier).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
 			Expect(fieldStat.Attribute).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
-			Expect(fieldStat.IndexErrors.IndexingFailures).To(Equal(int64(0)))
+			Expect(fieldStat.IndexErrors.IndexingFailures).To(BeEquivalentTo(0))
 			Expect(fieldStat.IndexErrors.LastIndexingError).To(Equal("N/A"))
 			Expect(fieldStat.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
 		}
