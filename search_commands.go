@@ -2302,6 +2302,111 @@ func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
+func (cmd *FTHybridCmd) Clone() Cmder {
+	val := FTHybridResult{
+		TotalResults:  cmd.val.TotalResults,
+		ExecutionTime: cmd.val.ExecutionTime,
+	}
+	if cmd.val.Results != nil {
+		val.Results = make([]map[string]interface{}, len(cmd.val.Results))
+		for i, result := range cmd.val.Results {
+			val.Results[i] = make(map[string]interface{}, len(result))
+			for k, v := range result {
+				val.Results[i][k] = v
+			}
+		}
+	}
+	if cmd.val.Warnings != nil {
+		val.Warnings = make([]string, len(cmd.val.Warnings))
+		copy(val.Warnings, cmd.val.Warnings)
+	}
+
+	var cursorVal *FTHybridCursorResult
+	if cmd.cursorVal != nil {
+		cursorVal = &FTHybridCursorResult{
+			SearchCursorID: cmd.cursorVal.SearchCursorID,
+			VsimCursorID:   cmd.cursorVal.VsimCursorID,
+		}
+	}
+
+	var options *FTHybridOptions
+	if cmd.options != nil {
+		options = &FTHybridOptions{
+			CountExpressions: cmd.options.CountExpressions,
+			Load:             cmd.options.Load,
+			Filter:           cmd.options.Filter,
+			LimitOffset:      cmd.options.LimitOffset,
+			Limit:            cmd.options.Limit,
+			ExplainScore:     cmd.options.ExplainScore,
+			Timeout:          cmd.options.Timeout,
+			WithCursor:       cmd.options.WithCursor,
+		}
+		// Clone slices and maps
+		if cmd.options.SearchExpressions != nil {
+			options.SearchExpressions = make([]FTHybridSearchExpression, len(cmd.options.SearchExpressions))
+			copy(options.SearchExpressions, cmd.options.SearchExpressions)
+		}
+		if cmd.options.VectorExpressions != nil {
+			options.VectorExpressions = make([]FTHybridVectorExpression, len(cmd.options.VectorExpressions))
+			copy(options.VectorExpressions, cmd.options.VectorExpressions)
+		}
+		if cmd.options.Combine != nil {
+			options.Combine = &FTHybridCombineOptions{
+				Method:       cmd.options.Combine.Method,
+				Count:        cmd.options.Combine.Count,
+				Window:       cmd.options.Combine.Window,
+				Constant:     cmd.options.Combine.Constant,
+				Alpha:        cmd.options.Combine.Alpha,
+				Beta:         cmd.options.Combine.Beta,
+				YieldScoreAs: cmd.options.Combine.YieldScoreAs,
+			}
+		}
+		if cmd.options.GroupBy != nil {
+			options.GroupBy = &FTHybridGroupBy{
+				Count:       cmd.options.GroupBy.Count,
+				ReduceFunc:  cmd.options.GroupBy.ReduceFunc,
+				ReduceCount: cmd.options.GroupBy.ReduceCount,
+			}
+			if cmd.options.GroupBy.Fields != nil {
+				options.GroupBy.Fields = make([]string, len(cmd.options.GroupBy.Fields))
+				copy(options.GroupBy.Fields, cmd.options.GroupBy.Fields)
+			}
+			if cmd.options.GroupBy.ReduceParams != nil {
+				options.GroupBy.ReduceParams = make([]interface{}, len(cmd.options.GroupBy.ReduceParams))
+				copy(options.GroupBy.ReduceParams, cmd.options.GroupBy.ReduceParams)
+			}
+		}
+		if cmd.options.Apply != nil {
+			options.Apply = make([]FTHybridApply, len(cmd.options.Apply))
+			copy(options.Apply, cmd.options.Apply)
+		}
+		if cmd.options.SortBy != nil {
+			options.SortBy = make([]FTSearchSortBy, len(cmd.options.SortBy))
+			copy(options.SortBy, cmd.options.SortBy)
+		}
+		if cmd.options.Params != nil {
+			options.Params = make(map[string]interface{}, len(cmd.options.Params))
+			for k, v := range cmd.options.Params {
+				options.Params[k] = v
+			}
+		}
+		if cmd.options.WithCursorOptions != nil {
+			options.WithCursorOptions = &FTHybridWithCursor{
+				MaxIdle: cmd.options.WithCursorOptions.MaxIdle,
+				Count:   cmd.options.WithCursorOptions.Count,
+			}
+		}
+	}
+
+	return &FTHybridCmd{
+		baseCmd:    cmd.cloneBaseCmd(),
+		val:        val,
+		cursorVal:  cursorVal,
+		options:    options,
+		withCursor: cmd.withCursor,
+	}
+}
+
 // FTSearch - Executes a search query on an index.
 // The 'index' parameter specifies the index to search, and the 'query' parameter specifies the search query.
 // For more information, please refer to the Redis documentation about [FT.SEARCH].
