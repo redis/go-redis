@@ -3962,10 +3962,8 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 	It("should parse FTInfo response with vector fields", Label("search", "ftinfo"), func() {
 		// Create an index with multiple field types including vector
-		val, err := client.FTCreate(ctx, "rand:42d1f2820b3048b6bc783d4dcdb9094a",
-			&redis.FTCreateOptions{
-				Prefix: []interface{}{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
-			},
+		val, err := client.FTCreate(ctx, "idx_vector",
+			&redis.FTCreateOptions{},
 			&redis.FieldSchema{
 				FieldName: "prompt",
 				FieldType: redis.SearchFieldTypeText,
@@ -3987,18 +3985,17 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(BeEquivalentTo("OK"))
-		WaitForIndexing(client, "rand:42d1f2820b3048b6bc783d4dcdb9094a")
+		WaitForIndexing(client, "idx_vector")
 
 		// Get FT.INFO
-		resInfo, err := client.FTInfo(ctx, "rand:42d1f2820b3048b6bc783d4dcdb9094a").Result()
+		resInfo, err := client.FTInfo(ctx, "idx_vector").Result()
 		Expect(err).NotTo(HaveOccurred())
 
 		// Validate index name
-		Expect(resInfo.IndexName).To(Equal("rand:42d1f2820b3048b6bc783d4dcdb9094a"))
+		Expect(resInfo.IndexName).To(Equal("idx_vector"))
 
 		// Validate index definition
 		Expect(resInfo.IndexDefinition.KeyType).To(Equal("HASH"))
-		Expect(resInfo.IndexDefinition.Prefixes).To(ContainElement("rand:42d1f2820b3048b6bc783d4dcdb9094a"))
 		Expect(resInfo.IndexDefinition.DefaultScore).To(Equal(float64(1)))
 
 		// Validate attributes
