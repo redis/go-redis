@@ -41,19 +41,19 @@ func startGlobalTimeCache() {
 	globalTimeCache.stop = make(chan struct{})
 	globalTimeCache.lock.Unlock()
 	// Start background updater
-	go func() {
+	go func(stopChan chan struct{}) {
 		ticker := time.NewTicker(50 * time.Millisecond)
 		defer ticker.Stop()
 
 		for range ticker.C {
 			select {
-			case <-globalTimeCache.stop:
+			case <-stopChan:
 				return
 			default:
 			}
 			globalTimeCache.nowNs.Store(time.Now().UnixNano())
 		}
-	}()
+	}(globalTimeCache.stop)
 }
 
 // stopGlobalTimeCache stops the global time cache if there are no subscribers.
