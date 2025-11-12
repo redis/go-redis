@@ -260,21 +260,23 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectEqual(len(res), len(vals))
 
-				res, err = client.VRange(ctx, vecName, "[k1", "[k2", -1).Result()
-				expectNil(err)
-				expectEqual(len(res), 2)
+				if RedisVersion >= 8.4 {
+					res, err = client.VRange(ctx, vecName, "[k1", "[k2", -1).Result()
+					expectNil(err)
+					expectEqual(len(res), 2)
 
-				res, err = client.VRange(ctx, vecName, "-", "[k2", -1).Result()
-				expectNil(err)
-				expectEqual(len(res), 3)
+					res, err = client.VRange(ctx, vecName, "-", "[k2", -1).Result()
+					expectNil(err)
+					expectEqual(len(res), 3)
 
-				res, err = client.VRange(ctx, vecName, "(k1", "+", -1).Result()
-				expectNil(err)
-				expectEqual(len(res), 3)
+					res, err = client.VRange(ctx, vecName, "(k1", "+", -1).Result()
+					expectNil(err)
+					expectEqual(len(res), 3)
 
-				res, err = client.VRange(ctx, vecName, "[k1", "+", 2).Result()
-				expectNil(err)
-				expectEqual(len(res), 2)
+					res, err = client.VRange(ctx, vecName, "[k1", "+", 2).Result()
+					expectNil(err)
+					expectEqual(len(res), 2)
+				}
 
 				// test equality
 				sim, err := client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
