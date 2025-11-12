@@ -2461,6 +2461,89 @@ var _ = Describe("Command Tips tests", func() {
 			}
 		})
 
+		It("should test DisableRoutingPolicies option disables routing policies", func() {
+			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+
+			// Test 1: With routing policies enabled (default), MGET should work across slots
+			testData := map[string]string{
+				"disable_routing_key_1111": "value1",
+				"disable_routing_key_2222": "value2",
+				"disable_routing_key_3333": "value3",
+			}
+
+			// Set keys
+			for key, value := range testData {
+				result := client.Set(ctx, key, value, 0)
+				Expect(result.Err()).NotTo(HaveOccurred())
+			}
+
+			// Verify keys are on different shards
+			type masterNode struct {
+				client *redis.Client
+				addr   string
+			}
+			var masterNodes []masterNode
+			var mu sync.Mutex
+
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				addr := master.Options().Addr
+				mu.Lock()
+				masterNodes = append(masterNodes, masterNode{client: master, addr: addr})
+				mu.Unlock()
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			keyLocations := make(map[string]string)
+			for key, value := range testData {
+				for _, node := range masterNodes {
+					getResult := node.client.Get(ctx, key)
+					if getResult.Err() == nil && getResult.Val() == value {
+						keyLocations[key] = node.addr
+						break
+					}
+				}
+			}
+
+			shardsUsed := make(map[string]bool)
+			for _, shardAddr := range keyLocations {
+				shardsUsed[shardAddr] = true
+			}
+			Expect(len(shardsUsed)).To(BeNumerically(">", 1))
+
+			keys := make([]string, 0, len(testData))
+			expectedValues := make([]interface{}, 0, len(testData))
+			for key, value := range testData {
+				keys = append(keys, key)
+				expectedValues = append(expectedValues, value)
+			}
+
+			// With routing policies enabled, MGET should work
+			mgetResult := client.MGet(ctx, keys...)
+			Expect(mgetResult.Err()).NotTo(HaveOccurred())
+
+			actualValues := mgetResult.Val()
+			Expect(len(actualValues)).To(Equal(len(expectedValues)))
+			for i, value := range actualValues {
+				if value != nil {
+					Expect(value).To(Equal(expectedValues[i]))
+				} else {
+					Expect(value).To(BeNil())
+				}
+			}
+
+			// Test 2: With routing policies disabled, MGET should fail with CROSSSLOT error
+			opt := redisClusterOptions()
+			opt.DisableRoutingPolicies = true
+			clientWithoutPolicies := cluster.newClusterClient(ctx, opt)
+			defer clientWithoutPolicies.Close()
+
+			// Try MGET with routing policies disabled - should fail with CROSSSLOT error
+			mgetResultDisabled := clientWithoutPolicies.MGet(ctx, keys...)
+			Expect(mgetResultDisabled.Err()).To(HaveOccurred())
+			Expect(mgetResultDisabled.Err().Error()).To(ContainSubstring("CROSSSLOT"))
+		})
+
 		It("should route keyless commands to arbitrary shards using round robin", func() {
 			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
 
