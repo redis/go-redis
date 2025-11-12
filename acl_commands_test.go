@@ -109,6 +109,14 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(password).NotTo(BeEmpty())
 	})
 
+	It("gen password with length", func() {
+		bit := 128
+		password, err := client.ACLGenPass(ctx, bit).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).NotTo(BeEmpty())
+		Expect(len(password)).To(Equal(bit / 4))
+	})
+
 	It("setuser and deluser", func() {
 		res, err := client.ACLList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
