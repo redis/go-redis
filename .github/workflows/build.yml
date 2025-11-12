@@ -2,7 +2,7 @@ name: Go
 
 on:
   push:
-    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski-redis/*', 'ce/*']
+    branches: [master, v9, 'v9.*']
   pull_request:
     branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski-redis/*', 'ce/*']
 
@@ -18,9 +18,9 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
+          - "8.4.x" # Redis CE 8.4
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
-          - "7.4.x" # Redis stack 7.4
         go-version:
           - "1.23.x"
           - "1.24.x"
@@ -44,9 +44,9 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
+            ["8.4.x"]="8.4-RC1-pre.2"
             ["8.2.x"]="8.2.1-pre"
             ["8.0.x"]="8.0.2"
-            ["7.4.x"]="rs-7.4.0-v5"
           )
           if [[ -v redis_version_mapping[$REDIS_VERSION] ]]; then
             echo "REDIS_VERSION=${redis_version_np}" >> $GITHUB_ENV
@@ -74,10 +74,9 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
+            - "8.4.x" # Redis CE 8.4
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
-            - "7.4.x" # Redis stack 7.4
-            - "7.2.x" # Redis stack 7.2
           go-version:
             - "1.23.x"
             - "1.24.x"

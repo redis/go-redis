@@ -3,6 +3,7 @@ package pool_test
 import (
 	"bufio"
 	"context"
+	"sync/atomic"
 	"unsafe"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -24,9 +25,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 	It("should use default buffer sizes when not specified", func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:      dummyDialer,
-			PoolSize:    int32(1),
-			PoolTimeout: 1000,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -46,11 +48,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 		customWriteSize := 64 * 1024 // 64KB
 
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        int32(1),
-			PoolTimeout:     1000,
-			ReadBufferSize:  customReadSize,
-			WriteBufferSize: customWriteSize,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
+			ReadBufferSize:     customReadSize,
+			WriteBufferSize:    customWriteSize,
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -67,11 +70,12 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 	It("should handle zero buffer sizes by using defaults", func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        int32(1),
-			PoolTimeout:     1000,
-			ReadBufferSize:  0, // Should use default
-			WriteBufferSize: 0, // Should use default
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
+			ReadBufferSize:     0, // Should use default
+			WriteBufferSize:    0, // Should use default
 		})
 
 		cn, err := connPool.NewConn(ctx)
@@ -103,9 +107,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 		// Test the scenario where someone creates a pool directly (like in tests)
 		// without setting ReadBufferSize and WriteBufferSize
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:      dummyDialer,
-			PoolSize:    int32(1),
-			PoolTimeout: 1000,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        1000,
 			// ReadBufferSize and WriteBufferSize are not set (will be 0)
 		})
 
@@ -129,9 +134,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 // cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64       // First field in pool.Conn
+		usedAt        atomic.Int64 // Second field (atomic)
+		lastPutAt     atomic.Int64 // Third field (atomic)
+		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -155,9 +161,10 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64       // First field in pool.Conn
+		usedAt        atomic.Int64 // Second field (atomic)
+		lastPutAt     atomic.Int64 // Third field (atomic)
+		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
