@@ -2464,17 +2464,6 @@ var _ = Describe("Command Tips tests", func() {
 		It("should route keyless commands to arbitrary shards using round robin", func() {
 			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
 
-			// // Create a cluster client with ReadOnly enabled to allow keyless readonly commands
-			// // to use ShardPicker for routing
-			// opt := redisClusterOptions()
-			// opt.ReadOnly = true
-			// readOnlyClient := cluster.newClusterClient(ctx, opt)
-			// defer readOnlyClient.Close()
-
-			// Eventually(func() error {
-			// 	return readOnlyClient.Ping(ctx).Err()
-			// }, 30*time.Second).ShouldNot(HaveOccurred())
-
 			var numMasters int
 			var numMastersMu sync.Mutex
 			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
@@ -2567,7 +2556,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(shardsWithEcho).To(Equal(1))
 
 			// Test Multiple ECHO commands should distribute across all shards using round robin
-			numCommands := numMasters * 3
+			numCommands := numMasters * 5
 
 			for i := 0; i < numCommands; i++ {
 				result := client.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
