@@ -34,6 +34,13 @@ func (c *ClusterClient) routeAndRun(ctx context.Context, cmd Cmder, node *cluste
 		policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 	}
 
+	// Set stepCount from cmdInfo if not already set
+	if cmd.stepCount() == 0 {
+		if cmdInfo := c.cmdInfo(ctx, cmd.Name()); cmdInfo != nil && cmdInfo.StepCount > 0 {
+			cmd.SetStepCount(cmdInfo.StepCount)
+		}
+	}
+
 	if policy == nil {
 		return c.executeDefault(ctx, cmd, policy, node)
 	}
@@ -104,6 +111,10 @@ func (c *ClusterClient) executeOnAllShards(ctx context.Context, cmd Cmder, polic
 func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy) error {
 	args := cmd.Args()
 	firstKeyPos := int(cmdFirstKeyPos(cmd))
+	stepCount := int(cmd.stepCount())
+	if stepCount == 0 {
+		stepCount = 1 // Default to 1 if not set
+	}
 
 	if firstKeyPos == 0 || firstKeyPos >= len(args) {
 		return fmt.Errorf("redis: multi-shard command %s has no key arguments", cmd.Name())
@@ -113,7 +124,7 @@ func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy
 	slotMap := make(map[int][]string)
 	keyOrder := make([]string, 0)
 
-	for i := firstKeyPos; i < len(args); i++ {
+	for i := firstKeyPos; i < len(args); i += stepCount {
 		key, ok := args[i].(string)
 		if !ok {
 			return fmt.Errorf("redis: non-string key at position %d: %v", i, args[i])
@@ -121,6 +132,12 @@ func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy
 
 		slot := hashtag.Slot(key)
 		slotMap[slot] = append(slotMap[slot], key)
+		for j := 1; j < stepCount; j++ {
+			if i+j >= len(args) {
+				break
+			}
+			slotMap[slot] = append(slotMap[slot], args[i+j].(string))
+		}
 		keyOrder = append(keyOrder, key)
 	}
 
@@ -371,6 +388,7 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 			}
 		}
 
+		// TODO: return multiple errors by order when we will implement multiple errors returning
 		if result.err != nil {
 			firstErr = result.err
 		}

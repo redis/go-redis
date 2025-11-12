@@ -201,6 +201,8 @@ type Cmder interface {
 	stringArg(int) string
 	firstKeyPos() int8
 	SetFirstKeyPos(int8)
+	stepCount() int8
+	SetStepCount(int8)
 
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
@@ -303,6 +305,7 @@ type baseCmd struct {
 	args         []interface{}
 	err          error
 	keyPos       int8
+	_stepCount   int8
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
@@ -361,6 +364,14 @@ func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
 
+func (cmd *baseCmd) stepCount() int8 {
+	return cmd._stepCount
+}
+
+func (cmd *baseCmd) SetStepCount(stepCount int8) {
+	cmd._stepCount = stepCount
+}
+
 func (cmd *baseCmd) SetErr(e error) {
 	cmd.err = e
 }
@@ -402,6 +413,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		args:         args,
 		err:          cmd.err,
 		keyPos:       cmd.keyPos,
+		_stepCount:   cmd._stepCount,
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
