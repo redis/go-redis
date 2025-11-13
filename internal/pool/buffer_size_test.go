@@ -3,6 +3,7 @@ package pool_test
 import (
 	"bufio"
 	"context"
+	"sync/atomic"
 	"unsafe"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -133,9 +134,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 // cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64       // First field in pool.Conn
+		usedAt        atomic.Int64 // Second field (atomic)
+		lastPutAt     atomic.Int64 // Third field (atomic)
+		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -159,9 +161,10 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64      // First field in pool.Conn
-		usedAt        int64       // Second field (atomic)
-		netConnAtomic interface{} // atomic.Value (interface{} has same size)
+		id            uint64       // First field in pool.Conn
+		usedAt        atomic.Int64 // Second field (atomic)
+		lastPutAt     atomic.Int64 // Third field (atomic)
+		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
