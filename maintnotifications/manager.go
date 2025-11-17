@@ -334,7 +334,7 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooks = append(hm.hooks, notificationHook)
 }
 
-// SetClusterStateReloadCallback sets the callback function that will be called when a SMOVED notification is received.
+// SetClusterStateReloadCallback sets the callback function that will be called when a SMIGRATED notification is received.
 // This allows node clients to notify their parent ClusterClient to reload cluster state.
 func (hm *Manager) SetClusterStateReloadCallback(callback ClusterStateReloadCallback) {
 	hm.clusterStateReloadCallback = callback
