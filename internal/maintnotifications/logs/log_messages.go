@@ -121,6 +121,10 @@ const (
 	UnrelaxedTimeoutMessage                       = "clearing relaxed timeout"
 	ManagerNotInitializedMessage                  = "manager not initialized"
 	FailedToMarkForHandoffMessage                 = "failed to mark connection for handoff"
+	InvalidSlotInSMigratingNotificationMessage    = "invalid slot in SMIGRATING notification"
+	InvalidSlotInSMigratedNotificationMessage     = "invalid slot in SMIGRATED notification"
+	SlotMigratingMessage                          = "slot is migrating, applying relaxed timeout"
+	SlotMigratedMessage                           = "slot has migrated, triggering cluster state reload"
 
 	// ========================================
 	// used in pool/conn
@@ -622,4 +626,34 @@ func ExtractDataFromLogMessage(logMessage string) map[string]interface{} {
 
 	// If JSON parsing fails, return empty map
 	return result
+}
+
+// Cluster notification functions
+func InvalidSlotInSMigratingNotification(slot interface{}) string {
+	message := fmt.Sprintf("%s: %v", InvalidSlotInSMigratingNotificationMessage, slot)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"slot": fmt.Sprintf("%v", slot),
+	})
+}
+
+func InvalidSlotInSMigratedNotification(slot interface{}) string {
+	message := fmt.Sprintf("%s: %v", InvalidSlotInSMigratedNotificationMessage, slot)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"slot": fmt.Sprintf("%v", slot),
+	})
+}
+
+func SlotMigrating(connID uint64, slot int64) string {
+	message := fmt.Sprintf("conn[%d] %s %d", connID, SlotMigratingMessage, slot)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"connID": connID,
+		"slot":   slot,
+	})
+}
+
+func SlotMigrated(slot int64) string {
+	message := fmt.Sprintf("%s %d", SlotMigratedMessage, slot)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"slot": slot,
+	})
 }

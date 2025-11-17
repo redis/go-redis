@@ -18,11 +18,13 @@ import (
 
 // Push notification type constants for maintenance
 const (
-	NotificationMoving      = "MOVING"
-	NotificationMigrating   = "MIGRATING"
-	NotificationMigrated    = "MIGRATED"
-	NotificationFailingOver = "FAILING_OVER"
-	NotificationFailedOver  = "FAILED_OVER"
+	NotificationMoving      = "MOVING"      // Per-connection handoff notification
+	NotificationMigrating   = "MIGRATING"   // Per-connection migration start notification - relaxes timeouts
+	NotificationMigrated    = "MIGRATED"    // Per-connection migration complete notification - clears relaxed timeouts
+	NotificationFailingOver = "FAILING_OVER" // Per-connection failover start notification - relaxes timeouts
+	NotificationFailedOver  = "FAILED_OVER"  // Per-connection failover complete notification - clears relaxed timeouts
+	NotificationSMigrating  = "SMIGRATING"   // Cluster slot migrating notification - relaxes timeouts
+	NotificationSMigrated   = "SMIGRATED"    // Cluster slot migrated notification - triggers cluster state reload
 )
 
 // maintenanceNotificationTypes contains all notification types that maintenance handles
@@ -32,6 +34,8 @@ var maintenanceNotificationTypes = []string{
 	NotificationMigrated,
 	NotificationFailingOver,
 	NotificationFailedOver,
+	NotificationSMigrating,
+	NotificationSMigrated,
 }
 
 // NotificationHook is called before and after notification processing
@@ -73,6 +77,9 @@ type Manager struct {
 	hooks        []NotificationHook
 	hooksMu      sync.RWMutex // Protects hooks slice
 	poolHooksRef *PoolHook
+
+	// Cluster state reload callback for SMIGRATED notifications
+	clusterStateReloadCallback ClusterStateReloadCallback
 }
 
 // MovingOperation tracks an active MOVING operation.
@@ -82,6 +89,13 @@ type MovingOperation struct {
 	StartTime   time.Time
 	Deadline    time.Time
 }
+
+// ClusterStateReloadCallback is a callback function that triggers cluster state reload.
+// This is used by node clients to notify their parent ClusterClient about SMIGRATED notifications.
+// The slot parameter indicates which slot has migrated (0-16383).
+// Currently, implementations typically reload the entire cluster state, but in the future
+// this could be optimized to reload only the specific slot.
+type ClusterStateReloadCallback func(ctx context.Context, slot int)
 
 // NewManager creates a new simplified manager.
 func NewManager(client interfaces.ClientInterface, pool pool.Pooler, config *Config) (*Manager, error) {
@@ -317,4 +331,18 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooksMu.Lock()
 	defer hm.hooksMu.Unlock()
 	hm.hooks = append(hm.hooks, notificationHook)
+}
+
+// SetClusterStateReloadCallback sets the callback function that will be called when a SMOVED notification is received.
+// This allows node clients to notify their parent ClusterClient to reload cluster state.
+func (hm *Manager) SetClusterStateReloadCallback(callback ClusterStateReloadCallback) {
+	hm.clusterStateReloadCallback = callback
+}
+
+// TriggerClusterStateReload calls the cluster state reload callback if it's set.
+// This is called when a SMOVED notification is received.
+func (hm *Manager) TriggerClusterStateReload(ctx context.Context, slot int) {
+	if hm.clusterStateReloadCallback != nil {
+		hm.clusterStateReloadCallback(ctx, slot)
+	}
 }

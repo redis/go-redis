@@ -146,7 +146,8 @@ type ClusterOptions struct {
 	// cluster upgrade notifications gracefully and manage connection/pool state
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications upgrades are in "auto" mode and will be enabled if the server supports it.
-	// The ClusterClient does not directly work with maintnotifications, it is up to the clients in the Nodes map to work with maintnotifications.
+	// The ClusterClient supports SMOVING notifications for cluster state management.
+	// Individual node clients handle other maintenance notifications (MOVING, MIGRATING, etc.).
 	MaintNotificationsConfig *maintnotifications.Config
 }
 
@@ -1037,6 +1038,23 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		pipeline:   c.processPipeline,
 		txPipeline: c.processTxPipeline,
 	})
+
+	// Set up SMOVING notification handling for cluster state reload
+	// When a node client receives a SMOVING notification, it should trigger
+	// cluster state reload on the parent ClusterClient
+	if opt.MaintNotificationsConfig != nil {
+		c.nodes.OnNewNode(func(nodeClient *Client) {
+			manager := nodeClient.GetMaintNotificationsManager()
+			if manager != nil {
+				manager.SetClusterStateReloadCallback(func(ctx context.Context, slot int) {
+					// Currently we reload the entire cluster state
+					// In the future, this could be optimized to reload only the specific slot
+					_ = slot // slot parameter available for future optimization
+					c.state.LazyReload()
+				})
+			}
+		})
+	}
 
 	return c
 }

@@ -49,6 +49,10 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 		err = snh.handleFailingOver(ctx, handlerCtx, modifiedNotification)
 	case NotificationFailedOver:
 		err = snh.handleFailedOver(ctx, handlerCtx, modifiedNotification)
+	case NotificationSMigrating:
+		err = snh.handleSMigrating(ctx, handlerCtx, modifiedNotification)
+	case NotificationSMigrated:
+		err = snh.handleSMigrated(ctx, handlerCtx, modifiedNotification)
 	default:
 		// Ignore other notification types (e.g., pub/sub messages)
 		err = nil
@@ -61,7 +65,9 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 }
 
 // handleMoving processes MOVING notifications.
-// ["MOVING", seqNum, timeS, endpoint] - per-connection handoff
+// MOVING indicates that a connection should be handed off to a new endpoint.
+// This is a per-connection notification that triggers connection handoff.
+// Expected format: ["MOVING", seqNum, timeS, endpoint]
 func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("MOVING", notification))
@@ -167,9 +173,10 @@ func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint 
 }
 
 // handleMigrating processes MIGRATING notifications.
+// MIGRATING indicates that a connection migration is starting.
+// This is a per-connection notification that applies relaxed timeouts.
+// Expected format: ["MIGRATING", ...]
 func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	// MIGRATING notifications indicate that a connection is about to be migrated
-	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("MIGRATING", notification))
 		return ErrInvalidNotification
@@ -195,9 +202,10 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 }
 
 // handleMigrated processes MIGRATED notifications.
+// MIGRATED indicates that a connection migration has completed.
+// This is a per-connection notification that clears relaxed timeouts.
+// Expected format: ["MIGRATED", ...]
 func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	// MIGRATED notifications indicate that a connection migration has completed
-	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("MIGRATED", notification))
 		return ErrInvalidNotification
@@ -224,9 +232,10 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 }
 
 // handleFailingOver processes FAILING_OVER notifications.
+// FAILING_OVER indicates that a failover is starting.
+// This is a per-connection notification that applies relaxed timeouts.
+// Expected format: ["FAILING_OVER", ...]
 func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	// FAILING_OVER notifications indicate that a connection is about to failover
-	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("FAILING_OVER", notification))
 		return ErrInvalidNotification
@@ -253,9 +262,10 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 }
 
 // handleFailedOver processes FAILED_OVER notifications.
+// FAILED_OVER indicates that a failover has completed.
+// This is a per-connection notification that clears relaxed timeouts.
+// Expected format: ["FAILED_OVER", ...]
 func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	// FAILED_OVER notifications indicate that a connection failover has completed
-	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("FAILED_OVER", notification))
 		return ErrInvalidNotification
@@ -278,5 +288,67 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 		internal.Logger.Printf(ctx, logs.UnrelaxedTimeout(connID))
 	}
 	conn.ClearRelaxedTimeout()
+	return nil
+}
+
+// handleSMigrating processes SMIGRATING notifications.
+// SMIGRATING indicates that a cluster slot is in the process of migrating to a different node.
+// This is a per-connection notification that applies relaxed timeouts during slot migration.
+// Expected format: ["SMIGRATING", slot, ...]
+func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATING", notification))
+		return ErrInvalidNotification
+	}
+
+	slot, ok := notification[1].(int64)
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidSlotInSMigratingNotification(notification[1]))
+		return ErrInvalidNotification
+	}
+
+	if handlerCtx.Conn == nil {
+		internal.Logger.Printf(ctx, logs.NoConnectionInHandlerContext("SMIGRATING"))
+		return ErrInvalidNotification
+	}
+
+	conn, ok := handlerCtx.Conn.(*pool.Conn)
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidConnectionTypeInHandlerContext("SMIGRATING", handlerCtx.Conn, handlerCtx))
+		return ErrInvalidNotification
+	}
+
+	// Apply relaxed timeout to this specific connection
+	if internal.LogLevel.InfoOrAbove() {
+		internal.Logger.Printf(ctx, logs.SlotMigrating(conn.GetID(), slot))
+	}
+	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+	return nil
+}
+
+// handleSMigrated processes SMIGRATED notifications.
+// SMIGRATED indicates that a cluster slot has finished migrating to a different node.
+// This is a cluster-level notification that triggers cluster state reload.
+// Expected format: ["SMIGRATED", slot, ...]
+func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+	if len(notification) < 2 {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
+		return ErrInvalidNotification
+	}
+
+	slot, ok := notification[1].(int64)
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidSlotInSMigratedNotification(notification[1]))
+		return ErrInvalidNotification
+	}
+
+	if internal.LogLevel.InfoOrAbove() {
+		internal.Logger.Printf(ctx, logs.SlotMigrated(slot))
+	}
+
+	// Trigger cluster state reload via callback, passing the slot ID
+	// This allows for future optimization of partial slot reloads
+	snh.manager.TriggerClusterStateReload(ctx, int(slot))
+
 	return nil
 }
