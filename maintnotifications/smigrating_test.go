@@ -34,8 +34,8 @@ func TestSMigratingNotificationHandler(t *testing.T) {
 		// Create a mock connection
 		conn := createMockConnection()
 
-		// Create SMIGRATING notification: ["SMIGRATING", slot]
-		notification := []interface{}{"SMIGRATING", int64(1234)}
+		// Create SMIGRATING notification: ["SMIGRATING", SeqID, slot/range, ...]
+		notification := []interface{}{"SMIGRATING", int64(123), "1234", "5000-6000"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{
@@ -76,7 +76,7 @@ func TestSMigratingNotificationHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("InvalidSMigratingNotification_InvalidSlot", func(t *testing.T) {
+	t.Run("InvalidSMigratingNotification_InvalidSeqID", func(t *testing.T) {
 		config := DefaultConfig()
 		manager := &Manager{
 			config: config,
@@ -86,8 +86,8 @@ func TestSMigratingNotificationHandler(t *testing.T) {
 			operationsManager: manager,
 		}
 
-		// Invalid notification - slot is not int64
-		notification := []interface{}{"SMIGRATING", "not-a-number"}
+		// Invalid notification - SeqID is not int64
+		notification := []interface{}{"SMIGRATING", "not-a-number", "1234"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{}
@@ -108,7 +108,7 @@ func TestSMigratingNotificationHandler(t *testing.T) {
 			operationsManager: manager,
 		}
 
-		notification := []interface{}{"SMIGRATING", int64(1234)}
+		notification := []interface{}{"SMIGRATING", int64(123), "1234"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{} // No connection
@@ -147,13 +147,15 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 	t.Run("ValidSMigratedNotification", func(t *testing.T) {
 		// Track if callback was called
 		var callbackCalled atomic.Bool
-		var receivedSlot int
+		var receivedHostPort string
+		var receivedSlotRanges []string
 
 		// Create a mock manager with callback
 		manager := &Manager{
-			clusterStateReloadCallback: func(ctx context.Context, slot int) {
+			clusterStateReloadCallback: func(ctx context.Context, hostPort string, slotRanges []string) {
 				callbackCalled.Store(true)
-				receivedSlot = slot
+				receivedHostPort = hostPort
+				receivedSlotRanges = slotRanges
 			},
 		}
 
@@ -163,8 +165,8 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 			operationsManager: manager,
 		}
 
-		// Create SMIGRATED notification: ["SMIGRATED", slot]
-		notification := []interface{}{"SMIGRATED", int64(1234)}
+		// Create SMIGRATED notification: ["SMIGRATED", SeqID, host:port, slot/range, ...]
+		notification := []interface{}{"SMIGRATED", int64(123), "127.0.0.1:6379", "1234", "5000-6000"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{}
@@ -180,9 +182,22 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 			t.Error("Cluster state reload callback should have been called")
 		}
 
-		// Verify slot was passed correctly
-		if receivedSlot != 1234 {
-			t.Errorf("Expected slot 1234, got %d", receivedSlot)
+		// Verify host:port was passed correctly
+		if receivedHostPort != "127.0.0.1:6379" {
+			t.Errorf("Expected host:port '127.0.0.1:6379', got '%s'", receivedHostPort)
+		}
+
+		// Verify slot ranges were passed correctly
+		if len(receivedSlotRanges) != 2 {
+			t.Errorf("Expected 2 slot ranges, got %d", len(receivedSlotRanges))
+		}
+		if len(receivedSlotRanges) >= 2 {
+			if receivedSlotRanges[0] != "1234" {
+				t.Errorf("Expected first slot range '1234', got '%s'", receivedSlotRanges[0])
+			}
+			if receivedSlotRanges[1] != "5000-6000" {
+				t.Errorf("Expected second slot range '5000-6000', got '%s'", receivedSlotRanges[1])
+			}
 		}
 	})
 
@@ -205,15 +220,34 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 		}
 	})
 
-	t.Run("InvalidSMigratedNotification_InvalidSlot", func(t *testing.T) {
+	t.Run("InvalidSMigratedNotification_InvalidSeqID", func(t *testing.T) {
 		manager := &Manager{}
 		handler := &NotificationHandler{
 			manager:           manager,
 			operationsManager: manager,
 		}
 
-		// Invalid notification - slot is not int64
-		notification := []interface{}{"SMIGRATED", "not-a-number"}
+		// Invalid notification - SeqID is not int64
+		notification := []interface{}{"SMIGRATED", "not-a-number", "127.0.0.1:6379", "1234"}
+
+		ctx := context.Background()
+		handlerCtx := push.NotificationHandlerContext{}
+
+		err := handler.handleSMigrated(ctx, handlerCtx, notification)
+		if err != ErrInvalidNotification {
+			t.Errorf("Expected ErrInvalidNotification, got: %v", err)
+		}
+	})
+
+	t.Run("InvalidSMigratedNotification_InvalidHostPort", func(t *testing.T) {
+		manager := &Manager{}
+		handler := &NotificationHandler{
+			manager:           manager,
+			operationsManager: manager,
+		}
+
+		// Invalid notification - host:port is not string
+		notification := []interface{}{"SMIGRATED", int64(123), int64(999), "1234"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{}
@@ -232,7 +266,7 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 			operationsManager: manager,
 		}
 
-		notification := []interface{}{"SMIGRATED", int64(1234)}
+		notification := []interface{}{"SMIGRATED", int64(123), "127.0.0.1:6379", "1234"}
 
 		ctx := context.Background()
 		handlerCtx := push.NotificationHandlerContext{}
@@ -271,20 +305,23 @@ func TestClusterStateReloadCallback(t *testing.T) {
 	t.Run("SetAndTriggerCallback", func(t *testing.T) {
 		var callbackCalled atomic.Bool
 		var receivedCtx context.Context
-		var receivedSlot int
+		var receivedHostPort string
+		var receivedSlotRanges []string
 
 		manager := &Manager{}
-		callback := func(ctx context.Context, slot int) {
+		callback := func(ctx context.Context, hostPort string, slotRanges []string) {
 			callbackCalled.Store(true)
 			receivedCtx = ctx
-			receivedSlot = slot
+			receivedHostPort = hostPort
+			receivedSlotRanges = slotRanges
 		}
 
 		manager.SetClusterStateReloadCallback(callback)
 
 		ctx := context.Background()
-		testSlot := 1234
-		manager.TriggerClusterStateReload(ctx, testSlot)
+		testHostPort := "127.0.0.1:6379"
+		testSlotRanges := []string{"1234", "5000-6000"}
+		manager.TriggerClusterStateReload(ctx, testHostPort, testSlotRanges)
 
 		if !callbackCalled.Load() {
 			t.Error("Callback should have been called")
@@ -294,8 +331,12 @@ func TestClusterStateReloadCallback(t *testing.T) {
 			t.Error("Callback should receive the correct context")
 		}
 
-		if receivedSlot != testSlot {
-			t.Errorf("Callback should receive the correct slot, got %d, want %d", receivedSlot, testSlot)
+		if receivedHostPort != testHostPort {
+			t.Errorf("Callback should receive the correct host:port, got %s, want %s", receivedHostPort, testHostPort)
+		}
+
+		if len(receivedSlotRanges) != len(testSlotRanges) {
+			t.Errorf("Callback should receive the correct slot ranges, got %v, want %v", receivedSlotRanges, testSlotRanges)
 		}
 	})
 
@@ -303,7 +344,7 @@ func TestClusterStateReloadCallback(t *testing.T) {
 		manager := &Manager{}
 		// Should not panic
 		ctx := context.Background()
-		manager.TriggerClusterStateReload(ctx, 1234)
+		manager.TriggerClusterStateReload(ctx, "127.0.0.1:6379", []string{"1234"})
 	})
 }
 

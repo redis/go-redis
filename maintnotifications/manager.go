@@ -92,10 +92,11 @@ type MovingOperation struct {
 
 // ClusterStateReloadCallback is a callback function that triggers cluster state reload.
 // This is used by node clients to notify their parent ClusterClient about SMIGRATED notifications.
-// The slot parameter indicates which slot has migrated (0-16383).
+// The hostPort parameter indicates the destination node (e.g., "127.0.0.1:6379").
+// The slotRanges parameter contains the migrated slots (e.g., ["1234", "5000-6000"]).
 // Currently, implementations typically reload the entire cluster state, but in the future
-// this could be optimized to reload only the specific slot.
-type ClusterStateReloadCallback func(ctx context.Context, slot int)
+// this could be optimized to reload only the specific slots.
+type ClusterStateReloadCallback func(ctx context.Context, hostPort string, slotRanges []string)
 
 // NewManager creates a new simplified manager.
 func NewManager(client interfaces.ClientInterface, pool pool.Pooler, config *Config) (*Manager, error) {
@@ -340,9 +341,9 @@ func (hm *Manager) SetClusterStateReloadCallback(callback ClusterStateReloadCall
 }
 
 // TriggerClusterStateReload calls the cluster state reload callback if it's set.
-// This is called when a SMOVED notification is received.
-func (hm *Manager) TriggerClusterStateReload(ctx context.Context, slot int) {
+// This is called when a SMIGRATED notification is received.
+func (hm *Manager) TriggerClusterStateReload(ctx context.Context, hostPort string, slotRanges []string) {
 	if hm.clusterStateReloadCallback != nil {
-		hm.clusterStateReloadCallback(ctx, slot)
+		hm.clusterStateReloadCallback(ctx, hostPort, slotRanges)
 	}
 }

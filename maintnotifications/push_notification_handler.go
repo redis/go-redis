@@ -294,17 +294,28 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 // handleSMigrating processes SMIGRATING notifications.
 // SMIGRATING indicates that a cluster slot is in the process of migrating to a different node.
 // This is a per-connection notification that applies relaxed timeouts during slot migration.
-// Expected format: ["SMIGRATING", slot, ...]
+// Expected format: ["SMIGRATING", SeqID, slot/range1-range2, ...]
 func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	if len(notification) < 2 {
+	if len(notification) < 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATING", notification))
 		return ErrInvalidNotification
 	}
 
-	slot, ok := notification[1].(int64)
+	// Extract SeqID (position 1)
+	seqID, ok := notification[1].(int64)
 	if !ok {
-		internal.Logger.Printf(ctx, logs.InvalidSlotInSMigratingNotification(notification[1]))
+		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratingNotification(notification[1]))
 		return ErrInvalidNotification
+	}
+
+	// Extract slot ranges (position 2+)
+	// For now, we just extract them for logging
+	// Format can be: single slot "1234" or range "100-200"
+	var slotRanges []string
+	for i := 2; i < len(notification); i++ {
+		if slotRange, ok := notification[i].(string); ok {
+			slotRanges = append(slotRanges, slotRange)
+		}
 	}
 
 	if handlerCtx.Conn == nil {
@@ -320,7 +331,7 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 
 	// Apply relaxed timeout to this specific connection
 	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(ctx, logs.SlotMigrating(conn.GetID(), slot))
+		internal.Logger.Printf(ctx, logs.SlotMigrating(conn.GetID(), seqID, slotRanges))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
@@ -329,26 +340,48 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // handleSMigrated processes SMIGRATED notifications.
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
-// Expected format: ["SMIGRATED", slot, ...]
+// Expected format: ["SMIGRATED", SeqID, host:port, slot1/range1-range2, ...]
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	if len(notification) < 2 {
+	if len(notification) < 4 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
 		return ErrInvalidNotification
 	}
 
-	slot, ok := notification[1].(int64)
+	// Extract SeqID (position 1)
+	seqID, ok := notification[1].(int64)
 	if !ok {
-		internal.Logger.Printf(ctx, logs.InvalidSlotInSMigratedNotification(notification[1]))
+		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratedNotification(notification[1]))
 		return ErrInvalidNotification
 	}
 
-	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(ctx, logs.SlotMigrated(slot))
+	// Extract host:port (position 2)
+	hostPort, ok := notification[2].(string)
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidHostPortInSMigratedNotification(notification[2]))
+		return ErrInvalidNotification
 	}
 
-	// Trigger cluster state reload via callback, passing the slot ID
-	// This allows for future optimization of partial slot reloads
-	snh.manager.TriggerClusterStateReload(ctx, int(slot))
+	// Extract slot ranges (position 3+)
+	// For now, we just extract them for logging
+	// Format can be: single slot "1234" or range "100-200"
+	var slotRanges []string
+	for i := 3; i < len(notification); i++ {
+		if slotRange, ok := notification[i].(string); ok {
+			slotRanges = append(slotRanges, slotRange)
+		}
+	}
+
+	if internal.LogLevel.InfoOrAbove() {
+		internal.Logger.Printf(ctx, logs.SlotMigrated(seqID, hostPort, slotRanges))
+	}
+
+	// Trigger cluster state reload via callback, passing host:port and slot ranges
+	// For now, implementations just log these and trigger a full reload
+	// In the future, this could be optimized to reload only the specific slots
+	snh.manager.TriggerClusterStateReload(ctx, hostPort, slotRanges)
+
+	// TODO: Should we also clear the relaxed timeout here (like MIGRATED does)?
+	// Currently we only trigger state reload, but the timeout stays relaxed
 
 	return nil
 }

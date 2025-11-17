@@ -45,29 +45,35 @@ func TestClusterClientSMigratedCallback(t *testing.T) {
 			return
 		}
 
-		// Temporarily replace the cluster state reload with our test version
-		var receivedSlot int
-		originalCallback := manager
-		manager.SetClusterStateReloadCallback(func(ctx context.Context, slot int) {
+		// Set up cluster state reload callback for testing
+		var receivedHostPort string
+		var receivedSlotRanges []string
+		manager.SetClusterStateReloadCallback(func(ctx context.Context, hostPort string, slotRanges []string) {
 			reloadCalled.Store(true)
-			receivedSlot = slot
+			receivedHostPort = hostPort
+			receivedSlotRanges = slotRanges
 		})
 
 		// Trigger the callback (this is what SMIGRATED notification would do)
 		ctx := context.Background()
-		testSlot := 1234
-		manager.TriggerClusterStateReload(ctx, testSlot)
+		testHostPort := "127.0.0.1:6379"
+		testSlotRanges := []string{"1234", "5000-6000"}
+		manager.TriggerClusterStateReload(ctx, testHostPort, testSlotRanges)
 
 		// Verify callback was called
 		if !reloadCalled.Load() {
 			t.Error("Cluster state reload callback should have been called")
 		}
 
-		// Verify slot was passed correctly
-		if receivedSlot != testSlot {
-			t.Errorf("Expected slot %d, got %d", testSlot, receivedSlot)
+		// Verify host:port was passed correctly
+		if receivedHostPort != testHostPort {
+			t.Errorf("Expected host:port %s, got %s", testHostPort, receivedHostPort)
 		}
-		_ = originalCallback
+
+		// Verify slot ranges were passed correctly
+		if len(receivedSlotRanges) != len(testSlotRanges) {
+			t.Errorf("Expected %d slot ranges, got %d", len(testSlotRanges), len(receivedSlotRanges))
+		}
 	})
 
 	t.Run("NoCallbackWithoutMaintNotifications", func(t *testing.T) {
@@ -121,22 +127,29 @@ func TestClusterClientSMigratedIntegration(t *testing.T) {
 		// We can't directly test LazyReload being called without a real cluster,
 		// but we can verify the callback mechanism works
 		var callbackWorks atomic.Bool
-		var receivedSlot int
-		manager.SetClusterStateReloadCallback(func(ctx context.Context, slot int) {
+		var receivedHostPort string
+		var receivedSlotRanges []string
+		manager.SetClusterStateReloadCallback(func(ctx context.Context, hostPort string, slotRanges []string) {
 			callbackWorks.Store(true)
-			receivedSlot = slot
+			receivedHostPort = hostPort
+			receivedSlotRanges = slotRanges
 		})
 
 		ctx := context.Background()
-		testSlot := 5678
-		manager.TriggerClusterStateReload(ctx, testSlot)
+		testHostPort := "127.0.0.1:7000"
+		testSlotRanges := []string{"5678"}
+		manager.TriggerClusterStateReload(ctx, testHostPort, testSlotRanges)
 
 		if !callbackWorks.Load() {
 			t.Error("Callback mechanism should work")
 		}
 
-		if receivedSlot != testSlot {
-			t.Errorf("Expected slot %d, got %d", testSlot, receivedSlot)
+		if receivedHostPort != testHostPort {
+			t.Errorf("Expected host:port %s, got %s", testHostPort, receivedHostPort)
+		}
+
+		if len(receivedSlotRanges) != 1 || receivedSlotRanges[0] != "5678" {
+			t.Errorf("Expected slot ranges [5678], got %v", receivedSlotRanges)
 		}
 	})
 }

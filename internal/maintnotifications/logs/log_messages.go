@@ -121,10 +121,11 @@ const (
 	UnrelaxedTimeoutMessage                       = "clearing relaxed timeout"
 	ManagerNotInitializedMessage                  = "manager not initialized"
 	FailedToMarkForHandoffMessage                 = "failed to mark connection for handoff"
-	InvalidSlotInSMigratingNotificationMessage    = "invalid slot in SMIGRATING notification"
-	InvalidSlotInSMigratedNotificationMessage     = "invalid slot in SMIGRATED notification"
-	SlotMigratingMessage                          = "slot is migrating, applying relaxed timeout"
-	SlotMigratedMessage                           = "slot has migrated, triggering cluster state reload"
+	InvalidSeqIDInSMigratingNotificationMessage   = "invalid SeqID in SMIGRATING notification"
+	InvalidSeqIDInSMigratedNotificationMessage    = "invalid SeqID in SMIGRATED notification"
+	InvalidHostPortInSMigratedNotificationMessage = "invalid host:port in SMIGRATED notification"
+	SlotMigratingMessage                          = "slots migrating, applying relaxed timeout"
+	SlotMigratedMessage                           = "slots migrated, triggering cluster state reload"
 
 	// ========================================
 	// used in pool/conn
@@ -629,31 +630,41 @@ func ExtractDataFromLogMessage(logMessage string) map[string]interface{} {
 }
 
 // Cluster notification functions
-func InvalidSlotInSMigratingNotification(slot interface{}) string {
-	message := fmt.Sprintf("%s: %v", InvalidSlotInSMigratingNotificationMessage, slot)
+func InvalidSeqIDInSMigratingNotification(seqID interface{}) string {
+	message := fmt.Sprintf("%s: %v", InvalidSeqIDInSMigratingNotificationMessage, seqID)
 	return appendJSONIfDebug(message, map[string]interface{}{
-		"slot": fmt.Sprintf("%v", slot),
+		"seqID": fmt.Sprintf("%v", seqID),
 	})
 }
 
-func InvalidSlotInSMigratedNotification(slot interface{}) string {
-	message := fmt.Sprintf("%s: %v", InvalidSlotInSMigratedNotificationMessage, slot)
+func InvalidSeqIDInSMigratedNotification(seqID interface{}) string {
+	message := fmt.Sprintf("%s: %v", InvalidSeqIDInSMigratedNotificationMessage, seqID)
 	return appendJSONIfDebug(message, map[string]interface{}{
-		"slot": fmt.Sprintf("%v", slot),
+		"seqID": fmt.Sprintf("%v", seqID),
 	})
 }
 
-func SlotMigrating(connID uint64, slot int64) string {
-	message := fmt.Sprintf("conn[%d] %s %d", connID, SlotMigratingMessage, slot)
+func InvalidHostPortInSMigratedNotification(hostPort interface{}) string {
+	message := fmt.Sprintf("%s: %v", InvalidHostPortInSMigratedNotificationMessage, hostPort)
 	return appendJSONIfDebug(message, map[string]interface{}{
-		"connID": connID,
-		"slot":   slot,
+		"hostPort": fmt.Sprintf("%v", hostPort),
 	})
 }
 
-func SlotMigrated(slot int64) string {
-	message := fmt.Sprintf("%s %d", SlotMigratedMessage, slot)
+func SlotMigrating(connID uint64, seqID int64, slotRanges []string) string {
+	message := fmt.Sprintf("conn[%d] %s seqID=%d slots=%v", connID, SlotMigratingMessage, seqID, slotRanges)
 	return appendJSONIfDebug(message, map[string]interface{}{
-		"slot": slot,
+		"connID":     connID,
+		"seqID":      seqID,
+		"slotRanges": slotRanges,
+	})
+}
+
+func SlotMigrated(seqID int64, hostPort string, slotRanges []string) string {
+	message := fmt.Sprintf("%s seqID=%d host:port=%s slots=%v", SlotMigratedMessage, seqID, hostPort, slotRanges)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"seqID":      seqID,
+		"hostPort":   hostPort,
+		"slotRanges": slotRanges,
 	})
 }
