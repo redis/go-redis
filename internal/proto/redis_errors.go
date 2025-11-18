@@ -253,7 +253,7 @@ func IsAskError(err error) (*AskError, bool) {
 		// Parse: ASK 3999 127.0.0.1:6381
 		parts := strings.Split(s, " ")
 		if len(parts) == 3 {
-			return &AskError{msg: s}, true
+			return &AskError{msg: s, addr: parts[2]}, true
 		}
 	}
 	return nil, false
