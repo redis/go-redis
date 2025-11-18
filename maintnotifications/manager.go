@@ -69,6 +69,10 @@ type Manager struct {
 	// MOVING operation tracking - using sync.Map for better concurrent performance
 	activeMovingOps sync.Map // map[MovingOperationKey]*MovingOperation
 
+	// SMIGRATED notification deduplication - tracks processed SeqIDs
+	// Multiple connections may receive the same SMIGRATED notification
+	processedSMigratedSeqIDs sync.Map // map[int64]bool
+
 	// Atomic state tracking - no locks needed for state queries
 	activeOperationCount atomic.Int64 // Number of active operations
 	closed               atomic.Bool  // Manager closed state
@@ -236,6 +240,15 @@ func (hm *Manager) IsHandoffInProgress() bool {
 // Uses atomic counter for lock-free operation.
 func (hm *Manager) GetActiveOperationCount() int64 {
 	return hm.activeOperationCount.Load()
+}
+
+// MarkSMigratedSeqIDProcessed attempts to mark a SMIGRATED SeqID as processed.
+// Returns true if this is the first time processing this SeqID (should process),
+// false if it was already processed (should skip).
+// This prevents duplicate processing when multiple connections receive the same notification.
+func (hm *Manager) MarkSMigratedSeqIDProcessed(seqID int64) bool {
+	_, alreadyProcessed := hm.processedSMigratedSeqIDs.LoadOrStore(seqID, true)
+	return !alreadyProcessed // Return true if NOT already processed
 }
 
 // Close closes the manager.

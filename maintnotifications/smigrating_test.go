@@ -201,6 +201,64 @@ func TestSMigratedNotificationHandler(t *testing.T) {
 		}
 	})
 
+t.Run("SMigratedNotification_Deduplication", func(t *testing.T) {
+	// Track callback invocations
+	var callbackCount atomic.Int32
+
+	// Create a mock manager with callback
+	manager := &Manager{
+		clusterStateReloadCallback: func(ctx context.Context, hostPort string, slotRanges []string) {
+			callbackCount.Add(1)
+		},
+	}
+
+	// Create notification handler
+	handler := &NotificationHandler{
+		manager:           manager,
+		operationsManager: manager,
+	}
+
+	// Create SMIGRATED notification with SeqID 456
+	notification := []interface{}{"SMIGRATED", int64(456), "127.0.0.1:6379", "1234"}
+
+	ctx := context.Background()
+	handlerCtx := push.NotificationHandlerContext{}
+
+	// Handle the notification first time
+	err := handler.handleSMigrated(ctx, handlerCtx, notification)
+	if err != nil {
+		t.Errorf("handleSMigrated should not error on first call: %v", err)
+	}
+
+	// Verify callback was called once
+	if callbackCount.Load() != 1 {
+		t.Errorf("Expected callback to be called once, got %d", callbackCount.Load())
+	}
+
+	// Handle the same notification again (simulating multiple connections)
+	err = handler.handleSMigrated(ctx, handlerCtx, notification)
+	if err != nil {
+		t.Errorf("handleSMigrated should not error on second call: %v", err)
+	}
+
+	// Verify callback was NOT called again (still 1)
+	if callbackCount.Load() != 1 {
+		t.Errorf("Expected callback to be called only once (deduplication), got %d", callbackCount.Load())
+	}
+
+	// Handle a different notification with different SeqID
+	notification2 := []interface{}{"SMIGRATED", int64(789), "127.0.0.1:6380", "5678"}
+	err = handler.handleSMigrated(ctx, handlerCtx, notification2)
+	if err != nil {
+		t.Errorf("handleSMigrated should not error on third call: %v", err)
+	}
+
+	// Verify callback was called again (now 2)
+	if callbackCount.Load() != 2 {
+		t.Errorf("Expected callback to be called twice (different SeqID), got %d", callbackCount.Load())
+	}
+})
+
 	t.Run("InvalidSMigratedNotification_TooShort", func(t *testing.T) {
 		manager := &Manager{}
 		handler := &NotificationHandler{

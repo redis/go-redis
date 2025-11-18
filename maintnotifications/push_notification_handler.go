@@ -341,6 +341,7 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
 // Expected format: ["SMIGRATED", SeqID, host:port, slot1/range1-range2, ...]
+// Note: Multiple connections may receive the same notification, so we deduplicate by SeqID.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 4 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
@@ -352,6 +353,15 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	if !ok {
 		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratedNotification(notification[1]))
 		return ErrInvalidNotification
+	}
+
+	// Deduplicate by SeqID - multiple connections may receive the same notification
+	if !snh.manager.MarkSMigratedSeqIDProcessed(seqID) {
+		// Already processed this SeqID, skip
+		if internal.LogLevel.DebugOrAbove() {
+			internal.Logger.Printf(ctx, "cluster: SMIGRATED notification with SeqID %d already processed, skipping", seqID)
+		}
+		return nil
 	}
 
 	// Extract host:port (position 2)
