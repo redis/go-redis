@@ -19,11 +19,6 @@ func (e *LoadingError) Error() string {
 
 func (e *LoadingError) RedisError() {}
 
-func (e *LoadingError) Is(target error) bool {
-	_, ok := target.(*LoadingError)
-	return ok
-}
-
 // NewLoadingError creates a new LoadingError with the given message.
 func NewLoadingError(msg string) *LoadingError {
 	return &LoadingError{msg: msg}
@@ -39,11 +34,6 @@ func (e *ReadOnlyError) Error() string {
 }
 
 func (e *ReadOnlyError) RedisError() {}
-
-func (e *ReadOnlyError) Is(target error) bool {
-	_, ok := target.(*ReadOnlyError)
-	return ok
-}
 
 // NewReadOnlyError creates a new ReadOnlyError with the given message.
 func NewReadOnlyError(msg string) *ReadOnlyError {
@@ -61,11 +51,6 @@ func (e *MovedError) Error() string {
 }
 
 func (e *MovedError) RedisError() {}
-
-func (e *MovedError) Is(target error) bool {
-	_, ok := target.(*MovedError)
-	return ok
-}
 
 // Addr returns the address of the node where the key has been moved.
 func (e *MovedError) Addr() string {
@@ -89,11 +74,6 @@ func (e *AskError) Error() string {
 
 func (e *AskError) RedisError() {}
 
-func (e *AskError) Is(target error) bool {
-	_, ok := target.(*AskError)
-	return ok
-}
-
 // Addr returns the address of the node to ask.
 func (e *AskError) Addr() string {
 	return e.addr
@@ -115,11 +95,6 @@ func (e *ClusterDownError) Error() string {
 
 func (e *ClusterDownError) RedisError() {}
 
-func (e *ClusterDownError) Is(target error) bool {
-	_, ok := target.(*ClusterDownError)
-	return ok
-}
-
 // NewClusterDownError creates a new ClusterDownError with the given message.
 func NewClusterDownError(msg string) *ClusterDownError {
 	return &ClusterDownError{msg: msg}
@@ -135,11 +110,6 @@ func (e *TryAgainError) Error() string {
 }
 
 func (e *TryAgainError) RedisError() {}
-
-func (e *TryAgainError) Is(target error) bool {
-	_, ok := target.(*TryAgainError)
-	return ok
-}
 
 // NewTryAgainError creates a new TryAgainError with the given message.
 func NewTryAgainError(msg string) *TryAgainError {
@@ -157,11 +127,6 @@ func (e *MasterDownError) Error() string {
 
 func (e *MasterDownError) RedisError() {}
 
-func (e *MasterDownError) Is(target error) bool {
-	_, ok := target.(*MasterDownError)
-	return ok
-}
-
 // NewMasterDownError creates a new MasterDownError with the given message.
 func NewMasterDownError(msg string) *MasterDownError {
 	return &MasterDownError{msg: msg}
@@ -177,11 +142,6 @@ func (e *MaxClientsError) Error() string {
 }
 
 func (e *MaxClientsError) RedisError() {}
-
-func (e *MaxClientsError) Is(target error) bool {
-	_, ok := target.(*MaxClientsError)
-	return ok
-}
 
 // NewMaxClientsError creates a new MaxClientsError with the given message.
 func NewMaxClientsError(msg string) *MaxClientsError {

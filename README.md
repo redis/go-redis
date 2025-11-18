@@ -476,7 +476,7 @@ func (h MyHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
                 Err:       err,
             }
             cmd.SetErr(wrappedErr)
-            return wrappedErr
+            return wrappedErr  // Return wrapped error to preserve it
         }
         return nil
     }
