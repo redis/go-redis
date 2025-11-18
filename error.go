@@ -78,23 +78,23 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
-	s := err.Error()
-	if s == "ERR max number of clients reached" {
+	// Check for typed Redis errors using errors.As (works with wrapped errors)
+	if proto.IsMaxClientsError(err) {
 		return true
 	}
-	if strings.HasPrefix(s, "LOADING ") {
+	if proto.IsLoadingError(err) {
 		return true
 	}
-	if strings.HasPrefix(s, "READONLY ") {
+	if proto.IsReadOnlyError(err) {
 		return true
 	}
-	if strings.HasPrefix(s, "MASTERDOWN ") {
+	if proto.IsMasterDownError(err) {
 		return true
 	}
-	if strings.HasPrefix(s, "CLUSTERDOWN ") {
+	if proto.IsClusterDownError(err) {
 		return true
 	}
-	if strings.HasPrefix(s, "TRYAGAIN ") {
+	if proto.IsTryAgainError(err) {
 		return true
 	}
 
@@ -146,40 +146,97 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 		return
 	}
 
-	s := err.Error()
-	switch {
-	case strings.HasPrefix(s, "MOVED "):
-		moved = true
-	case strings.HasPrefix(s, "ASK "):
-		ask = true
-	default:
-		return
+	// Check for typed MovedError
+	if movedErr, ok := proto.IsMovedError(err); ok {
+		addr = movedErr.Addr()
+		addr = internal.GetAddr(addr)
+		return true, false, addr
 	}
 
-	ind := strings.LastIndex(s, " ")
-	if ind == -1 {
-		return false, false, ""
+	// Check for typed AskError
+	if askErr, ok := proto.IsAskError(err); ok {
+		addr = askErr.Addr()
+		addr = internal.GetAddr(addr)
+		return false, true, addr
 	}
 
-	addr = s[ind+1:]
-	addr = internal.GetAddr(addr)
-	return
+	return false, false, ""
 }
 
 func isLoadingError(err error) bool {
-	return strings.HasPrefix(err.Error(), "LOADING ")
+	return proto.IsLoadingError(err)
 }
 
 func isReadOnlyError(err error) bool {
-	return strings.HasPrefix(err.Error(), "READONLY ")
+	return proto.IsReadOnlyError(err)
 }
 
 func isMovedSameConnAddr(err error, addr string) bool {
-	redisError := err.Error()
-	if !strings.HasPrefix(redisError, "MOVED ") {
-		return false
+	if movedErr, ok := proto.IsMovedError(err); ok {
+		return strings.HasSuffix(movedErr.Addr(), addr)
 	}
-	return strings.HasSuffix(redisError, " "+addr)
+	return false
+}
+
+//------------------------------------------------------------------------------
+
+// Typed error checking functions for public use.
+// These functions work correctly even when errors are wrapped in hooks.
+
+// IsLoadingError checks if an error is a Redis LOADING error, even if wrapped.
+// LOADING errors occur when Redis is loading the dataset in memory.
+func IsLoadingError(err error) bool {
+	return proto.IsLoadingError(err)
+}
+
+// IsReadOnlyError checks if an error is a Redis READONLY error, even if wrapped.
+// READONLY errors occur when trying to write to a read-only replica.
+func IsReadOnlyError(err error) bool {
+	return proto.IsReadOnlyError(err)
+}
+
+// IsClusterDownError checks if an error is a Redis CLUSTERDOWN error, even if wrapped.
+// CLUSTERDOWN errors occur when the cluster is down.
+func IsClusterDownError(err error) bool {
+	return proto.IsClusterDownError(err)
+}
+
+// IsTryAgainError checks if an error is a Redis TRYAGAIN error, even if wrapped.
+// TRYAGAIN errors occur when a command cannot be processed and should be retried.
+func IsTryAgainError(err error) bool {
+	return proto.IsTryAgainError(err)
+}
+
+// IsMasterDownError checks if an error is a Redis MASTERDOWN error, even if wrapped.
+// MASTERDOWN errors occur when the master is down.
+func IsMasterDownError(err error) bool {
+	return proto.IsMasterDownError(err)
+}
+
+// IsMaxClientsError checks if an error is a Redis max clients error, even if wrapped.
+// This error occurs when the maximum number of clients has been reached.
+func IsMaxClientsError(err error) bool {
+	return proto.IsMaxClientsError(err)
+}
+
+// IsMovedError checks if an error is a Redis MOVED error, even if wrapped.
+// MOVED errors occur in cluster mode when a key has been moved to a different node.
+// Returns the address of the node where the key has been moved and a boolean indicating if it's a MOVED error.
+func IsMovedError(err error) (addr string, ok bool) {
+	if movedErr, isMovedErr := proto.IsMovedError(err); isMovedErr {
+		return movedErr.Addr(), true
+	}
+	return "", false
+}
+
+// IsAskError checks if an error is a Redis ASK error, even if wrapped.
+// ASK errors occur in cluster mode when a key is being migrated and the client should ask another node.
+// Returns the address of the node to ask and a boolean indicating if it's an ASK error.
+func IsAskError(err error) (addr string, ok bool) {
+	if askErr, isAskErr := proto.IsAskError(err); isAskErr {
+		return askErr.Addr(), true
+	}
+	return "", false
 }
 
 //------------------------------------------------------------------------------
