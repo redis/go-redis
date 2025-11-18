@@ -429,6 +429,76 @@ vals, err := rdb.Eval(ctx, "return {KEYS[1],ARGV[1]}", []string{"key"}, "hello")
 res, err := rdb.Do(ctx, "set", "key", "value").Result()
 ```
 
+## Typed Errors
+
+go-redis provides typed error checking functions for common Redis errors:
+
+```go
+redis.IsLoadingError(err)        // Redis is loading the dataset
+redis.IsReadOnlyError(err)       // Write to read-only replica
+redis.IsClusterDownError(err)    // Cluster is down
+redis.IsTryAgainError(err)       // Command should be retried
+redis.IsMasterDownError(err)     // Master is down
+redis.IsMaxClientsError(err)     // Maximum clients reached
+redis.IsMovedError(err)          // Returns (address, true) if key moved
+redis.IsAskError(err)            // Returns (address, true) if key being migrated
+```
+
+### Error Wrapping in Hooks
+
+When wrapping errors in hooks, use custom error types with `Unwrap()` method (preferred) or `fmt.Errorf` with `%w`. Always call `cmd.SetErr()` to preserve error type information:
+
+```go
+// Custom error type (preferred)
+type AppError struct {
+    Code      string
+    RequestID string
+    Err       error
+}
+
+func (e *AppError) Error() string {
+    return fmt.Sprintf("[%s] request_id=%s: %v", e.Code, e.RequestID, e.Err)
+}
+
+func (e *AppError) Unwrap() error {
+    return e.Err
+}
+
+// Hook implementation
+func (h MyHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+    return func(ctx context.Context, cmd redis.Cmder) error {
+        err := next(ctx, cmd)
+        if err != nil {
+            // Wrap with custom error type
+            wrappedErr := &AppError{
+                Code:      "REDIS_ERROR",
+                RequestID: getRequestID(ctx),
+                Err:       err,
+            }
+            cmd.SetErr(wrappedErr)
+            return wrappedErr
+        }
+        return nil
+    }
+}
+
+// Typed error detection works through wrappers
+if redis.IsLoadingError(err) {
+    // Retry logic
+}
+
+// Extract custom error if needed
+var appErr *AppError
+if errors.As(err, &appErr) {
+    log.Printf("Request: %s", appErr.RequestID)
+}
+```
+
+Alternatively, use `fmt.Errorf` with `%w`:
+```go
+wrappedErr := fmt.Errorf("context: %w", err)
+cmd.SetErr(wrappedErr)
+```
 
 ## Run the test
 

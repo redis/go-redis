@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -292,6 +293,153 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 				t.Errorf("ShouldRetry returned %v, want %v for error: %v", result, tt.shouldRetry, wrappedErr)
 			}
 		})
+	}
+}
+
+// TestSetErrWithWrappedError tests that when a hook wraps an error and sets it
+// via cmd.SetErr(), the underlying typed error can still be detected
+func TestSetErrWithWrappedError(t *testing.T) {
+	testCtx := context.Background()
+
+	// Test with a simulated LOADING error
+	// We test the mechanism directly without needing a real Redis server
+	cmd := redis.NewStatusCmd(testCtx, "GET", "key")
+	loadingErr := proto.ParseErrorReply([]byte("-LOADING Redis is loading the dataset in memory"))
+	wrappedLoadingErr := fmt.Errorf("hook wrapper: %w", loadingErr)
+	cmd.SetErr(wrappedLoadingErr)
+
+	// Verify we can still detect the LOADING error through the wrapper
+	if !redis.IsLoadingError(cmd.Err()) {
+		t.Errorf("IsLoadingError failed to detect wrapped error set via SetErr: %v", cmd.Err())
+	}
+
+	// Test with MOVED error
+	cmd2 := redis.NewStatusCmd(testCtx, "GET", "key")
+	movedErr := proto.ParseErrorReply([]byte("-MOVED 3999 127.0.0.1:6381"))
+	wrappedMovedErr := fmt.Errorf("hook wrapper: %w", movedErr)
+	cmd2.SetErr(wrappedMovedErr)
+
+	// Verify we can still detect and extract address from MOVED error
+	addr, ok := redis.IsMovedError(cmd2.Err())
+	if !ok {
+		t.Errorf("IsMovedError failed to detect wrapped error set via SetErr: %v", cmd2.Err())
+	}
+	if addr != "127.0.0.1:6381" {
+		t.Errorf("Address extraction failed: got %q, want %q", addr, "127.0.0.1:6381")
+	}
+
+	// Test with READONLY error
+	cmd3 := redis.NewStatusCmd(testCtx, "SET", "key", "value")
+	readonlyErr := proto.ParseErrorReply([]byte("-READONLY You can't write against a read only replica"))
+	wrappedReadonlyErr := fmt.Errorf("custom error wrapper: %w", readonlyErr)
+	cmd3.SetErr(wrappedReadonlyErr)
+
+	// Verify we can still detect the READONLY error through the wrapper
+	if !redis.IsReadOnlyError(cmd3.Err()) {
+		t.Errorf("IsReadOnlyError failed to detect wrapped error set via SetErr: %v", cmd3.Err())
+	}
+
+	// Verify the error message contains both the wrapper and original error
+	errMsg := cmd3.Err().Error()
+	if !contains(errMsg, "custom error wrapper") {
+		t.Errorf("Error message missing wrapper context: %v", errMsg)
+	}
+	if !contains(errMsg, "READONLY") {
+		t.Errorf("Error message missing original error: %v", errMsg)
+	}
+}
+
+// AppError is a custom error type for testing
+type AppError struct {
+	Code      string
+	Message   string
+	RequestID string
+	Err       error
+}
+
+// Error implements the error interface
+func (e *AppError) Error() string {
+	return fmt.Sprintf("[%s] %s (request_id=%s): %v", e.Code, e.Message, e.RequestID, e.Err)
+}
+
+// Unwrap implements the error unwrapping interface - this is critical for errors.As() to work
+func (e *AppError) Unwrap() error {
+	return e.Err
+}
+
+// TestCustomErrorTypeWrapping tests that users can wrap Redis errors in their own custom error types
+// and still have typed error detection work correctly
+func TestCustomErrorTypeWrapping(t *testing.T) {
+	testCtx := context.Background()
+
+	// Test 1: Wrap LOADING error in custom type
+	cmd1 := redis.NewStatusCmd(testCtx, "GET", "key")
+	loadingErr := proto.ParseErrorReply([]byte("-LOADING Redis is loading the dataset in memory"))
+	customErr1 := &AppError{
+		Code:      "REDIS_ERROR",
+		Message:   "Database operation failed",
+		RequestID: "req-12345",
+		Err:       loadingErr,
+	}
+	cmd1.SetErr(customErr1)
+
+	// Verify typed error detection works through custom error type
+	if !redis.IsLoadingError(cmd1.Err()) {
+		t.Errorf("IsLoadingError failed to detect error wrapped in custom type: %v", cmd1.Err())
+	}
+
+	// Verify error message contains custom context
+	errMsg := cmd1.Err().Error()
+	if !contains(errMsg, "REDIS_ERROR") || !contains(errMsg, "req-12345") {
+		t.Errorf("Error message missing custom error context: %v", errMsg)
+	}
+
+	// Test 2: Wrap MOVED error in custom type
+	cmd2 := redis.NewStatusCmd(testCtx, "GET", "key")
+	movedErr := proto.ParseErrorReply([]byte("-MOVED 3999 127.0.0.1:6381"))
+	customErr2 := &AppError{
+		Code:      "CLUSTER_REDIRECT",
+		Message:   "Key moved to different node",
+		RequestID: "req-67890",
+		Err:       movedErr,
+	}
+	cmd2.SetErr(customErr2)
+
+	// Verify address extraction works through custom error type
+	addr, ok := redis.IsMovedError(cmd2.Err())
+	if !ok {
+		t.Errorf("IsMovedError failed to detect error wrapped in custom type: %v", cmd2.Err())
+	}
+	if addr != "127.0.0.1:6381" {
+		t.Errorf("Address extraction failed: got %q, want %q", addr, "127.0.0.1:6381")
+	}
+
+	// Test 3: Multiple levels of wrapping (custom type + fmt.Errorf)
+	cmd3 := redis.NewStatusCmd(testCtx, "SET", "key", "value")
+	readonlyErr := proto.ParseErrorReply([]byte("-READONLY You can't write against a read only replica"))
+	customErr3 := &AppError{
+		Code:      "WRITE_ERROR",
+		Message:   "Write operation failed",
+		RequestID: "req-11111",
+		Err:       readonlyErr,
+	}
+	// Wrap the custom error again with fmt.Errorf
+	doubleWrapped := fmt.Errorf("hook context: %w", customErr3)
+	cmd3.SetErr(doubleWrapped)
+
+	// Verify typed error detection works through multiple levels of wrapping
+	if !redis.IsReadOnlyError(cmd3.Err()) {
+		t.Errorf("IsReadOnlyError failed to detect error wrapped in custom type + fmt.Errorf: %v", cmd3.Err())
+	}
+
+	// Verify we can unwrap to get the custom error
+	var appErr *AppError
+	if !errors.As(cmd3.Err(), &appErr) {
+		t.Errorf("errors.As failed to extract custom error type from wrapped error")
+	} else {
+		if appErr.Code != "WRITE_ERROR" || appErr.RequestID != "req-11111" {
+			t.Errorf("Custom error fields incorrect: Code=%s, RequestID=%s", appErr.Code, appErr.RequestID)
+		}
 	}
 }
 
