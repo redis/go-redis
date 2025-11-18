@@ -231,22 +231,48 @@ func extractAddr(msg string) string {
 
 // IsLoadingError checks if an error is a LoadingError, even if wrapped.
 func IsLoadingError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var loadingErr *LoadingError
-	return errors.As(err, &loadingErr)
+	if errors.As(err, &loadingErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "LOADING ")
 }
 
 // IsReadOnlyError checks if an error is a ReadOnlyError, even if wrapped.
 func IsReadOnlyError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var readOnlyErr *ReadOnlyError
-	return errors.As(err, &readOnlyErr)
+	if errors.As(err, &readOnlyErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "READONLY ")
 }
 
 // IsMovedError checks if an error is a MovedError, even if wrapped.
 // Returns the error and a boolean indicating if it's a MovedError.
 func IsMovedError(err error) (*MovedError, bool) {
+	if err == nil {
+		return nil, false
+	}
 	var movedErr *MovedError
 	if errors.As(err, &movedErr) {
 		return movedErr, true
+	}
+	// Fallback to string checking for backward compatibility
+	s := err.Error()
+	if strings.HasPrefix(s, "MOVED ") {
+		// Parse: MOVED 3999 127.0.0.1:6381
+		parts := strings.Split(s, " ")
+		if len(parts) == 3 {
+			return &MovedError{msg: s}, true
+		}
 	}
 	return nil, false
 }
@@ -254,34 +280,74 @@ func IsMovedError(err error) (*MovedError, bool) {
 // IsAskError checks if an error is an AskError, even if wrapped.
 // Returns the error and a boolean indicating if it's an AskError.
 func IsAskError(err error) (*AskError, bool) {
+	if err == nil {
+		return nil, false
+	}
 	var askErr *AskError
 	if errors.As(err, &askErr) {
 		return askErr, true
+	}
+	// Fallback to string checking for backward compatibility
+	s := err.Error()
+	if strings.HasPrefix(s, "ASK ") {
+		// Parse: ASK 3999 127.0.0.1:6381
+		parts := strings.Split(s, " ")
+		if len(parts) == 3 {
+			return &AskError{msg: s}, true
+		}
 	}
 	return nil, false
 }
 
 // IsClusterDownError checks if an error is a ClusterDownError, even if wrapped.
 func IsClusterDownError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var clusterDownErr *ClusterDownError
-	return errors.As(err, &clusterDownErr)
+	if errors.As(err, &clusterDownErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "CLUSTERDOWN ")
 }
 
 // IsTryAgainError checks if an error is a TryAgainError, even if wrapped.
 func IsTryAgainError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var tryAgainErr *TryAgainError
-	return errors.As(err, &tryAgainErr)
+	if errors.As(err, &tryAgainErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "TRYAGAIN ")
 }
 
 // IsMasterDownError checks if an error is a MasterDownError, even if wrapped.
 func IsMasterDownError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var masterDownErr *MasterDownError
-	return errors.As(err, &masterDownErr)
+	if errors.As(err, &masterDownErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "MASTERDOWN ")
 }
 
 // IsMaxClientsError checks if an error is a MaxClientsError, even if wrapped.
 func IsMaxClientsError(err error) bool {
+	if err == nil {
+		return false
+	}
 	var maxClientsErr *MaxClientsError
-	return errors.As(err, &maxClientsErr)
+	if errors.As(err, &maxClientsErr) {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "ERR max number of clients reached")
 }
 

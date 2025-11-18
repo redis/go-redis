@@ -98,6 +98,24 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
+	// Fallback to string checking for backward compatibility with plain errors
+	s := err.Error()
+	if strings.HasPrefix(s, "ERR max number of clients reached") {
+		return true
+	}
+	if strings.HasPrefix(s, "LOADING ") {
+		return true
+	}
+	if strings.HasPrefix(s, "READONLY ") {
+		return true
+	}
+	if strings.HasPrefix(s, "CLUSTERDOWN ") {
+		return true
+	}
+	if strings.HasPrefix(s, "TRYAGAIN ") {
+		return true
+	}
+
 	return false
 }
 
@@ -142,10 +160,6 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 }
 
 func isMovedError(err error) (moved bool, ask bool, addr string) {
-	if !isRedisError(err) {
-		return
-	}
-
 	// Check for typed MovedError
 	if movedErr, ok := proto.IsMovedError(err); ok {
 		addr = movedErr.Addr()
@@ -158,6 +172,25 @@ func isMovedError(err error) (moved bool, ask bool, addr string) {
 		addr = askErr.Addr()
 		addr = internal.GetAddr(addr)
 		return false, true, addr
+	}
+
+	// Fallback to string checking for backward compatibility
+	s := err.Error()
+	if strings.HasPrefix(s, "MOVED ") {
+		// Parse: MOVED 3999 127.0.0.1:6381
+		parts := strings.Split(s, " ")
+		if len(parts) == 3 {
+			addr = internal.GetAddr(parts[2])
+			return true, false, addr
+		}
+	}
+	if strings.HasPrefix(s, "ASK ") {
+		// Parse: ASK 3999 127.0.0.1:6381
+		parts := strings.Split(s, " ")
+		if len(parts) == 3 {
+			addr = internal.GetAddr(parts[2])
+			return false, true, addr
+		}
 	}
 
 	return false, false, ""
