@@ -231,7 +231,7 @@ func IsMovedError(err error) (*MovedError, bool) {
 		// Parse: MOVED 3999 127.0.0.1:6381
 		parts := strings.Split(s, " ")
 		if len(parts) == 3 {
-			return &MovedError{msg: s}, true
+			return &MovedError{msg: s, addr: parts[2]}, true
 		}
 	}
 	return nil, false
