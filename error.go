@@ -52,27 +52,54 @@ type Error interface {
 var _ Error = proto.RedisError("")
 
 func isContextError(err error) bool {
-	switch err {
-	case context.Canceled, context.DeadlineExceeded:
-		return true
-	default:
-		return false
+	// Check for wrapped context errors using errors.Is
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// isTimeoutError checks if an error is a timeout error, even if wrapped.
+// Returns (isTimeout, shouldRetryOnTimeout) where:
+// - isTimeout: true if the error is any kind of timeout error
+// - shouldRetryOnTimeout: true if Timeout() method returns true
+func isTimeoutError(err error) (isTimeout bool, hasTimeoutFlag bool) {
+	// Check for timeoutError interface (works with wrapped errors)
+	var te timeoutError
+	if errors.As(err, &te) {
+		return true, te.Timeout()
 	}
+
+	// Check for net.Error specifically (common case for network timeouts)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true, netErr.Timeout()
+	}
+
+	return false, false
 }
 
 func shouldRetry(err error, retryTimeout bool) bool {
-	switch err {
-	case io.EOF, io.ErrUnexpectedEOF:
-		return true
-	case nil, context.Canceled, context.DeadlineExceeded:
+	if err == nil {
 		return false
-	case pool.ErrPoolTimeout:
+	}
+
+	// Check for EOF errors (works with wrapped errors)
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	// Check for context errors (works with wrapped errors)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	// Check for pool timeout (works with wrapped errors)
+	if errors.Is(err, pool.ErrPoolTimeout) {
 		// connection pool timeout, increase retries. #3289
 		return true
 	}
 
-	if v, ok := err.(timeoutError); ok {
-		if v.Timeout() {
+	// Check for timeout errors (works with wrapped errors)
+	if isTimeout, hasTimeoutFlag := isTimeoutError(err); isTimeout {
+		if hasTimeoutFlag {
 			return retryTimeout
 		}
 		return true
@@ -115,23 +142,37 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if strings.HasPrefix(s, "TRYAGAIN ") {
 		return true
 	}
+	if strings.HasPrefix(s, "MASTERDOWN ") {
+		return true
+	}
 
 	return false
 }
 
 func isRedisError(err error) bool {
-	_, ok := err.(proto.RedisError)
-	return ok
+	// Check if error implements the Error interface (works with wrapped errors)
+	var redisErr Error
+	if errors.As(err, &redisErr) {
+		return true
+	}
+	// Also check for proto.RedisError specifically
+	var protoRedisErr proto.RedisError
+	return errors.As(err, &protoRedisErr)
 }
 
 func isBadConn(err error, allowTimeout bool, addr string) bool {
-	switch err {
-		case nil:
-			return false
-		case context.Canceled, context.DeadlineExceeded:
-			return true
-		case pool.ErrConnUnusableTimeout:
-			return true
+	if err == nil {
+		return false
+	}
+
+	// Check for context errors (works with wrapped errors)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	// Check for pool timeout errors (works with wrapped errors)
+	if errors.Is(err, pool.ErrConnUnusableTimeout) {
+		return true
 	}
 
 	if isRedisError(err) {
@@ -151,7 +192,9 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 	}
 
 	if allowTimeout {
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		// Check for network timeout errors (works with wrapped errors)
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			return false
 		}
 	}

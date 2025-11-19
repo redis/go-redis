@@ -198,6 +198,11 @@ func IsLoadingError(err error) bool {
 	if errors.As(err, &loadingErr) {
 		return true
 	}
+	// Check if wrapped error is a RedisError with LOADING prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "LOADING ") {
+		return true
+	}
 	// Fallback to string checking for backward compatibility
 	return strings.HasPrefix(err.Error(), "LOADING ")
 }
@@ -209,6 +214,11 @@ func IsReadOnlyError(err error) bool {
 	}
 	var readOnlyErr *ReadOnlyError
 	if errors.As(err, &readOnlyErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with READONLY prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "READONLY ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -268,6 +278,11 @@ func IsClusterDownError(err error) bool {
 	if errors.As(err, &clusterDownErr) {
 		return true
 	}
+	// Check if wrapped error is a RedisError with CLUSTERDOWN prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "CLUSTERDOWN ") {
+		return true
+	}
 	// Fallback to string checking for backward compatibility
 	return strings.HasPrefix(err.Error(), "CLUSTERDOWN ")
 }
@@ -279,6 +294,11 @@ func IsTryAgainError(err error) bool {
 	}
 	var tryAgainErr *TryAgainError
 	if errors.As(err, &tryAgainErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with TRYAGAIN prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "TRYAGAIN ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -294,6 +314,11 @@ func IsMasterDownError(err error) bool {
 	if errors.As(err, &masterDownErr) {
 		return true
 	}
+	// Check if wrapped error is a RedisError with MASTERDOWN prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "MASTERDOWN ") {
+		return true
+	}
 	// Fallback to string checking for backward compatibility
 	return strings.HasPrefix(err.Error(), "MASTERDOWN ")
 }
@@ -305,6 +330,11 @@ func IsMaxClientsError(err error) bool {
 	}
 	var maxClientsErr *MaxClientsError
 	if errors.As(err, &maxClientsErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with max clients prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "ERR max number of clients reached") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
