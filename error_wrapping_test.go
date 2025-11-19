@@ -640,3 +640,89 @@ func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
+func TestAuthErrorWrapping(t *testing.T) {
+	t.Run("Wrapped NOAUTH error", func(t *testing.T) {
+		// Create an auth error
+		authErr := proto.NewAuthError("NOAUTH Authentication required")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("hook: %w", authErr)
+
+		// Should still be detected
+		if !redis.IsAuthError(wrappedErr) {
+			t.Errorf("IsAuthError should detect wrapped NOAUTH error")
+		}
+	})
+
+	t.Run("Wrapped WRONGPASS error", func(t *testing.T) {
+		// Create an auth error
+		authErr := proto.NewAuthError("WRONGPASS invalid username-password pair")
+
+		// Wrap it multiple times
+		wrappedErr := fmt.Errorf("connection error: %w", authErr)
+		doubleWrappedErr := fmt.Errorf("client error: %w", wrappedErr)
+
+		// Should still be detected
+		if !redis.IsAuthError(doubleWrappedErr) {
+			t.Errorf("IsAuthError should detect double-wrapped WRONGPASS error")
+		}
+	})
+
+	t.Run("Wrapped unauthenticated error", func(t *testing.T) {
+		// Create an auth error
+		authErr := proto.NewAuthError("ERR unauthenticated")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("hook: %w", authErr)
+
+		// Should still be detected
+		if !redis.IsAuthError(wrappedErr) {
+			t.Errorf("IsAuthError should detect wrapped unauthenticated error")
+		}
+	})
+}
+
+func TestPermissionErrorWrapping(t *testing.T) {
+	t.Run("Wrapped NOPERM error", func(t *testing.T) {
+		// Create a permission error
+		permErr := proto.NewPermissionError("NOPERM this user has no permissions to run the 'flushdb' command")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("hook: %w", permErr)
+
+		// Should still be detected
+		if !redis.IsPermissionError(wrappedErr) {
+			t.Errorf("IsPermissionError should detect wrapped NOPERM error")
+		}
+	})
+}
+
+func TestExecAbortErrorWrapping(t *testing.T) {
+	t.Run("Wrapped EXECABORT error", func(t *testing.T) {
+		// Create an EXECABORT error
+		execAbortErr := proto.NewExecAbortError("EXECABORT Transaction discarded because of previous errors")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("hook: %w", execAbortErr)
+
+		// Should still be detected
+		if !redis.IsExecAbortError(wrappedErr) {
+			t.Errorf("IsExecAbortError should detect wrapped EXECABORT error")
+		}
+	})
+}
+
+func TestOOMErrorWrapping(t *testing.T) {
+	t.Run("Wrapped OOM error", func(t *testing.T) {
+		// Create an OOM error
+		oomErr := proto.NewOOMError("OOM command not allowed when used memory > 'maxmemory'")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("hook: %w", oomErr)
+
+		// Should still be detected
+		if !redis.IsOOMError(wrappedErr) {
+			t.Errorf("IsOOMError should detect wrapped OOM error")
+		}
+	})
+}

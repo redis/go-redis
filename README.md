@@ -434,14 +434,23 @@ res, err := rdb.Do(ctx, "set", "key", "value").Result()
 go-redis provides typed error checking functions for common Redis errors:
 
 ```go
+// Cluster and replication errors
 redis.IsLoadingError(err)        // Redis is loading the dataset
 redis.IsReadOnlyError(err)       // Write to read-only replica
 redis.IsClusterDownError(err)    // Cluster is down
 redis.IsTryAgainError(err)       // Command should be retried
 redis.IsMasterDownError(err)     // Master is down
-redis.IsMaxClientsError(err)     // Maximum clients reached
 redis.IsMovedError(err)          // Returns (address, true) if key moved
 redis.IsAskError(err)            // Returns (address, true) if key being migrated
+
+// Connection and resource errors
+redis.IsMaxClientsError(err)     // Maximum clients reached
+redis.IsAuthError(err)           // Authentication failed (NOAUTH, WRONGPASS, unauthenticated)
+redis.IsPermissionError(err)     // Permission denied (NOPERM)
+redis.IsOOMError(err)            // Out of memory (OOM)
+
+// Transaction errors
+redis.IsExecAbortError(err)      // Transaction aborted (EXECABORT)
 ```
 
 ### Error Wrapping in Hooks
@@ -498,6 +507,60 @@ Alternatively, use `fmt.Errorf` with `%w`:
 ```go
 wrappedErr := fmt.Errorf("context: %w", err)
 cmd.SetErr(wrappedErr)
+```
+
+### Pipeline Hook Example
+
+For pipeline operations, use `ProcessPipelineHook`:
+
+```go
+type PipelineLoggingHook struct{}
+
+func (h PipelineLoggingHook) DialHook(next redis.DialHook) redis.DialHook {
+    return next
+}
+
+func (h PipelineLoggingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+    return next
+}
+
+func (h PipelineLoggingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+    return func(ctx context.Context, cmds []redis.Cmder) error {
+        start := time.Now()
+        err := next(ctx, cmds)
+        duration := time.Since(start)
+
+        // Log pipeline execution
+        log.Printf("Pipeline executed %d commands in %v", len(cmds), duration)
+
+        // Check for errors in individual commands
+        for _, cmd := range cmds {
+            if cmdErr := cmd.Err(); cmdErr != nil {
+                // Wrap individual command errors if needed
+                if redis.IsAuthError(cmdErr) {
+                    log.Printf("Auth error in pipeline command %s: %v", cmd.Name(), cmdErr)
+                } else if redis.IsPermissionError(cmdErr) {
+                    log.Printf("Permission error in pipeline command %s: %v", cmd.Name(), cmdErr)
+                }
+
+                // Optionally wrap the error
+                wrappedErr := fmt.Errorf("pipeline cmd %s failed: %w", cmd.Name(), cmdErr)
+                cmd.SetErr(wrappedErr)
+            }
+        }
+
+        return err
+    }
+}
+
+// Register the hook
+rdb.AddHook(PipelineLoggingHook{})
+
+// Use pipeline - errors are still properly typed
+pipe := rdb.Pipeline()
+pipe.Set(ctx, "key1", "value1", 0)
+pipe.Get(ctx, "key2")
+_, err := pipe.Exec(ctx)
 ```
 
 ## Run the test

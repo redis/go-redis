@@ -90,6 +90,48 @@ func TestTypedRedisErrors(t *testing.T) {
 			expectedMsg:  "ERR max number of clients reached",
 			checkFunc:    IsMaxClientsError,
 		},
+		{
+			name:         "NOAUTH error",
+			errorMsg:     "NOAUTH Authentication required",
+			expectedType: &AuthError{},
+			expectedMsg:  "NOAUTH Authentication required",
+			checkFunc:    IsAuthError,
+		},
+		{
+			name:         "WRONGPASS error",
+			errorMsg:     "WRONGPASS invalid username-password pair",
+			expectedType: &AuthError{},
+			expectedMsg:  "WRONGPASS invalid username-password pair",
+			checkFunc:    IsAuthError,
+		},
+		{
+			name:         "unauthenticated error",
+			errorMsg:     "ERR unauthenticated",
+			expectedType: &AuthError{},
+			expectedMsg:  "ERR unauthenticated",
+			checkFunc:    IsAuthError,
+		},
+		{
+			name:         "NOPERM error",
+			errorMsg:     "NOPERM this user has no permissions to run the 'flushdb' command",
+			expectedType: &PermissionError{},
+			expectedMsg:  "NOPERM this user has no permissions to run the 'flushdb' command",
+			checkFunc:    IsPermissionError,
+		},
+		{
+			name:         "EXECABORT error",
+			errorMsg:     "EXECABORT Transaction discarded because of previous errors",
+			expectedType: &ExecAbortError{},
+			expectedMsg:  "EXECABORT Transaction discarded because of previous errors",
+			checkFunc:    IsExecAbortError,
+		},
+		{
+			name:         "OOM error",
+			errorMsg:     "OOM command not allowed when used memory > 'maxmemory'",
+			expectedType: &OOMError{},
+			expectedMsg:  "OOM command not allowed when used memory > 'maxmemory'",
+			checkFunc:    IsOOMError,
+		},
 	}
 
 	for _, tt := range tests {
@@ -158,6 +200,36 @@ func TestWrappedTypedErrors(t *testing.T) {
 			name:      "Wrapped Max clients error",
 			errorMsg:  "ERR max number of clients reached",
 			checkFunc: IsMaxClientsError,
+		},
+		{
+			name:      "Wrapped NOAUTH error",
+			errorMsg:  "NOAUTH Authentication required",
+			checkFunc: IsAuthError,
+		},
+		{
+			name:      "Wrapped WRONGPASS error",
+			errorMsg:  "WRONGPASS invalid username-password pair",
+			checkFunc: IsAuthError,
+		},
+		{
+			name:      "Wrapped unauthenticated error",
+			errorMsg:  "ERR unauthenticated",
+			checkFunc: IsAuthError,
+		},
+		{
+			name:      "Wrapped NOPERM error",
+			errorMsg:  "NOPERM this user has no permissions to run the 'flushdb' command",
+			checkFunc: IsPermissionError,
+		},
+		{
+			name:      "Wrapped EXECABORT error",
+			errorMsg:  "EXECABORT Transaction discarded because of previous errors",
+			checkFunc: IsExecAbortError,
+		},
+		{
+			name:      "Wrapped OOM error",
+			errorMsg:  "OOM command not allowed when used memory > 'maxmemory'",
+			checkFunc: IsOOMError,
 		},
 	}
 
@@ -261,8 +333,8 @@ func TestGenericRedisError(t *testing.T) {
 			errorMsg: "WRONGTYPE Operation against a key holding the wrong kind of value",
 		},
 		{
-			name:     "NOAUTH error",
-			errorMsg: "NOAUTH Authentication required",
+			name:     "BUSYKEY error",
+			errorMsg: "BUSYKEY Target key name already exists",
 		},
 	}
 
@@ -282,7 +354,8 @@ func TestGenericRedisError(t *testing.T) {
 
 			// Should not match any typed error checks
 			if IsLoadingError(err) || IsReadOnlyError(err) || IsClusterDownError(err) ||
-				IsTryAgainError(err) || IsMasterDownError(err) || IsMaxClientsError(err) {
+				IsTryAgainError(err) || IsMasterDownError(err) || IsMaxClientsError(err) ||
+				IsAuthError(err) || IsPermissionError(err) || IsExecAbortError(err) || IsOOMError(err) {
 				t.Errorf("Generic error incorrectly matched a typed error check")
 			}
 		})

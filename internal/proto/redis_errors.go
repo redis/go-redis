@@ -148,6 +148,70 @@ func NewMaxClientsError(msg string) *MaxClientsError {
 	return &MaxClientsError{msg: msg}
 }
 
+// AuthError is returned when authentication fails.
+type AuthError struct {
+	msg string
+}
+
+func (e *AuthError) Error() string {
+	return e.msg
+}
+
+func (e *AuthError) RedisError() {}
+
+// NewAuthError creates a new AuthError with the given message.
+func NewAuthError(msg string) *AuthError {
+	return &AuthError{msg: msg}
+}
+
+// PermissionError is returned when a user lacks required permissions.
+type PermissionError struct {
+	msg string
+}
+
+func (e *PermissionError) Error() string {
+	return e.msg
+}
+
+func (e *PermissionError) RedisError() {}
+
+// NewPermissionError creates a new PermissionError with the given message.
+func NewPermissionError(msg string) *PermissionError {
+	return &PermissionError{msg: msg}
+}
+
+// ExecAbortError is returned when a transaction is aborted.
+type ExecAbortError struct {
+	msg string
+}
+
+func (e *ExecAbortError) Error() string {
+	return e.msg
+}
+
+func (e *ExecAbortError) RedisError() {}
+
+// NewExecAbortError creates a new ExecAbortError with the given message.
+func NewExecAbortError(msg string) *ExecAbortError {
+	return &ExecAbortError{msg: msg}
+}
+
+// OOMError is returned when Redis is out of memory.
+type OOMError struct {
+	msg string
+}
+
+func (e *OOMError) Error() string {
+	return e.msg
+}
+
+func (e *OOMError) RedisError() {}
+
+// NewOOMError creates a new OOMError with the given message.
+func NewOOMError(msg string) *OOMError {
+	return &OOMError{msg: msg}
+}
+
 // parseTypedRedisError parses a Redis error message and returns a typed error if applicable.
 // This function maintains backward compatibility by keeping the same error messages.
 func parseTypedRedisError(msg string) error {
@@ -173,6 +237,14 @@ func parseTypedRedisError(msg string) error {
 		return NewMasterDownError(msg)
 	case msg == "ERR max number of clients reached":
 		return NewMaxClientsError(msg)
+	case strings.HasPrefix(msg, "NOAUTH "), strings.HasPrefix(msg, "WRONGPASS "), strings.Contains(msg, "unauthenticated"):
+		return NewAuthError(msg)
+	case strings.HasPrefix(msg, "NOPERM "):
+		return NewPermissionError(msg)
+	case strings.HasPrefix(msg, "EXECABORT "):
+		return NewExecAbortError(msg)
+	case strings.HasPrefix(msg, "OOM "):
+		return NewOOMError(msg)
 	default:
 		// Return generic RedisError for unknown error types
 		return RedisError(msg)
@@ -200,7 +272,7 @@ func IsLoadingError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with LOADING prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "LOADING ") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "LOADING ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -218,7 +290,7 @@ func IsReadOnlyError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with READONLY prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "READONLY ") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "READONLY ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -280,7 +352,7 @@ func IsClusterDownError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with CLUSTERDOWN prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "CLUSTERDOWN ") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "CLUSTERDOWN ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -298,7 +370,7 @@ func IsTryAgainError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with TRYAGAIN prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "TRYAGAIN ") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "TRYAGAIN ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -316,7 +388,7 @@ func IsMasterDownError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with MASTERDOWN prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "MASTERDOWN ") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "MASTERDOWN ") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
@@ -334,10 +406,83 @@ func IsMaxClientsError(err error) bool {
 	}
 	// Check if wrapped error is a RedisError with max clients prefix
 	var redisErr RedisError
-	if errors.As(err, &redisErr) && strings.HasPrefix(string(redisErr), "ERR max number of clients reached") {
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "ERR max number of clients reached") {
 		return true
 	}
 	// Fallback to string checking for backward compatibility
 	return strings.HasPrefix(err.Error(), "ERR max number of clients reached")
 }
 
+// IsAuthError checks if an error is an AuthError, even if wrapped.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *AuthError
+	if errors.As(err, &authErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with auth error prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) {
+		s := redisErr.Error()
+		return strings.HasPrefix(s, "NOAUTH ") || strings.HasPrefix(s, "WRONGPASS ") || strings.Contains(s, "unauthenticated")
+	}
+	// Fallback to string checking for backward compatibility
+	s := err.Error()
+	return strings.HasPrefix(s, "NOAUTH ") || strings.HasPrefix(s, "WRONGPASS ") || strings.Contains(s, "unauthenticated")
+}
+
+// IsPermissionError checks if an error is a PermissionError, even if wrapped.
+func IsPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var permErr *PermissionError
+	if errors.As(err, &permErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with NOPERM prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "NOPERM ") {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "NOPERM ")
+}
+
+// IsExecAbortError checks if an error is an ExecAbortError, even if wrapped.
+func IsExecAbortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var execAbortErr *ExecAbortError
+	if errors.As(err, &execAbortErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with EXECABORT prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "EXECABORT ") {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "EXECABORT ")
+}
+
+// IsOOMError checks if an error is an OOMError, even if wrapped.
+func IsOOMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var oomErr *OOMError
+	if errors.As(err, &oomErr) {
+		return true
+	}
+	// Check if wrapped error is a RedisError with OOM prefix
+	var redisErr RedisError
+	if errors.As(err, &redisErr) && strings.HasPrefix(redisErr.Error(), "OOM ") {
+		return true
+	}
+	// Fallback to string checking for backward compatibility
+	return strings.HasPrefix(err.Error(), "OOM ")
+}

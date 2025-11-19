@@ -315,6 +315,33 @@ func IsAskError(err error) (addr string, ok bool) {
 	return "", false
 }
 
+// IsAuthError checks if an error is a Redis authentication error, even if wrapped.
+// Authentication errors occur when:
+// - NOAUTH: Redis requires authentication but none was provided
+// - WRONGPASS: Redis authentication failed due to incorrect password
+// - unauthenticated: Error returned when password changed
+func IsAuthError(err error) bool {
+	return proto.IsAuthError(err)
+}
+
+// IsPermissionError checks if an error is a Redis permission error, even if wrapped.
+// Permission errors (NOPERM) occur when a user does not have permission to execute a command.
+func IsPermissionError(err error) bool {
+	return proto.IsPermissionError(err)
+}
+
+// IsExecAbortError checks if an error is a Redis EXECABORT error, even if wrapped.
+// EXECABORT errors occur when a transaction is aborted.
+func IsExecAbortError(err error) bool {
+	return proto.IsExecAbortError(err)
+}
+
+// IsOOMError checks if an error is a Redis OOM (Out Of Memory) error, even if wrapped.
+// OOM errors occur when Redis is out of memory.
+func IsOOMError(err error) bool {
+	return proto.IsOOMError(err)
+}
+
 //------------------------------------------------------------------------------
 
 type timeoutError interface {
