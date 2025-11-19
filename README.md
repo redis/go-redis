@@ -527,28 +527,33 @@ func (h PipelineLoggingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHo
 func (h PipelineLoggingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
     return func(ctx context.Context, cmds []redis.Cmder) error {
         start := time.Now()
-        err := next(ctx, cmds)
-        duration := time.Since(start)
 
-        // Log pipeline execution
+        // Execute the pipeline
+        err := next(ctx, cmds)
+
+        duration := time.Since(start)
         log.Printf("Pipeline executed %d commands in %v", len(cmds), duration)
 
-        // Check for errors in individual commands
+        // Process individual command errors
+        // Note: Individual command errors are already set on each cmd by the pipeline execution
         for _, cmd := range cmds {
             if cmdErr := cmd.Err(); cmdErr != nil {
-                // Wrap individual command errors if needed
+                // Check for specific error types using typed error functions
                 if redis.IsAuthError(cmdErr) {
                     log.Printf("Auth error in pipeline command %s: %v", cmd.Name(), cmdErr)
                 } else if redis.IsPermissionError(cmdErr) {
                     log.Printf("Permission error in pipeline command %s: %v", cmd.Name(), cmdErr)
                 }
 
-                // Optionally wrap the error
+                // Optionally wrap individual command errors to add context
+                // The wrapped error preserves type information through errors.As()
                 wrappedErr := fmt.Errorf("pipeline cmd %s failed: %w", cmd.Name(), cmdErr)
                 cmd.SetErr(wrappedErr)
             }
         }
 
+        // Return the pipeline-level error (connection errors, etc.)
+        // You can wrap it if needed, or return it as-is
         return err
     }
 }
