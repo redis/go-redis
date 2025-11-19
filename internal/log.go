@@ -19,7 +19,7 @@ type DefaultLogger struct {
 }
 
 func (l *DefaultLogger) Printf(ctx context.Context, format string, v ...interface{}) {
-	_ = l.log.Output(2, fmt.Sprintf(format, v...))
+	_ = l.log.Output(4, fmt.Sprintf(format, v...))
 }
 
 func NewDefaultLogger() Logging {
