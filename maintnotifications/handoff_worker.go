@@ -487,6 +487,7 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	} else {
 		err := conn.Close() // Close the connection if no pool provided
 		if err != nil {
+			// TODO(ndyakov): extract this error as well.
 			hwm.logger().Errorf(ctx, "redis: failed to close connection: %v", err)
 		}
 		hwm.logger().Warnf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID()))
