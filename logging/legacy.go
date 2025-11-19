@@ -18,10 +18,13 @@ func (l *legacyLoggerAdapter) structuredToPrintf(msg string, v ...any) (string, 
 	var args []any
 
 	for i := 0; i < len(v); i += 2 {
+		format += " %v=%v"
 		if i+1 >= len(v) {
+			// Odd number of arguments, append a placeholder for the missing value
+			// adapted from https://cs.opensource.google/go/go/+/master:src/log/slog/record.go;l=160-182;drc=8c41a482f9b7a101404cd0b417ac45abd441e598
+			args = append(args, "!BADKEY", v[i])
 			break
 		}
-		format += " %v=%v"
 		args = append(args, v[i], v[i+1])
 	}
 
