@@ -145,6 +145,7 @@ type ConnPool struct {
 	poolSize            atomic.Int32
 	idleConnsLen        atomic.Int32
 	idleCheckInProgress atomic.Bool
+	idleCheckNeeded     atomic.Bool
 
 	stats          Stats
 	waitDurationNs atomic.Int64
@@ -220,44 +221,62 @@ func (p *ConnPool) RemovePoolHook(hook PoolHook) {
 }
 
 func (p *ConnPool) checkMinIdleConns() {
+	// If a check is already in progress, mark that we need another check and return
 	if !p.idleCheckInProgress.CompareAndSwap(false, true) {
+		p.idleCheckNeeded.Store(true)
 		return
 	}
-	defer p.idleCheckInProgress.Store(false)
 
 	if p.cfg.MinIdleConns == 0 {
+		p.idleCheckInProgress.Store(false)
 		return
 	}
 
-	// Only create idle connections if we haven't reached the total pool size limit
-	// MinIdleConns should be a subset of PoolSize, not additional connections
-	for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
-		// Try to acquire a semaphore token
-		if !p.semaphore.TryAcquire() {
-			// Semaphore is full, can't create more connections
+	// Keep checking until no more checks are needed
+	// This handles the case where multiple Remove() calls happen concurrently
+	for {
+		// Clear the "check needed" flag before we start
+		p.idleCheckNeeded.Store(false)
+
+		// Only create idle connections if we haven't reached the total pool size limit
+		// MinIdleConns should be a subset of PoolSize, not additional connections
+		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
+			// Try to acquire a semaphore token
+			if !p.semaphore.TryAcquire() {
+				// Semaphore is full, can't create more connections
+				p.idleCheckInProgress.Store(false)
+				return
+			}
+
+			p.poolSize.Add(1)
+			p.idleConnsLen.Add(1)
+			go func() {
+				defer func() {
+					if err := recover(); err != nil {
+						p.poolSize.Add(-1)
+						p.idleConnsLen.Add(-1)
+
+						p.freeTurn()
+						internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
+					}
+				}()
+
+				err := p.addIdleConn()
+				if err != nil && err != ErrClosed {
+					p.poolSize.Add(-1)
+					p.idleConnsLen.Add(-1)
+				}
+				p.freeTurn()
+			}()
+		}
+
+		// If no one requested another check while we were working, we're done
+		if !p.idleCheckNeeded.Load() {
+			p.idleCheckInProgress.Store(false)
 			return
 		}
 
-		p.poolSize.Add(1)
-		p.idleConnsLen.Add(1)
-		go func() {
-			defer func() {
-				if err := recover(); err != nil {
-					p.poolSize.Add(-1)
-					p.idleConnsLen.Add(-1)
-
-					p.freeTurn()
-					internal.Logger.Printf(context.Background(), "addIdleConn panic: %+v", err)
-				}
-			}()
-
-			err := p.addIdleConn()
-			if err != nil && err != ErrClosed {
-				p.poolSize.Add(-1)
-				p.idleConnsLen.Add(-1)
-			}
-			p.freeTurn()
-		}()
+		// Otherwise, loop again to handle the new requests
 	}
 }
 
