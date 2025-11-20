@@ -1037,13 +1037,30 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		pipeline:   c.processPipeline,
 		txPipeline: c.processTxPipeline,
 	})
-
 	return c
 }
 
 // Options returns read-only Options that were used to create the client.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
+}
+
+// AddHook adds a hook to the client.
+func (c *ClusterClient) AddHook(h Hook) {
+	// Add hook only to nodes, not to the cluster client itself.
+	// This prevents hooks from being called twice (once at cluster level, once at node level).
+	// The cluster client delegates all commands to nodes, so hooks on nodes will be called.
+
+	if err := c.ForEachShard(context.Background(), func(ctx context.Context, node *Client) error {
+		node.AddHook(h)
+		return nil
+	}); err != nil {
+		return
+	}
+
+	c.nodes.OnNewNode(func(rdb *Client) {
+		rdb.AddHook(h)
+	})
 }
 
 // ReloadState reloads cluster state. If available it calls ClusterSlots func
