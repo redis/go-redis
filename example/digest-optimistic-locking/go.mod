@@ -5,7 +5,7 @@ go 1.18
 replace github.com/redis/go-redis/v9 => ../..
 
 require (
-	github.com/redis/go-redis/v9 v9.16.0
+	github.com/redis/go-redis/v9 v9.17.0
 	github.com/zeebo/xxh3 v1.0.2
 )
 
