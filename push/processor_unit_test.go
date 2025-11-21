@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -312,4 +313,86 @@ func (h *UnitTestHandler) Reset() {
 	h.callCount = 0
 	h.lastNotification = nil
 	h.errorToReturn = nil
+}
+
+// TestErrorWrapping tests that error checking functions work with wrapped errors
+func TestErrorWrapping(t *testing.T) {
+	t.Run("IsHandlerExistsError with wrapped error", func(t *testing.T) {
+		// Create a HandlerError
+		handlerErr := ErrHandlerExists("test-notification")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("operation failed: %w", handlerErr)
+		doubleWrappedErr := fmt.Errorf("context: %w", wrappedErr)
+
+		// Should still be detected through wrapping
+		if !IsHandlerExistsError(doubleWrappedErr) {
+			t.Errorf("IsHandlerExistsError should detect wrapped error")
+		}
+
+		// Verify it doesn't match other error types
+		if IsProtectedHandlerError(doubleWrappedErr) {
+			t.Errorf("IsProtectedHandlerError should not match handler exists error")
+		}
+	})
+
+	t.Run("IsProtectedHandlerError with wrapped error", func(t *testing.T) {
+		// Create a protected handler error
+		protectedErr := ErrProtectedHandler("protected-notification")
+
+		// Wrap it
+		wrappedErr := fmt.Errorf("unregister failed: %w", protectedErr)
+
+		// Should still be detected through wrapping
+		if !IsProtectedHandlerError(wrappedErr) {
+			t.Errorf("IsProtectedHandlerError should detect wrapped error")
+		}
+
+		// Verify it doesn't match other error types
+		if IsHandlerExistsError(wrappedErr) {
+			t.Errorf("IsHandlerExistsError should not match protected handler error")
+		}
+	})
+
+	t.Run("IsVoidProcessorError with wrapped error", func(t *testing.T) {
+		// Create a void processor error
+		voidErr := ErrVoidProcessorRegister("test-notification")
+
+		// Wrap it multiple times
+		wrappedErr := fmt.Errorf("register failed: %w", voidErr)
+		doubleWrappedErr := fmt.Errorf("processor error: %w", wrappedErr)
+
+		// Should still be detected through wrapping
+		if !IsVoidProcessorError(doubleWrappedErr) {
+			t.Errorf("IsVoidProcessorError should detect wrapped error")
+		}
+	})
+
+	t.Run("IsHandlerNilError with wrapped error", func(t *testing.T) {
+		// Wrap the nil handler error
+		wrappedErr := fmt.Errorf("validation failed: %w", ErrHandlerNil)
+
+		// Should still be detected through wrapping
+		if !IsHandlerNilError(wrappedErr) {
+			t.Errorf("IsHandlerNilError should detect wrapped error")
+		}
+	})
+
+	t.Run("Error functions return false for non-matching errors", func(t *testing.T) {
+		// Create a different error
+		otherErr := fmt.Errorf("some other error")
+
+		if IsHandlerExistsError(otherErr) {
+			t.Errorf("IsHandlerExistsError should return false for non-matching error")
+		}
+		if IsProtectedHandlerError(otherErr) {
+			t.Errorf("IsProtectedHandlerError should return false for non-matching error")
+		}
+		if IsVoidProcessorError(otherErr) {
+			t.Errorf("IsVoidProcessorError should return false for non-matching error")
+		}
+		if IsHandlerNilError(otherErr) {
+			t.Errorf("IsHandlerNilError should return false for non-matching error")
+		}
+	})
 }

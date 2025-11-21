@@ -355,6 +355,10 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 512 * time.Millisecond
 	}
 
+	if opt.FailingTimeoutSeconds == 0 {
+		opt.FailingTimeoutSeconds = 15
+	}
+
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
 	// auto-detect endpoint type if not specified
