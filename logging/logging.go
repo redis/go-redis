@@ -89,3 +89,4 @@ func (l *filterLogger) Printf(ctx context.Context, format string, v ...interface
 		return
 	}
 }
+

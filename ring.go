@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -154,6 +155,8 @@ type RingOptions struct {
 	DisableIdentity bool
 	IdentitySuffix  string
 	UnstableResp3   bool
+
+	Logger *logging.CustomLogger
 }
 
 func (opt *RingOptions) init() {
@@ -345,7 +348,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 	cleanup := func(shards map[string]*ringShard) {
 		for addr, shard := range shards {
 			if err := shard.Client.Close(); err != nil {
-				internal.Logger.Printf(context.Background(), "shard.Close %s failed: %s", addr, err)
+				c.logger().Errorf(context.Background(), "shard.Close %s failed: %s", addr, err)
 			}
 		}
 	}
@@ -490,7 +493,7 @@ func (c *ringSharding) Heartbeat(ctx context.Context, frequency time.Duration) {
 			for _, shard := range c.List() {
 				isUp := c.opt.HeartbeatFn(ctx, shard.Client)
 				if shard.Vote(isUp) {
-					internal.Logger.Printf(ctx, "ring shard state changed: %s", shard)
+					c.logger().Infof(ctx, "ring shard state changed: %s", shard)
 					rebalance = true
 				}
 			}
@@ -557,6 +560,14 @@ func (c *ringSharding) Close() error {
 	c.numShard = 0
 
 	return firstErr
+}
+
+func (c *ringSharding) logger() *logging.CustomLogger {
+	var logger *logging.CustomLogger
+	if c.opt != nil && c.opt.Logger != nil {
+		logger = c.opt.Logger
+	}
+	return logger
 }
 
 //------------------------------------------------------------------------------
