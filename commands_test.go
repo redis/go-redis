@@ -13,6 +13,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 type TimeValue struct {
@@ -678,6 +679,22 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.FirstKeyPos).To(Equal(int8(0)))
 			Expect(cmd.LastKeyPos).To(Equal(int8(0)))
 			Expect(cmd.StepCount).To(Equal(int8(0)))
+		})
+
+		It("should Command Tips", Label("NonRedisEnterprise"), func() {
+			SkipAfterRedisVersion(7.9, "Redis 8 changed the COMMAND reply format")
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd := cmds["touch"]
+			Expect(cmd.Name).To(Equal("touch"))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqMultiShard))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAggSum))
+
+			cmd = cmds["flushall"]
+			Expect(cmd.Name).To(Equal("flushall"))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqAllShards))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAllSucceeded))
 		})
 
 		It("should return all command names", func() {
