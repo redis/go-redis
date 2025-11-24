@@ -217,6 +217,8 @@ func TestManagerRefactoring(t *testing.T) {
 			NotificationMigrated,
 			NotificationFailingOver,
 			NotificationFailedOver,
+			NotificationSMigrating,
+			NotificationSMigrated,
 		}
 
 		if len(maintenanceNotificationTypes) != len(expectedTypes) {
