@@ -146,7 +146,8 @@ type ClusterOptions struct {
 	// cluster upgrade notifications gracefully and manage connection/pool state
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications upgrades are in "auto" mode and will be enabled if the server supports it.
-	// The ClusterClient does not directly work with maintnotifications, it is up to the clients in the Nodes map to work with maintnotifications.
+	// The ClusterClient supports SMIGRATING and SMIGRATED notifications for cluster state management.
+	// Individual node clients handle other maintenance notifications (MOVING, MIGRATING, etc.).
 	MaintNotificationsConfig *maintnotifications.Config
 }
 
@@ -945,8 +946,9 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 type clusterStateHolder struct {
 	load func(ctx context.Context) (*clusterState, error)
 
-	state     atomic.Value
-	reloading uint32 // atomic
+	state         atomic.Value
+	reloading     uint32 // atomic
+	reloadPending uint32 // atomic - set to 1 when reload is requested during active reload
 }
 
 func newClusterStateHolder(fn func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
@@ -965,17 +967,36 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 }
 
 func (c *clusterStateHolder) LazyReload() {
+	// If already reloading, mark that another reload is pending
 	if !atomic.CompareAndSwapUint32(&c.reloading, 0, 1) {
+		atomic.StoreUint32(&c.reloadPending, 1)
 		return
 	}
-	go func() {
-		defer atomic.StoreUint32(&c.reloading, 0)
 
-		_, err := c.Reload(context.Background())
-		if err != nil {
-			return
+	go func() {
+		for {
+			_, err := c.Reload(context.Background())
+			if err != nil {
+				atomic.StoreUint32(&c.reloading, 0)
+				return
+			}
+
+			// Clear pending flag after reload completes, before cooldown
+			// This captures notifications that arrived during the reload
+			atomic.StoreUint32(&c.reloadPending, 0)
+
+			// Wait cooldown period
+			time.Sleep(200 * time.Millisecond)
+
+			// Check if another reload was requested during cooldown
+			if atomic.LoadUint32(&c.reloadPending) == 0 {
+				// No pending reload, we're done
+				atomic.StoreUint32(&c.reloading, 0)
+				return
+			}
+
+			// Pending reload requested, loop to reload again
 		}
-		time.Sleep(200 * time.Millisecond)
 	}()
 }
 
@@ -1037,6 +1058,26 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 		pipeline:   c.processPipeline,
 		txPipeline: c.processTxPipeline,
 	})
+
+	// Set up SMIGRATED notification handling for cluster state reload
+	// When a node client receives a SMIGRATED notification, it should trigger
+	// cluster state reload on the parent ClusterClient
+	if opt.MaintNotificationsConfig != nil {
+		c.nodes.OnNewNode(func(nodeClient *Client) {
+			manager := nodeClient.GetMaintNotificationsManager()
+			if manager != nil {
+				manager.SetClusterStateReloadCallback(func(ctx context.Context, hostPort string, slotRanges []string) {
+					// Log the migration details for now
+					if internal.LogLevel.InfoOrAbove() {
+						internal.Logger.Printf(ctx, "cluster: slots %v migrated to %s, reloading cluster state", slotRanges, hostPort)
+					}
+					// Currently we reload the entire cluster state
+					// In the future, this could be optimized to reload only the specific slots
+					c.state.LazyReload()
+				})
+			}
+		})
+	}
 
 	return c
 }
