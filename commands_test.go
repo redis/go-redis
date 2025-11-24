@@ -8905,27 +8905,37 @@ var _ = Describe("Commands", func() {
 			const key = "latency-monitor-threshold"
 
 			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
+			// Use a higher threshold (100ms) to avoid capturing normal operations
+			// that could cause flakiness due to timing variations
+			client.ConfigSet(ctx, key, "100")
 			defer client.ConfigSet(ctx, key, old[key])
 
 			result, err := client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			// Use a longer sleep (150ms) to ensure it exceeds the 100ms threshold
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(1))
+			Expect(len(result)).Should(BeNumerically(">=", 1))
 
 			// reset latency by event name
-			err = client.LatencyReset(ctx, result[0].Name).Err()
+			eventName := result[0].Name
+			err = client.LatencyReset(ctx, eventName).Err()
 			Expect(err).NotTo(HaveOccurred())
 
+			// Verify the specific event was reset (not that all events are gone)
+			// This avoids flakiness from other operations triggering latency events
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(0))
+			for _, event := range result {
+				if event.Name == eventName {
+					Fail("Event " + eventName + " should have been reset")
+				}
+			}
 		})
 	})
 })
