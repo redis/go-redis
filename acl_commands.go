@@ -70,7 +70,12 @@ func (c cmdable) ACLSetUser(ctx context.Context, username string, rules ...strin
 }
 
 func (c cmdable) ACLGenPass(ctx context.Context, bit int) *StringCmd {
-	cmd := NewStringCmd(ctx, "acl", "genpass")
+	args := make([]interface{}, 0, 3)
+	args = append(args, "acl", "genpass")
+	if bit > 0 {
+		args = append(args, bit)
+	}
+	cmd := NewStringCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

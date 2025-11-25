@@ -109,6 +109,14 @@ var _ = Describe("ACL user commands", Label("NonRedisEnterprise"), func() {
 		Expect(password).NotTo(BeEmpty())
 	})
 
+	It("gen password with length", func() {
+		bit := 128
+		password, err := client.ACLGenPass(ctx, bit).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(password).NotTo(BeEmpty())
+		Expect(len(password)).To(Equal(bit / 4))
+	})
+
 	It("setuser and deluser", func() {
 		res, err := client.ACLList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -298,7 +306,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 
 		// no perm for dropindex
 		err = c.FTDropIndex(ctx, "txt").Err()
-		Expect(err).ToNot(BeEmpty())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("NOPERM"))
 
 		// json set and get have perm
@@ -307,7 +315,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 
 		// no perm for json clear
 		err = c.JSONClear(ctx, "foo", "$").Err()
-		Expect(err).ToNot(BeEmpty())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("NOPERM"))
 
 		// perm for reserve
@@ -315,7 +323,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 
 		// no perm for info
 		err = c.BFInfo(ctx, "bloom").Err()
-		Expect(err).ToNot(BeEmpty())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("NOPERM"))
 
 		// perm for cf.reserve
@@ -330,7 +338,7 @@ var _ = Describe("ACL permissions", Label("NonRedisEnterprise"), func() {
 		Expect(c.TSCreate(ctx, "tsts").Err()).NotTo(HaveOccurred())
 		// noperm for ts.info
 		err = c.TSInfo(ctx, "tsts").Err()
-		Expect(err).ToNot(BeEmpty())
+		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("NOPERM"))
 
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())

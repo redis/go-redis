@@ -3316,6 +3316,531 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 			Expect(res.Total).To(BeEquivalentTo(3))
 		}
 	})
+
+	It("should parse FTInfo response with vector fields", Label("search", "ftinfo", "NonRedisEnterprise"), func() {
+		// Create an index with multiple field types including vector
+		val, err := client.FTCreate(ctx, "idx_vector",
+			&redis.FTCreateOptions{},
+			&redis.FieldSchema{
+				FieldName: "prompt",
+				FieldType: redis.SearchFieldTypeText,
+			},
+			&redis.FieldSchema{
+				FieldName: "response",
+				FieldType: redis.SearchFieldTypeText,
+			},
+			&redis.FieldSchema{
+				FieldName: "exact_digest",
+				FieldType: redis.SearchFieldTypeTag,
+				Separator: ",",
+			},
+			&redis.FieldSchema{
+				FieldName:  "prompt_vector",
+				FieldType:  redis.SearchFieldTypeVector,
+				VectorArgs: &redis.FTVectorArgs{HNSWOptions: &redis.FTHNSWOptions{Type: "FLOAT32", Dim: 1536, DistanceMetric: "COSINE", MaxEdgesPerNode: 16, MaxAllowedEdgesPerNode: 64}},
+			},
+		).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(BeEquivalentTo("OK"))
+		WaitForIndexing(client, "idx_vector")
+
+		// Get FT.INFO
+		resInfo, err := client.FTInfo(ctx, "idx_vector").Result()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Validate index definition
+		Expect(resInfo.IndexDefinition.KeyType).To(Equal("HASH"))
+		Expect(resInfo.IndexDefinition.DefaultScore).To(Equal(float64(1)))
+
+		// Validate attributes
+		Expect(len(resInfo.Attributes)).To(Equal(4))
+
+		// Check prompt field (TEXT)
+		promptAttr := resInfo.Attributes[0]
+		Expect(promptAttr.Identifier).To(Equal("prompt"))
+		Expect(promptAttr.Attribute).To(Equal("prompt"))
+		Expect(promptAttr.Type).To(Equal("TEXT"))
+
+		// Check response field (TEXT)
+		responseAttr := resInfo.Attributes[1]
+		Expect(responseAttr.Identifier).To(Equal("response"))
+		Expect(responseAttr.Attribute).To(Equal("response"))
+		Expect(responseAttr.Type).To(Equal("TEXT"))
+
+		// Check exact_digest field (TAG)
+		tagAttr := resInfo.Attributes[2]
+		Expect(tagAttr.Identifier).To(Equal("exact_digest"))
+		Expect(tagAttr.Attribute).To(Equal("exact_digest"))
+		Expect(tagAttr.Type).To(Equal("TAG"))
+
+		// Check prompt_vector field (VECTOR)
+		vectorAttr := resInfo.Attributes[3]
+		Expect(vectorAttr.Identifier).To(Equal("prompt_vector"))
+		Expect(vectorAttr.Attribute).To(Equal("prompt_vector"))
+		Expect(vectorAttr.Type).To(Equal("VECTOR"))
+
+		// Validate numeric fields
+		Expect(resInfo.NumDocs).To(BeEquivalentTo(0))
+		Expect(resInfo.MaxDocID).To(BeEquivalentTo(0))
+		Expect(resInfo.NumTerms).To(BeEquivalentTo(0))
+		Expect(resInfo.NumRecords).To(BeEquivalentTo(0))
+		Expect(resInfo.Indexing).To(BeEquivalentTo(0))
+		Expect(resInfo.PercentIndexed).To(BeEquivalentTo(1))
+		Expect(resInfo.HashIndexingFailures).To(BeEquivalentTo(0))
+		Expect(resInfo.Cleaning).To(BeEquivalentTo(0))
+
+		// Validate memory stats
+		Expect(resInfo.InvertedSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.VectorIndexSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TotalInvertedIndexBlocks).To(BeEquivalentTo(0))
+		Expect(resInfo.OffsetVectorsSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.DocTableSizeMB).To(BeNumerically(">=", 0))
+		Expect(resInfo.SortableValuesSizeMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TagOverheadSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TextOverheadSzMB).To(BeEquivalentTo(0))
+		Expect(resInfo.TotalIndexMemorySzMB).To(BeNumerically(">=", 0))
+		Expect(resInfo.GeoshapesSzMB).To(BeEquivalentTo(0))
+
+		// Validate average stats (should be "nan" for empty index)
+		Expect(resInfo.RecordsPerDocAvg).To(Equal("nan"))
+		Expect(resInfo.BytesPerRecordAvg).To(Equal("nan"))
+		Expect(resInfo.OffsetsPerTermAvg).To(Equal("nan"))
+		Expect(resInfo.OffsetBitsPerRecordAvg).To(Equal("nan"))
+
+		// Validate cursor stats
+		Expect(resInfo.CursorStats.GlobalIdle).To(BeEquivalentTo(0))
+		Expect(resInfo.CursorStats.GlobalTotal).To(BeEquivalentTo(0))
+		Expect(resInfo.CursorStats.IndexCapacity).To(BeNumerically(">=", 0))
+		Expect(resInfo.CursorStats.IndexTotal).To(BeEquivalentTo(0))
+
+		// Validate dialect stats
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_1"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_2"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_3"))
+		Expect(resInfo.DialectStats).To(HaveKey("dialect_4"))
+
+		// Validate GC stats
+		Expect(resInfo.GCStats.BytesCollected).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.TotalMsRun).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.TotalCycles).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.AverageCycleTimeMs).To(Equal("nan"))
+		Expect(resInfo.GCStats.LastRunTimeMs).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.GCNumericTreesMissed).To(BeEquivalentTo(0))
+		Expect(resInfo.GCStats.GCBlocksDenied).To(BeEquivalentTo(0))
+
+		// Validate Index Errors
+		Expect(resInfo.IndexErrors.IndexingFailures).To(BeEquivalentTo(0))
+		Expect(resInfo.IndexErrors.LastIndexingError).To(Equal("N/A"))
+		Expect(resInfo.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
+
+		// Validate field statistics
+		Expect(len(resInfo.FieldStatistics)).To(Equal(4))
+		for _, fieldStat := range resInfo.FieldStatistics {
+			Expect(fieldStat.Identifier).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
+			Expect(fieldStat.Attribute).To(BeElementOf("prompt", "response", "exact_digest", "prompt_vector"))
+			Expect(fieldStat.IndexErrors.IndexingFailures).To(BeEquivalentTo(0))
+			Expect(fieldStat.IndexErrors.LastIndexingError).To(Equal("N/A"))
+			Expect(fieldStat.IndexErrors.LastIndexingErrorKey).To(Equal("N/A"))
+		}
+	})
+})
+
+// Hybrid Search Tests
+var _ = Describe("FT.HYBRID Commands", func() {
+	ctx := context.TODO()
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		// Create index with text, numeric, tag fields and vector fields
+		err := client.FTCreate(ctx, "hybrid_idx", &redis.FTCreateOptions{},
+			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText},
+			&redis.FieldSchema{FieldName: "price", FieldType: redis.SearchFieldTypeNumeric},
+			&redis.FieldSchema{FieldName: "color", FieldType: redis.SearchFieldTypeTag},
+			&redis.FieldSchema{FieldName: "item_type", FieldType: redis.SearchFieldTypeTag},
+			&redis.FieldSchema{FieldName: "size", FieldType: redis.SearchFieldTypeNumeric},
+			&redis.FieldSchema{
+				FieldName: "embedding",
+				FieldType: redis.SearchFieldTypeVector,
+				VectorArgs: &redis.FTVectorArgs{
+					FlatOptions: &redis.FTFlatOptions{
+						Type:           "FLOAT32",
+						Dim:            4,
+						DistanceMetric: "L2",
+					},
+				},
+			},
+			&redis.FieldSchema{
+				FieldName: "embedding_hnsw",
+				FieldType: redis.SearchFieldTypeVector,
+				VectorArgs: &redis.FTVectorArgs{
+					HNSWOptions: &redis.FTHNSWOptions{
+						Type:           "FLOAT32",
+						Dim:            4,
+						DistanceMetric: "L2",
+					},
+				},
+			}).Err()
+		Expect(err).NotTo(HaveOccurred())
+		WaitForIndexing(client, "hybrid_idx")
+
+		// Add test data
+		items := []struct {
+			key         string
+			description string
+			price       int
+			color       string
+			itemType    string
+			size        int
+			embedding   []float32
+		}{
+			{"item:0", "red shoes", 15, "red", "shoes", 10, []float32{1.0, 2.0, 7.0, 8.0}},
+			{"item:1", "green shoes with red laces", 16, "green", "shoes", 11, []float32{1.0, 4.0, 7.0, 8.0}},
+			{"item:2", "red dress", 17, "red", "dress", 12, []float32{1.0, 2.0, 6.0, 5.0}},
+			{"item:3", "orange dress", 18, "orange", "dress", 10, []float32{2.0, 3.0, 6.0, 5.0}},
+			{"item:4", "black shoes", 19, "black", "shoes", 11, []float32{5.0, 6.0, 7.0, 8.0}},
+		}
+
+		for _, item := range items {
+			client.HSet(ctx, item.key, map[string]interface{}{
+				"description":    item.description,
+				"price":          item.price,
+				"color":          item.color,
+				"item_type":      item.itemType,
+				"size":           item.size,
+				"embedding":      encodeFloat32Vector(item.embedding),
+				"embedding_hnsw": encodeFloat32Vector(item.embedding),
+			})
+		}
+	})
+
+	AfterEach(func() {
+		err := client.FTDropIndex(ctx, "hybrid_idx").Err()
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should perform basic hybrid search", Label("search", "fthybrid"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		// Basic hybrid search combining text and vector search
+		searchQuery := "@color:{red}"
+		vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
+
+		cmd := client.FTHybrid(ctx, "hybrid_idx", searchQuery, "embedding", &redis.VectorFP32{Val: vectorData})
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically(">", 0))
+
+		// Check that results contain expected fields
+		for _, result := range res.Results {
+			Expect(result).To(HaveKey("__score"))
+			Expect(result).To(HaveKey("__key"))
+		}
+	})
+
+	It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		// Test with TFIDF scorer
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{
+					Query:  "@color:{red}",
+					Scorer: "TFIDF",
+				},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+				},
+			},
+			Load:        []string{"@description", "@color", "@price", "@size", "@__score"},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+
+		// Verify that we got results with the fields we asked for
+		for _, result := range res.Results {
+			// Since we're using TFIDF scorer, the search results should be scored accordingly
+			Expect(result).To(HaveKey("__score"))
+		}
+	})
+
+	It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		// This query won't have results from search, so we can validate vector filter
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+					Filter:      "@price:[15 16] @size:[10 11]",
+				},
+			},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+
+		// Verify that all results match the filter criteria
+		for _, result := range res.Results {
+			if price, exists := result["price"]; exists {
+				priceStr := fmt.Sprintf("%v", price)
+				priceFloat, err := helper.ParseFloat(priceStr)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(priceFloat).To(BeNumerically(">=", 15))
+				Expect(priceFloat).To(BeNumerically("<=", 16))
+			}
+			if size, exists := result["size"]; exists {
+				sizeStr := fmt.Sprintf("%v", size)
+				sizeFloat, err := helper.ParseFloat(sizeStr)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sizeFloat).To(BeNumerically(">=", 10))
+				Expect(sizeFloat).To(BeNumerically("<=", 11))
+			}
+		}
+	})
+
+	It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:  "embedding",
+					VectorData:   &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+					Method:       "KNN",
+					MethodParams: []interface{}{"K", 3}, // K=3 as key-value pair
+				},
+			},
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(Equal(3)) // Should return exactly K=3 results
+		Expect(len(res.Results)).To(Equal(3))
+	})
+
+	It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:  "embedding",
+					VectorData:   &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					Method:       "RANGE",
+					MethodParams: []interface{}{"RADIUS", 2}, // RADIUS=2 as key-value pair
+				},
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+				},
+			},
+			Combine: &redis.FTHybridCombineOptions{
+				Method: redis.FTHybridCombineLinear,
+				Alpha:  0.5,
+				Beta:   0.5,
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+				},
+			},
+			Combine: &redis.FTHybridCombineOptions{
+				Method:   redis.FTHybridCombineRRF,
+				Window:   3,
+				Constant: 0.5,
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+				},
+			},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
+			Apply: []redis.FTHybridApply{
+				{
+					Expression: "@price - (@price * 0.1)",
+					AsField:    "price_discount",
+				},
+				{
+					Expression: "@price_discount * 0.2",
+					AsField:    "tax_discount",
+				},
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+
+		// Verify that applied fields exist
+		for _, result := range res.Results {
+			Expect(result).To(HaveKey("price_discount"))
+			Expect(result).To(HaveKey("tax_discount"))
+		}
+	})
+
+	It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+				},
+			},
+			LimitOffset: 0,
+			Limit:       2,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res.Results)).To(BeNumerically("<=", 2))
+	})
+
+	It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
+		SkipBeforeRedisVersion(8.4, "no support")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField: "embedding",
+					VectorData:  &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+				},
+			},
+			Load: []string{"@color", "@price"},
+			Apply: []redis.FTHybridApply{
+				{
+					Expression: "@price - (@price * 0.1)",
+					AsField:    "price_discount",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{FieldName: "@price_discount", Desc: true},
+				{FieldName: "@color", Asc: true},
+			},
+			LimitOffset: 0,
+			Limit:       5,
+		}
+
+		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
+
+		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 5))
+
+		// Check that results are sorted - first result should have higher price_discount
+		if len(res.Results) > 1 {
+			firstPriceStr := fmt.Sprintf("%v", res.Results[0]["price_discount"])
+			secondPriceStr := fmt.Sprintf("%v", res.Results[1]["price_discount"])
+			firstPrice, err1 := helper.ParseFloat(firstPriceStr)
+			secondPrice, err2 := helper.ParseFloat(secondPriceStr)
+
+			if err1 == nil && err2 == nil && firstPrice != secondPrice {
+				Expect(firstPrice).To(BeNumerically(">=", secondPrice))
+			}
+		}
+	})
 })
 
 func _assert_geosearch_result(result *redis.FTSearchResult, expectedDocIDs []string) {

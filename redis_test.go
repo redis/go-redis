@@ -245,6 +245,62 @@ var _ = Describe("Client", func() {
 		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 	})
 
+	It("should initialize idle connections created by MinIdleConns", Label("NonRedisEnterprise"), func() {
+		opt := redisOptions()
+		passwrd := "asdf"
+		db0 := redis.NewClient(opt)
+		// set password
+		err := db0.Do(ctx, "CONFIG", "SET", "requirepass", passwrd).Err()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			err = db0.Do(ctx, "CONFIG", "SET", "requirepass", "").Err()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(db0.Close()).NotTo(HaveOccurred())
+		}()
+		opt.MinIdleConns = 5
+		opt.Password = passwrd
+		opt.DB = 1 // Set DB to require SELECT
+
+		db := redis.NewClient(opt)
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		// Wait for minIdle connections to be created
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify that idle connections were created
+		stats := db.PoolStats()
+		Expect(stats.IdleConns).To(BeNumerically(">=", 5))
+
+		// Now use these connections - they should be properly initialized
+		// If they're not initialized, we'll get NOAUTH or WRONGDB errors
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				// Each goroutine performs multiple operations
+				for j := 0; j < 5; j++ {
+					key := fmt.Sprintf("test_key_%d_%d", id, j)
+					err := db.Set(ctx, key, "value", 0).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					val, err := db.Get(ctx, key).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(val).To(Equal("value"))
+
+					err = db.Del(ctx, key).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		// Verify no errors occurred
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd(ctx, "PING")
 		_ = client.Process(ctx, cmd)
@@ -323,6 +379,7 @@ var _ = Describe("Client", func() {
 		cn, err = client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
+		Expect(cn.UsedAt().UnixNano()).To(BeNumerically(">", createdAt.UnixNano()))
 		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())
 	})
 
