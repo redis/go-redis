@@ -494,10 +494,9 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	}
 }
 
-func (hwm *handoffWorkerManager) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (hwm *handoffWorkerManager) logger() logging.Lgr {
 	if hwm.config != nil && hwm.config.Logger != nil {
-		logger = hwm.config.Logger
+		return hwm.config.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

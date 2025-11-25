@@ -181,10 +181,9 @@ func (ph *PoolHook) Shutdown(ctx context.Context) error {
 	return ph.workerManager.shutdownWorkers(ctx)
 }
 
-func (ph *PoolHook) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (ph *PoolHook) logger() logging.Lgr {
 	if ph.config != nil && ph.config.Logger != nil {
-		logger = ph.config.Logger
+		return ph.config.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

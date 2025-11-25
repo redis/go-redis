@@ -229,9 +229,6 @@ type baseClient struct {
 
 	// streamingCredentialsManager is used to manage streaming credentials
 	streamingCredentialsManager *streaming.Manager
-
-	// loggerWithLevel is used for logging
-	loggerWithLevel *logging.CustomLogger
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -246,7 +243,6 @@ func (c *baseClient) clone() *baseClient {
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
-		loggerWithLevel:             c.loggerWithLevel,
 	}
 	return clone
 }
@@ -755,12 +751,11 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 
 // logger is a wrapper around the logger to log messages with context.
 // it uses the client logger if set, otherwise it uses the global logger.
-func (c *baseClient) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *baseClient) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.

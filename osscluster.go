@@ -151,7 +151,7 @@ type ClusterOptions struct {
 	MaintNotificationsConfig *maintnotifications.Config
 
 	// Logger is an optional logger for logging cluster-related messages.
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 }
 
 func (opt *ClusterOptions) init() {
@@ -709,12 +709,11 @@ func (c *clusterNodes) Random() (*clusterNode, error) {
 	return c.GetOrCreate(addrs[n])
 }
 
-func (c *clusterNodes) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *clusterNodes) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 //------------------------------------------------------------------------------
@@ -2140,12 +2139,11 @@ func (c *ClusterClient) context(ctx context.Context) context.Context {
 	return context.Background()
 }
 
-func (c *ClusterClient) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *ClusterClient) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 func appendIfNotExist[T comparable](vals []T, newVal T) []T {

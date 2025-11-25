@@ -38,6 +38,7 @@ var LogLevel LogLevelT = LogLevelError
 type LogLevelT int
 
 // Log level constants for the entire go-redis library
+// TODO(ndyakov): In v10 align those levels with slog.Level
 const (
 	LogLevelError LogLevelT = iota // 0 - errors only
 	LogLevelWarn                   // 1 - warnings and errors

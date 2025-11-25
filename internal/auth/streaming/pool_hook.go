@@ -166,7 +166,7 @@ func (r *ReAuthPoolHook) OnPut(_ context.Context, conn *pool.Conn) (bool, bool, 
 			defer func() {
 				if rec := recover(); rec != nil {
 					// once again - safety first
-					internal.Logger.Printf(context.Background(), "panic in reauth worker: %v", rec)
+					LoggerWrapper.Printf(context.Background(), "panic in reauth worker: %v", rec)
 				}
 				r.scheduledLock.Lock()
 				delete(r.scheduledReAuth, connID)

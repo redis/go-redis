@@ -122,7 +122,7 @@ type Options struct {
 	DialerRetryTimeout time.Duration
 
 	// Optional logger for connection pool operations.
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 }
 
 type lastDialErrorWrap struct {
@@ -1050,10 +1050,9 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	return true
 }
 
-func (p *ConnPool) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (p *ConnPool) logger() logging.Lgr {
 	if p.cfg != nil && p.cfg.Logger != nil {
-		logger = p.cfg.Logger
+		return p.cfg.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

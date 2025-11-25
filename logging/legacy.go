@@ -6,11 +6,11 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 )
 
-// legacyLoggerAdapter is a logger that implements [LoggerWithLevel] interface
+// legacyLoggerAdapter is a logger that implements [LoggerWithLevelI] interface
 // using the global [internal.Logger] and [internal.LogLevel] variables.
 type legacyLoggerAdapter struct{}
 
-var _ LoggerWithLevel = (*legacyLoggerAdapter)(nil)
+var _ LoggerWithLevelI = (*legacyLoggerAdapter)(nil)
 
 // structuredToPrintf converts a structured log message and key-value pairs into something a Printf-style logger can understand.
 func (l *legacyLoggerAdapter) structuredToPrintf(msg string, v ...any) (string, []any) {
@@ -92,3 +92,7 @@ func (l *legacyLoggerAdapter) Enabled(ctx context.Context, level LogLevelT) bool
 }
 
 var legacyLoggerWithLevel = &legacyLoggerAdapter{}
+
+func LoggerWithLevel() Lgr {
+	return legacyLoggerWithLevel
+}

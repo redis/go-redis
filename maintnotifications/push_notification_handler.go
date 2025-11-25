@@ -274,10 +274,9 @@ func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx
 	return nil
 }
 
-func (snh *NotificationHandler) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
-	if snh.manager != nil && snh.manager.config != nil && snh.manager.config.Logger != nil {
-		logger = snh.manager.config.Logger
+func (snh *NotificationHandler) logger() logging.Lgr {
+	if snh.manager != nil {
+		return snh.manager.logger()
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
