@@ -6,9 +6,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 func (c *baseClient) Pool() pool.Pooler {
@@ -87,7 +87,7 @@ func (c *clusterState) IsConsistent(ctx context.Context) bool {
 func GetSlavesAddrByName(ctx context.Context, c *SentinelClient, name string) []string {
 	addrs, err := c.Replicas(ctx, name).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+		logging.LoggerWithLevel.Errorf(ctx, "sentinel: Replicas name=%q failed: %s",
 			name, err)
 		return []string{}
 	}

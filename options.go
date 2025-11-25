@@ -270,8 +270,11 @@ type Options struct {
 	MaintNotificationsConfig *maintnotifications.Config
 
 	// Logger is the logger used by the client for logging.
-	// If none is provided, the global logger [internal.LegacyLoggerWithLevel] is used.
-	Logger *logging.CustomLogger
+	// If none is provided, the global logger [internal.Logger] is used.
+	// Keep in mind that the global logger is shared by all clients in the library, and at this time
+	// it is still the only logger for some internal components. This will change in the future and the global
+	// logger will be removed.
+	Logger logging.Lgr
 }
 
 func (opt *Options) init() {

@@ -194,12 +194,11 @@ func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
 	}
 }
 
-func (cb *CircuitBreaker) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (cb *CircuitBreaker) logger() logging.Lgr {
 	if cb.config != nil && cb.config.Logger != nil {
-		logger = cb.config.Logger
+		return cb.config.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 // CircuitBreakerStats provides statistics about a circuit breaker
@@ -352,10 +351,9 @@ func (cbm *CircuitBreakerManager) Reset() {
 	})
 }
 
-func (cbm *CircuitBreakerManager) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (cbm *CircuitBreakerManager) logger() logging.Lgr {
 	if cbm.config != nil && cbm.config.Logger != nil {
-		logger = cbm.config.Logger
+		return cbm.config.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

@@ -130,7 +130,7 @@ type Config struct {
 	MaxHandoffRetries int
 
 	// Logger is an optional custom logger for maintenance notifications.
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 }
 
 func (c *Config) IsEnabled() bool {
@@ -369,12 +369,11 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 	}
 }
 
-func (c *Config) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *Config) logger() logging.Lgr {
 	if c.Logger != nil {
-		logger = c.Logger
+		return c.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 // DetectEndpointType automatically detects the appropriate endpoint type

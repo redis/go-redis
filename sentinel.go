@@ -151,7 +151,7 @@ type FailoverOptions struct {
 	//MaintNotificationsConfig *maintnotifications.Config
 
 	// Optional logger for logging
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -1132,12 +1132,11 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 	}
 }
 
-func (c *sentinelFailover) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *sentinelFailover) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 func contains(slice []string, str string) bool {

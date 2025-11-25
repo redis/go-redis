@@ -156,7 +156,7 @@ type RingOptions struct {
 	IdentitySuffix  string
 	UnstableResp3   bool
 
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 }
 
 func (opt *RingOptions) init() {
@@ -562,12 +562,11 @@ func (c *ringSharding) Close() error {
 	return firstErr
 }
 
-func (c *ringSharding) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *ringSharding) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 //------------------------------------------------------------------------------

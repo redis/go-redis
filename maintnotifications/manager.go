@@ -311,10 +311,9 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooks = append(hm.hooks, notificationHook)
 }
 
-func (hm *Manager) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (hm *Manager) logger() logging.Lgr {
 	if hm.config != nil && hm.config.Logger != nil {
-		logger = hm.config.Logger
+		return hm.config.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

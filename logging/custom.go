@@ -5,17 +5,15 @@ import (
 	"fmt"
 )
 
-// CustomLogger is a logger interface with leveled logging methods.
-//
-// This interface can be implemented by custom loggers to provide leveled logging.
-type CustomLogger struct {
-	logger        LoggerWithLevel
+// LoggerWrapper is a slog.Logger wrapper that implements the Lgr interface.
+type LoggerWrapper struct {
+	logger        LoggerWithLevelI
 	loggerLevel   *LogLevelT
 	printfAdapter PrintfAdapter
 }
 
-func NewCustomLogger(logger LoggerWithLevel, opts ...CustomLoggerOption) *CustomLogger {
-	cl := &CustomLogger{
+func NewLoggerWrapper(logger LoggerWithLevelI, opts ...LoggerWrapperOption) *LoggerWrapper {
+	cl := &LoggerWrapper{
 		logger: logger,
 	}
 	for _, opt := range opts {
@@ -24,16 +22,16 @@ func NewCustomLogger(logger LoggerWithLevel, opts ...CustomLoggerOption) *Custom
 	return cl
 }
 
-type CustomLoggerOption func(*CustomLogger)
+type LoggerWrapperOption func(*LoggerWrapper)
 
-func WithPrintfAdapter(adapter PrintfAdapter) CustomLoggerOption {
-	return func(cl *CustomLogger) {
+func WithPrintfAdapter(adapter PrintfAdapter) LoggerWrapperOption {
+	return func(cl *LoggerWrapper) {
 		cl.printfAdapter = adapter
 	}
 }
 
-func WithLoggerLevel(level LogLevelT) CustomLoggerOption {
-	return func(cl *CustomLogger) {
+func WithLoggerLevel(level LogLevelT) LoggerWrapperOption {
+	return func(cl *LoggerWrapper) {
 		cl.loggerLevel = &level
 	}
 }
@@ -43,7 +41,7 @@ func WithLoggerLevel(level LogLevelT) CustomLoggerOption {
 type PrintfAdapter func(ctx context.Context, format string, v ...any) (context.Context, string, []any)
 
 // Error is a structured error level logging method with context and arguments.
-func (cl *CustomLogger) Error(ctx context.Context, msg string, args ...any) {
+func (cl *LoggerWrapper) Error(ctx context.Context, msg string, args ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Errorf(ctx, msg, args...)
 		return
@@ -51,7 +49,7 @@ func (cl *CustomLogger) Error(ctx context.Context, msg string, args ...any) {
 	cl.logger.ErrorContext(ctx, msg, args...)
 }
 
-func (cl *CustomLogger) Errorf(ctx context.Context, format string, v ...any) {
+func (cl *LoggerWrapper) Errorf(ctx context.Context, format string, v ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Errorf(ctx, format, v...)
 		return
@@ -60,7 +58,7 @@ func (cl *CustomLogger) Errorf(ctx context.Context, format string, v ...any) {
 }
 
 // Warn is a structured warning level logging method with context and arguments.
-func (cl *CustomLogger) Warn(ctx context.Context, msg string, args ...any) {
+func (cl *LoggerWrapper) Warn(ctx context.Context, msg string, args ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Warnf(ctx, msg, args...)
 		return
@@ -68,7 +66,7 @@ func (cl *CustomLogger) Warn(ctx context.Context, msg string, args ...any) {
 	cl.logger.WarnContext(ctx, msg, args...)
 }
 
-func (cl *CustomLogger) Warnf(ctx context.Context, format string, v ...any) {
+func (cl *LoggerWrapper) Warnf(ctx context.Context, format string, v ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Warnf(ctx, format, v...)
 		return
@@ -77,7 +75,7 @@ func (cl *CustomLogger) Warnf(ctx context.Context, format string, v ...any) {
 }
 
 // Info is a structured info level logging method with context and arguments.
-func (cl *CustomLogger) Info(ctx context.Context, msg string, args ...any) {
+func (cl *LoggerWrapper) Info(ctx context.Context, msg string, args ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Infof(ctx, msg, args...)
 		return
@@ -86,7 +84,7 @@ func (cl *CustomLogger) Info(ctx context.Context, msg string, args ...any) {
 }
 
 // Debug is a structured debug level logging method with context and arguments.
-func (cl *CustomLogger) Debug(ctx context.Context, msg string, args ...any) {
+func (cl *LoggerWrapper) Debug(ctx context.Context, msg string, args ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Debugf(ctx, msg, args...)
 		return
@@ -94,7 +92,7 @@ func (cl *CustomLogger) Debug(ctx context.Context, msg string, args ...any) {
 	cl.logger.DebugContext(ctx, msg, args...)
 }
 
-func (cl *CustomLogger) Infof(ctx context.Context, format string, v ...any) {
+func (cl *LoggerWrapper) Infof(ctx context.Context, format string, v ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Infof(ctx, format, v...)
 		return
@@ -103,7 +101,7 @@ func (cl *CustomLogger) Infof(ctx context.Context, format string, v ...any) {
 	cl.logger.InfoContext(cl.printfToStructured(ctx, format, v...))
 }
 
-func (cl *CustomLogger) Debugf(ctx context.Context, format string, v ...any) {
+func (cl *LoggerWrapper) Debugf(ctx context.Context, format string, v ...any) {
 	if cl == nil || cl.logger == nil {
 		legacyLoggerWithLevel.Debugf(ctx, format, v...)
 		return
@@ -111,14 +109,14 @@ func (cl *CustomLogger) Debugf(ctx context.Context, format string, v ...any) {
 	cl.logger.DebugContext(cl.printfToStructured(ctx, format, v...))
 }
 
-func (cl *CustomLogger) printfToStructured(ctx context.Context, format string, v ...any) (context.Context, string, []any) {
+func (cl *LoggerWrapper) printfToStructured(ctx context.Context, format string, v ...any) (context.Context, string, []any) {
 	if cl != nil && cl.printfAdapter != nil {
 		return cl.printfAdapter(ctx, format, v...)
 	}
 	return ctx, fmt.Sprintf(format, v...), nil
 }
 
-func (cl *CustomLogger) Enabled(ctx context.Context, level LogLevelT) bool {
+func (cl *LoggerWrapper) Enabled(ctx context.Context, level LogLevelT) bool {
 	if cl != nil && cl.loggerLevel != nil {
 		return level >= *cl.loggerLevel
 	}
@@ -126,10 +124,10 @@ func (cl *CustomLogger) Enabled(ctx context.Context, level LogLevelT) bool {
 	return legacyLoggerWithLevel.Enabled(ctx, level)
 }
 
-// LoggerWithLevel is a logger interface with leveled logging methods.
+// LoggerWithLevelI is a logger interface with leveled logging methods.
 //
 // [slog.Logger] from the standard library satisfies this interface.
-type LoggerWithLevel interface {
+type LoggerWithLevelI interface {
 	// InfoContext logs an info level message
 	InfoContext(ctx context.Context, format string, v ...any)
 

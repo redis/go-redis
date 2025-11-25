@@ -145,12 +145,11 @@ func mapKeys(m map[string]struct{}) []string {
 // logger is a wrapper around the logger to log messages with context.
 //
 // it uses the client logger if set, otherwise it uses the global logger.
-func (c *PubSub) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *PubSub) logger() logging.Lgr {
 	if c.opt != nil && c.opt.Logger != nil {
-		logger = c.opt.Logger
+		return c.opt.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }
 
 func (c *PubSub) _subscribe(
@@ -647,7 +646,7 @@ type channel struct {
 	pubSub *PubSub
 
 	// Optional logger for logging channel-related messages.
-	Logger *logging.CustomLogger
+	Logger logging.Lgr
 
 	msgCh chan *Message
 	allCh chan interface{}
@@ -810,10 +809,9 @@ func (c *channel) initAllChan() {
 	}()
 }
 
-func (c *channel) logger() *logging.CustomLogger {
-	var logger *logging.CustomLogger
+func (c *channel) logger() logging.Lgr {
 	if c.Logger != nil {
-		logger = c.Logger
+		return c.Logger
 	}
-	return logger
+	return logging.LoggerWithLevel()
 }

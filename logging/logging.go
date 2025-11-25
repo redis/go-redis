@@ -90,3 +90,21 @@ func (l *filterLogger) Printf(ctx context.Context, format string, v ...interface
 	}
 }
 
+// Lgr is a logger interface with leveled logging methods.
+// It is implemented by LoggerWrapper and legacyLoggerAdapter.
+// If you would like to use `slog.Logger` from the standard library, you can use LoggerWrapper.
+//
+//		logger := slog.New(slog.NewTextHandler(os.Stderr))
+//	    db := redis.NewClient(&redis.Options{
+//			Logger: logging.NewLoggerWrapper(logger),
+//		})
+//
+// This will NOT handle all logging at the moment, singe there is still a global logger in use.
+// that will be deprecated in the future.
+type Lgr interface {
+	Errorf(ctx context.Context, format string, v ...any)
+	Warnf(ctx context.Context, format string, v ...any)
+	Infof(ctx context.Context, format string, v ...any)
+	Debugf(ctx context.Context, format string, v ...any)
+	Enabled(ctx context.Context, level LogLevelT) bool
+}

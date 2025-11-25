@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
@@ -28,11 +29,7 @@ func usePrecise(dur time.Duration) bool {
 
 func formatMs(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Millisecond {
-		internal.Logger.Printf(
-			ctx,
-			"specified duration is %s, but minimal supported value is %s - truncating to 1ms",
-			dur, time.Millisecond,
-		)
+		logging.LoggerWithLevel().Infof(ctx, "specified duration is %s, but minimal supported value is %s - truncating to 1ms", dur, time.Millisecond)
 		return 1
 	}
 	return int64(dur / time.Millisecond)
@@ -40,11 +37,7 @@ func formatMs(ctx context.Context, dur time.Duration) int64 {
 
 func formatSec(ctx context.Context, dur time.Duration) int64 {
 	if dur > 0 && dur < time.Second {
-		internal.Logger.Printf(
-			ctx,
-			"specified duration is %s, but minimal supported value is %s - truncating to 1s",
-			dur, time.Second,
-		)
+		logging.LoggerWithLevel().Infof(ctx, "specified duration is %s, but minimal supported value is %s - truncating to 1s", dur, time.Second)
 		return 1
 	}
 	return int64(dur / time.Second)
