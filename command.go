@@ -65,6 +65,7 @@ var keylessCommands = map[string]struct{}{
 	"sync":         {},
 	"unsubscribe":  {},
 	"unwatch":      {},
+	"wait":         {},
 }
 
 // CmdTyper interface for getting command type

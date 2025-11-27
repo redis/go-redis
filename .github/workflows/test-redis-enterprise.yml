@@ -20,10 +20,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Clone Redis EE docker repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: RedisLabs/redis-ee-docker
           path: redis-ee
