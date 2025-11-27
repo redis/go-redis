@@ -295,11 +295,11 @@ func RemovingConnectionFromPool(connID uint64, reason error) string {
 	})
 }
 
-func NoPoolProvidedCannotRemove(connID uint64, reason error) string {
-	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, NoPoolProvidedMessageCannotRemoveMessage, reason)
+func NoPoolProvidedCannotRemove(connID uint64) string {
+	message := fmt.Sprintf("conn[%d] %s", connID, NoPoolProvidedMessageCannotRemoveMessage)
 	return appendJSONIfDebug(message, map[string]interface{}{
 		"connID": connID,
-		"reason": reason.Error(),
+		"reason": nil,
 	})
 }
 
