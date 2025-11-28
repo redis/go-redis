@@ -401,7 +401,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				// Another goroutine is initializing - WAIT for it to complete
 				// Use a context with timeout = min(remaining command timeout, DialTimeout)
 				// This prevents waiting too long while respecting the caller's deadline
-				waitCtx := ctx
+				var waitCtx context.Context
+				var cancel context.CancelFunc
 				dialTimeout := c.opt.DialTimeout
 
 				if cmdDeadline, hasCmdDeadline := ctx.Deadline(); hasCmdDeadline {
@@ -413,13 +414,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 						waitCtx = ctx
 					} else {
 						// DialTimeout is shorter, cap the wait at DialTimeout
-						var cancel context.CancelFunc
 						waitCtx, cancel = context.WithTimeout(ctx, dialTimeout)
 						defer cancel()
 					}
 				} else {
 					// No command deadline, use DialTimeout to prevent waiting indefinitely
-					var cancel context.CancelFunc
 					waitCtx, cancel = context.WithTimeout(ctx, dialTimeout)
 					defer cancel()
 				}
