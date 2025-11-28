@@ -558,6 +558,10 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		return nil, ctx.Err()
 	}
 
+	// Use context.Background() as parent to allow orphaned connection reuse.
+	// If the requester times out, the dial continues and the connection can be
+	// delivered to other waiters via putIdleConn() -> dialsQueue.dequeue().
+	// This is more efficient than canceling dials when individual requesters timeout.
 	dialCtx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
 
 	w := &wantConn{
@@ -568,10 +572,13 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 	var err error
 	defer func() {
 		if err != nil {
+			// Request failed/timed out
+			// If dial completed before timeout, try to deliver connection to other waiters
 			if cn := w.cancel(); cn != nil {
 				p.putIdleConn(ctx, cn)
-				p.freeTurn()
+				// freeTurn will be called by the dial goroutine or by the waiter who receives the connection
 			}
+			// If dial hasn't completed yet, freeTurn will be called by the dial goroutine
 		}
 	}()
 
@@ -595,14 +602,31 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		cn, cnErr := p.newConn(dialCtx, true)
 		delivered := w.tryDeliver(cn, cnErr)
 		if cnErr == nil && delivered {
+			// Connection delivered to original waiter - they will free the turn when done
 			return
 		} else if cnErr == nil && !delivered {
+			// Original waiter gave up or got another connection
+			// Try to deliver to other waiters or add to idle pool
 			p.putIdleConn(dialCtx, cn)
-			p.freeTurn()
-			freeTurnCalled = true
+
+			// Free the turn only if the original waiter did NOT get a connection
+			// If waiter got a connection (from another dial), they will free the turn when they call Put()
+			// If waiter did not get a connection (timed out), we should free the turn now
+			if !w.waiterGotConn() {
+				p.freeTurn()
+				freeTurnCalled = true
+			} else {
+				// Waiter got a connection from another dial - they will free the turn
+				freeTurnCalled = true // Mark as handled to prevent defer from freeing
+			}
 		} else {
-			p.freeTurn()
-			freeTurnCalled = true
+			// Dial failed - free the turn only if waiter didn't get a connection
+			if !w.waiterGotConn() {
+				p.freeTurn()
+				freeTurnCalled = true
+			} else {
+				freeTurnCalled = true // Mark as handled
+			}
 		}
 	}(w)
 
@@ -616,6 +640,8 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 	}
 }
 
+// putIdleConn tries to deliver the connection to waiting goroutines in the queue.
+// If no waiters are available, adds the connection to the idle pool.
 func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
 	for {
 		w, ok := p.dialsQueue.dequeue()
@@ -623,7 +649,7 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) {
 			break
 		}
 		if w.tryDeliver(cn, nil) {
-			return
+			return // Connection delivered to waiter
 		}
 	}
 

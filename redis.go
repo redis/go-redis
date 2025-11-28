@@ -399,13 +399,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 			if finalState == pool.StateInitializing {
 				// Another goroutine is initializing - WAIT for it to complete
-				// Use AwaitAndTransition to wait for IDLE or IN_USE state
-				// use DialTimeout as the timeout for the wait
-				waitCtx, cancel := context.WithTimeout(ctx, c.opt.DialTimeout)
-				defer cancel()
-
+				// Use the request context directly to respect the caller's timeout
+				// This prevents goroutines from waiting longer than their request timeout
 				finalState, err := cn.GetStateMachine().AwaitAndTransition(
-					waitCtx,
+					ctx,
 					[]pool.ConnState{pool.StateIdle, pool.StateInUse},
 					pool.StateIdle, // Target is IDLE (but we're already there, so this is a no-op)
 				)

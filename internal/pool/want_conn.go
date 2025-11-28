@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 type wantConn struct {
@@ -10,6 +11,7 @@ type wantConn struct {
 	ctx       context.Context // context for dial, cleared after delivered or canceled
 	cancelCtx context.CancelFunc
 	done      bool                // true after delivered or canceled
+	gotConn   atomic.Bool         // true if waiter received a connection (not an error)
 	result    chan wantConnResult // channel to deliver connection or error
 }
 
@@ -29,6 +31,7 @@ func (w *wantConn) tryDeliver(cn *Conn, err error) bool {
 	}
 
 	w.done = true
+	w.gotConn.Store(cn != nil && err == nil)
 	w.ctx = nil
 
 	w.result <- wantConnResult{cn: cn, err: err}
@@ -55,6 +58,12 @@ func (w *wantConn) cancel() *Conn {
 	w.mu.Unlock()
 
 	return cn
+}
+
+// waiterGotConn returns true if the waiter received a connection (not an error).
+// This is used by the dial goroutine to determine if it should free the turn.
+func (w *wantConn) waiterGotConn() bool {
+	return w.gotConn.Load()
 }
 
 type wantConnResult struct {
