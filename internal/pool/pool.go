@@ -576,7 +576,11 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 			// If dial completed before timeout, try to deliver connection to other waiters
 			if cn := w.cancel(); cn != nil {
 				p.putIdleConn(ctx, cn)
-				// freeTurn will be called by the dial goroutine or by the waiter who receives the connection
+				// Free the turn since:
+				// - Dial goroutine returned thinking delivery succeeded (tryDeliver returned true)
+				// - Original waiter won't call Put() (they got an error, not a connection)
+				// - Another waiter will receive this connection but won't free this turn
+				p.freeTurn()
 			}
 			// If dial hasn't completed yet, freeTurn will be called by the dial goroutine
 		}
