@@ -1020,22 +1020,22 @@ var _ = Describe("queuedNewConn", func() {
 		Expect(reqBErr).NotTo(HaveOccurred(), "Request B should receive Request A's connection")
 		Expect(reqBConn).NotTo(BeNil())
 
-		// CRITICAL CHECK: Turn leak detection
+		// FIRST CRITICAL CHECK: Turn state after connection delivery
 		// After Request B receives connection from putIdleConn:
-		// - Request A's turn SHOULD be released (via freeTurn)
-		// - Request B's turn is still held (will release on Put)
-		// Expected QueueLen: 1 (only Request B)
-		// If Bug exists (missing freeTurn): QueueLen: 2 (Request A's turn leaked)
-		time.Sleep(100 * time.Millisecond) // Allow time for turn release
-		currentQueueLen := testPool.QueueLen()
+		// - Request A's turn is held by Request B (connection delivered)
+		// - Request B's turn is still held by Request B's dial to complete the connection
+		// Expected QueueLen: 2 (Request B holding turn for connection usage)
+		time.Sleep(100 * time.Millisecond) // ~300ms total
+		Expect(testPool.QueueLen()).To(Equal(2))
 
-		Expect(currentQueueLen).To(Equal(1),
-			"QueueLen should be 1 (only Request B holding turn). "+
-				"If it's 2, Request A's turn leaked due to missing freeTurn()")
+		// SECOND CRITICAL CHECK: Turn release after dial completion
+		// Wait for Request B's dial result to complete
+		time.Sleep(300 * time.Millisecond) // ~600ms total
+		Expect(testPool.QueueLen()).To(Equal(1))
 
-		// Cleanup
+		// Cleanup and verify turn is released
 		testPool.Put(ctx, reqBConn)
-		Eventually(func() int { return testPool.QueueLen() }, "500ms").Should(Equal(0))
+		Eventually(func() int { return testPool.QueueLen() }, "600ms").Should(Equal(0))
 	})
 })
 
