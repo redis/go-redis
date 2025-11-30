@@ -31,6 +31,27 @@ type OTelRecorder interface {
 
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn ConnInfo)
+
+	// RecordConnectionRelaxedTimeout records when connection timeout is relaxed/unrelaxed
+	// delta: +1 for relaxed, -1 for unrelaxed
+	// poolName: name of the connection pool (e.g., "main", "pubsub")
+	// notificationType: the notification type that triggered the timeout relaxation (e.g., "MOVING", "HANDOFF")
+	RecordConnectionRelaxedTimeout(ctx context.Context, delta int, cn ConnInfo, poolName, notificationType string)
+
+	// RecordConnectionHandoff records when a connection is handed off to another node
+	// poolName: name of the connection pool (e.g., "main", "pubsub")
+	RecordConnectionHandoff(ctx context.Context, cn ConnInfo, poolName string)
+
+	// RecordError records client errors (ASK, MOVED, handshake failures, etc.)
+	// errorType: type of error (e.g., "ASK", "MOVED", "HANDSHAKE_FAILED")
+	// statusCode: Redis response status code if available (e.g., "MOVED", "ASK")
+	// isInternal: whether this is an internal error
+	// retryAttempts: number of retry attempts made
+	RecordError(ctx context.Context, errorType string, cn ConnInfo, statusCode string, isInternal bool, retryAttempts int)
+
+	// RecordMaintenanceNotification records when a maintenance notification is received
+	// notificationType: the type of notification (e.g., "MOVING", "MIGRATING", etc.)
+	RecordMaintenanceNotification(ctx context.Context, cn ConnInfo, notificationType string)
 }
 
 // SetOTelRecorder sets the global OpenTelemetry recorder.
@@ -81,4 +102,40 @@ func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, du
 		connInfo = cn
 	}
 	a.recorder.RecordConnectionCreateTime(ctx, duration, connInfo)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionRelaxedTimeout(ctx context.Context, delta int, cn *pool.Conn, poolName, notificationType string) {
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordConnectionRelaxedTimeout(ctx, delta, connInfo, poolName, notificationType)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionHandoff(ctx context.Context, cn *pool.Conn, poolName string) {
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordConnectionHandoff(ctx, connInfo, poolName)
+}
+
+func (a *otelRecorderAdapter) RecordError(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retryAttempts int) {
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordError(ctx, errorType, connInfo, statusCode, isInternal, retryAttempts)
+}
+
+func (a *otelRecorderAdapter) RecordMaintenanceNotification(ctx context.Context, cn *pool.Conn, notificationType string) {
+	// Convert internal pool.Conn to public ConnInfo
+	var connInfo ConnInfo
+	if cn != nil {
+		connInfo = cn
+	}
+	a.recorder.RecordMaintenanceNotification(ctx, connInfo, notificationType)
 }

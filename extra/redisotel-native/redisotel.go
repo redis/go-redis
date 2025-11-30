@@ -145,14 +145,57 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 		return fmt.Errorf("failed to create connection create time histogram: %w", err)
 	}
 
+	// Create UpDownCounter for relaxed timeout tracking
+	connectionRelaxedTimeout, err := meter.Int64UpDownCounter(
+		"redis.client.connection.relaxed_timeout",
+		metric.WithDescription("How many times the connection timeout has been increased/decreased (after a server maintenance notification)"),
+		metric.WithUnit("{relaxation}"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create connection relaxed timeout metric: %w", err)
+	}
+
+	// Create Counter for connection handoffs
+	connectionHandoff, err := meter.Int64Counter(
+		"redis.client.connection.handoff",
+		metric.WithDescription("Connections that have been handed off to another node (e.g after a MOVING notification)"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create connection handoff metric: %w", err)
+	}
+
+	// Create Counter for client errors
+	clientErrors, err := meter.Int64Counter(
+		"redis.client.errors",
+		metric.WithDescription("Number of errors handled by the Redis client"),
+		metric.WithUnit("{error}"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create client errors metric: %w", err)
+	}
+
+	// Create Counter for maintenance notifications
+	maintenanceNotifications, err := meter.Int64Counter(
+		"redis.client.maintenance.notifications",
+		metric.WithDescription("Number of maintenance notifications received"),
+		metric.WithUnit("{notification}"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create maintenance notifications metric: %w", err)
+	}
+
 	// Create recorder
 	recorder := &metricsRecorder{
-		operationDuration:    operationDuration,
-		connectionCount:      connectionCount,
-		connectionCreateTime: connectionCreateTime,
-		serverAddr:           serverAddr,
-		serverPort:           serverPort,
-		dbIndex:              dbIndex,
+		operationDuration:        operationDuration,
+		connectionCount:          connectionCount,
+		connectionCreateTime:     connectionCreateTime,
+		connectionRelaxedTimeout: connectionRelaxedTimeout,
+		connectionHandoff:        connectionHandoff,
+		clientErrors:             clientErrors,
+		maintenanceNotifications: maintenanceNotifications,
+		serverAddr:               serverAddr,
+		serverPort:               serverPort,
+		dbIndex:                  dbIndex,
 	}
 
 	// Register global recorder

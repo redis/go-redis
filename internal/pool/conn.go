@@ -241,6 +241,8 @@ func (cn *Conn) SetUsable(usable bool) {
 // SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
 // These timeouts will be used for all subsequent commands until the deadline expires.
 // Uses atomic operations for lock-free access.
+// Note: Metrics should be recorded by the caller (notification handler) which has context about
+// the notification type and pool name.
 func (cn *Conn) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
 	cn.relaxedCounter.Add(1)
 	cn.relaxedReadTimeoutNs.Store(int64(readTimeout))
@@ -275,6 +277,11 @@ func (cn *Conn) clearRelaxedTimeout() {
 	cn.relaxedWriteTimeoutNs.Store(0)
 	cn.relaxedDeadlineNs.Store(0)
 	cn.relaxedCounter.Store(0)
+
+	// Note: Metrics for timeout unrelaxing are not recorded here because we don't have
+	// context about which notification type or pool triggered the relaxation.
+	// In practice, relaxed timeouts expire automatically via deadline, so explicit
+	// unrelaxing metrics are less critical than the initial relaxation metrics.
 }
 
 // HasRelaxedTimeout returns true if relaxed timeouts are currently active on this connection.

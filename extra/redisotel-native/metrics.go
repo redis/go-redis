@@ -20,9 +20,13 @@ const (
 
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
-	operationDuration    metric.Float64Histogram
-	connectionCount      metric.Int64UpDownCounter
-	connectionCreateTime metric.Float64Histogram
+	operationDuration        metric.Float64Histogram
+	connectionCount          metric.Int64UpDownCounter
+	connectionCreateTime     metric.Float64Histogram
+	connectionRelaxedTimeout metric.Int64UpDownCounter
+	connectionHandoff        metric.Int64Counter
+	clientErrors             metric.Int64Counter
+	maintenanceNotifications metric.Int64Counter
 
 	// Client configuration for attributes (used for operation metrics only)
 	serverAddr string
@@ -54,7 +58,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		attribute.Bool("redis.client.operation.blocking", isBlockingCommand(cmd)),
 
 		// Recommended attributes
-		attribute.String("db.system", "redis"),
+		attribute.String("db.system.name", "redis"),
 		attribute.String("server.address", r.serverAddr),
 	}
 
@@ -326,6 +330,12 @@ func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
 	return host, portStr
 }
 
+// extractPeerInfo extracts peer network address and port from connection info
+// For client connections, this is the same as the server address (remote endpoint)
+func extractPeerInfo(cn redis.ConnInfo) (addr, port string) {
+	return extractServerInfo(cn)
+}
+
 // RecordConnectionCreateTime records the time it took to create a new connection
 func (r *metricsRecorder) RecordConnectionCreateTime(
 	ctx context.Context,
@@ -363,4 +373,155 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 
 	// Record the histogram
 	r.connectionCreateTime.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionRelaxedTimeout records when connection timeout is relaxed/unrelaxed
+func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
+	ctx context.Context,
+	delta int,
+	cn redis.ConnInfo,
+	poolName, notificationType string,
+) {
+	if r.connectionRelaxedTimeout == nil {
+		return
+	}
+
+	// Extract server address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		attribute.String("db.client.connection.pool.name", poolName),
+		attribute.String("redis.client.connection.notification", notificationType),
+	}
+
+	// Add server.port if not default
+	if serverPort != "" && serverPort != "6379" {
+		attrs = append(attrs, attribute.String("server.port", serverPort))
+	}
+
+	// Record the counter (delta can be +1 or -1)
+	r.connectionRelaxedTimeout.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionHandoff records when a connection is handed off to another node
+func (r *metricsRecorder) RecordConnectionHandoff(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	poolName string,
+) {
+	if r.connectionHandoff == nil {
+		return
+	}
+
+	// Extract server address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		attribute.String("db.client.connection.pool.name", poolName),
+	}
+
+	// Add server.port if not default
+	if serverPort != "" && serverPort != "6379" {
+		attrs = append(attrs, attribute.String("server.port", serverPort))
+	}
+
+	// Record the counter
+	r.connectionHandoff.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordError records client errors (ASK, MOVED, handshake failures, etc.)
+func (r *metricsRecorder) RecordError(
+	ctx context.Context,
+	errorType string,
+	cn redis.ConnInfo,
+	statusCode string,
+	isInternal bool,
+	retryAttempts int,
+) {
+	if r.clientErrors == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection (may be nil for some errors)
+	var serverAddr, serverPort, peerAddr, peerPort string
+	if cn != nil {
+		serverAddr, serverPort = extractServerInfo(cn)
+		peerAddr, peerPort = extractPeerInfo(cn)
+	}
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("error.type", errorType),
+		attribute.String("db.response.status_code", statusCode),
+		attribute.Bool("redis.client.errors.internal", isInternal),
+		attribute.Int("redis.client.operation.retry_attempts", retryAttempts),
+		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+	}
+
+	// Add server info if available
+	if serverAddr != "" {
+		attrs = append(attrs, attribute.String("server.address", serverAddr))
+		if serverPort != "" && serverPort != "6379" {
+			attrs = append(attrs, attribute.String("server.port", serverPort))
+		}
+	}
+
+	// Add peer info if available
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the counter
+	r.clientErrors.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordMaintenanceNotification records when a maintenance notification is received
+func (r *metricsRecorder) RecordMaintenanceNotification(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	notificationType string,
+) {
+	if r.maintenanceNotifications == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := extractPeerInfo(cn)
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		attribute.String("redis.client.connection.notification", notificationType),
+	}
+
+	// Add server.port if not default
+	if serverPort != "" && serverPort != "6379" {
+		attrs = append(attrs, attribute.String("server.port", serverPort))
+	}
+
+	// Add peer info if available
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the counter
+	r.maintenanceNotifications.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

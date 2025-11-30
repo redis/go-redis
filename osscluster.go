@@ -1124,6 +1124,18 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		if moved || ask {
 			c.state.LazyReload()
 
+			// Record error metrics
+			if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+				errorType := "MOVED"
+				statusCode := "MOVED"
+				if ask {
+					errorType = "ASK"
+					statusCode = "ASK"
+				}
+				// MOVED/ASK are not internal errors, and this is the first attempt (retry count = 0)
+				errorCallback(ctx, errorType, nil, statusCode, false, 0)
+			}
+
 			var err error
 			node, err = c.nodes.GetOrCreate(addr)
 			if err != nil {
