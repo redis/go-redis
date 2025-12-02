@@ -3,7 +3,7 @@ description: 'Runs go-redis tests against different Redis versions and configura
 inputs:
   go-version:
     description: 'Go version to use for running tests'
-    default: '1.23'
+    default: 'stable'
   redis-version:
     description: 'Redis version to test against'
     required: true

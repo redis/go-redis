@@ -22,8 +22,8 @@ jobs:
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
         go-version:
-          - "1.23.x"
-          - "1.24.x"
+          - "stable"    # The latest stable Go release
+          - "oldstable" # The previous Go release before stable
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -78,8 +78,9 @@ jobs:
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
           go-version:
-            - "1.23.x"
-            - "1.24.x"
+            - "stable"    # The latest stable Go release
+            - "oldstable" # The previous Go release before stable
+            - "1.18.x"    # Go 1.18 is the minimum supported version for go-redis (see go.mod)
 
     steps:
       - name: Checkout code

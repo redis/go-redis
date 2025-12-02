@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ["1.24"]
+        go-version: ["stable", "1.18"]
 
     steps:
       - name: Set up ${{ matrix.go-version }}

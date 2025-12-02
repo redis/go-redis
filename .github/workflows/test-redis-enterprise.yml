@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.24.x]
+        go-version: [stable, "1.18"]
         re-build: ["7.4.2-54"]
 
     steps:
