@@ -1056,6 +1056,7 @@ func (c *clusterStateHolder) LazyReload() {
 		for {
 			_, err := c.Reload(context.Background())
 			if err != nil {
+				atomic.StoreUint32(&c.reloadPending, 0)
 				atomic.StoreUint32(&c.reloading, 0)
 				return
 			}
