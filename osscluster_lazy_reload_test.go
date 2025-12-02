@@ -170,7 +170,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 		}
 	})
 
-	t.Run("CascadingSMigratedScenario", func(t *testing.T) {
+	t.Run("CascadingSMIGRATEDScenario", func(t *testing.T) {
 		// Simulate the real-world scenario: multiple SMIGRATED notifications
 		// arriving in quick succession from different node clients
 		var reloadCount atomic.Int32
