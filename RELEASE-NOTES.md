@@ -1,5 +1,79 @@
 # Release Notes
 
+# 9.18.0-beta.1 (2025-12-01)
+
+## 🚀 Highlights
+
+### Request and Response Policy Based Routing in Cluster Mode
+
+This beta release introduces comprehensive support for Redis COMMAND-based request and response policy routing for cluster clients. This feature enables intelligent command routing and response aggregation based on Redis command metadata.
+
+**Key Features:**
+- **Command Policy Loader**: Automatically parses and caches COMMAND metadata with routing/aggregation hints
+- **Enhanced Routing Engine**: Supports all request policies including:
+  - `default(keyless)` - Commands without keys
+  - `default(hashslot)` - Commands with hash slot routing
+  - `all_shards` - Commands that need to run on all shards
+  - `all_nodes` - Commands that need to run on all nodes
+  - `multi_shard` - Commands that span multiple shards
+  - `special` - Commands with custom routing logic
+- **Response Aggregator**: Intelligently combines multi-shard replies based on response policies:
+  - `all_succeeded` - All shards must succeed
+  - `one_succeeded` - At least one shard must succeed
+  - `agg_sum` - Aggregate numeric responses
+  - `special` - Custom aggregation logic (e.g., FT.CURSOR)
+- **Raw Command Support**: Policies are enforced on `Client.Do(ctx, args...)`
+
+This feature is particularly useful for Redis Stack commands like RediSearch that need to operate across multiple shards in a cluster.
+
+### Connection Pool Improvements
+
+Fixed a critical defect in the connection pool's turn management mechanism that could lead to connection leaks under certain conditions. The fix ensures proper 1:1 correspondence between turns and connections.
+
+## ✨ New Features
+
+- Request and Response Policy Based Routing in Cluster Mode ([#3422](https://github.com/redis/go-redis/pull/3422)) by [@ofekshenawa](https://github.com/ofekshenawa)
+
+## 🐛 Bug Fixes
+
+- Fixed connection pool turn management to prevent connection leaks ([#3626](https://github.com/redis/go-redis/pull/3626)) by [@cyningsun](https://github.com/cyningsun)
+
+## 🧰 Maintenance
+
+- chore(deps): bump rojopolis/spellcheck-github-actions from 0.54.0 to 0.55.0 ([#3627](https://github.com/redis/go-redis/pull/3627))
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@cyningsun](https://github.com/cyningsun), [@ofekshenawa](https://github.com/ofekshenawa), [@ndyakov](https://github.com/ndyakov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.17.1...v9.18.0-beta.1
+
+# 9.17.1 (2025-11-25)
+
+## 🐛 Bug Fixes
+
+- add wait to keyless commands list ([#3615](https://github.com/redis/go-redis/pull/3615)) by [@marcoferrer](https://github.com/marcoferrer)
+- fix(time): remove cached time optimization ([#3611](https://github.com/redis/go-redis/pull/3611)) by [@ndyakov](https://github.com/ndyakov)
+
+## 🧰 Maintenance
+
+- chore(deps): bump golangci/golangci-lint-action from 9.0.0 to 9.1.0 ([#3609](https://github.com/redis/go-redis/pull/3609))
+- chore(deps): bump actions/checkout from 5 to 6 ([#3610](https://github.com/redis/go-redis/pull/3610))
+- chore(script): fix help call in tag.sh ([#3606](https://github.com/redis/go-redis/pull/3606)) by [@ndyakov](https://github.com/ndyakov)
+
+## Contributors
+We'd like to thank all the contributors who worked on this release!
+
+[@marcoferrer](https://github.com/marcoferrer) and [@ndyakov](https://github.com/ndyakov)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.17.0...v9.17.1
+
 # 9.17.0 (2025-11-19)
 
 ## 🚀 Highlights
