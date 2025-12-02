@@ -21,7 +21,7 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2 
 - [Redis 8.4](https://raw.githubusercontent.com/redis/redis/8.4/00-RELEASENOTES) - using Redis CE 8.4
 
-Although the `go.mod` states it requires at minimum `go 1.18`, our CI is configured to run the tests against all three
+Although the `go.mod` states it requires at minimum `go 1.23`, our CI is configured to run the tests against all three
 versions of Redis and latest two versions of Go ([1.23](https://go.dev/doc/devel/release#go1.23.0),
 [1.24](https://go.dev/doc/devel/release#go1.24.0)). We observe that some modules related test may not pass with
 Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
