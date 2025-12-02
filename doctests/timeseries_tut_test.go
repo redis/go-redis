@@ -5,9 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math"
-	"slices"
 	"sort"
 
 	"github.com/redis/go-redis/v9"
@@ -417,7 +415,11 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res28Keys := slices.Collect(maps.Keys(res28))
+	var res28Keys []string
+	for k := range res28 {
+		res28Keys = append(res28Keys, k)
+	}
+
 	sort.Strings(res28Keys)
 
 	for _, k := range res28Keys {
@@ -457,7 +459,10 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res29Keys := slices.Collect(maps.Keys(res29))
+	var res29Keys []string
+	for k := range res29 {
+		res29Keys = append(res29Keys, k)
+	}
 	sort.Strings(res29Keys)
 
 	for _, k := range res29Keys {
@@ -505,7 +510,10 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res30Keys := slices.Collect(maps.Keys(res30))
+	var res30Keys []string
+	for k := range res30 {
+		res30Keys = append(res30Keys, k)
+	}
 	sort.Strings(res30Keys)
 
 	for _, k := range res30Keys {
@@ -550,7 +558,10 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res31Keys := slices.Collect(maps.Keys(res31))
+	var res31Keys []string
+	for k := range res31 {
+		res31Keys = append(res31Keys, k)
+	}
 	sort.Strings(res31Keys)
 
 	for _, k := range res31Keys {
@@ -857,7 +868,10 @@ func ExampleClient_timeseries_aggmulti() {
 		panic(err)
 	}
 
-	res44Keys := slices.Collect(maps.Keys(res44))
+	var res44Keys []string
+	for k := range res44 {
+		res44Keys = append(res44Keys, k)
+	}
 	sort.Strings(res44Keys)
 
 	for _, k := range res44Keys {
@@ -905,7 +919,10 @@ func ExampleClient_timeseries_aggmulti() {
 		panic(err)
 	}
 
-	res45Keys := slices.Collect(maps.Keys(res45))
+	var res45Keys []string
+	for k := range res45 {
+		res45Keys = append(res45Keys, k)
+	}
 	sort.Strings(res45Keys)
 
 	for _, k := range res45Keys {

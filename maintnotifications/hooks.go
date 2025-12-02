@@ -2,7 +2,6 @@ package maintnotifications
 
 import (
 	"context"
-	"slices"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
@@ -15,6 +14,17 @@ type LoggingHook struct {
 	LogLevel int // 0=Error, 1=Warn, 2=Info, 3=Debug
 }
 
+// slicesContains is an helper function to check if a slice contains a specific string.
+// TODO: Replace with slices.Contains when we move to Go 1.21+
+func slicesContains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
 // PreHook logs the notification before processing and allows modification.
 func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
 	if lh.LogLevel >= 2 { // Info level
@@ -24,7 +34,7 @@ func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.Notific
 			connID = conn.GetID()
 		}
 		seqID := int64(0)
-		if slices.Contains(maintenanceNotificationTypes, notificationType) {
+		if slicesContains(maintenanceNotificationTypes, notificationType) {
 			// seqID is the second element in the notification array
 			if len(notification) > 1 {
 				if parsedSeqID, ok := notification[1].(int64); !ok {

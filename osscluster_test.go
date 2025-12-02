@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,6 +106,18 @@ func (s *clusterScenario) Close() error {
 	return nil
 }
 
+// slicesContains is an helper function to check if a slice contains a specific string.
+//
+//	TODO: Replace with slices.Contains when we move to Go 1.21+
+func slicesContains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
 func configureClusterTopology(ctx context.Context, scenario *clusterScenario) error {
 	allowErrs := []string{
 		"ERR Slot 0 is already busy",
@@ -131,8 +142,10 @@ func configureClusterTopology(ctx context.Context, scenario *clusterScenario) er
 	slots := scenario.slots()
 	for pos, master := range scenario.masters() {
 		err := master.ClusterAddSlotsRange(ctx, slots[pos], slots[pos+1]-1).Err()
-		if err != nil && slices.Contains(allowErrs, err.Error()) == false {
-			return err
+		if err != nil {
+			if !slicesContains(allowErrs, err.Error()) {
+				return err
+			}
 		}
 	}
 

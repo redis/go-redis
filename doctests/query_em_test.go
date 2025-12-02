@@ -5,7 +5,7 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -279,8 +279,8 @@ func ExampleClient_query_em() {
 	fmt.Println(res3.Total) // >>> 5
 
 	docs := res3.Docs
-	slices.SortFunc(docs, func(a, b redis.Document) int {
-		return strings.Compare(a.ID, b.ID)
+	sort.Slice(docs, func(i, j int) bool {
+		return strings.Compare(docs[i].ID, docs[j].ID) < 0
 	})
 
 	for _, doc := range docs {
