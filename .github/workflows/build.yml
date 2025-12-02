@@ -80,6 +80,13 @@ jobs:
           go-version:
             - "stable"    # The latest stable Go release
             - "oldstable" # The previous Go release before stable
+            - "1.25.x"
+            - "1.24.x"
+            - "1.23.x"
+            - "1.22.x"
+            - "1.21.x"
+            - "1.20.x"
+            - "1.19.x"
             - "1.18.x"    # Go 1.18 is the minimum supported version for go-redis (see go.mod)
 
     steps:
