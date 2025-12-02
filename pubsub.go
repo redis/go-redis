@@ -734,7 +734,7 @@ func (c *channel) initMsgChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
+						ctx, "redis: %v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
@@ -788,7 +788,7 @@ func (c *channel) initAllChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
+						ctx, "redis: %v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
