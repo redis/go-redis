@@ -486,8 +486,9 @@ type TSTimestampValueCmd struct {
 func newTSTimestampValueCmd(ctx context.Context, args ...interface{}) *TSTimestampValueCmd {
 	return &TSTimestampValueCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeTSTimestampValue,
 		},
 	}
 }
@@ -531,6 +532,13 @@ func (cmd *TSTimestampValueCmd) readReply(rd *proto.Reader) (err error) {
 	}
 
 	return nil
+}
+
+func (cmd *TSTimestampValueCmd) Clone() Cmder {
+	return &TSTimestampValueCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val, // TSTimestampValue is a simple struct, can be copied directly
+	}
 }
 
 // TSInfo - Returns information about a time-series key.
@@ -704,8 +712,9 @@ type TSTimestampValueSliceCmd struct {
 func newTSTimestampValueSliceCmd(ctx context.Context, args ...interface{}) *TSTimestampValueSliceCmd {
 	return &TSTimestampValueSliceCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeTSTimestampValueSlice,
 		},
 	}
 }
@@ -750,6 +759,18 @@ func (cmd *TSTimestampValueSliceCmd) readReply(rd *proto.Reader) (err error) {
 	}
 
 	return nil
+}
+
+func (cmd *TSTimestampValueSliceCmd) Clone() Cmder {
+	var val []TSTimestampValue
+	if cmd.val != nil {
+		val = make([]TSTimestampValue, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &TSTimestampValueSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
 }
 
 // TSMRange - Returns a range of samples from multiple time-series keys.
