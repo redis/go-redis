@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9/internal/hscan"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -336,16 +337,16 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 				// Close the connection to force a reconnection.
 				err := c.connPool.CloseConn(poolCn)
 				if err != nil {
-					internal.Logger.Printf(context.Background(), "redis: failed to close connection: %v", err)
+					c.logger().Errorf(context.Background(), "redis: failed to close connection: %v", err)
 					// try to close the network connection directly
 					// so that no resource is leaked
 					err := poolCn.Close()
 					if err != nil {
-						internal.Logger.Printf(context.Background(), "redis: failed to close network connection: %v", err)
+						c.logger().Errorf(context.Background(), "redis: failed to close network connection: %v", err)
 					}
 				}
 			}
-			internal.Logger.Printf(context.Background(), "redis: re-authentication failed: %v", err)
+			c.logger().Errorf(context.Background(), "redis: re-authentication failed: %v", err)
 		}
 	}
 }
@@ -562,14 +563,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
 				// Disabling logging here as it's too noisy.
-				// TODO: Enable when we have a better logging solution for log levels
-				// internal.Logger.Printf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
+				// c.logger().Errorf(ctx, "auto mode fallback: maintnotifications disabled due to handshake error: %v", maintNotifHandshakeErr)
 				c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
 				c.optLock.Unlock()
 				// auto mode, disable maintnotifications and continue
 				if initErr := c.disableMaintNotificationsUpgrades(); initErr != nil {
 					// Log error but continue - auto mode should be resilient
-					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", initErr)
+					c.logger().Errorf(ctx, "failed to disable maintnotifications in auto mode: %v", initErr)
 				}
 			}
 		} else {
@@ -633,7 +633,7 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	} else {
 		// process any pending push notifications before returning the connection to the pool
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+			c.logger().Errorf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
 		}
 		c.connPool.Put(ctx, cn)
 	}
@@ -700,7 +700,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		// Process any pending push notifications before executing the command
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
+			c.logger().Errorf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
 
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
@@ -723,7 +723,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+				c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
 			return readReplyFunc(rd)
 		}); err != nil {
@@ -767,6 +767,15 @@ func (c *baseClient) context(ctx context.Context) context.Context {
 		return ctx
 	}
 	return context.Background()
+}
+
+// logger is a wrapper around the logger to log messages with context.
+// it uses the client logger if set, otherwise it uses the global logger.
+func (c *baseClient) logger() *logging.LoggerWrapper {
+	if c.opt != nil && c.opt.Logger != nil {
+		return logging.NewLoggerWrapper(c.opt.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
 
 // createInitConnFunc creates a connection initialization function that can be used for reconnections.
@@ -880,7 +889,7 @@ func (c *baseClient) generalProcessPipeline(
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			// Process any pending push notifications before executing the pipeline
 			if err := c.processPushNotifications(ctx, cn); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
+				c.logger().Errorf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
 			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
@@ -902,7 +911,7 @@ func (c *baseClient) pipelineProcessCmds(
 ) (bool, error) {
 	// Process any pending push notifications before executing the pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
 	}
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
@@ -926,7 +935,7 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 	for i, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
@@ -944,7 +953,7 @@ func (c *baseClient) txPipelineProcessCmds(
 ) (bool, error) {
 	// Process any pending push notifications before executing the transaction pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before transaction: %v", err)
 	}
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
@@ -978,7 +987,7 @@ func (c *baseClient) txPipelineProcessCmds(
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
@@ -989,7 +998,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
@@ -1001,7 +1010,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		c.logger().Errorf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
@@ -1075,7 +1084,7 @@ func NewClient(opt *Options) *Client {
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
 		err := c.enableMaintNotificationsUpgrades()
 		if err != nil {
-			internal.Logger.Printf(context.Background(), "failed to initialize maintnotifications: %v", err)
+			c.logger().Errorf(context.Background(), "failed to initialize maintnotifications: %v", err)
 			if opt.MaintNotificationsConfig.Mode == maintnotifications.ModeEnabled {
 				/*
 					Design decision: panic here to fail fast if maintnotifications cannot be enabled when explicitly requested.
