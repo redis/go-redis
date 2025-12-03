@@ -4,29 +4,20 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// MetricGroup represents a group of related metrics
 type MetricGroup string
 
 const (
-	// MetricGroupCommand includes command-level metrics
-	MetricGroupCommand MetricGroup = "command"
-	// MetricGroupConnectionBasic includes basic connection metrics
-	MetricGroupConnectionBasic MetricGroup = "connection-basic"
-	// MetricGroupResiliency includes resiliency metrics (errors, retries, etc.)
-	MetricGroupResiliency MetricGroup = "resiliency"
-	// MetricGroupConnectionAdvanced includes advanced connection metrics
+	MetricGroupCommand            MetricGroup = "command"
+	MetricGroupConnectionBasic    MetricGroup = "connection-basic"
+	MetricGroupResiliency         MetricGroup = "resiliency"
 	MetricGroupConnectionAdvanced MetricGroup = "connection-advanced"
-	// MetricGroupStream includes stream-specific metrics
-	MetricGroupStream MetricGroup = "stream"
+	MetricGroupStream             MetricGroup = "stream"
 )
 
-// HistogramAggregation represents the histogram aggregation mode
 type HistogramAggregation string
 
 const (
-	// HistogramAggregationExplicitBucket uses explicit bucket boundaries
-	HistogramAggregationExplicitBucket HistogramAggregation = "explicit_bucket_histogram"
-	// HistogramAggregationBase2Exponential uses base-2 exponential buckets
+	HistogramAggregationExplicitBucket   HistogramAggregation = "explicit_bucket_histogram"
 	HistogramAggregationBase2Exponential HistogramAggregation = "base2_exponential_bucket_histogram"
 )
 
@@ -58,15 +49,13 @@ type config struct {
 	bucketsConnectionUseTime        []float64
 }
 
-// defaultConfig returns the default configuration
 func defaultConfig() config {
 	return config{
 		meterProvider: nil, // Will use global otel.GetMeterProvider() if nil
 		enabled:       false,
 
-		// Default metric groups: command, connection-basic, resiliency
+		// Default metric groups: connection-basic, resiliency
 		enabledMetricGroups: map[MetricGroup]bool{
-			MetricGroupCommand:         true,
 			MetricGroupConnectionBasic: true,
 			MetricGroupResiliency:      true,
 		},
@@ -82,12 +71,12 @@ func defaultConfig() config {
 		// Use explicit bucket histogram by default
 		histAggregation: HistogramAggregationExplicitBucket,
 
-		// Default buckets for different metrics
-		bucketsOperationDuration:        defaultOperationDurationBuckets(),
-		bucketsStreamProcessingDuration: defaultStreamProcessingDurationBuckets(),
-		bucketsConnectionCreateTime:     defaultConnectionCreateTimeBuckets(),
-		bucketsConnectionWaitTime:       defaultConnectionWaitTimeBuckets(),
-		bucketsConnectionUseTime:        defaultConnectionUseTimeBuckets(),
+		// Default buckets for all duration metrics
+		bucketsOperationDuration:        defaultHistogramBuckets(),
+		bucketsStreamProcessingDuration: defaultHistogramBuckets(),
+		bucketsConnectionCreateTime:     defaultHistogramBuckets(),
+		bucketsConnectionWaitTime:       defaultHistogramBuckets(),
+		bucketsConnectionUseTime:        defaultHistogramBuckets(),
 	}
 }
 
@@ -98,98 +87,31 @@ func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
 
 // isCommandIncluded checks if a command should be included in metrics
 func (c *config) isCommandIncluded(command string) bool {
-	// If there's an exclude list and command is in it, exclude
 	if c.excludeCommands != nil && c.excludeCommands[command] {
 		return false
 	}
 
-	// If there's an include list, only include if command is in it
 	if c.includeCommands != nil {
 		return c.includeCommands[command]
 	}
 
-	// No filtering, include all
 	return true
 }
 
-// defaultOperationDurationBuckets returns the default histogram buckets for db.client.operation.duration
-// These buckets are designed to capture typical Redis operation latencies:
+// defaultHistogramBuckets returns the default histogram buckets for all duration metrics.
+// These buckets are designed to capture typical Redis operation and connection latencies:
 // - Sub-millisecond: 0.0001s (0.1ms), 0.0005s (0.5ms)
 // - Milliseconds: 0.001s (1ms), 0.005s (5ms), 0.01s (10ms), 0.05s (50ms), 0.1s (100ms)
 // - Sub-second: 0.5s (500ms)
-// - Seconds: 1s, 2.5s
-func defaultOperationDurationBuckets() []float64 {
-	return []float64{
-		0.0001, // 0.1ms
-		0.0005, // 0.5ms
-		0.001,  // 1ms
-		0.005,  // 5ms
-		0.01,   // 10ms
-		0.05,   // 50ms
-		0.1,    // 100ms
-		0.5,    // 500ms
-		1.0,    // 1s
-		2.5,    // 2.5s
-	}
-}
-
-// defaultStreamProcessingDurationBuckets returns the default histogram buckets for redis.client.stream.processing_duration
-// Stream processing can take longer than regular operations
-func defaultStreamProcessingDurationBuckets() []float64 {
-	return []float64{
-		0.0001, // 0.1ms
-		0.0005, // 0.5ms
-		0.001,  // 1ms
-		0.005,  // 5ms
-		0.01,   // 10ms
-		0.05,   // 50ms
-		0.1,    // 100ms
-		0.5,    // 500ms
-		1.0,    // 1s
-		5.0,    // 5s
-		10.0,   // 10s
-	}
-}
-
-// defaultConnectionCreateTimeBuckets returns the default histogram buckets for db.client.connection.create_time
-// Connection creation can take longer than regular operations
-func defaultConnectionCreateTimeBuckets() []float64 {
-	return []float64{
-		0.0001, // 0.1ms
-		0.0005, // 0.5ms
-		0.001,  // 1ms
-		0.005,  // 5ms
-		0.01,   // 10ms
-		0.05,   // 50ms
-		0.1,    // 100ms
-		0.5,    // 500ms
-		1.0,    // 1s
-		5.0,    // 5s
-		10.0,   // 10s
-	}
-}
-
-// defaultConnectionWaitTimeBuckets returns the default histogram buckets for db.client.connection.wait_time
-// Time waiting for a connection from the pool
-func defaultConnectionWaitTimeBuckets() []float64 {
-	return []float64{
-		0.0001, // 0.1ms
-		0.0005, // 0.5ms
-		0.001,  // 1ms
-		0.005,  // 5ms
-		0.01,   // 10ms
-		0.05,   // 50ms
-		0.1,    // 100ms
-		0.5,    // 500ms
-		1.0,    // 1s
-		5.0,    // 5s
-		10.0,   // 10s
-	}
-}
-
-// defaultConnectionUseTimeBuckets returns the default histogram buckets for db.client.connection.use_time
-// Time a connection is in use (checked out from pool)
-func defaultConnectionUseTimeBuckets() []float64 {
+// - Seconds: 1s, 5s, 10s
+//
+// This covers the range from 0.1ms to 10s, which is suitable for:
+// - db.client.operation.duration (command execution time)
+// - db.client.connection.create_time (connection establishment)
+// - db.client.connection.wait_time (waiting for connection from pool)
+// - db.client.connection.use_time (time connection is checked out)
+// - redis.client.stream.processing_duration (stream message processing)
+func defaultHistogramBuckets() []float64 {
 	return []float64{
 		0.0001, // 0.1ms
 		0.0005, // 0.5ms
@@ -233,7 +155,7 @@ func WithEnabled(enabled bool) Option {
 }
 
 // WithEnabledMetricGroups sets which metric groups to register
-// Default: ["command", "connection-basic", "resiliency"]
+// Default: ["connection-basic", "resiliency"]
 func WithEnabledMetricGroups(groups []MetricGroup) Option {
 	return optionFunc(func(c *config) {
 		c.enabledMetricGroups = make(map[MetricGroup]bool)
@@ -288,37 +210,28 @@ func WithHistogramAggregation(agg HistogramAggregation) Option {
 	})
 }
 
-// WithBucketsOperationDuration sets explicit buckets (seconds) for db.client.operation.duration
-func WithBucketsOperationDuration(buckets []float64) Option {
+// WithHistogramBuckets sets custom histogram buckets for ALL duration metrics.
+// If not set, uses defaultHistogramBuckets() which covers 0.1ms to 10s.
+// Buckets should be in seconds (e.g., 0.001 = 1ms, 0.1 = 100ms, 1.0 = 1s).
+//
+// This applies to all duration histograms:
+// - db.client.operation.duration
+// - db.client.connection.create_time
+// - db.client.connection.wait_time
+// - db.client.connection.use_time
+// - redis.client.stream.processing_duration
+//
+// Example:
+//
+//	redisotel.Init(rdb,
+//	    redisotel.WithHistogramBuckets([]float64{0.001, 0.01, 0.1, 1.0}),
+//	)
+func WithHistogramBuckets(buckets []float64) Option {
 	return optionFunc(func(c *config) {
 		c.bucketsOperationDuration = buckets
-	})
-}
-
-// WithBucketsStreamProcessingDuration sets explicit buckets (seconds) for redis.client.stream.processing_duration
-func WithBucketsStreamProcessingDuration(buckets []float64) Option {
-	return optionFunc(func(c *config) {
 		c.bucketsStreamProcessingDuration = buckets
-	})
-}
-
-// WithBucketsConnectionCreateTime sets buckets for db.client.connection.create_time
-func WithBucketsConnectionCreateTime(buckets []float64) Option {
-	return optionFunc(func(c *config) {
 		c.bucketsConnectionCreateTime = buckets
-	})
-}
-
-// WithBucketsConnectionWaitTime sets buckets for db.client.connection.wait_time
-func WithBucketsConnectionWaitTime(buckets []float64) Option {
-	return optionFunc(func(c *config) {
 		c.bucketsConnectionWaitTime = buckets
-	})
-}
-
-// WithBucketsConnectionUseTime sets buckets for db.client.connection.use_time
-func WithBucketsConnectionUseTime(buckets []float64) Option {
-	return optionFunc(func(c *config) {
 		c.bucketsConnectionUseTime = buckets
 	})
 }

@@ -70,68 +70,42 @@ type otelRecorderAdapter struct {
 	recorder OTelRecorder
 }
 
+// toConnInfo converts internal pool.Conn to public ConnInfo interface
+// Returns nil if cn is nil, otherwise returns cn (which implements ConnInfo)
+func toConnInfo(cn *pool.Conn) ConnInfo {
+	if cn != nil {
+		return cn
+	}
+	return nil
+}
+
 func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, duration time.Duration, cmd otel.Cmder, attempts int, cn *pool.Conn) {
 	// Convert internal Cmder to public Cmder
 	if publicCmd, ok := cmd.(Cmder); ok {
-		// Convert internal pool.Conn to public ConnInfo
-		var connInfo ConnInfo
-		if cn != nil {
-			connInfo = cn
-		}
-		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, connInfo)
+		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, toConnInfo(cn))
 	}
 }
 
 func (a *otelRecorderAdapter) RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordConnectionStateChange(ctx, connInfo, fromState, toState)
+	a.recorder.RecordConnectionStateChange(ctx, toConnInfo(cn), fromState, toState)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordConnectionCreateTime(ctx, duration, connInfo)
+	a.recorder.RecordConnectionCreateTime(ctx, duration, toConnInfo(cn))
 }
 
 func (a *otelRecorderAdapter) RecordConnectionRelaxedTimeout(ctx context.Context, delta int, cn *pool.Conn, poolName, notificationType string) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordConnectionRelaxedTimeout(ctx, delta, connInfo, poolName, notificationType)
+	a.recorder.RecordConnectionRelaxedTimeout(ctx, delta, toConnInfo(cn), poolName, notificationType)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionHandoff(ctx context.Context, cn *pool.Conn, poolName string) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordConnectionHandoff(ctx, connInfo, poolName)
+	a.recorder.RecordConnectionHandoff(ctx, toConnInfo(cn), poolName)
 }
 
 func (a *otelRecorderAdapter) RecordError(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retryAttempts int) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordError(ctx, errorType, connInfo, statusCode, isInternal, retryAttempts)
+	a.recorder.RecordError(ctx, errorType, toConnInfo(cn), statusCode, isInternal, retryAttempts)
 }
 
 func (a *otelRecorderAdapter) RecordMaintenanceNotification(ctx context.Context, cn *pool.Conn, notificationType string) {
-	// Convert internal pool.Conn to public ConnInfo
-	var connInfo ConnInfo
-	if cn != nil {
-		connInfo = cn
-	}
-	a.recorder.RecordMaintenanceNotification(ctx, connInfo, notificationType)
+	a.recorder.RecordMaintenanceNotification(ctx, toConnInfo(cn), notificationType)
 }

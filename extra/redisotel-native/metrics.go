@@ -18,6 +18,28 @@ const (
 	libraryName = "go-redis"
 )
 
+// getLibraryVersionAttr returns the redis.client.library attribute
+// This is computed once and reused to avoid repeated string formatting
+func getLibraryVersionAttr() attribute.KeyValue {
+	return attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version()))
+}
+
+// addServerPortIfNonDefault adds server.port attribute if port is not the default (6379)
+func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []attribute.KeyValue {
+	if serverPort != "" && serverPort != "6379" {
+		return append(attrs, attribute.String("server.port", serverPort))
+	}
+	return attrs
+}
+
+// formatPoolName formats the pool name from server address and port
+func formatPoolName(serverAddr, serverPort string) string {
+	if serverPort != "" && serverPort != "6379" {
+		return fmt.Sprintf("%s:%s", serverAddr, serverPort)
+	}
+	return serverAddr
+}
+
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
@@ -53,7 +75,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	attrs := []attribute.KeyValue{
 		// Required attributes
 		attribute.String("db.operation.name", cmd.FullName()),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
 		attribute.Bool("redis.client.operation.blocking", isBlockingCommand(cmd)),
 
@@ -63,9 +85,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	}
 
 	// Add server.port if not default
-	if r.serverPort != "" && r.serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", r.serverPort))
-	}
+	attrs = addServerPortIfNonDefault(attrs, r.serverPort)
 
 	// Add db.namespace (database index) if available
 	if r.dbIndex != "" {
@@ -188,30 +208,9 @@ func isNetworkError(err error) bool {
 		return false
 	}
 
-	// Check for net.Error interface
-	if _, ok := err.(net.Error); ok {
-		return true
-	}
-
-	// Check error message for common network error patterns
-	errStr := strings.ToLower(err.Error())
-	networkPatterns := []string{
-		"connection refused",
-		"connection reset",
-		"broken pipe",
-		"no route to host",
-		"network is unreachable",
-		"i/o timeout",
-		"eof",
-	}
-
-	for _, pattern := range networkPatterns {
-		if strings.Contains(errStr, pattern) {
-			return true
-		}
-	}
-
-	return false
+	// Check for net.Error interface (standard way to detect network errors)
+	_, ok := err.(net.Error)
+	return ok
 }
 
 // isTimeoutError checks if an error is a timeout error
@@ -220,17 +219,16 @@ func isTimeoutError(err error) bool {
 		return false
 	}
 
-	// Check for net.Error with Timeout() method
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return true
+	// Check for net.Error with Timeout() method (standard way)
+	if netErr, ok := err.(net.Error); ok {
+		return netErr.Timeout()
 	}
 
-	// Check error message
-	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded")
+	return false
 }
 
 // splitHostPort splits a host:port string into host and port
+// This is a simplified version that handles the common cases
 func splitHostPort(addr string) (host, port string) {
 	// Handle Unix sockets
 	if strings.HasPrefix(addr, "/") || strings.HasPrefix(addr, "@") {
@@ -315,6 +313,7 @@ func (r *metricsRecorder) RecordConnectionStateChange(
 }
 
 // extractServerInfo extracts server address and port from connection info
+// For client connections, this is the remote endpoint (server address)
 func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
 	if cn == nil {
 		return "", ""
@@ -328,12 +327,6 @@ func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
 	addrStr := remoteAddr.String()
 	host, portStr := parseAddr(addrStr)
 	return host, portStr
-}
-
-// extractPeerInfo extracts peer network address and port from connection info
-// For client connections, this is the same as the server address (remote endpoint)
-func extractPeerInfo(cn redis.ConnInfo) (addr, port string) {
-	return extractServerInfo(cn)
 }
 
 // RecordConnectionCreateTime records the time it took to create a new connection
@@ -356,19 +349,14 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system", "redis"),
 		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 	}
 
 	// Add server.port if not default
-	if serverPort != "" && serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", serverPort))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Add pool name (using server.address:server.port format)
-	poolName := serverAddr
-	if serverPort != "" && serverPort != "6379" {
-		poolName = fmt.Sprintf("%s:%s", serverAddr, serverPort)
-	}
+	poolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram
@@ -393,15 +381,13 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 		attribute.String("db.client.connection.pool.name", poolName),
 		attribute.String("redis.client.connection.notification", notificationType),
 	}
 
 	// Add server.port if not default
-	if serverPort != "" && serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", serverPort))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Record the counter (delta can be +1 or -1)
 	r.connectionRelaxedTimeout.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
@@ -424,14 +410,12 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system", "redis"),
 		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 		attribute.String("db.client.connection.pool.name", poolName),
 	}
 
 	// Add server.port if not default
-	if serverPort != "" && serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", serverPort))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Record the counter
 	r.connectionHandoff.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -451,10 +435,11 @@ func (r *metricsRecorder) RecordError(
 	}
 
 	// Extract server address and peer address from connection (may be nil for some errors)
+	// For client connections, peer address is the same as server address (remote endpoint)
 	var serverAddr, serverPort, peerAddr, peerPort string
 	if cn != nil {
 		serverAddr, serverPort = extractServerInfo(cn)
-		peerAddr, peerPort = extractPeerInfo(cn)
+		peerAddr, peerPort = serverAddr, serverPort // Peer is same as server for client connections
 	}
 
 	// Build attributes
@@ -464,15 +449,13 @@ func (r *metricsRecorder) RecordError(
 		attribute.String("db.response.status_code", statusCode),
 		attribute.Bool("redis.client.errors.internal", isInternal),
 		attribute.Int("redis.client.operation.retry_attempts", retryAttempts),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 	}
 
 	// Add server info if available
 	if serverAddr != "" {
 		attrs = append(attrs, attribute.String("server.address", serverAddr))
-		if serverPort != "" && serverPort != "6379" {
-			attrs = append(attrs, attribute.String("server.port", serverPort))
-		}
+		attrs = addServerPortIfNonDefault(attrs, serverPort)
 	}
 
 	// Add peer info if available
@@ -498,21 +481,20 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 	}
 
 	// Extract server address and peer address from connection
+	// For client connections, peer address is the same as server address (remote endpoint)
 	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := extractPeerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort // Peer is same as server for client connections
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version())),
+		getLibraryVersionAttr(),
 		attribute.String("redis.client.connection.notification", notificationType),
 	}
 
 	// Add server.port if not default
-	if serverPort != "" && serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", serverPort))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Add peer info if available
 	if peerAddr != "" {
