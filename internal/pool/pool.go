@@ -132,7 +132,6 @@ func GetMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, no
 	return maintenanceNotificationCallback
 }
 
-
 // Stats contains pool state information and accumulated stats.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
@@ -948,7 +947,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.connsMu.Unlock()
 			p.idleConnsLen.Add(1)
 		}
-		p.idleConnsLen.Add(1)
 
 		// Notify metrics: connection moved from used to idle
 		if connectionStateChangeCallback != nil {
