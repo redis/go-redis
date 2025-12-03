@@ -4,9 +4,25 @@ set -e
 
 DRY_RUN=1
 
+helps() {
+    cat <<- EOF
+Usage: $0 TAGVERSION [-t]
+
+Creates git tags for public Go packages.
+
+ARGUMENTS:
+  TAGVERSION    Tag version to create, for example v1.0.0
+
+OPTIONS:
+  -t           Execute git commands (default: dry run)
+EOF
+    exit 0
+}
+
+
 if [ $# -eq 0 ]; then
     echo "Error: Tag version is required"
-    help
+    helps
 fi
 
 TAG=$1
@@ -24,20 +40,6 @@ while getopts "t" opt; do
     esac
 done
 
-help() {
-    cat <<- EOF
-Usage: $0 TAGVERSION [-t]
-
-Creates git tags for public Go packages.
-
-ARGUMENTS:
-  TAGVERSION    Tag version to create, for example v1.0.0
-
-OPTIONS:
-  -t           Execute git commands (default: dry run)
-EOF
-    exit 0
-}
 
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "Running in dry-run mode"

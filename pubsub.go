@@ -465,7 +465,6 @@ func (c *PubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (int
 	}
 
 	// Don't hold the lock to allow subscriptions and pings.
-
 	cn, err := c.connWithLock(ctx)
 	if err != nil {
 		return nil, err
@@ -735,7 +734,7 @@ func (c *channel) initMsgChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
+						ctx, "redis: %v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:
@@ -789,7 +788,7 @@ func (c *channel) initAllChan() {
 					}
 				case <-timer.C:
 					internal.Logger.Printf(
-						ctx, "redis: %s channel is full for %s (message is dropped)",
+						ctx, "redis: %v channel is full for %s (message is dropped)",
 						c, c.chanSendTimeout)
 				}
 			default:

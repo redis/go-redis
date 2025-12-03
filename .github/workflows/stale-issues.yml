@@ -20,7 +20,7 @@ jobs:
     steps:
       # First step: Handle regular issues (excluding needs-information)
       - name: Mark regular issues as stale
-        uses: actions/stale@v9
+        uses: actions/stale@v10
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -64,7 +64,7 @@ jobs:
 
       # Second step: Handle needs-information issues with accelerated timeline
       - name: Mark needs-information issues as stale
-        uses: actions/stale@v9
+        uses: actions/stale@v10
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 

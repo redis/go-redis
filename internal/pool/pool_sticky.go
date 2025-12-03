@@ -123,6 +123,12 @@ func (p *StickyConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
 	p.ch <- cn
 }
 
+// RemoveWithoutTurn has the same behavior as Remove for StickyConnPool
+// since StickyConnPool doesn't use a turn-based queue system.
+func (p *StickyConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error) {
+	p.Remove(ctx, cn, reason)
+}
+
 func (p *StickyConnPool) Close() error {
 	if shared := atomic.AddInt32(&p.shared, -1); shared > 0 {
 		return nil
@@ -195,6 +201,9 @@ func (p *StickyConnPool) Len() int {
 func (p *StickyConnPool) IdleLen() int {
 	return len(p.ch)
 }
+
+// Size returns the maximum pool size, which is always 1 for StickyConnPool.
+func (p *StickyConnPool) Size() int { return 1 }
 
 func (p *StickyConnPool) Stats() *Stats {
 	return &Stats{}

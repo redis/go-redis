@@ -31,11 +31,12 @@ func BenchmarkPoolGetPut(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(bm.poolSize),
-				PoolTimeout:     time.Second,
-				DialTimeout:     1 * time.Second,
-				ConnMaxIdleTime: time.Hour,
+				Dialer:             dummyDialer,
+				PoolSize:           int32(bm.poolSize),
+				MaxConcurrentDials: bm.poolSize,
+				PoolTimeout:        time.Second,
+				DialTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    time.Hour,
 			})
 
 			b.ResetTimer()
@@ -75,22 +76,23 @@ func BenchmarkPoolGetRemove(b *testing.B) {
 	for _, bm := range benchmarks {
 		b.Run(bm.String(), func(b *testing.B) {
 			connPool := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        int32(bm.poolSize),
-				PoolTimeout:     time.Second,
-				DialTimeout:     1 * time.Second,
-				ConnMaxIdleTime: time.Hour,
+				Dialer:             dummyDialer,
+				PoolSize:           int32(bm.poolSize),
+				MaxConcurrentDials: bm.poolSize,
+				PoolTimeout:        time.Second,
+				DialTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    time.Hour,
 			})
 
 			b.ResetTimer()
-
+			rmvErr := errors.New("Bench test remove")
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
 					cn, err := connPool.Get(ctx)
 					if err != nil {
 						b.Fatal(err)
 					}
-					connPool.Remove(ctx, cn, errors.New("Bench test remove"))
+					connPool.Remove(ctx, cn, rmvErr)
 				}
 			})
 		})

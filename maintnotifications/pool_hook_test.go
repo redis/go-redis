@@ -39,7 +39,9 @@ func (m *mockAddr) String() string  { return m.addr }
 func createMockPoolConnection() *pool.Conn {
 	mockNetConn := &mockNetConn{addr: "test:6379"}
 	conn := pool.NewConn(mockNetConn)
-	conn.SetUsable(true) // Make connection usable for testing
+	conn.SetUsable(true) // Make connection usable for testing (transitions to IDLE)
+	// Simulate real flow: connection is acquired (IDLE → IN_USE) before OnPut is called
+	conn.SetUsed(true) // Transition to IN_USE state
 	return conn
 }
 
@@ -73,6 +75,11 @@ func (mp *mockPool) Remove(ctx context.Context, conn *pool.Conn, reason error) {
 	mp.removedConnections[conn.GetID()] = true
 }
 
+func (mp *mockPool) RemoveWithoutTurn(ctx context.Context, conn *pool.Conn, reason error) {
+	// For mock pool, same behavior as Remove since we don't have a turn-based queue
+	mp.Remove(ctx, conn, reason)
+}
+
 // WasRemoved safely checks if a connection was removed from the pool
 func (mp *mockPool) WasRemoved(connID uint64) bool {
 	mp.mu.Lock()
@@ -90,6 +97,10 @@ func (mp *mockPool) IdleLen() int {
 
 func (mp *mockPool) Stats() *pool.Stats {
 	return &pool.Stats{}
+}
+
+func (mp *mockPool) Size() int {
+	return 0
 }
 
 func (mp *mockPool) AddPoolHook(hook pool.PoolHook) {
@@ -163,7 +174,7 @@ func TestConnectionHook(t *testing.T) {
 		select {
 		case <-initConnCalled:
 			// Good, initialization was called
-		case <-time.After(1 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatal("Timeout waiting for initialization function to be called")
 		}
 
@@ -227,14 +238,12 @@ func TestConnectionHook(t *testing.T) {
 			t.Error("Connection should not be removed when no handoff needed")
 		}
 	})
-
 	t.Run("EmptyEndpoint", func(t *testing.T) {
 		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
 		conn := createMockPoolConnection()
 		if err := conn.MarkForHandoff("", 12345); err != nil { // Empty endpoint
 			t.Fatalf("Failed to mark connection for handoff: %v", err)
 		}
-
 		ctx := context.Background()
 		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
 		if err != nil {
@@ -356,9 +365,12 @@ func TestConnectionHook(t *testing.T) {
 		conn := createMockPoolConnection()
 
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn, false)
+		acceptCon, err := processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should not error for normal connection: %v", err)
+		}
+		if !acceptCon {
+			t.Error("Connection should be accepted for normal connection")
 		}
 	})
 
@@ -378,12 +390,17 @@ func TestConnectionHook(t *testing.T) {
 		// Simulate a pending handoff by marking for handoff and queuing
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets ShouldHandoff=false, state=UNUSABLE)
 
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn, false)
+		acceptCon, err := processor.OnGet(ctx, conn, false)
+		// After MarkQueuedForHandoff, ShouldHandoff() returns false, so we get ErrConnectionMarkedForHandoff
+		// (from IsUsable() check) instead of ErrConnectionMarkedForHandoffWithState
 		if err != ErrConnectionMarkedForHandoff {
 			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
+		}
+		if acceptCon {
+			t.Error("Connection should not be accepted when marked for handoff")
 		}
 
 		// Clean up
@@ -404,7 +421,7 @@ func TestConnectionHook(t *testing.T) {
 		// Test adding to pending map
 		conn.MarkForHandoff("new-endpoint:6379", 12345)
 		processor.GetPendingMap().Store(conn.GetID(), int64(12345)) // Store connID -> seqID
-		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets usable=false)
+		conn.MarkQueuedForHandoff()                                 // Mark as queued (sets ShouldHandoff=false, state=UNUSABLE)
 
 		if _, pending := processor.GetPendingMap().Load(conn.GetID()); !pending {
 			t.Error("Connection should be in pending map")
@@ -412,9 +429,13 @@ func TestConnectionHook(t *testing.T) {
 
 		// Test OnGet with pending handoff
 		ctx := context.Background()
-		err := processor.OnGet(ctx, conn, false)
+		acceptCon, err := processor.OnGet(ctx, conn, false)
+		// After MarkQueuedForHandoff, ShouldHandoff() returns false, so we get ErrConnectionMarkedForHandoff
 		if err != ErrConnectionMarkedForHandoff {
-			t.Error("Should return ErrConnectionMarkedForHandoff for pending connection")
+			t.Errorf("Should return ErrConnectionMarkedForHandoff for pending connection, got %v", err)
+		}
+		if acceptCon {
+			t.Error("Should not accept connection with pending handoff")
 		}
 
 		// Test removing from pending map and clearing handoff state
@@ -428,9 +449,12 @@ func TestConnectionHook(t *testing.T) {
 		conn.SetUsable(true) // Make connection usable again
 
 		// Test OnGet without pending handoff
-		err = processor.OnGet(ctx, conn, false)
+		acceptCon, err = processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("Should not return error for non-pending connection: %v", err)
+		}
+		if !acceptCon {
+			t.Error("Should accept connection without pending handoff")
 		}
 	})
 
@@ -608,25 +632,30 @@ func TestConnectionHook(t *testing.T) {
 
 		ctx := context.Background()
 
-		// Create a new connection without setting it usable
+		// Create a new connection
 		mockNetConn := &mockNetConn{addr: "test:6379"}
 		conn := pool.NewConn(mockNetConn)
 
-		// Initially, connection should not be usable (not initialized)
-		if conn.IsUsable() {
-			t.Error("New connection should not be usable before initialization")
+		// New connections in CREATED state are usable (they pass OnGet() before initialization)
+		// The initialization happens AFTER OnGet() in the client code
+		if !conn.IsUsable() {
+			t.Error("New connection should be usable (CREATED state is usable)")
 		}
 
-		// Simulate initialization by setting usable to true
-		conn.SetUsable(true)
+		// Simulate initialization by transitioning to IDLE
+		conn.GetStateMachine().Transition(pool.StateIdle)
 		if !conn.IsUsable() {
-			t.Error("Connection should be usable after initialization")
+			t.Error("Connection should be usable after initialization (IDLE state)")
 		}
 
 		// OnGet should succeed for usable connection
-		err := processor.OnGet(ctx, conn, false)
+		acceptConn, err := processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should succeed for usable connection: %v", err)
+		}
+
+		if !acceptConn {
+			t.Error("Connection should be accepted when usable")
 		}
 
 		// Mark connection for handoff
@@ -647,13 +676,19 @@ func TestConnectionHook(t *testing.T) {
 			t.Error("Connection should be marked for handoff")
 		}
 
-		// OnGet should fail for connection marked for handoff
-		err = processor.OnGet(ctx, conn, false)
+		// OnGet should FAIL for connection marked for handoff
+		// Even though the connection is still in a usable state, the metadata indicates
+		// it should be handed off, so we reject it to prevent using a connection that
+		// will be moved to a different endpoint
+		acceptConn, err = processor.OnGet(ctx, conn, false)
 		if err == nil {
 			t.Error("OnGet should fail for connection marked for handoff")
 		}
-		if err != ErrConnectionMarkedForHandoff {
-			t.Errorf("Expected ErrConnectionMarkedForHandoff, got %v", err)
+		if err != ErrConnectionMarkedForHandoffWithState {
+			t.Errorf("Expected ErrConnectionMarkedForHandoffWithState, got %v", err)
+		}
+		if acceptConn {
+			t.Error("Connection should not be accepted when marked for handoff")
 		}
 
 		// Process the connection to trigger handoff
@@ -662,7 +697,7 @@ func TestConnectionHook(t *testing.T) {
 			t.Errorf("OnPut should succeed: %v", err)
 		}
 		if !shouldPool || shouldRemove {
-			t.Error("Connection should be pooled after handoff")
+			t.Errorf("Connection should be pooled after handoff (shouldPool=%v, shouldRemove=%v)", shouldPool, shouldRemove)
 		}
 
 		// Wait for handoff to complete
@@ -674,9 +709,13 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// OnGet should succeed again
-		err = processor.OnGet(ctx, conn, false)
+		acceptConn, err = processor.OnGet(ctx, conn, false)
 		if err != nil {
 			t.Errorf("OnGet should succeed after handoff completion: %v", err)
+		}
+
+		if !acceptConn {
+			t.Error("Connection should be accepted after handoff completion")
 		}
 
 		t.Logf("Usable flag behavior test completed successfully")

@@ -10,22 +10,28 @@ import (
 
 // TestHook for testing hook functionality
 type TestHook struct {
-	OnGetCalled  int
-	OnPutCalled  int
-	GetError     error
-	PutError     error
-	ShouldPool   bool
-	ShouldRemove bool
+	OnGetCalled    int
+	OnPutCalled    int
+	OnRemoveCalled int
+	GetError       error
+	PutError       error
+	ShouldPool     bool
+	ShouldRemove   bool
+	ShouldAccept   bool
 }
 
-func (th *TestHook) OnGet(ctx context.Context, conn *Conn, isNewConn bool) error {
+func (th *TestHook) OnGet(ctx context.Context, conn *Conn, isNewConn bool) (bool, error) {
 	th.OnGetCalled++
-	return th.GetError
+	return th.ShouldAccept, th.GetError
 }
 
 func (th *TestHook) OnPut(ctx context.Context, conn *Conn) (shouldPool bool, shouldRemove bool, err error) {
 	th.OnPutCalled++
 	return th.ShouldPool, th.ShouldRemove, th.PutError
+}
+
+func (th *TestHook) OnRemove(ctx context.Context, conn *Conn, reason error) {
+	th.OnRemoveCalled++
 }
 
 func TestPoolHookManager(t *testing.T) {
@@ -37,8 +43,8 @@ func TestPoolHookManager(t *testing.T) {
 	}
 
 	// Add hooks
-	hook1 := &TestHook{ShouldPool: true}
-	hook2 := &TestHook{ShouldPool: true}
+	hook1 := &TestHook{ShouldPool: true, ShouldAccept: true}
+	hook2 := &TestHook{ShouldPool: true, ShouldAccept: true}
 
 	manager.AddHook(hook1)
 	manager.AddHook(hook2)
@@ -51,9 +57,12 @@ func TestPoolHookManager(t *testing.T) {
 	ctx := context.Background()
 	conn := &Conn{} // Mock connection
 
-	err := manager.ProcessOnGet(ctx, conn, false)
+	accept, err := manager.ProcessOnGet(ctx, conn, false)
 	if err != nil {
 		t.Errorf("ProcessOnGet should not error: %v", err)
+	}
+	if !accept {
+		t.Error("Expected accept to be true")
 	}
 
 	if hook1.OnGetCalled != 1 {
@@ -99,11 +108,12 @@ func TestHookErrorHandling(t *testing.T) {
 
 	// Hook that returns error on Get
 	errorHook := &TestHook{
-		GetError:   errors.New("test error"),
-		ShouldPool: true,
+		GetError:     errors.New("test error"),
+		ShouldPool:   true,
+		ShouldAccept: true,
 	}
 
-	normalHook := &TestHook{ShouldPool: true}
+	normalHook := &TestHook{ShouldPool: true, ShouldAccept: true}
 
 	manager.AddHook(errorHook)
 	manager.AddHook(normalHook)
@@ -112,9 +122,12 @@ func TestHookErrorHandling(t *testing.T) {
 	conn := &Conn{}
 
 	// Test that error stops processing
-	err := manager.ProcessOnGet(ctx, conn, false)
+	accept, err := manager.ProcessOnGet(ctx, conn, false)
 	if err == nil {
 		t.Error("Expected error from ProcessOnGet")
+	}
+	if accept {
+		t.Error("Expected accept to be false")
 	}
 
 	if errorHook.OnGetCalled != 1 {
@@ -134,9 +147,10 @@ func TestHookShouldRemove(t *testing.T) {
 	removeHook := &TestHook{
 		ShouldPool:   false,
 		ShouldRemove: true,
+		ShouldAccept: true,
 	}
 
-	normalHook := &TestHook{ShouldPool: true}
+	normalHook := &TestHook{ShouldPool: true, ShouldAccept: true}
 
 	manager.AddHook(removeHook)
 	manager.AddHook(normalHook)
@@ -170,15 +184,16 @@ func TestHookShouldRemove(t *testing.T) {
 func TestPoolWithHooks(t *testing.T) {
 	// Create a pool with hooks
 	hookManager := NewPoolHookManager()
-	testHook := &TestHook{ShouldPool: true}
+	testHook := &TestHook{ShouldPool: true, ShouldAccept: true}
 	hookManager.AddHook(testHook)
 
 	opt := &Options{
 		Dialer: func(ctx context.Context) (net.Conn, error) {
 			return &net.TCPConn{}, nil // Mock connection
 		},
-		PoolSize:    1,
-		DialTimeout: time.Second,
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
 	}
 
 	pool := NewConnPool(opt)
@@ -188,26 +203,29 @@ func TestPoolWithHooks(t *testing.T) {
 	pool.AddPoolHook(testHook)
 
 	// Verify hooks are initialized
-	if pool.hookManager == nil {
+	manager := pool.hookManager.Load()
+	if manager == nil {
 		t.Error("Expected hookManager to be initialized")
 	}
 
-	if pool.hookManager.GetHookCount() != 1 {
-		t.Errorf("Expected 1 hook in pool, got %d", pool.hookManager.GetHookCount())
+	if manager.GetHookCount() != 1 {
+		t.Errorf("Expected 1 hook in pool, got %d", manager.GetHookCount())
 	}
 
 	// Test adding hook to pool
-	additionalHook := &TestHook{ShouldPool: true}
+	additionalHook := &TestHook{ShouldPool: true, ShouldAccept: true}
 	pool.AddPoolHook(additionalHook)
 
-	if pool.hookManager.GetHookCount() != 2 {
-		t.Errorf("Expected 2 hooks after adding, got %d", pool.hookManager.GetHookCount())
+	manager = pool.hookManager.Load()
+	if manager.GetHookCount() != 2 {
+		t.Errorf("Expected 2 hooks after adding, got %d", manager.GetHookCount())
 	}
 
 	// Test removing hook from pool
 	pool.RemovePoolHook(additionalHook)
 
-	if pool.hookManager.GetHookCount() != 1 {
-		t.Errorf("Expected 1 hook after removing, got %d", pool.hookManager.GetHookCount())
+	manager = pool.hookManager.Load()
+	if manager.GetHookCount() != 1 {
+		t.Errorf("Expected 1 hook after removing, got %d", manager.GetHookCount())
 	}
 }

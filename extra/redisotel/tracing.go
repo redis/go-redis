@@ -87,6 +87,11 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 
 func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+
+		if th.conf.filterDial {
+			return hook(ctx, network, addr)
+		}
+
 		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
 		defer span.End()
 
@@ -103,7 +108,7 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 
 		// Check if the command should be filtered out
-		if th.conf.filter != nil && th.conf.filter(cmd) {
+		if th.conf.filterProcess != nil && th.conf.filterProcess(cmd) {
 			// If so, just call the next hook
 			return hook(ctx, cmd)
 		}
@@ -141,6 +146,11 @@ func (th *tracingHook) ProcessPipelineHook(
 	hook redis.ProcessPipelineHook,
 ) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
+
+		if th.conf.filterProcessPipeline != nil && th.conf.filterProcessPipeline(cmds) {
+			return hook(ctx, cmds)
+		}
+
 		attrs := make([]attribute.KeyValue, 0, 8)
 		attrs = append(attrs,
 			attribute.Int("db.redis.num_cmd", len(cmds)),
