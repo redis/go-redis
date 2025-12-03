@@ -466,15 +466,12 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	conn.ClearHandoffState()
 	internal.Logger.Printf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 
-<<<<<<< HEAD
+	// successfully completed the handoff, no retry needed and no error
 	// Notify metrics: connection handoff succeeded
 	if handoffCallback := pool.GetConnectionHandoffCallback(); handoffCallback != nil {
 		handoffCallback(ctx, conn, "main")
 	}
 
-=======
-	// successfully completed the handoff, no retry needed and no error
->>>>>>> upstream/master
 	return false, nil
 }
 

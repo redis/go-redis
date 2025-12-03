@@ -24,7 +24,14 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
-<<<<<<< HEAD
+	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
+	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
+
+	// errHookRequestedRemoval is returned when a hook requests connection removal.
+	errHookRequestedRemoval = errors.New("hook requested removal")
+
+	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
+	errConnNotPooled = errors.New("connection not pooled")
 	// Global callback for connection state changes (set by otel package)
 	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
 
@@ -46,16 +53,6 @@ var (
 	// Global callback for maintenance notifications (set by otel package)
 	// Parameters: ctx, cn, notificationType
 	maintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
-=======
-	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
-	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
-
-	// errHookRequestedRemoval is returned when a hook requests connection removal.
-	errHookRequestedRemoval = errors.New("hook requested removal")
-
-	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
-	errConnNotPooled = errors.New("connection not pooled")
->>>>>>> upstream/master
 
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
@@ -75,7 +72,6 @@ var (
 	noExpiration = maxTime
 )
 
-<<<<<<< HEAD
 // SetConnectionStateChangeCallback sets the global callback for connection state changes.
 // This is called by the otel package to register metrics recording.
 func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
@@ -144,8 +140,6 @@ var timers = sync.Pool{
 	},
 }
 
-=======
->>>>>>> upstream/master
 // Stats contains pool state information and accumulated stats.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
@@ -961,26 +955,20 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.connsMu.Unlock()
 			p.idleConnsLen.Add(1)
 		}
-<<<<<<< HEAD
 		p.idleConnsLen.Add(1)
 
 		// Notify metrics: connection moved from used to idle
 		if connectionStateChangeCallback != nil {
 			connectionStateChangeCallback(ctx, cn, "used", "idle")
 		}
-=======
->>>>>>> upstream/master
 	} else {
 		shouldCloseConn = true
-<<<<<<< HEAD
+		p.removeConnWithLock(cn)
 
 		// Notify metrics: connection removed (used -> nothing)
 		if connectionStateChangeCallback != nil {
 			connectionStateChangeCallback(ctx, cn, "used", "")
 		}
-=======
-		p.removeConnWithLock(cn)
->>>>>>> upstream/master
 	}
 
 	if freeTurn {
@@ -995,8 +983,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
-<<<<<<< HEAD
-=======
 	p.removeConnInternal(ctx, cn, reason, true)
 }
 
@@ -1017,7 +1003,6 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		hookManager.ProcessOnRemove(ctx, cn, reason)
 	}
 
->>>>>>> upstream/master
 	p.removeConnWithLock(cn)
 
 	if freeTurn {

@@ -559,7 +559,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			case maintnotifications.ModeEnabled:
 				// enabled mode, fail the connection
 				c.optLock.Unlock()
-<<<<<<< HEAD
+				cn.GetStateMachine().Transition(pool.StateClosed)
 
 				// Record handshake failure metric
 				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
@@ -567,9 +567,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 				}
 
-=======
-				cn.GetStateMachine().Transition(pool.StateClosed)
->>>>>>> upstream/master
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
 				// Disabling logging here as it's too noisy.
