@@ -389,7 +389,11 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 			p.poolSize.Add(1)
 		}
 	}
-	connectionStateChangeCallback(ctx, cn, "", "idle")
+
+	// Notify metrics: new connection created and idle
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, cn, "", "idle")
+	}
 
 	return cn, nil
 }

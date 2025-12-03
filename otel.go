@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"time"
 
@@ -93,9 +92,6 @@ func (a *otelRecorderAdapter) RecordConnectionStateChange(ctx context.Context, c
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-
-	fmt.Println("RecordConnectionCreateTime---")
-
 	// Convert internal pool.Conn to public ConnInfo
 	var connInfo ConnInfo
 	if cn != nil {

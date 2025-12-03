@@ -115,11 +115,19 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 	)
 
 	// Create histogram for operation duration
-	operationDuration, err := meter.Float64Histogram(
-		"db.client.operation.duration",
+	var operationDurationOpts []metric.Float64HistogramOption
+	operationDurationOpts = append(operationDurationOpts,
 		metric.WithDescription("Duration of database client operations"),
 		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(cfg.histogramBuckets...),
+	)
+	if cfg.histAggregation == HistogramAggregationExplicitBucket {
+		operationDurationOpts = append(operationDurationOpts,
+			metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
+		)
+	}
+	operationDuration, err := meter.Float64Histogram(
+		"db.client.operation.duration",
+		operationDurationOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create operation duration histogram: %w", err)
@@ -136,10 +144,19 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 	}
 
 	// Create histogram for connection creation time
-	connectionCreateTime, err := meter.Float64Histogram(
-		"db.client.connection.create_time",
+	var connectionCreateTimeOpts []metric.Float64HistogramOption
+	connectionCreateTimeOpts = append(connectionCreateTimeOpts,
 		metric.WithDescription("The time it took to create a new connection"),
 		metric.WithUnit("s"),
+	)
+	if cfg.histAggregation == HistogramAggregationExplicitBucket {
+		connectionCreateTimeOpts = append(connectionCreateTimeOpts,
+			metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
+		)
+	}
+	connectionCreateTime, err := meter.Float64Histogram(
+		"db.client.connection.create_time",
+		connectionCreateTimeOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create connection create time histogram: %w", err)
