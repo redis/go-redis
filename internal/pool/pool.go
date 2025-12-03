@@ -132,13 +132,6 @@ func GetMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, no
 	return maintenanceNotificationCallback
 }
 
-var timers = sync.Pool{
-	New: func() interface{} {
-		t := time.NewTimer(time.Hour)
-		t.Stop()
-		return t
-	},
-}
 
 // Stats contains pool state information and accumulated stats.
 type Stats struct {

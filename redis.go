@@ -680,7 +680,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		totalAttempts++
 		attempt := attempt
 
-		retry, err, cn := c._process(ctx, cmd, attempt)
+		retry, cn, err := c._process(ctx, cmd, attempt)
 		if cn != nil {
 			lastConn = cn
 		}
@@ -714,10 +714,10 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
 	}
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error, *pool.Conn) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, err, nil
+			return false, nil, err
 		}
 	}
 
@@ -765,10 +765,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		return nil
 	}); err != nil {
 		retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
-		return retry, err, usedConn
+		return retry, usedConn, err
 	}
 
-	return false, nil, usedConn
+	return false, usedConn, nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
