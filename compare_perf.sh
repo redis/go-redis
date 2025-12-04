@@ -15,16 +15,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-BENCHMARK_COUNT=${BENCHMARK_COUNT:-5}
-BENCHMARK_TIME=${BENCHMARK_TIME:-10s}
-BENCHMARK_FILTER=${BENCHMARK_FILTER:-"BenchmarkOTelOverhead"}
+# Configuration (can be overridden via environment variables)
+# Optimized defaults: 3 iterations × 3s = statistically valid in ~5-8 minutes total
+BENCHMARK_COUNT=${BENCHMARK_COUNT:-3}        # Number of times to run each benchmark (3 is minimum for benchstat)
+BENCHMARK_TIME=${BENCHMARK_TIME:-3s}         # How long to run each benchmark (3s gives stable results)
+BENCHMARK_FILTER=${BENCHMARK_FILTER:-"BenchmarkOTelOverhead"}  # Benchmark name filter
 UPSTREAM_REMOTE=${UPSTREAM_REMOTE:-"upstream"}
 UPSTREAM_BRANCH=${UPSTREAM_BRANCH:-"master"}
 
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║  Redis Go Client - OTel Observability Performance Comparison  ║${NC}"
 echo -e "${BLUE}╔════════════════════════════════════════════════════════════════╗${NC}"
+echo ""
+echo -e "${BLUE}⏱️  Estimated time: ~5-8 minutes (count=${BENCHMARK_COUNT}, time=${BENCHMARK_TIME})${NC}"
+echo -e "${YELLOW}💡 Customize: BENCHMARK_COUNT=5 BENCHMARK_TIME=5s ./compare_perf.sh${NC}"
 echo ""
 
 # Check if benchstat is installed
@@ -41,12 +45,33 @@ fi
 
 # Check if Redis is running
 echo -e "${BLUE}🔍 Checking Redis connection...${NC}"
-if ! timeout 2 bash -c "echo > /dev/tcp/localhost/6379" 2>/dev/null; then
+
+# Try redis-cli first (works on both Linux and macOS)
+if command -v redis-cli &> /dev/null; then
+    if redis-cli -h localhost -p 6379 ping &> /dev/null; then
+        echo -e "${GREEN}✅ Redis is running${NC}"
+    else
+        echo -e "${RED}❌ Redis is not running on localhost:6379${NC}"
+        echo -e "${YELLOW}💡 Start Redis with: docker run -d -p 6379:6379 redis:latest${NC}"
+        exit 1
+    fi
+# Fallback to nc (netcat) - works on both Linux and macOS
+elif command -v nc &> /dev/null; then
+    if nc -z localhost 6379 2>/dev/null; then
+        echo -e "${GREEN}✅ Redis is running (detected via port check)${NC}"
+    else
+        echo -e "${RED}❌ Redis is not running on localhost:6379${NC}"
+        echo -e "${YELLOW}💡 Start Redis with: docker run -d -p 6379:6379 redis:latest${NC}"
+        exit 1
+    fi
+# Fallback to /dev/tcp (works on Linux with bash, not macOS)
+elif timeout 2 bash -c "echo > /dev/tcp/localhost/6379" 2>/dev/null; then
+    echo -e "${GREEN}✅ Redis is running (detected via /dev/tcp)${NC}"
+else
     echo -e "${RED}❌ Redis is not running on localhost:6379${NC}"
     echo -e "${YELLOW}💡 Start Redis with: docker run -d -p 6379:6379 redis:latest${NC}"
     exit 1
 fi
-echo -e "${GREEN}✅ Redis is running${NC}"
 echo ""
 
 # Save current state
