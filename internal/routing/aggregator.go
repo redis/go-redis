@@ -497,10 +497,6 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 		if a.res.CompareAndSwap(old, desired) {
 			break
 		}
-		// Early exit: if the value already equals what we want, no need to continue
-		if a.res.Load() == desired {
-			break
-		}
 	}
 
 	a.hasResult.Store(true)
@@ -594,10 +590,6 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 		old := a.res.Load()
 		desired := old | newVal
 		if a.res.CompareAndSwap(old, desired) {
-			break
-		}
-		// Early exit: if the value already equals what we want, no need to continue
-		if a.res.Load() == desired {
 			break
 		}
 	}
