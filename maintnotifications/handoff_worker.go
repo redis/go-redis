@@ -501,9 +501,9 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 			internal.Logger.Printf(ctx, logs.RemovingConnectionFromPool(conn.GetID(), err))
 		}
 	} else {
-		err := conn.Close() // Close the connection if no pool provided
-		if err != nil {
-			internal.Logger.Printf(ctx, "redis: failed to close connection: %v", err)
+		errClose := conn.Close() // Close the connection if no pool provided
+		if errClose != nil {
+			internal.Logger.Printf(ctx, "redis: failed to close connection: %v", errClose)
 		}
 		if internal.LogLevel.WarnOrAbove() {
 			internal.Logger.Printf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID(), err))
