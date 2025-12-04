@@ -293,19 +293,29 @@ func OperationNotTracked(connID uint64, seqID int64) string {
 
 // Connection pool functions
 func RemovingConnectionFromPool(connID uint64, reason error) string {
-	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, RemovingConnectionFromPoolMessage, reason)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	metadata := map[string]interface{}{
 		"connID": connID,
-		"reason": reason.Error(),
-	})
+		"reason": "unknown", // this will be overwritten if reason is not nil
+	}
+	if reason != nil {
+		metadata["reason"] = reason.Error()
+	}
+
+	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, RemovingConnectionFromPoolMessage, reason)
+	return appendJSONIfDebug(message, metadata)
 }
 
 func NoPoolProvidedCannotRemove(connID uint64, reason error) string {
-	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, NoPoolProvidedMessageCannotRemoveMessage, reason)
-	return appendJSONIfDebug(message, map[string]interface{}{
+	metadata := map[string]interface{}{
 		"connID": connID,
-		"reason": reason.Error(),
-	})
+		"reason": "unknown", // this will be overwritten if reason is not nil
+	}
+	if reason != nil {
+		metadata["reason"] = reason.Error()
+	}
+
+	message := fmt.Sprintf("conn[%d] %s due to: %v", connID, NoPoolProvidedMessageCannotRemoveMessage, reason)
+	return appendJSONIfDebug(message, metadata)
 }
 
 // Circuit breaker functions
