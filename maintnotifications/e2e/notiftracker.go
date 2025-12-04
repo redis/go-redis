@@ -227,9 +227,9 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 	switch notificationType {
 	case "MOVING":
 		tnh.movingCount.Add(1)
-	case "MIGRATING":
+	case "MIGRATING", "SMIGRATING":
 		tnh.migratingCount.Add(1)
-	case "MIGRATED":
+	case "MIGRATED", "SMIGRATED":
 		tnh.migratedCount.Add(1)
 	case "FAILING_OVER":
 		tnh.failingOverCount.Add(1)
@@ -242,9 +242,9 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 
 func (tnh *TrackingNotificationsHook) increaseRelaxedTimeoutCount(notificationType string) {
 	switch notificationType {
-	case "MIGRATING", "FAILING_OVER":
+	case "MIGRATING", "SMIGRATING", "FAILING_OVER":
 		tnh.relaxedTimeoutCount.Add(1)
-	case "MIGRATED", "FAILED_OVER":
+	case "MIGRATED", "SMIGRATED", "FAILED_OVER":
 		tnh.unrelaxedTimeoutCount.Add(1)
 	}
 }
@@ -311,7 +311,7 @@ func filterPushNotificationLogs(diagnosticsLog []DiagnosticsEvent) []Diagnostics
 
 	for _, log := range diagnosticsLog {
 		switch log.Type {
-		case "MOVING", "MIGRATING", "MIGRATED":
+		case "MOVING", "MIGRATING", "SMIGRATING", "MIGRATED", "SMIGRATED":
 			pushNotificationLogs = append(pushNotificationLogs, log)
 		}
 	}
@@ -374,9 +374,9 @@ func (da *DiagnosticsAnalysis) Analyze() {
 		switch log.Type {
 		case "MOVING":
 			da.MovingCount++
-		case "MIGRATING":
+		case "MIGRATING", "SMIGRATING":
 			da.MigratingCount++
-		case "MIGRATED":
+		case "MIGRATED", "SMIGRATED":
 			da.MigratedCount++
 		case "FAILING_OVER":
 			da.FailingOverCount++
@@ -391,9 +391,9 @@ func (da *DiagnosticsAnalysis) Analyze() {
 			fmt.Printf("[ERROR] Context: %v\n", log.Details["context"])
 			da.NotificationProcessingErrors++
 		}
-		if log.Type == "MIGRATING" || log.Type == "FAILING_OVER" {
+		if log.Type == "MIGRATING" || log.Type == "SMIGRATING" || log.Type == "FAILING_OVER" {
 			da.RelaxedTimeoutCount++
-		} else if log.Type == "MIGRATED" || log.Type == "FAILED_OVER" {
+		} else if log.Type == "MIGRATED" || log.Type == "SMIGRATED" || log.Type == "FAILED_OVER" {
 			da.UnrelaxedTimeoutCount++
 		}
 		if log.ConnID != 0 {

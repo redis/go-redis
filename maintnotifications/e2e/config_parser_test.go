@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -548,13 +549,58 @@ func CreateTestClientFactoryWithBdbID(databaseName string, bdbID int) (*ClientFa
 }
 
 // CreateTestFaultInjector creates a fault injector client from environment configuration
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it automatically starts a proxy fault injector server
+//
+// Deprecated: Use CreateTestFaultInjectorWithCleanup instead for proper cleanup
 func CreateTestFaultInjector() (*FaultInjectorClient, error) {
+	client, _, err := CreateTestFaultInjectorWithCleanup()
+	return client, err
+}
+
+// CreateTestFaultInjectorWithCleanup creates a fault injector client and returns a cleanup function
+//
+// Decision logic based on environment:
+// 1. If REDIS_ENDPOINTS_CONFIG_PATH is set -> use real fault injector from FAULT_INJECTION_API_URL
+// 2. If REDIS_ENDPOINTS_CONFIG_PATH is NOT set -> use Docker fault injector at http://localhost:5000
+//
+// Both the Docker proxy and fault injector should already be running (started via Docker Compose)
+// This function does NOT start any services - it only connects to existing ones
+//
+// Usage:
+//
+//	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+//	if err != nil { ... }
+//	defer cleanup()
+func CreateTestFaultInjectorWithCleanup() (*FaultInjectorClient, func(), error) {
+	// Try to get environment config
 	envConfig, err := GetEnvConfig()
+
+	// If environment config fails, use Docker fault injector
+	// Note: GetEnvConfig() only fails if REDIS_ENDPOINTS_CONFIG_PATH is not set
 	if err != nil {
-		return nil, fmt.Errorf("failed to get environment config: %w", err)
+		// Use Docker fault injector at http://localhost:5000
+		// The fault injector should already be running via docker-compose
+		faultInjectorURL := "http://localhost:5000"
+
+		// Check if fault injector is accessible
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get(faultInjectorURL + "/actions")
+		if err != nil {
+			return nil, nil, fmt.Errorf("Docker fault injector not accessible at %s (did you run 'make docker.e2e.start'?): %w", faultInjectorURL, err)
+		}
+		resp.Body.Close()
+
+		fmt.Printf("✓ Using Docker fault injector at %s\n", faultInjectorURL)
+
+		// Return client with no-op cleanup (Docker manages the fault injector lifecycle)
+		noopCleanup := func() {}
+		return NewFaultInjectorClient(faultInjectorURL), noopCleanup, nil
 	}
 
-	return NewFaultInjectorClient(envConfig.FaultInjectorURL), nil
+	// Using real fault injector - no cleanup needed
+	fmt.Printf("✓ Using real fault injector at %s\n", envConfig.FaultInjectorURL)
+	noopCleanup := func() {}
+	return NewFaultInjectorClient(envConfig.FaultInjectorURL), noopCleanup, nil
 }
 
 // GetAvailableDatabases returns a list of available database names from the configuration
@@ -906,8 +952,8 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -919,12 +965,14 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 	testDBName := fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix())
 	bdbID, err = dbManager.CreateDatabaseFromEnvConfig(ctx, envDbConfig, testDBName)
 	if err != nil {
+		fiCleanup()
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
-	// Return cleanup function
+	// Return combined cleanup function
 	cleanup = func() {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, cleanup
@@ -936,8 +984,8 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 //	bdbID, cleanup := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
 //	defer cleanup()
 func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig DatabaseConfig) (bdbID int, cleanup func()) {
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -948,12 +996,14 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 	// Create the database
 	bdbID, err = dbManager.CreateDatabase(ctx, dbConfig)
 	if err != nil {
+		fiCleanup()
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
-	// Return cleanup function
+	// Return combined cleanup function
 	cleanup = func() {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, cleanup
@@ -961,6 +1011,10 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 
 // SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, and cleanup function
 // This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
+//
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
+// This allows tests to work with either the real fault injector OR the Docker proxy setup.
+//
 // Usage:
 //
 //	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
@@ -969,7 +1023,27 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	// Get environment config
 	envConfig, err := GetEnvConfig()
 	if err != nil {
-		t.Fatalf("Failed to get environment config: %v", err)
+		// No environment config - use Docker proxy setup
+		t.Logf("No environment config found, using Docker proxy setup at localhost:7000")
+
+		// Create a simple Redis connection config for Docker proxy
+		redisConfig := &RedisConnectionConfig{
+			Host:     "localhost",
+			Port:     7000,
+			Username: "",
+			Password: "",
+			TLS:      false,
+			BdbID:    0,
+		}
+
+		factory = NewClientFactory(redisConfig)
+
+		// No-op cleanup since we're not creating a database
+		cleanup = func() {
+			factory.DestroyAll()
+		}
+
+		return 0, factory, cleanup
 	}
 
 	// Get database config from environment
@@ -1002,8 +1076,8 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		t.Fatalf("Failed to convert config: %v", err)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -1014,6 +1088,7 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	// Create the database and get the actual connection config from fault injector
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
+		fiCleanup()
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
@@ -1026,6 +1101,7 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
 	if err != nil {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 		t.Fatalf("Failed to convert database config: %v", err)
 	}
 
@@ -1036,12 +1112,17 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	cleanup = func() {
 		factory.DestroyAll()
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, factory, cleanup
 }
 
 // SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, and cleanup function
+//
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
+// This allows tests to work with either the real fault injector OR the Docker proxy setup.
+//
 // Usage:
 //
 //	bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
@@ -1050,7 +1131,27 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	// Get environment config to use as template for connection details
 	envConfig, err := GetEnvConfig()
 	if err != nil {
-		t.Fatalf("Failed to get environment config: %v", err)
+		// No environment config - use Docker proxy setup
+		t.Logf("No environment config found, using Docker proxy setup at localhost:7000")
+
+		// Create a simple Redis connection config for Docker proxy
+		redisConfig := &RedisConnectionConfig{
+			Host:     "localhost",
+			Port:     7000,
+			Username: "",
+			Password: "",
+			TLS:      false,
+			BdbID:    0,
+		}
+
+		factory = NewClientFactory(redisConfig)
+
+		// No-op cleanup since we're not creating a database
+		cleanup = func() {
+			factory.DestroyAll()
+		}
+
+		return 0, factory, cleanup
 	}
 
 	// Get database config from environment
@@ -1077,8 +1178,8 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -1089,6 +1190,7 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	// Create the database and get the actual connection config from fault injector
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
+		fiCleanup()
 		t.Fatalf("Failed to create test database: %v", err)
 	}
 
@@ -1101,6 +1203,7 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
 	if err != nil {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 		t.Fatalf("Failed to convert database config: %v", err)
 	}
 
@@ -1111,6 +1214,7 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	cleanup = func() {
 		factory.DestroyAll()
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, factory, cleanup

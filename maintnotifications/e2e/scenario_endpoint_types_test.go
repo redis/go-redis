@@ -62,11 +62,12 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			defer cleanup()
 			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d", endpointTest.name, bdbID)
 
-			// Create fault injector
-			faultInjector, err := CreateTestFaultInjector()
+			// Create fault injector with cleanup
+			faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 			if err != nil {
 				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 			}
+			defer fiCleanup()
 
 			// Get endpoint config from factory (now connected to new database)
 			endpointConfig := factory.GetConfig()
@@ -245,10 +246,22 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("MIGRATED notification received for %s. %v", endpointTest.name, migratedData)
 
 			// Complete migration with bind action
+			// Pass endpoint_type to the bind action so it knows what format to use
+			var endpointTypeStr string
+			switch endpointTest.endpointType {
+			case maintnotifications.EndpointTypeExternalIP:
+				endpointTypeStr = "external-ip"
+			case maintnotifications.EndpointTypeExternalFQDN:
+				endpointTypeStr = "external-fqdn"
+			case maintnotifications.EndpointTypeNone:
+				endpointTypeStr = "none"
+			}
+
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"bdb_id": endpointConfig.BdbID,
+					"bdb_id":        endpointConfig.BdbID,
+					"endpoint_type": endpointTypeStr,
 				},
 			})
 			if err != nil {
@@ -287,12 +300,14 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				var expectedAddress string
 				hostParts := strings.SplitN(endpointConfig.Host, ".", 2)
 				if len(hostParts) != 2 {
-					e("invalid host %s", endpointConfig.Host)
+					// Docker proxy setup uses "localhost" without domain suffix
+					// In this case, skip FQDN validation
+					p("Skipping FQDN validation for Docker proxy setup (host=%s)", endpointConfig.Host)
 				} else {
 					expectedAddress = hostParts[1]
-				}
-				if address != expectedAddress {
-					e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
+					if address != expectedAddress {
+						e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
+					}
 				}
 
 			case maintnotifications.EndpointTypeExternalIP:

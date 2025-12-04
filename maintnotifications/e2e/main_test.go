@@ -17,6 +17,7 @@ const defaultTestTimeout = 30 * time.Minute
 
 // Global fault injector client
 var faultInjector *FaultInjectorClient
+var faultInjectorCleanup func()
 
 func TestMain(m *testing.M) {
 	var err error
@@ -25,10 +26,12 @@ func TestMain(m *testing.M) {
 		return
 	}
 
-	faultInjector, err = CreateTestFaultInjector()
+	faultInjector, faultInjectorCleanup, err = CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		panic("Failed to create fault injector: " + err.Error())
 	}
+	defer faultInjectorCleanup()
+
 	// use log collector to capture logs from redis clients
 	logCollector = NewTestLogCollector()
 	redis.SetLogger(logCollector)
