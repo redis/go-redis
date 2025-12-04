@@ -482,10 +482,20 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 		return e
 	}
 
+	// Atomic AND operation using CompareAndSwap loop (Go 1.21 compatible)
+	// TODO: Once minimum Go version is upgraded to 1.23+, replace this with:
+	//   if val { a.res.And(1) } else { a.res.And(0) }
+	var newVal int64
 	if val {
-		a.res.And(1)
+		newVal = 1
 	} else {
-		a.res.And(0)
+		newVal = 0
+	}
+	for {
+		old := a.res.Load()
+		if a.res.CompareAndSwap(old, old&newVal) {
+			break
+		}
 	}
 
 	a.hasResult.Store(true)
@@ -566,10 +576,20 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 		return e
 	}
 
+	// Atomic OR operation using CompareAndSwap loop (Go 1.21 compatible)
+	// TODO: Once minimum Go version is upgraded to 1.23+, replace this with:
+	//   if val { a.res.Or(1) } else { a.res.Or(0) }
+	var newVal int64
 	if val {
-		a.res.Or(1)
+		newVal = 1
 	} else {
-		a.res.Or(0)
+		newVal = 0
+	}
+	for {
+		old := a.res.Load()
+		if a.res.CompareAndSwap(old, old|newVal) {
+			break
+		}
 	}
 
 	a.hasResult.Store(true)
