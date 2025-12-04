@@ -56,7 +56,7 @@ func NewNotificationInjector() (NotificationInjector, error) {
 	// Use proxy-based mock
 	apiPort := 8100
 	if portStr := os.Getenv("PROXY_API_PORT"); portStr != "" {
-		fmt.Sscanf(portStr, "%d", &apiPort)
+		_, _ = fmt.Sscanf(portStr, "%d", &apiPort)
 	}
 
 	return NewProxyNotificationInjector(apiPort), nil
@@ -105,7 +105,7 @@ func (p *ProxyNotificationInjector) Start() error {
 
 	targetPort := 6379
 	if portStr := os.Getenv("REDIS_TARGET_PORT"); portStr != "" {
-		fmt.Sscanf(portStr, "%d", &targetPort)
+		_, _ = fmt.Sscanf(portStr, "%d", &targetPort)
 	}
 
 	// Parse cluster addresses
@@ -116,7 +116,7 @@ func (p *ProxyNotificationInjector) Start() error {
 
 	// Extract first port for initial node
 	var initialPort int
-	fmt.Sscanf(strings.Split(addrs[0], ":")[1], "%d", &initialPort)
+	_, _ = fmt.Sscanf(strings.Split(addrs[0], ":")[1], "%d", &initialPort)
 
 	// Check if proxy is already running (e.g., in Docker)
 	proxyAlreadyRunning := false
@@ -164,7 +164,7 @@ func (p *ProxyNotificationInjector) Start() error {
 				if !proxyAlreadyRunning {
 					for i := 1; i < len(addrs); i++ {
 						var port int
-						fmt.Sscanf(strings.Split(addrs[i], ":")[1], "%d", &port)
+						_, _ = fmt.Sscanf(strings.Split(addrs[i], ":")[1], "%d", &port)
 						if err := p.addNode(port, targetPort, targetHost); err != nil {
 							return fmt.Errorf("failed to add node %d: %w", i, err)
 						}
@@ -421,7 +421,7 @@ func NewFaultInjectorNotificationInjector(baseURL string) *FaultInjectorNotifica
 
 	bdbID := 1
 	if bdbIDStr := os.Getenv("BDB_ID"); bdbIDStr != "" {
-		fmt.Sscanf(bdbIDStr, "%d", &bdbID)
+		_, _ = fmt.Sscanf(bdbIDStr, "%d", &bdbID)
 	}
 
 	return &FaultInjectorNotificationInjector{
@@ -455,9 +455,9 @@ func (f *FaultInjectorNotificationInjector) InjectSMIGRATING(ctx context.Context
 	var startSlot, endSlot int
 	if len(slots) > 0 {
 		if strings.Contains(slots[0], "-") {
-			fmt.Sscanf(slots[0], "%d-%d", &startSlot, &endSlot)
+			_, _ = fmt.Sscanf(slots[0], "%d-%d", &startSlot, &endSlot)
 		} else {
-			fmt.Sscanf(slots[0], "%d", &startSlot)
+			_, _ = fmt.Sscanf(slots[0], "%d", &startSlot)
 			endSlot = startSlot
 		}
 	}

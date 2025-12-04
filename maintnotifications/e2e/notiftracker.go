@@ -305,20 +305,6 @@ func setupClusterClientNotificationHook(client *redis.ClusterClient, hook maintn
 	})
 }
 
-// filterPushNotificationLogs filters the diagnostics log for push notification events
-func filterPushNotificationLogs(diagnosticsLog []DiagnosticsEvent) []DiagnosticsEvent {
-	var pushNotificationLogs []DiagnosticsEvent
-
-	for _, log := range diagnosticsLog {
-		switch log.Type {
-		case "MOVING", "MIGRATING", "SMIGRATING", "MIGRATED", "SMIGRATED":
-			pushNotificationLogs = append(pushNotificationLogs, log)
-		}
-	}
-
-	return pushNotificationLogs
-}
-
 func (tnh *TrackingNotificationsHook) GetAnalysis() *DiagnosticsAnalysis {
 	return NewDiagnosticsAnalysis(tnh.GetDiagnosticsLog())
 }
@@ -368,41 +354,42 @@ func NewDiagnosticsAnalysis(diagnosticsLog []DiagnosticsEvent) *DiagnosticsAnaly
 	return da
 }
 
-func (da *DiagnosticsAnalysis) Analyze() {
-	for _, log := range da.diagnosticsLog {
-		da.TotalNotifications++
+func (a *DiagnosticsAnalysis) Analyze() {
+	for _, log := range a.diagnosticsLog {
+		a.TotalNotifications++
 		switch log.Type {
 		case "MOVING":
-			da.MovingCount++
+			a.MovingCount++
 		case "MIGRATING", "SMIGRATING":
-			da.MigratingCount++
+			a.MigratingCount++
 		case "MIGRATED", "SMIGRATED":
-			da.MigratedCount++
+			a.MigratedCount++
 		case "FAILING_OVER":
-			da.FailingOverCount++
+			a.FailingOverCount++
 		case "FAILED_OVER":
-			da.FailedOverCount++
+			a.FailedOverCount++
 		default:
-			da.UnexpectedNotificationCount++
+			a.UnexpectedNotificationCount++
 		}
 		if log.Error != nil {
 			fmt.Printf("[ERROR] Notification processing error: %v\n", log.Error)
 			fmt.Printf("[ERROR] Notification: %v\n", log.Details["notification"])
 			fmt.Printf("[ERROR] Context: %v\n", log.Details["context"])
-			da.NotificationProcessingErrors++
+			a.NotificationProcessingErrors++
 		}
-		if log.Type == "MIGRATING" || log.Type == "SMIGRATING" || log.Type == "FAILING_OVER" {
-			da.RelaxedTimeoutCount++
-		} else if log.Type == "MIGRATED" || log.Type == "SMIGRATED" || log.Type == "FAILED_OVER" {
-			da.UnrelaxedTimeoutCount++
+		switch log.Type {
+		case "MIGRATING", "SMIGRATING", "FAILING_OVER":
+			a.RelaxedTimeoutCount++
+		case "MIGRATED", "SMIGRATED", "FAILED_OVER":
+			a.UnrelaxedTimeoutCount++
 		}
 		if log.ConnID != 0 {
-			if v, ok := da.connIds[log.ConnID]; !ok || !v {
-				da.connIds[log.ConnID] = true
-				da.connLogs[log.ConnID] = make([]DiagnosticsEvent, 0)
-				da.ConnectionCount++
+			if v, ok := a.connIds[log.ConnID]; !ok || !v {
+				a.connIds[log.ConnID] = true
+				a.connLogs[log.ConnID] = make([]DiagnosticsEvent, 0)
+				a.ConnectionCount++
 			}
-			da.connLogs[log.ConnID] = append(da.connLogs[log.ConnID], log)
+			a.connLogs[log.ConnID] = append(a.connLogs[log.ConnID], log)
 		}
 
 	}

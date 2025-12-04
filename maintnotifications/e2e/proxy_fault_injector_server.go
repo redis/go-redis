@@ -262,7 +262,7 @@ func (s *ProxyFaultInjectorServer) Stop() error {
 	if s.httpServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		s.httpServer.Shutdown(ctx)
+		_ = s.httpServer.Shutdown(ctx)
 	}
 
 	if s.proxyCmd != nil && s.proxyCmd.Process != nil {
@@ -332,7 +332,7 @@ func (s *ProxyFaultInjectorServer) handleListActions(w http.ResponseWriter, r *h
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(actions)
+	_ = json.NewEncoder(w).Encode(actions)
 }
 
 func (s *ProxyFaultInjectorServer) handleTriggerAction(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +377,7 @@ func (s *ProxyFaultInjectorServer) handleTriggerAction(w http.ResponseWriter, r 
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *ProxyFaultInjectorServer) handleActionStatus(w http.ResponseWriter, r *http.Request) {
@@ -411,7 +411,7 @@ func (s *ProxyFaultInjectorServer) handleActionStatus(w http.ResponseWriter, r *
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // executeAction executes an action and injects appropriate notifications
