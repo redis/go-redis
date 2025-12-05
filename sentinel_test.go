@@ -410,7 +410,9 @@ var _ = Describe("SentinelAclAuth", func() {
 	})
 })
 
-func TestParseFailoverURL(t *testing.T) {
+// renaming from TestParseFailoverURL to TestParseSentinelURL
+// to be easier to find Failed tests in the test output
+func TestParseSentinelURL(t *testing.T) {
 	cases := []struct {
 		url string
 		o   *redis.FailoverOptions
@@ -429,6 +431,14 @@ func TestParseFailoverURL(t *testing.T) {
 			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
 				TLSConfig: &tls.Config{
 					ServerName: "localhost",
+				}},
+		},
+		{
+			url: "rediss://localhost:6379/5?master_name=test&skip_verify=true",
+			o: &redis.FailoverOptions{SentinelAddrs: []string{"localhost:6379"}, MasterName: "test", DB: 5,
+				TLSConfig: &tls.Config{
+					ServerName:         "localhost",
+					InsecureSkipVerify: true,
 				}},
 		},
 		{
@@ -670,5 +680,101 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 		if a[i] != b[i] {
 			t.Errorf("%s got %q, want %q", name, a, b)
 		}
+	}
+}
+
+type joinErrorsTest struct {
+	name     string
+	errs     []error
+	expected string
+}
+
+func TestJoinErrors(t *testing.T) {
+	tests := []joinErrorsTest{
+		{
+			name:     "empty slice",
+			errs:     []error{},
+			expected: "",
+		},
+		{
+			name:     "single error",
+			errs:     []error{errors.New("first error")},
+			expected: "first error",
+		},
+		{
+			name:     "two errors",
+			errs:     []error{errors.New("first error"), errors.New("second error")},
+			expected: "first error\nsecond error",
+		},
+		{
+			name: "multiple errors",
+			errs: []error{
+				errors.New("first error"),
+				errors.New("second error"),
+				errors.New("third error"),
+			},
+			expected: "first error\nsecond error\nthird error",
+		},
+		{
+			name:     "nil slice",
+			errs:     nil,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := redis.JoinErrors(tt.errs)
+			if result != tt.expected {
+				t.Errorf("joinErrors() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func BenchmarkJoinErrors(b *testing.B) {
+	benchmarks := []joinErrorsTest{
+		{
+			name:     "empty slice",
+			errs:     []error{},
+			expected: "",
+		},
+		{
+			name:     "single error",
+			errs:     []error{errors.New("first error")},
+			expected: "first error",
+		},
+		{
+			name:     "two errors",
+			errs:     []error{errors.New("first error"), errors.New("second error")},
+			expected: "first error\nsecond error",
+		},
+		{
+			name: "multiple errors",
+			errs: []error{
+				errors.New("first error"),
+				errors.New("second error"),
+				errors.New("third error"),
+			},
+			expected: "first error\nsecond error\nthird error",
+		},
+		{
+			name:     "nil slice",
+			errs:     nil,
+			expected: "",
+		},
+	}
+	for _, bm := range benchmarks {
+		b.Run(bm.name, func(b *testing.B) {
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					result := redis.JoinErrors(bm.errs)
+					if result != bm.expected {
+						b.Errorf("joinErrors() = %q, want %q", result, bm.expected)
+					}
+				}
+			})
+		})
 	}
 }

@@ -12,7 +12,6 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/auth"
 )
@@ -87,6 +86,12 @@ var _ = Describe("Client", func() {
 
 		err = client.Ping(ctx).Err()
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("do", func() {
+		val, err := client.Do(ctx, "ping").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("PONG"))
 	})
 
 	It("should ping", func() {
@@ -240,6 +245,62 @@ var _ = Describe("Client", func() {
 		Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
 	})
 
+	It("should initialize idle connections created by MinIdleConns", Label("NonRedisEnterprise"), func() {
+		opt := redisOptions()
+		passwrd := "asdf"
+		db0 := redis.NewClient(opt)
+		// set password
+		err := db0.Do(ctx, "CONFIG", "SET", "requirepass", passwrd).Err()
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			err = db0.Do(ctx, "CONFIG", "SET", "requirepass", "").Err()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(db0.Close()).NotTo(HaveOccurred())
+		}()
+		opt.MinIdleConns = 5
+		opt.Password = passwrd
+		opt.DB = 1 // Set DB to require SELECT
+
+		db := redis.NewClient(opt)
+		defer func() {
+			Expect(db.Close()).NotTo(HaveOccurred())
+		}()
+
+		// Wait for minIdle connections to be created
+		time.Sleep(100 * time.Millisecond)
+
+		// Verify that idle connections were created
+		stats := db.PoolStats()
+		Expect(stats.IdleConns).To(BeNumerically(">=", 5))
+
+		// Now use these connections - they should be properly initialized
+		// If they're not initialized, we'll get NOAUTH or WRONGDB errors
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				// Each goroutine performs multiple operations
+				for j := 0; j < 5; j++ {
+					key := fmt.Sprintf("test_key_%d_%d", id, j)
+					err := db.Set(ctx, key, "value", 0).Err()
+					Expect(err).NotTo(HaveOccurred())
+
+					val, err := db.Get(ctx, key).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(val).To(Equal("value"))
+
+					err = db.Del(ctx, key).Err()
+					Expect(err).NotTo(HaveOccurred())
+				}
+			}(i)
+		}
+		wg.Wait()
+
+		// Verify no errors occurred
+		Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+	})
+
 	It("processes custom commands", func() {
 		cmd := redis.NewCmd(ctx, "PING")
 		_ = client.Process(ctx, cmd)
@@ -318,6 +379,7 @@ var _ = Describe("Client", func() {
 		cn, err = client.Pool().Get(context.Background())
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cn).NotTo(BeNil())
+		Expect(cn.UsedAt().UnixNano()).To(BeNumerically(">", createdAt.UnixNano()))
 		Expect(cn.UsedAt().After(createdAt)).To(BeTrue())
 	})
 
@@ -849,24 +911,34 @@ var _ = Describe("Credentials Provider Priority", func() {
 				credentials: initialCreds,
 				updates:     updatesChan,
 			},
+			PoolSize: 1, // Force single connection to ensure reauth is tested
 		}
 
 		client = redis.NewClient(opt)
 		client.AddHook(recorder.Hook())
 		// wrongpass
 		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
+		time.Sleep(10 * time.Millisecond)
 		Expect(recorder.Contains("AUTH initial_user")).To(BeTrue())
 
 		// Update credentials
 		opt.StreamingCredentialsProvider.(*mockStreamingProvider).updates <- updatedCreds
-		// wrongpass
-		Expect(client.Ping(context.Background()).Err()).To(HaveOccurred())
-		Expect(recorder.Contains("AUTH updated_user")).To(BeTrue())
+
+		// Wait for reauth to complete and verify updated credentials are used
+		// We need to keep trying Ping until we see the updated AUTH command
+		// because the reauth happens asynchronously
+		Eventually(func() bool {
+			// wrongpass
+			_ = client.Ping(context.Background()).Err()
+			return recorder.Contains("AUTH updated_user")
+		}, "1s", "50ms").Should(BeTrue())
+
 		close(updatesChan)
 	})
 })
 
 type mockStreamingProvider struct {
+	mu          sync.RWMutex
 	credentials auth.Credentials
 	err         error
 	updates     chan auth.Credentials
@@ -877,21 +949,50 @@ func (m *mockStreamingProvider) Subscribe(listener auth.CredentialsListener) (au
 		return nil, nil, m.err
 	}
 
+	if listener == nil {
+		return nil, nil, errors.New("listener cannot be nil")
+	}
+
+	// Create a done channel to stop the goroutine
+	done := make(chan struct{})
+
 	// Start goroutine to handle updates
 	go func() {
-		for creds := range m.updates {
-			m.credentials = creds
-			listener.OnNext(creds)
+		defer func() {
+			if r := recover(); r != nil {
+				// this is just a mock:
+				// allow panics to be caught without crashing
+			}
+		}()
+
+		for {
+			select {
+			case <-done:
+				return
+			case creds, ok := <-m.updates:
+				if !ok {
+					return
+				}
+				m.mu.Lock()
+				m.credentials = creds
+				m.mu.Unlock()
+				listener.OnNext(creds)
+			}
 		}
 	}()
 
-	return m.credentials, func() (err error) {
+	m.mu.RLock()
+	currentCreds := m.credentials
+	m.mu.RUnlock()
+
+	return currentCreds, func() (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				// this is just a mock:
 				// allow multiple closes from multiple listeners
 			}
 		}()
+		close(done)
 		return
 	}, nil
 }

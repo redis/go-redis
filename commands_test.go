@@ -13,6 +13,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 type TimeValue struct {
@@ -197,6 +198,29 @@ var _ = Describe("Commands", func() {
 			r := client.ClientKillByFilter(ctx, "TYPE", "test")
 			Expect(r.Err()).To(MatchError("ERR Unknown client type 'test'"))
 			Expect(r.Val()).To(Equal(int64(0)))
+		})
+
+		It("should ClientKillByFilter with kill myself", func() {
+			opt := redisOptions()
+			opt.ClientName = "killmyid"
+			db := redis.NewClient(opt)
+			Expect(db.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			defer func() {
+				Expect(db.Close()).NotTo(HaveOccurred())
+			}()
+			val, err := client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).Should(ContainSubstring("name=killmyid"))
+
+			myid := db.ClientID(ctx).Val()
+			killed := client.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
+			Expect(killed.Err()).NotTo(HaveOccurred())
+			Expect(killed.Val()).To(BeNumerically("==", 1))
+
+			val, err = client.ClientList(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
 		})
 
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
@@ -460,7 +484,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			// read the defaults to set them back later
-			for setting, _ := range expected {
+			for setting := range expected {
 				val, err := client.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				defaults[setting] = val[setting]
@@ -657,6 +681,22 @@ var _ = Describe("Commands", func() {
 			Expect(cmd.StepCount).To(Equal(int8(0)))
 		})
 
+		It("should Command Tips", Label("NonRedisEnterprise"), func() {
+			SkipAfterRedisVersion(7.9, "Redis 8 changed the COMMAND reply format")
+			cmds, err := client.Command(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd := cmds["touch"]
+			Expect(cmd.Name).To(Equal("touch"))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqMultiShard))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAggSum))
+
+			cmd = cmds["flushall"]
+			Expect(cmd.Name).To(Equal("flushall"))
+			Expect(cmd.CommandPolicy.Request).To(Equal(routing.ReqAllShards))
+			Expect(cmd.CommandPolicy.Response).To(Equal(routing.RespAllSucceeded))
+		})
+
 		It("should return all command names", func() {
 			cmdList := client.CommandList(ctx, nil)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
@@ -735,6 +775,9 @@ var _ = Describe("Commands", func() {
 			n, err = client.MemoryUsage(ctx, "foo", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).NotTo(BeZero())
+
+			_, err = client.MemoryUsage(ctx, "foo", 0, 1).Result()
+			Expect(err).Should(MatchError("MemoryUsage expects single sample count"))
 		})
 	})
 
@@ -1469,6 +1512,82 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("\xf0"))
 		})
 
+		It("should BitOpDiff", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff := client.BitOpDiff(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
+		It("should BitOpDiff1", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpDiff1 := client.BitOpDiff1(ctx, "dest", "key1", "key2")
+			Expect(bitOpDiff1.Err()).NotTo(HaveOccurred())
+			Expect(bitOpDiff1.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x00"))
+		})
+
+		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ANDOR is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpAndOr := client.BitOpAndOr(ctx, "dest", "key1", "key2")
+			Expect(bitOpAndOr.Err()).NotTo(HaveOccurred())
+			Expect(bitOpAndOr.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\x0f"))
+		})
+
+		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.2, "BITOP ONE is available since Redis 8.2")
+			set := client.Set(ctx, "key1", "\xff", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			set = client.Set(ctx, "key2", "\x0f", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			bitOpOne := client.BitOpOne(ctx, "dest", "key1", "key2")
+			Expect(bitOpOne.Err()).NotTo(HaveOccurred())
+			Expect(bitOpOne.Val()).To(Equal(int64(1)))
+
+			get := client.Get(ctx, "dest")
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal("\xf0"))
+		})
+
 		It("should BitOpNot", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key1", "\x00", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
@@ -1522,6 +1641,9 @@ var _ = Describe("Commands", func() {
 			pos, err = client.BitPos(ctx, "mykey", 0, 0, 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pos).To(Equal(int64(-1)))
+
+			_, err = client.BitPos(ctx, "mykey", 0, 0, 0, 0, 0).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should BitPosSpan", func() {
@@ -1559,6 +1681,9 @@ var _ = Describe("Commands", func() {
 			nn, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4", 13).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(nn).To(Equal([]int64{0, 15, 15, 14}))
+
+			_, err = client.BitFieldRO(ctx, "mykey", "u8", 0, "u4", 8, "u4", 12, "u4").Result()
+			Expect(err).Should(MatchError("BitFieldRO: invalid number of arguments, must be even"))
 		})
 
 		It("should Decr", func() {
@@ -1684,6 +1809,200 @@ var _ = Describe("Commands", func() {
 			Expect(getDel.Err()).NotTo(HaveOccurred())
 			Expect(getDel.Val()).To(Equal("value"))
 
+			get := client.Get(ctx, "key")
+			Expect(get.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should DelExArgs when value matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "lock", "token-123", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete only if value matches
+			deleted := client.DelExArgs(ctx, "lock", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "token-123",
+			})
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(1)))
+
+			// Verify key was deleted
+			get := client.Get(ctx, "lock")
+			Expect(get.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should DelExArgs fail when value does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "lock", "token-123", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to delete with wrong value
+			deleted := client.DelExArgs(ctx, "lock", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "wrong-token",
+			})
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(0)))
+
+			// Verify key was NOT deleted
+			val, err := client.Get(ctx, "lock").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("token-123"))
+		})
+
+		It("should DelExArgs on non-existent key", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Try to delete non-existent key
+			deleted := client.DelExArgs(ctx, "nonexistent", redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "any-value",
+			})
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(0)))
+		})
+
+		It("should DelExArgs with IFEQ", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "temp-key", "temp-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete with IFEQ
+			args := redis.DelExArgs{
+				Mode:       "IFEQ",
+				MatchValue: "temp-value",
+			}
+			deleted := client.DelExArgs(ctx, "temp-key", args)
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(1)))
+
+			// Verify key was deleted
+			get := client.Get(ctx, "temp-key")
+			Expect(get.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should DelExArgs with IFNE", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "temporary", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete only if value is NOT "permanent"
+			args := redis.DelExArgs{
+				Mode:       "IFNE",
+				MatchValue: "permanent",
+			}
+			deleted := client.DelExArgs(ctx, "key", args)
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(1)))
+
+			// Verify key was deleted
+			get := client.Get(ctx, "key")
+			Expect(get.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should DelExArgs with IFNE fail when value matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "permanent", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to delete but value matches (should fail)
+			args := redis.DelExArgs{
+				Mode:       "IFNE",
+				MatchValue: "permanent",
+			}
+			deleted := client.DelExArgs(ctx, "key", args)
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(0)))
+
+			// Verify key was NOT deleted
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("permanent"))
+		})
+
+		It("should Digest", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set a value
+			err := client.Set(ctx, "my-key", "my-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest (returns uint64)
+			digest := client.Digest(ctx, "my-key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+			Expect(digest.Val()).NotTo(BeZero())
+
+			// Digest should be consistent
+			digest2 := client.Digest(ctx, "my-key")
+			Expect(digest2.Err()).NotTo(HaveOccurred())
+			Expect(digest2.Val()).To(Equal(digest.Val()))
+		})
+
+		It("should Digest on non-existent key", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Get digest of non-existent key
+			digest := client.Digest(ctx, "nonexistent")
+			Expect(digest.Err()).To(Equal(redis.Nil))
+		})
+
+		It("should use Digest with SetArgs IFDEQ", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Update using digest
+			args := redis.SetArgs{
+				Mode:        "IFDEQ",
+				MatchDigest: digest.Val(),
+			}
+			result := client.SetArgs(ctx, "key", "value2", args)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should use Digest with DelExArgs IFDEQ", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Delete using digest
+			args := redis.DelExArgs{
+				Mode:        "IFDEQ",
+				MatchDigest: digest.Val(),
+			}
+			deleted := client.DelExArgs(ctx, "key", args)
+			Expect(deleted.Err()).NotTo(HaveOccurred())
+			Expect(deleted.Val()).To(Equal(int64(1)))
+
+			// Verify key was deleted
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).To(Equal(redis.Nil))
 		})
@@ -1825,6 +2144,137 @@ var _ = Describe("Commands", func() {
 			})
 			Expect(mSetNX.Err()).NotTo(HaveOccurred())
 			Expect(mSetNX.Val()).To(Equal(true))
+		})
+
+		It("should MSetEX", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "hello1", "key2", "hello2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			// Verify keys were set
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("hello1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("hello2"))
+
+			// Verify TTL was set
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+			Expect(ttl1.Val()).To(BeNumerically("<=", 1*time.Second))
+
+			ttl2 := client.TTL(ctx, "key2")
+			Expect(ttl2.Err()).NotTo(HaveOccurred())
+			Expect(ttl2.Val()).To(BeNumerically(">", 0))
+			Expect(ttl2.Val()).To(BeNumerically("<=", 1*time.Second))
+		})
+
+		It("should MSetEX with NX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			client.Set(ctx, "key1", "existing", 0)
+
+			// Try to set with NX mode - should fail because key1 exists
+			args := redis.MSetEXArgs{
+				Condition: redis.NX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("existing"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).To(Equal(redis.Nil))
+
+			client.Del(ctx, "key1")
+
+			// Now try with NX mode when keys don't exist - should succeed
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 = client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 = client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+		})
+
+		It("should MSetEX with XX mode", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+
+			args := redis.MSetEXArgs{
+				Condition: redis.XX,
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(0)))
+
+			client.Set(ctx, "key1", "existing1", 0)
+			client.Set(ctx, "key2", "existing2", 0)
+
+			mSetEX = client.MSetEX(ctx, args, "key1", "new1", "key2", "new2")
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("new1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("new2"))
+
+			ttl1 := client.TTL(ctx, "key1")
+			Expect(ttl1.Err()).NotTo(HaveOccurred())
+			Expect(ttl1.Val()).To(BeNumerically(">", 0))
+		})
+
+		It("should MSetEX with map", func() {
+			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			args := redis.MSetEXArgs{
+				Expiration: &redis.ExpirationOption{
+					Mode:  redis.EX,
+					Value: 1,
+				},
+			}
+			mSetEX := client.MSetEX(ctx, args, map[string]interface{}{
+				"key1": "value1",
+				"key2": "value2",
+			})
+			Expect(mSetEX.Err()).NotTo(HaveOccurred())
+			Expect(mSetEX.Val()).To(Equal(int64(1)))
+
+			val1 := client.Get(ctx, "key1")
+			Expect(val1.Err()).NotTo(HaveOccurred())
+			Expect(val1.Val()).To(Equal("value1"))
+
+			val2 := client.Get(ctx, "key2")
+			Expect(val2.Err()).NotTo(HaveOccurred())
+			Expect(val2.Val()).To(Equal("value2"))
 		})
 
 		It("should SetWithArgs with TTL", func() {
@@ -2235,6 +2685,320 @@ var _ = Describe("Commands", func() {
 			Expect(ttl).NotTo(Equal(-1))
 		})
 
+		It("should SetIFEQ when value matches", func() {
+			if RedisVersion < 8.4 {
+				Skip("CAS/CAD commands require Redis >= 8.4")
+			}
+
+			// Set initial value
+			err := client.Set(ctx, "key", "old-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update only if current value is "old-value"
+			result := client.SetIFEQ(ctx, "key", "new-value", "old-value", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("new-value"))
+		})
+
+		It("should SetIFEQ fail when value does not match", func() {
+			if RedisVersion < 8.4 {
+				Skip("CAS/CAD commands require Redis >= 8.4")
+			}
+
+			// Set initial value
+			err := client.Set(ctx, "key", "current-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to update with wrong match value
+			result := client.SetIFEQ(ctx, "key", "new-value", "wrong-value", 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("current-value"))
+		})
+
+		It("should SetIFEQ with expiration", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "token-123", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update with expiration
+			result := client.SetIFEQ(ctx, "key", "token-456", "token-123", 500*time.Millisecond)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("token-456"))
+
+			// Wait for expiration
+			Eventually(func() error {
+				return client.Get(ctx, "key").Err()
+			}, "1s", "100ms").Should(Equal(redis.Nil))
+		})
+
+		It("should SetIFNE when value does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "pending", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update only if current value is NOT "completed"
+			result := client.SetIFNE(ctx, "key", "processing", "completed", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("processing"))
+		})
+
+		It("should SetIFNE fail when value matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "completed", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Try to update but value matches (should fail)
+			result := client.SetIFNE(ctx, "key", "processing", "completed", 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("completed"))
+		})
+
+		It("should SetArgs with IFEQ", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "counter", "100", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update with IFEQ
+			args := redis.SetArgs{
+				Mode:       "IFEQ",
+				MatchValue: "100",
+				TTL:        1 * time.Hour,
+			}
+			result := client.SetArgs(ctx, "counter", "200", args)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "counter").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("200"))
+		})
+
+		It("should SetArgs with IFEQ and GET", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "old", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update with IFEQ and GET old value
+			args := redis.SetArgs{
+				Mode:       "IFEQ",
+				MatchValue: "old",
+				Get:        true,
+			}
+			result := client.SetArgs(ctx, "key", "new", args)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("old"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("new"))
+		})
+
+		It("should SetArgs with IFNE", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "status", "pending", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update with IFNE
+			args := redis.SetArgs{
+				Mode:       "IFNE",
+				MatchValue: "completed",
+				TTL:        30 * time.Minute,
+			}
+			result := client.SetArgs(ctx, "status", "processing", args)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "status").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("processing"))
+		})
+
+		It("should SetIFEQGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "old-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update and get previous value
+			result := client.SetIFEQGet(ctx, "key", "new-value", "old-value", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("old-value"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("new-value"))
+		})
+
+		It("should SetIFNEGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "pending", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Update and get previous value
+			result := client.SetIFNEGet(ctx, "key", "processing", "completed", 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("pending"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("processing"))
+		})
+
+		It("should SetIFDEQ when digest matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Update using digest
+			result := client.SetIFDEQ(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDEQ fail when digest does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest of a different value to use as wrong digest
+			err = client.Set(ctx, "temp-key", "different-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			wrongDigest := client.Digest(ctx, "temp-key")
+			Expect(wrongDigest.Err()).NotTo(HaveOccurred())
+
+			// Try to update with wrong digest
+			result := client.SetIFDEQ(ctx, "key", "value2", wrongDigest.Val(), 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value1"))
+		})
+
+		It("should SetIFDEQGet return previous value", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Update using digest and get previous value
+			result := client.SetIFDEQGet(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("value1"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDNE when digest does not match", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest of a different value
+			err = client.Set(ctx, "temp-key", "different-value", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+			differentDigest := client.Digest(ctx, "temp-key")
+			Expect(differentDigest.Err()).NotTo(HaveOccurred())
+
+			// Update with different digest (should succeed because digest doesn't match)
+			result := client.SetIFDNE(ctx, "key", "value2", differentDigest.Val(), 0)
+			Expect(result.Err()).NotTo(HaveOccurred())
+			Expect(result.Val()).To(Equal("OK"))
+
+			// Verify value was updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value2"))
+		})
+
+		It("should SetIFDNE fail when digest matches", func() {
+			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+
+			// Set initial value
+			err := client.Set(ctx, "key", "value1", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get digest
+			digest := client.Digest(ctx, "key")
+			Expect(digest.Err()).NotTo(HaveOccurred())
+
+			// Try to update but digest matches (should fail)
+			result := client.SetIFDNE(ctx, "key", "value2", digest.Val(), 0)
+			Expect(result.Err()).To(Equal(redis.Nil))
+
+			// Verify value was NOT updated
+			val, err := client.Get(ctx, "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value1"))
+		})
+
 		It("should SetRange", func() {
 			set := client.Set(ctx, "key", "Hello World", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
@@ -2335,6 +3099,77 @@ var _ = Describe("Commands", func() {
 			}
 
 			Expect(args).To(Equal(expectedArgs))
+		})
+
+		It("should IncrByFloat with edge cases", func() {
+			// Test with negative increment
+			set := client.Set(ctx, "key", "10.5", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat := client.IncrByFloat(ctx, "key", -2.3)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2, 0.0001))
+
+			// Test with zero increment (should return current value)
+			incrByFloat = client.IncrByFloat(ctx, "key", 0.0)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2, 0.0001))
+
+			// Test with very small increment (precision test)
+			incrByFloat = client.IncrByFloat(ctx, "key", 0.0001)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 8.2001, 0.00001))
+
+			// Test with non-existent key (should start from 0)
+			incrByFloat = client.IncrByFloat(ctx, "nonexistent", 5.5)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(5.5))
+
+			// Test with integer value stored as string
+			set = client.Set(ctx, "intkey", "42", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "intkey", 0.5)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(42.5))
+
+			// Test with scientific notation
+			set = client.Set(ctx, "scikey", "1.5e2", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "scikey", 5.0)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(155.0))
+
+			// Test with negative scientific notation
+			incrByFloat = client.IncrByFloat(ctx, "scikey", -1.5e1)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(Equal(140.0))
+
+			// Test error case: non-numeric value
+			set = client.Set(ctx, "stringkey", "notanumber", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "stringkey", 1.0)
+			Expect(incrByFloat.Err()).To(HaveOccurred())
+			Expect(incrByFloat.Err().Error()).To(ContainSubstring("value is not a valid float"))
+
+			// Test with very large numbers
+			set = client.Set(ctx, "largekey", "1.7976931348623157e+308", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			// This should work as it's within float64 range
+			incrByFloat = client.IncrByFloat(ctx, "largekey", -1.0e+308)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 7.976931348623157e+307, 1e+300))
+
+			// Test with very small numbers (near zero)
+			set = client.Set(ctx, "smallkey", "1e-10", 0)
+			Expect(set.Err()).NotTo(HaveOccurred())
+
+			incrByFloat = client.IncrByFloat(ctx, "smallkey", 1e-10)
+			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
+			Expect(incrByFloat.Val()).To(BeNumerically("~", 2e-10, 1e-15))
 		})
 	})
 
@@ -2872,7 +3707,8 @@ var _ = Describe("Commands", func() {
 
 			res, err = client.HPTTL(ctx, "myhash", "key1", "key2", "key200").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 1))
+			// overhead of the push notification check is about 1-2ms for 100 commands
+			Expect(res[0]).To(BeNumerically("~", 10*time.Second.Milliseconds(), 2))
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
@@ -5106,6 +5942,9 @@ var _ = Describe("Commands", func() {
 				Score:  1,
 				Member: "one",
 			}}))
+
+			_, err = client.ZPopMax(ctx, "zset", 10, 11).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should ZPopMin", func() {
@@ -5173,6 +6012,9 @@ var _ = Describe("Commands", func() {
 				Score:  3,
 				Member: "three",
 			}}))
+
+			_, err = client.ZPopMin(ctx, "zset", 10, 11).Result()
+			Expect(err).Should(MatchError("too many arguments"))
 		})
 
 		It("should ZRange", func() {
@@ -6093,6 +6935,34 @@ var _ = Describe("Commands", func() {
 			Expect(n).To(Equal(int64(3)))
 		})
 
+		It("should XTrimMaxLenMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenMode(ctx, "stream", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMaxLenApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMaxLenApproxMode(ctx, "stream", 0, 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDMode(ctx, "stream", "4-0", "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
+		It("should XTrimMinIDApproxMode", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			n, err := client.XTrimMinIDApproxMode(ctx, "stream", "4-0", 0, "KEEPREF").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(BeNumerically(">=", 0))
+		})
+
 		It("should XAdd", func() {
 			id, err := client.XAdd(ctx, &redis.XAddArgs{
 				Stream: "stream",
@@ -6144,6 +7014,37 @@ var _ = Describe("Commands", func() {
 			n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(Equal(int64(3)))
+		})
+
+		It("should XAckDel", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// First, create a consumer group
+			err := client.XGroupCreate(ctx, "stream", "testgroup", "0").Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Read messages to create pending entries
+			_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "testgroup",
+				Consumer: "testconsumer",
+				Streams:  []string{"stream", ">"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Test XAckDel with KEEPREF mode
+			n, err := client.XAckDel(ctx, "stream", "testgroup", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
+
+			// Clean up
+			client.XGroupDestroy(ctx, "stream", "testgroup")
+		})
+
+		It("should XDelEx", func() {
+			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			// Test XDelEx with KEEPREF mode
+			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(HaveLen(2))
 		})
 
 		It("should XLen", func() {
@@ -6526,6 +7427,242 @@ var _ = Describe("Commands", func() {
 				n, err := client.XAck(ctx, "stream", "group", "1-0", "2-0", "4-0").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
+			})
+
+			It("should XReadGroup with CLAIM argument", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer2",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+				Expect(res[0].Stream).To(Equal("stream"))
+
+				messages := res[0].Messages
+				Expect(len(messages)).To(BeNumerically(">=", 1))
+
+				for _, msg := range messages {
+					if msg.MillisElapsedFromDelivery > 0 {
+						Expect(msg.MillisElapsedFromDelivery).To(BeNumerically(">=", 50))
+						Expect(msg.DeliveredCount).To(BeNumerically(">=", 1))
+					}
+				}
+			})
+
+			It("should XReadGroup with CLAIM and COUNT", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer3",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+					Count:    2,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 && len(res[0].Messages) > 0 {
+					Expect(len(res[0].Messages)).To(BeNumerically("<=", 2))
+				}
+			})
+
+			It("should XReadGroup with CLAIM and NOACK", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer4",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+					NoAck:    true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 {
+					Expect(res[0].Stream).To(Equal("stream"))
+				}
+			})
+
+			It("should XReadGroup CLAIM empties PEL after acknowledgment", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer5",
+					Streams:  []string{"stream", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 && len(res[0].Messages) > 0 {
+					ids := make([]string, len(res[0].Messages))
+					for i, msg := range res[0].Messages {
+						ids[i] = msg.ID
+					}
+
+					n, err := client.XAck(ctx, "stream", "group", ids...).Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(n).To(BeNumerically(">=", 1))
+
+					pending, err := client.XPending(ctx, "stream", "group").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(pending.Count).To(BeNumerically("<", 3))
+				}
+			})
+
+			It("should XReadGroup backward compatibility without CLAIM", func() {
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group",
+					Consumer: "consumer_compat",
+					Streams:  []string{"stream", "0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(HaveLen(1))
+				Expect(res[0].Stream).To(Equal("stream"))
+
+				for _, msg := range res[0].Messages {
+					Expect(msg.MillisElapsedFromDelivery).To(Equal(int64(0)))
+					Expect(msg.DeliveredCount).To(Equal(int64(0)))
+				}
+			})
+
+			It("should XReadGroup CLAIM with multiple streams", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				id, err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "stream2",
+					ID:     "1-0",
+					Values: map[string]interface{}{"field1": "value1"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("1-0"))
+
+				id, err = client.XAdd(ctx, &redis.XAddArgs{
+					Stream: "stream2",
+					ID:     "2-0",
+					Values: map[string]interface{}{"field2": "value2"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(id).To(Equal("2-0"))
+
+				err = client.XGroupCreate(ctx, "stream2", "group2", "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group2",
+					Consumer: "consumer1",
+					Streams:  []string{"stream2", ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				time.Sleep(100 * time.Millisecond)
+
+				res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    "group2",
+					Consumer: "consumer2",
+					Streams:  []string{"stream2", ">"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				if len(res) > 0 {
+					Expect(res[0].Stream).To(Equal("stream2"))
+					if len(res[0].Messages) > 0 {
+						for _, msg := range res[0].Messages {
+							if msg.MillisElapsedFromDelivery > 0 {
+								Expect(msg.DeliveredCount).To(BeNumerically(">=", 1))
+							}
+						}
+					}
+				}
+			})
+
+			It("should XReadGroup CLAIM work consistently on RESP2 and RESP3", func() {
+				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+
+				streamName := "stream-resp-test"
+				err := client.XAdd(ctx, &redis.XAddArgs{
+					Stream: streamName,
+					Values: map[string]interface{}{"field1": "value1"},
+				}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				err = client.XAdd(ctx, &redis.XAddArgs{
+					Stream: streamName,
+					Values: map[string]interface{}{"field2": "value2"},
+				}).Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				groupName := "resp-test-group"
+				err = client.XGroupCreate(ctx, streamName, groupName, "0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer1",
+					Streams:  []string{streamName, ">"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				time.Sleep(100 * time.Millisecond)
+
+				// Test with RESP2 (protocol 2)
+				resp2Client := redis.NewClient(&redis.Options{
+					Addr:     redisAddr,
+					Protocol: 2,
+				})
+				defer resp2Client.Close()
+
+				resp2Result, err := resp2Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer2",
+					Streams:  []string{streamName, "0"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp2Result).To(HaveLen(1))
+
+				// Test with RESP3 (protocol 3)
+				resp3Client := redis.NewClient(&redis.Options{
+					Addr:     redisAddr,
+					Protocol: 3,
+				})
+				defer resp3Client.Close()
+
+				resp3Result, err := resp3Client.XReadGroup(ctx, &redis.XReadGroupArgs{
+					Group:    groupName,
+					Consumer: "consumer3",
+					Streams:  []string{streamName, "0"},
+					Claim:    50 * time.Millisecond,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp3Result).To(HaveLen(1))
+
+				Expect(len(resp2Result[0].Messages)).To(Equal(len(resp3Result[0].Messages)))
+
+				for i := range resp2Result[0].Messages {
+					msg2 := resp2Result[0].Messages[i]
+					msg3 := resp3Result[0].Messages[i]
+
+					Expect(msg2.ID).To(Equal(msg3.ID))
+
+					if msg2.MillisElapsedFromDelivery > 0 {
+						Expect(msg3.MillisElapsedFromDelivery).To(BeNumerically(">", 0))
+						Expect(msg2.DeliveredCount).To(Equal(msg3.DeliveredCount))
+					}
+				}
 			})
 		})
 
@@ -7682,7 +8819,7 @@ var _ = Describe("Commands", func() {
 		})
 	})
 
-	Describe("SlowLogGet", func() {
+	Describe("SlowLog", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
@@ -7698,6 +8835,114 @@ var _ = Describe("Commands", func() {
 			result, err := client.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Reset slowlog
+			err := client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			const key = "slowlog-log-slower-than"
+
+			old := client.ConfigGet(ctx, key).Val()
+			// first slowlog entry is the config set command itself
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// Set a key to trigger a slow query, and this is the second slowlog entry
+			client.Set(ctx, "test", "true", 0)
+			result, err := client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(2)))
+
+			// Reset slowlog
+			err = client.SlowLogReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Check if slowlog is empty, this is the first slowlog entry after reset
+			result, err = client.SlowLogLen(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).Should(Equal(int64(1)))
+		})
+	})
+
+	Describe("Latency", Label("NonRedisEnterprise"), func() {
+		It("returns latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).NotTo(BeZero())
+		})
+
+		It("reset all latencies", func() {
+			const key = "latency-monitor-threshold"
+
+			result, err := client.Latency(ctx).Result()
+			// reset all latencies
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// get latency after reset
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			// create a new latency
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after create a new latency
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset all latencies again
+			err = client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// get latency after reset again
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+		})
+
+		It("reset latencies by add event name args", func() {
+			const key = "latency-monitor-threshold"
+
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "1")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			result, err := client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
+
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(1))
+
+			// reset latency by event name
+			err = client.LatencyReset(ctx, result[0].Name).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err = client.Latency(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(len(result)).Should(Equal(0))
 		})
 	})
 })

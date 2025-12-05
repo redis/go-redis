@@ -199,11 +199,11 @@ func ExampleClient_geoindex() {
 	// OK
 	// OK
 	// OK
-	// {1 [{product:46885 <nil> <nil> <nil> map[$:{"city":"Denver","description":"Navy Blue Slippers","location":"-104.991531, 39.742043","price":45.99}]}]}
+	// {1 [{product:46885 <nil> <nil> <nil> map[$:{"city":"Denver","description":"Navy Blue Slippers","location":"-104.991531, 39.742043","price":45.99}] <nil>}]}
 	// OK
 	// OK
 	// OK
 	// OK
 	// OK
-	// {1 [{shape:4 <nil> <nil> <nil> map[$:[{"geom":"POINT (2 2)","name":"Purple Point"}]]}]}
+	// {1 [{shape:4 <nil> <nil> <nil> map[$:[{"geom":"POINT (2 2)","name":"Purple Point"}]] <nil>}]}
 }

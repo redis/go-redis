@@ -16,9 +16,11 @@ jobs:
 
     services:
       redis-stack:
-        image: redis/redis-stack-server:latest
-        options: >-
-          --health-cmd "redis-cli ping" --health-interval 10s --health-timeout 5s --health-retries 5
+        image: redislabs/client-libs-test:8.4.0
+        env:
+          TLS_ENABLED: no
+          REDIS_CLUSTER: no
+          PORT: 6379
         ports:
           - 6379:6379
 
@@ -29,13 +31,13 @@ jobs:
 
     steps:
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Test doc examples
         working-directory: ./doctests
-        run: go test -v
+        run: make test

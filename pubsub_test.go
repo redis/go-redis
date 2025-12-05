@@ -113,6 +113,9 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.SSubscribe(ctx, "mychannel", "mychannel2")
 		defer pubsub.Close()
 
+		// Let Redis process the ssubscribe command.
+		time.Sleep(10 * time.Millisecond)
+
 		channels, err = client.PubSubShardChannels(ctx, "mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(channels).To(ConsistOf([]string{"mychannel", "mychannel2"}))
