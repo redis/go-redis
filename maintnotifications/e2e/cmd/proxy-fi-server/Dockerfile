@@ -39,5 +39,5 @@ EXPOSE 5000
 
 # Run the server
 ENTRYPOINT ["/app/proxy-fi-server"]
-CMD ["--listen", "0.0.0.0:5000", "--proxy-api-port", "3000"]
+CMD ["--listen", "0.0.0.0:5000", "--proxy-api-url", "http://cae-resp-proxy:3000"]
 

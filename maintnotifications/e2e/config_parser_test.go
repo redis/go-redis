@@ -561,7 +561,7 @@ func CreateTestFaultInjector() (*FaultInjectorClient, error) {
 //
 // Decision logic based on environment:
 // 1. If REDIS_ENDPOINTS_CONFIG_PATH is set -> use real fault injector from FAULT_INJECTION_API_URL
-// 2. If REDIS_ENDPOINTS_CONFIG_PATH is NOT set -> use Docker fault injector at http://localhost:5000
+// 2. If REDIS_ENDPOINTS_CONFIG_PATH is NOT set -> use Docker fault injector at http://localhost:15000
 //
 // Both the Docker proxy and fault injector should already be running (started via Docker Compose)
 // This function does NOT start any services - it only connects to existing ones
@@ -578,9 +578,9 @@ func CreateTestFaultInjectorWithCleanup() (*FaultInjectorClient, func(), error) 
 	// If environment config fails, use Docker fault injector
 	// Note: GetEnvConfig() only fails if REDIS_ENDPOINTS_CONFIG_PATH is not set
 	if err != nil {
-		// Use Docker fault injector at http://localhost:5000
+		// Use Docker fault injector at http://localhost:15000 (updated to avoid macOS Control Center conflict)
 		// The fault injector should already be running via docker-compose
-		faultInjectorURL := "http://localhost:5000"
+		faultInjectorURL := "http://localhost:15000"
 
 		// Check if fault injector is accessible
 		client := &http.Client{Timeout: 2 * time.Second}
@@ -1012,7 +1012,7 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 // SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, test mode config, and cleanup function
 // This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
 //
-// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (127.0.0.1:17000) instead of creating a new database.
 // This allows tests to work with either the real fault injector OR the Docker proxy setup.
 //
 // Usage:
@@ -1024,12 +1024,12 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	envConfig, err := GetEnvConfig()
 	if err != nil {
 		// No environment config - use Docker proxy setup
-		t.Logf("No environment config found, using Docker proxy setup at localhost:7000")
+		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
 
 		// Create a simple Redis connection config for Docker proxy
 		redisConfig := &RedisConnectionConfig{
-			Host:     "localhost",
-			Port:     7000,
+			Host:     "127.0.0.1", // Use 127.0.0.1 to force IPv4
+			Port:     17000,
 			Username: "",
 			Password: "",
 			TLS:      false,
@@ -1126,7 +1126,7 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 
 // SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, test mode config, and cleanup function
 //
-// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (127.0.0.1:17000) instead of creating a new database.
 // This allows tests to work with either the real fault injector OR the Docker proxy setup.
 //
 // Usage:
@@ -1138,12 +1138,12 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	envConfig, err := GetEnvConfig()
 	if err != nil {
 		// No environment config - use Docker proxy setup
-		t.Logf("No environment config found, using Docker proxy setup at localhost:7000")
+		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
 
 		// Create a simple Redis connection config for Docker proxy
 		redisConfig := &RedisConnectionConfig{
-			Host:     "localhost",
-			Port:     7000,
+			Host:     "127.0.0.1", // Use 127.0.0.1 to force IPv4
+			Port:     17000,
 			Username: "",
 			Password: "",
 			TLS:      false,

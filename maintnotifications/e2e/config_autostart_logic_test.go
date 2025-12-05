@@ -153,7 +153,7 @@ func TestFaultInjectorClientCreation(t *testing.T) {
 		name string
 		url  string
 	}{
-		{"localhost", "http://localhost:5000"},
+		{"localhost", "http://localhost:15000"}, // Updated to avoid macOS Control Center conflict
 		{"with port", "http://test:9999"},
 		{"with trailing slash", "http://test:9999/"},
 	}

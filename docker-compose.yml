@@ -46,15 +46,16 @@ services:
     environment:
       - TARGET_HOST=redis
       - TARGET_PORT=6379
-      - LISTEN_PORT=7000,7001,7002  # Multiple proxy nodes for cluster simulation
+      - LISTEN_PORT=17000,17001,17002,17003  # 4 proxy nodes: initially show 3, swap in 4th during SMIGRATED
       - LISTEN_HOST=0.0.0.0
       - API_PORT=3000
       - DEFAULT_INTERCEPTORS=cluster,hitless
     ports:
-      - "7000:7000"  # Proxy node 1 (host:container)
-      - "7001:7001"  # Proxy node 2 (host:container)
-      - "7002:7002"  # Proxy node 3 (host:container)
-      - "8100:3000"  # HTTP API port (host:container)
+      - "17000:17000"  # Proxy node 1 (host:container)
+      - "17001:17001"  # Proxy node 2 (host:container)
+      - "17002:17002"  # Proxy node 3 (host:container)
+      - "17003:17003"  # Proxy node 4 (host:container) - hidden initially, swapped in during SMIGRATED
+      - "18100:3000"  # HTTP API port (host:container)
     depends_on:
       - redis
     profiles:
@@ -62,19 +63,16 @@ services:
       - all
 
   proxy-fault-injector:
-    image: golang:1.23-alpine
+    build:
+      context: .
+      dockerfile: maintnotifications/e2e/cmd/proxy-fi-server/Dockerfile
     container_name: proxy-fault-injector
-    working_dir: /app
-    environment:
-      - CGO_ENABLED=0
-    command: >
-      sh -c "go run ./maintnotifications/e2e/cmd/proxy-fi-server/main.go --listen 0.0.0.0:5000 --proxy-api-url http://cae-resp-proxy:3000"
     ports:
-      - "5000:5000"  # Fault injector API port
+      - "15000:5000"  # Fault injector API port (host:container)
     depends_on:
       - cae-resp-proxy
-    volumes:
-      - ".:/app"
+    environment:
+      - PROXY_API_URL=http://cae-resp-proxy:3000
     profiles:
       - e2e
       - all

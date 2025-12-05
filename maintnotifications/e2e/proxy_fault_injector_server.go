@@ -109,7 +109,7 @@ func (s *ProxyFaultInjectorServer) Start() error {
 	// Get cluster configuration from environment
 	clusterAddrs := os.Getenv("CLUSTER_ADDRS")
 	if clusterAddrs == "" {
-		clusterAddrs = "localhost:7000,localhost:7001,localhost:7002"
+		clusterAddrs = "127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002" // Use 127.0.0.1 to force IPv4
 	}
 
 	targetHost := os.Getenv("REDIS_TARGET_HOST")

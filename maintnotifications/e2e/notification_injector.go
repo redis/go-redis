@@ -57,7 +57,7 @@ func NewNotificationInjector() (NotificationInjector, error) {
 	}
 
 	// Use proxy-based mock
-	apiPort := 8100
+	apiPort := 18100 // Default port (updated to avoid macOS Control Center conflict)
 	if portStr := os.Getenv("PROXY_API_PORT"); portStr != "" {
 		_, _ = fmt.Sscanf(portStr, "%d", &apiPort)
 	}
@@ -67,11 +67,12 @@ func NewNotificationInjector() (NotificationInjector, error) {
 
 // ProxyNotificationInjector implements NotificationInjector using cae-resp-proxy
 type ProxyNotificationInjector struct {
-	apiPort    int
-	apiBaseURL string
-	cmd        *exec.Cmd
-	httpClient *http.Client
-	nodes      []proxyNode
+	apiPort       int
+	apiBaseURL    string
+	cmd           *exec.Cmd
+	httpClient    *http.Client
+	nodes         []proxyNode
+	visibleNodes  []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
 }
 
 type proxyNode struct {
@@ -98,12 +99,15 @@ func (p *ProxyNotificationInjector) Start() error {
 	// Get cluster configuration from environment
 	clusterAddrs := os.Getenv("CLUSTER_ADDRS")
 	if clusterAddrs == "" {
-		clusterAddrs = "localhost:7000,localhost:7001,localhost:7002"
+		// Start with 4 nodes: 17000, 17001, 17002, 17003
+		// Initially, CLUSTER SLOTS will only expose 17000, 17001, 17002
+		// Node 17003 will be "hidden" until SMIGRATED swaps it in for 17002
+		clusterAddrs = "127.0.0.1:17000,127.0.0.1:17001,127.0.0.1:17002,127.0.0.1:17003" // Use 127.0.0.1 to force IPv4
 	}
 
 	targetHost := os.Getenv("REDIS_TARGET_HOST")
 	if targetHost == "" {
-		targetHost = "localhost"
+		targetHost = "127.0.0.1" // Use 127.0.0.1 to force IPv4
 	}
 
 	targetPort := 6379
@@ -153,24 +157,48 @@ func (p *ProxyNotificationInjector) Start() error {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
-				// Add initial node
-				p.nodes = append(p.nodes, proxyNode{
-					listenPort: initialPort,
-					targetHost: targetHost,
-					targetPort: targetPort,
-					proxyAddr:  fmt.Sprintf("localhost:%d", initialPort),
-					nodeID:     fmt.Sprintf("localhost:%d:%d", initialPort, targetPort),
-				})
+				// Add all nodes from the cluster addresses
+				// For Docker proxy, all nodes are already running
+				// For local proxy, we'll add them via API
+				for i, addr := range addrs {
+					var port int
+					_, _ = fmt.Sscanf(strings.Split(addr, ":")[1], "%d", &port)
 
-				// Add remaining nodes (only if we started the proxy ourselves)
-				// If using Docker proxy, it's already configured
-				if !proxyAlreadyRunning {
-					for i := 1; i < len(addrs); i++ {
-						var port int
-						_, _ = fmt.Sscanf(strings.Split(addrs[i], ":")[1], "%d", &port)
+					if i == 0 {
+						// Add initial node directly
+						p.nodes = append(p.nodes, proxyNode{
+							listenPort: port,
+							targetHost: targetHost,
+							targetPort: targetPort,
+							proxyAddr:  fmt.Sprintf("127.0.0.1:%d", port),
+							nodeID:     fmt.Sprintf("127.0.0.1:%d:%d", port, targetPort),
+						})
+					} else if !proxyAlreadyRunning {
+						// Add remaining nodes via API (only if we started the proxy ourselves)
 						if err := p.addNode(port, targetPort, targetHost); err != nil {
 							return fmt.Errorf("failed to add node %d: %w", i, err)
 						}
+					} else {
+						// Docker proxy: nodes are already running, just add to our list
+						p.nodes = append(p.nodes, proxyNode{
+							listenPort: port,
+							targetHost: targetHost,
+							targetPort: targetPort,
+							proxyAddr:  fmt.Sprintf("127.0.0.1:%d", port),
+							nodeID:     fmt.Sprintf("127.0.0.1:%d:%d", port, targetPort),
+						})
+					}
+				}
+
+				// Initially, make only the first 3 nodes visible in CLUSTER SLOTS
+				// The 4th node (index 3) will be hidden until SMIGRATED swaps it in
+				if len(p.nodes) >= 4 {
+					p.visibleNodes = []int{0, 1, 2} // Nodes 17000, 17001, 17002
+				} else {
+					// If we have fewer than 4 nodes, make all visible
+					p.visibleNodes = make([]int, len(p.nodes))
+					for i := range p.visibleNodes {
+						p.visibleNodes[i] = i
 					}
 				}
 
@@ -227,31 +255,124 @@ func (p *ProxyNotificationInjector) addNode(listenPort, targetPort int, targetHo
 	return nil
 }
 
-func (p *ProxyNotificationInjector) setupClusterInterceptors() error {
-	// Create CLUSTER SLOTS response for a single-node cluster
+func (p *ProxyNotificationInjector) buildClusterSlotsResponse() string {
+	// Build CLUSTER SLOTS response dynamically based on VISIBLE nodes only
 	// Format: Array of slot ranges, each containing:
 	//   - start slot (integer)
 	//   - end slot (integer)
 	//   - master node array: [host, port]
 	//   - replica arrays (optional)
 
-	// Build the CLUSTER SLOTS response
-	clusterSlotsResponse := "*1\r\n" + // 1 slot range
-		"*3\r\n" + // 3 elements: start, end, master
-		":0\r\n" + // start slot
-		":16383\r\n" + // end slot
-		"*2\r\n" + // master info: 2 elements (host, port)
-		"$9\r\nlocalhost\r\n" + // host
-		":7000\r\n" // port
+	// For simplicity, divide slots equally among visible nodes
+	totalSlots := 16384
+	visibleCount := len(p.visibleNodes)
+	if visibleCount == 0 {
+		visibleCount = len(p.nodes)
+	}
+	slotsPerNode := totalSlots / visibleCount
+
+	response := fmt.Sprintf("*%d\r\n", visibleCount) // Number of slot ranges
+
+	for i, nodeIdx := range p.visibleNodes {
+		if nodeIdx >= len(p.nodes) {
+			continue
+		}
+		node := p.nodes[nodeIdx]
+
+		startSlot := i * slotsPerNode
+		endSlot := startSlot + slotsPerNode - 1
+		if i == visibleCount-1 {
+			endSlot = 16383 // Last node gets remaining slots
+		}
+
+		// Extract host and port from proxyAddr
+		host, portStr, _ := strings.Cut(node.proxyAddr, ":")
+
+		response += "*3\r\n" // 3 elements: start, end, master
+		response += fmt.Sprintf(":%d\r\n", startSlot)
+		response += fmt.Sprintf(":%d\r\n", endSlot)
+		response += "*2\r\n" // master info: 2 elements (host, port)
+		response += fmt.Sprintf("$%d\r\n%s\r\n", len(host), host)
+		response += fmt.Sprintf(":%s\r\n", portStr)
+	}
+
+	return response
+}
+
+func (p *ProxyNotificationInjector) addClusterSlotsInterceptor() error {
+	clusterSlotsResponse := p.buildClusterSlotsResponse()
+
+	interceptor := map[string]interface{}{
+		"name":     "cluster-slots",
+		"match":    "*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n",
+		"response": clusterSlotsResponse,
+		"encoding": "raw",
+	}
+
+	jsonData, err := json.Marshal(interceptor)
+	if err != nil {
+		return fmt.Errorf("failed to marshal interceptor: %w", err)
+	}
+
+	resp, err := p.httpClient.Post(
+		p.apiBaseURL+"/interceptors",
+		"application/json",
+		bytes.NewReader(jsonData),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to add interceptor: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to add interceptor, status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (p *ProxyNotificationInjector) updateClusterSlotsInterceptor() error {
+	// The proxy doesn't support updating existing interceptors
+	// As a workaround, we'll send the updated CLUSTER SLOTS response directly to all clients
+	// This simulates what would happen when the client calls CLUSTER SLOTS after SMIGRATED
+
+	clusterSlotsResponse := p.buildClusterSlotsResponse()
+
+	// Send the updated CLUSTER SLOTS response to all connected clients
+	// This uses the /send-to-all-clients endpoint
+	payload := map[string]interface{}{
+		"data": clusterSlotsResponse,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	resp, err := p.httpClient.Post(
+		p.apiBaseURL+"/send-to-all-clients",
+		"application/json",
+		bytes.NewReader(jsonData),
+	)
+	if err != nil {
+		// If this fails, it's not critical - the client will get the updated
+		// response when it calls CLUSTER SLOTS after receiving SMIGRATED
+		return nil
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+func (p *ProxyNotificationInjector) setupClusterInterceptors() error {
+	// Add CLUSTER SLOTS interceptor
+	if err := p.addClusterSlotsInterceptor(); err != nil {
+		return err
+	}
 
 	// Interceptors to add
 	interceptors := []map[string]interface{}{
-		{
-			"name":     "cluster-slots",
-			"match":    "*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n",
-			"response": clusterSlotsResponse,
-			"encoding": "raw",
-		},
 		{
 			"name":     "client-maint-notifications-on-with-endpoint",
 			"match":    "*5\r\n$6\r\nclient\r\n$19\r\nmaint_notifications\r\n$2\r\non\r\n$21\r\nmoving-endpoint-type\r\n$4\r\nnone\r\n",
@@ -332,6 +453,22 @@ func (p *ProxyNotificationInjector) InjectSMIGRATING(ctx context.Context, seqID 
 }
 
 func (p *ProxyNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID int64, hostPort string, slots ...string) error {
+	// Simulate topology change by swapping visible nodes
+	// If we have 4 nodes and currently showing [0,1,2], swap to [0,1,3]
+	// This simulates node 2 (17002) being replaced by node 3 (17003)
+	if len(p.nodes) >= 4 && len(p.visibleNodes) == 3 {
+		// Check if the hostPort matches node 3 (the "new" node)
+		if hostPort == p.nodes[3].proxyAddr {
+			// Swap node 2 for node 3 in visible nodes
+			p.visibleNodes = []int{0, 1, 3}
+
+			// Update CLUSTER SLOTS interceptor to reflect new topology
+			if err := p.updateClusterSlotsInterceptor(); err != nil {
+				return fmt.Errorf("failed to update CLUSTER SLOTS after migration: %w", err)
+			}
+		}
+	}
+
 	// Format endpoint as "host:port slot1,slot2,range1-range2"
 	endpoint := fmt.Sprintf("%s %s", hostPort, strings.Join(slots, ","))
 	notification := formatSMigratedNotification(seqID, endpoint)

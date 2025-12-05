@@ -12,7 +12,7 @@ import (
 
 func main() {
 	listenAddr := flag.String("listen", "0.0.0.0:5000", "Address to listen on for fault injector API")
-	proxyAPIURL := flag.String("proxy-api-url", "http://localhost:8100", "URL of the cae-resp-proxy API")
+	proxyAPIURL := flag.String("proxy-api-url", "http://localhost:18100", "URL of the cae-resp-proxy API (updated to avoid macOS Control Center conflict)")
 	flag.Parse()
 
 	fmt.Printf("Starting Proxy Fault Injector Server...\n")

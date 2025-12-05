@@ -26,7 +26,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	defer cleanup()
 
 	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"localhost:7000"}
+	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
 
 	t.Logf("✓ Using fault injector client")
 	t.Logf("✓ Cluster addresses: %v", clusterAddrs)
@@ -40,7 +40,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	t.Logf("✓ Available actions: %v", actions)
 
 	// Test 2: Create Redis cluster client
-	// The proxy is configured with multiple listen ports (7000, 7001, 7002)
+	// The proxy is configured with multiple listen ports (17000, 17001, 17002)
 	// and will return cluster topology pointing to these ports
 	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:    clusterAddrs,
@@ -159,7 +159,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	defer cleanup()
 
 	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"localhost:7000"}
+	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
 
 	ctx := context.Background()
 
@@ -237,7 +237,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	defer cleanup()
 
 	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"localhost:7000"}
+	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
 
 	// From here on, the test code is IDENTICAL regardless of which backend is used
 	ctx := context.Background()
@@ -306,7 +306,7 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 	defer cleanup()
 
 	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"localhost:7000"}
+	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
 
 	ctx := context.Background()
 
@@ -397,7 +397,7 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	}
 	defer cleanup()
 
-	clusterAddrs := []string{"localhost:7000"}
+	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
 
 	// Test 2: Create first Redis client
 	client1 := redis.NewClusterClient(&redis.ClusterOptions{
