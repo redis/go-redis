@@ -1,5 +1,46 @@
 # Release Notes
 
+# 9.18.0-beta.2 (2025-12-05)
+
+## 🚀 Highlights
+
+### Go Version Update
+
+This release updates the minimum required Go version to 1.21. This is part of a gradual migration strategy where the minimum supported Go version will be three versions behind the latest release. With each new Go version release, we will bump the minimum version by one, ensuring compatibility while staying current with the Go ecosystem.
+
+### Stability Improvements
+
+This release includes several important stability fixes:
+- Fixed a critical panic in the handoff worker manager that could occur when handling nil errors
+- Improved test reliability for Smart Client Handoff functionality
+- Fixed logging format issues that could cause runtime errors
+
+## ✨ New Features
+
+- OpenTelemetry metrics improvements for nil response handling ([#3638](https://github.com/redis/go-redis/pull/3638)) by [@fengve](https://github.com/fengve)
+
+## 🐛 Bug Fixes
+
+- Fixed panic on nil error in handoffWorkerManager closeConnFromRequest ([#3633](https://github.com/redis/go-redis/pull/3633)) by [@ccoVeille](https://github.com/ccoVeille)
+- Fixed bad sprintf syntax in logging ([#3632](https://github.com/redis/go-redis/pull/3632)) by [@ccoVeille](https://github.com/ccoVeille)
+
+## 🧰 Maintenance
+
+- Updated minimum Go version to 1.21 ([#3640](https://github.com/redis/go-redis/pull/3640)) by [@ndyakov](https://github.com/ndyakov)
+- Use Go 1.20 idiomatic string<->byte conversion ([#3435](https://github.com/redis/go-redis/pull/3435)) by [@justinhwang](https://github.com/justinhwang)
+- Reduce flakiness of Smart Client Handoff test ([#3641](https://github.com/redis/go-redis/pull/3641)) by [@kiryazovi-redis](https://github.com/kiryazovi-redis)
+- Revert PR #3634 (Observability metrics phase1) ([#3635](https://github.com/redis/go-redis/pull/3635)) by [@ofekshenawa](https://github.com/ofekshenawa)
+
+## 👥 Contributors
+
+We'd like to thank all the contributors who worked on this release!
+
+[@justinhwang](https://github.com/justinhwang), [@ndyakov](https://github.com/ndyakov), [@kiryazovi-redis](https://github.com/kiryazovi-redis), [@fengve](https://github.com/fengve), [@ccoVeille](https://github.com/ccoVeille), [@ofekshenawa](https://github.com/ofekshenawa)
+
+---
+
+**Full Changelog**: https://github.com/redis/go-redis/compare/v9.18.0-beta.1...v9.18.0-beta.2
+
 # 9.18.0-beta.1 (2025-12-01)
 
 ## 🚀 Highlights
