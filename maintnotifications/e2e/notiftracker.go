@@ -366,6 +366,8 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 }
 
 // setupNotificationHook adds a notification hook to a cluster client
+//
+//nolint:unused // Used in test files
 func setupNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
 	_ = client.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
 		manager := nodeClient.GetMaintNotificationsManager()
@@ -385,6 +387,8 @@ func setupNotificationHook(client *redis.ClusterClient, hook maintnotifications.
 }
 
 // setupNotificationHooks adds multiple notification hooks to a regular client
+//
+//nolint:unused // Used in test files
 func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifications.NotificationHook) {
 	// Try to get manager from the client
 	var manager *maintnotifications.Manager
