@@ -249,62 +249,6 @@ func (tnh *TrackingNotificationsHook) increaseRelaxedTimeoutCount(notificationTy
 	}
 }
 
-// setupNotificationHook sets up tracking for both regular and cluster clients with notification hooks
-func setupNotificationHook(client redis.UniversalClient, hook maintnotifications.NotificationHook) {
-	if clusterClient, ok := client.(*redis.ClusterClient); ok {
-		setupClusterClientNotificationHook(clusterClient, hook)
-	} else if regularClient, ok := client.(*redis.Client); ok {
-		setupRegularClientNotificationHook(regularClient, hook)
-	}
-}
-
-// setupNotificationHooks sets up tracking for both regular and cluster clients with notification hooks
-func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifications.NotificationHook) {
-	for _, hook := range hooks {
-		setupNotificationHook(client, hook)
-	}
-}
-
-// setupRegularClientNotificationHook sets up notification hook for regular clients
-func setupRegularClientNotificationHook(client *redis.Client, hook maintnotifications.NotificationHook) {
-	maintnotificationsManager := client.GetMaintNotificationsManager()
-	if maintnotificationsManager != nil {
-		maintnotificationsManager.AddNotificationHook(hook)
-	} else {
-		fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking\n")
-	}
-}
-
-// setupClusterClientNotificationHook sets up notification hook for cluster clients
-func setupClusterClientNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
-	ctx := context.Background()
-
-	// Register hook on existing nodes
-	err := client.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
-		if maintnotificationsManager != nil {
-			maintnotificationsManager.AddNotificationHook(hook)
-		} else {
-			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on node: %s\n", nodeClient.Options().Addr)
-		}
-		return nil
-	})
-
-	if err != nil {
-		fmt.Printf("[TNH] Warning: Failed to register timeout tracking hooks on existing cluster nodes: %v\n", err)
-	}
-
-	// Register hook on new nodes
-	client.OnNewNode(func(nodeClient *redis.Client) {
-		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
-		if maintnotificationsManager != nil {
-			maintnotificationsManager.AddNotificationHook(hook)
-		} else {
-			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on new node: %s\n", nodeClient.Options().Addr)
-		}
-	})
-}
-
 func (tnh *TrackingNotificationsHook) GetAnalysis() *DiagnosticsAnalysis {
 	return NewDiagnosticsAnalysis(tnh.GetDiagnosticsLog())
 }

@@ -119,7 +119,9 @@ func (s *ProxyFaultInjectorServer) Start() error {
 
 	targetPort := 6379
 	if portStr := os.Getenv("REDIS_TARGET_PORT"); portStr != "" {
-		fmt.Sscanf(portStr, "%d", &targetPort)
+		if _, err := fmt.Sscanf(portStr, "%d", &targetPort); err != nil {
+			return fmt.Errorf("invalid REDIS_TARGET_PORT: %w", err)
+		}
 	}
 
 	// Parse cluster addresses
@@ -130,7 +132,9 @@ func (s *ProxyFaultInjectorServer) Start() error {
 
 	// Extract first port for initial node
 	var initialPort int
-	fmt.Sscanf(strings.Split(addrs[0], ":")[1], "%d", &initialPort)
+	if _, err := fmt.Sscanf(strings.Split(addrs[0], ":")[1], "%d", &initialPort); err != nil {
+		return fmt.Errorf("invalid port in cluster address %s: %w", addrs[0], err)
+	}
 
 	// Check if proxy is already running (e.g., in Docker)
 	proxyAlreadyRunning := false
@@ -181,7 +185,9 @@ func (s *ProxyFaultInjectorServer) Start() error {
 				if !proxyAlreadyRunning {
 					for i := 1; i < len(addrs); i++ {
 						var port int
-						fmt.Sscanf(strings.Split(addrs[i], ":")[1], "%d", &port)
+						if _, err := fmt.Sscanf(strings.Split(addrs[i], ":")[1], "%d", &port); err != nil {
+							return fmt.Errorf("invalid port in cluster address %s: %w", addrs[i], err)
+						}
 						if err := s.addProxyNode(port, targetPort, targetHost); err != nil {
 							return fmt.Errorf("failed to add node %d: %w", i, err)
 						}
