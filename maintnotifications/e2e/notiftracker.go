@@ -364,3 +364,65 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 	t.Logf("-------------")
 	t.Logf("Diagnostics Analysis completed successfully")
 }
+
+// setupNotificationHook adds a notification hook to a cluster client
+func setupNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
+	client.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+		manager := nodeClient.GetMaintNotificationsManager()
+		if manager != nil {
+			manager.AddNotificationHook(hook)
+		}
+		return nil
+	})
+
+	// Also add hook to new nodes
+	client.OnNewNode(func(nodeClient *redis.Client) {
+		manager := nodeClient.GetMaintNotificationsManager()
+		if manager != nil {
+			manager.AddNotificationHook(hook)
+		}
+	})
+}
+
+// setupNotificationHooks adds multiple notification hooks to a regular client
+func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifications.NotificationHook) {
+	// Try to get manager from the client
+	var manager *maintnotifications.Manager
+
+	// Check if it's a regular client
+	if regularClient, ok := client.(*redis.Client); ok {
+		manager = regularClient.GetMaintNotificationsManager()
+	}
+
+	// Check if it's a cluster client
+	if clusterClient, ok := client.(*redis.ClusterClient); ok {
+		// For cluster clients, add hooks to all shards
+		clusterClient.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+			nodeManager := nodeClient.GetMaintNotificationsManager()
+			if nodeManager != nil {
+				for _, hook := range hooks {
+					nodeManager.AddNotificationHook(hook)
+				}
+			}
+			return nil
+		})
+
+		// Also add hooks to new nodes
+		clusterClient.OnNewNode(func(nodeClient *redis.Client) {
+			nodeManager := nodeClient.GetMaintNotificationsManager()
+			if nodeManager != nil {
+				for _, hook := range hooks {
+					nodeManager.AddNotificationHook(hook)
+				}
+			}
+		})
+		return
+	}
+
+	// For regular clients, add hooks directly
+	if manager != nil {
+		for _, hook := range hooks {
+			manager.AddNotificationHook(hook)
+		}
+	}
+}

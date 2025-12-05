@@ -42,6 +42,9 @@ type NotificationInjector interface {
 
 	// IsReal returns true if this is a real fault injector (not a mock)
 	IsReal() bool
+
+	// GetTestModeConfig returns the test mode configuration for this injector
+	GetTestModeConfig() *TestModeConfig
 }
 
 // NewNotificationInjector creates a notification injector based on environment
@@ -310,6 +313,19 @@ func (p *ProxyNotificationInjector) IsReal() bool {
 	return false
 }
 
+func (p *ProxyNotificationInjector) GetTestModeConfig() *TestModeConfig {
+	return &TestModeConfig{
+		Mode:                     TestModeProxyMock,
+		NotificationDelay:        1 * time.Second,
+		ActionWaitTimeout:        10 * time.Second,
+		ActionPollInterval:       500 * time.Millisecond,
+		DatabaseReadyDelay:       1 * time.Second,
+		ConnectionEstablishDelay: 500 * time.Millisecond,
+		MaxClients:               1,
+		SkipMultiClientTests:     true,
+	}
+}
+
 func (p *ProxyNotificationInjector) InjectSMIGRATING(ctx context.Context, seqID int64, slots ...string) error {
 	notification := formatSMigratingNotification(seqID, slots...)
 	return p.injectNotification(notification)
@@ -447,6 +463,19 @@ func (f *FaultInjectorNotificationInjector) GetClusterAddrs() []string {
 
 func (f *FaultInjectorNotificationInjector) IsReal() bool {
 	return true
+}
+
+func (f *FaultInjectorNotificationInjector) GetTestModeConfig() *TestModeConfig {
+	return &TestModeConfig{
+		Mode:                     TestModeRealFaultInjector,
+		NotificationDelay:        30 * time.Second,
+		ActionWaitTimeout:        240 * time.Second,
+		ActionPollInterval:       2 * time.Second,
+		DatabaseReadyDelay:       10 * time.Second,
+		ConnectionEstablishDelay: 2 * time.Second,
+		MaxClients:               3,
+		SkipMultiClientTests:     false,
+	}
 }
 
 func (f *FaultInjectorNotificationInjector) InjectSMIGRATING(ctx context.Context, seqID int64, slots ...string) error {

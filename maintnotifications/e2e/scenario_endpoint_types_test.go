@@ -58,9 +58,14 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	for _, endpointTest := range endpointTypes {
 		t.Run(endpointTest.name, func(t *testing.T) {
 			// Setup: Create fresh database and client factory for THIS endpoint type test
-			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 			defer cleanup()
-			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d", endpointTest.name, bdbID)
+			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d (mode: %s)", endpointTest.name, bdbID, testMode.Mode)
+
+			// Skip this test if using proxy mock (requires real fault injector)
+			if testMode.IsProxyMock() {
+				t.Skip("Skipping endpoint type test - requires real fault injector")
+			}
 
 			// Create fault injector with cleanup
 			faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()

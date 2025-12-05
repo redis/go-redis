@@ -15,22 +15,24 @@ import (
 // This test works with EITHER the real fault injector OR the proxy-based mock
 func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Create notification injector (automatically chooses based on environment)
 	injector, err := NewNotificationInjector()
 	if err != nil {
 		t.Fatalf("Failed to create notification injector: %v", err)
 	}
-	
+
 	// Start the injector
 	if err := injector.Start(); err != nil {
 		t.Fatalf("Failed to start injector: %v", err)
 	}
 	defer injector.Stop()
-	
-	t.Logf("Using %s injector", map[bool]string{true: "REAL", false: "MOCK"}[injector.IsReal()])
+
+	// Get test mode configuration
+	testMode := injector.GetTestModeConfig()
+	t.Logf("Using %s mode", testMode.Mode)
 	t.Logf("Cluster addresses: %v", injector.GetClusterAddrs())
-	
+
 	// Create cluster client with maintnotifications enabled
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:    injector.GetClusterAddrs(),
@@ -42,16 +44,16 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 		},
 	})
 	defer client.Close()
-	
+
 	// Set up notification tracking
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(client, tracker)
-	
+
 	// Verify connection
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect to cluster: %v", err)
 	}
-	
+
 	// Perform some operations to establish connections
 	for i := 0; i < 10; i++ {
 		if err := client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0).Err(); err != nil {
@@ -68,17 +70,17 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 		blockingDone <- err
 	}()
 
-	// Wait for blocking command to start
-	time.Sleep(500 * time.Millisecond)
+	// Wait for blocking command to start (mode-aware)
+	time.Sleep(testMode.ConnectionEstablishDelay)
 
 	// Inject SMIGRATING notification while connection is active
 	t.Log("Injecting SMIGRATING notification...")
 	if err := injector.InjectSMIGRATING(ctx, 12345, "1000-2000", "3000"); err != nil {
 		t.Fatalf("Failed to inject SMIGRATING: %v", err)
 	}
-	
-	// Wait for notification processing
-	time.Sleep(1 * time.Second)
+
+	// Wait for notification processing (mode-aware)
+	time.Sleep(testMode.NotificationDelay)
 	
 	// Verify notification was received
 	analysis := tracker.GetAnalysis()
@@ -102,22 +104,29 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 // TestUnifiedInjector_SMIGRATED demonstrates SMIGRATED notification handling
 func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	ctx := context.Background()
-	
+
 	injector, err := NewNotificationInjector()
 	if err != nil {
 		t.Fatalf("Failed to create notification injector: %v", err)
 	}
-	
+
 	if err := injector.Start(); err != nil {
 		t.Fatalf("Failed to start injector: %v", err)
 	}
 	defer injector.Stop()
-	
-	t.Logf("Using %s injector", map[bool]string{true: "REAL", false: "MOCK"}[injector.IsReal()])
-	
+
+	// Get test mode configuration
+	testMode := injector.GetTestModeConfig()
+	t.Logf("Using %s mode", testMode.Mode)
+
+	// Skip this test if using real fault injector (can't directly inject SMIGRATED)
+	if testMode.IsRealFaultInjector() {
+		t.Skip("Skipping SMIGRATED test - real fault injector cannot directly inject SMIGRATED")
+	}
+
 	// Track cluster state reloads
 	var reloadCount atomic.Int32
-	
+
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:    injector.GetClusterAddrs(),
 		Protocol: 3,
@@ -177,8 +186,8 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 		blockingDone <- err
 	}()
 
-	// Wait for blocking command to start
-	time.Sleep(500 * time.Millisecond)
+	// Wait for blocking command to start (mode-aware)
+	time.Sleep(testMode.ConnectionEstablishDelay)
 
 	// Inject SMIGRATED notification
 	t.Log("Injecting SMIGRATED notification...")
@@ -188,16 +197,11 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	hostPort := addrs[0]
 
 	if err := injector.InjectSMIGRATED(ctx, 12346, hostPort, "1000-2000", "3000"); err != nil {
-		if injector.IsReal() {
-			t.Logf("Note: Real fault injector cannot directly inject SMIGRATED (expected): %v", err)
-			t.Skip("Skipping SMIGRATED test with real fault injector")
-		} else {
-			t.Fatalf("Failed to inject SMIGRATED: %v", err)
-		}
+		t.Fatalf("Failed to inject SMIGRATED: %v", err)
 	}
 
-	// Wait for notification processing
-	time.Sleep(1 * time.Second)
+	// Wait for notification processing (mode-aware)
+	time.Sleep(testMode.NotificationDelay)
 
 	// Wait for blocking operation to complete
 	<-blockingDone
@@ -228,30 +232,32 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 // TestUnifiedInjector_ComplexScenario demonstrates a complex migration scenario
 func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 	ctx := context.Background()
-	
+
 	injector, err := NewNotificationInjector()
 	if err != nil {
 		t.Fatalf("Failed to create notification injector: %v", err)
 	}
-	
+
 	if err := injector.Start(); err != nil {
 		t.Fatalf("Failed to start injector: %v", err)
 	}
 	defer injector.Stop()
-	
-	t.Logf("Using %s injector", map[bool]string{true: "REAL", false: "MOCK"}[injector.IsReal()])
-	
+
+	// Get test mode configuration
+	testMode := injector.GetTestModeConfig()
+	t.Logf("Using %s mode", testMode.Mode)
+
 	var reloadCount atomic.Int32
-	
+
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:    injector.GetClusterAddrs(),
 		Protocol: 3,
 	})
 	defer client.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(client, tracker)
-	
+
 	client.OnNewNode(func(nodeClient *redis.Client) {
 		manager := nodeClient.GetMaintNotificationsManager()
 		if manager != nil {
@@ -260,34 +266,36 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 			})
 		}
 	})
-	
+
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
-	
+
 	// Perform operations
 	for i := 0; i < 20; i++ {
 		client.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
 	}
-	
-	time.Sleep(500 * time.Millisecond)
-	
+
+	// Wait for connections to establish (mode-aware)
+	time.Sleep(testMode.ConnectionEstablishDelay)
+
 	// Simulate a multi-step migration scenario
 	t.Log("Step 1: Injecting SMIGRATING for slots 0-5000...")
 	if err := injector.InjectSMIGRATING(ctx, 10001, "0-5000"); err != nil {
 		t.Fatalf("Failed to inject SMIGRATING: %v", err)
 	}
-	
-	time.Sleep(500 * time.Millisecond)
-	
+
+	// Wait for notification processing (mode-aware)
+	time.Sleep(testMode.NotificationDelay)
+
 	// Verify operations work during migration
 	for i := 0; i < 5; i++ {
 		if err := client.Set(ctx, fmt.Sprintf("migration-key%d", i), "value", 0).Err(); err != nil {
 			t.Logf("Warning: Operation failed during migration: %v", err)
 		}
 	}
-	
-	if !injector.IsReal() {
+
+	if testMode.IsProxyMock() {
 		// Only inject SMIGRATED with mock injector
 		t.Log("Step 2: Injecting SMIGRATED for completed migration...")
 		addrs := injector.GetClusterAddrs()
@@ -296,8 +304,9 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 		if err := injector.InjectSMIGRATED(ctx, 10002, hostPort, "0-5000"); err != nil {
 			t.Fatalf("Failed to inject SMIGRATED: %v", err)
 		}
-		
-		time.Sleep(500 * time.Millisecond)
+
+		// Wait for notification processing (mode-aware)
+		time.Sleep(testMode.NotificationDelay)
 	}
 	
 	// Verify operations still work

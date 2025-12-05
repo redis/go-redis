@@ -1009,7 +1009,7 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 	return bdbID, cleanup
 }
 
-// SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, and cleanup function
+// SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, test mode config, and cleanup function
 // This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
 //
 // If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
@@ -1017,9 +1017,9 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 //
 // Usage:
 //
-//	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+//	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 //	defer cleanup()
-func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, cleanup func()) {
+func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, cleanup func()) {
 	// Get environment config
 	envConfig, err := GetEnvConfig()
 	if err != nil {
@@ -1038,12 +1038,15 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 
 		factory = NewClientFactory(redisConfig)
 
+		// Get proxy mock test mode config
+		testMode = GetTestModeConfig()
+
 		// No-op cleanup since we're not creating a database
 		cleanup = func() {
 			factory.DestroyAll()
 		}
 
-		return 0, factory, cleanup
+		return 0, factory, testMode, cleanup
 	}
 
 	// Get database config from environment
@@ -1108,6 +1111,9 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	// Create client factory with the actual config from fault injector
 	factory = NewClientFactory(redisConfig)
 
+	// Get real fault injector test mode config
+	testMode = GetTestModeConfig()
+
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
@@ -1115,19 +1121,19 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		fiCleanup()
 	}
 
-	return bdbID, factory, cleanup
+	return bdbID, factory, testMode, cleanup
 }
 
-// SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, and cleanup function
+// SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, test mode config, and cleanup function
 //
 // If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (localhost:7000) instead of creating a new database.
 // This allows tests to work with either the real fault injector OR the Docker proxy setup.
 //
 // Usage:
 //
-//	bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
+//	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
 //	defer cleanup()
-func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, cleanup func()) {
+func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, cleanup func()) {
 	// Get environment config to use as template for connection details
 	envConfig, err := GetEnvConfig()
 	if err != nil {
@@ -1146,12 +1152,15 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 
 		factory = NewClientFactory(redisConfig)
 
+		// Get proxy mock test mode config
+		testMode = GetTestModeConfig()
+
 		// No-op cleanup since we're not creating a database
 		cleanup = func() {
 			factory.DestroyAll()
 		}
 
-		return 0, factory, cleanup
+		return 0, factory, testMode, cleanup
 	}
 
 	// Get database config from environment
@@ -1210,6 +1219,9 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	// Create client factory with the actual config from fault injector
 	factory = NewClientFactory(redisConfig)
 
+	// Get real fault injector test mode config
+	testMode = GetTestModeConfig()
+
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
@@ -1217,5 +1229,5 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 		fiCleanup()
 	}
 
-	return bdbID, factory, cleanup
+	return bdbID, factory, testMode, cleanup
 }
