@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/example/redis-bloom
 
-go 1.18
+go 1.21
 
 replace github.com/redis/go-redis/v9 => ../..
 
