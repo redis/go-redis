@@ -1,12 +1,12 @@
 module github.com/redis/go-redis/extra/redisprometheus/v9
 
-go 1.19
+go 1.21
 
 replace github.com/redis/go-redis/v9 => ../..
 
 require (
 	github.com/prometheus/client_golang v1.14.0
-	github.com/redis/go-redis/v9 v9.11.0
+	github.com/redis/go-redis/v9 v9.18.0-beta.1
 )
 
 require (
@@ -18,11 +18,13 @@ require (
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.39.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sys v0.4.0 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 retract (
-	v9.7.2 // This version was accidentally released.
-	v9.5.3 // This version was accidentally released.
+	v9.7.2 // This version was accidentally released. Please use version 9.7.3 instead.
+	v9.5.3 // This version was accidentally released. Please use version 9.6.0 instead.
 )

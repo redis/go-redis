@@ -20,16 +20,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Clone Redis EE docker repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: RedisLabs/redis-ee-docker
           path: redis-ee
 
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
 

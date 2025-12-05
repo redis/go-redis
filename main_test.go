@@ -13,6 +13,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 const (
@@ -68,7 +69,7 @@ var RCEDocker = false
 // Notes version of redis we are executing tests against.
 // This can be used before we change the bsm fork of ginkgo for one,
 // which have support for label sets, so we can filter tests per redis version.
-var RedisVersion float64 = 7.2
+var RedisVersion float64 = 8.4
 
 func SkipBeforeRedisVersion(version float64, msg string) {
 	if RedisVersion < version {
@@ -95,13 +96,14 @@ var _ = BeforeSuite(func() {
 	RedisVersion, _ = strconv.ParseFloat(strings.Trim(os.Getenv("REDIS_VERSION"), "\""), 64)
 
 	if RedisVersion == 0 {
-		RedisVersion = 7.2
+		RedisVersion = 8.4
 	}
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
+	logging.Disable()
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
