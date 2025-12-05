@@ -367,7 +367,7 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 
 // setupNotificationHook adds a notification hook to a cluster client
 func setupNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
-	client.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+	_ = client.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
 		manager := nodeClient.GetMaintNotificationsManager()
 		if manager != nil {
 			manager.AddNotificationHook(hook)
@@ -397,7 +397,7 @@ func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifica
 	// Check if it's a cluster client
 	if clusterClient, ok := client.(*redis.ClusterClient); ok {
 		// For cluster clients, add hooks to all shards
-		clusterClient.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+		_ = clusterClient.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
 			nodeManager := nodeClient.GetMaintNotificationsManager()
 			if nodeManager != nil {
 				for _, hook := range hooks {
