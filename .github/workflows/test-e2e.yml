@@ -35,7 +35,7 @@ jobs:
       - name: Wait for services to be ready
         run: |
           echo "Waiting for Redis to be ready..."
-          timeout 30 bash -c 'until docker exec redis-stack redis-cli ping 2>/dev/null; do sleep 1; done'
+          timeout 30 bash -c 'until docker exec redis-standalone redis-cli ping 2>/dev/null; do sleep 1; done'
           echo "Waiting for cae-resp-proxy to be ready..."
           timeout 30 bash -c 'until curl -s http://localhost:18100/stats > /dev/null; do sleep 1; done'
           echo "All services are ready!"
@@ -55,7 +55,7 @@ jobs:
         if: failure()
         run: |
           echo "=== Redis logs ==="
-          docker logs redis-stack 2>&1 | tail -100
+          docker logs redis-standalone 2>&1 | tail -100
           echo "=== cae-resp-proxy logs ==="
           docker logs cae-resp-proxy 2>&1 | tail -100
           echo "=== proxy-fault-injector logs ==="
