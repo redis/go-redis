@@ -13,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/auth/streaming"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -559,6 +560,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				// enabled mode, fail the connection
 				c.optLock.Unlock()
 				cn.GetStateMachine().Transition(pool.StateClosed)
+
+				// Record handshake failure metric
+				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+					// Handshake failures are internal errors with no retry attempts
+					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
+				}
+
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
 				// Disabling logging here as it's too noisy.
@@ -662,17 +670,34 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	// Start measuring total operation duration (includes all retries)
+	operationStart := time.Now()
+	var lastConn *pool.Conn
+
 	var lastErr error
+	totalAttempts := 0
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		totalAttempts++
 		attempt := attempt
 
-		retry, err := c._process(ctx, cmd, attempt)
+		retry, cn, err := c._process(ctx, cmd, attempt)
+		if cn != nil {
+			lastConn = cn
+		}
 		if err == nil || !retry {
+			// Record total operation duration
+			operationDuration := time.Since(operationStart)
+			otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn)
 			return err
 		}
 
 		lastErr = err
 	}
+
+	// Record failed operation after all retries
+	operationDuration := time.Since(operationStart)
+	otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn)
+
 	return lastErr
 }
 
@@ -689,15 +714,17 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
 	}
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, err
+			return false, nil, err
 		}
 	}
 
+	var usedConn *pool.Conn
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		usedConn = cn
 		// Process any pending push notifications before executing the command
 		if err := c.processPushNotifications(ctx, cn); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
@@ -738,10 +765,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		return nil
 	}); err != nil {
 		retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
-		return retry, err
+		return retry, usedConn, err
 	}
 
-	return false, nil
+	return false, usedConn, nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {

@@ -32,6 +32,27 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
+	// Global callback for connection state changes (set by otel package)
+	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
+
+	// Global callback for connection creation time (set by otel package)
+	connectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+
+	// Global callback for connection relaxed timeout changes (set by otel package)
+	// Parameters: ctx, delta (+1/-1), cn, poolName, notificationType
+	connectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
+
+	// Global callback for connection handoff (set by otel package)
+	// Parameters: ctx, cn, poolName
+	connectionHandoffCallback func(ctx context.Context, cn *Conn, poolName string)
+
+	// Global callback for error tracking (set by otel package)
+	// Parameters: ctx, errorType, cn, statusCode, isInternal, retryAttempts
+	errorCallback func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
+
+	// Global callback for maintenance notifications (set by otel package)
+	// Parameters: ctx, cn, notificationType
+	maintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
 
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
@@ -50,6 +71,66 @@ var (
 	maxTime      = minTime.Add(1<<63 - 1)
 	noExpiration = maxTime
 )
+
+// SetConnectionStateChangeCallback sets the global callback for connection state changes.
+// This is called by the otel package to register metrics recording.
+func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
+	connectionStateChangeCallback = fn
+}
+
+// SetConnectionCreateTimeCallback sets the global callback for connection creation time.
+// This is called by the otel package to register metrics recording.
+func SetConnectionCreateTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
+	connectionCreateTimeCallback = fn
+}
+
+// SetConnectionRelaxedTimeoutCallback sets the global callback for connection relaxed timeout changes.
+// This is called by the otel package to register metrics recording.
+func SetConnectionRelaxedTimeoutCallback(fn func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)) {
+	connectionRelaxedTimeoutCallback = fn
+}
+
+// GetConnectionRelaxedTimeoutCallback returns the global callback for connection relaxed timeout changes.
+// This is used by maintnotifications to record relaxed timeout metrics.
+func GetConnectionRelaxedTimeoutCallback() func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string) {
+	return connectionRelaxedTimeoutCallback
+}
+
+// SetConnectionHandoffCallback sets the global callback for connection handoffs.
+// This is called by the otel package to register metrics recording.
+func SetConnectionHandoffCallback(fn func(ctx context.Context, cn *Conn, poolName string)) {
+	connectionHandoffCallback = fn
+}
+
+// GetConnectionHandoffCallback returns the global callback for connection handoffs.
+// This is used by maintnotifications to record handoff metrics.
+func GetConnectionHandoffCallback() func(ctx context.Context, cn *Conn, poolName string) {
+	return connectionHandoffCallback
+}
+
+// SetErrorCallback sets the global callback for error tracking.
+// This is called by the otel package to register metrics recording.
+func SetErrorCallback(fn func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)) {
+	errorCallback = fn
+}
+
+// GetErrorCallback returns the global callback for error tracking.
+// This is used by cluster and client code to record error metrics.
+func GetErrorCallback() func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int) {
+	return errorCallback
+}
+
+// SetMaintenanceNotificationCallback sets the global callback for maintenance notifications.
+// This is called by the otel package to register metrics recording.
+func SetMaintenanceNotificationCallback(fn func(ctx context.Context, cn *Conn, notificationType string)) {
+	maintenanceNotificationCallback = fn
+}
+
+// GetMaintenanceNotificationCallback returns the global callback for maintenance notifications.
+// This is used by maintnotifications to record notification metrics.
+func GetMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, notificationType string) {
+	return maintenanceNotificationCallback
+}
 
 // Stats contains pool state information and accumulated stats.
 type Stats struct {
@@ -359,10 +440,18 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		}
 	}
 
+	// Notify metrics: new connection created and idle
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, cn, "", "idle")
+	}
+
 	return cn, nil
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
+	// Start measuring connection creation time
+	startTime := time.Now()
+
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -411,6 +500,12 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
 		} else {
 			cn.expiresAt = noExpiration
+		}
+
+		// Record connection creation time
+		if connectionCreateTimeCallback != nil {
+			duration := time.Since(startTime)
+			connectionCreateTimeCallback(ctx, duration, cn)
 		}
 
 		return cn, nil
@@ -524,6 +619,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
+
+		// Notify metrics: connection moved from idle to used
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "idle", "used")
+		}
+
 		return cn, nil
 	}
 
@@ -546,6 +647,12 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 			return nil, err
 		}
 	}
+
+	// Notify metrics: new connection is created and used
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, newcn, "", "used")
+	}
+
 	return newcn, nil
 }
 
@@ -840,9 +947,19 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.connsMu.Unlock()
 			p.idleConnsLen.Add(1)
 		}
+
+		// Notify metrics: connection moved from used to idle
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "used", "idle")
+		}
 	} else {
 		shouldCloseConn = true
 		p.removeConnWithLock(cn)
+
+		// Notify metrics: connection removed (used -> nothing)
+		if connectionStateChangeCallback != nil {
+			connectionStateChangeCallback(ctx, cn, "used", "")
+		}
 	}
 
 	if freeTurn {
@@ -881,6 +998,11 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 
 	if freeTurn {
 		p.freeTurn()
+	}
+
+	// Notify metrics: connection removed (assume from used state)
+	if connectionStateChangeCallback != nil {
+		connectionStateChangeCallback(ctx, cn, "used", "")
 	}
 
 	_ = p.closeConn(cn)
