@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -243,10 +244,13 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Count how many nodes the client knows about
+	var nodeAddrsMu sync.Mutex
 	nodeAddrs := make(map[string]bool)
 	client.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
 		addr := nodeClient.Options().Addr
+		nodeAddrsMu.Lock()
 		nodeAddrs[addr] = true
+		nodeAddrsMu.Unlock()
 		t.Logf("Client knows about node: %s", addr)
 		return nil
 	})
