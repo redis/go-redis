@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -340,11 +341,12 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // handleSMigrated processes SMIGRATED notifications.
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
-// Expected format: ["SMIGRATED", SeqID, host:port, slot1/range1-range2, ...]
+// Expected format: ["SMIGRATED", SeqID, count, [endpoint1, endpoint2, ...]]
+// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	if len(notification) < 4 {
+	if len(notification) != 4 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
 		return ErrInvalidNotification
 	}
@@ -356,32 +358,60 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
+	// Extract count (position 2)
+	count, ok := notification[2].(int64)
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (count)", notification))
+		return ErrInvalidNotification
+	}
+
+	// Extract endpoints array (position 3)
+	endpointsArray, ok := notification[3].([]interface{})
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoints)", notification))
+		return ErrInvalidNotification
+	}
+
+	if int64(len(endpointsArray)) != count {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (count mismatch)", notification))
+		return ErrInvalidNotification
+	}
+
+	// Parse endpoints
+	endpoints := make([]string, 0, count)
+	for _, ep := range endpointsArray {
+		if endpoint, ok := ep.(string); ok {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+
 	// Deduplicate by SeqID - multiple connections may receive the same notification
 	if snh.manager.MarkSMigratedSeqIDProcessed(seqID) {
-		// Extract host:port (position 2)
-		hostPort, ok := notification[2].(string)
-		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidHostPortInSMigratedNotification(notification[2]))
-			return ErrInvalidNotification
-		}
+		// For logging and triggering reload, we use the first endpoint's host:port
+		// and collect all slot ranges from all endpoints
+		var hostPort string
+		var allSlotRanges []string
 
-		// Extract slot ranges (position 3+)
-		// For now, we just extract them for logging
-		// Format can be: single slot "1234" or range "100-200"
-		var slotRanges []string
-		for i := 3; i < len(notification); i++ {
-			if slotRange, ok := notification[i].(string); ok {
-				slotRanges = append(slotRanges, slotRange)
+		for _, endpoint := range endpoints {
+			// Parse endpoint: "host:port slot1,slot2,range1-range2"
+			parts := strings.SplitN(endpoint, " ", 2)
+			if len(parts) == 2 {
+				if hostPort == "" {
+					hostPort = parts[0]
+				}
+				// Split slots by comma
+				slots := strings.Split(parts[1], ",")
+				allSlotRanges = append(allSlotRanges, slots...)
 			}
 		}
 
 		if internal.LogLevel.InfoOrAbove() {
-			internal.Logger.Printf(ctx, logs.SlotMigrated(seqID, hostPort, slotRanges))
+			internal.Logger.Printf(ctx, logs.SlotMigrated(seqID, hostPort, allSlotRanges))
 		}
 		// Trigger cluster state reload via callback, passing host:port and slot ranges
 		// For now, implementations just log these and trigger a full reload
 		// In the future, this could be optimized to reload only the specific slots
-		snh.manager.TriggerClusterStateReload(ctx, hostPort, slotRanges)
+		snh.manager.TriggerClusterStateReload(ctx, hostPort, allSlotRanges)
 	}
 
 	// clear relaxed timeout
