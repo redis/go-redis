@@ -1,6 +1,6 @@
 # Release Notes
 
-# 9.18.0-beta.2 (2025-12-05)
+# 9.18.0-beta.2 (2025-12-09)
 
 ## 🚀 Highlights
 
