@@ -270,10 +270,10 @@ func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	cn, err := c._getConn(ctx)
+	if c.opt.Limiter != nil {
+		c.opt.Limiter.ReportResult(err)
+	}
 	if err != nil {
-		if c.opt.Limiter != nil {
-			c.opt.Limiter.ReportResult(err)
-		}
 		return nil, err
 	}
 
@@ -329,6 +329,7 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 		return err
 	}
 }
+
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
