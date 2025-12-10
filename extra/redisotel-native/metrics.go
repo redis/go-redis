@@ -50,6 +50,19 @@ type metricsRecorder struct {
 	clientErrors             metric.Int64Counter
 	maintenanceNotifications metric.Int64Counter
 
+	connectionWaitTime    metric.Float64Histogram
+	connectionUseTime     metric.Float64Histogram
+	connectionTimeouts    metric.Int64Counter
+	connectionClosed      metric.Int64Counter
+	connectionPendingReqs metric.Int64UpDownCounter
+
+	pubsubMessages metric.Int64Counter
+
+	streamLag metric.Float64Histogram
+
+	// Configuration
+	cfg *config
+
 	// Client configuration for attributes (used for operation metrics only)
 	serverAddr string
 	serverPort string
@@ -65,6 +78,11 @@ func (r *metricsRecorder) RecordOperationDuration(
 	cn redis.ConnInfo,
 ) {
 	if r.operationDuration == nil {
+		return
+	}
+
+	// Check if command should be included
+	if r.cfg != nil && !r.cfg.isCommandIncluded(cmd.Name()) {
 		return
 	}
 
@@ -506,4 +524,277 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 
 	// Record the counter
 	r.maintenanceNotifications.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionWaitTime records db.client.connection.wait_time metric
+func (r *metricsRecorder) RecordConnectionWaitTime(
+	ctx context.Context,
+	duration time.Duration,
+	cn redis.ConnInfo,
+) {
+	if r.connectionWaitTime == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		getLibraryVersionAttr(),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the histogram (duration in seconds)
+	r.connectionWaitTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionUseTime records db.client.connection.use_time metric
+func (r *metricsRecorder) RecordConnectionUseTime(
+	ctx context.Context,
+	duration time.Duration,
+	cn redis.ConnInfo,
+) {
+	if r.connectionUseTime == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		getLibraryVersionAttr(),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the histogram (duration in seconds)
+	r.connectionUseTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionTimeout records db.client.connection.timeouts metric
+func (r *metricsRecorder) RecordConnectionTimeout(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	timeoutType string,
+) {
+	if r.connectionTimeouts == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.connection.timeout_type", timeoutType),
+		getLibraryVersionAttr(),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the counter
+	r.connectionTimeouts.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionClosed records redis.client.connection.closed metric
+func (r *metricsRecorder) RecordConnectionClosed(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	reason string,
+) {
+	if r.connectionClosed == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.connection.close_reason", reason),
+		getLibraryVersionAttr(),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the counter
+	r.connectionClosed.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordConnectionPendingRequests records db.client.connection.pending_requests metric
+func (r *metricsRecorder) RecordConnectionPendingRequests(
+	ctx context.Context,
+	delta int,
+	cn redis.ConnInfo,
+) {
+	if r.connectionPendingReqs == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		getLibraryVersionAttr(),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the up/down counter
+	r.connectionPendingReqs.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
+}
+
+// RecordPubSubMessage records redis.client.pubsub.messages metric
+func (r *metricsRecorder) RecordPubSubMessage(
+	ctx context.Context,
+	cn redis.ConnInfo,
+	direction string,
+	channel string,
+	sharded bool,
+) {
+	if r.pubsubMessages == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.pubsub.direction", direction), // "sent" or "received"
+		attribute.Bool("redis.client.pubsub.sharded", sharded),
+		getLibraryVersionAttr(),
+	}
+
+	// Add channel name if not hidden for cardinality reduction
+	if !r.cfg.hidePubSubChannelNames && channel != "" {
+		attrs = append(attrs, attribute.String("redis.client.pubsub.channel", channel))
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the counter
+	r.pubsubMessages.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordStreamLag records redis.client.stream.lag metric
+func (r *metricsRecorder) RecordStreamLag(
+	ctx context.Context,
+	lag time.Duration,
+	cn redis.ConnInfo,
+	streamName string,
+	consumerGroup string,
+	consumerName string,
+) {
+	if r.streamLag == nil {
+		return
+	}
+
+	// Extract server address and peer address from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+	peerAddr, peerPort := serverAddr, serverPort
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", serverAddr),
+		attribute.String("redis.client.stream.consumer_group", consumerGroup),
+		attribute.String("redis.client.stream.consumer_name", consumerName),
+		getLibraryVersionAttr(),
+	}
+
+	// Add stream name if not hidden for cardinality reduction
+	if !r.cfg.hideStreamNames && streamName != "" {
+		attrs = append(attrs, attribute.String("redis.client.stream.name", streamName))
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
+
+	// Add peer info
+	if peerAddr != "" {
+		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		if peerPort != "" {
+			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+		}
+	}
+
+	// Record the histogram (lag in seconds)
+	r.streamLag.Record(ctx, lag.Seconds(), metric.WithAttributes(attrs...))
 }

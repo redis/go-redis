@@ -11,6 +11,7 @@ const (
 	MetricGroupConnectionBasic    MetricGroup = "connection-basic"
 	MetricGroupResiliency         MetricGroup = "resiliency"
 	MetricGroupConnectionAdvanced MetricGroup = "connection-advanced"
+	MetricGroupPubSub             MetricGroup = "pubsub"
 	MetricGroupStream             MetricGroup = "stream"
 )
 

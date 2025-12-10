@@ -51,6 +51,37 @@ type OTelRecorder interface {
 	// RecordMaintenanceNotification records when a maintenance notification is received
 	// notificationType: the type of notification (e.g., "MOVING", "MIGRATING", etc.)
 	RecordMaintenanceNotification(ctx context.Context, cn ConnInfo, notificationType string)
+
+	// RecordConnectionWaitTime records the time spent waiting for a connection from the pool
+	RecordConnectionWaitTime(ctx context.Context, duration time.Duration, cn ConnInfo)
+
+	// RecordConnectionUseTime records the time a connection was checked out from the pool
+	RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn ConnInfo)
+
+	// RecordConnectionTimeout records when a connection timeout occurs
+	// timeoutType: "pool" for pool timeout, "read" for read timeout, "write" for write timeout
+	RecordConnectionTimeout(ctx context.Context, cn ConnInfo, timeoutType string)
+
+	// RecordConnectionClosed records when a connection is closed
+	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
+	RecordConnectionClosed(ctx context.Context, cn ConnInfo, reason string)
+
+	// RecordConnectionPendingRequests records changes in pending requests count
+	// delta: +1 when request starts, -1 when request completes
+	RecordConnectionPendingRequests(ctx context.Context, delta int, cn ConnInfo)
+
+	// RecordPubSubMessage records a Pub/Sub message
+	// direction: "sent" or "received"
+	// channel: channel name (may be hidden for cardinality reduction)
+	// sharded: true for sharded pub/sub (SPUBLISH/SSUBSCRIBE)
+	RecordPubSubMessage(ctx context.Context, cn ConnInfo, direction, channel string, sharded bool)
+
+	// RecordStreamLag records the lag for stream consumer group processing
+	// lag: time difference between message creation and consumption
+	// streamName: name of the stream (may be hidden for cardinality reduction)
+	// consumerGroup: name of the consumer group
+	// consumerName: name of the consumer
+	RecordStreamLag(ctx context.Context, lag time.Duration, cn ConnInfo, streamName, consumerGroup, consumerName string)
 }
 
 // SetOTelRecorder sets the global OpenTelemetry recorder.
@@ -108,4 +139,32 @@ func (a *otelRecorderAdapter) RecordError(ctx context.Context, errorType string,
 
 func (a *otelRecorderAdapter) RecordMaintenanceNotification(ctx context.Context, cn *pool.Conn, notificationType string) {
 	a.recorder.RecordMaintenanceNotification(ctx, toConnInfo(cn), notificationType)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionWaitTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+	a.recorder.RecordConnectionWaitTime(ctx, duration, toConnInfo(cn))
+}
+
+func (a *otelRecorderAdapter) RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+	a.recorder.RecordConnectionUseTime(ctx, duration, toConnInfo(cn))
+}
+
+func (a *otelRecorderAdapter) RecordConnectionTimeout(ctx context.Context, cn *pool.Conn, timeoutType string) {
+	a.recorder.RecordConnectionTimeout(ctx, toConnInfo(cn), timeoutType)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string) {
+	a.recorder.RecordConnectionClosed(ctx, toConnInfo(cn), reason)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionPendingRequests(ctx context.Context, delta int, cn *pool.Conn) {
+	a.recorder.RecordConnectionPendingRequests(ctx, delta, toConnInfo(cn))
+}
+
+func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {
+	a.recorder.RecordPubSubMessage(ctx, toConnInfo(cn), direction, channel, sharded)
+}
+
+func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
+	a.recorder.RecordStreamLag(ctx, lag, toConnInfo(cn), streamName, consumerGroup, consumerName)
 }

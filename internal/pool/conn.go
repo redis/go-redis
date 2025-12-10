@@ -69,8 +69,9 @@ type Conn struct {
 	// Connection identifier for unique tracking
 	id uint64
 
-	usedAt    atomic.Int64
-	lastPutAt atomic.Int64
+	usedAt     atomic.Int64
+	lastPutAt  atomic.Int64
+	checkoutAt atomic.Int64 // Time when connection was checked out from pool (for use_time metric)
 
 	// Lock-free netConn access using atomic.Value
 	// Contains *atomicNetConn wrapper, accessed atomically for better performance

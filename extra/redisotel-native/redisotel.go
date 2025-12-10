@@ -114,91 +114,218 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 		metric.WithInstrumentationVersion(redis.Version()),
 	)
 
-	// Create histogram for operation duration
-	var operationDurationOpts []metric.Float64HistogramOption
-	operationDurationOpts = append(operationDurationOpts,
-		metric.WithDescription("Duration of database client operations"),
-		metric.WithUnit("s"),
-	)
-	if cfg.histAggregation == HistogramAggregationExplicitBucket {
+	var operationDuration metric.Float64Histogram
+	if cfg.isMetricGroupEnabled(MetricGroupCommand) {
+		var operationDurationOpts []metric.Float64HistogramOption
 		operationDurationOpts = append(operationDurationOpts,
-			metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
+			metric.WithDescription("Duration of database client operations"),
+			metric.WithUnit("s"),
 		)
-	}
-	operationDuration, err := meter.Float64Histogram(
-		"db.client.operation.duration",
-		operationDurationOpts...,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create operation duration histogram: %w", err)
-	}
-
-	// Create synchronous UpDownCounter for connection count
-	connectionCount, err := meter.Int64UpDownCounter(
-		"db.client.connection.count",
-		metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
-		metric.WithUnit("{connection}"),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create connection count metric: %w", err)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			operationDurationOpts = append(operationDurationOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
+			)
+		}
+		operationDuration, err = meter.Float64Histogram(
+			"db.client.operation.duration",
+			operationDurationOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create operation duration histogram: %w", err)
+		}
 	}
 
-	// Create histogram for connection creation time
-	var connectionCreateTimeOpts []metric.Float64HistogramOption
-	connectionCreateTimeOpts = append(connectionCreateTimeOpts,
-		metric.WithDescription("The time it took to create a new connection"),
-		metric.WithUnit("s"),
-	)
-	if cfg.histAggregation == HistogramAggregationExplicitBucket {
+	var connectionCount metric.Int64UpDownCounter
+	var connectionCreateTime metric.Float64Histogram
+
+	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
+		// Create synchronous UpDownCounter for connection count
+		connectionCount, err = meter.Int64UpDownCounter(
+			"db.client.connection.count",
+			metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
+			metric.WithUnit("{connection}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection count metric: %w", err)
+		}
+
+		// Create histogram for connection creation time
+		var connectionCreateTimeOpts []metric.Float64HistogramOption
 		connectionCreateTimeOpts = append(connectionCreateTimeOpts,
-			metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
+			metric.WithDescription("The time it took to create a new connection"),
+			metric.WithUnit("s"),
 		)
-	}
-	connectionCreateTime, err := meter.Float64Histogram(
-		"db.client.connection.create_time",
-		connectionCreateTimeOpts...,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create connection create time histogram: %w", err)
-	}
-
-	// Create UpDownCounter for relaxed timeout tracking
-	connectionRelaxedTimeout, err := meter.Int64UpDownCounter(
-		"redis.client.connection.relaxed_timeout",
-		metric.WithDescription("How many times the connection timeout has been increased/decreased (after a server maintenance notification)"),
-		metric.WithUnit("{relaxation}"),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create connection relaxed timeout metric: %w", err)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionCreateTimeOpts = append(connectionCreateTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
+			)
+		}
+		connectionCreateTime, err = meter.Float64Histogram(
+			"db.client.connection.create_time",
+			connectionCreateTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection create time histogram: %w", err)
+		}
 	}
 
-	// Create Counter for connection handoffs
-	connectionHandoff, err := meter.Int64Counter(
-		"redis.client.connection.handoff",
-		metric.WithDescription("Connections that have been handed off to another node (e.g after a MOVING notification)"),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create connection handoff metric: %w", err)
+	var connectionRelaxedTimeout metric.Int64UpDownCounter
+	var connectionHandoff metric.Int64Counter
+	var clientErrors metric.Int64Counter
+	var maintenanceNotifications metric.Int64Counter
+
+	if cfg.isMetricGroupEnabled(MetricGroupResiliency) {
+		// Create UpDownCounter for relaxed timeout tracking
+		connectionRelaxedTimeout, err = meter.Int64UpDownCounter(
+			"redis.client.connection.relaxed_timeout",
+			metric.WithDescription("How many times the connection timeout has been increased/decreased (after a server maintenance notification)"),
+			metric.WithUnit("{relaxation}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection relaxed timeout metric: %w", err)
+		}
+
+		// Create Counter for connection handoffs
+		connectionHandoff, err = meter.Int64Counter(
+			"redis.client.connection.handoff",
+			metric.WithDescription("Connections that have been handed off to another node (e.g after a MOVING notification)"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection handoff metric: %w", err)
+		}
+
+		// Create Counter for client errors
+		clientErrors, err = meter.Int64Counter(
+			"redis.client.errors",
+			metric.WithDescription("Number of errors handled by the Redis client"),
+			metric.WithUnit("{error}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create client errors metric: %w", err)
+		}
+
+		// Create Counter for maintenance notifications
+		maintenanceNotifications, err = meter.Int64Counter(
+			"redis.client.maintenance.notifications",
+			metric.WithDescription("Number of maintenance notifications received"),
+			metric.WithUnit("{notification}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create maintenance notifications metric: %w", err)
+		}
 	}
 
-	// Create Counter for client errors
-	clientErrors, err := meter.Int64Counter(
-		"redis.client.errors",
-		metric.WithDescription("Number of errors handled by the Redis client"),
-		metric.WithUnit("{error}"),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create client errors metric: %w", err)
+	var connectionWaitTime metric.Float64Histogram
+	var connectionUseTime metric.Float64Histogram
+	var connectionTimeouts metric.Int64Counter
+	var connectionClosed metric.Int64Counter
+	var connectionPendingReqs metric.Int64UpDownCounter
+
+	if cfg.isMetricGroupEnabled(MetricGroupConnectionAdvanced) {
+		// Create histogram for connection wait time
+		var connectionWaitTimeOpts []metric.Float64HistogramOption
+		connectionWaitTimeOpts = append(connectionWaitTimeOpts,
+			metric.WithDescription("The time it took to obtain a connection from the pool"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionWaitTimeOpts = append(connectionWaitTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionWaitTime...),
+			)
+		}
+		connectionWaitTime, err = meter.Float64Histogram(
+			"db.client.connection.wait_time",
+			connectionWaitTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection wait time histogram: %w", err)
+		}
+
+		// Create histogram for connection use time
+		var connectionUseTimeOpts []metric.Float64HistogramOption
+		connectionUseTimeOpts = append(connectionUseTimeOpts,
+			metric.WithDescription("The time between borrowing a connection and returning it to the pool"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionUseTimeOpts = append(connectionUseTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionUseTime...),
+			)
+		}
+		connectionUseTime, err = meter.Float64Histogram(
+			"db.client.connection.use_time",
+			connectionUseTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection use time histogram: %w", err)
+		}
+
+		// Create counter for connection timeouts
+		connectionTimeouts, err = meter.Int64Counter(
+			"db.client.connection.timeouts",
+			metric.WithDescription("The number of connection timeouts that have occurred"),
+			metric.WithUnit("{timeout}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection timeouts metric: %w", err)
+		}
+
+		// Create counter for closed connections
+		connectionClosed, err = meter.Int64Counter(
+			"redis.client.connection.closed",
+			metric.WithDescription("The number of connections that have been closed"),
+			metric.WithUnit("{connection}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection closed metric: %w", err)
+		}
+
+		// Create up/down counter for pending requests
+		connectionPendingReqs, err = meter.Int64UpDownCounter(
+			"db.client.connection.pending_requests",
+			metric.WithDescription("The number of pending requests waiting for a connection"),
+			metric.WithUnit("{request}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection pending requests metric: %w", err)
+		}
 	}
 
-	// Create Counter for maintenance notifications
-	maintenanceNotifications, err := meter.Int64Counter(
-		"redis.client.maintenance.notifications",
-		metric.WithDescription("Number of maintenance notifications received"),
-		metric.WithUnit("{notification}"),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create maintenance notifications metric: %w", err)
+	var pubsubMessages metric.Int64Counter
+
+	if cfg.isMetricGroupEnabled(MetricGroupPubSub) {
+		// Create counter for Pub/Sub messages
+		pubsubMessages, err = meter.Int64Counter(
+			"redis.client.pubsub.messages",
+			metric.WithDescription("The number of Pub/Sub messages sent or received"),
+			metric.WithUnit("{message}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create Pub/Sub messages metric: %w", err)
+		}
+	}
+
+	var streamLag metric.Float64Histogram
+
+	if cfg.isMetricGroupEnabled(MetricGroupStream) {
+		// Create histogram for stream lag
+		var streamLagOpts []metric.Float64HistogramOption
+		streamLagOpts = append(streamLagOpts,
+			metric.WithDescription("The lag between message creation and consumption in a stream consumer group"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			streamLagOpts = append(streamLagOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsStreamProcessingDuration...),
+			)
+		}
+		streamLag, err = meter.Float64Histogram(
+			"redis.client.stream.lag",
+			streamLagOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create stream lag histogram: %w", err)
+		}
 	}
 
 	// Create recorder
@@ -210,9 +337,22 @@ func initOnce(client redis.UniversalClient, opts ...Option) error {
 		connectionHandoff:        connectionHandoff,
 		clientErrors:             clientErrors,
 		maintenanceNotifications: maintenanceNotifications,
-		serverAddr:               serverAddr,
-		serverPort:               serverPort,
-		dbIndex:                  dbIndex,
+
+		connectionWaitTime:    connectionWaitTime,
+		connectionUseTime:     connectionUseTime,
+		connectionTimeouts:    connectionTimeouts,
+		connectionClosed:      connectionClosed,
+		connectionPendingReqs: connectionPendingReqs,
+
+		pubsubMessages: pubsubMessages,
+
+		streamLag: streamLag,
+
+		// Configuration and client info
+		cfg:        &cfg,
+		serverAddr: serverAddr,
+		serverPort: serverPort,
+		dbIndex:    dbIndex,
 	}
 
 	// Register global recorder
