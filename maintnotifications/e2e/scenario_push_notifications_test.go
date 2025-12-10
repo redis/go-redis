@@ -23,12 +23,17 @@ func TestPushNotifications(t *testing.T) {
 	defer cancel()
 
 	// Setup: Create fresh database and client factory for this test
-	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 	defer cleanup()
-	t.Logf("[PUSH-NOTIFICATIONS] Created test database with bdb_id: %d", bdbID)
+	t.Logf("[PUSH-NOTIFICATIONS] Created test database with bdb_id: %d (mode: %s)", bdbID, testMode.Mode)
 
-	// Wait for database to be fully ready
-	time.Sleep(10 * time.Second)
+	// Skip this test if using proxy mock (requires real fault injector)
+	if testMode.IsProxyMock() {
+		t.Skip("Skipping push notifications test - requires real fault injector")
+	}
+
+	// Wait for database to be fully ready (mode-aware)
+	time.Sleep(testMode.DatabaseReadyDelay)
 
 	var dump = true
 	var seqIDToObserve int64

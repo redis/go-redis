@@ -48,6 +48,9 @@ const (
 	// Database management actions
 	ActionDeleteDatabase ActionType = "delete_database"
 	ActionCreateDatabase ActionType = "create_database"
+	ActionFailover       ActionType = "failover"
+	ActionMigrate        ActionType = "migrate"
+	ActionBind           ActionType = "bind"
 )
 
 // ActionStatus represents the status of an action
