@@ -45,7 +45,8 @@ var _ = Describe("error", func() {
 			proto.ParseErrorReply([]byte("-READONLY You can't write against a read only replica")):   true,
 			proto.ParseErrorReply([]byte("-CLUSTERDOWN The cluster is down")):                        true,
 			proto.ParseErrorReply([]byte("-TRYAGAIN Command cannot be processed, please try again")): true,
-			proto.ParseErrorReply([]byte("-ERR other")): false,
+			proto.ParseErrorReply([]byte("-NOREPLICAS Not enough good replicas to write")):           true,
+			proto.ParseErrorReply([]byte("-ERR other")):                                              false,
 		}
 
 		for err, expected := range data {
