@@ -60,7 +60,7 @@ func GetTestModeConfig() *TestModeConfig {
 			ActionPollInterval:       500 * time.Millisecond,
 			DatabaseReadyDelay:       1 * time.Second,
 			ConnectionEstablishDelay: 500 * time.Millisecond,
-			MaxClients:               1, // Proxy mock only supports single client
+			MaxClients:               1,
 			SkipMultiClientTests:     true,
 		}
 		
@@ -72,7 +72,7 @@ func GetTestModeConfig() *TestModeConfig {
 			ActionPollInterval:       2 * time.Second,
 			DatabaseReadyDelay:       10 * time.Second,
 			ConnectionEstablishDelay: 2 * time.Second,
-			MaxClients:               3, // Real FI can handle multiple clients
+			MaxClients:               3,
 			SkipMultiClientTests:     false,
 		}
 		

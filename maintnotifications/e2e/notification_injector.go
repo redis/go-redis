@@ -23,13 +23,20 @@ type NotificationInjector interface {
 	InjectSMIGRATED(ctx context.Context, seqID int64, hostPort string, slots ...string) error
 
 	// InjectMOVING injects a MOVING notification (for standalone)
-	InjectMOVING(ctx context.Context, seqID int64, slot int) error
+	// Format: ["MOVING", seqID, timeS, endpoint]
+	InjectMOVING(ctx context.Context, seqID int64, timeS int64, endpoint string) error
 
 	// InjectMIGRATING injects a MIGRATING notification (for standalone)
 	InjectMIGRATING(ctx context.Context, seqID int64, slot int) error
 
 	// InjectMIGRATED injects a MIGRATED notification (for standalone)
 	InjectMIGRATED(ctx context.Context, seqID int64, slot int) error
+
+	// InjectFAILING_OVER injects a FAILING_OVER notification
+	InjectFAILING_OVER(ctx context.Context, seqID int64) error
+
+	// InjectFAILED_OVER injects a FAILED_OVER notification
+	InjectFAILED_OVER(ctx context.Context, seqID int64) error
 
 	// Start starts the injector (if needed)
 	Start() error
@@ -475,8 +482,8 @@ func (p *ProxyNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID i
 	return p.injectNotification(notification)
 }
 
-func (p *ProxyNotificationInjector) InjectMOVING(ctx context.Context, seqID int64, slot int) error {
-	notification := formatMovingNotification(seqID, slot)
+func (p *ProxyNotificationInjector) InjectMOVING(ctx context.Context, seqID int64, timeS int64, endpoint string) error {
+	notification := formatMovingNotification(seqID, timeS, endpoint)
 	return p.injectNotification(notification)
 }
 
@@ -487,6 +494,16 @@ func (p *ProxyNotificationInjector) InjectMIGRATING(ctx context.Context, seqID i
 
 func (p *ProxyNotificationInjector) InjectMIGRATED(ctx context.Context, seqID int64, slot int) error {
 	notification := formatMigratedNotification(seqID, slot)
+	return p.injectNotification(notification)
+}
+
+func (p *ProxyNotificationInjector) InjectFAILING_OVER(ctx context.Context, seqID int64) error {
+	notification := formatFailingOverNotification(seqID)
+	return p.injectNotification(notification)
+}
+
+func (p *ProxyNotificationInjector) InjectFAILED_OVER(ctx context.Context, seqID int64) error {
+	notification := formatFailedOverNotification(seqID)
 	return p.injectNotification(notification)
 }
 
@@ -541,9 +558,14 @@ func formatSMigratedNotification(seqID int64, endpoints ...string) string {
 	return strings.Join(parts, "")
 }
 
-func formatMovingNotification(seqID int64, slot int) string {
-	slotStr := fmt.Sprintf("%d", slot)
-	return fmt.Sprintf(">3\r\n$6\r\nMOVING\r\n:%d\r\n$%d\r\n%s\r\n", seqID, len(slotStr), slotStr)
+func formatMovingNotification(seqID int64, timeS int64, endpoint string) string {
+	// Format: ["MOVING", seqID, timeS, endpoint]
+	if endpoint == "" {
+		// 3 elements: MOVING, seqID, timeS
+		return fmt.Sprintf(">3\r\n$6\r\nMOVING\r\n:%d\r\n:%d\r\n", seqID, timeS)
+	}
+	// 4 elements: MOVING, seqID, timeS, endpoint
+	return fmt.Sprintf(">4\r\n$6\r\nMOVING\r\n:%d\r\n:%d\r\n$%d\r\n%s\r\n", seqID, timeS, len(endpoint), endpoint)
 }
 
 func formatMigratingNotification(seqID int64, slot int) string {
@@ -554,6 +576,16 @@ func formatMigratingNotification(seqID int64, slot int) string {
 func formatMigratedNotification(seqID int64, slot int) string {
 	slotStr := fmt.Sprintf("%d", slot)
 	return fmt.Sprintf(">3\r\n$8\r\nMIGRATED\r\n:%d\r\n$%d\r\n%s\r\n", seqID, len(slotStr), slotStr)
+}
+
+func formatFailingOverNotification(seqID int64) string {
+	// Format: ["FAILING_OVER", seqID]
+	return fmt.Sprintf(">2\r\n$12\r\nFAILING_OVER\r\n:%d\r\n", seqID)
+}
+
+func formatFailedOverNotification(seqID int64) string {
+	// Format: ["FAILED_OVER", seqID]
+	return fmt.Sprintf(">2\r\n$11\r\nFAILED_OVER\r\n:%d\r\n", seqID)
 }
 
 
@@ -646,9 +678,9 @@ func (f *FaultInjectorNotificationInjector) InjectSMIGRATED(ctx context.Context,
 	return fmt.Errorf("SMIGRATED cannot be directly injected with real fault injector - it's generated when migration completes")
 }
 
-func (f *FaultInjectorNotificationInjector) InjectMOVING(ctx context.Context, seqID int64, slot int) error {
-	// MOVING notifications are generated during slot migration
-	return fmt.Errorf("MOVING cannot be directly injected with real fault injector - it's generated during migration")
+func (f *FaultInjectorNotificationInjector) InjectMOVING(ctx context.Context, seqID int64, timeS int64, endpoint string) error {
+	// MOVING notifications are generated during bind action
+	return fmt.Errorf("MOVING cannot be directly injected with real fault injector - it's generated during bind action")
 }
 
 func (f *FaultInjectorNotificationInjector) InjectMIGRATING(ctx context.Context, seqID int64, slot int) error {
@@ -667,4 +699,13 @@ func (f *FaultInjectorNotificationInjector) InjectMIGRATED(ctx context.Context, 
 	return fmt.Errorf("MIGRATED cannot be directly injected with real fault injector - it's generated when migration completes")
 }
 
+func (f *FaultInjectorNotificationInjector) InjectFAILING_OVER(ctx context.Context, seqID int64) error {
+	// FAILING_OVER is generated automatically when failover starts
+	return fmt.Errorf("FAILING_OVER cannot be directly injected with real fault injector - it's generated when failover starts")
+}
+
+func (f *FaultInjectorNotificationInjector) InjectFAILED_OVER(ctx context.Context, seqID int64) error {
+	// FAILED_OVER is generated automatically when failover completes
+	return fmt.Errorf("FAILED_OVER cannot be directly injected with real fault injector - it's generated when failover completes")
+}
 
