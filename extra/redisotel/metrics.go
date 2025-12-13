@@ -156,7 +156,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	waits, err := conf.meter.Int64ObservableUpDownCounter(
+	// Counter: cumulative count of connection wait events (monotonic, only increases)
+	waits, err := conf.meter.Int64ObservableCounter(
 		"db.client.connections.waits",
 		metric.WithDescription("The number of times a connection was waited for"),
 	)
@@ -173,7 +174,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
+	// Counter: cumulative count of connection timeout events (monotonic, only increases)
+	timeouts, err := conf.meter.Int64ObservableCounter(
 		"db.client.connections.timeouts",
 		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
 	)
@@ -181,7 +183,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	hits, err := conf.meter.Int64ObservableUpDownCounter(
+	// Counter: cumulative count of connection pool hits (monotonic, only increases)
+	hits, err := conf.meter.Int64ObservableCounter(
 		"db.client.connections.hits",
 		metric.WithDescription("The number of times free connection was found in the pool"),
 	)
@@ -189,7 +192,8 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	misses, err := conf.meter.Int64ObservableUpDownCounter(
+	// Counter: cumulative count of connection pool misses (monotonic, only increases)
+	misses, err := conf.meter.Int64ObservableCounter(
 		"db.client.connections.misses",
 		metric.WithDescription("The number of times free connection was not found in the pool"),
 	)
@@ -330,7 +334,7 @@ func milliseconds(d time.Duration) float64 {
 
 func statusAttr(err error) attribute.KeyValue {
 	if err != nil {
-		if  err == redis.Nil {
+		if err == redis.Nil {
 			return attribute.String("status", "nil")
 		}
 		return attribute.String("status", "error")
