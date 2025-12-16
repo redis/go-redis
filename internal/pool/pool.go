@@ -321,6 +321,12 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrPoolExhausted
 	}
 
+	// Protect against nil context due to race condition in queuedNewConn
+	// where the context can be set to nil after timeout/cancellation
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
 	defer cancel()
 	cn, err := p.dialConn(dialCtx, pooled)
