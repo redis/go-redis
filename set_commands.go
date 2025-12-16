@@ -38,6 +38,8 @@ type SetCmdable interface {
 //
 // Returns the number of elements that were added to the set, not including all
 // the elements already present in the set.
+//
+// [SADD](https://redis.io/docs/latest/commands/sadd/)
 func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "sadd"
@@ -51,6 +53,8 @@ func (c cmdable) SAdd(ctx context.Context, key string, members ...interface{}) *
 // SCard Redis `SCARD key` command.
 // Returns the set cardinality (number of elements) of the set stored at key.
 // Returns 0 if key does not exist.
+//
+// [SCARD](https://redis.io/docs/latest/commands/scard/)
 func (c cmdable) SCard(ctx context.Context, key string) *IntCmd {
 	cmd := NewIntCmd(ctx, "scard", key)
 	_ = c(ctx, cmd)
@@ -63,6 +67,8 @@ func (c cmdable) SCard(ctx context.Context, key string) *IntCmd {
 // Keys that do not exist are considered to be empty sets.
 //
 // Returns a slice of members of the resulting set.
+//
+// [SDIFF](https://redis.io/docs/latest/commands/sdiff/)
 func (c cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sdiff"
@@ -80,6 +86,8 @@ func (c cmdable) SDiff(ctx context.Context, keys ...string) *StringSliceCmd {
 // If destination already exists, it is overwritten.
 //
 // Returns the number of elements in the resulting set.
+//
+// [SDIFFSTORE](https://redis.io/docs/latest/commands/sdiffstore/)
 func (c cmdable) SDiffStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sdiffstore"
@@ -98,6 +106,8 @@ func (c cmdable) SDiffStore(ctx context.Context, destination string, keys ...str
 // With one of the keys being an empty set, the resulting set is also empty.
 //
 // Returns a slice of members of the resulting set.
+//
+// [SINTER](https://redis.io/docs/latest/commands/sinter/)
 func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sinter"
@@ -118,6 +128,8 @@ func (c cmdable) SInter(ctx context.Context, keys ...string) *StringSliceCmd {
 // If limit is 0, no limit is applied.
 //
 // Returns the number of elements in the resulting set.
+//
+// [SINTERCARD](https://redis.io/docs/latest/commands/sintercard/)
 func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *IntCmd {
 	numKeys := len(keys)
 	args := make([]interface{}, 4+numKeys)
@@ -139,6 +151,8 @@ func (c cmdable) SInterCard(ctx context.Context, limit int64, keys ...string) *I
 // If destination already exists, it is overwritten.
 //
 // Returns the number of elements in the resulting set.
+//
+// [SINTERSTORE](https://redis.io/docs/latest/commands/sinterstore/)
 func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sinterstore"
@@ -155,6 +169,8 @@ func (c cmdable) SInterStore(ctx context.Context, destination string, keys ...st
 // Returns if member is a member of the set stored at key.
 // Returns true if the element is a member of the set, false if it is not a member
 // or if key does not exist.
+//
+// [SISMEMBER](https://redis.io/docs/latest/commands/sismember/)
 func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "sismember", key, member)
 	_ = c(ctx, cmd)
@@ -167,6 +183,8 @@ func (c cmdable) SIsMember(ctx context.Context, key string, member interface{}) 
 // a member or if key does not exist.
 //
 // Returns a slice of booleans, one for each member, indicating membership.
+//
+// [SMISMEMBER](https://redis.io/docs/latest/commands/smismember/)
 func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interface{}) *BoolSliceCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "smismember"
@@ -182,6 +200,8 @@ func (c cmdable) SMIsMember(ctx context.Context, key string, members ...interfac
 // Returns an empty slice if key does not exist.
 //
 // Returns a slice of all members of the set.
+//
+// [SMEMBERS](https://redis.io/docs/latest/commands/smembers/)
 func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -193,6 +213,8 @@ func (c cmdable) SMembers(ctx context.Context, key string) *StringSliceCmd {
 // Returns an empty map if key does not exist.
 //
 // Returns a map where keys are the set members and values are empty structs.
+//
+// [SMEMBERS](https://redis.io/docs/latest/commands/smembers/)
 func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCmd {
 	cmd := NewStringStructMapCmd(ctx, "smembers", key)
 	_ = c(ctx, cmd)
@@ -206,6 +228,8 @@ func (c cmdable) SMembersMap(ctx context.Context, key string) *StringStructMapCm
 //
 // Returns true if the element is moved, false if the element is not a member of source
 // and no operation was performed.
+//
+// [SMOVE](https://redis.io/docs/latest/commands/smove/)
 func (c cmdable) SMove(ctx context.Context, source, destination string, member interface{}) *BoolCmd {
 	cmd := NewBoolCmd(ctx, "smove", source, destination, member)
 	_ = c(ctx, cmd)
@@ -217,6 +241,8 @@ func (c cmdable) SMove(ctx context.Context, source, destination string, member i
 // This version returns a single random member.
 //
 // Returns the removed member, or nil if key does not exist.
+//
+// [SPOP](https://redis.io/docs/latest/commands/spop/)
 func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "spop", key)
 	_ = c(ctx, cmd)
@@ -228,6 +254,8 @@ func (c cmdable) SPop(ctx context.Context, key string) *StringCmd {
 // This version returns up to count random members.
 //
 // Returns a slice of removed members. If key does not exist, returns an empty slice.
+//
+// [SPOP](https://redis.io/docs/latest/commands/spop/)
 func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "spop", key, count)
 	_ = c(ctx, cmd)
@@ -239,6 +267,8 @@ func (c cmdable) SPopN(ctx context.Context, key string, count int64) *StringSlic
 // This version returns a single random member without removing it.
 //
 // Returns the random member, or nil if key does not exist or the set is empty.
+//
+// [SRANDMEMBER](https://redis.io/docs/latest/commands/srandmember/)
 func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "srandmember", key)
 	_ = c(ctx, cmd)
@@ -252,6 +282,8 @@ func (c cmdable) SRandMember(ctx context.Context, key string) *StringCmd {
 // When called with a negative count, allows for repeated elements.
 //
 // Returns a slice of random members. If key does not exist, returns an empty slice.
+//
+// [SRANDMEMBER](https://redis.io/docs/latest/commands/srandmember/)
 func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "srandmember", key, count)
 	_ = c(ctx, cmd)
@@ -265,6 +297,8 @@ func (c cmdable) SRandMemberN(ctx context.Context, key string, count int64) *Str
 //
 // Returns the number of members that were removed from the set, not including
 // non-existing members.
+//
+// [SREM](https://redis.io/docs/latest/commands/srem/)
 func (c cmdable) SRem(ctx context.Context, key string, members ...interface{}) *IntCmd {
 	args := make([]interface{}, 2, 2+len(members))
 	args[0] = "srem"
@@ -280,6 +314,8 @@ func (c cmdable) SRem(ctx context.Context, key string, members ...interface{}) *
 // Keys that do not exist are considered to be empty sets.
 //
 // Returns a slice of members of the resulting set.
+//
+// [SUNION](https://redis.io/docs/latest/commands/sunion/)
 func (c cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "sunion"
@@ -297,6 +333,8 @@ func (c cmdable) SUnion(ctx context.Context, keys ...string) *StringSliceCmd {
 // If destination already exists, it is overwritten.
 //
 // Returns the number of elements in the resulting set.
+//
+// [SUNIONSTORE](https://redis.io/docs/latest/commands/sunionstore/)
 func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...string) *IntCmd {
 	args := make([]interface{}, 2+len(keys))
 	args[0] = "sunionstore"
@@ -320,6 +358,8 @@ func (c cmdable) SUnionStore(ctx context.Context, destination string, keys ...st
 //
 // Returns a ScanCmd that can be used to iterate through all members of the set.
 // Use the returned cursor from each iteration to continue scanning.
+//
+// [SSCAN](https://redis.io/docs/latest/commands/sscan/)
 func (c cmdable) SScan(ctx context.Context, key string, cursor uint64, match string, count int64) *ScanCmd {
 	args := []interface{}{"sscan", key, cursor}
 	if match != "" {
