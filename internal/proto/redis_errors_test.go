@@ -9,12 +9,12 @@ import (
 // TestTypedRedisErrors tests that typed Redis errors are created correctly
 func TestTypedRedisErrors(t *testing.T) {
 	tests := []struct {
-		name          string
-		errorMsg      string
-		expectedType  interface{}
-		expectedMsg   string
-		checkFunc     func(error) bool
-		extractAddr   func(error) string
+		name         string
+		errorMsg     string
+		expectedType interface{}
+		expectedMsg  string
+		checkFunc    func(error) bool
+		extractAddr  func(error) string
 	}{
 		{
 			name:         "LOADING error",
@@ -131,6 +131,13 @@ func TestTypedRedisErrors(t *testing.T) {
 			expectedType: &OOMError{},
 			expectedMsg:  "OOM command not allowed when used memory > 'maxmemory'",
 			checkFunc:    IsOOMError,
+		},
+		{
+			name:         "NOREPLICAS error",
+			errorMsg:     "NOREPLICAS Not enough good replicas to write",
+			expectedType: &NoReplicasError{},
+			expectedMsg:  "NOREPLICAS Not enough good replicas to write",
+			checkFunc:    IsNoReplicasError,
 		},
 	}
 
@@ -389,4 +396,3 @@ func TestBackwardCompatibility(t *testing.T) {
 		})
 	}
 }
-
