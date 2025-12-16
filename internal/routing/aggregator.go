@@ -65,7 +65,7 @@ func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggreg
 		}
 	case RespAggLogicalAnd:
 		andAgg := &AggLogicalAndAggregator{}
-		andAgg.res.Add(1)
+		andAgg.res.Store(true)
 
 		return andAgg
 	case RespAggLogicalOr:
@@ -466,7 +466,7 @@ func (a *AggMaxAggregator) Result() (interface{}, error) {
 // AggLogicalAndAggregator performs logical AND on boolean values.
 type AggLogicalAndAggregator struct {
 	err       atomic.Value
-	res       atomic.Int64
+	res       atomic.Bool
 	hasResult atomic.Bool
 }
 
@@ -482,10 +482,9 @@ func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
 		return e
 	}
 
-	if val {
-		a.res.And(1)
-	} else {
-		a.res.And(0)
+	// Atomic AND operation: if val is false, result is always false
+	if !val {
+		a.res.Store(false)
 	}
 
 	a.hasResult.Store(true)
@@ -544,13 +543,13 @@ func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
 	if !a.hasResult.Load() {
 		return nil, ErrAndAggregation
 	}
-	return a.res.Load() != 0, nil
+	return a.res.Load(), nil
 }
 
 // AggLogicalOrAggregator performs logical OR on boolean values.
 type AggLogicalOrAggregator struct {
 	err       atomic.Value
-	res       atomic.Int64
+	res       atomic.Bool
 	hasResult atomic.Bool
 }
 
@@ -566,10 +565,9 @@ func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
 		return e
 	}
 
+	// Atomic OR operation: if val is true, result is always true
 	if val {
-		a.res.Or(1)
-	} else {
-		a.res.Or(0)
+		a.res.Store(true)
 	}
 
 	a.hasResult.Store(true)
@@ -628,7 +626,7 @@ func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
 	if !a.hasResult.Load() {
 		return nil, ErrOrAggregation
 	}
-	return a.res.Load() != 0, nil
+	return a.res.Load(), nil
 }
 
 func toInt64(val interface{}) (int64, error) {
