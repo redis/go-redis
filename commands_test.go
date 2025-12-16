@@ -8870,11 +8870,15 @@ var _ = Describe("Commands", func() {
 		It("returns latencies", func() {
 			const key = "latency-monitor-threshold"
 
+			// reset all latencies first to ensure clean state
+			err := client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
+
 			old := client.ConfigGet(ctx, key).Val()
 			client.ConfigSet(ctx, key, "1")
 			defer client.ConfigSet(ctx, key, old[key])
 
-			err := client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err := client.Latency(ctx).Result()
@@ -8920,6 +8924,10 @@ var _ = Describe("Commands", func() {
 
 		It("reset latencies by add event name args", func() {
 			const key = "latency-monitor-threshold"
+
+			// reset all latencies first to ensure clean state
+			err := client.LatencyReset(ctx).Err()
+			Expect(err).NotTo(HaveOccurred())
 
 			old := client.ConfigGet(ctx, key).Val()
 			// Use a higher threshold (100ms) to avoid capturing normal operations
