@@ -239,10 +239,10 @@ func TestErrorWrappingInHookScenario(t *testing.T) {
 // TestShouldRetryWithTypedErrors tests that shouldRetry works with typed errors
 func TestShouldRetryWithTypedErrors(t *testing.T) {
 	tests := []struct {
-		name          string
-		errorMsg      string
-		shouldRetry   bool
-		retryTimeout  bool
+		name         string
+		errorMsg     string
+		shouldRetry  bool
+		retryTimeout bool
 	}{
 		{
 			name:         "LOADING error should retry",
@@ -277,6 +277,12 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 		{
 			name:         "Max clients error should retry",
 			errorMsg:     "ERR max number of clients reached",
+			shouldRetry:  true,
+			retryTimeout: false,
+		},
+		{
+			name:         "NOREPLICAS error should retry",
+			errorMsg:     "NOREPLICAS Not enough good replicas to write",
 			shouldRetry:  true,
 			retryTimeout: false,
 		},
