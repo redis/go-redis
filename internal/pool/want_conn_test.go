@@ -442,3 +442,56 @@ func BenchmarkWantConnQueue_EnqueueDequeue(b *testing.B) {
 		q.dequeue()
 	}
 }
+
+// TestWantConn_RaceConditionNilContext tests the race condition where
+// getCtxForDial can return nil after the context is cancelled.
+// This test verifies that the fix in newConn handles nil context gracefully.
+func TestWantConn_RaceConditionNilContext(t *testing.T) {
+	// This test simulates the race condition described in the issue:
+	// 1. Main goroutine creates a wantConn with a context
+	// 2. Background goroutine starts but hasn't called getCtxForDial yet
+	// 3. Main goroutine times out and calls cancel(), setting w.ctx to nil
+	// 4. Background goroutine calls getCtxForDial() and gets nil
+	// 5. Background goroutine calls newConn(nil, true) which should not panic
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	w := &wantConn{
+		ctx:       dialCtx,
+		cancelCtx: cancel,
+		result:    make(chan wantConnResult, 1),
+	}
+
+	// Simulate the race condition by canceling the context
+	// and then trying to get it
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+		// Small delay to ensure cancel happens first
+		time.Sleep(10 * time.Millisecond)
+
+		// This should return nil after cancel
+		ctx := w.getCtxForDial()
+
+		// Verify that we got nil context
+		if ctx != nil {
+			t.Errorf("Expected nil context after cancel, got %v", ctx)
+		}
+	}()
+
+	// Cancel the context immediately
+	w.cancel()
+
+	wg.Wait()
+
+	// Verify the wantConn state
+	if !w.done {
+		t.Error("wantConn should be marked as done after cancel")
+	}
+	if w.ctx != nil {
+		t.Error("wantConn.ctx should be nil after cancel")
+	}
+}
