@@ -299,6 +299,13 @@ func TestPushNotifications(t *testing.T) {
 	// Trigger bind action to complete the migration process (or inject MOVING in proxy mock mode)
 	var bindResp *ActionResponse
 	if testMode.IsProxyMock() {
+		// Proxy mock: Start commands BEFORE injecting MOVING notification
+		// This ensures there are active connections that can receive the push notification
+		p("Starting commands before MOVING injection (proxy mock mode)...")
+		go commandsRunner.FireCommandsUntilStop(ctx)
+		// Give commands time to establish connections
+		time.Sleep(1 * time.Second)
+
 		// Proxy mock: Directly inject MOVING notification
 		// Format: ["MOVING", seqID, timeS, endpoint]
 		// timeS is the time in seconds until the connection should be handed off
@@ -472,13 +479,13 @@ func TestPushNotifications(t *testing.T) {
 	// Run commands based on mode
 	if testMode.SkipMultiClientTests {
 		// Single client mode (proxy mock)
+		// Commands are already running (started before MOVING injection)
 		// Need to wait long enough for:
 		// 1. MOVING notification to be processed
 		// 2. Handoff to be scheduled (at timeS/2 = 15 seconds)
 		// 3. Handoff to execute
 		// 4. Post-handoff relaxed timeout to be observed (2 seconds)
 		// Total: ~20 seconds minimum
-		go commandsRunner.FireCommandsUntilStop(ctx)
 		time.Sleep(25 * time.Second)
 		commandsRunner.Stop()
 	} else {
