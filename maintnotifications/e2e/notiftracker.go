@@ -227,9 +227,9 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 	switch notificationType {
 	case "MOVING":
 		tnh.movingCount.Add(1)
-	case "MIGRATING":
+	case "MIGRATING", "SMIGRATING":
 		tnh.migratingCount.Add(1)
-	case "MIGRATED":
+	case "MIGRATED", "SMIGRATED":
 		tnh.migratedCount.Add(1)
 	case "FAILING_OVER":
 		tnh.failingOverCount.Add(1)
@@ -242,81 +242,11 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 
 func (tnh *TrackingNotificationsHook) increaseRelaxedTimeoutCount(notificationType string) {
 	switch notificationType {
-	case "MIGRATING", "FAILING_OVER":
+	case "MIGRATING", "SMIGRATING", "FAILING_OVER":
 		tnh.relaxedTimeoutCount.Add(1)
-	case "MIGRATED", "FAILED_OVER":
+	case "MIGRATED", "SMIGRATED", "FAILED_OVER":
 		tnh.unrelaxedTimeoutCount.Add(1)
 	}
-}
-
-// setupNotificationHook sets up tracking for both regular and cluster clients with notification hooks
-func setupNotificationHook(client redis.UniversalClient, hook maintnotifications.NotificationHook) {
-	if clusterClient, ok := client.(*redis.ClusterClient); ok {
-		setupClusterClientNotificationHook(clusterClient, hook)
-	} else if regularClient, ok := client.(*redis.Client); ok {
-		setupRegularClientNotificationHook(regularClient, hook)
-	}
-}
-
-// setupNotificationHooks sets up tracking for both regular and cluster clients with notification hooks
-func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifications.NotificationHook) {
-	for _, hook := range hooks {
-		setupNotificationHook(client, hook)
-	}
-}
-
-// setupRegularClientNotificationHook sets up notification hook for regular clients
-func setupRegularClientNotificationHook(client *redis.Client, hook maintnotifications.NotificationHook) {
-	maintnotificationsManager := client.GetMaintNotificationsManager()
-	if maintnotificationsManager != nil {
-		maintnotificationsManager.AddNotificationHook(hook)
-	} else {
-		fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking\n")
-	}
-}
-
-// setupClusterClientNotificationHook sets up notification hook for cluster clients
-func setupClusterClientNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
-	ctx := context.Background()
-
-	// Register hook on existing nodes
-	err := client.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
-		if maintnotificationsManager != nil {
-			maintnotificationsManager.AddNotificationHook(hook)
-		} else {
-			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on node: %s\n", nodeClient.Options().Addr)
-		}
-		return nil
-	})
-
-	if err != nil {
-		fmt.Printf("[TNH] Warning: Failed to register timeout tracking hooks on existing cluster nodes: %v\n", err)
-	}
-
-	// Register hook on new nodes
-	client.OnNewNode(func(nodeClient *redis.Client) {
-		maintnotificationsManager := nodeClient.GetMaintNotificationsManager()
-		if maintnotificationsManager != nil {
-			maintnotificationsManager.AddNotificationHook(hook)
-		} else {
-			fmt.Printf("[TNH] Warning: Maintenance notifications manager not available for tracking on new node: %s\n", nodeClient.Options().Addr)
-		}
-	})
-}
-
-// filterPushNotificationLogs filters the diagnostics log for push notification events
-func filterPushNotificationLogs(diagnosticsLog []DiagnosticsEvent) []DiagnosticsEvent {
-	var pushNotificationLogs []DiagnosticsEvent
-
-	for _, log := range diagnosticsLog {
-		switch log.Type {
-		case "MOVING", "MIGRATING", "MIGRATED":
-			pushNotificationLogs = append(pushNotificationLogs, log)
-		}
-	}
-
-	return pushNotificationLogs
 }
 
 func (tnh *TrackingNotificationsHook) GetAnalysis() *DiagnosticsAnalysis {
@@ -368,41 +298,42 @@ func NewDiagnosticsAnalysis(diagnosticsLog []DiagnosticsEvent) *DiagnosticsAnaly
 	return da
 }
 
-func (da *DiagnosticsAnalysis) Analyze() {
-	for _, log := range da.diagnosticsLog {
-		da.TotalNotifications++
+func (a *DiagnosticsAnalysis) Analyze() {
+	for _, log := range a.diagnosticsLog {
+		a.TotalNotifications++
 		switch log.Type {
 		case "MOVING":
-			da.MovingCount++
-		case "MIGRATING":
-			da.MigratingCount++
-		case "MIGRATED":
-			da.MigratedCount++
+			a.MovingCount++
+		case "MIGRATING", "SMIGRATING":
+			a.MigratingCount++
+		case "MIGRATED", "SMIGRATED":
+			a.MigratedCount++
 		case "FAILING_OVER":
-			da.FailingOverCount++
+			a.FailingOverCount++
 		case "FAILED_OVER":
-			da.FailedOverCount++
+			a.FailedOverCount++
 		default:
-			da.UnexpectedNotificationCount++
+			a.UnexpectedNotificationCount++
 		}
 		if log.Error != nil {
 			fmt.Printf("[ERROR] Notification processing error: %v\n", log.Error)
 			fmt.Printf("[ERROR] Notification: %v\n", log.Details["notification"])
 			fmt.Printf("[ERROR] Context: %v\n", log.Details["context"])
-			da.NotificationProcessingErrors++
+			a.NotificationProcessingErrors++
 		}
-		if log.Type == "MIGRATING" || log.Type == "FAILING_OVER" {
-			da.RelaxedTimeoutCount++
-		} else if log.Type == "MIGRATED" || log.Type == "FAILED_OVER" {
-			da.UnrelaxedTimeoutCount++
+		switch log.Type {
+		case "MIGRATING", "SMIGRATING", "FAILING_OVER":
+			a.RelaxedTimeoutCount++
+		case "MIGRATED", "SMIGRATED", "FAILED_OVER":
+			a.UnrelaxedTimeoutCount++
 		}
 		if log.ConnID != 0 {
-			if v, ok := da.connIds[log.ConnID]; !ok || !v {
-				da.connIds[log.ConnID] = true
-				da.connLogs[log.ConnID] = make([]DiagnosticsEvent, 0)
-				da.ConnectionCount++
+			if v, ok := a.connIds[log.ConnID]; !ok || !v {
+				a.connIds[log.ConnID] = true
+				a.connLogs[log.ConnID] = make([]DiagnosticsEvent, 0)
+				a.ConnectionCount++
 			}
-			da.connLogs[log.ConnID] = append(da.connLogs[log.ConnID], log)
+			a.connLogs[log.ConnID] = append(a.connLogs[log.ConnID], log)
 		}
 
 	}
@@ -432,4 +363,70 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 	t.Logf(" - Connection Count: %d", a.ConnectionCount)
 	t.Logf("-------------")
 	t.Logf("Diagnostics Analysis completed successfully")
+}
+
+// setupNotificationHook adds a notification hook to a cluster client
+//
+//nolint:unused // Used in test files
+func setupNotificationHook(client *redis.ClusterClient, hook maintnotifications.NotificationHook) {
+	_ = client.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+		manager := nodeClient.GetMaintNotificationsManager()
+		if manager != nil {
+			manager.AddNotificationHook(hook)
+		}
+		return nil
+	})
+
+	// Also add hook to new nodes
+	client.OnNewNode(func(nodeClient *redis.Client) {
+		manager := nodeClient.GetMaintNotificationsManager()
+		if manager != nil {
+			manager.AddNotificationHook(hook)
+		}
+	})
+}
+
+// setupNotificationHooks adds multiple notification hooks to a regular client
+//
+//nolint:unused // Used in test files
+func setupNotificationHooks(client redis.UniversalClient, hooks ...maintnotifications.NotificationHook) {
+	// Try to get manager from the client
+	var manager *maintnotifications.Manager
+
+	// Check if it's a regular client
+	if regularClient, ok := client.(*redis.Client); ok {
+		manager = regularClient.GetMaintNotificationsManager()
+	}
+
+	// Check if it's a cluster client
+	if clusterClient, ok := client.(*redis.ClusterClient); ok {
+		// For cluster clients, add hooks to all shards
+		_ = clusterClient.ForEachShard(context.Background(), func(ctx context.Context, nodeClient *redis.Client) error {
+			nodeManager := nodeClient.GetMaintNotificationsManager()
+			if nodeManager != nil {
+				for _, hook := range hooks {
+					nodeManager.AddNotificationHook(hook)
+				}
+			}
+			return nil
+		})
+
+		// Also add hooks to new nodes
+		clusterClient.OnNewNode(func(nodeClient *redis.Client) {
+			nodeManager := nodeClient.GetMaintNotificationsManager()
+			if nodeManager != nil {
+				for _, hook := range hooks {
+					nodeManager.AddNotificationHook(hook)
+				}
+			}
+		})
+		return
+	}
+
+	// For regular clients, add hooks directly
+	if manager != nil {
+		for _, hook := range hooks {
+			manager.AddNotificationHook(hook)
+		}
+	}
 }

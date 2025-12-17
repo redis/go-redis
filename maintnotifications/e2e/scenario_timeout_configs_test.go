@@ -78,9 +78,14 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 	for _, timeoutTest := range timeoutConfigs {
 		t.Run(timeoutTest.name, func(t *testing.T) {
 			// Setup: Create fresh database and client factory for THIS timeout config test
-			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 			defer cleanup()
-			t.Logf("[TIMEOUT-CONFIGS-%s] Created test database with bdb_id: %d", timeoutTest.name, bdbID)
+			t.Logf("[TIMEOUT-CONFIGS-%s] Created test database with bdb_id: %d (mode: %s)", timeoutTest.name, bdbID, testMode.Mode)
+
+			// Skip this test if using proxy mock (requires real fault injector)
+			if testMode.IsProxyMock() {
+				t.Skip("Skipping timeout config test - requires real fault injector")
+			}
 
 			// Get endpoint config from factory (now connected to new database)
 			endpointConfig := factory.GetConfig()
