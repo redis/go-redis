@@ -92,22 +92,34 @@ func (tlc *TestLogCollector) DoPrint() {
 // MatchFunc is a slice of functions that check the logs for a specific condition
 // use in WaitForLogMatchFunc
 type MatchFunc struct {
-	completed atomic.Bool
-	F         func(lstring string) bool
-	matches   []string
-	found     chan struct{} // channel to notify when match is found, will be closed
-	done      func()
+	completed   atomic.Bool
+	F           func(lstring string) bool
+	matches     []string
+	matchesMu   sync.Mutex // protects matches slice
+	found       chan struct{} // channel to notify when match is found, will be closed
+	done        func()
 }
 
 func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {
 	tlc.mu.Lock()
-	defer tlc.mu.Unlock()
 	lstr := fmt.Sprintf(format, v...)
-	if len(tlc.matchFuncs) > 0 {
+
+	// Check if there are match functions to process
+	// Use matchFuncsMutex to safely read matchFuncs
+	tlc.matchFuncsMutex.Lock()
+	hasMatchFuncs := len(tlc.matchFuncs) > 0
+	// Create a copy of matchFuncs to avoid holding the lock while processing
+	matchFuncsCopy := make([]*MatchFunc, len(tlc.matchFuncs))
+	copy(matchFuncsCopy, tlc.matchFuncs)
+	tlc.matchFuncsMutex.Unlock()
+
+	if hasMatchFuncs {
 		go func(lstr string) {
-			for _, matchFunc := range tlc.matchFuncs {
+			for _, matchFunc := range matchFuncsCopy {
 				if matchFunc.F(lstr) {
+					matchFunc.matchesMu.Lock()
 					matchFunc.matches = append(matchFunc.matches, lstr)
+					matchFunc.matchesMu.Unlock()
 					matchFunc.done()
 					return
 				}
@@ -118,6 +130,7 @@ func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...inter
 		fmt.Println(lstr)
 	}
 	tlc.l = append(tlc.l, fmt.Sprintf(format, v...))
+	tlc.mu.Unlock()
 }
 
 func (tlc *TestLogCollector) WaitForLogContaining(searchString string, timeout time.Duration) bool {
@@ -170,7 +183,12 @@ func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout t
 
 	select {
 	case <-matchFunc.found:
-		return matchFunc.matches[0], true
+		matchFunc.matchesMu.Lock()
+		defer matchFunc.matchesMu.Unlock()
+		if len(matchFunc.matches) > 0 {
+			return matchFunc.matches[0], true
+		}
+		return "", false
 	case <-time.After(timeout):
 		return "", false
 	}

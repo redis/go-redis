@@ -147,7 +147,28 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
 				// Log error but don't fail the goroutine - use background context since original may be cancelled
 				internal.Logger.Printf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+				return
 			}
+
+			// Queue the handoff immediately if the connection is idle in the pool.
+			// If the connection is in use (StateInUse), it will be queued when returned to the pool via OnPut.
+			// This handles the case where the connection is idle and might never be retrieved again.
+			if poolConn.GetStateMachine().GetState() == pool.StateIdle {
+				if snh.manager.poolHooksRef != nil && snh.manager.poolHooksRef.workerManager != nil {
+					if err := snh.manager.poolHooksRef.workerManager.queueHandoff(poolConn); err != nil {
+						internal.Logger.Printf(context.Background(), logs.FailedToQueueHandoff(poolConn.GetID(), err))
+					} else {
+						// Mark the connection as queued for handoff to prevent it from being retrieved
+						// This transitions the connection to StateUnusable
+						if err := poolConn.MarkQueuedForHandoff(); err != nil {
+							internal.Logger.Printf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+						} else {
+							internal.Logger.Printf(context.Background(), logs.MarkedForHandoff(poolConn.GetID()))
+						}
+					}
+				}
+			}
+			// If connection is StateInUse, the handoff will be queued when it's returned to the pool
 		})
 		return nil
 	}
