@@ -434,6 +434,11 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 		deadline := time.Now().Add(hwm.config.PostHandoffRelaxedDuration)
 		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
 
+		// Record relaxed timeout metric (post-handoff)
+		if relaxedTimeoutCallback := pool.GetConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+			relaxedTimeoutCallback(ctx, 1, conn, "main", "HANDOFF")
+		}
+
 		if internal.LogLevel.InfoOrAbove() {
 			internal.Logger.Printf(context.Background(), logs.ApplyingRelaxedTimeoutDueToPostHandoff(connID, relaxedTimeout, deadline.Format("15:04:05.000")))
 		}
@@ -462,6 +467,11 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	internal.Logger.Printf(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 
 	// successfully completed the handoff, no retry needed and no error
+	// Notify metrics: connection handoff succeeded
+	if handoffCallback := pool.GetConnectionHandoffCallback(); handoffCallback != nil {
+		handoffCallback(ctx, conn, "main")
+	}
+
 	return false, nil
 }
 

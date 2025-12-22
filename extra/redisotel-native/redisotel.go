@@ -1,0 +1,529 @@
+// Package redisotel provides native OpenTelemetry instrumentation for go-redis.
+//
+// This package implements the OpenTelemetry Semantic Conventions for database clients,
+// providing metrics, traces, and logs for Redis operations.
+//
+// Basic Usage (with global MeterProvider):
+//
+//	import (
+//	    "github.com/redis/go-redis/v9"
+//	    redisotel "github.com/redis/go-redis/extra/redisotel-native/v9"
+//	    "go.opentelemetry.io/otel"
+//	)
+//
+//	func main() {
+//	    // Initialize OpenTelemetry globally (meter provider, etc.)
+//	    otel.SetMeterProvider(myMeterProvider)
+//
+//	    // Create Redis client
+//	    rdb := redis.NewClient(&redis.Options{
+//	        Addr: "localhost:6379",
+//	        DB:   0,
+//	    })
+//
+//	    // Initialize native OTel instrumentation (uses global MeterProvider)
+//	    if err := redisotel.Init(rdb); err != nil {
+//	        panic(err)
+//	    }
+//
+//	    // Use the client normally - metrics are automatically recorded
+//	    rdb.Set(ctx, "key", "value", 0)
+//	}
+//
+// Advanced Usage (with custom MeterProvider):
+//
+//	// Pass a custom MeterProvider
+//	if err := redisotel.Init(rdb, redisotel.WithMeterProvider(customProvider)); err != nil {
+//	    panic(err)
+//	}
+package redisotel
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+)
+
+var (
+	// Global singleton instance
+	globalInstance     *metricsRecorder
+	globalInstanceOnce sync.Once
+	initErr            error
+)
+
+// Init initializes native OpenTelemetry instrumentation for the given Redis client.
+// This function should be called once per application, typically during startup.
+// Subsequent calls are no-ops and return nil.
+//
+// The function extracts configuration from the client (server address, port, database index)
+// and registers a global metrics recorder.
+//
+// If no MeterProvider is provided via WithMeterProvider option, the global MeterProvider
+// from otel.GetMeterProvider() will be used. Make sure to call otel.SetMeterProvider()
+// before calling Init() if you want to use a custom provider.
+//
+// Example (using global MeterProvider):
+//
+//	otel.SetMeterProvider(myMeterProvider)
+//	rdb := redis.NewClient(&redis.Options{
+//	    Addr: "localhost:6379",
+//	    DB:   0,
+//	})
+//	if err := redisotel.Init(rdb); err != nil {
+//	    log.Fatal(err)
+//	}
+//
+// Example (using custom MeterProvider):
+//
+//	if err := redisotel.Init(rdb, redisotel.WithMeterProvider(customProvider)); err != nil {
+//	    log.Fatal(err)
+//	}
+func Init(client redis.UniversalClient, opts ...Option) error {
+	globalInstanceOnce.Do(func() {
+		initErr = initOnce(client, opts...)
+	})
+	return initErr
+}
+
+// initOnce performs the actual initialization (called once by sync.Once)
+func initOnce(client redis.UniversalClient, opts ...Option) error {
+	// Apply options
+	cfg := defaultConfig()
+	for _, opt := range opts {
+		opt.apply(&cfg)
+	}
+
+	// Extract client configuration
+	serverAddr, serverPort, dbIndex, err := extractClientConfig(client)
+	if err != nil {
+		return fmt.Errorf("failed to extract client config: %w", err)
+	}
+
+	// Get meter provider (use global if not provided)
+	meterProvider := cfg.meterProvider
+	if meterProvider == nil {
+		meterProvider = otel.GetMeterProvider()
+	}
+
+	// Create meter
+	meter := meterProvider.Meter(
+		"github.com/redis/go-redis",
+		metric.WithInstrumentationVersion(redis.Version()),
+	)
+
+	var operationDuration metric.Float64Histogram
+	if cfg.isMetricGroupEnabled(MetricGroupCommand) {
+		var operationDurationOpts []metric.Float64HistogramOption
+		operationDurationOpts = append(operationDurationOpts,
+			metric.WithDescription("Duration of database client operations"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			operationDurationOpts = append(operationDurationOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
+			)
+		}
+		operationDuration, err = meter.Float64Histogram(
+			"db.client.operation.duration",
+			operationDurationOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create operation duration histogram: %w", err)
+		}
+	}
+
+	var connectionCountGauge metric.Int64ObservableGauge
+	var connectionCreateTime metric.Float64Histogram
+	var connectionRelaxedTimeout metric.Int64UpDownCounter
+	var connectionHandoff metric.Int64Counter
+
+	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
+		// Create asynchronous ObservableGauge for connection count
+		connectionCountGauge, err = meter.Int64ObservableGauge(
+			"db.client.connection.count",
+			metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
+			metric.WithUnit("{connection}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection count metric: %w", err)
+		}
+
+		// Create histogram for connection creation time
+		var connectionCreateTimeOpts []metric.Float64HistogramOption
+		connectionCreateTimeOpts = append(connectionCreateTimeOpts,
+			metric.WithDescription("The time it took to create a new connection"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionCreateTimeOpts = append(connectionCreateTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
+			)
+		}
+		connectionCreateTime, err = meter.Float64Histogram(
+			"db.client.connection.create_time",
+			connectionCreateTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection create time histogram: %w", err)
+		}
+
+		// Create UpDownCounter for relaxed timeout tracking
+		connectionRelaxedTimeout, err = meter.Int64UpDownCounter(
+			"redis.client.connection.relaxed_timeout",
+			metric.WithDescription("How many times the connection timeout has been increased/decreased (after a server maintenance notification)"),
+			metric.WithUnit("{relaxation}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection relaxed timeout metric: %w", err)
+		}
+
+		// Create Counter for connection handoffs
+		connectionHandoff, err = meter.Int64Counter(
+			"redis.client.connection.handoff",
+			metric.WithDescription("Connections that have been handed off to another node (e.g after a MOVING notification)"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection handoff metric: %w", err)
+		}
+	}
+
+	var clientErrors metric.Int64Counter
+	var maintenanceNotifications metric.Int64Counter
+
+	if cfg.isMetricGroupEnabled(MetricGroupResiliency) {
+		// Create Counter for client errors
+		clientErrors, err = meter.Int64Counter(
+			"redis.client.errors",
+			metric.WithDescription("Number of errors handled by the Redis client"),
+			metric.WithUnit("{error}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create client errors metric: %w", err)
+		}
+
+		// Create Counter for maintenance notifications
+		maintenanceNotifications, err = meter.Int64Counter(
+			"redis.client.maintenance.notifications",
+			metric.WithDescription("Number of maintenance notifications received"),
+			metric.WithUnit("{notification}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create maintenance notifications metric: %w", err)
+		}
+	}
+
+	var connectionWaitTime metric.Float64Histogram
+	var connectionUseTime metric.Float64Histogram
+	var connectionClosed metric.Int64Counter
+	var connectionPendingReqsGauge metric.Int64ObservableGauge
+
+	if cfg.isMetricGroupEnabled(MetricGroupConnectionAdvanced) {
+		// Create histogram for connection wait time
+		var connectionWaitTimeOpts []metric.Float64HistogramOption
+		connectionWaitTimeOpts = append(connectionWaitTimeOpts,
+			metric.WithDescription("The time it took to obtain a connection from the pool"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionWaitTimeOpts = append(connectionWaitTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionWaitTime...),
+			)
+		}
+		connectionWaitTime, err = meter.Float64Histogram(
+			"db.client.connection.wait_time",
+			connectionWaitTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection wait time histogram: %w", err)
+		}
+
+		// Create histogram for connection use time
+		var connectionUseTimeOpts []metric.Float64HistogramOption
+		connectionUseTimeOpts = append(connectionUseTimeOpts,
+			metric.WithDescription("The time between borrowing a connection and returning it to the pool"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			connectionUseTimeOpts = append(connectionUseTimeOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionUseTime...),
+			)
+		}
+		connectionUseTime, err = meter.Float64Histogram(
+			"db.client.connection.use_time",
+			connectionUseTimeOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection use time histogram: %w", err)
+		}
+
+		// Create counter for closed connections
+		connectionClosed, err = meter.Int64Counter(
+			"redis.client.connection.closed",
+			metric.WithDescription("The number of connections that have been closed"),
+			metric.WithUnit("{connection}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection closed metric: %w", err)
+		}
+
+		// Create asynchronous ObservableGauge for pending requests
+		connectionPendingReqsGauge, err = meter.Int64ObservableGauge(
+			"db.client.connection.pending_requests",
+			metric.WithDescription("The number of pending requests waiting for a connection"),
+			metric.WithUnit("{request}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create connection pending requests metric: %w", err)
+		}
+	}
+
+	var pubsubMessages metric.Int64Counter
+
+	if cfg.isMetricGroupEnabled(MetricGroupPubSub) {
+		// Create counter for Pub/Sub messages
+		pubsubMessages, err = meter.Int64Counter(
+			"redis.client.pubsub.messages",
+			metric.WithDescription("The number of Pub/Sub messages sent or received"),
+			metric.WithUnit("{message}"),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create Pub/Sub messages metric: %w", err)
+		}
+	}
+
+	var streamLag metric.Float64Histogram
+
+	if cfg.isMetricGroupEnabled(MetricGroupStream) {
+		// Create histogram for stream lag
+		var streamLagOpts []metric.Float64HistogramOption
+		streamLagOpts = append(streamLagOpts,
+			metric.WithDescription("The lag between message creation and consumption in a stream consumer group"),
+			metric.WithUnit("s"),
+		)
+		if cfg.histAggregation == HistogramAggregationExplicitBucket {
+			streamLagOpts = append(streamLagOpts,
+				metric.WithExplicitBucketBoundaries(cfg.bucketsStreamProcessingDuration...),
+			)
+		}
+		streamLag, err = meter.Float64Histogram(
+			"redis.client.stream.lag",
+			streamLagOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create stream lag histogram: %w", err)
+		}
+	}
+
+	// Create recorder
+	recorder := &metricsRecorder{
+		operationDuration:          operationDuration,
+		connectionCountGauge:       connectionCountGauge,
+		connectionCreateTime:       connectionCreateTime,
+		connectionRelaxedTimeout:   connectionRelaxedTimeout,
+		connectionHandoff:          connectionHandoff,
+		clientErrors:               clientErrors,
+		maintenanceNotifications:   maintenanceNotifications,
+		connectionWaitTime:         connectionWaitTime,
+		connectionUseTime:          connectionUseTime,
+		connectionClosed:           connectionClosed,
+		connectionPendingReqsGauge: connectionPendingReqsGauge,
+		pubsubMessages:             pubsubMessages,
+		streamLag:                  streamLag,
+
+		// Configuration and client info
+		cfg:        &cfg,
+		serverAddr: serverAddr,
+		serverPort: serverPort,
+		dbIndex:    dbIndex,
+		client:     client,
+	}
+
+	// Register global recorder
+	redis.SetOTelRecorder(recorder)
+	globalInstance = recorder
+
+	// Register async callbacks for ObservableGauges
+	if err := registerAsyncCallbacks(meter, recorder, serverAddr, serverPort, dbIndex); err != nil {
+		return fmt.Errorf("failed to register async callbacks: %w", err)
+	}
+
+	return nil
+}
+
+// extractClientConfig extracts server address, port, and database index from a Redis client
+func extractClientConfig(client redis.UniversalClient) (serverAddr, serverPort, dbIndex string, err error) {
+	switch c := client.(type) {
+	case *redis.Client:
+		opts := c.Options()
+		host, port := parseAddr(opts.Addr)
+		return host, port, formatDBIndex(opts.DB), nil
+
+	case *redis.ClusterClient:
+		opts := c.Options()
+		if len(opts.Addrs) > 0 {
+			// Use first address for server.address attribute
+			host, port := parseAddr(opts.Addrs[0])
+			return host, port, "", nil
+		}
+		return "", "", "", fmt.Errorf("cluster client has no addresses")
+
+	case *redis.Ring:
+		opts := c.Options()
+		if len(opts.Addrs) > 0 {
+			// Use first address for server.address attribute
+			for _, addr := range opts.Addrs {
+				host, port := parseAddr(addr)
+				return host, port, formatDBIndex(opts.DB), nil
+			}
+		}
+		return "", "", "", fmt.Errorf("ring client has no addresses")
+
+	default:
+		return "", "", "", fmt.Errorf("unsupported client type: %T", client)
+	}
+}
+
+// registerAsyncCallbacks registers async observation callbacks for ObservableGauges
+// Each gauge gets its own callback for better separation of concerns and scalability
+func registerAsyncCallbacks(meter metric.Meter, recorder *metricsRecorder, serverAddr, serverPort, dbIndex string) error {
+	// Register connection count gauge callback
+	if err := registerConnectionCountCallback(meter, recorder, serverAddr, serverPort, dbIndex); err != nil {
+		return fmt.Errorf("failed to register connection count callback: %w", err)
+	}
+
+	// Register pending requests gauge callback
+	if err := registerPendingRequestsCallback(meter, recorder, serverAddr, serverPort, dbIndex); err != nil {
+		return fmt.Errorf("failed to register pending requests callback: %w", err)
+	}
+
+	return nil
+}
+
+// registerConnectionCountCallback registers the async callback for db.client.connection.count gauge
+func registerConnectionCountCallback(meter metric.Meter, recorder *metricsRecorder, serverAddr, serverPort, dbIndex string) error {
+	if recorder.connectionCountGauge == nil {
+		return nil // Metric not enabled, skip
+	}
+
+	_, err := meter.RegisterCallback(
+		func(ctx context.Context, observer metric.Observer) error {
+			if recorder.client == nil {
+				return nil
+			}
+
+			stats := recorder.client.PoolStats()
+			if stats == nil {
+				return nil
+			}
+
+			// Build base attributes
+			baseAttrs := []attribute.KeyValue{
+				attribute.String("db.system.name", "redis"),
+				attribute.String("server.address", serverAddr),
+				getLibraryVersionAttr(),
+			}
+			if serverPort != "" && serverPort != "6379" {
+				baseAttrs = append(baseAttrs, attribute.String("server.port", serverPort))
+			}
+
+			// Add pool name
+			poolName := formatPoolName(serverAddr, serverPort, dbIndex)
+			baseAttrs = append(baseAttrs, attribute.String("db.client.connection.pool.name", poolName))
+
+			// Observe regular pool connections (non-pubsub)
+			// Idle connections
+			idleAttrs := append([]attribute.KeyValue{}, baseAttrs...)
+			idleAttrs = append(idleAttrs,
+				attribute.String("db.client.connection.state", "idle"),
+				attribute.Bool("redis.client.connection.pubsub", false),
+			)
+			observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.IdleConns),
+				metric.WithAttributes(idleAttrs...))
+
+			// Used connections
+			usedConns := stats.TotalConns - stats.IdleConns
+			usedAttrs := append([]attribute.KeyValue{}, baseAttrs...)
+			usedAttrs = append(usedAttrs,
+				attribute.String("db.client.connection.state", "used"),
+				attribute.Bool("redis.client.connection.pubsub", false),
+			)
+			observer.ObserveInt64(recorder.connectionCountGauge, int64(usedConns),
+				metric.WithAttributes(usedAttrs...))
+
+			// Observe pubsub pool connections
+			if stats.PubSubStats.Active > 0 {
+				pubsubAttrs := append([]attribute.KeyValue{}, baseAttrs...)
+				pubsubAttrs = append(pubsubAttrs,
+					attribute.String("db.client.connection.state", "used"),
+					attribute.Bool("redis.client.connection.pubsub", true),
+				)
+				observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.PubSubStats.Active),
+					metric.WithAttributes(pubsubAttrs...))
+			}
+
+			return nil
+		},
+		recorder.connectionCountGauge,
+	)
+
+	return err
+}
+
+// registerPendingRequestsCallback registers the async callback for db.client.connection.pending_requests gauge
+func registerPendingRequestsCallback(meter metric.Meter, recorder *metricsRecorder, serverAddr, serverPort, dbIndex string) error {
+	if recorder.connectionPendingReqsGauge == nil {
+		return nil // Metric not enabled, skip
+	}
+
+	_, err := meter.RegisterCallback(
+		func(ctx context.Context, observer metric.Observer) error {
+			if recorder.client == nil {
+				return nil
+			}
+
+			stats := recorder.client.PoolStats()
+			if stats == nil {
+				return nil
+			}
+
+			// Build base attributes
+			baseAttrs := []attribute.KeyValue{
+				attribute.String("db.system.name", "redis"),
+				attribute.String("server.address", serverAddr),
+				getLibraryVersionAttr(),
+			}
+			if serverPort != "" && serverPort != "6379" {
+				baseAttrs = append(baseAttrs, attribute.String("server.port", serverPort))
+			}
+
+			// Add pool name
+			poolName := formatPoolName(serverAddr, serverPort, dbIndex)
+			baseAttrs = append(baseAttrs, attribute.String("db.client.connection.pool.name", poolName))
+
+			// Observe pending requests count
+			observer.ObserveInt64(recorder.connectionPendingReqsGauge, int64(stats.PendingRequests),
+				metric.WithAttributes(baseAttrs...))
+
+			return nil
+		},
+		recorder.connectionPendingReqsGauge,
+	)
+
+	return err
+}
+
+// Shutdown cleans up resources (for testing purposes)
+func Shutdown() {
+	if globalInstance != nil {
+		redis.SetOTelRecorder(nil)
+		globalInstance = nil
+	}
+	// Reset the sync.Once so Init can be called again (useful for tests)
+	globalInstanceOnce = sync.Once{}
+	initErr = nil
+}
