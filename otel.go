@@ -25,9 +25,6 @@ type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo)
 
-	// RecordConnectionStateChange records when a connection changes state (e.g., idle -> used)
-	RecordConnectionStateChange(ctx context.Context, cn ConnInfo, fromState, toState string)
-
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn ConnInfo)
 
@@ -58,17 +55,9 @@ type OTelRecorder interface {
 	// RecordConnectionUseTime records the time a connection was checked out from the pool
 	RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn ConnInfo)
 
-	// RecordConnectionTimeout records when a connection timeout occurs
-	// timeoutType: "pool" for pool timeout, "read" for read timeout, "write" for write timeout
-	RecordConnectionTimeout(ctx context.Context, cn ConnInfo, timeoutType string)
-
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
 	RecordConnectionClosed(ctx context.Context, cn ConnInfo, reason string)
-
-	// RecordConnectionPendingRequests records changes in pending requests count
-	// delta: +1 when request starts, -1 when request completes
-	RecordConnectionPendingRequests(ctx context.Context, delta int, cn ConnInfo)
 
 	// RecordPubSubMessage records a Pub/Sub message
 	// direction: "sent" or "received"
@@ -117,10 +106,6 @@ func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, durat
 	}
 }
 
-func (a *otelRecorderAdapter) RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string) {
-	a.recorder.RecordConnectionStateChange(ctx, toConnInfo(cn), fromState, toState)
-}
-
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
 	a.recorder.RecordConnectionCreateTime(ctx, duration, toConnInfo(cn))
 }
@@ -149,16 +134,8 @@ func (a *otelRecorderAdapter) RecordConnectionUseTime(ctx context.Context, durat
 	a.recorder.RecordConnectionUseTime(ctx, duration, toConnInfo(cn))
 }
 
-func (a *otelRecorderAdapter) RecordConnectionTimeout(ctx context.Context, cn *pool.Conn, timeoutType string) {
-	a.recorder.RecordConnectionTimeout(ctx, toConnInfo(cn), timeoutType)
-}
-
 func (a *otelRecorderAdapter) RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string) {
 	a.recorder.RecordConnectionClosed(ctx, toConnInfo(cn), reason)
-}
-
-func (a *otelRecorderAdapter) RecordConnectionPendingRequests(ctx context.Context, delta int, cn *pool.Conn) {
-	a.recorder.RecordConnectionPendingRequests(ctx, delta, toConnInfo(cn))
 }
 
 func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {

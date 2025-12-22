@@ -32,29 +32,35 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 	return attrs
 }
 
-// formatPoolName formats the pool name from server address and port
-func formatPoolName(serverAddr, serverPort string) string {
+// formatPoolName formats the pool name according to OpenTelemetry semantic conventions
+func formatPoolName(serverAddr, serverPort, dbIndex string) string {
+	poolName := serverAddr
+
 	if serverPort != "" && serverPort != "6379" {
-		return fmt.Sprintf("%s:%s", serverAddr, serverPort)
+		poolName = fmt.Sprintf("%s:%s", poolName, serverPort)
 	}
-	return serverAddr
+
+	if dbIndex != "" {
+		poolName = fmt.Sprintf("%s/%s", poolName, dbIndex)
+	}
+
+	return poolName
 }
 
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
-	connectionCount          metric.Int64UpDownCounter
+	connectionCountGauge     metric.Int64ObservableGauge
 	connectionCreateTime     metric.Float64Histogram
 	connectionRelaxedTimeout metric.Int64UpDownCounter
 	connectionHandoff        metric.Int64Counter
 	clientErrors             metric.Int64Counter
 	maintenanceNotifications metric.Int64Counter
 
-	connectionWaitTime    metric.Float64Histogram
-	connectionUseTime     metric.Float64Histogram
-	connectionTimeouts    metric.Int64Counter
-	connectionClosed      metric.Int64Counter
-	connectionPendingReqs metric.Int64UpDownCounter
+	connectionWaitTime         metric.Float64Histogram
+	connectionUseTime          metric.Float64Histogram
+	connectionClosed           metric.Int64Counter
+	connectionPendingReqsGauge metric.Int64ObservableGauge
 
 	pubsubMessages metric.Int64Counter
 
@@ -67,6 +73,9 @@ type metricsRecorder struct {
 	serverAddr string
 	serverPort string
 	dbIndex    string
+
+	// Client reference for accessing pool stats (used for async gauges)
+	client redis.UniversalClient
 }
 
 // RecordOperationDuration records db.client.operation.duration metric
@@ -290,46 +299,6 @@ func formatDBIndex(db int) string {
 	return strconv.Itoa(db)
 }
 
-// RecordConnectionStateChange records a change in connection state
-// This is called from the pool when connections transition between states
-func (r *metricsRecorder) RecordConnectionStateChange(
-	ctx context.Context,
-	cn redis.ConnInfo,
-	fromState, toState string,
-) {
-	if r.connectionCount == nil {
-		return
-	}
-
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
-	// Build base attributes
-	attrs := []attribute.KeyValue{
-		attribute.String("db.system", "redis"),
-		attribute.String("server.address", serverAddr),
-	}
-
-	// Add server.port if not default
-	if serverPort != "" && serverPort != "6379" {
-		attrs = append(attrs, attribute.String("server.port", serverPort))
-	}
-
-	// Decrement old state (if not empty)
-	if fromState != "" {
-		fromAttrs := append([]attribute.KeyValue{}, attrs...)
-		fromAttrs = append(fromAttrs, attribute.String("state", fromState))
-		r.connectionCount.Add(ctx, -1, metric.WithAttributes(fromAttrs...))
-	}
-
-	// Increment new state
-	if toState != "" {
-		toAttrs := append([]attribute.KeyValue{}, attrs...)
-		toAttrs = append(toAttrs, attribute.String("state", toState))
-		r.connectionCount.Add(ctx, 1, metric.WithAttributes(toAttrs...))
-	}
-}
-
 // extractServerInfo extracts server address and port from connection info
 // For client connections, this is the remote endpoint (server address)
 func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
@@ -365,16 +334,12 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system", "redis"),
-		attribute.String("server.address", serverAddr),
+		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
-
-	// Add pool name (using server.address:server.port format)
-	poolName := formatPoolName(serverAddr, serverPort)
+	// Add pool name
+	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram
@@ -398,14 +363,15 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
 		getLibraryVersionAttr(),
-		attribute.String("db.client.connection.pool.name", poolName),
-		attribute.String("redis.client.connection.notification", notificationType),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
+	// Add pool name (computed from server info, not using the passed poolName parameter)
+	computedPoolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
+
+	// Add notification type
+	attrs = append(attrs, attribute.String("redis.client.connection.notification", notificationType))
 
 	// Record the counter (delta can be +1 or -1)
 	r.connectionRelaxedTimeout.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
@@ -424,16 +390,16 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes
+	// Build attributes (connection-basic: NO peer info)
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system", "redis"),
-		attribute.String("server.address", serverAddr),
+		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
-		attribute.String("db.client.connection.pool.name", poolName),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
+	// Add pool name (computed from server info, not using the passed poolName parameter)
+	// The passed poolName is just "main" or "pubsub" which is not unique enough
+	computedPoolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
 
 	// Record the counter
 	r.connectionHandoff.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -536,27 +502,18 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 		return
 	}
 
-	// Extract server address and peer address from connection
+	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := serverAddr, serverPort
 
-	// Build attributes
+	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
 		getLibraryVersionAttr(),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
-
-	// Add peer info
-	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
-		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
-		}
-	}
+	// Add pool name
+	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram (duration in seconds)
 	r.connectionWaitTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
@@ -572,67 +529,21 @@ func (r *metricsRecorder) RecordConnectionUseTime(
 		return
 	}
 
-	// Extract server address and peer address from connection
+	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := serverAddr, serverPort
 
-	// Build attributes
+	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
 		getLibraryVersionAttr(),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
-
-	// Add peer info
-	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
-		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
-		}
-	}
+	// Add pool name
+	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram (duration in seconds)
 	r.connectionUseTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
-}
-
-// RecordConnectionTimeout records db.client.connection.timeouts metric
-func (r *metricsRecorder) RecordConnectionTimeout(
-	ctx context.Context,
-	cn redis.ConnInfo,
-	timeoutType string,
-) {
-	if r.connectionTimeouts == nil {
-		return
-	}
-
-	// Extract server address and peer address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := serverAddr, serverPort
-
-	// Build attributes
-	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.connection.timeout_type", timeoutType),
-		getLibraryVersionAttr(),
-	}
-
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
-
-	// Add peer info
-	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
-		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
-		}
-	}
-
-	// Record the counter
-	r.connectionTimeouts.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordConnectionClosed records redis.client.connection.closed metric
@@ -645,67 +556,24 @@ func (r *metricsRecorder) RecordConnectionClosed(
 		return
 	}
 
-	// Extract server address and peer address from connection
+	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := serverAddr, serverPort
 
-	// Build attributes
+	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.connection.close_reason", reason),
 		getLibraryVersionAttr(),
 	}
 
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
+	// Add pool name
+	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
-	// Add peer info
-	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
-		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
-		}
-	}
+	// Add close reason
+	attrs = append(attrs, attribute.String("redis.client.connection.close.reason", reason))
 
 	// Record the counter
 	r.connectionClosed.Add(ctx, 1, metric.WithAttributes(attrs...))
-}
-
-// RecordConnectionPendingRequests records db.client.connection.pending_requests metric
-func (r *metricsRecorder) RecordConnectionPendingRequests(
-	ctx context.Context,
-	delta int,
-	cn redis.ConnInfo,
-) {
-	if r.connectionPendingReqs == nil {
-		return
-	}
-
-	// Extract server address and peer address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-	peerAddr, peerPort := serverAddr, serverPort
-
-	// Build attributes
-	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		getLibraryVersionAttr(),
-	}
-
-	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, serverPort)
-
-	// Add peer info
-	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
-		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
-		}
-	}
-
-	// Record the up/down counter
-	r.connectionPendingReqs.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
 }
 
 // RecordPubSubMessage records redis.client.pubsub.messages metric

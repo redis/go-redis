@@ -22,9 +22,6 @@ type Recorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn)
 
-	// RecordConnectionStateChange records when a connection changes state
-	RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string)
-
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
 
@@ -55,17 +52,9 @@ type Recorder interface {
 	// RecordConnectionUseTime records the time a connection was checked out from the pool
 	RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
 
-	// RecordConnectionTimeout records when a connection timeout occurs
-	// timeoutType: "pool" for pool timeout, "read" for read timeout, "write" for write timeout
-	RecordConnectionTimeout(ctx context.Context, cn *pool.Conn, timeoutType string)
-
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
 	RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string)
-
-	// RecordConnectionPendingRequests records changes in pending requests count
-	// delta: +1 when request starts, -1 when request completes
-	RecordConnectionPendingRequests(ctx context.Context, delta int, cn *pool.Conn)
 
 	// RecordPubSubMessage records a Pub/Sub message
 	// direction: "sent" or "received"
@@ -89,7 +78,6 @@ func SetGlobalRecorder(r Recorder) {
 	if r == nil {
 		globalRecorder = noopRecorder{}
 		// Unregister pool callbacks
-		pool.SetConnectionStateChangeCallback(nil)
 		pool.SetConnectionCreateTimeCallback(nil)
 		pool.SetConnectionRelaxedTimeoutCallback(nil)
 		pool.SetConnectionHandoffCallback(nil)
@@ -97,17 +85,10 @@ func SetGlobalRecorder(r Recorder) {
 		pool.SetMaintenanceNotificationCallback(nil)
 		pool.SetConnectionWaitTimeCallback(nil)
 		pool.SetConnectionUseTimeCallback(nil)
-		pool.SetConnectionTimeoutCallback(nil)
 		pool.SetConnectionClosedCallback(nil)
-		pool.SetConnectionPendingRequestsCallback(nil)
 		return
 	}
 	globalRecorder = r
-
-	// Register pool callback to forward state changes to recorder
-	pool.SetConnectionStateChangeCallback(func(ctx context.Context, cn *pool.Conn, fromState, toState string) {
-		globalRecorder.RecordConnectionStateChange(ctx, cn, fromState, toState)
-	})
 
 	// Register pool callback to forward connection creation time to recorder
 	pool.SetConnectionCreateTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
@@ -144,19 +125,9 @@ func SetGlobalRecorder(r Recorder) {
 		globalRecorder.RecordConnectionUseTime(ctx, duration, cn)
 	})
 
-	// Register pool callback to forward connection timeouts to recorder
-	pool.SetConnectionTimeoutCallback(func(ctx context.Context, cn *pool.Conn, timeoutType string) {
-		globalRecorder.RecordConnectionTimeout(ctx, cn, timeoutType)
-	})
-
 	// Register pool callback to forward connection closed to recorder
 	pool.SetConnectionClosedCallback(func(ctx context.Context, cn *pool.Conn, reason string) {
 		globalRecorder.RecordConnectionClosed(ctx, cn, reason)
-	})
-
-	// Register pool callback to forward connection pending requests to recorder
-	pool.SetConnectionPendingRequestsCallback(func(ctx context.Context, delta int, cn *pool.Conn) {
-		globalRecorder.RecordConnectionPendingRequests(ctx, delta, cn)
 	})
 }
 
@@ -164,12 +135,6 @@ func SetGlobalRecorder(r Recorder) {
 // This is called from redis.go after command execution completes.
 func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn) {
 	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, cn)
-}
-
-// RecordConnectionStateChange records when a connection changes state.
-// This is called from pool.go when connections transition between states.
-func RecordConnectionStateChange(ctx context.Context, cn *pool.Conn, fromState, toState string) {
-	globalRecorder.RecordConnectionStateChange(ctx, cn, fromState, toState)
 }
 
 // RecordConnectionCreateTime records the time it took to create a new connection.
@@ -194,7 +159,6 @@ func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, stre
 type noopRecorder struct{}
 
 func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn) {}
-func (noopRecorder) RecordConnectionStateChange(context.Context, *pool.Conn, string, string)        {}
 func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn)          {}
 func (noopRecorder) RecordConnectionRelaxedTimeout(context.Context, int, *pool.Conn, string, string) {
 }
@@ -204,9 +168,7 @@ func (noopRecorder) RecordMaintenanceNotification(context.Context, *pool.Conn, s
 
 func (noopRecorder) RecordConnectionWaitTime(context.Context, time.Duration, *pool.Conn) {}
 func (noopRecorder) RecordConnectionUseTime(context.Context, time.Duration, *pool.Conn)  {}
-func (noopRecorder) RecordConnectionTimeout(context.Context, *pool.Conn, string)         {}
 func (noopRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string)          {}
-func (noopRecorder) RecordConnectionPendingRequests(context.Context, int, *pool.Conn)    {}
 
 func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {}
 

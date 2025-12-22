@@ -191,9 +191,10 @@ type Stats struct {
 	Unusable       uint32 // number of times a connection was found to be unusable
 	WaitDurationNs int64  // total time spent for waiting a connection in nanoseconds
 
-	TotalConns uint32 // number of total connections in the pool
-	IdleConns  uint32 // number of idle connections in the pool
-	StaleConns uint32 // number of stale connections removed from the pool
+	TotalConns      uint32 // number of total connections in the pool
+	IdleConns       uint32 // number of idle connections in the pool
+	StaleConns      uint32 // number of stale connections removed from the pool
+	PendingRequests uint32 // number of pending requests waiting for a connection
 
 	PubSubStats PubSubStats
 }
@@ -619,16 +620,15 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	// Track pending requests
-	if connectionPendingRequestsCallback != nil {
-		connectionPendingRequestsCallback(ctx, 1, nil)
-		defer func() {
-			if err != nil {
-				// Failed to get connection, decrement pending requests
-				connectionPendingRequestsCallback(ctx, -1, nil)
-			}
-		}()
-	}
+	// Track pending requests in pool stats
+	// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
+	atomic.AddUint32(&p.stats.PendingRequests, 1)
+	defer func() {
+		if err != nil {
+			// Failed to get connection, decrement pending requests
+			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+		}
+	}()
 
 	// Track wait time
 	waitStart := time.Now()
@@ -700,9 +700,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		cn.checkoutAt.Store(time.Now().UnixNano())
 
 		// Decrement pending requests (connection acquired successfully)
-		if connectionPendingRequestsCallback != nil {
-			connectionPendingRequestsCallback(ctx, -1, cn)
-		}
+		// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
+		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 
 		return cn, nil
 	}
@@ -739,9 +738,8 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	newcn.checkoutAt.Store(time.Now().UnixNano())
 
 	// Decrement pending requests (connection acquired successfully)
-	if connectionPendingRequestsCallback != nil {
-		connectionPendingRequestsCallback(ctx, -1, newcn)
-	}
+	// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
+	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 
 	return newcn, nil
 }
@@ -1186,12 +1184,13 @@ func (p *ConnPool) Size() int {
 
 func (p *ConnPool) Stats() *Stats {
 	return &Stats{
-		Hits:           atomic.LoadUint32(&p.stats.Hits),
-		Misses:         atomic.LoadUint32(&p.stats.Misses),
-		Timeouts:       atomic.LoadUint32(&p.stats.Timeouts),
-		WaitCount:      atomic.LoadUint32(&p.stats.WaitCount),
-		Unusable:       atomic.LoadUint32(&p.stats.Unusable),
-		WaitDurationNs: p.waitDurationNs.Load(),
+		Hits:            atomic.LoadUint32(&p.stats.Hits),
+		Misses:          atomic.LoadUint32(&p.stats.Misses),
+		Timeouts:        atomic.LoadUint32(&p.stats.Timeouts),
+		WaitCount:       atomic.LoadUint32(&p.stats.WaitCount),
+		Unusable:        atomic.LoadUint32(&p.stats.Unusable),
+		WaitDurationNs:  p.waitDurationNs.Load(),
+		PendingRequests: atomic.LoadUint32(&p.stats.PendingRequests),
 
 		TotalConns: uint32(p.Len()),
 		IdleConns:  uint32(p.IdleLen()),
