@@ -70,10 +70,6 @@ var (
 	// Parameters: ctx, cn, reason
 	connectionClosedCallback func(ctx context.Context, cn *Conn, reason string)
 
-	// Global callback for connection pending requests (set by otel package)
-	// Parameters: ctx, delta, cn
-	connectionPendingRequestsCallback func(ctx context.Context, delta int, cn *Conn)
-
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -174,12 +170,6 @@ func SetConnectionTimeoutCallback(fn func(ctx context.Context, cn *Conn, timeout
 // This is called by the otel package to register metrics recording.
 func SetConnectionClosedCallback(fn func(ctx context.Context, cn *Conn, reason string)) {
 	connectionClosedCallback = fn
-}
-
-// SetConnectionPendingRequestsCallback sets the global callback for connection pending requests.
-// This is called by the otel package to register metrics recording.
-func SetConnectionPendingRequestsCallback(fn func(ctx context.Context, delta int, cn *Conn)) {
-	connectionPendingRequestsCallback = fn
 }
 
 // Stats contains pool state information and accumulated stats.
