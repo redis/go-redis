@@ -110,6 +110,7 @@ func ExampleClient() {
         Password: "", // no password set
         DB:       0,  // use default DB
     })
+    defer rdb.Close()
 
     err := rdb.Set(ctx, "key", "value", 0).Err()
     if err != nil {
