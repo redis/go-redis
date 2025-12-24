@@ -702,13 +702,15 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if err := c.processPushNotifications(ctx, cn); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
-
+		now := time.Now()
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		}); err != nil {
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
+		internal.Logger.Printf(ctx, "------xinqitang--------write duration=%v", time.Since(now))
+
 		readReplyFunc := cmd.readReply
 		// Apply unstable RESP3 search module.
 		if c.opt.Protocol != 2 {
@@ -720,6 +722,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				readReplyFunc = cmd.readRawReply
 			}
 		}
+		now1 := time.Now()
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
@@ -734,6 +737,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			}
 			return err
 		}
+		internal.Logger.Printf(ctx, "------xinqitang--------read duration=%v", time.Since(now1))
 
 		return nil
 	}); err != nil {
