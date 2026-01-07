@@ -25,6 +25,12 @@ type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo)
 
+	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
+	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
+	// cmdCount is the number of commands in the pipeline.
+	// err is the error from the pipeline execution (can be nil).
+	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn ConnInfo)
+
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn ConnInfo)
 
@@ -57,7 +63,8 @@ type OTelRecorder interface {
 
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
-	RecordConnectionClosed(ctx context.Context, cn ConnInfo, reason string)
+	// err: the error that caused the close (nil for non-error closures)
+	RecordConnectionClosed(ctx context.Context, cn ConnInfo, reason string, err error)
 
 	// RecordPubSubMessage records a Pub/Sub message
 	// direction: "sent" or "received"
@@ -106,6 +113,10 @@ func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, durat
 	}
 }
 
+func (a *otelRecorderAdapter) RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn) {
+	a.recorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, toConnInfo(cn))
+}
+
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
 	a.recorder.RecordConnectionCreateTime(ctx, duration, toConnInfo(cn))
 }
@@ -134,8 +145,8 @@ func (a *otelRecorderAdapter) RecordConnectionUseTime(ctx context.Context, durat
 	a.recorder.RecordConnectionUseTime(ctx, duration, toConnInfo(cn))
 }
 
-func (a *otelRecorderAdapter) RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string) {
-	a.recorder.RecordConnectionClosed(ctx, toConnInfo(cn), reason)
+func (a *otelRecorderAdapter) RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string, err error) {
+	a.recorder.RecordConnectionClosed(ctx, toConnInfo(cn), reason, err)
 }
 
 func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {

@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/rand"
@@ -1431,17 +1432,26 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
+	operationStart := time.Now()
+	totalAttempts := 0
+
 	cmdsMap := newCmdsMap()
 
 	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
 		setCmdsErr(cmds, err)
+		operationDuration := time.Since(operationStart)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil)
 		return err
 	}
 
+	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
+				operationDuration := time.Since(operationStart)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil)
 				return err
 			}
 		}
@@ -1462,7 +1472,16 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 			break
 		}
 		cmdsMap = failedCmds
+		lastErr = cmdsFirstErr(cmds)
 	}
+
+	// Record pipeline operation duration
+	operationDuration := time.Since(operationStart)
+	finalErr := cmdsFirstErr(cmds)
+	if finalErr == nil {
+		finalErr = lastErr
+	}
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil)
 
 	return cmdsFirstErr(cmds)
 }
@@ -1653,6 +1672,9 @@ func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 }
 
 func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
+	operationStart := time.Now()
+	totalAttempts := 0
+
 	// Trim multi .. exec.
 	cmds = cmds[1 : len(cmds)-1]
 
@@ -1663,6 +1685,8 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		setCmdsErr(cmds, err)
+		operationDuration := time.Since(operationStart)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil)
 		return err
 	}
 
@@ -1679,20 +1703,28 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	default:
 		// TxPipeline does not support cross slot transaction.
 		setCmdsErr(cmds, ErrCrossSlot)
+		operationDuration := time.Since(operationStart)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil)
 		return ErrCrossSlot
 	}
 
 	node, err := state.slotMasterNode(slot)
 	if err != nil {
 		setCmdsErr(cmds, err)
+		operationDuration := time.Since(operationStart)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil)
 		return err
 	}
 
+	var lastErr error
 	cmdsMap := map[*clusterNode][]Cmder{node: cmds}
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
+		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
+				operationDuration := time.Since(operationStart)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil)
 				return err
 			}
 		}
@@ -1713,7 +1745,15 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 			break
 		}
 		cmdsMap = failedCmds.m
+		lastErr = cmdsFirstErr(cmds)
 	}
+
+	operationDuration := time.Since(operationStart)
+	finalErr := cmdsFirstErr(cmds)
+	if finalErr == nil {
+		finalErr = lastErr
+	}
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil)
 
 	return cmdsFirstErr(cmds)
 }

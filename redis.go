@@ -875,14 +875,14 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE"); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
 }
 
 func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI"); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
@@ -891,13 +891,22 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, p pipelineProcessor,
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
+	// Start measuring total operation duration (includes all retries)
+	operationStart := time.Now()
+	var lastConn *pool.Conn
+	totalAttempts := 0
+
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
+				// Record pipeline operation duration on early exit
+				operationDuration := time.Since(operationStart)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn)
 				return err
 			}
 		}
@@ -905,6 +914,7 @@ func (c *baseClient) generalProcessPipeline(
 		// Enable retries by default to retry dial errors returned by withConn.
 		canRetry := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			lastConn = cn
 			// Process any pending push notifications before executing the pipeline
 			if err := c.processPushNotifications(ctx, cn); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
@@ -918,9 +928,16 @@ func (c *baseClient) generalProcessPipeline(
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
+			// Record pipeline operation duration
+			operationDuration := time.Since(operationStart)
+			otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn)
 			return lastErr
 		}
 	}
+
+	// Record failed pipeline operation after all retries
+	operationDuration := time.Since(operationStart)
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn)
 	return lastErr
 }
 

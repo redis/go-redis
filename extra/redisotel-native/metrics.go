@@ -104,7 +104,6 @@ func (r *metricsRecorder) RecordOperationDuration(
 		attribute.String("db.operation.name", cmd.FullName()),
 		getLibraryVersionAttr(),
 		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
-		attribute.Bool("redis.client.operation.blocking", isBlockingCommand(cmd)),
 
 		// Recommended attributes
 		attribute.String("db.system.name", "redis"),
@@ -133,13 +132,73 @@ func (r *metricsRecorder) RecordOperationDuration(
 		}
 	}
 
-	// Add error.type if command failed
+	// Add error attributes if command failed
 	if err := cmd.Err(); err != nil {
 		attrs = append(attrs, attribute.String("error.type", classifyError(err)))
+		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
+		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
+			attrs = append(attrs, attribute.String("db.response.status_code", statusCode))
+		}
 	}
 
-	// Add db.response.status_code if error is a Redis error
-	if err := cmd.Err(); err != nil {
+	// Record the histogram
+	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordPipelineOperationDuration records db.client.operation.duration metric for pipelines/transactions.
+// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
+func (r *metricsRecorder) RecordPipelineOperationDuration(
+	ctx context.Context,
+	duration time.Duration,
+	operationName string,
+	cmdCount int,
+	attempts int,
+	err error,
+	cn redis.ConnInfo,
+) {
+
+	// Convert duration to seconds (OTel convention for duration metrics)
+	durationSeconds := duration.Seconds()
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		// Required attributes
+		attribute.String("db.operation.name", operationName),
+		getLibraryVersionAttr(),
+		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
+		attribute.Int("db.operation.batch.size", cmdCount),                 // number of commands in pipeline
+
+		// Recommended attributes
+		attribute.String("db.system.name", "redis"),
+		attribute.String("server.address", r.serverAddr),
+	}
+
+	// Add server.port if not default
+	attrs = addServerPortIfNonDefault(attrs, r.serverPort)
+
+	// Add db.namespace (database index) if available
+	if r.dbIndex != "" {
+		attrs = append(attrs, attribute.String("db.namespace", r.dbIndex))
+	}
+
+	// Add network.peer.address and network.peer.port from connection
+	if cn != nil {
+		remoteAddr := cn.RemoteAddr()
+		if remoteAddr != nil {
+			peerAddr, peerPort := splitHostPort(remoteAddr.String())
+			if peerAddr != "" {
+				attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+			}
+			if peerPort != "" {
+				attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+			}
+		}
+	}
+
+	// Add error attributes if pipeline failed
+	if err != nil {
+		attrs = append(attrs, attribute.String("error.type", classifyError(err)))
+		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
 			attrs = append(attrs, attribute.String("db.response.status_code", statusCode))
 		}
@@ -252,6 +311,111 @@ func isTimeoutError(err error) bool {
 	}
 
 	return false
+}
+
+// getErrorCategory returns the error category for redis.client.errors.category attribute.
+// Categories:
+// - network: transport/DNS/socket issues
+// - tls: security/TLS errors
+// - auth: authentication/authorization
+// - server: Redis server errors (including cluster errors)
+// - other: Uncategorized errors
+func getErrorCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	errStr := strings.ToLower(err.Error())
+
+	// Check for TLS errors
+	if strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") ||
+		strings.Contains(errStr, "x509") || strings.Contains(errStr, "ssl") {
+		return "tls"
+	}
+
+	// Check for auth errors
+	if strings.Contains(errStr, "auth") || strings.Contains(errStr, "noauth") ||
+		strings.Contains(errStr, "wrongpass") || strings.Contains(errStr, "noperm") ||
+		strings.Contains(errStr, "permission") {
+		return "auth"
+	}
+
+	// Check for network errors (transport/DNS/socket issues)
+	if isNetworkError(err) || isTimeoutError(err) ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "no route to host") ||
+		strings.Contains(errStr, "network is unreachable") ||
+		strings.Contains(errStr, "dns") ||
+		strings.Contains(errStr, "lookup") ||
+		strings.Contains(errStr, "dial") ||
+		strings.Contains(errStr, "eof") ||
+		strings.Contains(errStr, "broken pipe") {
+		return "network"
+	}
+
+	// Check for Redis server errors (including cluster errors)
+	if prefix := extractRedisErrorPrefix(err); prefix != "" {
+		return "server"
+	}
+
+	// Uncategorized errors
+	return "other"
+}
+
+// getErrorCategoryFromType derives the error category from an errorType string.
+// This is used when we only have the error type string, not the original error.
+// Categories:
+// - network: transport/DNS/socket issues
+// - tls: security/TLS errors
+// - auth: authentication/authorization
+// - server: Redis server errors (including cluster errors)
+// - other: Uncategorized errors
+func getErrorCategoryFromType(errorType string) string {
+	if errorType == "" {
+		return ""
+	}
+
+	errLower := strings.ToLower(errorType)
+
+	// Check for TLS errors
+	if strings.Contains(errLower, "tls") || strings.Contains(errLower, "certificate") ||
+		strings.Contains(errLower, "x509") || strings.Contains(errLower, "ssl") {
+		return "tls"
+	}
+
+	// Check for auth errors
+	if strings.Contains(errLower, "auth") || strings.Contains(errLower, "noauth") ||
+		strings.Contains(errLower, "wrongpass") || strings.Contains(errLower, "noperm") ||
+		strings.Contains(errLower, "permission") {
+		return "auth"
+	}
+
+	// Check for network errors
+	if strings.Contains(errLower, "network") || strings.Contains(errLower, "timeout") ||
+		strings.Contains(errLower, "connection refused") || strings.Contains(errLower, "connection reset") ||
+		strings.Contains(errLower, "dns") || strings.Contains(errLower, "dial") ||
+		strings.Contains(errLower, "eof") || strings.Contains(errLower, "broken pipe") ||
+		strings.Contains(errLower, "i/o") {
+		return "network"
+	}
+
+	// Check for Redis server errors (including cluster errors)
+	// Common Redis error prefixes: ERR, WRONGTYPE, CLUSTERDOWN, MOVED, ASK, READONLY, etc.
+	serverErrors := []string{"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
+		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum"}
+	for _, prefix := range serverErrors {
+		if strings.Contains(errLower, prefix) {
+			return "server"
+		}
+	}
+
+	// If it looks like an uppercase Redis error prefix, it's a server error
+	if len(errorType) > 0 && errorType == strings.ToUpper(errorType) {
+		return "server"
+	}
+
+	return "other"
 }
 
 // splitHostPort splits a host:port string into host and port
@@ -390,14 +554,13 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes (connection-basic: NO peer info)
+	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
 	// Add pool name (computed from server info, not using the passed poolName parameter)
-	// The passed poolName is just "main" or "pubsub" which is not unique enough
 	computedPoolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
 
@@ -430,6 +593,7 @@ func (r *metricsRecorder) RecordError(
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		attribute.String("error.type", errorType),
+		attribute.String("redis.client.errors.category", getErrorCategoryFromType(errorType)),
 		attribute.String("db.response.status_code", statusCode),
 		attribute.Bool("redis.client.errors.internal", isInternal),
 		attribute.Int("redis.client.operation.retry_attempts", retryAttempts),
@@ -505,7 +669,7 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
+	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
@@ -532,7 +696,7 @@ func (r *metricsRecorder) RecordConnectionUseTime(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
+	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
@@ -551,6 +715,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	ctx context.Context,
 	cn redis.ConnInfo,
 	reason string,
+	err error,
 ) {
 	if r.connectionClosed == nil {
 		return
@@ -559,7 +724,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes (connection-advanced: NO peer info, NO server.address/port)
+	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
@@ -571,6 +736,16 @@ func (r *metricsRecorder) RecordConnectionClosed(
 
 	// Add close reason
 	attrs = append(attrs, attribute.String("redis.client.connection.close.reason", reason))
+
+	// Add error type and category (always required per spec)
+	if err != nil {
+		attrs = append(attrs, attribute.String("error.type", err.Error()))
+		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
+	} else {
+		// For non-error closures, use reason as error type and derive category
+		attrs = append(attrs, attribute.String("error.type", reason))
+		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategoryFromType(reason)))
+	}
 
 	// Record the counter
 	r.connectionClosed.Add(ctx, 1, metric.WithAttributes(attrs...))

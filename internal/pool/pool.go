@@ -67,8 +67,8 @@ var (
 	connectionTimeoutCallback func(ctx context.Context, cn *Conn, timeoutType string)
 
 	// Global callback for connection closed (set by otel package)
-	// Parameters: ctx, cn, reason
-	connectionClosedCallback func(ctx context.Context, cn *Conn, reason string)
+	// Parameters: ctx, cn, reason, err
+	connectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
@@ -168,7 +168,7 @@ func SetConnectionTimeoutCallback(fn func(ctx context.Context, cn *Conn, timeout
 
 // SetConnectionClosedCallback sets the global callback for connection closed.
 // This is called by the otel package to register metrics recording.
-func SetConnectionClosedCallback(fn func(ctx context.Context, cn *Conn, reason string)) {
+func SetConnectionClosedCallback(fn func(ctx context.Context, cn *Conn, reason string, err error)) {
 	connectionClosedCallback = fn
 }
 
@@ -1111,7 +1111,7 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		if reason != nil {
 			reasonStr = reason.Error()
 		}
-		connectionClosedCallback(ctx, cn, reasonStr)
+		connectionClosedCallback(ctx, cn, reasonStr, reason)
 	}
 
 	_ = p.closeConn(cn)

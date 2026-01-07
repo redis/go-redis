@@ -22,6 +22,12 @@ type Recorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn)
 
+	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
+	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
+	// cmdCount is the number of commands in the pipeline.
+	// err is the error from the pipeline execution (can be nil).
+	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn)
+
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
 
@@ -54,7 +60,8 @@ type Recorder interface {
 
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
-	RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string)
+	// err: the error that caused the close (nil for non-error closures)
+	RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string, err error)
 
 	// RecordPubSubMessage records a Pub/Sub message
 	// direction: "sent" or "received"
@@ -126,8 +133,8 @@ func SetGlobalRecorder(r Recorder) {
 	})
 
 	// Register pool callback to forward connection closed to recorder
-	pool.SetConnectionClosedCallback(func(ctx context.Context, cn *pool.Conn, reason string) {
-		globalRecorder.RecordConnectionClosed(ctx, cn, reason)
+	pool.SetConnectionClosedCallback(func(ctx context.Context, cn *pool.Conn, reason string, err error) {
+		globalRecorder.RecordConnectionClosed(ctx, cn, reason, err)
 	})
 }
 
@@ -135,6 +142,14 @@ func SetGlobalRecorder(r Recorder) {
 // This is called from redis.go after command execution completes.
 func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn) {
 	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, cn)
+}
+
+// RecordPipelineOperationDuration records the total pipeline/transaction duration.
+// This is called from redis.go after pipeline/transaction execution completes.
+// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
+// err is the error from the pipeline execution (can be nil).
+func RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn) {
+	globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn)
 }
 
 // RecordConnectionCreateTime records the time it took to create a new connection.
@@ -159,7 +174,9 @@ func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, stre
 type noopRecorder struct{}
 
 func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn) {}
-func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn)          {}
+func (noopRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn) {
+}
+func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn) {}
 func (noopRecorder) RecordConnectionRelaxedTimeout(context.Context, int, *pool.Conn, string, string) {
 }
 func (noopRecorder) RecordConnectionHandoff(context.Context, *pool.Conn, string)        {}
@@ -168,7 +185,7 @@ func (noopRecorder) RecordMaintenanceNotification(context.Context, *pool.Conn, s
 
 func (noopRecorder) RecordConnectionWaitTime(context.Context, time.Duration, *pool.Conn) {}
 func (noopRecorder) RecordConnectionUseTime(context.Context, time.Duration, *pool.Conn)  {}
-func (noopRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string)          {}
+func (noopRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string, error)   {}
 
 func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {}
 
