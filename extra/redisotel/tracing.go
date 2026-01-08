@@ -85,10 +85,52 @@ func newTracingHook(connString string, opts ...TracingOption) *tracingHook {
 	}
 }
 
+func (th *tracingHook) shouldTrace(cmd redis.Cmder) bool {
+	if _, excluded := th.conf.excludedCommands[strings.ToUpper(cmd.Name())]; excluded {
+		return false
+	}
+
+	if th.conf.unifiedProcessFilter != nil {
+		return !th.conf.unifiedProcessFilter(cmd)
+	}
+
+	if th.conf.filterProcess != nil {
+		return !th.conf.filterProcess(cmd)
+	}
+
+	return true
+}
+
+func (th *tracingHook) shouldTracePipeline(cmds []redis.Cmder) bool {
+	for _, cmd := range cmds {
+		if _, excluded := th.conf.excludedCommands[strings.ToUpper(cmd.Name())]; excluded {
+			return false
+		}
+	}
+
+	if th.conf.unifiedProcessPipelineFilter != nil {
+		return !th.conf.unifiedProcessPipelineFilter(cmds)
+	}
+
+	if th.conf.filterProcessPipeline != nil {
+		return !th.conf.filterProcessPipeline(cmds)
+	}
+
+	return true
+}
+
+func (th *tracingHook) shouldTraceDial(network, addr string) bool {
+	if th.conf.unifiedDialFilter != nil {
+		return !th.conf.unifiedDialFilter(network, addr)
+	}
+
+	return !th.conf.filterDial
+}
+
 func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 
-		if th.conf.filterDial {
+		if !th.shouldTraceDial(network, addr) {
 			return hook(ctx, network, addr)
 		}
 
@@ -107,25 +149,25 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 
-		// Check if the command should be filtered out
-		if th.conf.filterProcess != nil && th.conf.filterProcess(cmd) {
-			// If so, just call the next hook
+		if !th.shouldTrace(cmd) {
 			return hook(ctx, cmd)
 		}
 
 		attrs := make([]attribute.KeyValue, 0, 8)
 		if th.conf.callerEnabled {
-			fn, file, line := funcFileLine("github.com/redis/go-redis")
-			attrs = append(attrs,
-				semconv.CodeFunction(fn),
-				semconv.CodeFilepath(file),
-				semconv.CodeLineNumber(line),
-			)
+			if fn, file, line := funcFileLine("github.com/redis/go-redis"); fn != "" {
+				attrs = append(attrs,
+					semconv.CodeFunction(fn),
+					semconv.CodeFilepath(file),
+					semconv.CodeLineNumber(line),
+				)
+			}
 		}
 
 		if th.conf.dbStmtEnabled {
-			cmdString := rediscmd.CmdString(cmd)
-			attrs = append(attrs, semconv.DBStatement(cmdString))
+			if cmdString := rediscmd.CmdString(cmd); cmdString != "" {
+				attrs = append(attrs, semconv.DBStatement(cmdString))
+			}
 		}
 
 		opts := th.spanOpts
@@ -147,7 +189,7 @@ func (th *tracingHook) ProcessPipelineHook(
 ) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 
-		if th.conf.filterProcessPipeline != nil && th.conf.filterProcessPipeline(cmds) {
+		if !th.shouldTracePipeline(cmds) {
 			return hook(ctx, cmds)
 		}
 
@@ -224,7 +266,8 @@ func funcFileLine(pkg string) (string, string, int) {
 	return fn, file, line
 }
 
-// Database span attributes semantic conventions recommended server address and port
+// addServerAttributes adds database span attributes following semantic conventions
+// for server address and port as recommended by OpenTelemetry.
 // https://opentelemetry.io/docs/specs/semconv/database/database-spans/#connection-level-attributes
 func addServerAttributes(opts []TracingOption, addr string) []TracingOption {
 	host, portString, err := net.SplitHostPort(addr)
@@ -232,19 +275,19 @@ func addServerAttributes(opts []TracingOption, addr string) []TracingOption {
 		return opts
 	}
 
-	opts = append(opts, WithAttributes(
-		semconv.ServerAddress(host),
-	))
-
-	// Parse the port string to an integer
-	port, err := strconv.Atoi(portString)
-	if err != nil {
-		return opts
+	if host != "" {
+		opts = append(opts, WithAttributes(
+			semconv.ServerAddress(host),
+		))
 	}
 
-	opts = append(opts, WithAttributes(
-		semconv.ServerPort(port),
-	))
+	if portString != "" {
+		if port, err := strconv.Atoi(portString); err == nil && port > 0 {
+			opts = append(opts, WithAttributes(
+				semconv.ServerPort(port),
+			))
+		}
+	}
 
 	return opts
 }
