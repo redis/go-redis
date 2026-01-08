@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -671,8 +671,8 @@ func compareFailoverOptions(t *testing.T, a, e *redis.FailoverOptions) {
 }
 
 func compareSlices(t *testing.T, a, b []string, name string) {
-	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
-	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	slices.Sort(a)
+	slices.Sort(b)
 	if len(a) != len(b) {
 		t.Errorf("%s got %q, want %q", name, a, b)
 	}
