@@ -179,6 +179,9 @@ type ClusterOptions struct {
 	// ShardPicker is used to pick a shard when the request_policy is
 	// ReqDefault and the command has no keys.
 	ShardPicker routing.ShardPicker
+
+	// ClusterStateReloadInterval is the interval for reloading the cluster state.
+	ClusterStateReloadInterval time.Duration
 }
 
 func (opt *ClusterOptions) init() {
@@ -257,6 +260,10 @@ func (opt *ClusterOptions) init() {
 
 	if opt.ShardPicker == nil {
 		opt.ShardPicker = &routing.RoundRobinPicker{}
+	}
+
+	if opt.ClusterStateReloadInterval == 0 {
+		opt.ClusterStateReloadInterval = 30 * time.Second
 	}
 }
 
@@ -422,17 +429,17 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
-		ReadBufferSize:     opt.ReadBufferSize,
-		WriteBufferSize:    opt.WriteBufferSize,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ReadBufferSize:        opt.ReadBufferSize,
+		WriteBufferSize:       opt.WriteBufferSize,
 		DisableIdentity:       opt.DisableIdentity,
 		DisableIndentity:      opt.DisableIdentity,
 		IdentitySuffix:        opt.IdentitySuffix,
@@ -1025,14 +1032,16 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 type clusterStateHolder struct {
 	load func(ctx context.Context) (*clusterState, error)
 
-	state         atomic.Value
-	reloading     uint32 // atomic
-	reloadPending uint32 // atomic - set to 1 when reload is requested during active reload
+	reloadInterval time.Duration
+	state          atomic.Value
+	reloading      uint32 // atomic
+	reloadPending  uint32 // atomic - set to 1 when reload is requested during active reload
 }
 
-func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error)) *clusterStateHolder {
+func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error), reloadInterval time.Duration) *clusterStateHolder {
 	return &clusterStateHolder{
-		load: load,
+		load:           load,
+		reloadInterval: reloadInterval,
 	}
 }
 
@@ -1087,7 +1096,7 @@ func (c *clusterStateHolder) Get(ctx context.Context) (*clusterState, error) {
 	}
 
 	state := v.(*clusterState)
-	if time.Since(state.createdAt) > 10*time.Second {
+	if time.Since(state.createdAt) > c.reloadInterval {
 		c.LazyReload()
 	}
 	return state, nil
@@ -1128,7 +1137,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
-	c.state = newClusterStateHolder(c.loadState)
+	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
