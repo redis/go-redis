@@ -346,7 +346,7 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	if len(notification) != 4 {
+	if len(notification) != 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
 		return ErrInvalidNotification
 	}
@@ -358,29 +358,23 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
-	// Extract count (position 2)
-	count, ok := notification[2].(int64)
-	if !ok {
-		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (count)", notification))
-		return ErrInvalidNotification
-	}
-
 	// Extract endpoints array (position 3)
-	endpointsArray, ok := notification[3].([]interface{})
+	endpointsArray, ok := notification[2].([]interface{})
 	if !ok {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoints)", notification))
 		return ErrInvalidNotification
 	}
 
-	if int64(len(endpointsArray)) != count {
-		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (count mismatch)", notification))
-		return ErrInvalidNotification
-	}
-
 	// Parse endpoints
-	endpoints := make([]string, 0, count)
+	endpoints := make([][]string, 0, len(endpointsArray))
 	for _, ep := range endpointsArray {
-		if endpoint, ok := ep.(string); ok {
+		if endpointParts, ok := ep.([]interface{}); ok {
+			endpoint := make([]string, 0, len(endpointParts))
+			for _, part := range endpointParts {
+				if partStr, ok := part.(string); ok {
+					endpoint = append(endpoint, partStr)
+				}
+			}
 			endpoints = append(endpoints, endpoint)
 		}
 	}
@@ -393,16 +387,15 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		var allSlotRanges []string
 
 		for _, endpoint := range endpoints {
-			// Parse endpoint: "host:port slot1,slot2,range1-range2"
-			parts := strings.SplitN(endpoint, " ", 2)
-			if len(parts) == 2 {
-				if hostPort == "" {
-					hostPort = parts[0]
-				}
-				// Split slots by comma
-				slots := strings.Split(parts[1], ",")
-				allSlotRanges = append(allSlotRanges, slots...)
+			// endpoint is a slice of strings - it holds ["host:port", "slot1,slot2,range1-range2"]
+			if len(endpoint) != 2 {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoint)", endpoint))
+				continue
 			}
+			hostPort = endpoint[0]
+			slotRanges := strings.Split(endpoint[1], ",")
+			allSlotRanges = append(allSlotRanges, slotRanges...)
+
 		}
 
 		if internal.LogLevel.InfoOrAbove() {
