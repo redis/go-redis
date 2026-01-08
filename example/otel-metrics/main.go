@@ -59,17 +59,19 @@ func main() {
 	// STEP_END
 
 	// STEP_START redis_client_setup
-	// Create Redis client
+	// Initialize OTel instrumentation BEFORE creating Redis clients
+	otelInstance := redisotel.GetObservabilityInstance()
+	config := redisotel.NewConfig().WithEnabled(true)
+	if err := otelInstance.Init(config); err != nil {
+		log.Fatalf("Failed to initialize OTel: %v", err)
+	}
+	defer otelInstance.Shutdown()
+
+	// Create Redis client - automatically instrumented
 	rdb := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
 	defer rdb.Close()
-
-	// Initialize OTel instrumentation (uses global meter provider)
-	if err := redisotel.Init(rdb); err != nil {
-		log.Fatalf("Failed to initialize OTel: %v", err)
-	}
-	defer redisotel.Shutdown()
 	// STEP_END
 
 	// STEP_START redis_operations

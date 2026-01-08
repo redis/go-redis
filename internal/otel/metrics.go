@@ -17,16 +17,17 @@ type Cmder interface {
 }
 
 // Recorder is the interface for recording metrics.
-// Implementations are provided by extra/redisotel-native package.
 type Recorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
-	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn)
+	// dbIndex is the Redis database index (0-15)
+	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn, dbIndex int)
 
 	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
 	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
 	// cmdCount is the number of commands in the pipeline.
 	// err is the error from the pipeline execution (can be nil).
-	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn)
+	// dbIndex is the Redis database index (0-15)
+	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int)
 
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
@@ -75,6 +76,26 @@ type Recorder interface {
 	// consumerGroup: name of the consumer group
 	// consumerName: name of the consumer
 	RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string)
+}
+
+type PubSubPooler interface {
+	Stats() *pool.PubSubStats
+}
+
+type PoolRegistrar interface {
+	// RegisterPool is called when a new client is created with its connection pools.
+	// poolName: identifier for the pool (e.g., "main")
+	// pool: the connection pool
+	RegisterPool(poolName string, pool pool.Pooler)
+	// UnregisterPool is called when a client is closed to remove its pool from the registry.
+	// pool: the connection pool to unregister
+	UnregisterPool(pool pool.Pooler)
+	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
+	// pool: the PubSub connection pool
+	RegisterPubSubPool(pool PubSubPooler)
+	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
+	// pool: the PubSub connection pool to unregister
+	UnregisterPubSubPool(pool PubSubPooler)
 }
 
 // Global recorder instance (initialized by extra/redisotel-native)
@@ -139,42 +160,40 @@ func SetGlobalRecorder(r Recorder) {
 }
 
 // RecordOperationDuration records the total operation duration.
-// This is called from redis.go after command execution completes.
-func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn) {
-	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, cn)
+// dbIndex is the Redis database index (0-15).
+func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn, dbIndex int) {
+	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, cn, dbIndex)
 }
 
 // RecordPipelineOperationDuration records the total pipeline/transaction duration.
 // This is called from redis.go after pipeline/transaction execution completes.
 // operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
 // err is the error from the pipeline execution (can be nil).
-func RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn) {
-	globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn)
+// dbIndex is the Redis database index (0-15).
+func RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
+	globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
 }
 
 // RecordConnectionCreateTime records the time it took to create a new connection.
-// This is called from pool.go when a new connection is successfully created.
 func RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
 	globalRecorder.RecordConnectionCreateTime(ctx, duration, cn)
 }
 
 // RecordPubSubMessage records a Pub/Sub message sent or received.
-// This is called from pubsub.go when messages are sent or received.
 func RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {
 	globalRecorder.RecordPubSubMessage(ctx, cn, direction, channel, sharded)
 }
 
 // RecordStreamLag records the lag between message creation and consumption in a stream.
-// This is called from stream_commands.go when processing stream messages.
 func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
 	globalRecorder.RecordStreamLag(ctx, lag, cn, streamName, consumerGroup, consumerName)
 }
 
-// noopRecorder is a no-op implementation (zero overhead when metrics disabled)
 type noopRecorder struct{}
 
-func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn) {}
-func (noopRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn) {
+func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn, int) {
+}
+func (noopRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn, int) {
 }
 func (noopRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn) {}
 func (noopRecorder) RecordConnectionRelaxedTimeout(context.Context, int, *pool.Conn, string, string) {
@@ -190,4 +209,30 @@ func (noopRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string, 
 func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {}
 
 func (noopRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
+}
+
+// RegisterPools registers connection pools with the global recorder
+func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler) {
+	// Check if the global recorder implements PoolRegistrar
+	if registrar, ok := globalRecorder.(PoolRegistrar); ok {
+		if connPool != nil {
+			registrar.RegisterPool("main", connPool)
+		}
+		if pubSubPool != nil {
+			registrar.RegisterPubSubPool(pubSubPool)
+		}
+	}
+}
+
+// UnregisterPools removes connection pools from the global recorder
+func UnregisterPools(connPool pool.Pooler, pubSubPool PubSubPooler) {
+	// Check if the global recorder implements PoolRegistrar
+	if registrar, ok := globalRecorder.(PoolRegistrar); ok {
+		if connPool != nil {
+			registrar.UnregisterPool(connPool)
+		}
+		if pubSubPool != nil {
+			registrar.UnregisterPubSubPool(pubSubPool)
+		}
+	}
 }

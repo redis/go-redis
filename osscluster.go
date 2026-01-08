@@ -1440,7 +1440,7 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
 		setCmdsErr(cmds, err)
 		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil, 0)
 		return err
 	}
 
@@ -1451,7 +1451,7 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
 				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil, 0)
 				return err
 			}
 		}
@@ -1481,7 +1481,7 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	if finalErr == nil {
 		finalErr = lastErr
 	}
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil)
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil, 0)
 
 	return cmdsFirstErr(cmds)
 }
@@ -1686,7 +1686,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	if err != nil {
 		setCmdsErr(cmds, err)
 		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
 		return err
 	}
 
@@ -1704,7 +1704,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 		// TxPipeline does not support cross slot transaction.
 		setCmdsErr(cmds, ErrCrossSlot)
 		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil, 0)
 		return ErrCrossSlot
 	}
 
@@ -1712,7 +1712,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	if err != nil {
 		setCmdsErr(cmds, err)
 		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil)
+		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
 		return err
 	}
 
@@ -1724,7 +1724,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
 				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil, 0)
 				return err
 			}
 		}
@@ -1753,7 +1753,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	if finalErr == nil {
 		finalErr = lastErr
 	}
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil)
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
 
 	return cmdsFirstErr(cmds)
 }

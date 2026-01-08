@@ -563,7 +563,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 				// Record handshake failure metric
 				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
-					// Handshake failures are internal errors with no retry attempts
 					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 				}
 
@@ -687,7 +686,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		if err == nil || !retry {
 			// Record total operation duration
 			operationDuration := time.Since(operationStart)
-			otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn)
+			otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
 			return err
 		}
 
@@ -696,7 +695,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 
 	// Record failed operation after all retries
 	operationDuration := time.Since(operationStart)
-	otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn)
+	otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
 
 	return lastErr
 }
@@ -857,6 +856,10 @@ func (c *baseClient) Close() error {
 			firstErr = err
 		}
 	}
+
+	// Unregister pools from OTel before closing them
+	otel.UnregisterPools(c.connPool, c.pubSubPool)
+
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -893,7 +896,6 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
-	// Start measuring total operation duration (includes all retries)
 	operationStart := time.Now()
 	var lastConn *pool.Conn
 	totalAttempts := 0
@@ -904,9 +906,8 @@ func (c *baseClient) generalProcessPipeline(
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				// Record pipeline operation duration on early exit
 				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				return err
 			}
 		}
@@ -928,16 +929,14 @@ func (c *baseClient) generalProcessPipeline(
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
-			// Record pipeline operation duration
 			operationDuration := time.Since(operationStart)
-			otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn)
+			otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 			return lastErr
 		}
 	}
 
-	// Record failed pipeline operation after all retries
 	operationDuration := time.Since(operationStart)
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn)
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 	return lastErr
 }
 
@@ -1135,6 +1134,10 @@ func NewClient(opt *Options) *Client {
 			}
 		}
 	}
+
+	// Register pools with OTel recorder if it supports pool registration
+	// This allows async gauge metrics to pull stats from pools periodically
+	otel.RegisterPools(c.connPool, c.pubSubPool)
 
 	return &c
 }

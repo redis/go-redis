@@ -22,7 +22,6 @@ const (
 	HistogramAggregationBase2Exponential HistogramAggregation = "base2_exponential_bucket_histogram"
 )
 
-// config holds the configuration for the instrumentation
 type config struct {
 	// Core settings
 	meterProvider metric.MeterProvider
@@ -50,43 +49,10 @@ type config struct {
 	bucketsConnectionUseTime        []float64
 }
 
-func defaultConfig() config {
-	return config{
-		meterProvider: nil, // Will use global otel.GetMeterProvider() if nil
-		enabled:       false,
-
-		// Default metric groups: connection-basic, resiliency
-		enabledMetricGroups: map[MetricGroup]bool{
-			MetricGroupConnectionBasic: true,
-			MetricGroupResiliency:      true,
-		},
-
-		// No command filtering by default
-		includeCommands: nil,
-		excludeCommands: nil,
-
-		// Don't hide labels by default
-		hidePubSubChannelNames: false,
-		hideStreamNames:        false,
-
-		// Use explicit bucket histogram by default
-		histAggregation: HistogramAggregationExplicitBucket,
-
-		// Default buckets for all duration metrics
-		bucketsOperationDuration:        defaultHistogramBuckets(),
-		bucketsStreamProcessingDuration: defaultHistogramBuckets(),
-		bucketsConnectionCreateTime:     defaultHistogramBuckets(),
-		bucketsConnectionWaitTime:       defaultHistogramBuckets(),
-		bucketsConnectionUseTime:        defaultHistogramBuckets(),
-	}
-}
-
-// isMetricGroupEnabled checks if a metric group is enabled
 func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
 	return c.enabledMetricGroups[group]
 }
 
-// isCommandIncluded checks if a command should be included in metrics
 func (c *config) isCommandIncluded(command string) bool {
 	if c.excludeCommands != nil && c.excludeCommands[command] {
 		return false
@@ -128,111 +94,171 @@ func defaultHistogramBuckets() []float64 {
 	}
 }
 
-// Option is a functional option for configuring the instrumentation
-type Option interface {
-	apply(*config)
+// MetricGroupFlags represents metric groups as bitwise flags
+type MetricGroupFlags uint32
+
+const (
+	MetricGroupFlagCommand            MetricGroupFlags = 1 << 0
+	MetricGroupFlagConnectionBasic    MetricGroupFlags = 1 << 1
+	MetricGroupFlagResiliency         MetricGroupFlags = 1 << 2
+	MetricGroupFlagConnectionAdvanced MetricGroupFlags = 1 << 3
+	MetricGroupFlagPubSub             MetricGroupFlags = 1 << 4
+	MetricGroupFlagStream             MetricGroupFlags = 1 << 5
+
+	// MetricGroupAll enables all metric groups
+	MetricGroupAll MetricGroupFlags = MetricGroupFlagCommand |
+		MetricGroupFlagConnectionBasic |
+		MetricGroupFlagResiliency |
+		MetricGroupFlagConnectionAdvanced |
+		MetricGroupFlagPubSub |
+		MetricGroupFlagStream
+)
+
+// Use NewConfig() to create a new instance with defaults, then chain
+// builder methods to customize.
+//
+// Example:
+//
+//	config := redisotel.NewConfig().
+//	    WithEnabled(true).
+//	    WithMetricGroups(redisotel.MetricGroupAll).
+//	    WithMeterProvider(myProvider)
+//
+//	otel := redisotel.GetObservabilityInstance()
+//	otel.Init(config)
+type Config struct {
+	// Core settings
+	Enabled       bool
+	MeterProvider metric.MeterProvider
+
+	// Metric groups (bitwise flags)
+	MetricGroups MetricGroupFlags
+
+	// Command filtering
+	IncludeCommands map[string]bool // nil means include all
+	ExcludeCommands map[string]bool // nil means exclude none
+
+	// Cardinality reduction
+	HidePubSubChannelNames bool
+	HideStreamNames        bool
+
+	// Histogram settings
+	HistogramAggregation HistogramAggregation
+
+	// Bucket configurations for different histogram metrics
+	BucketsOperationDuration    []float64
+	BucketsStreamLag            []float64
+	BucketsConnectionCreateTime []float64
+	BucketsConnectionWaitTime   []float64
+	BucketsConnectionUseTime    []float64
 }
 
-// optionFunc wraps a function to implement the Option interface
-type optionFunc func(*config)
+// NewConfig creates a new Config with default values.
+// Default configuration:
+// - Enabled: false (must explicitly enable)
+// - MetricGroups: connection-basic + resiliency
+// - HistogramAggregation: explicit bucket
+// - Buckets: 0.1ms to 10s (suitable for Redis operations)
+//
+// Example:
+//
+//	config := redisotel.NewConfig().
+//	    WithEnabled(true).
+//	    WithMetricGroups(redisotel.MetricGroupAll)
+func NewConfig() *Config {
+	return &Config{
+		Enabled:       false,
+		MeterProvider: nil, // Will use global otel.GetMeterProvider() if nil
 
-func (f optionFunc) apply(c *config) {
-	f(c)
+		// Default metric groups: connection-basic + resiliency
+		MetricGroups: MetricGroupFlagConnectionBasic | MetricGroupFlagResiliency,
+
+		// No command filtering by default
+		IncludeCommands: nil,
+		ExcludeCommands: nil,
+
+		// Don't hide labels by default
+		HidePubSubChannelNames: false,
+		HideStreamNames:        false,
+
+		// Use explicit bucket histogram by default
+		HistogramAggregation: HistogramAggregationExplicitBucket,
+
+		// Default buckets for all duration metrics
+		BucketsOperationDuration:    defaultHistogramBuckets(),
+		BucketsStreamLag:            defaultHistogramBuckets(),
+		BucketsConnectionCreateTime: defaultHistogramBuckets(),
+		BucketsConnectionWaitTime:   defaultHistogramBuckets(),
+		BucketsConnectionUseTime:    defaultHistogramBuckets(),
+	}
+}
+
+// WithEnabled enables or disables metrics emission.
+// Default: false (must explicitly enable)
+func (c *Config) WithEnabled(enabled bool) *Config {
+	c.Enabled = enabled
+	return c
 }
 
 // WithMeterProvider sets the meter provider to use for creating metrics.
 // If not provided, the global meter provider from otel.GetMeterProvider() will be used.
-func WithMeterProvider(provider metric.MeterProvider) Option {
-	return optionFunc(func(c *config) {
-		c.meterProvider = provider
-	})
+func (c *Config) WithMeterProvider(provider metric.MeterProvider) *Config {
+	c.MeterProvider = provider
+	return c
 }
 
-// WithEnabled enables or disables metrics emission
-func WithEnabled(enabled bool) Option {
-	return optionFunc(func(c *config) {
-		c.enabled = enabled
-	})
+// WithMetricGroups sets which metric groups to register using bitwise flags.
+// You can combine multiple groups with the | operator.
+func (c *Config) WithMetricGroups(groups MetricGroupFlags) *Config {
+	c.MetricGroups = groups
+	return c
 }
 
-// WithEnabledMetricGroups sets which metric groups to register
-// Default: ["connection-basic", "resiliency"]
-func WithEnabledMetricGroups(groups []MetricGroup) Option {
-	return optionFunc(func(c *config) {
-		c.enabledMetricGroups = make(map[MetricGroup]bool)
-		for _, group := range groups {
-			c.enabledMetricGroups[group] = true
-		}
-	})
+// WithIncludeCommands sets a command allow-list for metrics.
+func (c *Config) WithIncludeCommands(commands []string) *Config {
+	c.IncludeCommands = make(map[string]bool)
+	for _, cmd := range commands {
+		c.IncludeCommands[cmd] = true
+	}
+	return c
 }
 
-// WithIncludeCommands sets a command allow-list for metrics
-// Only commands in this list will have metrics recorded
-// If not set, all commands are included (unless excluded)
-func WithIncludeCommands(commands []string) Option {
-	return optionFunc(func(c *config) {
-		c.includeCommands = make(map[string]bool)
-		for _, cmd := range commands {
-			c.includeCommands[cmd] = true
-		}
-	})
+// WithExcludeCommands sets a command deny-list for metrics.
+// Commands in this list will not have metrics recorded.
+func (c *Config) WithExcludeCommands(commands []string) *Config {
+	c.ExcludeCommands = make(map[string]bool)
+	for _, cmd := range commands {
+		c.ExcludeCommands[cmd] = true
+	}
+	return c
 }
 
-// WithExcludeCommands sets a command deny-list for metrics
-// Commands in this list will not have metrics recorded
-func WithExcludeCommands(commands []string) Option {
-	return optionFunc(func(c *config) {
-		c.excludeCommands = make(map[string]bool)
-		for _, cmd := range commands {
-			c.excludeCommands[cmd] = true
-		}
-	})
+// WithHidePubSubChannelNames omits channel label from Pub/Sub metrics to reduce cardinality.
+func (c *Config) WithHidePubSubChannelNames(hide bool) *Config {
+	c.HidePubSubChannelNames = hide
+	return c
 }
 
-// WithHidePubSubChannelNames omits channel label from Pub/Sub metrics to reduce cardinality
-func WithHidePubSubChannelNames(hide bool) Option {
-	return optionFunc(func(c *config) {
-		c.hidePubSubChannelNames = hide
-	})
+// WithHideStreamNames omits stream label from stream metrics to reduce cardinality.
+func (c *Config) WithHideStreamNames(hide bool) *Config {
+	c.HideStreamNames = hide
+	return c
 }
 
-// WithHideStreamNames omits stream label from stream metrics to reduce cardinality
-func WithHideStreamNames(hide bool) Option {
-	return optionFunc(func(c *config) {
-		c.hideStreamNames = hide
-	})
-}
-
-// WithHistogramAggregation sets the histogram aggregation mode
-// Controls whether bucket overrides apply
-func WithHistogramAggregation(agg HistogramAggregation) Option {
-	return optionFunc(func(c *config) {
-		c.histAggregation = agg
-	})
+// WithHistogramAggregation sets the histogram aggregation mode.
+func (c *Config) WithHistogramAggregation(agg HistogramAggregation) *Config {
+	c.HistogramAggregation = agg
+	return c
 }
 
 // WithHistogramBuckets sets custom histogram buckets for ALL duration metrics.
 // If not set, uses defaultHistogramBuckets() which covers 0.1ms to 10s.
 // Buckets should be in seconds (e.g., 0.001 = 1ms, 0.1 = 100ms, 1.0 = 1s).
-//
-// This applies to all duration histograms:
-// - db.client.operation.duration
-// - db.client.connection.create_time
-// - db.client.connection.wait_time
-// - db.client.connection.use_time
-// - redis.client.stream.processing_duration
-//
-// Example:
-//
-//	redisotel.Init(rdb,
-//	    redisotel.WithHistogramBuckets([]float64{0.001, 0.01, 0.1, 1.0}),
-//	)
-func WithHistogramBuckets(buckets []float64) Option {
-	return optionFunc(func(c *config) {
-		c.bucketsOperationDuration = buckets
-		c.bucketsStreamProcessingDuration = buckets
-		c.bucketsConnectionCreateTime = buckets
-		c.bucketsConnectionWaitTime = buckets
-		c.bucketsConnectionUseTime = buckets
-	})
+func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
+	c.BucketsOperationDuration = buckets
+	c.BucketsStreamLag = buckets
+	c.BucketsConnectionCreateTime = buckets
+	c.BucketsConnectionWaitTime = buckets
+	c.BucketsConnectionUseTime = buckets
+	return c
 }

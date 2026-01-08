@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,7 +20,6 @@ const (
 )
 
 // getLibraryVersionAttr returns the redis.client.library attribute
-// This is computed once and reused to avoid repeated string formatting
 func getLibraryVersionAttr() attribute.KeyValue {
 	return attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version()))
 }
@@ -33,18 +33,25 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 }
 
 // formatPoolName formats the pool name according to OpenTelemetry semantic conventions
-func formatPoolName(serverAddr, serverPort, dbIndex string) string {
+func formatPoolName(serverAddr, serverPort string) string {
 	poolName := serverAddr
 
 	if serverPort != "" && serverPort != "6379" {
 		poolName = fmt.Sprintf("%s:%s", poolName, serverPort)
 	}
 
-	if dbIndex != "" {
-		poolName = fmt.Sprintf("%s/%s", poolName, dbIndex)
-	}
-
 	return poolName
+}
+
+// poolInfo stores information about a registered main connection pool
+type poolInfo struct {
+	name string
+	pool redis.Pooler
+}
+
+// pubsubPoolInfo stores information about a registered PubSub pool
+type pubsubPoolInfo struct {
+	pool redis.PubSubPooler
 }
 
 // metricsRecorder implements the otel.Recorder interface
@@ -69,13 +76,10 @@ type metricsRecorder struct {
 	// Configuration
 	cfg *config
 
-	// Client configuration for attributes (used for operation metrics only)
-	serverAddr string
-	serverPort string
-	dbIndex    string
-
-	// Client reference for accessing pool stats (used for async gauges)
-	client redis.UniversalClient
+	// Pool registry for tracking multiple pools
+	poolsMu     sync.RWMutex
+	pools       []poolInfo
+	pubsubPools []pubsubPoolInfo
 }
 
 // RecordOperationDuration records db.client.operation.duration metric
@@ -85,6 +89,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	cmd redis.Cmder,
 	attempts int,
 	cn redis.ConnInfo,
+	dbIndex int,
 ) {
 	if r.operationDuration == nil {
 		return
@@ -98,6 +103,8 @@ func (r *metricsRecorder) RecordOperationDuration(
 	// Convert duration to seconds (OTel convention for duration metrics)
 	durationSeconds := duration.Seconds()
 
+	serverAddr, serverPort := extractServerInfo(cn)
+
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		// Required attributes
@@ -107,16 +114,12 @@ func (r *metricsRecorder) RecordOperationDuration(
 
 		// Recommended attributes
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", r.serverAddr),
+		attribute.String("server.address", serverAddr),
+		attribute.String("db.namespace", strconv.Itoa(dbIndex)),
 	}
 
 	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, r.serverPort)
-
-	// Add db.namespace (database index) if available
-	if r.dbIndex != "" {
-		attrs = append(attrs, attribute.String("db.namespace", r.dbIndex))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Add network.peer.address and network.peer.port from connection
 	if cn != nil {
@@ -155,31 +158,31 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	attempts int,
 	err error,
 	cn redis.ConnInfo,
+	dbIndex int,
 ) {
+	if r.operationDuration == nil {
+		return
+	}
 
 	// Convert duration to seconds (OTel convention for duration metrics)
 	durationSeconds := duration.Seconds()
 
+	// Extract server info from connection
+	serverAddr, serverPort := extractServerInfo(cn)
+
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		// Required attributes
 		attribute.String("db.operation.name", operationName),
 		getLibraryVersionAttr(),
 		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
 		attribute.Int("db.operation.batch.size", cmdCount),                 // number of commands in pipeline
-
-		// Recommended attributes
 		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", r.serverAddr),
+		attribute.String("server.address", serverAddr),
+		attribute.String("db.namespace", strconv.Itoa(dbIndex)),
 	}
 
 	// Add server.port if not default
-	attrs = addServerPortIfNonDefault(attrs, r.serverPort)
-
-	// Add db.namespace (database index) if available
-	if r.dbIndex != "" {
-		attrs = append(attrs, attribute.String("db.namespace", r.dbIndex))
-	}
+	attrs = addServerPortIfNonDefault(attrs, serverPort)
 
 	// Add network.peer.address and network.peer.port from connection
 	if cn != nil {
@@ -206,35 +209,6 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 
 	// Record the histogram
 	r.operationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
-}
-
-// isBlockingCommand checks if a command is a blocking operation
-// Blocking commands have a timeout parameter and include: BLPOP, BRPOP, BRPOPLPUSH, BLMOVE,
-// BZPOPMIN, BZPOPMAX, BZMPOP, BLMPOP, XREAD with BLOCK, XREADGROUP with BLOCK
-func isBlockingCommand(cmd redis.Cmder) bool {
-	name := strings.ToLower(cmd.Name())
-
-	// Commands that start with 'b' and are blocking
-	if strings.HasPrefix(name, "b") {
-		switch name {
-		case "blpop", "brpop", "brpoplpush", "blmove", "bzpopmin", "bzpopmax", "bzmpop", "blmpop":
-			return true
-		}
-	}
-
-	// XREAD and XREADGROUP with BLOCK option
-	if name == "xread" || name == "xreadgroup" {
-		args := cmd.Args()
-		for i, arg := range args {
-			if argStr, ok := arg.(string); ok {
-				if strings.ToLower(argStr) == "block" && i+1 < len(args) {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
 }
 
 // classifyError returns the error.type attribute value
@@ -313,13 +287,6 @@ func isTimeoutError(err error) bool {
 	return false
 }
 
-// getErrorCategory returns the error category for redis.client.errors.category attribute.
-// Categories:
-// - network: transport/DNS/socket issues
-// - tls: security/TLS errors
-// - auth: authentication/authorization
-// - server: Redis server errors (including cluster errors)
-// - other: Uncategorized errors
 func getErrorCategory(err error) string {
 	if err == nil {
 		return ""
@@ -363,14 +330,6 @@ func getErrorCategory(err error) string {
 	return "other"
 }
 
-// getErrorCategoryFromType derives the error category from an errorType string.
-// This is used when we only have the error type string, not the original error.
-// Categories:
-// - network: transport/DNS/socket issues
-// - tls: security/TLS errors
-// - auth: authentication/authorization
-// - server: Redis server errors (including cluster errors)
-// - other: Uncategorized errors
 func getErrorCategoryFromType(errorType string) string {
 	if errorType == "" {
 		return ""
@@ -455,14 +414,6 @@ func parseAddr(addr string) (host, port string) {
 	return host, port
 }
 
-// formatDBIndex formats the database index as a string
-func formatDBIndex(db int) string {
-	if db < 0 {
-		return ""
-	}
-	return strconv.Itoa(db)
-}
-
 // extractServerInfo extracts server address and port from connection info
 // For client connections, this is the remote endpoint (server address)
 func extractServerInfo(cn redis.ConnInfo) (addr, port string) {
@@ -503,7 +454,7 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	}
 
 	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	poolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram
@@ -531,7 +482,7 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	}
 
 	// Add pool name (computed from server info, not using the passed poolName parameter)
-	computedPoolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	computedPoolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
 
 	// Add notification type
@@ -554,14 +505,13 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	// Extract server address from connection
 	serverAddr, serverPort := extractServerInfo(cn)
 
-	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
 	// Add pool name (computed from server info, not using the passed poolName parameter)
-	computedPoolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	computedPoolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
 
 	// Record the counter
@@ -676,7 +626,7 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	}
 
 	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	poolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram (duration in seconds)
@@ -703,7 +653,7 @@ func (r *metricsRecorder) RecordConnectionUseTime(
 	}
 
 	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	poolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Record the histogram (duration in seconds)
@@ -731,7 +681,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	}
 
 	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort, r.dbIndex)
+	poolName := formatPoolName(serverAddr, serverPort)
 	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
 
 	// Add close reason
@@ -840,4 +790,63 @@ func (r *metricsRecorder) RecordStreamLag(
 
 	// Record the histogram (lag in seconds)
 	r.streamLag.Record(ctx, lag.Seconds(), metric.WithAttributes(attrs...))
+}
+
+// RegisterPool implements the OTelPoolRegistrar interface.
+// The pools are used by async gauge callbacks to pull statistics.
+func (r *metricsRecorder) RegisterPool(poolName string, pool redis.Pooler) {
+	r.poolsMu.Lock()
+	defer r.poolsMu.Unlock()
+
+	// Add pool to registry
+	r.pools = append(r.pools, poolInfo{
+		name: poolName,
+		pool: pool,
+	})
+}
+
+// UnregisterPool implements the OTelPoolRegistrar interface.
+// This ensures async gauge callbacks don't try to access closed pools.
+func (r *metricsRecorder) UnregisterPool(pool redis.Pooler) {
+	r.poolsMu.Lock()
+	defer r.poolsMu.Unlock()
+
+	// Find and remove the pool from registry
+	for i, p := range r.pools {
+		if p.pool == pool {
+			// Remove by swapping with last element and truncating
+			r.pools[i] = r.pools[len(r.pools)-1]
+			r.pools = r.pools[:len(r.pools)-1]
+			return
+		}
+	}
+}
+
+// RegisterPubSubPool implements the OTelPoolRegistrar interface.
+// The pools are used by async gauge callbacks to pull statistics.
+func (r *metricsRecorder) RegisterPubSubPool(pool redis.PubSubPooler) {
+	r.poolsMu.Lock()
+	defer r.poolsMu.Unlock()
+
+	// Add PubSub pool to registry
+	r.pubsubPools = append(r.pubsubPools, pubsubPoolInfo{
+		pool: pool,
+	})
+}
+
+// UnregisterPubSubPool implements the OTelPoolRegistrar interface.
+// This ensures async gauge callbacks don't try to access closed pools.
+func (r *metricsRecorder) UnregisterPubSubPool(pool redis.PubSubPooler) {
+	r.poolsMu.Lock()
+	defer r.poolsMu.Unlock()
+
+	// Find and remove the pool from registry
+	for i, p := range r.pubsubPools {
+		if p.pool == pool {
+			// Remove by swapping with last element and truncating
+			r.pubsubPools[i] = r.pubsubPools[len(r.pubsubPools)-1]
+			r.pubsubPools = r.pubsubPools[:len(r.pubsubPools)-1]
+			return
+		}
+	}
 }

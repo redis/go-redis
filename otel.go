@@ -10,26 +10,27 @@ import (
 )
 
 // ConnInfo provides information about a Redis connection for metrics.
-// This is a public interface to avoid exposing internal types.
 type ConnInfo interface {
-	// RemoteAddr returns the remote network address
 	RemoteAddr() net.Addr
 }
 
+type Pooler interface {
+	PoolStats() *pool.Stats
+}
+
+type PubSubPooler interface {
+	Stats() *pool.PubSubStats
+}
+
 // OTelRecorder is the interface for recording OpenTelemetry metrics.
-// Implementations are provided by extra/redisotel-native package.
-//
-// This interface is exported to allow external packages to implement
-// custom recorders without depending on internal packages.
+
 type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
-	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo)
+	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo, dbIndex int)
 
 	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
 	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
-	// cmdCount is the number of commands in the pipeline.
-	// err is the error from the pipeline execution (can be nil).
-	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn ConnInfo)
+	RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn ConnInfo, dbIndex int)
 
 	// RecordConnectionCreateTime records the time it took to create a new connection
 	RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn ConnInfo)
@@ -80,10 +81,19 @@ type OTelRecorder interface {
 	RecordStreamLag(ctx context.Context, lag time.Duration, cn ConnInfo, streamName, consumerGroup, consumerName string)
 }
 
+// This is used for async gauge metrics that need to pull stats from pools periodically.
+type OTelPoolRegistrar interface {
+	// RegisterPool is called when a new client is created with its main connection pool.
+	RegisterPool(poolName string, pool Pooler)
+	// UnregisterPool is called when a client is closed to remove its pool from the registry.
+	UnregisterPool(pool Pooler)
+	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
+	RegisterPubSubPool(pool PubSubPooler)
+	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
+	UnregisterPubSubPool(pool PubSubPooler)
+}
+
 // SetOTelRecorder sets the global OpenTelemetry recorder.
-// This is typically called by Init() in extra/redisotel-native package.
-//
-// Setting a nil recorder disables metrics collection.
 func SetOTelRecorder(r OTelRecorder) {
 	if r == nil {
 		otel.SetGlobalRecorder(nil)
@@ -92,13 +102,11 @@ func SetOTelRecorder(r OTelRecorder) {
 	otel.SetGlobalRecorder(&otelRecorderAdapter{r})
 }
 
-// otelRecorderAdapter adapts the public OTelRecorder interface to the internal otel.Recorder interface
 type otelRecorderAdapter struct {
 	recorder OTelRecorder
 }
 
 // toConnInfo converts internal pool.Conn to public ConnInfo interface
-// Returns nil if cn is nil, otherwise returns cn (which implements ConnInfo)
 func toConnInfo(cn *pool.Conn) ConnInfo {
 	if cn != nil {
 		return cn
@@ -106,15 +114,15 @@ func toConnInfo(cn *pool.Conn) ConnInfo {
 	return nil
 }
 
-func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, duration time.Duration, cmd otel.Cmder, attempts int, cn *pool.Conn) {
+func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, duration time.Duration, cmd otel.Cmder, attempts int, cn *pool.Conn, dbIndex int) {
 	// Convert internal Cmder to public Cmder
 	if publicCmd, ok := cmd.(Cmder); ok {
-		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, toConnInfo(cn))
+		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, toConnInfo(cn), dbIndex)
 	}
 }
 
-func (a *otelRecorderAdapter) RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn) {
-	a.recorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, toConnInfo(cn))
+func (a *otelRecorderAdapter) RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
+	a.recorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, toConnInfo(cn), dbIndex)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
@@ -155,4 +163,44 @@ func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.
 
 func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
 	a.recorder.RecordStreamLag(ctx, lag, toConnInfo(cn), streamName, consumerGroup, consumerName)
+}
+
+func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {
+	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
+		registrar.RegisterPool(poolName, &poolerAdapter{p})
+	}
+}
+
+func (a *otelRecorderAdapter) UnregisterPool(p pool.Pooler) {
+	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
+		registrar.UnregisterPool(&poolerAdapter{p})
+	}
+}
+
+func (a *otelRecorderAdapter) RegisterPubSubPool(p otel.PubSubPooler) {
+	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
+		registrar.RegisterPubSubPool(&pubSubPoolerAdapter{p})
+	}
+}
+
+func (a *otelRecorderAdapter) UnregisterPubSubPool(p otel.PubSubPooler) {
+	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
+		registrar.UnregisterPubSubPool(&pubSubPoolerAdapter{p})
+	}
+}
+
+type poolerAdapter struct {
+	p pool.Pooler
+}
+
+func (a *poolerAdapter) PoolStats() *pool.Stats {
+	return a.p.Stats()
+}
+
+type pubSubPoolerAdapter struct {
+	p otel.PubSubPooler
+}
+
+func (a *pubSubPoolerAdapter) Stats() *pool.PubSubStats {
+	return a.p.Stats()
 }
