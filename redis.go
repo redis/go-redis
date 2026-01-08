@@ -13,6 +13,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/auth/streaming"
 	"github.com/redis/go-redis/v9/internal/hscan"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -559,6 +560,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				// enabled mode, fail the connection
 				c.optLock.Unlock()
 				cn.GetStateMachine().Transition(pool.StateClosed)
+
+				// Record handshake failure metric
+				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
+				}
+
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
 				// Disabling logging here as it's too noisy.
@@ -662,17 +669,34 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	// Start measuring total operation duration (includes all retries)
+	operationStart := time.Now()
+	var lastConn *pool.Conn
+
 	var lastErr error
+	totalAttempts := 0
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		totalAttempts++
 		attempt := attempt
 
-		retry, err := c._process(ctx, cmd, attempt)
+		retry, cn, err := c._process(ctx, cmd, attempt)
+		if cn != nil {
+			lastConn = cn
+		}
 		if err == nil || !retry {
+			// Record total operation duration
+			operationDuration := time.Since(operationStart)
+			otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
 			return err
 		}
 
 		lastErr = err
 	}
+
+	// Record failed operation after all retries
+	operationDuration := time.Since(operationStart)
+	otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
+
 	return lastErr
 }
 
@@ -689,15 +713,17 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
 	}
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, error) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, err
+			return false, nil, err
 		}
 	}
 
+	var usedConn *pool.Conn
 	retryTimeout := uint32(0)
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		usedConn = cn
 		// Process any pending push notifications before executing the command
 		if err := c.processPushNotifications(ctx, cn); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
@@ -738,10 +764,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		return nil
 	}); err != nil {
 		retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
-		return retry, err
+		return retry, usedConn, err
 	}
 
-	return false, nil
+	return false, usedConn, nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
@@ -830,6 +856,10 @@ func (c *baseClient) Close() error {
 			firstErr = err
 		}
 	}
+
+	// Unregister pools from OTel before closing them
+	otel.UnregisterPools(c.connPool, c.pubSubPool)
+
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -848,14 +878,14 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE"); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
 }
 
 func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI"); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
@@ -864,13 +894,20 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, p pipelineProcessor,
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
+	operationStart := time.Now()
+	var lastConn *pool.Conn
+	totalAttempts := 0
+
 	var lastErr error
 	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
+				operationDuration := time.Since(operationStart)
+				otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
 				return err
 			}
 		}
@@ -878,6 +915,7 @@ func (c *baseClient) generalProcessPipeline(
 		// Enable retries by default to retry dial errors returned by withConn.
 		canRetry := true
 		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			lastConn = cn
 			// Process any pending push notifications before executing the pipeline
 			if err := c.processPushNotifications(ctx, cn); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
@@ -891,9 +929,14 @@ func (c *baseClient) generalProcessPipeline(
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
+			operationDuration := time.Since(operationStart)
+			otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 			return lastErr
 		}
 	}
+
+	operationDuration := time.Since(operationStart)
+	otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 	return lastErr
 }
 
@@ -1091,6 +1134,10 @@ func NewClient(opt *Options) *Client {
 			}
 		}
 	}
+
+	// Register pools with OTel recorder if it supports pool registration
+	// This allows async gauge metrics to pull stats from pools periodically
+	otel.RegisterPools(c.connPool, c.pubSubPool)
 
 	return &c
 }
