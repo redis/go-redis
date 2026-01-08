@@ -341,8 +341,15 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // handleSMigrated processes SMIGRATED notifications.
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
-// Expected format: ["SMIGRATED", SeqID, count, [endpoint1, endpoint2, ...]]
-// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
+// Expected format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
+// RESP3 wire format:
+//   >3
+//   +SMIGRATED
+//   :SeqID
+//   *<num_entries>
+//     *2
+//       +<host:port>
+//       +<slots-or-ranges>
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
@@ -358,25 +365,12 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
-	// Extract endpoints array (position 3)
+	// Extract endpoints array (position 2)
+	// Each entry is an array: [host:port, slots]
 	endpointsArray, ok := notification[2].([]interface{})
 	if !ok {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoints)", notification))
 		return ErrInvalidNotification
-	}
-
-	// Parse endpoints
-	endpoints := make([][]string, 0, len(endpointsArray))
-	for _, ep := range endpointsArray {
-		if endpointParts, ok := ep.([]interface{}); ok {
-			endpoint := make([]string, 0, len(endpointParts))
-			for _, part := range endpointParts {
-				if partStr, ok := part.(string); ok {
-					endpoint = append(endpoint, partStr)
-				}
-			}
-			endpoints = append(endpoints, endpoint)
-		}
 	}
 
 	// Deduplicate by SeqID - multiple connections may receive the same notification
@@ -386,16 +380,31 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		var hostPort string
 		var allSlotRanges []string
 
-		for _, endpoint := range endpoints {
-			// endpoint is a slice of strings - it holds ["host:port", "slot1,slot2,range1-range2"]
-			if len(endpoint) != 2 {
-				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoint)", endpoint))
+		for _, ep := range endpointsArray {
+			// Each endpoint is an array: [host:port, slots]
+			endpointParts, ok := ep.([]interface{})
+			if !ok || len(endpointParts) != 2 {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoint format)", ep))
 				continue
 			}
-			hostPort = endpoint[0]
-			slotRanges := strings.Split(endpoint[1], ",")
-			allSlotRanges = append(allSlotRanges, slotRanges...)
 
+			// Extract host:port (element 0)
+			hostPortStr, ok := endpointParts[0].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (host:port)", endpointParts[0]))
+				continue
+			}
+
+			// Extract slots (element 1)
+			slotsStr, ok := endpointParts[1].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", endpointParts[1]))
+				continue
+			}
+
+			hostPort = hostPortStr
+			slotRanges := strings.Split(slotsStr, ",")
+			allSlotRanges = append(allSlotRanges, slotRanges...)
 		}
 
 		if internal.LogLevel.InfoOrAbove() {
