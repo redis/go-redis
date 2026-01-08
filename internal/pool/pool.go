@@ -10,7 +10,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/util"
 )
 
 var (
@@ -701,7 +700,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	var cn *Conn
 	attempts := 0
 
-	maxAttempts := util.Min(popAttempts, n)
+	maxAttempts := min(popAttempts, n)
 	for attempts < maxAttempts {
 		if len(p.idleConns) == 0 {
 			return nil, nil
