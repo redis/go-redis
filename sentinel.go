@@ -827,7 +827,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	if sentinel != nil {
 		addr, err := c.getMasterAddr(ctx, sentinel)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isContextError(ctx.Err()) {
 				return "", err
 			}
 			// Continue on other errors
@@ -845,7 +845,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 		addr, err := c.getMasterAddr(ctx, c.sentinel)
 		if err != nil {
 			_ = c.closeSentinel()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isContextError(ctx.Err()) {
 				return "", err
 			}
 			// Continue on other errors
@@ -930,7 +930,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	if sentinel != nil {
 		addrs, err := c.getReplicaAddrs(ctx, sentinel)
 		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isContextError(ctx.Err()) {
 				return nil, err
 			}
 			// Continue on other errors
@@ -948,7 +948,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 		addrs, err := c.getReplicaAddrs(ctx, c.sentinel)
 		if err != nil {
 			_ = c.closeSentinel()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isContextError(ctx.Err()) {
 				return nil, err
 			}
 			// Continue on other errors
@@ -970,7 +970,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 		replicas, err := sentinel.Replicas(ctx, c.opt.MasterName).Result()
 		if err != nil {
 			_ = sentinel.Close()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if isContextError(ctx.Err()) {
 				return nil, err
 			}
 			internal.Logger.Printf(ctx, "sentinel: Replicas master=%q failed: %s",
