@@ -651,6 +651,9 @@ func compareFailoverOptions(t *testing.T, a, e *redis.FailoverOptions) {
 	if a.ConnMaxLifetime != e.ConnMaxLifetime {
 		t.Errorf("ConnMaxLifeTime got %v, want %v", a.ConnMaxLifetime, e.ConnMaxLifetime)
 	}
+	if a.ConnMaxLifetimeJitter != e.ConnMaxLifetimeJitter {
+		t.Errorf("ConnMaxLifetimeJitter got %v, want %v", a.ConnMaxLifetimeJitter, e.ConnMaxLifetimeJitter)
+	}
 	if a.DisableIdentity != e.DisableIdentity {
 		t.Errorf("DisableIdentity got %v, want %v", a.DisableIdentity, e.DisableIdentity)
 	}

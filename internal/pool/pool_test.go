@@ -1095,6 +1095,58 @@ var _ = Describe("queuedNewConn", func() {
 		// We should have at least some timeouts due to the short timeout
 		Expect(timeoutCount).To(BeNumerically(">", 0))
 	})
+
+	Describe("calcConnExpiresAt", func() {
+		// Case 1: lifetime <= 0 returns noExpiration
+		It("returns noExpiration when ConnMaxLifetime is not positive", func() {
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:          dummyDialer,
+				PoolSize:        1,
+				ConnMaxLifetime: 0,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+			Expect(p.CalcConnExpiresAt()).To(Equal(pool.NoExpiration))
+		})
+
+		// Case 2: lifetime > 0, jitter <= 0 returns exact lifetime
+		It("returns exact lifetime when jitter is zero", func() {
+			lifetime := 1 * time.Hour
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+			after := time.Now()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime)))
+			Expect(expiresAt).To(BeTemporally("<=", after.Add(lifetime)))
+		})
+
+		// Case 3: lifetime > 0, jitter > 0 returns value in jitter range
+		It("returns value in jitter range when jitter is positive", func() {
+			lifetime := 1 * time.Hour
+			jitter := 6 * time.Minute
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: jitter,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime-jitter)))
+			Expect(expiresAt).To(BeTemporally("<=", before.Add(lifetime+jitter)))
+		})
+	})
 })
 
 func init() {
