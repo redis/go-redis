@@ -437,15 +437,14 @@ func (p *ConnPool) calcConnExpiresAt() time.Time {
 		return noExpiration
 	}
 
-	jitter := p.cfg.ConnMaxLifetimeJitter
-	if jitter > 0 {
-		// Apply random jitter in the range [-jitter, +jitter]
-		jitterRange := jitter.Nanoseconds() * 2
-		jitterNs := rand.Int63n(jitterRange) - jitter.Nanoseconds()
-		return time.Now().Add(p.cfg.ConnMaxLifetime + time.Duration(jitterNs))
+	if p.cfg.ConnMaxLifetimeJitter <= 0 {
+		return time.Now().Add(p.cfg.ConnMaxLifetime)
 	}
-	// No jitter configured, use ConnMaxLifetime directly
-	return time.Now().Add(p.cfg.ConnMaxLifetime)
+
+	jitter := p.cfg.ConnMaxLifetimeJitter
+	jitterRange := jitter.Nanoseconds() * 2
+	jitterNs := rand.Int63n(jitterRange) - jitter.Nanoseconds()
+	return time.Now().Add(p.cfg.ConnMaxLifetime + time.Duration(jitterNs))
 }
 
 func (p *ConnPool) tryDial() {
