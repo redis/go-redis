@@ -2876,9 +2876,8 @@ var _ = Describe("Command Tips tests", func() {
 							}
 							statLine = statLine[:statEnd]
 
-							callsStart := strings.Index(statLine, "calls=")
-							if callsStart != -1 {
-								callsStr := statLine[callsStart+6:]
+							// callsStart := strings.Index(statLine, "calls=")
+							if _, callsStr, found := strings.Cut(statLine, "calls="); found {
 								callsEnd := strings.Index(callsStr, ",")
 								if callsEnd == -1 {
 									callsEnd = strings.Index(callsStr, "\r")
