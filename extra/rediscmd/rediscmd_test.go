@@ -23,6 +23,7 @@ var _ = Describe("AppendArg", func() {
 		Entry("", "+inf", "+inf"),
 		Entry("", "foo.bar", "foo.bar"),
 		Entry("", "foo:bar", "foo:bar"),
+		Entry("", "foo bar", "foo bar"),
 		Entry("", "foo{bar}", "foo{bar}"),
 		Entry("", "foo-123_BAR", "foo-123_BAR"),
 		Entry("", "foo\nbar", "666f6f0a626172"),
