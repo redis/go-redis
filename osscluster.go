@@ -181,6 +181,7 @@ type ClusterOptions struct {
 	ShardPicker routing.ShardPicker
 
 	// ClusterStateReloadInterval is the interval for reloading the cluster state.
+	// Default is 10 seconds.
 	ClusterStateReloadInterval time.Duration
 }
 
@@ -263,7 +264,7 @@ func (opt *ClusterOptions) init() {
 	}
 
 	if opt.ClusterStateReloadInterval == 0 {
-		opt.ClusterStateReloadInterval = 30 * time.Second
+		opt.ClusterStateReloadInterval = 10 * time.Second
 	}
 }
 
