@@ -16,7 +16,6 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
-	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -942,22 +941,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 	for err := range errCh {
 		errs = append(errs, err)
 	}
-	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %s", joinErrors(errs))
-}
-
-func joinErrors(errs []error) string {
-	if len(errs) == 0 {
-		return ""
-	}
-	if len(errs) == 1 {
-		return errs[0].Error()
-	}
-	b := []byte(errs[0].Error())
-	for _, err := range errs[1:] {
-		b = append(b, '\n')
-		b = append(b, err.Error()...)
-	}
-	return util.BytesToString(b)
+	return "", fmt.Errorf("redis: all sentinels specified in configuration are unreachable: %w", errors.Join(errs...))
 }
 
 func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected bool) ([]string, error) {
