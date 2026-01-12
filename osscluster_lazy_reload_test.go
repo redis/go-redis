@@ -16,7 +16,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(50 * time.Millisecond) // Simulate reload work
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger one reload
 		holder.LazyReload()
@@ -36,7 +36,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(50 * time.Millisecond) // Simulate reload work
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger multiple reloads concurrently
 		for i := 0; i < 10; i++ {
@@ -59,7 +59,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(10 * time.Millisecond) // Simulate reload work
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger first reload
 		holder.LazyReload()
@@ -86,7 +86,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(10 * time.Millisecond) // Simulate reload work
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger first reload
 		holder.LazyReload()
@@ -118,7 +118,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(10 * time.Millisecond) // Simulate reload work
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger first reload
 		holder.LazyReload()
@@ -149,7 +149,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 				return nil, context.DeadlineExceeded
 			}
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Trigger reload that will fail
 		holder.LazyReload()
@@ -179,7 +179,7 @@ func TestLazyReloadQueueBehavior(t *testing.T) {
 			reloadCount.Add(1)
 			time.Sleep(20 * time.Millisecond) // Simulate realistic reload time
 			return &clusterState{}, nil
-		})
+		}, 10*time.Second)
 
 		// Simulate 5 SMIGRATED notifications arriving within 100ms
 		for i := 0; i < 5; i++ {
