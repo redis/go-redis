@@ -60,8 +60,9 @@ func Present(key string) bool {
 	if key == "" {
 		return false
 	}
-	if s := strings.IndexByte(key, '{'); s > -1 {
-		if e := strings.IndexByte(key[s+1:], '}'); e > 0 {
+
+	if _, after, found := strings.Cut(key, "{"); found {
+		if e := strings.IndexByte(after, '}'); e > 0 {
 			return true
 		}
 	}
