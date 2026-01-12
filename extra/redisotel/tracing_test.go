@@ -661,7 +661,7 @@ func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
 	}
 }
 
-func assertEqual(t *testing.T, expected, actual interface{}) {
+func assertEqual(t *testing.T, expected, actual any) {
 	t.Helper()
 	if expected != actual {
 		t.Fatalf("expected %v, got %v", expected, actual)

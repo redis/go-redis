@@ -38,8 +38,8 @@ var maintenanceNotificationTypes = []string{
 // PreHook can modify the notification and return false to skip processing
 // PostHook is called after successful processing
 type NotificationHook interface {
-	PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool)
-	PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error)
+	PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any) ([]any, bool)
+	PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any, result error)
 }
 
 // MovingOperationKey provides a unique key for tracking MOVING operations
@@ -194,7 +194,7 @@ func (hm *Manager) GetActiveMovingOperations() map[MovingOperationKey]*MovingOpe
 	result := make(map[MovingOperationKey]*MovingOperation)
 
 	// Iterate over sync.Map to build result
-	hm.activeMovingOps.Range(func(key, value interface{}) bool {
+	hm.activeMovingOps.Range(func(key, value any) bool {
 		k := key.(MovingOperationKey)
 		op := value.(*MovingOperation)
 
@@ -249,7 +249,7 @@ func (hm *Manager) Close() error {
 	}
 
 	// Clear all active operations
-	hm.activeMovingOps.Range(func(key, value interface{}) bool {
+	hm.activeMovingOps.Range(func(key, value any) bool {
 		hm.activeMovingOps.Delete(key)
 		return true
 	})
@@ -269,7 +269,7 @@ func (hm *Manager) GetState() State {
 }
 
 // processPreHooks calls all pre-hooks and returns the modified notification and whether to continue processing.
-func (hm *Manager) processPreHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (hm *Manager) processPreHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any) ([]any, bool) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 
@@ -287,7 +287,7 @@ func (hm *Manager) processPreHooks(ctx context.Context, notificationCtx push.Not
 }
 
 // processPostHooks calls all post-hooks with the processing result.
-func (hm *Manager) processPostHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+func (hm *Manager) processPostHooks(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any, result error) {
 	hm.hooksMu.RLock()
 	defer hm.hooksMu.RUnlock()
 

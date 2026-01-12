@@ -11,7 +11,7 @@ func TestTypedRedisErrors(t *testing.T) {
 	tests := []struct {
 		name         string
 		errorMsg     string
-		expectedType interface{}
+		expectedType any
 		expectedMsg  string
 		checkFunc    func(error) bool
 		extractAddr  func(error) string

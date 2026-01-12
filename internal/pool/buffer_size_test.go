@@ -137,7 +137,7 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 		id            uint64       // First field in pool.Conn
 		usedAt        atomic.Int64 // Second field (atomic)
 		lastPutAt     atomic.Int64 // Third field (atomic)
-		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
+		netConnAtomic any          // atomic.Value (any has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -153,7 +153,7 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 		err error
 		buf []byte
 		n   int
-		wr  interface{}
+		wr  any
 	})(unsafe.Pointer(cnPtr.bw))
 
 	return len(bwPtr.buf)
@@ -164,7 +164,7 @@ func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 		id            uint64       // First field in pool.Conn
 		usedAt        atomic.Int64 // Second field (atomic)
 		lastPutAt     atomic.Int64 // Third field (atomic)
-		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
+		netConnAtomic any          // atomic.Value (any has same size)
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -187,7 +187,7 @@ func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	// bufio.Reader internal structure
 	bufReaderPtr := (*struct {
 		buf          []byte
-		rd           interface{}
+		rd           any
 		r, w         int
 		err          error
 		lastByte     int

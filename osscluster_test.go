@@ -1843,7 +1843,7 @@ var _ = Describe("Command Tips tests", func() {
 			result := client.FTCreate(ctx, indexName,
 				&redis.FTCreateOptions{
 					OnHash: true,
-					Prefix: []interface{}{"doc:"},
+					Prefix: []any{"doc:"},
 				},
 				&redis.FieldSchema{
 					FieldName: "title",
@@ -1881,7 +1881,7 @@ var _ = Describe("Command Tips tests", func() {
 			result := client.FTCreate(ctx, indexName,
 				&redis.FTCreateOptions{
 					OnHash: true,
-					Prefix: []interface{}{"doc:"},
+					Prefix: []any{"doc:"},
 				},
 				&redis.FieldSchema{
 					FieldName: "title",
@@ -1890,7 +1890,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(result.Err()).NotTo(HaveOccurred())
 
 			alterResult := client.FTAlter(ctx, indexName, false,
-				[]interface{}{"description", redis.SearchFieldTypeText.String()})
+				[]any{"description", redis.SearchFieldTypeText.String()})
 			Expect(alterResult.Err()).NotTo(HaveOccurred())
 			Expect(alterResult.Val()).To(Equal("OK"))
 			client.FTDropIndex(ctx, indexName)
@@ -2291,7 +2291,7 @@ var _ = Describe("Command Tips tests", func() {
 			Expect(len(shardsUsed)).To(BeNumerically(">", 1))
 
 			keys := make([]string, 0, len(testData))
-			expectedValues := make([]interface{}, 0, len(testData))
+			expectedValues := make([]any, 0, len(testData))
 			for key, value := range testData {
 				keys = append(keys, key)
 				expectedValues = append(expectedValues, value)

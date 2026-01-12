@@ -85,16 +85,16 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			dump = true
 			// redefine p and e for each test to get
 			// proper test name in logs and proper test failures
-			var p = func(format string, args ...interface{}) {
+			var p = func(format string, args ...any) {
 				printLog("ENDPOINT-TYPES", false, format, args...)
 			}
 
-			var e = func(format string, args ...interface{}) {
+			var e = func(format string, args ...any) {
 				errorsDetected = true
 				printLog("ENDPOINT-TYPES", true, format, args...)
 			}
 
-			var ef = func(format string, args ...interface{}) {
+			var ef = func(format string, args ...any) {
 				printLog("ENDPOINT-TYPES", true, format, args...)
 				t.FailNow()
 			}
@@ -155,7 +155,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("Testing failover with %s endpoint type on database [bdb_id:%s]...", endpointTest.name, endpointConfig.BdbID)
 			failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "failover",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})
@@ -204,7 +204,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("Testing migration with %s endpoint type...", endpointTest.name)
 			migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "migrate",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})
@@ -247,7 +247,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			// Complete migration with bind action
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"bdb_id": endpointConfig.BdbID,
 				},
 			})

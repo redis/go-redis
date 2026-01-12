@@ -64,8 +64,8 @@ const (
 
 // ActionRequest represents a request to trigger an action
 type ActionRequest struct {
-	Type       ActionType             `json:"type"`
-	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	Type       ActionType     `json:"type"`
+	Parameters map[string]any `json:"parameters,omitempty"`
 }
 
 // ActionResponse represents the response from triggering an action
@@ -77,20 +77,20 @@ type ActionResponse struct {
 
 // ActionStatusResponse represents the status of an action
 type ActionStatusResponse struct {
-	ActionID  string                 `json:"action_id"`
-	Status    ActionStatus           `json:"status"`
-	Error     interface{}            `json:"error,omitempty"`
-	Output    map[string]interface{} `json:"output,omitempty"`
-	Progress  float64                `json:"progress,omitempty"`
-	StartTime time.Time              `json:"start_time,omitempty"`
-	EndTime   time.Time              `json:"end_time,omitempty"`
+	ActionID  string         `json:"action_id"`
+	Status    ActionStatus   `json:"status"`
+	Error     any            `json:"error,omitempty"`
+	Output    map[string]any `json:"output,omitempty"`
+	Progress  float64        `json:"progress,omitempty"`
+	StartTime time.Time      `json:"start_time,omitempty"`
+	EndTime   time.Time      `json:"end_time,omitempty"`
 }
 
 // SequenceAction represents an action in a sequence
 type SequenceAction struct {
-	Type       ActionType             `json:"type"`
-	Parameters map[string]interface{} `json:"params,omitempty"`
-	Delay      time.Duration          `json:"delay,omitempty"`
+	Type       ActionType     `json:"type"`
+	Parameters map[string]any `json:"params,omitempty"`
+	Delay      time.Duration  `json:"delay,omitempty"`
 }
 
 // FaultInjectorClient provides programmatic control over test infrastructure
@@ -132,7 +132,7 @@ func (c *FaultInjectorClient) TriggerAction(ctx context.Context, action ActionRe
 func (c *FaultInjectorClient) TriggerSequence(ctx context.Context, bdbID int, actions []SequenceAction) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionSequence,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"bdb_id":  bdbID,
 			"actions": actions,
 		},
@@ -187,7 +187,7 @@ func (c *FaultInjectorClient) WaitForAction(ctx context.Context, actionID string
 func (c *FaultInjectorClient) TriggerClusterFailover(ctx context.Context, nodeID string, force bool) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionClusterFailover,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 			"force":   force,
 		},
@@ -198,7 +198,7 @@ func (c *FaultInjectorClient) TriggerClusterFailover(ctx context.Context, nodeID
 func (c *FaultInjectorClient) TriggerClusterReshard(ctx context.Context, slots []int, sourceNode, targetNode string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionClusterReshard,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"slots":       slots,
 			"source_node": sourceNode,
 			"target_node": targetNode,
@@ -210,7 +210,7 @@ func (c *FaultInjectorClient) TriggerClusterReshard(ctx context.Context, slots [
 func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlot, endSlot int, sourceNode, targetNode string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionSlotMigration,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"start_slot":  startSlot,
 			"end_slot":    endSlot,
 			"source_node": sourceNode,
@@ -225,7 +225,7 @@ func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlo
 func (c *FaultInjectorClient) RestartNode(ctx context.Context, nodeID string, graceful bool) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNodeRestart,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id":  nodeID,
 			"graceful": graceful,
 		},
@@ -236,7 +236,7 @@ func (c *FaultInjectorClient) RestartNode(ctx context.Context, nodeID string, gr
 func (c *FaultInjectorClient) StopNode(ctx context.Context, nodeID string, graceful bool) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNodeStop,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id":  nodeID,
 			"graceful": graceful,
 		},
@@ -247,7 +247,7 @@ func (c *FaultInjectorClient) StopNode(ctx context.Context, nodeID string, grace
 func (c *FaultInjectorClient) StartNode(ctx context.Context, nodeID string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNodeStart,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 		},
 	})
@@ -257,7 +257,7 @@ func (c *FaultInjectorClient) StartNode(ctx context.Context, nodeID string) (*Ac
 func (c *FaultInjectorClient) KillNode(ctx context.Context, nodeID string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNodeKill,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 		},
 	})
@@ -269,7 +269,7 @@ func (c *FaultInjectorClient) KillNode(ctx context.Context, nodeID string) (*Act
 func (c *FaultInjectorClient) SimulateNetworkPartition(ctx context.Context, nodes []string, duration time.Duration) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkPartition,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"nodes":    nodes,
 			"duration": duration.String(),
 		},
@@ -280,7 +280,7 @@ func (c *FaultInjectorClient) SimulateNetworkPartition(ctx context.Context, node
 func (c *FaultInjectorClient) SimulateNetworkLatency(ctx context.Context, nodes []string, latency time.Duration, jitter time.Duration) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkLatency,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"nodes":   nodes,
 			"latency": latency.String(),
 			"jitter":  jitter.String(),
@@ -292,7 +292,7 @@ func (c *FaultInjectorClient) SimulateNetworkLatency(ctx context.Context, nodes 
 func (c *FaultInjectorClient) SimulatePacketLoss(ctx context.Context, nodes []string, lossPercent float64) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkPacketLoss,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"nodes":        nodes,
 			"loss_percent": lossPercent,
 		},
@@ -303,7 +303,7 @@ func (c *FaultInjectorClient) SimulatePacketLoss(ctx context.Context, nodes []st
 func (c *FaultInjectorClient) LimitBandwidth(ctx context.Context, nodes []string, bandwidth string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkBandwidth,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"nodes":     nodes,
 			"bandwidth": bandwidth,
 		},
@@ -314,7 +314,7 @@ func (c *FaultInjectorClient) LimitBandwidth(ctx context.Context, nodes []string
 func (c *FaultInjectorClient) RestoreNetwork(ctx context.Context, nodes []string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionNetworkRestore,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"nodes": nodes,
 		},
 	})
@@ -326,7 +326,7 @@ func (c *FaultInjectorClient) RestoreNetwork(ctx context.Context, nodes []string
 func (c *FaultInjectorClient) ChangeConfig(ctx context.Context, nodeID string, config map[string]string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionConfigChange,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 			"config":  config,
 		},
@@ -337,7 +337,7 @@ func (c *FaultInjectorClient) ChangeConfig(ctx context.Context, nodeID string, c
 func (c *FaultInjectorClient) EnableMaintenanceMode(ctx context.Context, nodeID string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionMaintenanceMode,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 			"enabled": true,
 		},
@@ -348,7 +348,7 @@ func (c *FaultInjectorClient) EnableMaintenanceMode(ctx context.Context, nodeID 
 func (c *FaultInjectorClient) DisableMaintenanceMode(ctx context.Context, nodeID string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionMaintenanceMode,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 			"enabled": false,
 		},
@@ -393,7 +393,7 @@ type ShardKeyRegexPattern struct {
 func (c *FaultInjectorClient) DeleteDatabase(ctx context.Context, clusterIndex int, bdbID int) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionDeleteDatabase,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"cluster_index": clusterIndex,
 			"bdb_id":        bdbID,
 		},
@@ -407,7 +407,7 @@ func (c *FaultInjectorClient) DeleteDatabase(ctx context.Context, clusterIndex i
 func (c *FaultInjectorClient) CreateDatabase(ctx context.Context, clusterIndex int, databaseConfig DatabaseConfig) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionCreateDatabase,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"cluster_index":   clusterIndex,
 			"database_config": databaseConfig,
 		},
@@ -419,10 +419,10 @@ func (c *FaultInjectorClient) CreateDatabase(ctx context.Context, clusterIndex i
 // Parameters:
 //   - clusterIndex: The index of the cluster
 //   - databaseConfig: The database configuration as a map
-func (c *FaultInjectorClient) CreateDatabaseFromMap(ctx context.Context, clusterIndex int, databaseConfig map[string]interface{}) (*ActionResponse, error) {
+func (c *FaultInjectorClient) CreateDatabaseFromMap(ctx context.Context, clusterIndex int, databaseConfig map[string]any) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionCreateDatabase,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"cluster_index":   clusterIndex,
 			"database_config": databaseConfig,
 		},
@@ -435,7 +435,7 @@ func (c *FaultInjectorClient) CreateDatabaseFromMap(ctx context.Context, cluster
 func (c *FaultInjectorClient) ExecuteSequence(ctx context.Context, actions []SequenceAction) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionSequence,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"actions": actions,
 		},
 	})
@@ -445,7 +445,7 @@ func (c *FaultInjectorClient) ExecuteSequence(ctx context.Context, actions []Seq
 func (c *FaultInjectorClient) ExecuteCommand(ctx context.Context, nodeID, command string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionExecuteCommand,
-		Parameters: map[string]interface{}{
+		Parameters: map[string]any{
 			"node_id": nodeID,
 			"command": command,
 		},
@@ -462,7 +462,7 @@ func (c *FaultInjectorClient) SimulateClusterUpgrade(ctx context.Context, nodes 
 	for i, nodeID := range nodes {
 		actions = append(actions, SequenceAction{
 			Type: ActionNodeRestart,
-			Parameters: map[string]interface{}{
+			Parameters: map[string]any{
 				"node_id":  nodeID,
 				"graceful": true,
 			},
@@ -478,7 +478,7 @@ func (c *FaultInjectorClient) SimulateNetworkIssues(ctx context.Context, nodes [
 	actions := []SequenceAction{
 		{
 			Type: ActionNetworkLatency,
-			Parameters: map[string]interface{}{
+			Parameters: map[string]any{
 				"nodes":   nodes,
 				"latency": "100ms",
 				"jitter":  "20ms",
@@ -486,7 +486,7 @@ func (c *FaultInjectorClient) SimulateNetworkIssues(ctx context.Context, nodes [
 		},
 		{
 			Type: ActionNetworkPacketLoss,
-			Parameters: map[string]interface{}{
+			Parameters: map[string]any{
 				"nodes":        nodes,
 				"loss_percent": 2.0,
 			},
@@ -494,7 +494,7 @@ func (c *FaultInjectorClient) SimulateNetworkIssues(ctx context.Context, nodes [
 		},
 		{
 			Type: ActionNetworkRestore,
-			Parameters: map[string]interface{}{
+			Parameters: map[string]any{
 				"nodes": nodes,
 			},
 			Delay: 60 * time.Second,
@@ -528,7 +528,7 @@ func WithMaxWaitTime(maxWait time.Duration) WaitOption {
 }
 
 // Internal HTTP request method
-func (c *FaultInjectorClient) request(ctx context.Context, method, path string, body interface{}, result interface{}) error {
+func (c *FaultInjectorClient) request(ctx context.Context, method, path string, body any, result any) error {
 	url := c.baseURL + path
 
 	var reqBody io.Reader
@@ -570,14 +570,14 @@ func (c *FaultInjectorClient) request(ctx context.Context, method, path string, 
 			// sometimes the output of the action status is map, sometimes it is json.
 			// since we don't have a proper response structure we are going to handle it here
 			if result, ok := result.(*ActionStatusResponse); ok {
-				mapResult := map[string]interface{}{}
+				mapResult := map[string]any{}
 				err = json.Unmarshal(respBody, &mapResult)
 				if err != nil {
 					fmt.Println("Failed to unmarshal response:", string(respBody))
 					panic(err)
 				}
 				result.Error = mapResult["error"]
-				result.Output = map[string]interface{}{"result": mapResult["output"]}
+				result.Output = map[string]any{"result": mapResult["output"]}
 				if status, ok := mapResult["status"].(string); ok {
 					result.Status = ActionStatus(status)
 				}

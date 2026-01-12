@@ -196,7 +196,7 @@ resp, err := faultInjector.CreateDatabase(ctx, 0, dbConfig)
 ### Example 3: Create Database Using a Map
 
 ```go
-dbConfigMap := map[string]interface{}{
+dbConfigMap := map[string]any{
     "name":            "map-db",
     "port":            12002,
     "memory_size":     268435456,
@@ -307,7 +307,7 @@ Creates a new database using a structured `DatabaseConfig` object.
 func (c *FaultInjectorClient) CreateDatabaseFromMap(
     ctx context.Context,
     clusterIndex int,
-    databaseConfig map[string]interface{},
+    databaseConfig map[string]any,
 ) (*ActionResponse, error)
 ```
 

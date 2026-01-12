@@ -33,16 +33,16 @@ func TestStressPushNotifications(t *testing.T) {
 	var dump = true
 	var errorsDetected = false
 
-	var p = func(format string, args ...interface{}) {
+	var p = func(format string, args ...any) {
 		printLog("STRESS", false, format, args...)
 	}
 
-	var e = func(format string, args ...interface{}) {
+	var e = func(format string, args ...any) {
 		errorsDetected = true
 		printLog("STRESS", true, format, args...)
 	}
 
-	var ef = func(format string, args ...interface{}) {
+	var ef = func(format string, args ...any) {
 		printLog("STRESS", true, format, args...)
 		t.FailNow()
 	}
@@ -174,14 +174,14 @@ func TestStressPushNotifications(t *testing.T) {
 			case "failover":
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "failover",
-					Parameters: map[string]interface{}{
+					Parameters: map[string]any{
 						"bdb_id": endpointConfig.BdbID,
 					},
 				})
 			case "migrate":
 				resp, err = faultInjector.TriggerAction(ctx, ActionRequest{
 					Type: "migrate",
-					Parameters: map[string]interface{}{
+					Parameters: map[string]any{
 						"bdb_id": endpointConfig.BdbID,
 					},
 				})

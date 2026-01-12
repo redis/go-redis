@@ -50,7 +50,7 @@ func formatSec(ctx context.Context, dur time.Duration) int64 {
 	return int64(dur / time.Second)
 }
 
-func appendArgs(dst, src []interface{}) []interface{} {
+func appendArgs(dst, src []any) []any {
 	if len(src) == 1 {
 		return appendArg(dst, src[0])
 	}
@@ -59,17 +59,17 @@ func appendArgs(dst, src []interface{}) []interface{} {
 	return dst
 }
 
-func appendArg(dst []interface{}, arg interface{}) []interface{} {
+func appendArg(dst []any, arg any) []any {
 	switch arg := arg.(type) {
 	case []string:
 		for _, s := range arg {
 			dst = append(dst, s)
 		}
 		return dst
-	case []interface{}:
+	case []any:
 		dst = append(dst, arg...)
 		return dst
-	case map[string]interface{}:
+	case map[string]any:
 		for k, v := range arg {
 			dst = append(dst, k, v)
 		}
@@ -103,7 +103,7 @@ func appendArg(dst []interface{}, arg interface{}) []interface{} {
 }
 
 // appendStructField appends the field and value held by the structure v to dst, and returns the appended dst.
-func appendStructField(dst []interface{}, v reflect.Value) []interface{} {
+func appendStructField(dst []any, v reflect.Value) []any {
 	typ := v.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		tag := typ.Field(i).Tag.Get("redis")
@@ -174,10 +174,10 @@ type Cmdable interface {
 
 	Command(ctx context.Context) *CommandsInfoCmd
 	CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd
-	CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd
-	CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd
+	CommandGetKeys(ctx context.Context, commands ...any) *StringSliceCmd
+	CommandGetKeysAndFlags(ctx context.Context, commands ...any) *KeyFlagsCmd
 	ClientGetName(ctx context.Context) *StringCmd
-	Echo(ctx context.Context, message interface{}) *StringCmd
+	Echo(ctx context.Context, message any) *StringCmd
 	Ping(ctx context.Context) *StatusCmd
 	Quit(ctx context.Context) *StatusCmd
 	Unlink(ctx context.Context, keys ...string) *IntCmd
@@ -217,7 +217,7 @@ type Cmdable interface {
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
 	Latency(ctx context.Context) *LatencyCmd
-	LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd
+	LatencyReset(ctx context.Context, events ...any) *StatusCmd
 
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
@@ -349,7 +349,7 @@ func (info LibraryInfo) Validate() error {
 func (c statefulCmdable) Hello(ctx context.Context,
 	ver int, username, password, clientName string,
 ) *MapStringInterfaceCmd {
-	args := make([]interface{}, 0, 7)
+	args := make([]any, 0, 7)
 	args = append(args, "hello", ver)
 	if password != "" {
 		if username != "" {
@@ -382,7 +382,7 @@ type FilterBy struct {
 }
 
 func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSliceCmd {
-	args := make([]interface{}, 0, 5)
+	args := make([]any, 0, 5)
 	args = append(args, "command", "list")
 	if filter != nil {
 		if filter.Module != "" {
@@ -398,8 +398,8 @@ func (c cmdable) CommandList(ctx context.Context, filter *FilterBy) *StringSlice
 	return cmd
 }
 
-func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *StringSliceCmd {
-	args := make([]interface{}, 2+len(commands))
+func (c cmdable) CommandGetKeys(ctx context.Context, commands ...any) *StringSliceCmd {
+	args := make([]any, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeys"
 	copy(args[2:], commands)
@@ -408,8 +408,8 @@ func (c cmdable) CommandGetKeys(ctx context.Context, commands ...interface{}) *S
 	return cmd
 }
 
-func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...interface{}) *KeyFlagsCmd {
-	args := make([]interface{}, 2+len(commands))
+func (c cmdable) CommandGetKeysAndFlags(ctx context.Context, commands ...any) *KeyFlagsCmd {
+	args := make([]any, 2+len(commands))
 	args[0] = "command"
 	args[1] = "getkeysandflags"
 	copy(args[2:], commands)
@@ -425,7 +425,7 @@ func (c cmdable) ClientGetName(ctx context.Context) *StringCmd {
 	return cmd
 }
 
-func (c cmdable) Echo(ctx context.Context, message interface{}) *StringCmd {
+func (c cmdable) Echo(ctx context.Context, message any) *StringCmd {
 	cmd := NewStringCmd(ctx, "echo", message)
 	_ = c(ctx, cmd)
 	return cmd
@@ -437,7 +437,7 @@ func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 	return cmd
 }
 
-func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
+func (c cmdable) Do(ctx context.Context, args ...any) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -471,7 +471,7 @@ func (c cmdable) ClientKill(ctx context.Context, ipPort string) *StatusCmd {
 //
 //	CLIENT KILL <option> [value] ... <option> [value]
 func (c cmdable) ClientKillByFilter(ctx context.Context, keys ...string) *IntCmd {
-	args := make([]interface{}, 2+len(keys))
+	args := make([]any, 2+len(keys))
 	args[0] = "client"
 	args[1] = "kill"
 	for i, key := range keys {
@@ -527,7 +527,7 @@ func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 // ClientMaintNotifications enables or disables maintenance notifications for maintenance upgrades.
 // When enabled, the client will receive push notifications about Redis maintenance events.
 func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
-	args := []interface{}{"client", "maint_notifications"}
+	args := []any{"client", "maint_notifications"}
 	if enabled {
 		if endpointType == "" {
 			endpointType = "none"
@@ -598,7 +598,7 @@ func (c cmdable) FlushDBAsync(ctx context.Context) *StatusCmd {
 }
 
 func (c cmdable) Info(ctx context.Context, sections ...string) *StringCmd {
-	args := make([]interface{}, 1+len(sections))
+	args := make([]any, 1+len(sections))
 	args[0] = "info"
 	for i, section := range sections {
 		args[i+1] = section
@@ -609,7 +609,7 @@ func (c cmdable) Info(ctx context.Context, sections ...string) *StringCmd {
 }
 
 func (c cmdable) InfoMap(ctx context.Context, sections ...string) *InfoCmd {
-	args := make([]interface{}, 1+len(sections))
+	args := make([]any, 1+len(sections))
 	args[0] = "info"
 	for i, section := range sections {
 		args[i+1] = section
@@ -632,11 +632,11 @@ func (c cmdable) Save(ctx context.Context) *StatusCmd {
 }
 
 func (c cmdable) shutdown(ctx context.Context, modifier string) *StatusCmd {
-	var args []interface{}
+	var args []any
 	if modifier == "" {
-		args = []interface{}{"shutdown"}
+		args = []any{"shutdown"}
 	} else {
-		args = []interface{}{"shutdown", modifier}
+		args = []any{"shutdown", modifier}
 	}
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
@@ -695,8 +695,8 @@ func (c cmdable) Latency(ctx context.Context) *LatencyCmd {
 	return cmd
 }
 
-func (c cmdable) LatencyReset(ctx context.Context, events ...interface{}) *StatusCmd {
-	args := make([]interface{}, 2+len(events))
+func (c cmdable) LatencyReset(ctx context.Context, events ...any) *StatusCmd {
+	args := make([]any, 2+len(events))
 	args[0] = "latency"
 	args[1] = "reset"
 	copy(args[2:], events)
@@ -722,7 +722,7 @@ func (c cmdable) DebugObject(ctx context.Context, key string) *StringCmd {
 }
 
 func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd {
-	args := []interface{}{"memory", "usage", key}
+	args := []any{"memory", "usage", key}
 	if len(samples) > 0 {
 		if len(samples) != 1 {
 			cmd := NewIntCmd(ctx)
@@ -743,12 +743,12 @@ func (c cmdable) MemoryUsage(ctx context.Context, key string, samples ...int) *I
 // `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]`
 type ModuleLoadexConfig struct {
 	Path string
-	Conf map[string]interface{}
-	Args []interface{}
+	Conf map[string]any
+	Args []any
 }
 
-func (c *ModuleLoadexConfig) toArgs() []interface{} {
-	args := make([]interface{}, 3, 3+len(c.Conf)*3+len(c.Args)*2)
+func (c *ModuleLoadexConfig) toArgs() []any {
+	args := make([]any, 3, 3+len(c.Conf)*3+len(c.Args)*2)
 	args[0] = "MODULE"
 	args[1] = "LOADEX"
 	args[2] = c.Path

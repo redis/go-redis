@@ -23,7 +23,7 @@ const (
 // Used to disable logging and thus speed up the library.
 type VoidLogger struct{}
 
-func (v *VoidLogger) Printf(_ context.Context, _ string, _ ...interface{}) {
+func (v *VoidLogger) Printf(_ context.Context, _ string, _ ...any) {
 	// do nothing
 }
 
@@ -69,7 +69,7 @@ type filterLogger struct {
 	substr    []string
 }
 
-func (l *filterLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+func (l *filterLogger) Printf(ctx context.Context, format string, v ...any) {
 	msg := fmt.Sprintf(format, v...)
 	found := false
 	for _, substr := range l.substr {

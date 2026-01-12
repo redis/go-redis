@@ -19,7 +19,7 @@ type NotificationHandler struct {
 }
 
 // HandlePushNotification processes push notifications with hook support.
-func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	if len(notification) == 0 {
 		internal.Logger.Printf(ctx, logs.InvalidNotificationFormat(notification))
 		return ErrInvalidNotification
@@ -62,7 +62,7 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 
 // handleMoving processes MOVING notifications.
 // ["MOVING", seqNum, timeS, endpoint] - per-connection handoff
-func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	if len(notification) < 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("MOVING", notification))
 		return ErrInvalidNotification
@@ -167,7 +167,7 @@ func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint 
 }
 
 // handleMigrating processes MIGRATING notifications.
-func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	// MIGRATING notifications indicate that a connection is about to be migrated
 	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
@@ -195,7 +195,7 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 }
 
 // handleMigrated processes MIGRATED notifications.
-func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	// MIGRATED notifications indicate that a connection migration has completed
 	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {
@@ -224,7 +224,7 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 }
 
 // handleFailingOver processes FAILING_OVER notifications.
-func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	// FAILING_OVER notifications indicate that a connection is about to failover
 	// Apply relaxed timeouts to the specific connection that received this notification
 	if len(notification) < 2 {
@@ -253,7 +253,7 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 }
 
 // handleFailedOver processes FAILED_OVER notifications.
-func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
+func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []any) error {
 	// FAILED_OVER notifications indicate that a connection failover has completed
 	// Restore normal timeouts for the specific connection that received this notification
 	if len(notification) < 2 {

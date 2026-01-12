@@ -22,21 +22,21 @@ var (
 // ResponseAggregator defines the interface for aggregating responses from multiple shards.
 type ResponseAggregator interface {
 	// Add processes a single shard response.
-	Add(result interface{}, err error) error
+	Add(result any, err error) error
 
 	// AddWithKey processes a single shard response for a specific key (used by keyed aggregators).
-	AddWithKey(key string, result interface{}, err error) error
+	AddWithKey(key string, result any, err error) error
 
 	BatchAdd(map[string]AggregatorResErr) error
 
 	BatchSlice([]AggregatorResErr) error
 
 	// Result returns the final aggregated result and any error.
-	Result() (interface{}, error)
+	Result() (any, error)
 }
 
 type AggregatorResErr struct {
-	Result interface{}
+	Result any
 	Err    error
 }
 
@@ -44,9 +44,9 @@ type AggregatorResErr struct {
 func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggregator {
 	switch policy {
 	case RespDefaultKeyless:
-		return &DefaultKeylessAggregator{results: make([]interface{}, 0)}
+		return &DefaultKeylessAggregator{results: make([]any, 0)}
 	case RespDefaultHashSlot:
-		return &DefaultKeyedAggregator{results: make(map[string]interface{})}
+		return &DefaultKeyedAggregator{results: make(map[string]any)}
 	case RespAllSucceeded:
 		return &AllSucceededAggregator{}
 	case RespOneSucceeded:
@@ -80,7 +80,7 @@ func NewResponseAggregator(policy ResponsePolicy, cmdName string) ResponseAggreg
 func NewDefaultAggregator(isKeyed bool) ResponseAggregator {
 	if isKeyed {
 		return &DefaultKeyedAggregator{
-			results: make(map[string]interface{}),
+			results: make(map[string]any),
 		}
 	}
 	return &DefaultKeylessAggregator{}
@@ -93,7 +93,7 @@ type AllSucceededAggregator struct {
 	res atomic.Value
 }
 
-func (a *AllSucceededAggregator) Add(result interface{}, err error) error {
+func (a *AllSucceededAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -136,7 +136,7 @@ func (a *AllSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *AllSucceededAggregator) Result() (interface{}, error) {
+func (a *AllSucceededAggregator) Result() (any, error) {
 	var err error
 	res, e := a.res.Load(), a.err.Load()
 	if e != nil {
@@ -146,7 +146,7 @@ func (a *AllSucceededAggregator) Result() (interface{}, error) {
 	return res, err
 }
 
-func (a *AllSucceededAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AllSucceededAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -157,7 +157,7 @@ type OneSucceededAggregator struct {
 	res atomic.Value
 }
 
-func (a *OneSucceededAggregator) Add(result interface{}, err error) error {
+func (a *OneSucceededAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -185,7 +185,7 @@ func (a *OneSucceededAggregator) BatchAdd(results map[string]AggregatorResErr) e
 	return nil
 }
 
-func (a *OneSucceededAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *OneSucceededAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -204,7 +204,7 @@ func (a *OneSucceededAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *OneSucceededAggregator) Result() (interface{}, error) {
+func (a *OneSucceededAggregator) Result() (any, error) {
 	res, e := a.res.Load(), a.err.Load()
 	if res == nil {
 		return nil, e.(error)
@@ -219,7 +219,7 @@ type AggSumAggregator struct {
 	res uberAtomic.Float64
 }
 
-func (a *AggSumAggregator) Add(result interface{}, err error) error {
+func (a *AggSumAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 	}
@@ -255,7 +255,7 @@ func (a *AggSumAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	return a.Add(sum, nil)
 }
 
-func (a *AggSumAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AggSumAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -278,7 +278,7 @@ func (a *AggSumAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(sum, nil)
 }
 
-func (a *AggSumAggregator) Result() (interface{}, error) {
+func (a *AggSumAggregator) Result() (any, error) {
 	res, err := a.res.Load(), a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -293,7 +293,7 @@ type AggMinAggregator struct {
 	res *util.AtomicMin
 }
 
-func (a *AggMinAggregator) Add(result interface{}, err error) error {
+func (a *AggMinAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -334,7 +334,7 @@ func (a *AggMinAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	return a.Add(min, nil)
 }
 
-func (a *AggMinAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AggMinAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -362,7 +362,7 @@ func (a *AggMinAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(min, nil)
 }
 
-func (a *AggMinAggregator) Result() (interface{}, error) {
+func (a *AggMinAggregator) Result() (any, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -381,7 +381,7 @@ type AggMaxAggregator struct {
 	res *util.AtomicMax
 }
 
-func (a *AggMaxAggregator) Add(result interface{}, err error) error {
+func (a *AggMaxAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -422,7 +422,7 @@ func (a *AggMaxAggregator) BatchAdd(results map[string]AggregatorResErr) error {
 	return a.Add(max, nil)
 }
 
-func (a *AggMaxAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AggMaxAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -450,7 +450,7 @@ func (a *AggMaxAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(max, nil)
 }
 
-func (a *AggMaxAggregator) Result() (interface{}, error) {
+func (a *AggMaxAggregator) Result() (any, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -470,7 +470,7 @@ type AggLogicalAndAggregator struct {
 	hasResult atomic.Bool
 }
 
-func (a *AggLogicalAndAggregator) Add(result interface{}, err error) error {
+func (a *AggLogicalAndAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -511,7 +511,7 @@ func (a *AggLogicalAndAggregator) BatchAdd(results map[string]AggregatorResErr) 
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalAndAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AggLogicalAndAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -534,7 +534,7 @@ func (a *AggLogicalAndAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalAndAggregator) Result() (interface{}, error) {
+func (a *AggLogicalAndAggregator) Result() (any, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -553,7 +553,7 @@ type AggLogicalOrAggregator struct {
 	hasResult atomic.Bool
 }
 
-func (a *AggLogicalOrAggregator) Add(result interface{}, err error) error {
+func (a *AggLogicalOrAggregator) Add(result any, err error) error {
 	if err != nil {
 		a.err.CompareAndSwap(nil, err)
 		return nil
@@ -594,7 +594,7 @@ func (a *AggLogicalOrAggregator) BatchAdd(results map[string]AggregatorResErr) e
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalOrAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *AggLogicalOrAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -617,7 +617,7 @@ func (a *AggLogicalOrAggregator) BatchSlice(results []AggregatorResErr) error {
 	return a.Add(result, nil)
 }
 
-func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
+func (a *AggLogicalOrAggregator) Result() (any, error) {
 	err := a.err.Load()
 	if err != nil {
 		return nil, err.(error)
@@ -629,7 +629,7 @@ func (a *AggLogicalOrAggregator) Result() (interface{}, error) {
 	return a.res.Load(), nil
 }
 
-func toInt64(val interface{}) (int64, error) {
+func toInt64(val any) (int64, error) {
 	if val == nil {
 		return 0, nil
 	}
@@ -650,7 +650,7 @@ func toInt64(val interface{}) (int64, error) {
 	}
 }
 
-func toFloat64(val interface{}) (float64, error) {
+func toFloat64(val any) (float64, error) {
 	if val == nil {
 		return 0, nil
 	}
@@ -671,7 +671,7 @@ func toFloat64(val interface{}) (float64, error) {
 	}
 }
 
-func toBool(val interface{}) (bool, error) {
+func toBool(val any) (bool, error) {
 	if val == nil {
 		return false, nil
 	}
@@ -690,11 +690,11 @@ func toBool(val interface{}) (bool, error) {
 // DefaultKeylessAggregator collects all results in an array, order doesn't matter.
 type DefaultKeylessAggregator struct {
 	mu       sync.Mutex
-	results  []interface{}
+	results  []any
 	firstErr error
 }
 
-func (a *DefaultKeylessAggregator) add(result interface{}, err error) error {
+func (a *DefaultKeylessAggregator) add(result any, err error) error {
 	if err != nil && a.firstErr == nil {
 		a.firstErr = err
 		return nil
@@ -705,7 +705,7 @@ func (a *DefaultKeylessAggregator) add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *DefaultKeylessAggregator) Add(result interface{}, err error) error {
+func (a *DefaultKeylessAggregator) Add(result any, err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -730,7 +730,7 @@ func (a *DefaultKeylessAggregator) BatchAdd(results map[string]AggregatorResErr)
 	return nil
 }
 
-func (a *DefaultKeylessAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *DefaultKeylessAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -752,7 +752,7 @@ func (a *DefaultKeylessAggregator) BatchSlice(results []AggregatorResErr) error 
 	return nil
 }
 
-func (a *DefaultKeylessAggregator) Result() (interface{}, error) {
+func (a *DefaultKeylessAggregator) Result() (any, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -765,19 +765,19 @@ func (a *DefaultKeylessAggregator) Result() (interface{}, error) {
 // DefaultKeyedAggregator reassembles replies in the exact key order of the original request.
 type DefaultKeyedAggregator struct {
 	mu       sync.Mutex
-	results  map[string]interface{}
+	results  map[string]any
 	keyOrder []string
 	firstErr error
 }
 
 func NewDefaultKeyedAggregator(keyOrder []string) *DefaultKeyedAggregator {
 	return &DefaultKeyedAggregator{
-		results:  make(map[string]interface{}),
+		results:  make(map[string]any),
 		keyOrder: keyOrder,
 	}
 }
 
-func (a *DefaultKeyedAggregator) add(result interface{}, err error) error {
+func (a *DefaultKeyedAggregator) add(result any, err error) error {
 	if err != nil && a.firstErr == nil {
 		a.firstErr = err
 		return nil
@@ -789,7 +789,7 @@ func (a *DefaultKeyedAggregator) add(result interface{}, err error) error {
 	return nil
 }
 
-func (a *DefaultKeyedAggregator) Add(result interface{}, err error) error {
+func (a *DefaultKeyedAggregator) Add(result any, err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -814,7 +814,7 @@ func (a *DefaultKeyedAggregator) BatchAdd(results map[string]AggregatorResErr) e
 	return nil
 }
 
-func (a *DefaultKeyedAggregator) addWithKey(key string, result interface{}, err error) error {
+func (a *DefaultKeyedAggregator) addWithKey(key string, result any, err error) error {
 	if err != nil && a.firstErr == nil {
 		a.firstErr = err
 		return nil
@@ -825,7 +825,7 @@ func (a *DefaultKeyedAggregator) addWithKey(key string, result interface{}, err 
 	return nil
 }
 
-func (a *DefaultKeyedAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *DefaultKeyedAggregator) AddWithKey(key string, result any, err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -875,7 +875,7 @@ func (a *DefaultKeyedAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
+func (a *DefaultKeyedAggregator) Result() (any, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -885,7 +885,7 @@ func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
 
 	// If no explicit key order is set, return results in any order
 	if len(a.keyOrder) == 0 {
-		orderedResults := make([]interface{}, 0, len(a.results))
+		orderedResults := make([]any, 0, len(a.results))
 		for _, result := range a.results {
 			orderedResults = append(orderedResults, result)
 		}
@@ -893,7 +893,7 @@ func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
 	}
 
 	// Return results in the exact key order
-	orderedResults := make([]interface{}, len(a.keyOrder))
+	orderedResults := make([]any, len(a.keyOrder))
 	for i, key := range a.keyOrder {
 		if result, exists := a.results[key]; exists {
 			orderedResults[i] = result
@@ -905,18 +905,18 @@ func (a *DefaultKeyedAggregator) Result() (interface{}, error) {
 // SpecialAggregator provides a registry for command-specific aggregation logic.
 type SpecialAggregator struct {
 	mu             sync.Mutex
-	aggregatorFunc func([]interface{}, []error) (interface{}, error)
-	results        []interface{}
+	aggregatorFunc func([]any, []error) (any, error)
+	results        []any
 	errors         []error
 }
 
-func (a *SpecialAggregator) add(result interface{}, err error) error {
+func (a *SpecialAggregator) add(result any, err error) error {
 	a.results = append(a.results, result)
 	a.errors = append(a.errors, err)
 	return nil
 }
 
-func (a *SpecialAggregator) Add(result interface{}, err error) error {
+func (a *SpecialAggregator) Add(result any, err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -941,7 +941,7 @@ func (a *SpecialAggregator) BatchAdd(results map[string]AggregatorResErr) error 
 	return nil
 }
 
-func (a *SpecialAggregator) AddWithKey(key string, result interface{}, err error) error {
+func (a *SpecialAggregator) AddWithKey(key string, result any, err error) error {
 	return a.Add(result, err)
 }
 
@@ -963,7 +963,7 @@ func (a *SpecialAggregator) BatchSlice(results []AggregatorResErr) error {
 	return nil
 }
 
-func (a *SpecialAggregator) Result() (interface{}, error) {
+func (a *SpecialAggregator) Result() (any, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -983,10 +983,10 @@ func (a *SpecialAggregator) Result() (interface{}, error) {
 }
 
 // SpecialAggregatorRegistry holds custom aggregation functions for specific commands.
-var SpecialAggregatorRegistry = make(map[string]func([]interface{}, []error) (interface{}, error))
+var SpecialAggregatorRegistry = make(map[string]func([]any, []error) (any, error))
 
 // RegisterSpecialAggregator registers a custom aggregation function for a command.
-func RegisterSpecialAggregator(cmdName string, fn func([]interface{}, []error) (interface{}, error)) {
+func RegisterSpecialAggregator(cmdName string, fn func([]any, []error) (any, error)) {
 	SpecialAggregatorRegistry[cmdName] = fn
 }
 

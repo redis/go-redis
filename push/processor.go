@@ -88,7 +88,7 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		}
 
 		// Convert to slice of interfaces
-		notification, ok := reply.([]interface{})
+		notification, ok := reply.([]any)
 		if !ok {
 			break
 		}

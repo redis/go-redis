@@ -93,7 +93,7 @@ type pushProcessorAdapter struct {
 }
 
 // RegisterHandler registers a handler for a specific push notification name.
-func (ppa *pushProcessorAdapter) RegisterHandler(pushNotificationName string, handler interface{}, protected bool) error {
+func (ppa *pushProcessorAdapter) RegisterHandler(pushNotificationName string, handler any, protected bool) error {
 	if pushHandler, ok := handler.(push.NotificationHandler); ok {
 		return ppa.processor.RegisterHandler(pushNotificationName, pushHandler, protected)
 	}
@@ -106,6 +106,6 @@ func (ppa *pushProcessorAdapter) UnregisterHandler(pushNotificationName string) 
 }
 
 // GetHandler returns the handler for a specific push notification name.
-func (ppa *pushProcessorAdapter) GetHandler(pushNotificationName string) interface{} {
+func (ppa *pushProcessorAdapter) GetHandler(pushNotificationName string) any {
 	return ppa.processor.GetHandler(pushNotificationName)
 }

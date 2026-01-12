@@ -94,7 +94,7 @@ result, err := rdb.MGet(ctx, key1, key2, key3, ...).Result()
 ```
 
 **Returns:**
-- A slice of `interface{}` values
+- A slice of `any` values
 - Each value corresponds to a key in the same order
 - `nil` is returned for keys that don't exist
 

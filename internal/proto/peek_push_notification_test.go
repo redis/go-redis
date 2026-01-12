@@ -581,7 +581,7 @@ func TestPeekPushNotificationNameBehavior(t *testing.T) {
 		}
 
 		// Verify we got the complete notification
-		if replySlice, ok := reply.([]interface{}); ok {
+		if replySlice, ok := reply.([]any); ok {
 			if len(replySlice) != 2 {
 				t.Errorf("Expected 2 elements, got %d", len(replySlice))
 			}

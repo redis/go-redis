@@ -3,8 +3,8 @@ package redis
 import "context"
 
 type PubSubCmdable interface {
-	Publish(ctx context.Context, channel string, message interface{}) *IntCmd
-	SPublish(ctx context.Context, channel string, message interface{}) *IntCmd
+	Publish(ctx context.Context, channel string, message any) *IntCmd
+	SPublish(ctx context.Context, channel string, message any) *IntCmd
 	PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd
 	PubSubNumSub(ctx context.Context, channels ...string) *MapStringIntCmd
 	PubSubNumPat(ctx context.Context) *IntCmd
@@ -13,20 +13,20 @@ type PubSubCmdable interface {
 }
 
 // Publish posts the message to the channel.
-func (c cmdable) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+func (c cmdable) Publish(ctx context.Context, channel string, message any) *IntCmd {
 	cmd := NewIntCmd(ctx, "publish", channel, message)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func (c cmdable) SPublish(ctx context.Context, channel string, message interface{}) *IntCmd {
+func (c cmdable) SPublish(ctx context.Context, channel string, message any) *IntCmd {
 	cmd := NewIntCmd(ctx, "spublish", channel, message)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 func (c cmdable) PubSubChannels(ctx context.Context, pattern string) *StringSliceCmd {
-	args := []interface{}{"pubsub", "channels"}
+	args := []any{"pubsub", "channels"}
 	if pattern != "*" {
 		args = append(args, pattern)
 	}
@@ -36,7 +36,7 @@ func (c cmdable) PubSubChannels(ctx context.Context, pattern string) *StringSlic
 }
 
 func (c cmdable) PubSubNumSub(ctx context.Context, channels ...string) *MapStringIntCmd {
-	args := make([]interface{}, 2+len(channels))
+	args := make([]any, 2+len(channels))
 	args[0] = "pubsub"
 	args[1] = "numsub"
 	for i, channel := range channels {
@@ -48,7 +48,7 @@ func (c cmdable) PubSubNumSub(ctx context.Context, channels ...string) *MapStrin
 }
 
 func (c cmdable) PubSubShardChannels(ctx context.Context, pattern string) *StringSliceCmd {
-	args := []interface{}{"pubsub", "shardchannels"}
+	args := []any{"pubsub", "shardchannels"}
 	if pattern != "*" {
 		args = append(args, pattern)
 	}
@@ -58,7 +58,7 @@ func (c cmdable) PubSubShardChannels(ctx context.Context, pattern string) *Strin
 }
 
 func (c cmdable) PubSubShardNumSub(ctx context.Context, channels ...string) *MapStringIntCmd {
-	args := make([]interface{}, 2+len(channels))
+	args := make([]any, 2+len(channels))
 	args[0] = "pubsub"
 	args[1] = "shardnumsub"
 	for i, channel := range channels {

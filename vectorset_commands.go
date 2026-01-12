@@ -20,7 +20,7 @@ type VectorSetCmdable interface {
 	VRandMember(ctx context.Context, key string) *StringCmd
 	VRandMemberCount(ctx context.Context, key string, count int) *StringSliceCmd
 	VRem(ctx context.Context, key, element string) *BoolCmd
-	VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd
+	VSetAttr(ctx context.Context, key, element string, attr any) *BoolCmd
 	VClearAttributes(ctx context.Context, key, element string) *BoolCmd
 	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
 	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
@@ -236,7 +236,7 @@ func (c cmdable) VRem(ctx context.Context, key, element string) *BoolCmd {
 // the argument is a string or []byte when we assume that it can be passed directly as JSON.
 //
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd {
+func (c cmdable) VSetAttr(ctx context.Context, key, element string, attr any) *BoolCmd {
 	var attrStr string
 	var err error
 	switch v := attr.(type) {

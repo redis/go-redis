@@ -12,7 +12,7 @@ import (
 // HIDE_END
 
 // REMOVE_START
-func UNUSED(v ...interface{}) {}
+func UNUSED(v ...any) {}
 
 // REMOVE_END
 
@@ -34,7 +34,7 @@ func ExampleClient_xadd() {
 	// STEP_START xadd
 	res1, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       30.2,
 			"position":    1,
@@ -50,7 +50,7 @@ func ExampleClient_xadd() {
 
 	res2, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Norem",
 			"speed":       28.8,
 			"position":    3,
@@ -66,7 +66,7 @@ func ExampleClient_xadd() {
 
 	res3, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Prickett",
 			"speed":       29.7,
 			"position":    2,
@@ -114,7 +114,7 @@ func ExampleClient_racefrance1() {
 
 	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       30.2,
 			"position":    1,
@@ -129,7 +129,7 @@ func ExampleClient_racefrance1() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Norem",
 			"speed":       28.8,
 			"position":    3,
@@ -144,7 +144,7 @@ func ExampleClient_racefrance1() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Prickett",
 			"speed":       29.7,
 			"position":    2,
@@ -186,7 +186,7 @@ func ExampleClient_racefrance1() {
 	// STEP_START xadd_2
 	res6, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       29.9,
 			"position":    1,
@@ -239,7 +239,7 @@ func ExampleClient_raceusa() {
 	// STEP_START xadd_id
 	res8, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:usa",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"racer": "Castilla",
 		},
 		ID: "0-1",
@@ -253,7 +253,7 @@ func ExampleClient_raceusa() {
 
 	res9, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:usa",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"racer": "Norem",
 		},
 		ID: "0-2",
@@ -268,7 +268,7 @@ func ExampleClient_raceusa() {
 
 	// STEP_START xadd_bad_id
 	res10, err := rdb.XAdd(ctx, &redis.XAddArgs{
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"racer": "Prickett",
 		},
 		ID: "0-1",
@@ -283,7 +283,7 @@ func ExampleClient_raceusa() {
 	// STEP_START xadd_7
 	res11, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:usa",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"racer": "Prickett",
 		},
 		ID: "0-*",
@@ -323,7 +323,7 @@ func ExampleClient_racefrance2() {
 
 	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       30.2,
 			"position":    1,
@@ -338,7 +338,7 @@ func ExampleClient_racefrance2() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Norem",
 			"speed":       28.8,
 			"position":    3,
@@ -353,7 +353,7 @@ func ExampleClient_racefrance2() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Prickett",
 			"speed":       29.7,
 			"position":    2,
@@ -368,7 +368,7 @@ func ExampleClient_racefrance2() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       29.9,
 			"position":    1,
@@ -493,7 +493,7 @@ func ExampleClient_xgroupcreate() {
 
 	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:france",
-		Values: map[string]interface{}{
+		Values: map[string]any{
 			"rider":       "Castilla",
 			"speed":       30.2,
 			"position":    1,
@@ -577,7 +577,7 @@ func ExampleClient_xgroupread() {
 	// STEP_START xgroup_read
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Castilla"},
+		Values: map[string]any{"rider": "Castilla"},
 	}).Result()
 	// >>> 1692632639151-0
 
@@ -587,7 +587,7 @@ func ExampleClient_xgroupread() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Royce"},
+		Values: map[string]any{"rider": "Royce"},
 	}).Result()
 	// >>> 1692632647899-0
 
@@ -597,7 +597,7 @@ func ExampleClient_xgroupread() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Sam-Bodden"},
+		Values: map[string]any{"rider": "Sam-Bodden"},
 	}).Result()
 	// >>> 1692632662819-0
 
@@ -607,7 +607,7 @@ func ExampleClient_xgroupread() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Prickett"},
+		Values: map[string]any{"rider": "Prickett"},
 	}).Result()
 	// >>> 1692632670501-0
 
@@ -617,7 +617,7 @@ func ExampleClient_xgroupread() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Norem"},
+		Values: map[string]any{"rider": "Norem"},
 	}).Result()
 	// >>> 1692632678249-0
 
@@ -684,7 +684,7 @@ func ExampleClient_raceitaly() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Castilla"},
+		Values: map[string]any{"rider": "Castilla"},
 		ID:     "1692632639151-0",
 	}).Result()
 
@@ -694,7 +694,7 @@ func ExampleClient_raceitaly() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Royce"},
+		Values: map[string]any{"rider": "Royce"},
 		ID:     "1692632647899-0",
 	}).Result()
 
@@ -704,7 +704,7 @@ func ExampleClient_raceitaly() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Sam-Bodden"},
+		Values: map[string]any{"rider": "Sam-Bodden"},
 		ID:     "1692632662819-0",
 	}).Result()
 
@@ -714,7 +714,7 @@ func ExampleClient_raceitaly() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Prickett"},
+		Values: map[string]any{"rider": "Prickett"},
 		ID:     "1692632670501-0",
 	}).Result()
 
@@ -724,7 +724,7 @@ func ExampleClient_raceitaly() {
 
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
-		Values: map[string]interface{}{"rider": "Norem"},
+		Values: map[string]any{"rider": "Norem"},
 		ID:     "1692632678249-0",
 	}).Result()
 
@@ -926,7 +926,7 @@ func ExampleClient_raceitaly() {
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
 		MaxLen: 2,
-		Values: map[string]interface{}{"rider": "Jones"},
+		Values: map[string]any{"rider": "Jones"},
 	},
 	).Result()
 
@@ -937,7 +937,7 @@ func ExampleClient_raceitaly() {
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
 		MaxLen: 2,
-		Values: map[string]interface{}{"rider": "Wood"},
+		Values: map[string]any{"rider": "Wood"},
 	},
 	).Result()
 
@@ -948,7 +948,7 @@ func ExampleClient_raceitaly() {
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
 		MaxLen: 2,
-		Values: map[string]interface{}{"rider": "Henshaw"},
+		Values: map[string]any{"rider": "Henshaw"},
 	},
 	).Result()
 
@@ -1035,7 +1035,7 @@ func ExampleClient_xdel() {
 	_, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
 		MaxLen: 2,
-		Values: map[string]interface{}{"rider": "Wood"},
+		Values: map[string]any{"rider": "Wood"},
 		ID:     "1692633198206-0",
 	},
 	).Result()
@@ -1047,7 +1047,7 @@ func ExampleClient_xdel() {
 	_, err = rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: "race:italy",
 		MaxLen: 2,
-		Values: map[string]interface{}{"rider": "Henshaw"},
+		Values: map[string]any{"rider": "Henshaw"},
 		ID:     "1692633208557-0",
 	},
 	).Result()

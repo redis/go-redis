@@ -69,7 +69,7 @@ func (c *ClusterClient) ScriptFlush(ctx context.Context) *StatusCmd {
 }
 
 func (c *ClusterClient) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
-	args := make([]interface{}, 2+len(hashes))
+	args := make([]any, 2+len(hashes))
 	args[0] = "script"
 	args[1] = "exists"
 	for i, hash := range hashes {

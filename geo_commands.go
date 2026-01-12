@@ -20,7 +20,7 @@ type GeoCmdable interface {
 }
 
 func (c cmdable) GeoAdd(ctx context.Context, key string, geoLocation ...*GeoLocation) *IntCmd {
-	args := make([]interface{}, 2+3*len(geoLocation))
+	args := make([]any, 2+3*len(geoLocation))
 	args[0] = "geoadd"
 	args[1] = key
 	for i, eachLoc := range geoLocation {
@@ -88,7 +88,7 @@ func (c cmdable) GeoRadiusByMemberStore(
 }
 
 func (c cmdable) GeoSearch(ctx context.Context, key string, q *GeoSearchQuery) *StringSliceCmd {
-	args := make([]interface{}, 0, 13)
+	args := make([]any, 0, 13)
 	args = append(args, "geosearch", key)
 	args = geoSearchArgs(q, args)
 	cmd := NewStringSliceCmd(ctx, args...)
@@ -99,7 +99,7 @@ func (c cmdable) GeoSearch(ctx context.Context, key string, q *GeoSearchQuery) *
 func (c cmdable) GeoSearchLocation(
 	ctx context.Context, key string, q *GeoSearchLocationQuery,
 ) *GeoSearchLocationCmd {
-	args := make([]interface{}, 0, 16)
+	args := make([]any, 0, 16)
 	args = append(args, "geosearch", key)
 	args = geoSearchLocationArgs(q, args)
 	cmd := NewGeoSearchLocationCmd(ctx, q, args...)
@@ -108,7 +108,7 @@ func (c cmdable) GeoSearchLocation(
 }
 
 func (c cmdable) GeoSearchStore(ctx context.Context, key, store string, q *GeoSearchStoreQuery) *IntCmd {
-	args := make([]interface{}, 0, 15)
+	args := make([]any, 0, 15)
 	args = append(args, "geosearchstore", store, key)
 	args = geoSearchArgs(&q.GeoSearchQuery, args)
 	if q.StoreDist {
@@ -131,7 +131,7 @@ func (c cmdable) GeoDist(
 }
 
 func (c cmdable) GeoHash(ctx context.Context, key string, members ...string) *StringSliceCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]any, 2+len(members))
 	args[0] = "geohash"
 	args[1] = key
 	for i, member := range members {
@@ -143,7 +143,7 @@ func (c cmdable) GeoHash(ctx context.Context, key string, members ...string) *St
 }
 
 func (c cmdable) GeoPos(ctx context.Context, key string, members ...string) *GeoPosCmd {
-	args := make([]interface{}, 2+len(members))
+	args := make([]any, 2+len(members))
 	args[0] = "geopos"
 	args[1] = key
 	for i, member := range members {

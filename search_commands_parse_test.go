@@ -9,39 +9,39 @@ import (
 func TestParseFTInfo(t *testing.T) {
 	// This is the data structure that would be returned by Redis for FT.INFO
 	// Based on the redis-cli output provided by the user
-	data := map[string]interface{}{
+	data := map[string]any{
 		"index_name":    "rand:42d1f2820b3048b6bc783d4dcdb9094a",
-		"index_options": []interface{}{},
-		"index_definition": []interface{}{
+		"index_options": []any{},
+		"index_definition": []any{
 			"key_type", "HASH",
-			"prefixes", []interface{}{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
+			"prefixes", []any{"rand:42d1f2820b3048b6bc783d4dcdb9094a"},
 			"default_score", "1",
 			"indexes_all", false,
 		},
-		"attributes": []interface{}{
+		"attributes": []any{
 			// prompt field (TEXT)
-			[]interface{}{
+			[]any{
 				"identifier", "prompt",
 				"attribute", "prompt",
 				"type", "TEXT",
 				"WEIGHT", "1",
 			},
 			// response field (TEXT)
-			[]interface{}{
+			[]any{
 				"identifier", "response",
 				"attribute", "response",
 				"type", "TEXT",
 				"WEIGHT", "1",
 			},
 			// exact_digest field (TAG)
-			[]interface{}{
+			[]any{
 				"identifier", "exact_digest",
 				"attribute", "exact_digest",
 				"type", "TAG",
 				"SEPARATOR", ",",
 			},
 			// prompt_vector field (VECTOR)
-			[]interface{}{
+			[]any{
 				"identifier", "prompt_vector",
 				"attribute", "prompt_vector",
 				"type", "VECTOR",
@@ -78,7 +78,7 @@ func TestParseFTInfo(t *testing.T) {
 		"percent_indexed":             "1",
 		"number_of_uses":              int64(2),
 		"cleaning":                    int64(0),
-		"gc_stats": []interface{}{
+		"gc_stats": []any{
 			"bytes_collected", "0",
 			"total_ms_run", "0",
 			"total_cycles", "0",
@@ -87,56 +87,56 @@ func TestParseFTInfo(t *testing.T) {
 			"gc_numeric_trees_missed", "0",
 			"gc_blocks_denied", "0",
 		},
-		"cursor_stats": []interface{}{
+		"cursor_stats": []any{
 			"global_idle", int64(0),
 			"global_total", int64(0),
 			"index_capacity", int64(128),
 			"index_total", int64(0),
 		},
-		"dialect_stats": []interface{}{
+		"dialect_stats": []any{
 			"dialect_1", int64(0),
 			"dialect_2", int64(0),
 			"dialect_3", int64(0),
 			"dialect_4", int64(0),
 		},
-		"Index Errors": []interface{}{
+		"Index Errors": []any{
 			"indexing failures", int64(0),
 			"last indexing error", "N/A",
 			"last indexing error key", "N/A",
 			"background indexing status", "OK",
 		},
-		"field statistics": []interface{}{
-			[]interface{}{
+		"field statistics": []any{
+			[]any{
 				"identifier", "prompt",
 				"attribute", "prompt",
-				"Index Errors", []interface{}{
+				"Index Errors", []any{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
 				},
 			},
-			[]interface{}{
+			[]any{
 				"identifier", "response",
 				"attribute", "response",
-				"Index Errors", []interface{}{
+				"Index Errors", []any{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
 				},
 			},
-			[]interface{}{
+			[]any{
 				"identifier", "exact_digest",
 				"attribute", "exact_digest",
-				"Index Errors", []interface{}{
+				"Index Errors", []any{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",
 				},
 			},
-			[]interface{}{
+			[]any{
 				"identifier", "prompt_vector",
 				"attribute", "prompt_vector",
-				"Index Errors", []interface{}{
+				"Index Errors", []any{
 					"indexing failures", int64(0),
 					"last indexing error", "N/A",
 					"last indexing error key", "N/A",

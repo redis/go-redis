@@ -157,9 +157,9 @@ func TestProcessPendingNotificationsNilReader(t *testing.T) {
 // TestWillHandleNotificationInClient tests the notification filtering logic
 func TestWillHandleNotificationInClient(t *testing.T) {
 	testCases := []struct {
-		name           string
+		name             string
 		notificationType string
-		shouldHandle   bool
+		shouldHandle     bool
 	}{
 		// Pub/Sub notifications (should be handled in client)
 		{"message", "message", true},
@@ -243,7 +243,7 @@ func TestProcessorErrorHandlingUnit(t *testing.T) {
 // TestProcessorConcurrentAccess tests concurrent access to processor
 func TestProcessorConcurrentAccess(t *testing.T) {
 	processor := NewProcessor()
-	
+
 	t.Run("ConcurrentRegisterAndGet", func(t *testing.T) {
 		done := make(chan bool, 2)
 
@@ -284,13 +284,13 @@ func TestProcessorInterfaceCompliance(t *testing.T) {
 
 // UnitTestHandler is a test implementation of NotificationHandler
 type UnitTestHandler struct {
-	name           string
-	lastNotification []interface{}
-	errorToReturn  error
-	callCount      int
+	name             string
+	lastNotification []any
+	errorToReturn    error
+	callCount        int
 }
 
-func (h *UnitTestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []interface{}) error {
+func (h *UnitTestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []any) error {
 	h.callCount++
 	h.lastNotification = notification
 	return h.errorToReturn
@@ -301,7 +301,7 @@ func (h *UnitTestHandler) GetCallCount() int {
 	return h.callCount
 }
 
-func (h *UnitTestHandler) GetLastNotification() []interface{} {
+func (h *UnitTestHandler) GetLastNotification() []any {
 	return h.lastNotification
 }
 

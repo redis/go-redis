@@ -16,7 +16,7 @@ type LoggingHook struct {
 }
 
 // PreHook logs the notification before processing and allows modification.
-func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any) ([]any, bool) {
 	if lh.LogLevel >= 2 { // Info level
 		// Log the notification type and content
 		connID := uint64(0)
@@ -41,7 +41,7 @@ func (lh *LoggingHook) PreHook(ctx context.Context, notificationCtx push.Notific
 }
 
 // PostHook logs the result after processing.
-func (lh *LoggingHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}, result error) {
+func (lh *LoggingHook) PostHook(ctx context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []any, result error) {
 	connID := uint64(0)
 	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
 		connID = conn.GetID()

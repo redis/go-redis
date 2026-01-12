@@ -182,7 +182,7 @@ func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalC
 	firstKeyPos := int(cmdFirstKeyPos(originalCmd))
 
 	// Build new args with only the specified keys
-	newArgs := make([]interface{}, 0, firstKeyPos+len(keys))
+	newArgs := make([]any, 0, firstKeyPos+len(keys))
 
 	// Copy command name and arguments before the keys
 	newArgs = append(newArgs, originalArgs[:firstKeyPos]...)
@@ -197,7 +197,7 @@ func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalC
 }
 
 // createCommandByType creates a new command of the specified type with the given arguments
-func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface{}) Cmder {
+func createCommandByType(ctx context.Context, cmdType CmdType, args ...any) Cmder {
 	switch cmdType {
 	case CmdTypeString:
 		return NewStringCmd(ctx, args...)
@@ -371,7 +371,7 @@ func (c *ClusterClient) aggregateMultiSlotResults(ctx context.Context, cmd Cmder
 			value, err := ExtractCommandValue(result.cmd)
 
 			// Check if the result is a slice (e.g., from MGET)
-			if sliceValue, ok := value.([]interface{}); ok {
+			if sliceValue, ok := value.([]any); ok {
 				// Map each element to its corresponding key
 				for i, key := range result.keys {
 					if i < len(sliceValue) {
@@ -507,7 +507,7 @@ func (c *ClusterClient) readOnlyEnabled() bool {
 }
 
 // setCommandValue sets the aggregated value on a command using the enum-based approach
-func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
+func (c *ClusterClient) setCommandValue(cmd Cmder, value any) error {
 	// If value is nil, it might mean ExtractCommandValue couldn't extract the value
 	// but the command might have executed successfully. In this case, don't set an error.
 	if value == nil {
@@ -598,13 +598,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		}
 	case CmdTypeMapStringInterface:
 		if c, ok := cmd.(*MapStringInterfaceCmd); ok {
-			if v, ok := value.(map[string]interface{}); ok {
+			if v, ok := value.(map[string]any); ok {
 				c.SetVal(v)
 			}
 		}
 	case CmdTypeSlice:
 		if c, ok := cmd.(*SliceCmd); ok {
-			if v, ok := value.([]interface{}); ok {
+			if v, ok := value.([]any); ok {
 				c.SetVal(v)
 			}
 		}
@@ -760,13 +760,13 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		}
 	case CmdTypeMapMapStringInterface:
 		if c, ok := cmd.(*MapMapStringInterfaceCmd); ok {
-			if v, ok := value.(map[string]interface{}); ok {
+			if v, ok := value.(map[string]any); ok {
 				c.SetVal(v)
 			}
 		}
 	case CmdTypeMapStringInterfaceSlice:
 		if c, ok := cmd.(*MapStringInterfaceSliceCmd); ok {
-			if v, ok := value.([]map[string]interface{}); ok {
+			if v, ok := value.([]map[string]any); ok {
 				c.SetVal(v)
 			}
 		}
@@ -855,7 +855,7 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 		}
 	case CmdTypeJSONSlice:
 		if c, ok := cmd.(*JSONSliceCmd); ok {
-			if v, ok := value.([]interface{}); ok {
+			if v, ok := value.([]any); ok {
 				c.SetVal(v)
 			}
 		}
@@ -952,7 +952,7 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 }
 
 // setCommandValueReflection is a fallback function that uses reflection
-func (c *ClusterClient) setCommandValueReflection(cmd Cmder, value interface{}) error {
+func (c *ClusterClient) setCommandValueReflection(cmd Cmder, value any) error {
 	cmdValue := reflect.ValueOf(cmd)
 	if cmdValue.Kind() != reflect.Ptr || cmdValue.IsNil() {
 		return errInvalidCmdPointer

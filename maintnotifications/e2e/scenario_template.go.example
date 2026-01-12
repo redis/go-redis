@@ -109,14 +109,14 @@ func TestScenarioTemplate(t *testing.T) {
 	// sequence := []SequenceAction{
 	//     {
 	//         Type: ActionNetworkLatency,
-	//         Parameters: map[string]interface{}{
+	//         Parameters: map[string]any{
 	//             "nodes":   []string{"localhost:7001"},
 	//             "latency": "50ms",
 	//         },
 	//     },
 	//     {
 	//         Type: ActionClusterFailover,
-	//         Parameters: map[string]interface{}{
+	//         Parameters: map[string]any{
 	//             "node_id": "node-1",
 	//             "force":   false,
 	//         },

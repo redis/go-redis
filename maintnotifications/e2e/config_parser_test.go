@@ -32,7 +32,7 @@ type DatabaseEndpoint struct {
 
 // EnvDatabaseConfig represents the configuration for a single database
 type EnvDatabaseConfig struct {
-	BdbID                interface{}        `json:"bdb_id,omitempty"`
+	BdbID                any                `json:"bdb_id,omitempty"`
 	Username             string             `json:"username,omitempty"`
 	Password             string             `json:"password,omitempty"`
 	TLS                  bool               `json:"tls"`
@@ -319,7 +319,7 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 	}
 
 	var client redis.UniversalClient
-	var opts interface{}
+	var opts any
 
 	// Determine if this is a cluster configuration
 	if len(cf.config.Endpoints) > 1 || cf.isClusterEndpoint() {
@@ -703,7 +703,7 @@ func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig Datab
 	if status.Output != nil {
 		if id, ok := status.Output["bdb_id"].(float64); ok {
 			bdbID = int(id)
-		} else if resultMap, ok := status.Output["result"].(map[string]interface{}); ok {
+		} else if resultMap, ok := status.Output["result"].(map[string]any); ok {
 			if id, ok := resultMap["bdb_id"].(float64); ok {
 				bdbID = int(id)
 			}
@@ -770,7 +770,7 @@ func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, db
 	}
 
 	// Extract endpoints
-	if endpoints, ok := status.Output["endpoints"].([]interface{}); ok {
+	if endpoints, ok := status.Output["endpoints"].([]any); ok {
 		envConfig.Endpoints = make([]string, 0, len(endpoints))
 		for _, ep := range endpoints {
 			if epStr, ok := ep.(string); ok {
@@ -780,14 +780,14 @@ func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, db
 	}
 
 	// Extract raw_endpoints
-	if rawEndpoints, ok := status.Output["raw_endpoints"].([]interface{}); ok {
+	if rawEndpoints, ok := status.Output["raw_endpoints"].([]any); ok {
 		envConfig.RawEndpoints = make([]DatabaseEndpoint, 0, len(rawEndpoints))
 		for _, rawEp := range rawEndpoints {
-			if rawEpMap, ok := rawEp.(map[string]interface{}); ok {
+			if rawEpMap, ok := rawEp.(map[string]any); ok {
 				var dbEndpoint DatabaseEndpoint
 
 				// Extract addr
-				if addr, ok := rawEpMap["addr"].([]interface{}); ok {
+				if addr, ok := rawEpMap["addr"].([]any); ok {
 					dbEndpoint.Addr = make([]string, 0, len(addr))
 					for _, a := range addr {
 						if aStr, ok := a.(string); ok {

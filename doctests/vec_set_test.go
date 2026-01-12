@@ -147,7 +147,7 @@ func ExampleClient_vectorset() {
 	// STEP_END
 
 	// STEP_START attr
-	attrs := map[string]interface{}{
+	attrs := map[string]any{
 		"name":        "Point A",
 		"description": "First point added",
 	}
@@ -256,7 +256,7 @@ func ExampleClient_vectorset() {
 	// STEP_START vsim_filter
 	// Set attributes for filtering
 	res24, err := rdb.VSetAttr(ctx, "points", "pt:A",
-		map[string]interface{}{
+		map[string]any{
 			"size":  "large",
 			"price": 18.99,
 		},
@@ -269,7 +269,7 @@ func ExampleClient_vectorset() {
 	fmt.Println(res24) // >>> true
 
 	res25, err := rdb.VSetAttr(ctx, "points", "pt:B",
-		map[string]interface{}{
+		map[string]any{
 			"size":  "large",
 			"price": 35.99,
 		},
@@ -282,7 +282,7 @@ func ExampleClient_vectorset() {
 	fmt.Println(res25) // >>> true
 
 	res26, err := rdb.VSetAttr(ctx, "points", "pt:C",
-		map[string]interface{}{
+		map[string]any{
 			"size":  "large",
 			"price": 25.99,
 		},
@@ -295,7 +295,7 @@ func ExampleClient_vectorset() {
 	fmt.Println(res26) // >>> true
 
 	res27, err := rdb.VSetAttr(ctx, "points", "pt:D",
-		map[string]interface{}{
+		map[string]any{
 			"size":  "small",
 			"price": 21.00,
 		},
@@ -308,7 +308,7 @@ func ExampleClient_vectorset() {
 	fmt.Println(res27) // >>> true
 
 	res28, err := rdb.VSetAttr(ctx, "points", "pt:E",
-		map[string]interface{}{
+		map[string]any{
 			"size":  "small",
 			"price": 17.75,
 		},

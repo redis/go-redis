@@ -17,14 +17,14 @@ import (
 // TestHandler implements NotificationHandler interface for testing
 type TestHandler struct {
 	name        string
-	handled     [][]interface{}
+	handled     [][]any
 	returnError error
 }
 
 func NewTestHandler(name string) *TestHandler {
 	return &TestHandler{
 		name:    name,
-		handled: make([][]interface{}, 0),
+		handled: make([][]any, 0),
 	}
 }
 
@@ -40,12 +40,12 @@ func (m *MockNetConn) SetDeadline(t time.Time) error      { return nil }
 func (m *MockNetConn) SetReadDeadline(t time.Time) error  { return nil }
 func (m *MockNetConn) SetWriteDeadline(t time.Time) error { return nil }
 
-func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []interface{}) error {
+func (h *TestHandler) HandlePushNotification(ctx context.Context, handlerCtx NotificationHandlerContext, notification []any) error {
 	h.handled = append(h.handled, notification)
 	return h.returnError
 }
 
-func (h *TestHandler) GetHandledNotifications() [][]interface{} {
+func (h *TestHandler) GetHandledNotifications() [][]any {
 	return h.handled
 }
 
@@ -54,7 +54,7 @@ func (h *TestHandler) SetReturnError(err error) {
 }
 
 func (h *TestHandler) Reset() {
-	h.handled = make([][]interface{}, 0)
+	h.handled = make([][]any, 0)
 	h.returnError = nil
 }
 
@@ -583,7 +583,7 @@ func TestNotificationHandlerInterface(t *testing.T) {
 		Conn:       nil,
 		IsBlocking: false,
 	}
-	notification := []interface{}{"TEST", "data"}
+	notification := []any{"TEST", "data"}
 
 	err := handler.HandlePushNotification(ctx, handlerCtx, notification)
 	if err != nil {
@@ -614,7 +614,7 @@ func TestNotificationHandlerError(t *testing.T) {
 		Conn:       nil,
 		IsBlocking: false,
 	}
-	notification := []interface{}{"TEST", "data"}
+	notification := []any{"TEST", "data"}
 
 	err := handler.HandlePushNotification(ctx, handlerCtx, notification)
 	if err != expectedError {
