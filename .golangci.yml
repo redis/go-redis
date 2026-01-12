@@ -3,8 +3,6 @@ run:
   timeout: 5m
   tests: false
 linters:
-  enable:
-    - gofumpt
   settings:
     staticcheck:
       checks:
@@ -28,6 +26,8 @@ linters:
       - builtin$
       - examples$
 formatters:
+  enable:
+    - gofumpt
   exclusions:
     generated: lax
     paths:
