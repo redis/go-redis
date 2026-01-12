@@ -540,19 +540,37 @@ func formatSMigratingNotification(seqID int64, slots ...string) string {
 }
 
 func formatSMigratedNotification(seqID int64, endpoints ...string) string {
-	// New Format: ["SMIGRATED", SeqID, count, [endpoint1, endpoint2, ...]]
+	// Correct Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
+	// RESP3 wire format:
+	//   >3
+	//   +SMIGRATED
+	//   :SeqID
+	//   *<num_entries>
+	//     *2
+	//       +<host:port>
+	//       +<slots-or-ranges>
 	// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
-	// Example: >4\r\n$9\r\nSMIGRATED\r\n:15\r\n:2\r\n*2\r\n$31\r\n127.0.0.1:6379 123,456,789-1000\r\n$30\r\n127.0.0.1:6380 124,457,300-500\r\n
-	parts := []string{">4\r\n"}
-	parts = append(parts, "$9\r\nSMIGRATED\r\n")
+	parts := []string{">3\r\n"}
+	parts = append(parts, "+SMIGRATED\r\n")
 	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
 
 	count := len(endpoints)
-	parts = append(parts, fmt.Sprintf(":%d\r\n", count))
 	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
 
 	for _, endpoint := range endpoints {
-		parts = append(parts, fmt.Sprintf("$%d\r\n%s\r\n", len(endpoint), endpoint))
+		// Split endpoint into host:port and slots
+		// endpoint format: "host:port slot1,slot2,range1-range2"
+		endpointParts := strings.SplitN(endpoint, " ", 2)
+		if len(endpointParts) != 2 {
+			continue
+		}
+		hostPort := endpointParts[0]
+		slots := endpointParts[1]
+
+		// Each entry is an array with 2 elements
+		parts = append(parts, "*2\r\n")
+		parts = append(parts, fmt.Sprintf("+%s\r\n", hostPort))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
 	}
 
 	return strings.Join(parts, "")

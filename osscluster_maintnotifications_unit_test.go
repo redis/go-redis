@@ -100,22 +100,20 @@ func TestClusterMaintNotifications_SMigratingHandler(t *testing.T) {
 
 // TestClusterMaintNotifications_SMigratedHandler tests SMIGRATED notification handling
 func TestClusterMaintNotifications_SMigratedHandler(t *testing.T) {
-	// Simulate receiving a SMIGRATED notification with new format
-	// Format: ["SMIGRATED", SeqID, count, [endpoint1, endpoint2, ...]]
-	// Each endpoint is "host:port slot1,slot2,range1-range2"
+	// Simulate receiving a SMIGRATED notification with correct format
+	// Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(12346),
-		int64(2), // count of endpoints
 		[]interface{}{
-			"127.0.0.1:6379 123,456,789-1000",
-			"127.0.0.1:6380 124,457,300-500",
+			[]interface{}{"127.0.0.1:6379", "123,456,789-1000"},
+			[]interface{}{"127.0.0.1:6380", "124,457,300-500"},
 		},
 	}
 
 	// Verify notification format
-	if len(notification) != 4 {
-		t.Fatalf("SMIGRATED notification should have exactly 4 elements, got %d", len(notification))
+	if len(notification) != 3 {
+		t.Fatalf("SMIGRATED notification should have exactly 3 elements, got %d", len(notification))
 	}
 
 	notifType, ok := notification[0].(string)
@@ -131,40 +129,47 @@ func TestClusterMaintNotifications_SMigratedHandler(t *testing.T) {
 		t.Errorf("Expected SeqID 12346, got %d", seqID)
 	}
 
-	// Verify count
-	count, ok := notification[2].(int64)
-	if !ok {
-		t.Fatalf("Expected count to be int64, got %T", notification[2])
-	}
-	if count != 2 {
-		t.Errorf("Expected count 2, got %d", count)
-	}
-
 	// Verify endpoints array
-	endpoints, ok := notification[3].([]interface{})
+	endpoints, ok := notification[2].([]interface{})
 	if !ok {
-		t.Fatalf("Expected endpoints to be array, got %T", notification[3])
+		t.Fatalf("Expected endpoints to be array, got %T", notification[2])
 	}
-	if len(endpoints) != int(count) {
-		t.Errorf("Expected %d endpoints, got %d", count, len(endpoints))
+	if len(endpoints) != 2 {
+		t.Errorf("Expected 2 endpoints, got %d", len(endpoints))
 	}
 
 	// Verify first endpoint
-	endpoint1, ok := endpoints[0].(string)
+	endpoint1, ok := endpoints[0].([]interface{})
 	if !ok {
-		t.Fatalf("Expected endpoint to be string, got %T", endpoints[0])
+		t.Fatalf("Expected endpoint to be array, got %T", endpoints[0])
 	}
-	if endpoint1 != "127.0.0.1:6379 123,456,789-1000" {
-		t.Errorf("Expected first endpoint '127.0.0.1:6379 123,456,789-1000', got %v", endpoint1)
+	if len(endpoint1) != 2 {
+		t.Fatalf("Expected endpoint to have 2 elements, got %d", len(endpoint1))
+	}
+	hostPort1, ok := endpoint1[0].(string)
+	if !ok || hostPort1 != "127.0.0.1:6379" {
+		t.Errorf("Expected first endpoint host:port '127.0.0.1:6379', got %v", endpoint1[0])
+	}
+	slots1, ok := endpoint1[1].(string)
+	if !ok || slots1 != "123,456,789-1000" {
+		t.Errorf("Expected first endpoint slots '123,456,789-1000', got %v", endpoint1[1])
 	}
 
 	// Verify second endpoint
-	endpoint2, ok := endpoints[1].(string)
+	endpoint2, ok := endpoints[1].([]interface{})
 	if !ok {
-		t.Fatalf("Expected endpoint to be string, got %T", endpoints[1])
+		t.Fatalf("Expected endpoint to be array, got %T", endpoints[1])
 	}
-	if endpoint2 != "127.0.0.1:6380 124,457,300-500" {
-		t.Errorf("Expected second endpoint '127.0.0.1:6380 124,457,300-500', got %v", endpoint2)
+	if len(endpoint2) != 2 {
+		t.Fatalf("Expected endpoint to have 2 elements, got %d", len(endpoint2))
+	}
+	hostPort2, ok := endpoint2[0].(string)
+	if !ok || hostPort2 != "127.0.0.1:6380" {
+		t.Errorf("Expected second endpoint host:port '127.0.0.1:6380', got %v", endpoint2[0])
+	}
+	slots2, ok := endpoint2[1].(string)
+	if !ok || slots2 != "124,457,300-500" {
+		t.Errorf("Expected second endpoint slots '124,457,300-500', got %v", endpoint2[1])
 	}
 
 	t.Log("SMIGRATED notification format validation passed")
