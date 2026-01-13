@@ -200,6 +200,8 @@ type Options struct {
 	// MaxActiveConns is the maximum number of connections allocated by the pool at a given time.
 	// When zero, there is no limit on the number of connections in the pool.
 	// If the pool is full, the next call to Get() will block until a connection is released.
+	//
+	// default: 0
 	MaxActiveConns int
 
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
