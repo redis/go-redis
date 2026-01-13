@@ -33,11 +33,11 @@ func TestConnStateMachine_Transition(t *testing.T) {
 
 func TestConnStateMachine_TryTransition(t *testing.T) {
 	tests := []struct {
-		name           string
-		initialState   ConnState
-		validStates    []ConnState
-		targetState    ConnState
-		expectError    bool
+		name         string
+		initialState ConnState
+		validStates  []ConnState
+		targetState  ConnState
+		expectError  bool
 	}{
 		{
 			name:         "valid transition from CREATED to INITIALIZING",
@@ -228,8 +228,6 @@ func TestConnStateMachine_ConcurrentAccess(t *testing.T) {
 
 	t.Logf("Successful transitions: %d out of %d attempts", successCount.Load(), numGoroutines*numIterations)
 }
-
-
 
 func TestConnStateMachine_StateString(t *testing.T) {
 	tests := []struct {
@@ -541,8 +539,6 @@ func BenchmarkConnStateMachine_TryTransition(b *testing.B) {
 	}
 }
 
-
-
 func TestConnStateMachine_IdleInUseTransitions(t *testing.T) {
 	sm := NewConnStateMachine()
 
@@ -639,7 +635,6 @@ func TestConn_UsedMethods(t *testing.T) {
 		t.Error("expected IsUsed to be false after SetUsed(false)")
 	}
 }
-
 
 func TestConnStateMachine_UnusableState(t *testing.T) {
 	sm := NewConnStateMachine()
@@ -738,5 +733,3 @@ func TestConn_UsableUnusable(t *testing.T) {
 		t.Errorf("expected state IDLE after SetUsable(true), got %s", state)
 	}
 }
-
-
