@@ -535,9 +535,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// Enable maintnotifications if maintnotifications are configured
 	c.optLock.RLock()
-	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
+	maintNotifEnabled := false
 	protocol := c.opt.Protocol
-	endpointType := c.opt.MaintNotificationsConfig.EndpointType
+	var endpointType maintnotifications.EndpointType
+	if c.opt.MaintNotificationsConfig != nil {
+		maintNotifEnabled = c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
+		endpointType = c.opt.MaintNotificationsConfig.EndpointType
+	}
 	c.optLock.RUnlock()
 	var maintNotifHandshakeErr error
 	if maintNotifEnabled && protocol == 3 {
