@@ -10,7 +10,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/util"
 )
 
 var (
@@ -319,6 +318,12 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	if p.cfg.MaxActiveConns > 0 && p.poolSize.Load() >= p.cfg.MaxActiveConns {
 		return nil, ErrPoolExhausted
+	}
+
+	// Protect against nil context due to race condition in queuedNewConn
+	// where the context can be set to nil after timeout/cancellation
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
@@ -695,7 +700,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 	var cn *Conn
 	attempts := 0
 
-	maxAttempts := util.Min(popAttempts, n)
+	maxAttempts := min(popAttempts, n)
 	for attempts < maxAttempts {
 		if len(p.idleConns) == 0 {
 			return nil, nil

@@ -1037,6 +1037,64 @@ var _ = Describe("queuedNewConn", func() {
 		testPool.Put(ctx, reqBConn)
 		Eventually(func() int { return testPool.QueueLen() }, "600ms").Should(Equal(0))
 	})
+	// Test for race condition where nil context can be passed to newConn
+	// This reproduces the issue reported in GitHub where queuedNewConn panics
+	// with "cannot create context from nil parent"
+	It("should handle nil context race condition in queuedNewConn", func() {
+		// Create a pool with very short timeouts to trigger the race condition
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				// Add a small delay to increase chance of race condition
+				time.Sleep(50 * time.Millisecond)
+				return dummyDialer(ctx)
+			},
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        10 * time.Millisecond, // Very short timeout
+			DialTimeout:        100 * time.Millisecond,
+			ConnMaxIdleTime:    time.Millisecond,
+		})
+		defer testPool.Close()
+
+		// Try to trigger the race condition by making many concurrent requests
+		// with short timeouts
+		const numGoroutines = 50
+		var wg sync.WaitGroup
+		errors := make(chan error, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+
+				// Use a very short context timeout to trigger the race
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+				defer cancel()
+
+				_, err := testPool.Get(ctx)
+				if err != nil {
+					// We expect timeout errors, but not panics
+					errors <- err
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check that we got timeout errors (expected) but no panics
+		// The test passes if it doesn't panic
+		timeoutCount := 0
+		for err := range errors {
+			if err == context.DeadlineExceeded || err == pool.ErrPoolTimeout {
+				timeoutCount++
+			}
+		}
+
+		// We should have at least some timeouts due to the short timeout
+		Expect(timeoutCount).To(BeNumerically(">", 0))
+	})
 })
 
 func init() {

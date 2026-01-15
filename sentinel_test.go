@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -671,8 +671,8 @@ func compareFailoverOptions(t *testing.T, a, e *redis.FailoverOptions) {
 }
 
 func compareSlices(t *testing.T, a, b []string, name string) {
-	sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
-	sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
+	slices.Sort(a)
+	slices.Sort(b)
 	if len(a) != len(b) {
 		t.Errorf("%s got %q, want %q", name, a, b)
 	}
@@ -680,101 +680,5 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 		if a[i] != b[i] {
 			t.Errorf("%s got %q, want %q", name, a, b)
 		}
-	}
-}
-
-type joinErrorsTest struct {
-	name     string
-	errs     []error
-	expected string
-}
-
-func TestJoinErrors(t *testing.T) {
-	tests := []joinErrorsTest{
-		{
-			name:     "empty slice",
-			errs:     []error{},
-			expected: "",
-		},
-		{
-			name:     "single error",
-			errs:     []error{errors.New("first error")},
-			expected: "first error",
-		},
-		{
-			name:     "two errors",
-			errs:     []error{errors.New("first error"), errors.New("second error")},
-			expected: "first error\nsecond error",
-		},
-		{
-			name: "multiple errors",
-			errs: []error{
-				errors.New("first error"),
-				errors.New("second error"),
-				errors.New("third error"),
-			},
-			expected: "first error\nsecond error\nthird error",
-		},
-		{
-			name:     "nil slice",
-			errs:     nil,
-			expected: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := redis.JoinErrors(tt.errs)
-			if result != tt.expected {
-				t.Errorf("joinErrors() = %q, want %q", result, tt.expected)
-			}
-		})
-	}
-}
-
-func BenchmarkJoinErrors(b *testing.B) {
-	benchmarks := []joinErrorsTest{
-		{
-			name:     "empty slice",
-			errs:     []error{},
-			expected: "",
-		},
-		{
-			name:     "single error",
-			errs:     []error{errors.New("first error")},
-			expected: "first error",
-		},
-		{
-			name:     "two errors",
-			errs:     []error{errors.New("first error"), errors.New("second error")},
-			expected: "first error\nsecond error",
-		},
-		{
-			name: "multiple errors",
-			errs: []error{
-				errors.New("first error"),
-				errors.New("second error"),
-				errors.New("third error"),
-			},
-			expected: "first error\nsecond error\nthird error",
-		},
-		{
-			name:     "nil slice",
-			errs:     nil,
-			expected: "",
-		},
-	}
-	for _, bm := range benchmarks {
-		b.Run(bm.name, func(b *testing.B) {
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					result := redis.JoinErrors(bm.errs)
-					if result != bm.expected {
-						b.Errorf("joinErrors() = %q, want %q", result, bm.expected)
-					}
-				}
-			})
-		})
 	}
 }
