@@ -22,3 +22,9 @@ func (p *ConnPool) CheckMinIdleConns() {
 func (p *ConnPool) QueueLen() int {
 	return int(p.semaphore.Len())
 }
+
+var NoExpiration = noExpiration
+
+func (p *ConnPool) CalcConnExpiresAt() time.Time {
+	return p.calcConnExpiresAt()
+}

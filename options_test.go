@@ -74,6 +74,17 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?max_concurrent_dials=0", // MaxConcurrentDials zero value
 			o:   &Options{Addr: "localhost:123", MaxConcurrentDials: 0},
 		}, {
+			url: "redis://localhost:123/?conn_max_lifetime=1h&conn_max_lifetime_jitter=6m",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: time.Hour, ConnMaxLifetimeJitter: 6 * time.Minute},
+		}, {
+			// jitter > lifetime should be capped
+			url: "redis://localhost:123/?conn_max_lifetime=30m&conn_max_lifetime_jitter=1h",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: 30 * time.Minute, ConnMaxLifetimeJitter: 30 * time.Minute},
+		}, {
+			// jitter without lifetime should be capped to 0
+			url: "redis://localhost:123/?conn_max_lifetime_jitter=6m",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetimeJitter: 0},
+		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
 		}, {
@@ -202,6 +213,9 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	}
 	if actual.ConnMaxLifetime != expected.ConnMaxLifetime {
 		t.Errorf("ConnMaxLifetime: got %v, expected %v", actual.ConnMaxLifetime, expected.ConnMaxLifetime)
+	}
+	if actual.ConnMaxLifetimeJitter != expected.ConnMaxLifetimeJitter {
+		t.Errorf("ConnMaxLifetimeJitter: got %v, expected %v", actual.ConnMaxLifetimeJitter, expected.ConnMaxLifetimeJitter)
 	}
 	if actual.MaxConcurrentDials != expected.MaxConcurrentDials {
 		t.Errorf("MaxConcurrentDials: got %v, expected %v", actual.MaxConcurrentDials, expected.MaxConcurrentDials)
