@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
@@ -110,6 +111,7 @@ type Options struct {
 	MaxActiveConns           int32
 	ConnMaxIdleTime          time.Duration
 	ConnMaxLifetime          time.Duration
+	ConnMaxLifetimeJitter    time.Duration
 	PushNotificationsEnabled bool
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
@@ -321,6 +323,12 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrPoolExhausted
 	}
 
+	// Protect against nil context due to race condition in queuedNewConn
+	// where the context can be set to nil after timeout/cancellation
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
 	defer cancel()
 	cn, err := p.dialConn(dialCtx, pooled)
@@ -407,11 +415,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		// Success - create connection
 		cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 		cn.pooled = pooled
-		if p.cfg.ConnMaxLifetime > 0 {
-			cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
-		} else {
-			cn.expiresAt = noExpiration
-		}
+		cn.expiresAt = p.calcConnExpiresAt()
 
 		return cn, nil
 	}
@@ -423,6 +427,25 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		go p.tryDial()
 	}
 	return nil, lastErr
+}
+
+// calcConnExpiresAt calculates the expiration time for a connection.
+// It applies random jitter to prevent all connections from expiring simultaneously,
+// avoiding the "thundering herd" problem where all connections expire at once.
+// Returns noExpiration if ConnMaxLifetime is not set.
+func (p *ConnPool) calcConnExpiresAt() time.Time {
+	if p.cfg.ConnMaxLifetime <= 0 {
+		return noExpiration
+	}
+
+	if p.cfg.ConnMaxLifetimeJitter <= 0 {
+		return time.Now().Add(p.cfg.ConnMaxLifetime)
+	}
+
+	jitter := p.cfg.ConnMaxLifetimeJitter
+	jitterRange := jitter.Nanoseconds() * 2
+	jitterNs := rand.Int63n(jitterRange) - jitter.Nanoseconds()
+	return time.Now().Add(p.cfg.ConnMaxLifetime + time.Duration(jitterNs))
 }
 
 func (p *ConnPool) tryDial() {
