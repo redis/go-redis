@@ -79,11 +79,11 @@ type UniversalOptions struct {
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize        int
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int
+	PoolSize              int
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int
 	ConnMaxIdleTime       time.Duration
 	ConnMaxLifetime       time.Duration
 	ConnMaxLifetimeJitter time.Duration
@@ -167,11 +167,11 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		PoolFIFO: o.PoolFIFO,
 
-		PoolSize:        o.PoolSize,
-		PoolTimeout:     o.PoolTimeout,
-		MinIdleConns:    o.MinIdleConns,
-		MaxIdleConns:    o.MaxIdleConns,
-		MaxActiveConns:  o.MaxActiveConns,
+		PoolSize:              o.PoolSize,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
 		ConnMaxIdleTime:       o.ConnMaxIdleTime,
 		ConnMaxLifetime:       o.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
@@ -227,12 +227,12 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
 
-		PoolFIFO:        o.PoolFIFO,
-		PoolSize:        o.PoolSize,
-		PoolTimeout:     o.PoolTimeout,
-		MinIdleConns:    o.MinIdleConns,
-		MaxIdleConns:    o.MaxIdleConns,
-		MaxActiveConns:  o.MaxActiveConns,
+		PoolFIFO:              o.PoolFIFO,
+		PoolSize:              o.PoolSize,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
 		ConnMaxIdleTime:       o.ConnMaxIdleTime,
 		ConnMaxLifetime:       o.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
