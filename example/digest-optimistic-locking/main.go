@@ -242,4 +242,3 @@ func clientSideDigestExample(ctx context.Context, rdb *redis.Client) {
 		fmt.Println("✓ Binary digest matches!")
 	}
 }
-
