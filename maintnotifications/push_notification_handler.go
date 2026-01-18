@@ -40,48 +40,25 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 	var err error
 	switch notificationType {
 	case NotificationMoving:
-		// Record maintenance notification metric
-		if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
-			if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-				maintenanceCallback(ctx, conn, notificationType)
-			}
-		}
 		err = snh.handleMoving(ctx, handlerCtx, modifiedNotification)
 	case NotificationMigrating:
-		// Record maintenance notification metric
-		if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
-			if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-				maintenanceCallback(ctx, conn, notificationType)
-			}
-		}
 		err = snh.handleMigrating(ctx, handlerCtx, modifiedNotification)
 	case NotificationMigrated:
-		// Record maintenance notification metric
-		if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
-			if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-				maintenanceCallback(ctx, conn, notificationType)
-			}
-		}
 		err = snh.handleMigrated(ctx, handlerCtx, modifiedNotification)
 	case NotificationFailingOver:
-		// Record maintenance notification metric
-		if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
-			if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-				maintenanceCallback(ctx, conn, notificationType)
-			}
-		}
 		err = snh.handleFailingOver(ctx, handlerCtx, modifiedNotification)
 	case NotificationFailedOver:
-		// Record maintenance notification metric
-		if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
-			if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-				maintenanceCallback(ctx, conn, notificationType)
-			}
-		}
 		err = snh.handleFailedOver(ctx, handlerCtx, modifiedNotification)
 	default:
 		// Ignore other notification types (e.g., pub/sub messages)
 		err = nil
+	}
+
+	// Record maintenance notification metric
+	if maintenanceCallback := pool.GetMaintenanceNotificationCallback(); maintenanceCallback != nil {
+		if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
+			maintenanceCallback(ctx, conn, notificationType)
+		}
 	}
 
 	// Process post-hooks with the result

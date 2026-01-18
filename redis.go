@@ -299,6 +299,13 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
+	if dialStartNs := cn.GetDialStartNs(); dialStartNs > 0 {
+		if cb := pool.GetConnectionCreateTimeCallback(); cb != nil {
+			duration := time.Duration(time.Now().UnixNano() - dialStartNs)
+			cb(ctx, duration, cn)
+		}
+	}
+
 	// initConn will transition to IDLE state, so we need to acquire it
 	// before returning it to the user.
 	if !cn.TryAcquire() {
@@ -670,7 +677,12 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	// Start measuring total operation duration (includes all retries)
-	operationStart := time.Now()
+	// Only call time.Now() if operation duration callback is set to avoid overhead
+	var operationStart time.Time
+	opDurationCallback := otel.GetOperationDurationCallback()
+	if opDurationCallback != nil {
+		operationStart = time.Now()
+	}
 	var lastConn *pool.Conn
 
 	var lastErr error
@@ -685,8 +697,17 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		if err == nil || !retry {
 			// Record total operation duration
-			operationDuration := time.Since(operationStart)
-			otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
+			if opDurationCallback != nil {
+				operationDuration := time.Since(operationStart)
+				opDurationCallback(ctx, operationDuration, cmd, totalAttempts, err, lastConn, c.opt.DB)
+			}
+
+			if err != nil {
+				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+					errorType, statusCode, isInternal := classifyCommandError(err)
+					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
+				}
+			}
 			return err
 		}
 
@@ -694,10 +715,78 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	}
 
 	// Record failed operation after all retries
-	operationDuration := time.Since(operationStart)
-	otel.RecordOperationDuration(ctx, operationDuration, cmd, totalAttempts, lastConn, c.opt.DB)
+	if opDurationCallback != nil {
+		operationDuration := time.Since(operationStart)
+		opDurationCallback(ctx, operationDuration, cmd, totalAttempts, lastErr, lastConn, c.opt.DB)
+	}
+
+	// Record error metric for exhausted retries
+	if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+		errorType, statusCode, isInternal := classifyCommandError(lastErr)
+		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
+	}
 
 	return lastErr
+}
+
+// classifyCommandError classifies an error for metrics reporting.
+// Returns: errorType, statusCode, isInternal
+// - errorType: A string describing the error type (e.g., "TIMEOUT", "NETWORK", "ERR")
+// - statusCode: The Redis error prefix or error category
+// - isInternal: true for network/timeout errors, false for Redis server errors
+func classifyCommandError(err error) (errorType, statusCode string, isInternal bool) {
+	if err == nil {
+		return "", "", false
+	}
+
+	errStr := err.Error()
+
+	// Check for timeout errors
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return "TIMEOUT", "TIMEOUT", true
+	}
+
+	// Check for network errors
+	if _, ok := err.(net.Error); ok {
+		return "NETWORK", "NETWORK", true
+	}
+
+	// Check for context errors
+	if errors.Is(err, context.Canceled) {
+		return "CONTEXT_CANCELED", "CONTEXT_CANCELED", true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "CONTEXT_TIMEOUT", "CONTEXT_TIMEOUT", true
+	}
+
+	// Check for Redis errors
+	// Examples: "ERR ...", "WRONGTYPE ...", "CLUSTERDOWN ..."
+	if len(errStr) > 0 {
+		// Find the first space to extract the prefix
+		spaceIdx := 0
+		for i, c := range errStr {
+			if c == ' ' {
+				spaceIdx = i
+				break
+			}
+		}
+		if spaceIdx == 0 {
+			spaceIdx = len(errStr)
+		}
+		prefix := errStr[:spaceIdx]
+		isUppercase := true
+		for _, c := range prefix {
+			if c < 'A' || c > 'Z' {
+				isUppercase = false
+				break
+			}
+		}
+		if isUppercase && len(prefix) > 0 {
+			return prefix, prefix, false
+		}
+	}
+
+	return "UNKNOWN", "UNKNOWN", true
 }
 
 func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
@@ -896,7 +985,12 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
-	operationStart := time.Now()
+	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
+	var operationStart time.Time
+	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
+	if pipelineOpDurationCallback != nil {
+		operationStart = time.Now()
+	}
 	var lastConn *pool.Conn
 	totalAttempts := 0
 
@@ -906,8 +1000,10 @@ func (c *baseClient) generalProcessPipeline(
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
+				if pipelineOpDurationCallback != nil {
+					operationDuration := time.Since(operationStart)
+					pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, err, lastConn, c.opt.DB)
+				}
 				return err
 			}
 		}
@@ -929,14 +1025,31 @@ func (c *baseClient) generalProcessPipeline(
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
-			operationDuration := time.Since(operationStart)
-			otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+			if pipelineOpDurationCallback != nil {
+				operationDuration := time.Since(operationStart)
+				pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+			}
+
+			if lastErr != nil {
+				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+					errorType, statusCode, isInternal := classifyCommandError(lastErr)
+					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
+				}
+			}
 			return lastErr
 		}
 	}
 
-	operationDuration := time.Since(operationStart)
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+	if pipelineOpDurationCallback != nil {
+		operationDuration := time.Since(operationStart)
+		pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
+	}
+
+	if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+		errorType, statusCode, isInternal := classifyCommandError(lastErr)
+		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
+	}
+
 	return lastErr
 }
 

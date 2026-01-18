@@ -26,7 +26,8 @@ type PubSubPooler interface {
 
 type OTelRecorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
-	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn ConnInfo, dbIndex int)
+	// err is the error from command execution (can be nil for successful commands)
+	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn ConnInfo, dbIndex int)
 
 	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
 	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
@@ -58,9 +59,6 @@ type OTelRecorder interface {
 
 	// RecordConnectionWaitTime records the time spent waiting for a connection from the pool
 	RecordConnectionWaitTime(ctx context.Context, duration time.Duration, cn ConnInfo)
-
-	// RecordConnectionUseTime records the time a connection was checked out from the pool
-	RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn ConnInfo)
 
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
@@ -106,63 +104,51 @@ type otelRecorderAdapter struct {
 	recorder OTelRecorder
 }
 
-// toConnInfo converts internal pool.Conn to public ConnInfo interface
-func toConnInfo(cn *pool.Conn) ConnInfo {
-	if cn != nil {
-		return cn
-	}
-	return nil
-}
-
-func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, duration time.Duration, cmd otel.Cmder, attempts int, cn *pool.Conn, dbIndex int) {
+func (a *otelRecorderAdapter) RecordOperationDuration(ctx context.Context, duration time.Duration, cmd otel.Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
 	// Convert internal Cmder to public Cmder
 	if publicCmd, ok := cmd.(Cmder); ok {
-		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, toConnInfo(cn), dbIndex)
+		a.recorder.RecordOperationDuration(ctx, duration, publicCmd, attempts, err, cn, dbIndex)
 	}
 }
 
 func (a *otelRecorderAdapter) RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
-	a.recorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, toConnInfo(cn), dbIndex)
+	a.recorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-	a.recorder.RecordConnectionCreateTime(ctx, duration, toConnInfo(cn))
+	a.recorder.RecordConnectionCreateTime(ctx, duration, cn)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionRelaxedTimeout(ctx context.Context, delta int, cn *pool.Conn, poolName, notificationType string) {
-	a.recorder.RecordConnectionRelaxedTimeout(ctx, delta, toConnInfo(cn), poolName, notificationType)
+	a.recorder.RecordConnectionRelaxedTimeout(ctx, delta, cn, poolName, notificationType)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionHandoff(ctx context.Context, cn *pool.Conn, poolName string) {
-	a.recorder.RecordConnectionHandoff(ctx, toConnInfo(cn), poolName)
+	a.recorder.RecordConnectionHandoff(ctx, cn, poolName)
 }
 
 func (a *otelRecorderAdapter) RecordError(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retryAttempts int) {
-	a.recorder.RecordError(ctx, errorType, toConnInfo(cn), statusCode, isInternal, retryAttempts)
+	a.recorder.RecordError(ctx, errorType, cn, statusCode, isInternal, retryAttempts)
 }
 
 func (a *otelRecorderAdapter) RecordMaintenanceNotification(ctx context.Context, cn *pool.Conn, notificationType string) {
-	a.recorder.RecordMaintenanceNotification(ctx, toConnInfo(cn), notificationType)
+	a.recorder.RecordMaintenanceNotification(ctx, cn, notificationType)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionWaitTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-	a.recorder.RecordConnectionWaitTime(ctx, duration, toConnInfo(cn))
-}
-
-func (a *otelRecorderAdapter) RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-	a.recorder.RecordConnectionUseTime(ctx, duration, toConnInfo(cn))
+	a.recorder.RecordConnectionWaitTime(ctx, duration, cn)
 }
 
 func (a *otelRecorderAdapter) RecordConnectionClosed(ctx context.Context, cn *pool.Conn, reason string, err error) {
-	a.recorder.RecordConnectionClosed(ctx, toConnInfo(cn), reason, err)
+	a.recorder.RecordConnectionClosed(ctx, cn, reason, err)
 }
 
 func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {
-	a.recorder.RecordPubSubMessage(ctx, toConnInfo(cn), direction, channel, sharded)
+	a.recorder.RecordPubSubMessage(ctx, cn, direction, channel, sharded)
 }
 
 func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
-	a.recorder.RecordStreamLag(ctx, lag, toConnInfo(cn), streamName, consumerGroup, consumerName)
+	a.recorder.RecordStreamLag(ctx, lag, cn, streamName, consumerGroup, consumerName)
 }
 
 func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {

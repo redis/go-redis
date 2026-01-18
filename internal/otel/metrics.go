@@ -20,7 +20,7 @@ type Cmder interface {
 type Recorder interface {
 	// RecordOperationDuration records the total operation duration (including all retries)
 	// dbIndex is the Redis database index (0-15)
-	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn, dbIndex int)
+	RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int)
 
 	// RecordPipelineOperationDuration records the total pipeline/transaction duration.
 	// operationName should be "PIPELINE" for regular pipelines or "MULTI" for transactions.
@@ -55,9 +55,6 @@ type Recorder interface {
 
 	// RecordConnectionWaitTime records the time spent waiting for a connection from the pool
 	RecordConnectionWaitTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
-
-	// RecordConnectionUseTime records the time a connection was checked out from the pool
-	RecordConnectionUseTime(ctx context.Context, duration time.Duration, cn *pool.Conn)
 
 	// RecordConnectionClosed records when a connection is closed
 	// reason: reason for closing (e.g., "idle", "max_lifetime", "error", "pool_closed")
@@ -101,10 +98,26 @@ type PoolRegistrar interface {
 // Global recorder instance (initialized by extra/redisotel-native)
 var globalRecorder Recorder = noopRecorder{}
 
+// Callbacks for operation duration metrics
+var operationDurationCallback func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int)
+var pipelineOperationDurationCallback func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int)
+
+// GetOperationDurationCallback returns the callback for operation duration.
+func GetOperationDurationCallback() func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
+	return operationDurationCallback
+}
+
+// GetPipelineOperationDurationCallback returns the callback for pipeline operation duration.
+func GetPipelineOperationDurationCallback() func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
+	return pipelineOperationDurationCallback
+}
+
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
 	if r == nil {
 		globalRecorder = noopRecorder{}
+		operationDurationCallback = nil
+		pipelineOperationDurationCallback = nil
 		// Unregister pool callbacks
 		pool.SetConnectionCreateTimeCallback(nil)
 		pool.SetConnectionRelaxedTimeoutCallback(nil)
@@ -112,11 +125,18 @@ func SetGlobalRecorder(r Recorder) {
 		pool.SetErrorCallback(nil)
 		pool.SetMaintenanceNotificationCallback(nil)
 		pool.SetConnectionWaitTimeCallback(nil)
-		pool.SetConnectionUseTimeCallback(nil)
 		pool.SetConnectionClosedCallback(nil)
 		return
 	}
 	globalRecorder = r
+
+	// Register operation duration callbacks
+	operationDurationCallback = func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
+		globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
+	}
+	pipelineOperationDurationCallback = func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
+		globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
+	}
 
 	// Register pool callback to forward connection creation time to recorder
 	pool.SetConnectionCreateTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
@@ -148,11 +168,6 @@ func SetGlobalRecorder(r Recorder) {
 		globalRecorder.RecordConnectionWaitTime(ctx, duration, cn)
 	})
 
-	// Register pool callback to forward connection use time to recorder
-	pool.SetConnectionUseTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-		globalRecorder.RecordConnectionUseTime(ctx, duration, cn)
-	})
-
 	// Register pool callback to forward connection closed to recorder
 	pool.SetConnectionClosedCallback(func(ctx context.Context, cn *pool.Conn, reason string, err error) {
 		globalRecorder.RecordConnectionClosed(ctx, cn, reason, err)
@@ -161,8 +176,8 @@ func SetGlobalRecorder(r Recorder) {
 
 // RecordOperationDuration records the total operation duration.
 // dbIndex is the Redis database index (0-15).
-func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, cn *pool.Conn, dbIndex int) {
-	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, cn, dbIndex)
+func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
+	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
 }
 
 // RecordPipelineOperationDuration records the total pipeline/transaction duration.
@@ -191,7 +206,7 @@ func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, stre
 
 type noopRecorder struct{}
 
-func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, *pool.Conn, int) {
+func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, error, *pool.Conn, int) {
 }
 func (noopRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn, int) {
 }
@@ -203,7 +218,6 @@ func (noopRecorder) RecordError(context.Context, string, *pool.Conn, string, boo
 func (noopRecorder) RecordMaintenanceNotification(context.Context, *pool.Conn, string)  {}
 
 func (noopRecorder) RecordConnectionWaitTime(context.Context, time.Duration, *pool.Conn) {}
-func (noopRecorder) RecordConnectionUseTime(context.Context, time.Duration, *pool.Conn)  {}
 func (noopRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string, error)   {}
 
 func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {}

@@ -1,6 +1,8 @@
 package redisotel
 
 import (
+	"strings"
+
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -46,7 +48,6 @@ type config struct {
 	bucketsStreamProcessingDuration []float64
 	bucketsConnectionCreateTime     []float64
 	bucketsConnectionWaitTime       []float64
-	bucketsConnectionUseTime        []float64
 }
 
 func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
@@ -76,7 +77,6 @@ func (c *config) isCommandIncluded(command string) bool {
 // - db.client.operation.duration (command execution time)
 // - db.client.connection.create_time (connection establishment)
 // - db.client.connection.wait_time (waiting for connection from pool)
-// - db.client.connection.use_time (time connection is checked out)
 // - redis.client.stream.processing_duration (stream message processing)
 func defaultHistogramBuckets() []float64 {
 	return []float64{
@@ -150,7 +150,6 @@ type Config struct {
 	BucketsStreamLag            []float64
 	BucketsConnectionCreateTime []float64
 	BucketsConnectionWaitTime   []float64
-	BucketsConnectionUseTime    []float64
 }
 
 // NewConfig creates a new Config with default values.
@@ -189,7 +188,6 @@ func NewConfig() *Config {
 		BucketsStreamLag:            defaultHistogramBuckets(),
 		BucketsConnectionCreateTime: defaultHistogramBuckets(),
 		BucketsConnectionWaitTime:   defaultHistogramBuckets(),
-		BucketsConnectionUseTime:    defaultHistogramBuckets(),
 	}
 }
 
@@ -218,7 +216,7 @@ func (c *Config) WithMetricGroups(groups MetricGroupFlags) *Config {
 func (c *Config) WithIncludeCommands(commands []string) *Config {
 	c.IncludeCommands = make(map[string]bool)
 	for _, cmd := range commands {
-		c.IncludeCommands[cmd] = true
+		c.IncludeCommands[strings.ToLower(cmd)] = true
 	}
 	return c
 }
@@ -228,7 +226,7 @@ func (c *Config) WithIncludeCommands(commands []string) *Config {
 func (c *Config) WithExcludeCommands(commands []string) *Config {
 	c.ExcludeCommands = make(map[string]bool)
 	for _, cmd := range commands {
-		c.ExcludeCommands[cmd] = true
+		c.ExcludeCommands[strings.ToLower(cmd)] = true
 	}
 	return c
 }
@@ -259,6 +257,5 @@ func (c *Config) WithHistogramBuckets(buckets []float64) *Config {
 	c.BucketsStreamLag = buckets
 	c.BucketsConnectionCreateTime = buckets
 	c.BucketsConnectionWaitTime = buckets
-	c.BucketsConnectionUseTime = buckets
 	return c
 }

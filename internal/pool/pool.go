@@ -32,41 +32,40 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
-	// Global callback for connection state changes (set by otel package)
+	// callbackMu protects all global callback functions for thread-safe access.
+	callbackMu sync.RWMutex
+
+	// Global callback for connection state changes
 	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
 
-	// Global callback for connection creation time (set by otel package)
+	// Global callback for connection creation time
 	connectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
 
-	// Global callback for connection relaxed timeout changes (set by otel package)
+	// Global callback for connection relaxed timeout changes
 	// Parameters: ctx, delta (+1/-1), cn, poolName, notificationType
 	connectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
 
-	// Global callback for connection handoff (set by otel package)
+	// Global callback for connection handoff
 	// Parameters: ctx, cn, poolName
 	connectionHandoffCallback func(ctx context.Context, cn *Conn, poolName string)
 
-	// Global callback for error tracking (set by otel package)
+	// Global callback for error tracking
 	// Parameters: ctx, errorType, cn, statusCode, isInternal, retryAttempts
 	errorCallback func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
 
-	// Global callback for maintenance notifications (set by otel package)
+	// Global callback for maintenance notifications
 	// Parameters: ctx, cn, notificationType
 	maintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
 
-	// Global callback for connection wait time (set by otel package)
+	// Global callback for connection wait time
 	// Parameters: ctx, duration, cn
 	connectionWaitTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
 
-	// Global callback for connection use time (set by otel package)
-	// Parameters: ctx, duration, cn
-	connectionUseTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
-
-	// Global callback for connection timeouts (set by otel package)
+	// Global callback for connection timeouts
 	// Parameters: ctx, cn, timeoutType
 	connectionTimeoutCallback func(ctx context.Context, cn *Conn, timeoutType string)
 
-	// Global callback for connection closed (set by otel package)
+	// Global callback for connection closed
 	// Parameters: ctx, cn, reason, err
 	connectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
@@ -91,85 +90,146 @@ var (
 // SetConnectionStateChangeCallback sets the global callback for connection state changes.
 // This is called by the otel package to register metrics recording.
 func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
+	callbackMu.Lock()
 	connectionStateChangeCallback = fn
+	callbackMu.Unlock()
+}
+
+func getConnectionStateChangeCallback() func(ctx context.Context, cn *Conn, fromState, toState string) {
+	callbackMu.RLock()
+	cb := connectionStateChangeCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionCreateTimeCallback sets the global callback for connection creation time.
 // This is called by the otel package to register metrics recording.
 func SetConnectionCreateTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
+	callbackMu.Lock()
 	connectionCreateTimeCallback = fn
+	callbackMu.Unlock()
+}
+
+// GetConnectionCreateTimeCallback returns the global callback for connection creation time.
+// This is used by redis.go to record connection creation time after initConn completes.
+func GetConnectionCreateTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
+	callbackMu.RLock()
+	cb := connectionCreateTimeCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionRelaxedTimeoutCallback sets the global callback for connection relaxed timeout changes.
 // This is called by the otel package to register metrics recording.
 func SetConnectionRelaxedTimeoutCallback(fn func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)) {
+	callbackMu.Lock()
 	connectionRelaxedTimeoutCallback = fn
+	callbackMu.Unlock()
 }
 
 // GetConnectionRelaxedTimeoutCallback returns the global callback for connection relaxed timeout changes.
 // This is used by maintnotifications to record relaxed timeout metrics.
 func GetConnectionRelaxedTimeoutCallback() func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string) {
-	return connectionRelaxedTimeoutCallback
+	callbackMu.RLock()
+	cb := connectionRelaxedTimeoutCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionHandoffCallback sets the global callback for connection handoffs.
 // This is called by the otel package to register metrics recording.
 func SetConnectionHandoffCallback(fn func(ctx context.Context, cn *Conn, poolName string)) {
+	callbackMu.Lock()
 	connectionHandoffCallback = fn
+	callbackMu.Unlock()
 }
 
 // GetConnectionHandoffCallback returns the global callback for connection handoffs.
 // This is used by maintnotifications to record handoff metrics.
 func GetConnectionHandoffCallback() func(ctx context.Context, cn *Conn, poolName string) {
-	return connectionHandoffCallback
+	callbackMu.RLock()
+	cb := connectionHandoffCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetErrorCallback sets the global callback for error tracking.
 // This is called by the otel package to register metrics recording.
 func SetErrorCallback(fn func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)) {
+	callbackMu.Lock()
 	errorCallback = fn
+	callbackMu.Unlock()
 }
 
 // GetErrorCallback returns the global callback for error tracking.
 // This is used by cluster and client code to record error metrics.
 func GetErrorCallback() func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int) {
-	return errorCallback
+	callbackMu.RLock()
+	cb := errorCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetMaintenanceNotificationCallback sets the global callback for maintenance notifications.
 // This is called by the otel package to register metrics recording.
 func SetMaintenanceNotificationCallback(fn func(ctx context.Context, cn *Conn, notificationType string)) {
+	callbackMu.Lock()
 	maintenanceNotificationCallback = fn
+	callbackMu.Unlock()
 }
 
 // GetMaintenanceNotificationCallback returns the global callback for maintenance notifications.
 // This is used by maintnotifications to record notification metrics.
 func GetMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, notificationType string) {
-	return maintenanceNotificationCallback
+	callbackMu.RLock()
+	cb := maintenanceNotificationCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionWaitTimeCallback sets the global callback for connection wait time.
 // This is called by the otel package to register metrics recording.
 func SetConnectionWaitTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
+	callbackMu.Lock()
 	connectionWaitTimeCallback = fn
+	callbackMu.Unlock()
 }
 
-// SetConnectionUseTimeCallback sets the global callback for connection use time.
-// This is called by the otel package to register metrics recording.
-func SetConnectionUseTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
-	connectionUseTimeCallback = fn
+func getConnectionWaitTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
+	callbackMu.RLock()
+	cb := connectionWaitTimeCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionTimeoutCallback sets the global callback for connection timeouts.
 // This is called by the otel package to register metrics recording.
 func SetConnectionTimeoutCallback(fn func(ctx context.Context, cn *Conn, timeoutType string)) {
+	callbackMu.Lock()
 	connectionTimeoutCallback = fn
+	callbackMu.Unlock()
+}
+
+func getConnectionTimeoutCallback() func(ctx context.Context, cn *Conn, timeoutType string) {
+	callbackMu.RLock()
+	cb := connectionTimeoutCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // SetConnectionClosedCallback sets the global callback for connection closed.
 // This is called by the otel package to register metrics recording.
 func SetConnectionClosedCallback(fn func(ctx context.Context, cn *Conn, reason string, err error)) {
+	callbackMu.Lock()
 	connectionClosedCallback = fn
+	callbackMu.Unlock()
+}
+
+func getConnectionClosedCallback() func(ctx context.Context, cn *Conn, reason string, err error) {
+	callbackMu.RLock()
+	cb := connectionClosedCallback
+	callbackMu.RUnlock()
+	return cb
 }
 
 // Stats contains pool state information and accumulated stats.
@@ -488,23 +548,28 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	// Notify metrics: new connection created and idle
-	if connectionStateChangeCallback != nil {
-		connectionStateChangeCallback(ctx, cn, "", "idle")
+	if cb := getConnectionStateChangeCallback(); cb != nil {
+		cb(ctx, cn, "", "idle")
 	}
 
 	return cn, nil
 }
 
 func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
-	// Start measuring connection creation time
-	startTime := time.Now()
-
 	if p.closed() {
 		return nil, ErrClosed
 	}
 
 	if atomic.LoadUint32(&p.dialErrorsNum) >= uint32(p.cfg.PoolSize) {
 		return nil, p.getLastDialError()
+	}
+
+	// Record dial start time for connection creation metric
+	// This will be used after handshake completes in redis.go _getConn()
+	// Only call time.Now() if callback is registered to avoid overhead
+	var dialStartNs int64
+	if GetConnectionCreateTimeCallback() != nil {
+		dialStartNs = time.Now().UnixNano()
 	}
 
 	// Retry dialing with backoff
@@ -540,19 +605,16 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			continue
 		}
 
-		// Success - create connection
 		cn := NewConnWithBufferSize(netConn, p.cfg.ReadBufferSize, p.cfg.WriteBufferSize)
 		cn.pooled = pooled
+		// Store dial start time only if we recorded it (callback was set)
+		if dialStartNs > 0 {
+			cn.dialStartNs.Store(dialStartNs)
+		}
 		if p.cfg.ConnMaxLifetime > 0 {
 			cn.expiresAt = time.Now().Add(p.cfg.ConnMaxLifetime)
 		} else {
 			cn.expiresAt = noExpiration
-		}
-
-		// Record connection creation time
-		if connectionCreateTimeCallback != nil {
-			duration := time.Since(startTime)
-			connectionCreateTimeCallback(ctx, duration, cn)
 		}
 
 		return cn, nil
@@ -608,10 +670,7 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 }
 
 // getConn returns a connection from the pool.
-func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
-	var cn *Conn
-	var err error
-
+func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -626,16 +685,29 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		}
 	}()
 
-	// Track wait time
-	waitStart := time.Now()
-	if err := p.waitTurn(ctx); err != nil {
+	// Track wait time - only call time.Now() if callback is registered
+	var waitStart time.Time
+	waitTimeCallback := getConnectionWaitTimeCallback()
+	if waitTimeCallback != nil {
+		waitStart = time.Now()
+	}
+	if err = p.waitTurn(ctx); err != nil {
 		// Record timeout if applicable
-		if err == ErrPoolTimeout && connectionTimeoutCallback != nil {
-			connectionTimeoutCallback(ctx, nil, "pool")
+		if err == ErrPoolTimeout {
+			if cb := getConnectionTimeoutCallback(); cb != nil {
+				cb(ctx, nil, "pool")
+			}
+			// Record general error metric for pool timeout
+			if cb := GetErrorCallback(); cb != nil {
+				cb(ctx, "POOL_TIMEOUT", nil, "POOL_TIMEOUT", true, 0)
+			}
 		}
 		return nil, err
 	}
-	waitDuration := time.Since(waitStart)
+	var waitDuration time.Duration
+	if waitTimeCallback != nil {
+		waitDuration = time.Since(waitStart)
+	}
 
 	// Use cached time for health checks (max 50ms staleness is acceptable)
 	nowNs := getCachedTimeNs()
@@ -666,10 +738,10 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		// Process connection using the hooks system
 		// Combine error and rejection checks to reduce branches
 		if hookManager != nil {
-			acceptConn, err := hookManager.ProcessOnGet(ctx, cn, false)
-			if err != nil || !acceptConn {
-				if err != nil {
-					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", err)
+			acceptConn, hookErr := hookManager.ProcessOnGet(ctx, cn, false)
+			if hookErr != nil || !acceptConn {
+				if hookErr != nil {
+					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					_ = p.CloseConn(cn)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
@@ -685,15 +757,14 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 		atomic.AddUint32(&p.stats.Hits, 1)
 
 		// Notify metrics: connection moved from idle to used
-		if connectionStateChangeCallback != nil {
-			connectionStateChangeCallback(ctx, cn, "idle", "used")
+		if cb := getConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, "idle", "used")
 		}
 
-		// Record wait time and checkout time
-		if connectionWaitTimeCallback != nil {
-			connectionWaitTimeCallback(ctx, waitDuration, cn)
+		// Record wait time (use cached callback from above)
+		if waitTimeCallback != nil {
+			waitTimeCallback(ctx, waitDuration, cn)
 		}
-		cn.checkoutAt.Store(time.Now().UnixNano())
 
 		// Decrement pending requests (connection acquired successfully)
 		// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
@@ -704,14 +775,17 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 
 	atomic.AddUint32(&p.stats.Misses, 1)
 
-	newcn, err := p.queuedNewConn(ctx)
+	var newcn *Conn
+	newcn, err = p.queuedNewConn(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// Process connection using the hooks system
+	// This includes the handshake (HELLO/AUTH) via initConn hook
 	if hookManager != nil {
-		acceptConn, err := hookManager.ProcessOnGet(ctx, newcn, true)
+		var acceptConn bool
+		acceptConn, err = hookManager.ProcessOnGet(ctx, newcn, true)
 		// both errors and accept=false mean a hook rejected the connection
 		// this should not happen with a new connection, but we handle it gracefully
 		if err != nil || !acceptConn {
@@ -723,15 +797,14 @@ func (p *ConnPool) getConn(ctx context.Context) (*Conn, error) {
 	}
 
 	// Notify metrics: new connection is created and used
-	if connectionStateChangeCallback != nil {
-		connectionStateChangeCallback(ctx, newcn, "", "used")
+	if cb := getConnectionStateChangeCallback(); cb != nil {
+		cb(ctx, newcn, "", "used")
 	}
 
-	// Record wait time and checkout time
-	if connectionWaitTimeCallback != nil {
-		connectionWaitTimeCallback(ctx, waitDuration, newcn)
+	// Record wait time (use cached callback from above)
+	if waitTimeCallback != nil {
+		waitTimeCallback(ctx, waitDuration, newcn)
 	}
-	newcn.checkoutAt.Store(time.Now().UnixNano())
 
 	// Decrement pending requests (connection acquired successfully)
 	// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
@@ -947,14 +1020,6 @@ func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
 
 // putConn is the internal implementation of Put that optionally frees a turn.
 func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
-	// Record use time (time between checkout and return)
-	checkoutAtNs := cn.checkoutAt.Load()
-	if checkoutAtNs > 0 && connectionUseTimeCallback != nil {
-		useTime := time.Duration(time.Now().UnixNano() - checkoutAtNs)
-		connectionUseTimeCallback(ctx, useTime, cn)
-		cn.checkoutAt.Store(0) // Reset checkout time
-	}
-
 	// Process connection using the hooks system
 	shouldPool := true
 	shouldRemove := false
@@ -1041,16 +1106,16 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 
 		// Notify metrics: connection moved from used to idle
-		if connectionStateChangeCallback != nil {
-			connectionStateChangeCallback(ctx, cn, "used", "idle")
+		if cb := getConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, "used", "idle")
 		}
 	} else {
 		shouldCloseConn = true
 		p.removeConnWithLock(cn)
 
 		// Notify metrics: connection removed (used -> nothing)
-		if connectionStateChangeCallback != nil {
-			connectionStateChangeCallback(ctx, cn, "used", "")
+		if cb := getConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, "used", "")
 		}
 	}
 
@@ -1079,14 +1144,6 @@ func (p *ConnPool) RemoveWithoutTurn(ctx context.Context, cn *Conn, reason error
 
 // removeConnInternal is the internal implementation of Remove that optionally frees a turn.
 func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason error, freeTurn bool) {
-	// Record use time if connection was checked out
-	checkoutAtNs := cn.checkoutAt.Load()
-	if checkoutAtNs > 0 && connectionUseTimeCallback != nil {
-		useTime := time.Duration(time.Now().UnixNano() - checkoutAtNs)
-		connectionUseTimeCallback(ctx, useTime, cn)
-		cn.checkoutAt.Store(0) // Reset checkout time
-	}
-
 	// Lock-free atomic read - no mutex overhead!
 	hookManager := p.hookManager.Load()
 
@@ -1101,17 +1158,17 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	}
 
 	// Notify metrics: connection removed (assume from used state)
-	if connectionStateChangeCallback != nil {
-		connectionStateChangeCallback(ctx, cn, "used", "")
+	if cb := getConnectionStateChangeCallback(); cb != nil {
+		cb(ctx, cn, "used", "")
 	}
 
 	// Record connection closed
-	if connectionClosedCallback != nil {
+	if cb := getConnectionClosedCallback(); cb != nil {
 		reasonStr := "unknown"
 		if reason != nil {
 			reasonStr = reason.Error()
 		}
-		connectionClosedCallback(ctx, cn, reasonStr, reason)
+		cb(ctx, cn, reasonStr, reason)
 	}
 
 	_ = p.closeConn(cn)

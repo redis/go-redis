@@ -65,7 +65,6 @@ type metricsRecorder struct {
 	maintenanceNotifications metric.Int64Counter
 
 	connectionWaitTime         metric.Float64Histogram
-	connectionUseTime          metric.Float64Histogram
 	connectionClosed           metric.Int64Counter
 	connectionPendingReqsGauge metric.Int64ObservableGauge
 
@@ -88,6 +87,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 	duration time.Duration,
 	cmd redis.Cmder,
 	attempts int,
+	err error,
 	cn redis.ConnInfo,
 	dbIndex int,
 ) {
@@ -135,8 +135,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		}
 	}
 
-	// Add error attributes if command failed
-	if err := cmd.Err(); err != nil {
+	if err != nil {
 		attrs = append(attrs, attribute.String("error.type", classifyError(err)))
 		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
@@ -631,33 +630,6 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 
 	// Record the histogram (duration in seconds)
 	r.connectionWaitTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
-}
-
-// RecordConnectionUseTime records db.client.connection.use_time metric
-func (r *metricsRecorder) RecordConnectionUseTime(
-	ctx context.Context,
-	duration time.Duration,
-	cn redis.ConnInfo,
-) {
-	if r.connectionUseTime == nil {
-		return
-	}
-
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
-	// Build attributes
-	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		getLibraryVersionAttr(),
-	}
-
-	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
-
-	// Record the histogram (duration in seconds)
-	r.connectionUseTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
 }
 
 // RecordConnectionClosed records redis.client.connection.closed metric

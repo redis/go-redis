@@ -1432,15 +1432,22 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	operationStart := time.Now()
+	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
+	var operationStart time.Time
+	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
+	if pipelineOpDurationCallback != nil {
+		operationStart = time.Now()
+	}
 	totalAttempts := 0
 
 	cmdsMap := newCmdsMap()
 
 	if err := c.mapCmdsByNode(ctx, cmdsMap, cmds); err != nil {
 		setCmdsErr(cmds, err)
-		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil, 0)
+		if pipelineOpDurationCallback != nil {
+			operationDuration := time.Since(operationStart)
+			pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), 1, err, nil, 0)
+		}
 		return err
 	}
 
@@ -1450,8 +1457,10 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil, 0)
+				if pipelineOpDurationCallback != nil {
+					operationDuration := time.Since(operationStart)
+					pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, err, nil, 0)
+				}
 				return err
 			}
 		}
@@ -1476,12 +1485,14 @@ func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error
 	}
 
 	// Record pipeline operation duration
-	operationDuration := time.Since(operationStart)
-	finalErr := cmdsFirstErr(cmds)
-	if finalErr == nil {
-		finalErr = lastErr
+	if pipelineOpDurationCallback != nil {
+		operationDuration := time.Since(operationStart)
+		finalErr := cmdsFirstErr(cmds)
+		if finalErr == nil {
+			finalErr = lastErr
+		}
+		pipelineOpDurationCallback(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil, 0)
 	}
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, "PIPELINE", len(cmds), totalAttempts, finalErr, nil, 0)
 
 	return cmdsFirstErr(cmds)
 }
@@ -1672,7 +1683,12 @@ func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 }
 
 func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	operationStart := time.Now()
+	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
+	var operationStart time.Time
+	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
+	if pipelineOpDurationCallback != nil {
+		operationStart = time.Now()
+	}
 	totalAttempts := 0
 
 	// Trim multi .. exec.
@@ -1685,8 +1701,10 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		setCmdsErr(cmds, err)
-		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
+		if pipelineOpDurationCallback != nil {
+			operationDuration := time.Since(operationStart)
+			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
+		}
 		return err
 	}
 
@@ -1703,16 +1721,20 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	default:
 		// TxPipeline does not support cross slot transaction.
 		setCmdsErr(cmds, ErrCrossSlot)
-		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil, 0)
+		if pipelineOpDurationCallback != nil {
+			operationDuration := time.Since(operationStart)
+			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil, 0)
+		}
 		return ErrCrossSlot
 	}
 
 	node, err := state.slotMasterNode(slot)
 	if err != nil {
 		setCmdsErr(cmds, err)
-		operationDuration := time.Since(operationStart)
-		otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
+		if pipelineOpDurationCallback != nil {
+			operationDuration := time.Since(operationStart)
+			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
+		}
 		return err
 	}
 
@@ -1723,8 +1745,10 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				operationDuration := time.Since(operationStart)
-				otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil, 0)
+				if pipelineOpDurationCallback != nil {
+					operationDuration := time.Since(operationStart)
+					pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil, 0)
+				}
 				return err
 			}
 		}
@@ -1748,12 +1772,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 		lastErr = cmdsFirstErr(cmds)
 	}
 
-	operationDuration := time.Since(operationStart)
-	finalErr := cmdsFirstErr(cmds)
-	if finalErr == nil {
-		finalErr = lastErr
+	if pipelineOpDurationCallback != nil {
+		operationDuration := time.Since(operationStart)
+		finalErr := cmdsFirstErr(cmds)
+		if finalErr == nil {
+			finalErr = lastErr
+		}
+		pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
 	}
-	otel.RecordPipelineOperationDuration(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
 
 	return cmdsFirstErr(cmds)
 }

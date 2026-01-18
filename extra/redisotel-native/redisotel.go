@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -42,9 +43,9 @@ func (o *ObservabilityInstance) Init(cfg *Config) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	// If already initialized, shutdown previous instance
+	// If already initialized, return error
 	if o.initialized {
-		o.shutdownLocked()
+		return errors.New("redisotel: already initialized, call Shutdown() before reinitializing")
 	}
 
 	o.config = cfg
@@ -143,7 +144,6 @@ func (o *ObservabilityInstance) configToInternal(cfg *Config) config {
 		bucketsStreamProcessingDuration: cfg.BucketsStreamLag,
 		bucketsConnectionCreateTime:     cfg.BucketsConnectionCreateTime,
 		bucketsConnectionWaitTime:       cfg.BucketsConnectionWaitTime,
-		bucketsConnectionUseTime:        cfg.BucketsConnectionUseTime,
 	}
 }
 
@@ -247,7 +247,6 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 	}
 
 	var connectionWaitTime metric.Float64Histogram
-	var connectionUseTime metric.Float64Histogram
 	var connectionClosed metric.Int64Counter
 	var connectionPendingReqsGauge metric.Int64ObservableGauge
 
@@ -268,24 +267,6 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection wait time histogram: %w", err)
-		}
-
-		var connectionUseTimeOpts []metric.Float64HistogramOption
-		connectionUseTimeOpts = append(connectionUseTimeOpts,
-			metric.WithDescription("The time between borrowing a connection and returning it to the pool"),
-			metric.WithUnit("s"),
-		)
-		if cfg.histAggregation == HistogramAggregationExplicitBucket {
-			connectionUseTimeOpts = append(connectionUseTimeOpts,
-				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionUseTime...),
-			)
-		}
-		connectionUseTime, err = meter.Float64Histogram(
-			"db.client.connection.use_time",
-			connectionUseTimeOpts...,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create connection use time histogram: %w", err)
 		}
 
 		connectionClosed, err = meter.Int64Counter(
@@ -352,7 +333,6 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		clientErrors:               clientErrors,
 		maintenanceNotifications:   maintenanceNotifications,
 		connectionWaitTime:         connectionWaitTime,
-		connectionUseTime:          connectionUseTime,
 		connectionClosed:           connectionClosed,
 		connectionPendingReqsGauge: connectionPendingReqsGauge,
 		pubsubMessages:             pubsubMessages,
@@ -449,10 +429,6 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 					if stats == nil {
 						continue
 					}
-
-					// PubSub pools don't have server info in the pool name
-					// We'll use empty server address/port for now
-					// TODO: Consider storing server info with the pool
 
 					// Build base attributes
 					baseAttrs := []attribute.KeyValue{
