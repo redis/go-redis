@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"regexp"
 	"strconv"
@@ -2003,10 +2004,7 @@ func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
 func (cmd *StringStructMapCmd) Clone() Cmder {
 	var val map[string]struct{}
 	if cmd.val != nil {
-		val = make(map[string]struct{}, len(cmd.val))
-		for k := range cmd.val {
-			val[k] = struct{}{}
-		}
+		val = maps.Clone(cmd.val)
 	}
 	return &StringStructMapCmd{
 		baseCmd: cmd.cloneBaseCmd(),

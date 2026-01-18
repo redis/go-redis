@@ -330,7 +330,7 @@ func milliseconds(d time.Duration) float64 {
 
 func statusAttr(err error) attribute.KeyValue {
 	if err != nil {
-		if  err == redis.Nil {
+		if err == redis.Nil {
 			return attribute.String("status", "nil")
 		}
 		return attribute.String("status", "error")
