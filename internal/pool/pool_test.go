@@ -1020,22 +1020,132 @@ var _ = Describe("queuedNewConn", func() {
 		Expect(reqBErr).NotTo(HaveOccurred(), "Request B should receive Request A's connection")
 		Expect(reqBConn).NotTo(BeNil())
 
-		// CRITICAL CHECK: Turn leak detection
+		// FIRST CRITICAL CHECK: Turn state after connection delivery
 		// After Request B receives connection from putIdleConn:
-		// - Request A's turn SHOULD be released (via freeTurn)
-		// - Request B's turn is still held (will release on Put)
-		// Expected QueueLen: 1 (only Request B)
-		// If Bug exists (missing freeTurn): QueueLen: 2 (Request A's turn leaked)
-		time.Sleep(100 * time.Millisecond) // Allow time for turn release
-		currentQueueLen := testPool.QueueLen()
+		// - Request A's turn is held by Request B (connection delivered)
+		// - Request B's turn is still held by Request B's dial to complete the connection
+		// Expected QueueLen: 2 (Request B holding turn for connection usage)
+		time.Sleep(100 * time.Millisecond) // ~300ms total
+		Expect(testPool.QueueLen()).To(Equal(2))
 
-		Expect(currentQueueLen).To(Equal(1),
-			"QueueLen should be 1 (only Request B holding turn). "+
-				"If it's 2, Request A's turn leaked due to missing freeTurn()")
+		// SECOND CRITICAL CHECK: Turn release after dial completion
+		// Wait for Request B's dial result to complete
+		time.Sleep(300 * time.Millisecond) // ~600ms total
+		Expect(testPool.QueueLen()).To(Equal(1))
 
-		// Cleanup
+		// Cleanup and verify turn is released
 		testPool.Put(ctx, reqBConn)
-		Eventually(func() int { return testPool.QueueLen() }, "500ms").Should(Equal(0))
+		Eventually(func() int { return testPool.QueueLen() }, "600ms").Should(Equal(0))
+	})
+	// Test for race condition where nil context can be passed to newConn
+	// This reproduces the issue reported in GitHub where queuedNewConn panics
+	// with "cannot create context from nil parent"
+	It("should handle nil context race condition in queuedNewConn", func() {
+		// Create a pool with very short timeouts to trigger the race condition
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				// Add a small delay to increase chance of race condition
+				time.Sleep(50 * time.Millisecond)
+				return dummyDialer(ctx)
+			},
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        10 * time.Millisecond, // Very short timeout
+			DialTimeout:        100 * time.Millisecond,
+			ConnMaxIdleTime:    time.Millisecond,
+		})
+		defer testPool.Close()
+
+		// Try to trigger the race condition by making many concurrent requests
+		// with short timeouts
+		const numGoroutines = 50
+		var wg sync.WaitGroup
+		errors := make(chan error, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+
+				// Use a very short context timeout to trigger the race
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+				defer cancel()
+
+				_, err := testPool.Get(ctx)
+				if err != nil {
+					// We expect timeout errors, but not panics
+					errors <- err
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check that we got timeout errors (expected) but no panics
+		// The test passes if it doesn't panic
+		timeoutCount := 0
+		for err := range errors {
+			if err == context.DeadlineExceeded || err == pool.ErrPoolTimeout {
+				timeoutCount++
+			}
+		}
+
+		// We should have at least some timeouts due to the short timeout
+		Expect(timeoutCount).To(BeNumerically(">", 0))
+	})
+
+	Describe("calcConnExpiresAt", func() {
+		// Case 1: lifetime <= 0 returns noExpiration
+		It("returns noExpiration when ConnMaxLifetime is not positive", func() {
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       0,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+			Expect(p.CalcConnExpiresAt()).To(Equal(pool.NoExpiration))
+		})
+
+		// Case 2: lifetime > 0, jitter <= 0 returns exact lifetime
+		It("returns exact lifetime when jitter is zero", func() {
+			lifetime := 1 * time.Hour
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+			after := time.Now()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime)))
+			Expect(expiresAt).To(BeTemporally("<=", after.Add(lifetime)))
+		})
+
+		// Case 3: lifetime > 0, jitter > 0 returns value in jitter range
+		It("returns value in jitter range when jitter is positive", func() {
+			lifetime := 1 * time.Hour
+			jitter := 6 * time.Minute
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: jitter,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime-jitter)))
+			Expect(expiresAt).To(BeTemporally("<=", before.Add(lifetime+jitter)))
+		})
 	})
 })
 

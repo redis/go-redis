@@ -2,12 +2,12 @@ package redis_test
 
 import (
 	"context"
-	"errors"
 	"io"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type testTimeout struct {
@@ -39,12 +39,14 @@ var _ = Describe("error", func() {
 			context.Canceled:         false,
 			context.DeadlineExceeded: false,
 			redis.ErrPoolTimeout:     true,
-			errors.New("ERR max number of clients reached"):                      true,
-			errors.New("LOADING Redis is loading the dataset in memory"):         true,
-			errors.New("READONLY You can't write against a read only replica"):   true,
-			errors.New("CLUSTERDOWN The cluster is down"):                        true,
-			errors.New("TRYAGAIN Command cannot be processed, please try again"): true,
-			errors.New("other"): false,
+			// Use typed errors instead of plain errors.New()
+			proto.ParseErrorReply([]byte("-ERR max number of clients reached")):                      true,
+			proto.ParseErrorReply([]byte("-LOADING Redis is loading the dataset in memory")):         true,
+			proto.ParseErrorReply([]byte("-READONLY You can't write against a read only replica")):   true,
+			proto.ParseErrorReply([]byte("-CLUSTERDOWN The cluster is down")):                        true,
+			proto.ParseErrorReply([]byte("-TRYAGAIN Command cannot be processed, please try again")): true,
+			proto.ParseErrorReply([]byte("-NOREPLICAS Not enough good replicas to write")):           true,
+			proto.ParseErrorReply([]byte("-ERR other")):                                              false,
 		}
 
 		for err, expected := range data {

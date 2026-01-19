@@ -200,6 +200,8 @@ type Options struct {
 	// MaxActiveConns is the maximum number of connections allocated by the pool at a given time.
 	// When zero, there is no limit on the number of connections in the pool.
 	// If the pool is full, the next call to Get() will block until a connection is released.
+	//
+	// default: 0
 	MaxActiveConns int
 
 	// ConnMaxIdleTime is the maximum amount of time a connection may be idle.
@@ -219,6 +221,19 @@ type Options struct {
 	//
 	// default: 0
 	ConnMaxLifetime time.Duration
+
+	// ConnMaxLifetimeJitter is the absolute jitter duration applied to ConnMaxLifetime
+	// to prevent all connections from expiring simultaneously.
+	//
+	// The jitter is applied as a random offset in the range [-jitter, +jitter].
+	// For example, if ConnMaxLifetime is 1 hour and ConnMaxLifetimeJitter is 6 minutes,
+	// connections will expire between 54 minutes and 66 minutes.
+	//
+	// If <= 0, no jitter is applied.
+	// If > ConnMaxLifetime, it will be capped at ConnMaxLifetime.
+	//
+	// default: 0
+	ConnMaxLifetimeJitter time.Duration
 
 	// TLSConfig to use. When set, TLS will be negotiated.
 	TLSConfig *tls.Config
@@ -336,6 +351,8 @@ func (opt *Options) init() {
 		opt.ConnMaxIdleTime = 30 * time.Minute
 	}
 
+	opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)
+
 	switch opt.MaxRetries {
 	case -1:
 		opt.MaxRetries = 0
@@ -353,6 +370,10 @@ func (opt *Options) init() {
 		opt.MaxRetryBackoff = 0
 	case 0:
 		opt.MaxRetryBackoff = 512 * time.Millisecond
+	}
+
+	if opt.FailingTimeoutSeconds == 0 {
+		opt.FailingTimeoutSeconds = 15
 	}
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
@@ -641,6 +662,9 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	} else {
 		o.ConnMaxLifetime = q.duration("max_conn_age")
 	}
+	if q.has("conn_max_lifetime_jitter") {
+		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
+	}
 	if q.err != nil {
 		return nil, q.err
 	}
@@ -707,6 +731,7 @@ func newConnPool(
 		MaxActiveConns:           maxActiveConns,
 		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
 		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:           opt.ReadBufferSize,
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
@@ -748,6 +773,7 @@ func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr 
 		MaxActiveConns:           maxActiveConns,
 		ConnMaxIdleTime:          opt.ConnMaxIdleTime,
 		ConnMaxLifetime:          opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter:    opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:           32 * 1024,
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,

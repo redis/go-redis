@@ -572,6 +572,8 @@ var _ = Describe("PubSub", func() {
 		err := client.Publish(ctx, "mychannel", text).Err()
 		Expect(err).NotTo(HaveOccurred())
 
+		time.Sleep(10 * time.Millisecond)
+
 		var msg *redis.Message
 		Eventually(ch).Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("mychannel"))

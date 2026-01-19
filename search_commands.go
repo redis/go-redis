@@ -29,6 +29,8 @@ type SearchCmdable interface {
 	FTDropIndexWithArgs(ctx context.Context, index string, options *FTDropIndexOptions) *StatusCmd
 	FTExplain(ctx context.Context, index string, query string) *StringCmd
 	FTExplainWithArgs(ctx context.Context, index string, query string, options *FTExplainOptions) *StringCmd
+	FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd
+	FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd
 	FTInfo(ctx context.Context, index string) *FTInfoCmd
 	FTSpellCheck(ctx context.Context, index string, query string) *FTSpellCheckCmd
 	FTSpellCheckWithArgs(ctx context.Context, index string, query string, options *FTSpellCheckOptions) *FTSpellCheckCmd
@@ -344,6 +346,92 @@ type FTSearchOptions struct {
 	DialectVersion int
 }
 
+// FTHybridCombineMethod represents the fusion method for combining search and vector results
+type FTHybridCombineMethod string
+
+const (
+	FTHybridCombineRRF      FTHybridCombineMethod = "RRF"
+	FTHybridCombineLinear   FTHybridCombineMethod = "LINEAR"
+	FTHybridCombineFunction FTHybridCombineMethod = "FUNCTION"
+)
+
+// FTHybridSearchExpression represents a search expression in hybrid search
+type FTHybridSearchExpression struct {
+	Query        string
+	Scorer       string
+	ScorerParams []interface{}
+	YieldScoreAs string
+}
+
+type FTHybridVectorMethod = string
+
+const (
+	KNN   FTHybridCombineMethod = "KNN"
+	RANGE FTHybridCombineMethod = "RANGE"
+)
+
+// FTHybridVectorExpression represents a vector expression in hybrid search
+type FTHybridVectorExpression struct {
+	VectorField  string
+	VectorData   Vector
+	Method       FTHybridVectorMethod
+	MethodParams []interface{}
+	Filter       string
+	YieldScoreAs string
+}
+
+// FTHybridCombineOptions represents options for result fusion
+type FTHybridCombineOptions struct {
+	Method       FTHybridCombineMethod
+	Count        int
+	Window       int     // For RRF
+	Constant     float64 // For RRF
+	Alpha        float64 // For LINEAR
+	Beta         float64 // For LINEAR
+	YieldScoreAs string
+}
+
+// FTHybridGroupBy represents GROUP BY functionality
+type FTHybridGroupBy struct {
+	Count        int
+	Fields       []string
+	ReduceFunc   string
+	ReduceCount  int
+	ReduceParams []interface{}
+}
+
+// FTHybridApply represents APPLY functionality
+type FTHybridApply struct {
+	Expression string
+	AsField    string
+}
+
+// FTHybridWithCursor represents cursor configuration for hybrid search
+type FTHybridWithCursor struct {
+	Count   int // Number of results to return per cursor read
+	MaxIdle int // Maximum idle time in milliseconds before cursor is automatically deleted
+}
+
+// FTHybridOptions hold options that can be passed to the FT.HYBRID command
+type FTHybridOptions struct {
+	CountExpressions  int                        // Number of search/vector expressions
+	SearchExpressions []FTHybridSearchExpression // Multiple search expressions
+	VectorExpressions []FTHybridVectorExpression // Multiple vector expressions
+	Combine           *FTHybridCombineOptions    // Fusion step options
+	Load              []string                   // Projected fields
+	GroupBy           *FTHybridGroupBy           // Aggregation grouping
+	Apply             []FTHybridApply            // Field transformations
+	SortBy            []FTSearchSortBy           // Reuse from FTSearch
+	Filter            string                     // Post-filter expression
+	LimitOffset       int                        // Result limiting
+	Limit             int
+	Params            map[string]interface{} // Parameter substitution
+	ExplainScore      bool                   // Include score explanations
+	Timeout           int                    // Runtime timeout
+	WithCursor        bool                   // Enable cursor support for large result sets
+	WithCursorOptions *FTHybridWithCursor    // Cursor configuration options
+}
+
 type FTSynDumpResult struct {
 	Term     string
 	Synonyms []string
@@ -423,6 +511,14 @@ type FTAttribute struct {
 	PhoneticMatcher string
 	CaseSensitive   bool
 	WithSuffixtrie  bool
+
+	// Vector specific attributes
+	Algorithm      string
+	DataType       string
+	Dim            int
+	DistanceMetric string
+	M              int
+	EFConstruction int
 }
 
 type CursorStats struct {
@@ -672,8 +768,9 @@ func ProcessAggregateResult(data []interface{}) (*FTAggregateResult, error) {
 func NewAggregateCmd(ctx context.Context, args ...interface{}) *AggregateCmd {
 	return &AggregateCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeAggregate,
 		},
 	}
 }
@@ -712,6 +809,31 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 	return nil
+}
+
+func (cmd *AggregateCmd) Clone() Cmder {
+	var val *FTAggregateResult
+	if cmd.val != nil {
+		val = &FTAggregateResult{
+			Total: cmd.val.Total,
+		}
+		if cmd.val.Rows != nil {
+			val.Rows = make([]AggregateRow, len(cmd.val.Rows))
+			for i, row := range cmd.val.Rows {
+				val.Rows[i] = AggregateRow{}
+				if row.Fields != nil {
+					val.Rows[i].Fields = make(map[string]interface{}, len(row.Fields))
+					for k, v := range row.Fields {
+						val.Rows[i].Fields[k] = v
+					}
+				}
+			}
+		}
+	}
+	return &AggregateCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
 }
 
 // FTAggregateWithArgs - Performs a search query on an index and applies a series of aggregate transformations to the result.
@@ -1296,21 +1418,26 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 		for _, attr := range attributes {
 			if attrMap, ok := attr.([]interface{}); ok {
 				att := FTAttribute{}
-				for i := 0; i < len(attrMap); i++ {
-					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" {
+				attrLen := len(attrMap)
+				for i := 0; i < attrLen; i++ {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" && i+1 < attrLen {
 						att.Attribute = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" && i+1 < attrLen {
 						att.Identifier = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "type" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "type" && i+1 < attrLen {
 						att.Type = internal.ToString(attrMap[i+1])
+						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" && i+1 < attrLen {
 						att.Weight = internal.ToFloat(attrMap[i+1])
+						i++
 						continue
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "nostem" {
@@ -1329,7 +1456,7 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						att.UNF = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" {
+					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" && i+1 < attrLen {
 						att.PhoneticMatcher = internal.ToString(attrMap[i+1])
 						continue
 					}
@@ -1339,6 +1466,38 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 					}
 					if internal.ToLower(internal.ToString(attrMap[i])) == "withsuffixtrie" {
 						att.WithSuffixtrie = true
+						continue
+					}
+
+					// vector specific attributes
+					if internal.ToLower(internal.ToString(attrMap[i])) == "algorithm" && i+1 < attrLen {
+						att.Algorithm = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "data_type" && i+1 < attrLen {
+						att.DataType = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "dim" && i+1 < attrLen {
+						att.Dim = internal.ToInteger(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "distance_metric" && i+1 < attrLen {
+						att.DistanceMetric = internal.ToString(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "m" && i+1 < attrLen {
+						att.M = internal.ToInteger(attrMap[i+1])
+						i++
+						continue
+					}
+					if internal.ToLower(internal.ToString(attrMap[i])) == "ef_construction" && i+1 < attrLen {
+						att.EFConstruction = internal.ToInteger(attrMap[i+1])
+						i++
 						continue
 					}
 
@@ -1464,8 +1623,9 @@ type FTInfoCmd struct {
 func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
 	return &FTInfoCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeFTInfo,
 		},
 	}
 }
@@ -1527,6 +1687,68 @@ func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	return nil
 }
 
+func (cmd *FTInfoCmd) Clone() Cmder {
+	val := FTInfoResult{
+		IndexErrors:              cmd.val.IndexErrors,
+		BytesPerRecordAvg:        cmd.val.BytesPerRecordAvg,
+		Cleaning:                 cmd.val.Cleaning,
+		CursorStats:              cmd.val.CursorStats,
+		DocTableSizeMB:           cmd.val.DocTableSizeMB,
+		GCStats:                  cmd.val.GCStats,
+		GeoshapesSzMB:            cmd.val.GeoshapesSzMB,
+		HashIndexingFailures:     cmd.val.HashIndexingFailures,
+		IndexDefinition:          cmd.val.IndexDefinition,
+		IndexName:                cmd.val.IndexName,
+		Indexing:                 cmd.val.Indexing,
+		InvertedSzMB:             cmd.val.InvertedSzMB,
+		KeyTableSizeMB:           cmd.val.KeyTableSizeMB,
+		MaxDocID:                 cmd.val.MaxDocID,
+		NumDocs:                  cmd.val.NumDocs,
+		NumRecords:               cmd.val.NumRecords,
+		NumTerms:                 cmd.val.NumTerms,
+		NumberOfUses:             cmd.val.NumberOfUses,
+		OffsetBitsPerRecordAvg:   cmd.val.OffsetBitsPerRecordAvg,
+		OffsetVectorsSzMB:        cmd.val.OffsetVectorsSzMB,
+		OffsetsPerTermAvg:        cmd.val.OffsetsPerTermAvg,
+		PercentIndexed:           cmd.val.PercentIndexed,
+		RecordsPerDocAvg:         cmd.val.RecordsPerDocAvg,
+		SortableValuesSizeMB:     cmd.val.SortableValuesSizeMB,
+		TagOverheadSzMB:          cmd.val.TagOverheadSzMB,
+		TextOverheadSzMB:         cmd.val.TextOverheadSzMB,
+		TotalIndexMemorySzMB:     cmd.val.TotalIndexMemorySzMB,
+		TotalIndexingTime:        cmd.val.TotalIndexingTime,
+		TotalInvertedIndexBlocks: cmd.val.TotalInvertedIndexBlocks,
+		VectorIndexSzMB:          cmd.val.VectorIndexSzMB,
+	}
+	// Clone slices and maps
+	if cmd.val.Attributes != nil {
+		val.Attributes = make([]FTAttribute, len(cmd.val.Attributes))
+		copy(val.Attributes, cmd.val.Attributes)
+	}
+	if cmd.val.DialectStats != nil {
+		val.DialectStats = make(map[string]int, len(cmd.val.DialectStats))
+		for k, v := range cmd.val.DialectStats {
+			val.DialectStats[k] = v
+		}
+	}
+	if cmd.val.FieldStatistics != nil {
+		val.FieldStatistics = make([]FieldStatistic, len(cmd.val.FieldStatistics))
+		copy(val.FieldStatistics, cmd.val.FieldStatistics)
+	}
+	if cmd.val.IndexOptions != nil {
+		val.IndexOptions = make([]string, len(cmd.val.IndexOptions))
+		copy(val.IndexOptions, cmd.val.IndexOptions)
+	}
+	if cmd.val.IndexDefinition.Prefixes != nil {
+		val.IndexDefinition.Prefixes = make([]string, len(cmd.val.IndexDefinition.Prefixes))
+		copy(val.IndexDefinition.Prefixes, cmd.val.IndexDefinition.Prefixes)
+	}
+	return &FTInfoCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
 // FTInfo - Retrieves information about an index.
 // The 'index' parameter specifies the index to retrieve information about.
 // For more information, please refer to the Redis documentation:
@@ -1583,8 +1805,9 @@ type FTSpellCheckCmd struct {
 func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckCmd {
 	return &FTSpellCheckCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeFTSpellCheck,
 		},
 	}
 }
@@ -1678,6 +1901,26 @@ func parseFTSpellCheck(data []interface{}) ([]SpellCheckResult, error) {
 	}
 
 	return results, nil
+}
+
+func (cmd *FTSpellCheckCmd) Clone() Cmder {
+	var val []SpellCheckResult
+	if cmd.val != nil {
+		val = make([]SpellCheckResult, len(cmd.val))
+		for i, result := range cmd.val {
+			val[i] = SpellCheckResult{
+				Term: result.Term,
+			}
+			if result.Suggestions != nil {
+				val[i].Suggestions = make([]SpellCheckSuggestion, len(result.Suggestions))
+				copy(val[i].Suggestions, result.Suggestions)
+			}
+		}
+	}
+	return &FTSpellCheckCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
 }
 
 func parseFTSearch(data []interface{}, noContent, withScores, withPayloads, withSortKeys bool) (FTSearchResult, error) {
@@ -1776,8 +2019,9 @@ type FTSearchCmd struct {
 func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...interface{}) *FTSearchCmd {
 	return &FTSearchCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeFTSearch,
 		},
 		options: options,
 	}
@@ -1817,6 +2061,395 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 		return err
 	}
 	return nil
+}
+
+func (cmd *FTSearchCmd) Clone() Cmder {
+	val := FTSearchResult{
+		Total: cmd.val.Total,
+	}
+	if cmd.val.Docs != nil {
+		val.Docs = make([]Document, len(cmd.val.Docs))
+		for i, doc := range cmd.val.Docs {
+			val.Docs[i] = Document{
+				ID:      doc.ID,
+				Score:   doc.Score,
+				Payload: doc.Payload,
+				SortKey: doc.SortKey,
+			}
+			if doc.Fields != nil {
+				val.Docs[i].Fields = make(map[string]string, len(doc.Fields))
+				for k, v := range doc.Fields {
+					val.Docs[i].Fields[k] = v
+				}
+			}
+		}
+	}
+	var options *FTSearchOptions
+	if cmd.options != nil {
+		options = &FTSearchOptions{
+			NoContent:       cmd.options.NoContent,
+			Verbatim:        cmd.options.Verbatim,
+			NoStopWords:     cmd.options.NoStopWords,
+			WithScores:      cmd.options.WithScores,
+			WithPayloads:    cmd.options.WithPayloads,
+			WithSortKeys:    cmd.options.WithSortKeys,
+			Slop:            cmd.options.Slop,
+			Timeout:         cmd.options.Timeout,
+			InOrder:         cmd.options.InOrder,
+			Language:        cmd.options.Language,
+			Expander:        cmd.options.Expander,
+			Scorer:          cmd.options.Scorer,
+			ExplainScore:    cmd.options.ExplainScore,
+			Payload:         cmd.options.Payload,
+			SortByWithCount: cmd.options.SortByWithCount,
+			LimitOffset:     cmd.options.LimitOffset,
+			Limit:           cmd.options.Limit,
+			CountOnly:       cmd.options.CountOnly,
+			DialectVersion:  cmd.options.DialectVersion,
+		}
+		// Clone slices and maps
+		if cmd.options.Filters != nil {
+			options.Filters = make([]FTSearchFilter, len(cmd.options.Filters))
+			copy(options.Filters, cmd.options.Filters)
+		}
+		if cmd.options.GeoFilter != nil {
+			options.GeoFilter = make([]FTSearchGeoFilter, len(cmd.options.GeoFilter))
+			copy(options.GeoFilter, cmd.options.GeoFilter)
+		}
+		if cmd.options.InKeys != nil {
+			options.InKeys = make([]interface{}, len(cmd.options.InKeys))
+			copy(options.InKeys, cmd.options.InKeys)
+		}
+		if cmd.options.InFields != nil {
+			options.InFields = make([]interface{}, len(cmd.options.InFields))
+			copy(options.InFields, cmd.options.InFields)
+		}
+		if cmd.options.Return != nil {
+			options.Return = make([]FTSearchReturn, len(cmd.options.Return))
+			copy(options.Return, cmd.options.Return)
+		}
+		if cmd.options.SortBy != nil {
+			options.SortBy = make([]FTSearchSortBy, len(cmd.options.SortBy))
+			copy(options.SortBy, cmd.options.SortBy)
+		}
+		if cmd.options.Params != nil {
+			options.Params = make(map[string]interface{}, len(cmd.options.Params))
+			for k, v := range cmd.options.Params {
+				options.Params[k] = v
+			}
+		}
+	}
+	return &FTSearchCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+		options: options,
+	}
+}
+
+// FTHybridResult represents the result of a hybrid search operation
+type FTHybridResult struct {
+	TotalResults  int
+	Results       []map[string]interface{}
+	Warnings      []string
+	ExecutionTime float64
+}
+
+// FTHybridCursorResult represents cursor result for hybrid search
+type FTHybridCursorResult struct {
+	SearchCursorID int
+	VsimCursorID   int
+}
+
+type FTHybridCmd struct {
+	baseCmd
+	val        FTHybridResult
+	cursorVal  *FTHybridCursorResult
+	options    *FTHybridOptions
+	withCursor bool
+}
+
+func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...interface{}) *FTHybridCmd {
+	var withCursor bool
+	if options != nil && options.WithCursor {
+		withCursor = true
+	}
+	return &FTHybridCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		options:    options,
+		withCursor: withCursor,
+	}
+}
+
+func (cmd *FTHybridCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
+	cmd.val = val
+}
+
+func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	return cmd.cursorVal, cmd.err
+}
+
+func (cmd *FTHybridCmd) Val() FTHybridResult {
+	return cmd.val
+}
+
+func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	return cmd.cursorVal
+}
+
+func (cmd *FTHybridCmd) RawVal() interface{} {
+	return cmd.rawVal
+}
+
+func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	return cmd.rawVal, cmd.err
+}
+
+func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybridCursorResult, error) {
+	// Convert to map
+	resultMap := make(map[string]interface{})
+	for i := 0; i < len(data); i += 2 {
+		if i+1 < len(data) {
+			key, ok := data[i].(string)
+			if !ok {
+				return FTHybridResult{}, nil, fmt.Errorf("invalid key type at index %d", i)
+			}
+			resultMap[key] = data[i+1]
+		}
+	}
+
+	// Handle cursor result
+	if withCursor {
+		searchCursorID, ok1 := resultMap["SEARCH"].(int64)
+		vsimCursorID, ok2 := resultMap["VSIM"].(int64)
+		if !ok1 || !ok2 {
+			return FTHybridResult{}, nil, fmt.Errorf("invalid cursor result format")
+		}
+		return FTHybridResult{}, &FTHybridCursorResult{
+			SearchCursorID: int(searchCursorID),
+			VsimCursorID:   int(vsimCursorID),
+		}, nil
+	}
+
+	// Parse regular result
+	totalResults, ok := resultMap["total_results"].(int64)
+	if !ok {
+		return FTHybridResult{}, nil, fmt.Errorf("invalid total_results format")
+	}
+
+	resultsData, ok := resultMap["results"].([]interface{})
+	if !ok {
+		return FTHybridResult{}, nil, fmt.Errorf("invalid results format")
+	}
+
+	// Parse each result item
+	results := make([]map[string]interface{}, 0, len(resultsData))
+	for _, item := range resultsData {
+		// Try parsing as map[string]interface{} first (RESP3 format)
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			results = append(results, itemMap)
+			continue
+		}
+
+		// Try parsing as map[interface{}]interface{} (alternative RESP3 format)
+		if rawMap, ok := item.(map[interface{}]interface{}); ok {
+			itemMap := make(map[string]interface{})
+			for k, v := range rawMap {
+				if keyStr, ok := k.(string); ok {
+					itemMap[keyStr] = v
+				}
+			}
+			results = append(results, itemMap)
+			continue
+		}
+
+		// Fall back to array format (RESP2 format - key-value pairs)
+		itemData, ok := item.([]interface{})
+		if !ok {
+			return FTHybridResult{}, nil, fmt.Errorf("invalid result item format")
+		}
+
+		itemMap := make(map[string]interface{})
+		for i := 0; i < len(itemData); i += 2 {
+			if i+1 < len(itemData) {
+				key, ok := itemData[i].(string)
+				if !ok {
+					return FTHybridResult{}, nil, fmt.Errorf("invalid item key format")
+				}
+				itemMap[key] = itemData[i+1]
+			}
+		}
+		results = append(results, itemMap)
+	}
+
+	// Parse warnings (optional field)
+	var warnings []string
+	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+		warnings = make([]string, 0, len(warningsData))
+		for _, w := range warningsData {
+			if ws, ok := w.(string); ok {
+				warnings = append(warnings, ws)
+			}
+		}
+	}
+
+	// Parse execution time (optional field)
+	var executionTime float64
+	if execTimeVal, exists := resultMap["execution_time"]; exists {
+		switch v := execTimeVal.(type) {
+		case string:
+			var err error
+			executionTime, err = strconv.ParseFloat(v, 64)
+			if err != nil {
+				return FTHybridResult{}, nil, fmt.Errorf("invalid execution_time format: %v", err)
+			}
+		case float64:
+			executionTime = v
+		case int64:
+			executionTime = float64(v)
+		}
+	}
+
+	return FTHybridResult{
+		TotalResults:  int(totalResults),
+		Results:       results,
+		Warnings:      warnings,
+		ExecutionTime: executionTime,
+	}, nil, nil
+}
+
+func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
+	data, err := rd.ReadSlice()
+	if err != nil {
+		return err
+	}
+
+	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
+	if err != nil {
+		return err
+	}
+
+	if cmd.withCursor {
+		cmd.cursorVal = cursorResult
+	} else {
+		cmd.val = result
+	}
+	return nil
+}
+
+func (cmd *FTHybridCmd) Clone() Cmder {
+	val := FTHybridResult{
+		TotalResults:  cmd.val.TotalResults,
+		ExecutionTime: cmd.val.ExecutionTime,
+	}
+	if cmd.val.Results != nil {
+		val.Results = make([]map[string]interface{}, len(cmd.val.Results))
+		for i, result := range cmd.val.Results {
+			val.Results[i] = make(map[string]interface{}, len(result))
+			for k, v := range result {
+				val.Results[i][k] = v
+			}
+		}
+	}
+	if cmd.val.Warnings != nil {
+		val.Warnings = make([]string, len(cmd.val.Warnings))
+		copy(val.Warnings, cmd.val.Warnings)
+	}
+
+	var cursorVal *FTHybridCursorResult
+	if cmd.cursorVal != nil {
+		cursorVal = &FTHybridCursorResult{
+			SearchCursorID: cmd.cursorVal.SearchCursorID,
+			VsimCursorID:   cmd.cursorVal.VsimCursorID,
+		}
+	}
+
+	var options *FTHybridOptions
+	if cmd.options != nil {
+		options = &FTHybridOptions{
+			CountExpressions: cmd.options.CountExpressions,
+			Load:             cmd.options.Load,
+			Filter:           cmd.options.Filter,
+			LimitOffset:      cmd.options.LimitOffset,
+			Limit:            cmd.options.Limit,
+			ExplainScore:     cmd.options.ExplainScore,
+			Timeout:          cmd.options.Timeout,
+			WithCursor:       cmd.options.WithCursor,
+		}
+		// Clone slices and maps
+		if cmd.options.SearchExpressions != nil {
+			options.SearchExpressions = make([]FTHybridSearchExpression, len(cmd.options.SearchExpressions))
+			copy(options.SearchExpressions, cmd.options.SearchExpressions)
+		}
+		if cmd.options.VectorExpressions != nil {
+			options.VectorExpressions = make([]FTHybridVectorExpression, len(cmd.options.VectorExpressions))
+			copy(options.VectorExpressions, cmd.options.VectorExpressions)
+		}
+		if cmd.options.Combine != nil {
+			options.Combine = &FTHybridCombineOptions{
+				Method:       cmd.options.Combine.Method,
+				Count:        cmd.options.Combine.Count,
+				Window:       cmd.options.Combine.Window,
+				Constant:     cmd.options.Combine.Constant,
+				Alpha:        cmd.options.Combine.Alpha,
+				Beta:         cmd.options.Combine.Beta,
+				YieldScoreAs: cmd.options.Combine.YieldScoreAs,
+			}
+		}
+		if cmd.options.GroupBy != nil {
+			options.GroupBy = &FTHybridGroupBy{
+				Count:       cmd.options.GroupBy.Count,
+				ReduceFunc:  cmd.options.GroupBy.ReduceFunc,
+				ReduceCount: cmd.options.GroupBy.ReduceCount,
+			}
+			if cmd.options.GroupBy.Fields != nil {
+				options.GroupBy.Fields = make([]string, len(cmd.options.GroupBy.Fields))
+				copy(options.GroupBy.Fields, cmd.options.GroupBy.Fields)
+			}
+			if cmd.options.GroupBy.ReduceParams != nil {
+				options.GroupBy.ReduceParams = make([]interface{}, len(cmd.options.GroupBy.ReduceParams))
+				copy(options.GroupBy.ReduceParams, cmd.options.GroupBy.ReduceParams)
+			}
+		}
+		if cmd.options.Apply != nil {
+			options.Apply = make([]FTHybridApply, len(cmd.options.Apply))
+			copy(options.Apply, cmd.options.Apply)
+		}
+		if cmd.options.SortBy != nil {
+			options.SortBy = make([]FTSearchSortBy, len(cmd.options.SortBy))
+			copy(options.SortBy, cmd.options.SortBy)
+		}
+		if cmd.options.Params != nil {
+			options.Params = make(map[string]interface{}, len(cmd.options.Params))
+			for k, v := range cmd.options.Params {
+				options.Params[k] = v
+			}
+		}
+		if cmd.options.WithCursorOptions != nil {
+			options.WithCursorOptions = &FTHybridWithCursor{
+				MaxIdle: cmd.options.WithCursorOptions.MaxIdle,
+				Count:   cmd.options.WithCursorOptions.Count,
+			}
+		}
+	}
+
+	return &FTHybridCmd{
+		baseCmd:    cmd.cloneBaseCmd(),
+		val:        val,
+		cursorVal:  cursorVal,
+		options:    options,
+		withCursor: cmd.withCursor,
+	}
 }
 
 // FTSearch - Executes a search query on an index.
@@ -2078,8 +2711,9 @@ func (c cmdable) FTSearchWithArgs(ctx context.Context, index string, query strin
 func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
 	return &FTSynDumpCmd{
 		baseCmd: baseCmd{
-			ctx:  ctx,
-			args: args,
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeFTSynDump,
 		},
 	}
 }
@@ -2145,6 +2779,26 @@ func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {
 	return nil
 }
 
+func (cmd *FTSynDumpCmd) Clone() Cmder {
+	var val []FTSynDumpResult
+	if cmd.val != nil {
+		val = make([]FTSynDumpResult, len(cmd.val))
+		for i, result := range cmd.val {
+			val[i] = FTSynDumpResult{
+				Term: result.Term,
+			}
+			if result.Synonyms != nil {
+				val[i].Synonyms = make([]string, len(result.Synonyms))
+				copy(val[i].Synonyms, result.Synonyms)
+			}
+		}
+	}
+	return &FTSynDumpCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
 // FTSynDump - Dumps the contents of a synonym group.
 // The 'index' parameter specifies the index to dump.
 // For more information, please refer to the Redis documentation:
@@ -2188,6 +2842,207 @@ func (c cmdable) FTSynUpdateWithArgs(ctx context.Context, index string, synGroup
 // [FT.TAGVALS]: (https://redis.io/commands/ft.tagvals/)
 func (c cmdable) FTTagVals(ctx context.Context, index string, field string) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "FT.TAGVALS", index, field)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FTHybrid - Executes a hybrid search combining full-text search and vector similarity
+// The 'index' parameter specifies the index to search, 'searchExpr' is the search query,
+// 'vectorField' is the name of the vector field, and 'vectorData' is the vector to search with.
+// FTHybrid is still experimental, the command behaviour and signature may change
+func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, vectorField string, vectorData Vector) *FTHybridCmd {
+	options := &FTHybridOptions{
+		CountExpressions: 2,
+		SearchExpressions: []FTHybridSearchExpression{
+			{Query: searchExpr},
+		},
+		VectorExpressions: []FTHybridVectorExpression{
+			{VectorField: vectorField, VectorData: vectorData},
+		},
+	}
+	return c.FTHybridWithArgs(ctx, index, options)
+}
+
+// FTHybridWithArgs - Executes a hybrid search with advanced options
+// FTHybridWithArgs is still experimental, the command behaviour and signature may change
+func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
+	args := []interface{}{"FT.HYBRID", index}
+
+	if options != nil {
+		// Add search expressions
+		for _, searchExpr := range options.SearchExpressions {
+			args = append(args, "SEARCH", searchExpr.Query)
+
+			if searchExpr.Scorer != "" {
+				args = append(args, "SCORER", searchExpr.Scorer)
+				if len(searchExpr.ScorerParams) > 0 {
+					args = append(args, searchExpr.ScorerParams...)
+				}
+			}
+
+			if searchExpr.YieldScoreAs != "" {
+				args = append(args, "YIELD_SCORE_AS", searchExpr.YieldScoreAs)
+			}
+		}
+
+		// Add vector expressions
+		for _, vectorExpr := range options.VectorExpressions {
+			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
+
+			// For FT.HYBRID, we need to send just the raw vector bytes, not the Value() format
+			// Value() returns [format, data] but FT.HYBRID expects just the blob
+			vectorValue := vectorExpr.VectorData.Value()
+			if len(vectorValue) >= 2 {
+				// vectorValue is [format, data, ...] - we only want the data part
+				args = append(args, vectorValue[1])
+			} else {
+				// Fallback for unexpected format
+				args = append(args, vectorValue...)
+			}
+
+			if vectorExpr.Method != "" {
+				args = append(args, vectorExpr.Method)
+				if len(vectorExpr.MethodParams) > 0 {
+					// MethodParams should be key-value pairs, count them
+					args = append(args, len(vectorExpr.MethodParams))
+					args = append(args, vectorExpr.MethodParams...)
+				}
+			}
+
+			if vectorExpr.Filter != "" {
+				args = append(args, "FILTER", vectorExpr.Filter)
+			}
+
+			if vectorExpr.YieldScoreAs != "" {
+				args = append(args, "YIELD_SCORE_AS", vectorExpr.YieldScoreAs)
+			}
+		}
+
+		// Add combine/fusion options
+		if options.Combine != nil {
+			// Build combine parameters
+			combineParams := []interface{}{}
+
+			switch options.Combine.Method {
+			case FTHybridCombineRRF:
+				if options.Combine.Window > 0 {
+					combineParams = append(combineParams, "WINDOW", options.Combine.Window)
+				}
+				if options.Combine.Constant > 0 {
+					combineParams = append(combineParams, "CONSTANT", options.Combine.Constant)
+				}
+			case FTHybridCombineLinear:
+				if options.Combine.Alpha > 0 {
+					combineParams = append(combineParams, "ALPHA", options.Combine.Alpha)
+				}
+				if options.Combine.Beta > 0 {
+					combineParams = append(combineParams, "BETA", options.Combine.Beta)
+				}
+			}
+
+			if options.Combine.YieldScoreAs != "" {
+				combineParams = append(combineParams, "YIELD_SCORE_AS", options.Combine.YieldScoreAs)
+			}
+
+			// Add COMBINE with method and parameter count
+			args = append(args, "COMBINE", string(options.Combine.Method))
+			if len(combineParams) > 0 {
+				args = append(args, len(combineParams))
+				args = append(args, combineParams...)
+			}
+		}
+
+		// Add LOAD (projected fields)
+		if len(options.Load) > 0 {
+			args = append(args, "LOAD", len(options.Load))
+			for _, field := range options.Load {
+				args = append(args, field)
+			}
+		}
+
+		// Add GROUPBY
+		if options.GroupBy != nil {
+			args = append(args, "GROUPBY", options.GroupBy.Count)
+			for _, field := range options.GroupBy.Fields {
+				args = append(args, field)
+			}
+			if options.GroupBy.ReduceFunc != "" {
+				args = append(args, "REDUCE", options.GroupBy.ReduceFunc, options.GroupBy.ReduceCount)
+				args = append(args, options.GroupBy.ReduceParams...)
+			}
+		}
+
+		// Add APPLY transformations
+		for _, apply := range options.Apply {
+			args = append(args, "APPLY", apply.Expression, "AS", apply.AsField)
+		}
+
+		// Add SORTBY
+		if len(options.SortBy) > 0 {
+			sortByOptions := []interface{}{}
+			for _, sortBy := range options.SortBy {
+				sortByOptions = append(sortByOptions, sortBy.FieldName)
+				if sortBy.Asc && sortBy.Desc {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: ASC and DESC are mutually exclusive"))
+					return cmd
+				}
+				if sortBy.Asc {
+					sortByOptions = append(sortByOptions, "ASC")
+				}
+				if sortBy.Desc {
+					sortByOptions = append(sortByOptions, "DESC")
+				}
+			}
+			args = append(args, "SORTBY", len(sortByOptions))
+			args = append(args, sortByOptions...)
+		}
+
+		// Add FILTER (post-filter)
+		if options.Filter != "" {
+			args = append(args, "FILTER", options.Filter)
+		}
+
+		// Add LIMIT
+		if options.LimitOffset >= 0 && options.Limit > 0 || options.LimitOffset > 0 && options.Limit == 0 {
+			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
+		}
+
+		// Add PARAMS
+		if len(options.Params) > 0 {
+			args = append(args, "PARAMS", len(options.Params)*2)
+			for key, value := range options.Params {
+				// Parameter keys should already have '$' prefix from the user
+				// Don't add it again if it's already there
+				args = append(args, key, value)
+			}
+		}
+
+		// Add EXPLAINSCORE
+		if options.ExplainScore {
+			args = append(args, "EXPLAINSCORE")
+		}
+
+		// Add TIMEOUT
+		if options.Timeout > 0 {
+			args = append(args, "TIMEOUT", options.Timeout)
+		}
+
+		// Add WITHCURSOR support
+		if options.WithCursor {
+			args = append(args, "WITHCURSOR")
+			if options.WithCursorOptions != nil {
+				if options.WithCursorOptions.Count > 0 {
+					args = append(args, "COUNT", options.WithCursorOptions.Count)
+				}
+				if options.WithCursorOptions.MaxIdle > 0 {
+					args = append(args, "MAXIDLE", options.WithCursorOptions.MaxIdle)
+				}
+			}
+		}
+	}
+
+	cmd := newFTHybridCmd(ctx, options, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

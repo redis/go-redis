@@ -5,8 +5,6 @@ import (
 	"net"
 	"testing"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/util"
 )
 
 func TestConfig(t *testing.T) {
@@ -130,8 +128,8 @@ func TestApplyDefaults(t *testing.T) {
 		workerBasedSize := result.MaxWorkers * 20
 		poolSize := 100 // Default pool size used in ApplyDefaults
 		poolBasedSize := poolSize
-		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
-		expectedQueueSize = util.Min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
+		expectedQueueSize := max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
 			t.Errorf("Expected HandoffQueueSize to be %d (max(20*MaxWorkers=%d, poolSize=%d) capped by 5*poolSize=%d), got %d",
 				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*5, result.HandoffQueueSize)
@@ -155,8 +153,8 @@ func TestApplyDefaults(t *testing.T) {
 		workerBasedSize := result.MaxWorkers * 20
 		poolSize := 100 // Default pool size used in ApplyDefaults
 		poolBasedSize := poolSize
-		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
-		expectedQueueSize = util.Min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
+		expectedQueueSize := max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
 			t.Errorf("Expected HandoffQueueSize to be %d (max(20*MaxWorkers=%d, poolSize=%d) capped by 5*poolSize=%d), got %d",
 				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*5, result.HandoffQueueSize)
@@ -224,8 +222,8 @@ func TestApplyDefaults(t *testing.T) {
 		workerBasedSize := result.MaxWorkers * 20
 		poolSize := 100 // Default pool size used in ApplyDefaults
 		poolBasedSize := poolSize
-		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
-		expectedQueueSize = util.Min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
+		expectedQueueSize := max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
 		if result.HandoffQueueSize != expectedQueueSize {
 			t.Errorf("Expected HandoffQueueSize to be %d (max(20*MaxWorkers=%d, poolSize=%d) capped by 5*poolSize=%d), got %d",
 				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*5, result.HandoffQueueSize)
@@ -234,7 +232,6 @@ func TestApplyDefaults(t *testing.T) {
 		if result.RelaxedTimeout != 10*time.Second {
 			t.Errorf("Expected RelaxedTimeout to be 10s (default), got %v", result.RelaxedTimeout)
 		}
-
 
 	})
 }
@@ -325,14 +322,12 @@ func TestIntegrationWithApplyDefaults(t *testing.T) {
 			t.Errorf("Expected MaxWorkers to be 50, got %d", expectedConfig.MaxWorkers)
 		}
 
-
-
 		// Should apply defaults for missing fields (auto-calculated queue size with hybrid scaling)
 		workerBasedSize := expectedConfig.MaxWorkers * 20
 		poolSize := 100 // Default pool size used in ApplyDefaults
 		poolBasedSize := poolSize
-		expectedQueueSize := util.Max(workerBasedSize, poolBasedSize)
-		expectedQueueSize = util.Min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
+		expectedQueueSize := max(workerBasedSize, poolBasedSize)
+		expectedQueueSize = min(expectedQueueSize, poolSize*5) // Cap by 5x pool size
 		if expectedConfig.HandoffQueueSize != expectedQueueSize {
 			t.Errorf("Expected HandoffQueueSize to be %d (max(20*MaxWorkers=%d, poolSize=%d) capped by 5*poolSize=%d), got %d",
 				expectedQueueSize, workerBasedSize, poolBasedSize, poolSize*5, expectedConfig.HandoffQueueSize)

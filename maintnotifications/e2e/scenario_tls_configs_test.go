@@ -13,14 +13,14 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
-// TODO ADD TLS CONFIGS
 // TestTLSConfigurationsPushNotifications tests push notifications with different TLS configurations
-func ТestTLSConfigurationsPushNotifications(t *testing.T) {
+func TestTLSConfigurationsPushNotifications(t *testing.T) {
+	t.Skip("Test disabled due to tls environment missing in test environment")
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 
 	var dump = true
