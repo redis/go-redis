@@ -352,7 +352,7 @@ func (opt *Options) init() {
 	}
 
 	opt.ConnMaxLifetimeJitter = min(opt.ConnMaxLifetimeJitter, opt.ConnMaxLifetime)
-	
+
 	switch opt.MaxRetries {
 	case -1:
 		opt.MaxRetries = 0
