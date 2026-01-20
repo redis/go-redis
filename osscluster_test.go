@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -254,6 +256,10 @@ func slotEqual(s1, s2 redis.ClusterSlot) bool {
 		}
 	}
 	return true
+}
+
+func getField(field reflect.Value) any {
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface()
 }
 
 // ------------------------------------------------------------------------------
@@ -1631,11 +1637,12 @@ var _ = Describe("ClusterClient timeout", func() {
 		BeforeEach(func() {
 			opt := redisClusterOptions()
 			client = cluster.newClusterClient(ctx, opt)
+			opt = getField(reflect.ValueOf(client).Elem().FieldByName("opt")).(*redis.ClusterOptions)
 
 			err := client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				err := client.ClientPause(ctx, pause).Err()
 
-				opt := client.Options()
+				opt := getField(reflect.ValueOf(client).Elem().FieldByName("opt")).(*redis.Options)
 				opt.ReadTimeout = time.Nanosecond
 				opt.WriteTimeout = time.Nanosecond
 
@@ -1653,7 +1660,7 @@ var _ = Describe("ClusterClient timeout", func() {
 			_ = client.ForEachShard(ctx, func(ctx context.Context, client *redis.Client) error {
 				defer GinkgoRecover()
 
-				opt := client.Options()
+				opt := getField(reflect.ValueOf(client).Elem().FieldByName("opt")).(*redis.Options)
 				opt.ReadTimeout = time.Second
 				opt.WriteTimeout = time.Second
 
@@ -3188,6 +3195,7 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 	It("should use default failing timeout of 15 seconds", func() {
 		opt := redisClusterOptions()
 		client = cluster.newClusterClient(ctx, opt)
+		opt = client.Options()
 
 		// Default should be 15 seconds
 		Expect(opt.FailingTimeoutSeconds).To(Equal(15))
@@ -3197,6 +3205,7 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 		opt := redisClusterOptions()
 		opt.FailingTimeoutSeconds = 30
 		client = cluster.newClusterClient(ctx, opt)
+		opt = client.Options()
 
 		// Should use custom value
 		Expect(opt.FailingTimeoutSeconds).To(Equal(30))
@@ -3241,6 +3250,7 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 		opt := redisClusterOptions()
 		opt.FailingTimeoutSeconds = 0 // Should use default
 		client = cluster.newClusterClient(ctx, opt)
+		opt = client.Options()
 
 		// After initialization, should be set to default
 		Expect(opt.FailingTimeoutSeconds).To(Equal(15))
