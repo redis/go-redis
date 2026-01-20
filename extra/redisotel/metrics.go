@@ -63,17 +63,17 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 
 	switch rdb := rdb.(type) {
 	case *redis.Client:
-		return registerClient(rdb, conf, state)
+		return registerClient(rdb, rdb.Options(), conf, state)
 	case *redis.ClusterClient:
 		rdb.OnNewNode(func(rdb *redis.Client) {
-			if err := registerClient(rdb, conf, state); err != nil {
+			if err := registerClient(rdb, rdb.Options(), conf, state); err != nil {
 				otel.Handle(err)
 			}
 		})
 		return nil
 	case *redis.Ring:
 		rdb.OnNewNode(func(rdb *redis.Client) {
-			if err := registerClient(rdb, conf, state); err != nil {
+			if err := registerClient(rdb, rdb.Options(), conf, state); err != nil {
 				otel.Handle(err)
 			}
 		})
@@ -83,7 +83,7 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 	}
 }
 
-func registerClient(rdb *redis.Client, conf *config, state *metricsState) error {
+func registerClient(rdb *redis.Client, redisConf *redis.Options, conf *config, state *metricsState) error {
 	if state != nil {
 		state.mutex.Lock()
 		defer state.mutex.Unlock()
@@ -94,12 +94,11 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 	}
 
 	if conf.poolName == "" {
-		opt := rdb.Options()
-		conf.poolName = opt.Addr
+		conf.poolName = redisConf.Addr
 	}
 	conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
 
-	registration, err := reportPoolStats(rdb, conf)
+	registration, err := reportPoolStats(rdb, redisConf, conf)
 	if err != nil {
 		return err
 	}
@@ -121,7 +120,7 @@ func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set
 	return
 }
 
-func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, error) {
+func reportPoolStats(rdb *redis.Client, redisConf *redis.Options, conf *config) (metric.Registration, error) {
 	poolAttrs, idleAttrs, usedAttrs := poolStatsAttrs(conf)
 
 	idleMax, err := conf.meter.Int64ObservableUpDownCounter(
@@ -197,7 +196,6 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	redisConf := rdb.Options()
 	return conf.meter.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
 			stats := rdb.PoolStats()
