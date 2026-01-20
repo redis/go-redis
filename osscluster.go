@@ -228,6 +228,21 @@ func (opt *ClusterOptions) init() {
 	}
 }
 
+func (opt *ClusterOptions) clone() *ClusterOptions {
+	clone := *opt
+	clone.Addrs = make([]string, len(opt.Addrs))
+
+	copy(clone.Addrs, opt.Addrs)
+
+	// Deep clone MaintNotificationsConfig to avoid sharing between clients
+	if opt.MaintNotificationsConfig != nil {
+		configClone := *opt.MaintNotificationsConfig
+		clone.MaintNotificationsConfig = &configClone
+	}
+
+	return &clone
+}
+
 // ParseClusterURL parses a URL into ClusterOptions that can be used to connect to Redis.
 // The URL must be in the form:
 //
@@ -1058,6 +1073,11 @@ type ClusterClient struct {
 // NewClusterClient returns a Redis Cluster client as described in
 // http://redis.io/topics/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
+	if opt == nil {
+		panic("redis: NewClusterClient nil options")
+	}
+	// clone to not share options with the caller
+	opt = opt.clone()
 	opt.init()
 
 	c := &ClusterClient{
@@ -1084,7 +1104,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 
 // Options returns read-only Options that were used to create the client.
 func (c *ClusterClient) Options() *ClusterOptions {
-	return c.opt
+	return c.opt.clone()
 }
 
 // ReloadState reloads cluster state. If available it calls ClusterSlots func

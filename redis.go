@@ -1128,7 +1128,7 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
-	return c.opt
+	return c.opt.clone()
 }
 
 // GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.

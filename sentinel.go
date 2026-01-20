@@ -150,6 +150,15 @@ type FailoverOptions struct {
 	//MaintNotificationsConfig *maintnotifications.Config
 }
 
+func (opt *FailoverOptions) clone() *FailoverOptions {
+	clone := *opt
+
+	clone.SentinelAddrs = make([]string, len(opt.SentinelAddrs))
+	copy(clone.SentinelAddrs, opt.SentinelAddrs)
+
+	return &clone
+}
+
 func (opt *FailoverOptions) clientOptions() *Options {
 	return &Options{
 		Addr:       "FailoverClient",
@@ -462,6 +471,9 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		panic("to route commands randomly, use NewFailoverClusterClient")
 	}
 
+	// clone to not share options with the caller
+	failoverOpt = failoverOpt.clone()
+
 	sentinelAddrs := make([]string, len(failoverOpt.SentinelAddrs))
 	copy(sentinelAddrs, failoverOpt.SentinelAddrs)
 
@@ -558,6 +570,8 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	if opt == nil {
 		panic("redis: NewSentinelClient nil options")
 	}
+	// clone to not share options with the caller
+	opt = opt.clone()
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
@@ -1124,6 +1138,9 @@ func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	if failoverOpt == nil {
 		panic("redis: NewFailoverClusterClient nil options")
 	}
+
+	// clone to not share options with the caller
+	failoverOpt = failoverOpt.clone()
 
 	sentinelAddrs := make([]string, len(failoverOpt.SentinelAddrs))
 	copy(sentinelAddrs, failoverOpt.SentinelAddrs)
