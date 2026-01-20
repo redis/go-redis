@@ -113,9 +113,3 @@ func (q *wantConnQueue) discardDoneAtFront() int {
 
 	return count
 }
-
-func (q *wantConnQueue) len() int {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	return len(q.items)
-}

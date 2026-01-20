@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+func (q *wantConnQueue) len() int {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return len(q.items)
+}
+
 func TestWantConn_getCtxForDial(t *testing.T) {
 	ctx := context.Background()
 	w := &wantConn{
