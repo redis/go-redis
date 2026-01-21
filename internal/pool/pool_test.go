@@ -1100,9 +1100,9 @@ var _ = Describe("queuedNewConn", func() {
 		// Case 1: lifetime <= 0 returns noExpiration
 		It("returns noExpiration when ConnMaxLifetime is not positive", func() {
 			p := pool.NewConnPool(&pool.Options{
-				Dialer:          dummyDialer,
-				PoolSize:        1,
-				ConnMaxLifetime: 0,
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       0,
 				ConnMaxLifetimeJitter: 0,
 			})
 			defer p.Close()

@@ -443,6 +443,9 @@ func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
 	return cmd
 }
 
+// Quit closes the connection.
+//
+// Deprecated: Just close the connection instead as of Redis 7.2.0.
 func (c cmdable) Quit(_ context.Context) *StatusCmd {
 	panic("not implemented")
 }
@@ -665,6 +668,9 @@ func (c cmdable) ShutdownNoSave(ctx context.Context) *StatusCmd {
 	return c.shutdown(ctx, "nosave")
 }
 
+// SlaveOf sets a Redis server as a replica of another, or promotes it to being a master.
+//
+// Deprecated: Use ReplicaOf instead as of Redis 5.0.0.
 func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "slaveof", host, port)
 	_ = c(ctx, cmd)

@@ -92,16 +92,16 @@ Binary data digest: 0x1122334455667788
 
 ### Digest Calculation
 
-Redis uses the **xxh3** hashing algorithm. To calculate digests client-side, use `github.com/zeebo/xxh3`:
+Redis uses the **xxh3** hashing algorithm. The go-redis library provides built-in helper functions to calculate digests client-side:
 
 ```go
-import "github.com/zeebo/xxh3"
+import "github.com/redis/go-redis/v9/helper"
 
 // For strings
-digest := xxh3.HashString("myvalue")
+digest := helper.DigestString("myvalue")
 
 // For binary data
-digest := xxh3.Hash([]byte{0x01, 0x02, 0x03})
+digest := helper.DigestBytes([]byte{0x01, 0x02, 0x03})
 ```
 
 ### Optimistic Locking Pattern
@@ -124,9 +124,11 @@ if result.Err() == redis.Nil {
 ### Client-Side Digest (No Extra Round Trip)
 
 ```go
+import "github.com/redis/go-redis/v9/helper"
+
 // If you know the expected current value, calculate digest client-side
 expectedValue := "100"
-expectedDigest := xxh3.HashString(expectedValue)
+expectedDigest := helper.DigestString(expectedValue)
 
 // Update without fetching digest from Redis first
 result := rdb.SetIFDEQ(ctx, "counter", "150", expectedDigest, 0)
@@ -152,9 +154,11 @@ if rdb.SetIFDEQ(ctx, "counter", newValue, currentDigest, 0).Err() == redis.Nil {
 ### 2. Session Management
 
 ```go
+import "github.com/redis/go-redis/v9/helper"
+
 // Delete session only if it contains expected data
 sessionData := "user:1234:active"
-expectedDigest := xxh3.HashString(sessionData)
+expectedDigest := helper.DigestString(sessionData)
 
 deleted := rdb.DelExArgs(ctx, "session:xyz", redis.DelExArgs{
     Mode:        "IFDEQ",
@@ -165,9 +169,11 @@ deleted := rdb.DelExArgs(ctx, "session:xyz", redis.DelExArgs{
 ### 3. Configuration Updates
 
 ```go
+import "github.com/redis/go-redis/v9/helper"
+
 // Update config only if it changed
 oldConfig := loadOldConfig()
-oldDigest := xxh3.HashString(oldConfig)
+oldDigest := helper.DigestString(oldConfig)
 
 newConfig := loadNewConfig()
 
@@ -190,11 +196,14 @@ if result.Err() != redis.Nil {
 - [Redis DIGEST command](https://redis.io/commands/digest/)
 - [Redis SET command with IFDEQ/IFDNE](https://redis.io/commands/set/)
 - [xxh3 hashing algorithm](https://github.com/Cyan4973/xxHash)
-- [github.com/zeebo/xxh3](https://github.com/zeebo/xxh3)
 
-## Comparison: XXH3 vs XXH64
+## Helper Functions Reference
 
-**Note**: Redis uses **XXH3**, not XXH64. If you have `github.com/cespare/xxhash/v2` in your project, it implements XXH64 which produces **different hash values**. You must use `github.com/zeebo/xxh3` for Redis DIGEST operations.
+The `github.com/redis/go-redis/v9/helper` package provides:
 
-See [XXHASH_LIBRARY_COMPARISON.md](../../XXHASH_LIBRARY_COMPARISON.md) for detailed comparison.
+| Function | Description |
+|----------|-------------|
+| `DigestString(s string) uint64` | Computes xxh3 hash of a string |
+| `DigestBytes(data []byte) uint64` | Computes xxh3 hash of a byte slice |
 
+Both functions produce the **exact same hash** as the Redis DIGEST command.
