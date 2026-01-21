@@ -42,6 +42,7 @@ runs:
     - name: Set up Docker Compose environment with redis ${{ inputs.redis-version }}
       run: |
         make docker.start
+        sleep 5
       shell: bash
     - name: Run tests
       env:
