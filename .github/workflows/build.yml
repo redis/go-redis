@@ -18,6 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
+          - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
@@ -77,6 +78,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
+            - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
