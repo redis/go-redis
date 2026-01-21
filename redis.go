@@ -300,7 +300,7 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	}
 
 	if dialStartNs := cn.GetDialStartNs(); dialStartNs > 0 {
-		if cb := pool.GetConnectionCreateTimeCallback(); cb != nil {
+		if cb := pool.GetMetricConnectionCreateTimeCallback(); cb != nil {
 			duration := time.Duration(time.Now().UnixNano() - dialStartNs)
 			cb(ctx, duration, cn)
 		}
@@ -569,7 +569,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				cn.GetStateMachine().Transition(pool.StateClosed)
 
 				// Record handshake failure metric
-				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 				}
 
@@ -703,7 +703,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 			}
 
 			if err != nil {
-				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(err)
 					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
 				}
@@ -721,7 +721,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	}
 
 	// Record error metric for exhausted retries
-	if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 		errorType, statusCode, isInternal := classifyCommandError(lastErr)
 		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
 	}
@@ -1031,7 +1031,7 @@ func (c *baseClient) generalProcessPipeline(
 			}
 
 			if lastErr != nil {
-				if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(lastErr)
 					errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
 				}
@@ -1045,7 +1045,7 @@ func (c *baseClient) generalProcessPipeline(
 		pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
 	}
 
-	if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+	if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 		errorType, statusCode, isInternal := classifyCommandError(lastErr)
 		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
 	}

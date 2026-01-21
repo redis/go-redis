@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -95,89 +96,98 @@ type PoolRegistrar interface {
 	UnregisterPubSubPool(pool PubSubPooler)
 }
 
-// Global recorder instance (initialized by extra/redisotel-native)
-var globalRecorder Recorder = noopRecorder{}
+var (
+	// recorderMu protects globalRecorder and operation duration callbacks
+	recorderMu sync.RWMutex
 
-// Callbacks for operation duration metrics
-var operationDurationCallback func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int)
-var pipelineOperationDurationCallback func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int)
+	// Global recorder instance (initialized by extra/redisotel-native)
+	globalRecorder Recorder = noopRecorder{}
+
+	// Callbacks for operation duration metrics
+	operationDurationCallback         func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int)
+	pipelineOperationDurationCallback func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int)
+)
 
 // GetOperationDurationCallback returns the callback for operation duration.
 func GetOperationDurationCallback() func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
-	return operationDurationCallback
+	recorderMu.RLock()
+	cb := operationDurationCallback
+	recorderMu.RUnlock()
+	return cb
 }
 
 // GetPipelineOperationDurationCallback returns the callback for pipeline operation duration.
 func GetPipelineOperationDurationCallback() func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
-	return pipelineOperationDurationCallback
+	recorderMu.RLock()
+	cb := pipelineOperationDurationCallback
+	recorderMu.RUnlock()
+	return cb
+}
+
+// getRecorder returns the current global recorder under a read lock.
+func getRecorder() Recorder {
+	recorderMu.RLock()
+	r := globalRecorder
+	recorderMu.RUnlock()
+	return r
 }
 
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
+	recorderMu.Lock()
 	if r == nil {
 		globalRecorder = noopRecorder{}
 		operationDurationCallback = nil
 		pipelineOperationDurationCallback = nil
-		// Unregister pool callbacks
-		pool.SetConnectionCreateTimeCallback(nil)
-		pool.SetConnectionRelaxedTimeoutCallback(nil)
-		pool.SetConnectionHandoffCallback(nil)
-		pool.SetErrorCallback(nil)
-		pool.SetMaintenanceNotificationCallback(nil)
-		pool.SetConnectionWaitTimeCallback(nil)
-		pool.SetConnectionClosedCallback(nil)
+		recorderMu.Unlock()
+		// Unregister all pool metric callbacks atomically
+		pool.SetAllMetricCallbacks(nil)
 		return
 	}
 	globalRecorder = r
 
 	// Register operation duration callbacks
+	// These capture r directly since we want them to use the specific recorder
+	// that was set at this point in time
 	operationDurationCallback = func(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
-		globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
+		getRecorder().RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
 	}
 	pipelineOperationDurationCallback = func(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
-		globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
+		getRecorder().RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
 	}
+	recorderMu.Unlock()
 
-	// Register pool callback to forward connection creation time to recorder
-	pool.SetConnectionCreateTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-		globalRecorder.RecordConnectionCreateTime(ctx, duration, cn)
-	})
-
-	// Register pool callback to forward connection relaxed timeout changes to recorder
-	pool.SetConnectionRelaxedTimeoutCallback(func(ctx context.Context, delta int, cn *pool.Conn, poolName, notificationType string) {
-		globalRecorder.RecordConnectionRelaxedTimeout(ctx, delta, cn, poolName, notificationType)
-	})
-
-	// Register pool callback to forward connection handoffs to recorder
-	pool.SetConnectionHandoffCallback(func(ctx context.Context, cn *pool.Conn, poolName string) {
-		globalRecorder.RecordConnectionHandoff(ctx, cn, poolName)
-	})
-
-	// Register pool callback to forward errors to recorder
-	pool.SetErrorCallback(func(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retryAttempts int) {
-		globalRecorder.RecordError(ctx, errorType, cn, statusCode, isInternal, retryAttempts)
-	})
-
-	// Register pool callback to forward maintenance notifications to recorder
-	pool.SetMaintenanceNotificationCallback(func(ctx context.Context, cn *pool.Conn, notificationType string) {
-		globalRecorder.RecordMaintenanceNotification(ctx, cn, notificationType)
-	})
-
-	// Register pool callback to forward connection wait time to recorder
-	pool.SetConnectionWaitTimeCallback(func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-		globalRecorder.RecordConnectionWaitTime(ctx, duration, cn)
-	})
-
-	// Register pool callback to forward connection closed to recorder
-	pool.SetConnectionClosedCallback(func(ctx context.Context, cn *pool.Conn, reason string, err error) {
-		globalRecorder.RecordConnectionClosed(ctx, cn, reason, err)
+	// Register all pool metric callbacks atomically
+	// These use getRecorder() to safely access the current recorder
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		ConnectionCreateTime: func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+			getRecorder().RecordConnectionCreateTime(ctx, duration, cn)
+		},
+		ConnectionRelaxedTimeout: func(ctx context.Context, delta int, cn *pool.Conn, poolName, notificationType string) {
+			getRecorder().RecordConnectionRelaxedTimeout(ctx, delta, cn, poolName, notificationType)
+		},
+		ConnectionHandoff: func(ctx context.Context, cn *pool.Conn, poolName string) {
+			getRecorder().RecordConnectionHandoff(ctx, cn, poolName)
+		},
+		Error: func(ctx context.Context, errorType string, cn *pool.Conn, statusCode string, isInternal bool, retryAttempts int) {
+			getRecorder().RecordError(ctx, errorType, cn, statusCode, isInternal, retryAttempts)
+		},
+		MaintenanceNotification: func(ctx context.Context, cn *pool.Conn, notificationType string) {
+			getRecorder().RecordMaintenanceNotification(ctx, cn, notificationType)
+		},
+		ConnectionWaitTime: func(ctx context.Context, duration time.Duration, cn *pool.Conn) {
+			getRecorder().RecordConnectionWaitTime(ctx, duration, cn)
+		},
+		ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
+			getRecorder().RecordConnectionClosed(ctx, cn, reason, err)
+		},
 	})
 }
 
 // RecordOperationDuration records the total operation duration.
 // dbIndex is the Redis database index (0-15).
 func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cmder, attempts int, err error, cn *pool.Conn, dbIndex int) {
-	globalRecorder.RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
+	getRecorder().RecordOperationDuration(ctx, duration, cmd, attempts, err, cn, dbIndex)
 }
 
 // RecordPipelineOperationDuration records the total pipeline/transaction duration.
@@ -186,22 +196,22 @@ func RecordOperationDuration(ctx context.Context, duration time.Duration, cmd Cm
 // err is the error from the pipeline execution (can be nil).
 // dbIndex is the Redis database index (0-15).
 func RecordPipelineOperationDuration(ctx context.Context, duration time.Duration, operationName string, cmdCount int, attempts int, err error, cn *pool.Conn, dbIndex int) {
-	globalRecorder.RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
+	getRecorder().RecordPipelineOperationDuration(ctx, duration, operationName, cmdCount, attempts, err, cn, dbIndex)
 }
 
 // RecordConnectionCreateTime records the time it took to create a new connection.
 func RecordConnectionCreateTime(ctx context.Context, duration time.Duration, cn *pool.Conn) {
-	globalRecorder.RecordConnectionCreateTime(ctx, duration, cn)
+	getRecorder().RecordConnectionCreateTime(ctx, duration, cn)
 }
 
 // RecordPubSubMessage records a Pub/Sub message sent or received.
 func RecordPubSubMessage(ctx context.Context, cn *pool.Conn, direction, channel string, sharded bool) {
-	globalRecorder.RecordPubSubMessage(ctx, cn, direction, channel, sharded)
+	getRecorder().RecordPubSubMessage(ctx, cn, direction, channel, sharded)
 }
 
 // RecordStreamLag records the lag between message creation and consumption in a stream.
 func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
-	globalRecorder.RecordStreamLag(ctx, lag, cn, streamName, consumerGroup, consumerName)
+	getRecorder().RecordStreamLag(ctx, lag, cn, streamName, consumerGroup, consumerName)
 }
 
 type noopRecorder struct{}

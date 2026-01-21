@@ -1179,7 +1179,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			c.state.LazyReload()
 
 			// Record error metrics
-			if errorCallback := pool.GetErrorCallback(); errorCallback != nil {
+			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 				errorType := "MOVED"
 				statusCode := "MOVED"
 				if ask {

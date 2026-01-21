@@ -435,7 +435,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
 
 		// Record relaxed timeout metric (post-handoff)
-		if relaxedTimeoutCallback := pool.GetConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+		if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
 			relaxedTimeoutCallback(ctx, 1, conn, "main", "HANDOFF")
 		}
 
@@ -468,7 +468,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 
 	// successfully completed the handoff, no retry needed and no error
 	// Notify metrics: connection handoff succeeded
-	if handoffCallback := pool.GetConnectionHandoffCallback(); handoffCallback != nil {
+	if handoffCallback := pool.GetMetricConnectionHandoffCallback(); handoffCallback != nil {
 		handoffCallback(ctx, conn, "main")
 	}
 

@@ -32,42 +32,42 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
-	// callbackMu protects all global callback functions for thread-safe access.
-	callbackMu sync.RWMutex
+	// metricCallbackMu protects all global metric callback functions for thread-safe access.
+	metricCallbackMu sync.RWMutex
 
-	// Global callback for connection state changes
-	connectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
+	// Global metric callbacks for connection state changes
+	metricConnectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
 
-	// Global callback for connection creation time
-	connectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+	// Global metric callback for connection creation time
+	metricConnectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
 
-	// Global callback for connection relaxed timeout changes
+	// Global metric callback for connection relaxed timeout changes
 	// Parameters: ctx, delta (+1/-1), cn, poolName, notificationType
-	connectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
+	metricConnectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
 
-	// Global callback for connection handoff
+	// Global metric callback for connection handoff
 	// Parameters: ctx, cn, poolName
-	connectionHandoffCallback func(ctx context.Context, cn *Conn, poolName string)
+	metricConnectionHandoffCallback func(ctx context.Context, cn *Conn, poolName string)
 
-	// Global callback for error tracking
+	// Global metric callback for error tracking
 	// Parameters: ctx, errorType, cn, statusCode, isInternal, retryAttempts
-	errorCallback func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
+	metricErrorCallback func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
 
-	// Global callback for maintenance notifications
+	// Global metric callback for maintenance notifications
 	// Parameters: ctx, cn, notificationType
-	maintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
+	metricMaintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
 
-	// Global callback for connection wait time
+	// Global metric callback for connection wait time
 	// Parameters: ctx, duration, cn
-	connectionWaitTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+	metricConnectionWaitTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
 
-	// Global callback for connection timeouts
+	// Global metric callback for connection timeouts
 	// Parameters: ctx, cn, timeoutType
-	connectionTimeoutCallback func(ctx context.Context, cn *Conn, timeoutType string)
+	metricConnectionTimeoutCallback func(ctx context.Context, cn *Conn, timeoutType string)
 
-	// Global callback for connection closed
+	// Global metric callback for connection closed
 	// Parameters: ctx, cn, reason, err
-	connectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
+	metricConnectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
@@ -87,148 +87,136 @@ var (
 	noExpiration = maxTime
 )
 
-// SetConnectionStateChangeCallback sets the global callback for connection state changes.
-// This is called by the otel package to register metrics recording.
-func SetConnectionStateChangeCallback(fn func(ctx context.Context, cn *Conn, fromState, toState string)) {
-	callbackMu.Lock()
-	connectionStateChangeCallback = fn
-	callbackMu.Unlock()
+// MetricCallbacks holds all metric callback functions.
+// Use SetAllMetricCallbacks to register all callbacks atomically.
+type MetricCallbacks struct {
+	// ConnectionCreateTime is called when a new connection is created
+	ConnectionCreateTime func(ctx context.Context, duration time.Duration, cn *Conn)
+
+	// ConnectionRelaxedTimeout is called when connection timeout is relaxed/unrelaxed
+	// delta: +1 for relaxed, -1 for unrelaxed
+	ConnectionRelaxedTimeout func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
+
+	// ConnectionHandoff is called when a connection is handed off to another node
+	ConnectionHandoff func(ctx context.Context, cn *Conn, poolName string)
+
+	// Error is called when an error occurs
+	Error func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
+
+	// MaintenanceNotification is called when a maintenance notification is received
+	MaintenanceNotification func(ctx context.Context, cn *Conn, notificationType string)
+
+	// ConnectionWaitTime is called to record time spent waiting for a connection
+	ConnectionWaitTime func(ctx context.Context, duration time.Duration, cn *Conn)
+
+	// ConnectionClosed is called when a connection is closed
+	ConnectionClosed func(ctx context.Context, cn *Conn, reason string, err error)
 }
 
-func getConnectionStateChangeCallback() func(ctx context.Context, cn *Conn, fromState, toState string) {
-	callbackMu.RLock()
-	cb := connectionStateChangeCallback
-	callbackMu.RUnlock()
+// SetAllMetricCallbacks sets all metric callbacks atomically.
+// Pass nil to clear all callbacks (disable metrics).
+// This ensures all callbacks are set together under a single lock,
+// preventing inconsistent state during registration.
+//
+// Note on thread safety: After returning, there is a small window where
+// concurrent getMetric* calls may return the old callback value. This is
+// acceptable for metrics - at most one event may go to the old recorder
+// or be missed during the transition. The callbacks themselves are immutable
+// function pointers, so calling an "old" callback is safe.
+func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
+	metricCallbackMu.Lock()
+	defer metricCallbackMu.Unlock()
+
+	if callbacks == nil {
+		metricConnectionCreateTimeCallback = nil
+		metricConnectionRelaxedTimeoutCallback = nil
+		metricConnectionHandoffCallback = nil
+		metricErrorCallback = nil
+		metricMaintenanceNotificationCallback = nil
+		metricConnectionWaitTimeCallback = nil
+		metricConnectionClosedCallback = nil
+		return
+	}
+
+	metricConnectionCreateTimeCallback = callbacks.ConnectionCreateTime
+	metricConnectionRelaxedTimeoutCallback = callbacks.ConnectionRelaxedTimeout
+	metricConnectionHandoffCallback = callbacks.ConnectionHandoff
+	metricErrorCallback = callbacks.Error
+	metricMaintenanceNotificationCallback = callbacks.MaintenanceNotification
+	metricConnectionWaitTimeCallback = callbacks.ConnectionWaitTime
+	metricConnectionClosedCallback = callbacks.ConnectionClosed
+}
+
+// getMetricConnectionStateChangeCallback returns the metric callback for connection state changes.
+func getMetricConnectionStateChangeCallback() func(ctx context.Context, cn *Conn, fromState, toState string) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionStateChangeCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionCreateTimeCallback sets the global callback for connection creation time.
-// This is called by the otel package to register metrics recording.
-func SetConnectionCreateTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
-	callbackMu.Lock()
-	connectionCreateTimeCallback = fn
-	callbackMu.Unlock()
-}
-
-// GetConnectionCreateTimeCallback returns the global callback for connection creation time.
-// This is used by redis.go to record connection creation time after initConn completes.
-func GetConnectionCreateTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
-	callbackMu.RLock()
-	cb := connectionCreateTimeCallback
-	callbackMu.RUnlock()
+// GetMetricConnectionCreateTimeCallback returns the metric callback for connection creation time.
+func GetMetricConnectionCreateTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionCreateTimeCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionRelaxedTimeoutCallback sets the global callback for connection relaxed timeout changes.
-// This is called by the otel package to register metrics recording.
-func SetConnectionRelaxedTimeoutCallback(fn func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)) {
-	callbackMu.Lock()
-	connectionRelaxedTimeoutCallback = fn
-	callbackMu.Unlock()
-}
-
-// GetConnectionRelaxedTimeoutCallback returns the global callback for connection relaxed timeout changes.
+// GetMetricConnectionRelaxedTimeoutCallback returns the metric callback for connection relaxed timeout changes.
 // This is used by maintnotifications to record relaxed timeout metrics.
-func GetConnectionRelaxedTimeoutCallback() func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string) {
-	callbackMu.RLock()
-	cb := connectionRelaxedTimeoutCallback
-	callbackMu.RUnlock()
+func GetMetricConnectionRelaxedTimeoutCallback() func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionRelaxedTimeoutCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionHandoffCallback sets the global callback for connection handoffs.
-// This is called by the otel package to register metrics recording.
-func SetConnectionHandoffCallback(fn func(ctx context.Context, cn *Conn, poolName string)) {
-	callbackMu.Lock()
-	connectionHandoffCallback = fn
-	callbackMu.Unlock()
-}
-
-// GetConnectionHandoffCallback returns the global callback for connection handoffs.
+// GetMetricConnectionHandoffCallback returns the metric callback for connection handoffs.
 // This is used by maintnotifications to record handoff metrics.
-func GetConnectionHandoffCallback() func(ctx context.Context, cn *Conn, poolName string) {
-	callbackMu.RLock()
-	cb := connectionHandoffCallback
-	callbackMu.RUnlock()
+func GetMetricConnectionHandoffCallback() func(ctx context.Context, cn *Conn, poolName string) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionHandoffCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetErrorCallback sets the global callback for error tracking.
-// This is called by the otel package to register metrics recording.
-func SetErrorCallback(fn func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)) {
-	callbackMu.Lock()
-	errorCallback = fn
-	callbackMu.Unlock()
-}
-
-// GetErrorCallback returns the global callback for error tracking.
+// GetMetricErrorCallback returns the metric callback for error tracking.
 // This is used by cluster and client code to record error metrics.
-func GetErrorCallback() func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int) {
-	callbackMu.RLock()
-	cb := errorCallback
-	callbackMu.RUnlock()
+func GetMetricErrorCallback() func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int) {
+	metricCallbackMu.RLock()
+	cb := metricErrorCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetMaintenanceNotificationCallback sets the global callback for maintenance notifications.
-// This is called by the otel package to register metrics recording.
-func SetMaintenanceNotificationCallback(fn func(ctx context.Context, cn *Conn, notificationType string)) {
-	callbackMu.Lock()
-	maintenanceNotificationCallback = fn
-	callbackMu.Unlock()
-}
-
-// GetMaintenanceNotificationCallback returns the global callback for maintenance notifications.
+// GetMetricMaintenanceNotificationCallback returns the metric callback for maintenance notifications.
 // This is used by maintnotifications to record notification metrics.
-func GetMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, notificationType string) {
-	callbackMu.RLock()
-	cb := maintenanceNotificationCallback
-	callbackMu.RUnlock()
+func GetMetricMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, notificationType string) {
+	metricCallbackMu.RLock()
+	cb := metricMaintenanceNotificationCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionWaitTimeCallback sets the global callback for connection wait time.
-// This is called by the otel package to register metrics recording.
-func SetConnectionWaitTimeCallback(fn func(ctx context.Context, duration time.Duration, cn *Conn)) {
-	callbackMu.Lock()
-	connectionWaitTimeCallback = fn
-	callbackMu.Unlock()
-}
-
-func getConnectionWaitTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
-	callbackMu.RLock()
-	cb := connectionWaitTimeCallback
-	callbackMu.RUnlock()
+func getMetricConnectionWaitTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionWaitTimeCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionTimeoutCallback sets the global callback for connection timeouts.
-// This is called by the otel package to register metrics recording.
-func SetConnectionTimeoutCallback(fn func(ctx context.Context, cn *Conn, timeoutType string)) {
-	callbackMu.Lock()
-	connectionTimeoutCallback = fn
-	callbackMu.Unlock()
-}
-
-func getConnectionTimeoutCallback() func(ctx context.Context, cn *Conn, timeoutType string) {
-	callbackMu.RLock()
-	cb := connectionTimeoutCallback
-	callbackMu.RUnlock()
+func getMetricConnectionTimeoutCallback() func(ctx context.Context, cn *Conn, timeoutType string) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionTimeoutCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
-// SetConnectionClosedCallback sets the global callback for connection closed.
-// This is called by the otel package to register metrics recording.
-func SetConnectionClosedCallback(fn func(ctx context.Context, cn *Conn, reason string, err error)) {
-	callbackMu.Lock()
-	connectionClosedCallback = fn
-	callbackMu.Unlock()
-}
-
-func getConnectionClosedCallback() func(ctx context.Context, cn *Conn, reason string, err error) {
-	callbackMu.RLock()
-	cb := connectionClosedCallback
-	callbackMu.RUnlock()
+func getMetricConnectionClosedCallback() func(ctx context.Context, cn *Conn, reason string, err error) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionClosedCallback
+	metricCallbackMu.RUnlock()
 	return cb
 }
 
@@ -549,7 +537,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	// Notify metrics: new connection created and idle
-	if cb := getConnectionStateChangeCallback(); cb != nil {
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, cn, "", "idle")
 	}
 
@@ -569,7 +557,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// This will be used after handshake completes in redis.go _getConn()
 	// Only call time.Now() if callback is registered to avoid overhead
 	var dialStartNs int64
-	if GetConnectionCreateTimeCallback() != nil {
+	if GetMetricConnectionCreateTimeCallback() != nil {
 		dialStartNs = time.Now().UnixNano()
 	}
 
@@ -703,18 +691,18 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 
 	// Track wait time - only call time.Now() if callback is registered
 	var waitStart time.Time
-	waitTimeCallback := getConnectionWaitTimeCallback()
+	waitTimeCallback := getMetricConnectionWaitTimeCallback()
 	if waitTimeCallback != nil {
 		waitStart = time.Now()
 	}
 	if err = p.waitTurn(ctx); err != nil {
 		// Record timeout if applicable
 		if err == ErrPoolTimeout {
-			if cb := getConnectionTimeoutCallback(); cb != nil {
+			if cb := getMetricConnectionTimeoutCallback(); cb != nil {
 				cb(ctx, nil, "pool")
 			}
 			// Record general error metric for pool timeout
-			if cb := GetErrorCallback(); cb != nil {
+			if cb := GetMetricErrorCallback(); cb != nil {
 				cb(ctx, "POOL_TIMEOUT", nil, "POOL_TIMEOUT", true, 0)
 			}
 		}
@@ -773,7 +761,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		atomic.AddUint32(&p.stats.Hits, 1)
 
 		// Notify metrics: connection moved from idle to used
-		if cb := getConnectionStateChangeCallback(); cb != nil {
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "idle", "used")
 		}
 
@@ -813,7 +801,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	}
 
 	// Notify metrics: new connection is created and used
-	if cb := getConnectionStateChangeCallback(); cb != nil {
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, newcn, "", "used")
 	}
 
@@ -1122,7 +1110,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 
 		// Notify metrics: connection moved from used to idle
-		if cb := getConnectionStateChangeCallback(); cb != nil {
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "used", "idle")
 		}
 	} else {
@@ -1130,7 +1118,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		p.removeConnWithLock(cn)
 
 		// Notify metrics: connection removed (used -> nothing)
-		if cb := getConnectionStateChangeCallback(); cb != nil {
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "used", "")
 		}
 	}
@@ -1174,12 +1162,12 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	}
 
 	// Notify metrics: connection removed (assume from used state)
-	if cb := getConnectionStateChangeCallback(); cb != nil {
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, cn, "used", "")
 	}
 
 	// Record connection closed
-	if cb := getConnectionClosedCallback(); cb != nil {
+	if cb := getMetricConnectionClosedCallback(); cb != nil {
 		reasonStr := "unknown"
 		if reason != nil {
 			reasonStr = reason.Error()
