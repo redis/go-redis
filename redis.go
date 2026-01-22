@@ -1250,7 +1250,7 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.connPool, c.pubSubPool)
+	otel.RegisterPools(c.connPool, c.pubSubPool, opt.Addr)
 
 	return &c
 }

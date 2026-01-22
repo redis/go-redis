@@ -55,6 +55,7 @@ func (c *config) isMetricGroupEnabled(group MetricGroup) bool {
 }
 
 func (c *config) isCommandIncluded(command string) bool {
+	command = strings.ToLower(command)
 	if c.excludeCommands != nil && c.excludeCommands[command] {
 		return false
 	}

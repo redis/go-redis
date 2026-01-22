@@ -2,11 +2,22 @@ package otel
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+// generateUniqueID generates a short unique identifier for pool names.
+func generateUniqueID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
 
 // Cmder is a minimal interface for command information needed for metrics.
 // This avoids circular dependencies with the main redis package.
@@ -82,15 +93,16 @@ type PubSubPooler interface {
 
 type PoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its connection pools.
-	// poolName: identifier for the pool (e.g., "main")
+	// poolName: identifier for the pool (e.g., "main_abc123")
 	// pool: the connection pool
 	RegisterPool(poolName string, pool pool.Pooler)
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	// pool: the connection pool to unregister
 	UnregisterPool(pool pool.Pooler)
 	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
+	// poolName: identifier for the pool (e.g., "main_abc123_pubsub")
 	// pool: the PubSub connection pool
-	RegisterPubSubPool(pool PubSubPooler)
+	RegisterPubSubPool(poolName string, pool PubSubPooler)
 	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
 	// pool: the PubSub connection pool to unregister
 	UnregisterPubSubPool(pool PubSubPooler)
@@ -235,15 +247,20 @@ func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, str
 func (noopRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
 }
 
-// RegisterPools registers connection pools with the global recorder
-func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler) {
+// RegisterPools registers connection pools with the global recorder.
+func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, addr string) {
 	// Check if the global recorder implements PoolRegistrar
 	if registrar, ok := globalRecorder.(PoolRegistrar); ok {
+		// Generate a unique ID for this client's pools
+		uniqueID := generateUniqueID()
+
 		if connPool != nil {
-			registrar.RegisterPool("main", connPool)
+			poolName := addr + "_" + uniqueID
+			registrar.RegisterPool(poolName, connPool)
 		}
 		if pubSubPool != nil {
-			registrar.RegisterPubSubPool(pubSubPool)
+			poolName := addr + "_" + uniqueID + "_pubsub"
+			registrar.RegisterPubSubPool(poolName, pubSubPool)
 		}
 	}
 }

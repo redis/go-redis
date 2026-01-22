@@ -81,11 +81,13 @@ type OTelRecorder interface {
 // This is used for async gauge metrics that need to pull stats from pools periodically.
 type OTelPoolRegistrar interface {
 	// RegisterPool is called when a new client is created with its main connection pool.
+	// poolName: unique identifier for the pool (e.g., "main_abc123")
 	RegisterPool(poolName string, pool Pooler)
 	// UnregisterPool is called when a client is closed to remove its pool from the registry.
 	UnregisterPool(pool Pooler)
 	// RegisterPubSubPool is called when a new client is created with a PubSub pool.
-	RegisterPubSubPool(pool PubSubPooler)
+	// poolName: unique identifier for the pool (e.g., "main_abc123_pubsub")
+	RegisterPubSubPool(poolName string, pool PubSubPooler)
 	// UnregisterPubSubPool is called when a PubSub client is closed to remove its pool.
 	UnregisterPubSubPool(pool PubSubPooler)
 }
@@ -172,9 +174,9 @@ func (a *otelRecorderAdapter) UnregisterPool(p pool.Pooler) {
 	}
 }
 
-func (a *otelRecorderAdapter) RegisterPubSubPool(p otel.PubSubPooler) {
+func (a *otelRecorderAdapter) RegisterPubSubPool(poolName string, p otel.PubSubPooler) {
 	if registrar, ok := a.recorder.(OTelPoolRegistrar); ok {
-		registrar.RegisterPubSubPool(&pubSubPoolerAdapter{p})
+		registrar.RegisterPubSubPool(poolName, &pubSubPoolerAdapter{p})
 	}
 }
 

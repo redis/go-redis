@@ -51,6 +51,7 @@ type poolInfo struct {
 
 // pubsubPoolInfo stores information about a registered PubSub pool
 type pubsubPoolInfo struct {
+	name string
 	pool redis.PubSubPooler
 }
 
@@ -796,12 +797,13 @@ func (r *metricsRecorder) UnregisterPool(pool redis.Pooler) {
 
 // RegisterPubSubPool implements the OTelPoolRegistrar interface.
 // The pools are used by async gauge callbacks to pull statistics.
-func (r *metricsRecorder) RegisterPubSubPool(pool redis.PubSubPooler) {
+func (r *metricsRecorder) RegisterPubSubPool(poolName string, pool redis.PubSubPooler) {
 	r.poolsMu.Lock()
 	defer r.poolsMu.Unlock()
 
 	// Add PubSub pool to registry
 	r.pubsubPools = append(r.pubsubPools, pubsubPoolInfo{
+		name: poolName,
 		pool: pool,
 	})
 }
