@@ -199,25 +199,25 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to trigger reshard: %v", err)
 	}
-	
+
 	t.Logf("Reshard action: %s", resp.ActionID)
-	
+
 	// Wait for completion
 	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Reshard completed: %+v", status.Output)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	// Verify notifications
 	analysis := tracker.GetAnalysis()
 	if analysis.MigratingCount == 0 || analysis.MigratedCount == 0 {
 		t.Error("Expected both SMIGRATING and SMIGRATED notifications")
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Cluster reshard test passed")
 }
@@ -247,7 +247,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 		Protocol: 3,
 	})
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -276,19 +276,19 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to trigger migration: %v", err)
 	}
-	
+
 	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Action completed: %s", status.Status)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	analysis.Print(t)
-	
+
 	t.Log("✓ Test passed with either real or proxy fault injector!")
 }
 
@@ -315,7 +315,7 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		Protocol: 3,
 	})
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -348,34 +348,34 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		{1001, 2000},
 		{2001, 3000},
 	}
-	
+
 	for i, mig := range migrations {
 		t.Logf("Migration %d: slots %d-%d", i+1, mig.start, mig.end)
-		
+
 		resp, err := client.TriggerSlotMigration(ctx, mig.start, mig.end, "node-1", "node-2")
 		if err != nil {
 			t.Fatalf("Failed to trigger migration %d: %v", i+1, err)
 		}
-		
+
 		status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 		if err != nil {
 			t.Fatalf("Failed to wait for migration %d: %v", i+1, err)
 		}
-		
+
 		t.Logf("  ✓ Migration %d completed: %s", i+1, status.Status)
 	}
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	t.Logf("Total SMIGRATING: %d", analysis.MigratingCount)
 	t.Logf("Total SMIGRATED: %d", analysis.MigratedCount)
-	
+
 	if analysis.MigratingCount < int64(len(migrations)) {
 		t.Errorf("Expected at least %d SMIGRATING notifications, got %d",
 			len(migrations), analysis.MigratingCount)
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Multiple actions test passed")
 }
@@ -538,4 +538,244 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	}
 
 	t.Log("✓ New connections receive active notifications test passed")
+}
+
+
+// TestSlotMigrate_AllEffects tests the new /slot-migrate API endpoint with all effects
+// This tests the OSS Cluster API client behavior during endpoint topology changes
+func TestSlotMigrate_AllEffects(t *testing.T) {
+	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
+		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
+	}
+
+	// Create fault injector client
+	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+	defer cleanup()
+
+	// Always use Docker proxy default for cluster addresses
+	clusterAddrs := []string{"127.0.0.1:17000"}
+
+	t.Logf("✓ Using fault injector client for slot-migrate API tests")
+	t.Logf("✓ Cluster addresses: %v", clusterAddrs)
+
+	ctx := context.Background()
+
+	// Create Redis cluster client with maintnotifications enabled
+	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:    clusterAddrs,
+		Protocol: 3,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeEnabled,
+		},
+	})
+	defer redisClient.Close()
+
+	// Set up notification tracking
+	tracker := NewTrackingNotificationsHook()
+	setupNotificationHook(redisClient, tracker)
+
+	// Verify connection
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		t.Fatalf("Failed to connect to cluster: %v", err)
+	}
+	t.Log("✓ Connected to cluster")
+
+	// Keep connections active by continuously executing commands
+	stopChan := make(chan struct{})
+	defer close(stopChan)
+
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				redisClient.Set(ctx, fmt.Sprintf("slotmigrate-key-%d", i%100), fmt.Sprintf("value-%d", i), 0)
+				redisClient.Get(ctx, fmt.Sprintf("slotmigrate-key-%d", i%100))
+				redisClient.Ping(ctx)
+				i++
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Give the command loop time to establish connections
+	time.Sleep(100 * time.Millisecond)
+
+	// Test all 10 valid effect-variant combinations
+	// Based on ACTIONS.md compatibility matrix:
+	// - remove-add: migrate, maintenance_mode, failover (3)
+	// - remove: migrate, maintenance_mode (2)
+	// - add: migrate, failover (2)
+	// - slot-shuffle: migrate, failover (2)
+	// Note: default variant is alias for migrate
+	//
+	// All effects send both SMIGRATING and SMIGRATED notifications.
+	// What differs is the node count change:
+	// - add: +1 (node added to cluster)
+	// - slot-shuffle: 0 (no node changes, only slot redistribution)
+	// - remove-add: 0 (net zero - one removed, one added)
+	// - remove: -1 (node removed from cluster)
+	//
+	// Each test resets the database to a fresh 2-node state, so order doesn't matter.
+	testCases := []struct {
+		name              string
+		effect            SlotMigrateEffect
+		variant           SlotMigrateVariant
+		expectedNodeDelta int // Expected change in node count
+	}{
+		// add effect (2 variants) - one node added
+		// Run these FIRST to build up node count from 1 -> 3
+		{
+			name:              "Add_Migrate",
+			effect:            SlotMigrateEffectAdd,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: +1,
+		},
+		{
+			name:              "Add_Failover",
+			effect:            SlotMigrateEffectAdd,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: +1,
+		},
+		// slot-shuffle effect (2 variants) - no node changes
+		// Run after add, maintains 3 nodes
+		{
+			name:              "SlotShuffle_Migrate",
+			effect:            SlotMigrateEffectSlotShuffle,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "SlotShuffle_Failover",
+			effect:            SlotMigrateEffectSlotShuffle,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: 0,
+		},
+		// remove-add effect (3 variants) - net zero node change
+		// Requires 2+ nodes, maintains 3 nodes
+		{
+			name:              "RemoveAdd_Migrate",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "RemoveAdd_MaintenanceMode",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantMaintenanceMode,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "RemoveAdd_Failover",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: 0,
+		},
+		// remove effect (2 variants) - one node removed
+		// Run these LAST, requires 2+ nodes, reduces 3 -> 2 -> 1
+		{
+			name:              "Remove_Migrate",
+			effect:            SlotMigrateEffectRemove,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: -1,
+		},
+		{
+			name:              "Remove_MaintenanceMode",
+			effect:            SlotMigrateEffectRemove,
+			variant:           SlotMigrateVariantMaintenanceMode,
+			expectedNodeDelta: -1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Clear previous notifications
+			tracker.Clear()
+
+			// Reset database to fresh 2-node state for each test
+			if _, err := client.DeleteDatabase(ctx, 1, 1); err != nil {
+				t.Logf("Warning: Failed to delete database: %v (may not exist yet)", err)
+			}
+			if _, err := client.CreateDatabaseFromMap(ctx, 1, nil); err != nil {
+				t.Fatalf("Failed to create database: %v", err)
+			}
+
+			t.Logf("Testing slot-migrate effect: %s, variant: %s", tc.effect, tc.variant)
+
+			// Get node count BEFORE the effect
+			triggersBefore, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers before: %v", err)
+			}
+			nodeCountBefore := triggersBefore.Cluster["nodes"].(float64)
+			t.Logf("Node count before: %.0f", nodeCountBefore)
+
+			// Trigger slot migration using new API
+			resp, err := client.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+				Effect:  tc.effect,
+				BdbID:   "1",
+				Variant: tc.variant,
+			})
+			if err != nil {
+				t.Fatalf("Failed to trigger slot migration: %v", err)
+			}
+
+			t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
+
+			// Wait for action to complete
+			status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+			if err != nil {
+				t.Fatalf("Failed to wait for action: %v", err)
+			}
+
+			t.Logf("✓ Action completed: %s (status: %s)", status.ActionID, status.Status)
+
+			// Give time for notifications to be processed
+			time.Sleep(500 * time.Millisecond)
+
+			// Get node count AFTER the effect
+			triggersAfter, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers after: %v", err)
+			}
+			nodeCountAfter := triggersAfter.Cluster["nodes"].(float64)
+			t.Logf("Node count after: %.0f", nodeCountAfter)
+
+			// Verify node count delta
+			actualDelta := int(nodeCountAfter - nodeCountBefore)
+			if actualDelta != tc.expectedNodeDelta {
+				t.Errorf("Expected node count delta %d, got %d (before: %.0f, after: %.0f)",
+					tc.expectedNodeDelta, actualDelta, nodeCountBefore, nodeCountAfter)
+			} else {
+				t.Logf("✓ Node count delta matches expected: %d", tc.expectedNodeDelta)
+			}
+
+			// Verify notifications - ALL effects should receive BOTH notifications
+			analysis := tracker.GetAnalysis()
+			analysis.Print(t)
+
+			if analysis.MigratingCount == 0 {
+				t.Errorf("Expected SMIGRATING notification for effect %s, got none", tc.effect)
+			} else {
+				t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
+			}
+
+			if analysis.MigratedCount == 0 {
+				t.Errorf("Expected SMIGRATED notification for effect %s, got none", tc.effect)
+			} else {
+				t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.MigratedCount)
+			}
+
+			if analysis.NotificationProcessingErrors > 0 {
+				t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
+			}
+		})
+	}
+
+	t.Log("✓ All slot-migrate effects tested successfully!")
 }

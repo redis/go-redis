@@ -51,7 +51,81 @@ const (
 	ActionFailover       ActionType = "failover"
 	ActionMigrate        ActionType = "migrate"
 	ActionBind           ActionType = "bind"
+
+	// Slot migrate action (OSS Cluster API testing)
+	ActionSlotMigrate ActionType = "slot_migrate"
 )
+
+// SlotMigrateEffect represents the effect type for slot migration
+type SlotMigrateEffect string
+
+const (
+	// SlotMigrateEffectRemoveAdd migrates all shards from source node to empty node
+	// Result: One endpoint removed, one endpoint added
+	SlotMigrateEffectRemoveAdd SlotMigrateEffect = "remove-add"
+
+	// SlotMigrateEffectRemove migrates all shards from source node to existing node
+	// Result: One endpoint removed
+	SlotMigrateEffectRemove SlotMigrateEffect = "remove"
+
+	// SlotMigrateEffectAdd migrates one shard to empty node
+	// Result: One endpoint added
+	SlotMigrateEffectAdd SlotMigrateEffect = "add"
+
+	// SlotMigrateEffectSlotShuffle migrates one shard between existing nodes
+	// Result: Slots move, endpoints unchanged
+	SlotMigrateEffectSlotShuffle SlotMigrateEffect = "slot-shuffle"
+)
+
+// SlotMigrateVariant represents the mechanism to achieve the slot migration effect
+type SlotMigrateVariant string
+
+const (
+	// SlotMigrateVariantDefault is an alias for migrate
+	SlotMigrateVariantDefault SlotMigrateVariant = "default"
+
+	// SlotMigrateVariantMigrate uses rladmin migrate to move shards
+	SlotMigrateVariantMigrate SlotMigrateVariant = "migrate"
+
+	// SlotMigrateVariantMaintenanceMode puts node in maintenance mode
+	// Only supported for remove-add and remove effects
+	SlotMigrateVariantMaintenanceMode SlotMigrateVariant = "maintenance_mode"
+
+	// SlotMigrateVariantFailover triggers failover to swap master/replica roles
+	// Requires replication to be enabled
+	SlotMigrateVariantFailover SlotMigrateVariant = "failover"
+)
+
+// SlotMigrateRequest represents a request to trigger a slot migration
+type SlotMigrateRequest struct {
+	Effect       SlotMigrateEffect  `json:"effect"`
+	BdbID        string             `json:"bdb_id"`
+	ClusterIndex int                `json:"cluster_index,omitempty"`
+	Variant      SlotMigrateVariant `json:"variant,omitempty"`
+	SourceNode   *int               `json:"source_node,omitempty"`
+	TargetNode   *int               `json:"target_node,omitempty"`
+}
+
+// SlotMigrateTrigger represents a trigger configuration for slot migration
+type SlotMigrateTrigger struct {
+	Name         string                       `json:"name"`
+	Description  string                       `json:"description"`
+	Requirements []SlotMigrateTriggerRequirement `json:"requirements"`
+}
+
+// SlotMigrateTriggerRequirement represents database configuration requirements
+type SlotMigrateTriggerRequirement struct {
+	DBConfig    map[string]interface{} `json:"dbconfig"`
+	Cluster     map[string]interface{} `json:"cluster"`
+	Description string                 `json:"description"`
+}
+
+// SlotMigrateTriggersResponse represents the response from GET /slot-migrate
+type SlotMigrateTriggersResponse struct {
+	Effect   SlotMigrateEffect  `json:"effect"`
+	Cluster  map[string]interface{} `json:"cluster"`
+	Triggers []SlotMigrateTrigger   `json:"triggers"`
+}
 
 // ActionStatus represents the status of an action
 type ActionStatus string
@@ -209,7 +283,7 @@ func (c *FaultInjectorClient) TriggerClusterReshard(ctx context.Context, slots [
 	})
 }
 
-// TriggerSlotMigration triggers migration of specific slots
+// TriggerSlotMigration triggers migration of specific slots (legacy API)
 func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlot, endSlot int, sourceNode, targetNode string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionSlotMigration,
@@ -219,6 +293,96 @@ func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlo
 			"source_node": sourceNode,
 			"target_node": targetNode,
 		},
+	})
+}
+
+// Slot Migrate Actions (OSS Cluster API Testing)
+// These methods use the /slot-migrate endpoint for testing cluster topology changes
+
+// GetSlotMigrateTriggers returns available triggers for a slot migration effect
+// This is useful for discovering what database configurations are needed for each effect/variant
+func (c *FaultInjectorClient) GetSlotMigrateTriggers(ctx context.Context, effect SlotMigrateEffect, clusterIndex int) (*SlotMigrateTriggersResponse, error) {
+	var response SlotMigrateTriggersResponse
+	path := fmt.Sprintf("/slot-migrate?effect=%s&cluster_index=%d", effect, clusterIndex)
+	err := c.request(ctx, "GET", path, nil, &response)
+	return &response, err
+}
+
+// TriggerSlotMigrate triggers a slot migration with the specified effect and variant
+// This is the new API for testing OSS Cluster API client behavior during endpoint changes
+//
+// Effects:
+//   - remove-add: One endpoint removed, one added (migrate all shards to empty node)
+//   - remove: One endpoint removed (migrate all shards to existing node)
+//   - add: One endpoint added (migrate one shard to empty node)
+//   - slot-shuffle: Slots moved without endpoint change (migrate one shard between existing nodes)
+//
+// Variants:
+//   - default/migrate: Use rladmin migrate to move shards
+//   - maintenance_mode: Put node in maintenance mode (only for remove-add, remove)
+//   - failover: Trigger failover to swap master/replica roles (requires replication)
+func (c *FaultInjectorClient) TriggerSlotMigrate(ctx context.Context, req SlotMigrateRequest) (*ActionResponse, error) {
+	var response ActionResponse
+
+	// Build query parameters
+	path := fmt.Sprintf("/slot-migrate?effect=%s&bdb_id=%s&cluster_index=%d",
+		req.Effect, req.BdbID, req.ClusterIndex)
+
+	if req.Variant != "" {
+		path += fmt.Sprintf("&variant=%s", req.Variant)
+	}
+	if req.SourceNode != nil {
+		path += fmt.Sprintf("&source_node=%d", *req.SourceNode)
+	}
+	if req.TargetNode != nil {
+		path += fmt.Sprintf("&target_node=%d", *req.TargetNode)
+	}
+
+	err := c.request(ctx, "POST", path, nil, &response)
+	return &response, err
+}
+
+// TriggerSlotMigrateRemoveAdd triggers a remove-add slot migration
+// This migrates all shards from source node to an empty node
+// Result: One endpoint removed, one endpoint added
+func (c *FaultInjectorClient) TriggerSlotMigrateRemoveAdd(ctx context.Context, bdbID string, variant SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectRemoveAdd,
+		BdbID:   bdbID,
+		Variant: variant,
+	})
+}
+
+// TriggerSlotMigrateRemove triggers a remove slot migration
+// This migrates all shards from source node to an existing node
+// Result: One endpoint removed
+func (c *FaultInjectorClient) TriggerSlotMigrateRemove(ctx context.Context, bdbID string, variant SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectRemove,
+		BdbID:   bdbID,
+		Variant: variant,
+	})
+}
+
+// TriggerSlotMigrateAdd triggers an add slot migration
+// This migrates one shard to an empty node
+// Result: One endpoint added
+func (c *FaultInjectorClient) TriggerSlotMigrateAdd(ctx context.Context, bdbID string, variant SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectAdd,
+		BdbID:   bdbID,
+		Variant: variant,
+	})
+}
+
+// TriggerSlotMigrateSlotShuffle triggers a slot-shuffle migration
+// This migrates one shard between existing nodes
+// Result: Slots move, endpoints unchanged
+func (c *FaultInjectorClient) TriggerSlotMigrateSlotShuffle(ctx context.Context, bdbID string, variant SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectSlotShuffle,
+		BdbID:   bdbID,
+		Variant: variant,
 	})
 }
 
