@@ -18,38 +18,39 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
-	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	fiClient, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
-	defer cleanup()
+	defer fiCleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	t.Logf("✓ Using fault injector client")
-	t.Logf("✓ Cluster addresses: %v", clusterAddrs)
+	t.Logf("✓ Using fault injector client (mode: %s)", testMode.Mode)
 
 	// Test 1: List actions
-	ctx := context.Background()
-	actions, err := client.ListActions(ctx)
+	actions, err := fiClient.ListActions(ctx)
 	if err != nil {
 		t.Fatalf("Failed to list actions: %v", err)
 	}
 	t.Logf("✓ Available actions: %v", actions)
 
-	// Test 2: Create Redis cluster client
-	// The proxy is configured with multiple listen ports (17000, 17001, 17002)
-	// and will return cluster topology pointing to these ports
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Test 2: Create Redis cluster client via factory
+	redisClient, err := factory.Create("test-client", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
-	defer redisClient.Close()
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
+	// Note: factoryCleanup() handles closing clients via factory.DestroyAll()
 
 	// Set up notification tracking
 	tracker := NewTrackingNotificationsHook()
@@ -61,16 +62,19 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	}
 
 	// Debug: Check if maintnotifications manager exists on nodes
-	if checkErr := redisClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-		manager := nodeClient.GetMaintNotificationsManager()
-		if manager == nil {
-			t.Logf("⚠️  WARNING: Maintnotifications manager is nil for node: %s", nodeClient.Options().Addr)
-		} else {
-			t.Logf("✓ Maintnotifications manager exists for node: %s", nodeClient.Options().Addr)
+	// ForEachShard is cluster-specific, so we need to type assert
+	if clusterClient, ok := redisClient.(*redis.ClusterClient); ok {
+		if checkErr := clusterClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+			manager := nodeClient.GetMaintNotificationsManager()
+			if manager == nil {
+				t.Logf("⚠️  WARNING: Maintnotifications manager is nil for node: %s", nodeClient.Options().Addr)
+			} else {
+				t.Logf("✓ Maintnotifications manager exists for node: %s", nodeClient.Options().Addr)
+			}
+			return nil
+		}); checkErr != nil {
+			t.Logf("Warning: Failed to check maintnotifications managers: %v", checkErr)
 		}
-		return nil
-	}); checkErr != nil {
-		t.Logf("Warning: Failed to check maintnotifications managers: %v", checkErr)
 	}
 
 	// Enable CLIENT TRACKING to ensure the proxy sends push notifications
@@ -106,7 +110,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 
 	// Test 3: Trigger slot migration using EXISTING fault injector client API
 	t.Log("Triggering slot migration via fault injector API...")
-	resp, err := client.TriggerSlotMigration(ctx, 1000, 2000, "node-1", "node-2")
+	resp, err := fiClient.TriggerSlotMigration(ctx, 1000, 2000, "node-1", "node-2")
 	if err != nil {
 		t.Fatalf("Failed to trigger slot migration: %v", err)
 	}
@@ -114,7 +118,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
 
 	// Wait for action to complete (commands continue running in background)
-	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+	status, err := fiClient.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
@@ -151,29 +155,40 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running cluster reshard test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
-	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	fiClient, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
-	defer cleanup()
+	defer fiCleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	ctx := context.Background()
-
-	// Create Redis client
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("reshard-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
 
-	tracker := NewTrackingNotificationsHook()
-	setupNotificationHook(redisClient, tracker)
+	// Type assertion for cluster-specific methods
+	clusterClient, ok := redisClient.(*redis.ClusterClient)
+	if !ok {
+		t.Fatal("Expected ClusterClient but got different type")
+	}
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	tracker := NewTrackingNotificationsHook()
+	setupNotificationHook(clusterClient, tracker)
+
+	if err := clusterClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
@@ -181,21 +196,21 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	// The proxy only tracks "active" connections (those currently executing commands)
 	go func() {
 		for i := 0; i < 100; i++ {
-			redisClient.BLPop(ctx, 100*time.Millisecond, "blocking-key")
+			clusterClient.BLPop(ctx, 100*time.Millisecond, "blocking-key")
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 
 	// Perform some operations
 	for i := 0; i < 10; i++ {
-		redisClient.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
+		clusterClient.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
 	}
 
 	time.Sleep(500 * time.Millisecond)
 
 	// Trigger cluster reshard
 	slots := []int{100, 200, 300, 400, 500}
-	resp, err := client.TriggerClusterReshard(ctx, slots, "node-1", "node-2")
+	resp, err := fiClient.TriggerClusterReshard(ctx, slots, "node-1", "node-2")
 	if err != nil {
 		t.Fatalf("Failed to trigger reshard: %v", err)
 	}
@@ -203,7 +218,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	t.Logf("Reshard action: %s", resp.ActionID)
 
 	// Wait for completion
-	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+	status, err := fiClient.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
@@ -229,6 +244,14 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
 	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -236,16 +259,13 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	// From here on, the test code is IDENTICAL regardless of which backend is used
-	ctx := context.Background()
-
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("env-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
 
 	tracker := NewTrackingNotificationsHook()
@@ -298,6 +318,14 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
 	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -305,15 +333,13 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	ctx := context.Background()
-
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("multi-action-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
 
 	tracker := NewTrackingNotificationsHook()
@@ -390,6 +416,12 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Test 1: Get fault injector client
 	fiClient, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -397,16 +429,17 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	}
 	defer cleanup()
 
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	// Test 2: Create first Redis client
-	client1 := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Test 2: Create first Redis client via factory
+	client1Iface, err := factory.Create("client1", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
+	if err != nil {
+		t.Fatalf("Failed to create client1: %v", err)
+	}
+	client1 := client1Iface.(*redis.ClusterClient)
 	defer client1.Close()
 
 	tracker1 := NewTrackingNotificationsHook()
@@ -457,13 +490,16 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 
 	// Test 4: Create second client DURING the migration (should receive SMIGRATING)
 	t.Log("Creating second client during migration...")
-	client2 := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	client2Iface, err := factory.Create("client2", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
+	if err != nil {
+		t.Fatalf("Failed to create client2: %v", err)
+	}
+	client2 := client2Iface.(*redis.ClusterClient)
 	defer client2.Close()
 
 	tracker2 := NewTrackingNotificationsHook()
@@ -548,6 +584,8 @@ func TestSlotMigrate_AllEffects(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
 	// Create fault injector client
 	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -555,22 +593,23 @@ func TestSlotMigrate_AllEffects(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"}
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
 
-	t.Logf("✓ Using fault injector client for slot-migrate API tests")
-	t.Logf("✓ Cluster addresses: %v", clusterAddrs)
+	t.Logf("✓ Running test in %s mode", testMode.Mode)
 
-	ctx := context.Background()
-
-	// Create Redis cluster client with maintnotifications enabled
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis cluster client via factory
+	redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
+	redisClient := redisClientIface.(*redis.ClusterClient)
 	defer redisClient.Close()
 
 	// Set up notification tracking
