@@ -697,18 +697,35 @@ func TestSlotMigrate_AllEffects(t *testing.T) {
 			// Clear previous notifications
 			tracker.Clear()
 
-			// Reset database to fresh 2-node state for each test
+			t.Logf("Testing slot-migrate effect: %s, variant: %s", tc.effect, tc.variant)
+
+			// Get triggers FIRST to retrieve the required dbconfig for this effect/variant
+			triggersBefore, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers: %v", err)
+			}
+
+			// Find the matching trigger for this variant and extract its dbconfig
+			var dbconfig map[string]interface{}
+			for _, trigger := range triggersBefore.Triggers {
+				if trigger.Name == string(tc.variant) {
+					if len(trigger.Requirements) > 0 {
+						dbconfig = trigger.Requirements[0].DBConfig
+					}
+					break
+				}
+			}
+
+			// Reset database to the required state for this effect/variant
 			if _, err := client.DeleteDatabase(ctx, 1, 1); err != nil {
 				t.Logf("Warning: Failed to delete database: %v (may not exist yet)", err)
 			}
-			if _, err := client.CreateDatabaseFromMap(ctx, 1, nil); err != nil {
+			if _, err := client.CreateDatabaseFromMap(ctx, 1, dbconfig); err != nil {
 				t.Fatalf("Failed to create database: %v", err)
 			}
 
-			t.Logf("Testing slot-migrate effect: %s, variant: %s", tc.effect, tc.variant)
-
-			// Get node count BEFORE the effect
-			triggersBefore, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			// Get node count BEFORE the effect (refresh after database creation)
+			triggersBefore, err = client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
 			if err != nil {
 				t.Fatalf("Failed to get triggers before: %v", err)
 			}
