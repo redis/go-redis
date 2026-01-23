@@ -18,38 +18,39 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
-	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	fiClient, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
-	defer cleanup()
+	defer fiCleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	t.Logf("✓ Using fault injector client")
-	t.Logf("✓ Cluster addresses: %v", clusterAddrs)
+	t.Logf("✓ Using fault injector client (mode: %s)", testMode.Mode)
 
 	// Test 1: List actions
-	ctx := context.Background()
-	actions, err := client.ListActions(ctx)
+	actions, err := fiClient.ListActions(ctx)
 	if err != nil {
 		t.Fatalf("Failed to list actions: %v", err)
 	}
 	t.Logf("✓ Available actions: %v", actions)
 
-	// Test 2: Create Redis cluster client
-	// The proxy is configured with multiple listen ports (17000, 17001, 17002)
-	// and will return cluster topology pointing to these ports
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Test 2: Create Redis cluster client via factory
+	redisClient, err := factory.Create("test-client", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
-	defer redisClient.Close()
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
+	// Note: factoryCleanup() handles closing clients via factory.DestroyAll()
 
 	// Set up notification tracking
 	tracker := NewTrackingNotificationsHook()
@@ -61,16 +62,19 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	}
 
 	// Debug: Check if maintnotifications manager exists on nodes
-	if checkErr := redisClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-		manager := nodeClient.GetMaintNotificationsManager()
-		if manager == nil {
-			t.Logf("⚠️  WARNING: Maintnotifications manager is nil for node: %s", nodeClient.Options().Addr)
-		} else {
-			t.Logf("✓ Maintnotifications manager exists for node: %s", nodeClient.Options().Addr)
+	// ForEachShard is cluster-specific, so we need to type assert
+	if clusterClient, ok := redisClient.(*redis.ClusterClient); ok {
+		if checkErr := clusterClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+			manager := nodeClient.GetMaintNotificationsManager()
+			if manager == nil {
+				t.Logf("⚠️  WARNING: Maintnotifications manager is nil for node: %s", nodeClient.Options().Addr)
+			} else {
+				t.Logf("✓ Maintnotifications manager exists for node: %s", nodeClient.Options().Addr)
+			}
+			return nil
+		}); checkErr != nil {
+			t.Logf("Warning: Failed to check maintnotifications managers: %v", checkErr)
 		}
-		return nil
-	}); checkErr != nil {
-		t.Logf("Warning: Failed to check maintnotifications managers: %v", checkErr)
 	}
 
 	// Enable CLIENT TRACKING to ensure the proxy sends push notifications
@@ -106,7 +110,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 
 	// Test 3: Trigger slot migration using EXISTING fault injector client API
 	t.Log("Triggering slot migration via fault injector API...")
-	resp, err := client.TriggerSlotMigration(ctx, 1000, 2000, "node-1", "node-2")
+	resp, err := fiClient.TriggerSlotMigration(ctx, 1000, 2000, "node-1", "node-2")
 	if err != nil {
 		t.Fatalf("Failed to trigger slot migration: %v", err)
 	}
@@ -114,7 +118,7 @@ func TestProxyFaultInjectorServer_ExistingE2ETest(t *testing.T) {
 	t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
 
 	// Wait for action to complete (commands continue running in background)
-	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+	status, err := fiClient.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
@@ -151,29 +155,40 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running cluster reshard test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
-	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	fiClient, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
-	defer cleanup()
+	defer fiCleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	ctx := context.Background()
-
-	// Create Redis client
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("reshard-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
 
-	tracker := NewTrackingNotificationsHook()
-	setupNotificationHook(redisClient, tracker)
+	// Type assertion for cluster-specific methods
+	clusterClient, ok := redisClient.(*redis.ClusterClient)
+	if !ok {
+		t.Fatal("Expected ClusterClient but got different type")
+	}
 
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	tracker := NewTrackingNotificationsHook()
+	setupNotificationHook(clusterClient, tracker)
+
+	if err := clusterClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
 
@@ -181,43 +196,43 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	// The proxy only tracks "active" connections (those currently executing commands)
 	go func() {
 		for i := 0; i < 100; i++ {
-			redisClient.BLPop(ctx, 100*time.Millisecond, "blocking-key")
+			clusterClient.BLPop(ctx, 100*time.Millisecond, "blocking-key")
 			time.Sleep(10 * time.Millisecond)
 		}
 	}()
 
 	// Perform some operations
 	for i := 0; i < 10; i++ {
-		redisClient.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
+		clusterClient.Set(ctx, fmt.Sprintf("key%d", i), "value", 0)
 	}
 
 	time.Sleep(500 * time.Millisecond)
 
 	// Trigger cluster reshard
 	slots := []int{100, 200, 300, 400, 500}
-	resp, err := client.TriggerClusterReshard(ctx, slots, "node-1", "node-2")
+	resp, err := fiClient.TriggerClusterReshard(ctx, slots, "node-1", "node-2")
 	if err != nil {
 		t.Fatalf("Failed to trigger reshard: %v", err)
 	}
-	
+
 	t.Logf("Reshard action: %s", resp.ActionID)
-	
+
 	// Wait for completion
-	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+	status, err := fiClient.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Reshard completed: %+v", status.Output)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	// Verify notifications
 	analysis := tracker.GetAnalysis()
 	if analysis.MigratingCount == 0 || analysis.MigratedCount == 0 {
 		t.Error("Expected both SMIGRATING and SMIGRATED notifications")
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Cluster reshard test passed")
 }
@@ -229,6 +244,14 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
 	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -236,18 +259,15 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	// From here on, the test code is IDENTICAL regardless of which backend is used
-	ctx := context.Background()
-
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("env-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -276,19 +296,19 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to trigger migration: %v", err)
 	}
-	
+
 	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Action completed: %s", status.Status)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	analysis.Print(t)
-	
+
 	t.Log("✓ Test passed with either real or proxy fault injector!")
 }
 
@@ -298,6 +318,14 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
 
+	ctx := context.Background()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Use the Docker fault injector (or real fault injector if environment is configured)
 	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -305,17 +333,15 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 	}
 	defer cleanup()
 
-	// Always use Docker proxy default for cluster addresses
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	ctx := context.Background()
-
-	redisClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Create Redis client via factory (uses correct addresses based on mode)
+	redisClient, err := factory.Create("multi-action-client", &CreateClientOptions{
 		Protocol: 3,
 	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -348,34 +374,34 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		{1001, 2000},
 		{2001, 3000},
 	}
-	
+
 	for i, mig := range migrations {
 		t.Logf("Migration %d: slots %d-%d", i+1, mig.start, mig.end)
-		
+
 		resp, err := client.TriggerSlotMigration(ctx, mig.start, mig.end, "node-1", "node-2")
 		if err != nil {
 			t.Fatalf("Failed to trigger migration %d: %v", i+1, err)
 		}
-		
+
 		status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 		if err != nil {
 			t.Fatalf("Failed to wait for migration %d: %v", i+1, err)
 		}
-		
+
 		t.Logf("  ✓ Migration %d completed: %s", i+1, status.Status)
 	}
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	t.Logf("Total SMIGRATING: %d", analysis.MigratingCount)
 	t.Logf("Total SMIGRATED: %d", analysis.MigratedCount)
-	
+
 	if analysis.MigratingCount < int64(len(migrations)) {
 		t.Errorf("Expected at least %d SMIGRATING notifications, got %d",
 			len(migrations), analysis.MigratingCount)
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Multiple actions test passed")
 }
@@ -390,6 +416,12 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("Running test in %s mode", testMode.Mode)
+
 	// Test 1: Get fault injector client
 	fiClient, cleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
@@ -397,16 +429,17 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	}
 	defer cleanup()
 
-	clusterAddrs := []string{"127.0.0.1:17000"} // Use 127.0.0.1 to force IPv4
-
-	// Test 2: Create first Redis client
-	client1 := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	// Test 2: Create first Redis client via factory
+	client1Iface, err := factory.Create("client1", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
+	if err != nil {
+		t.Fatalf("Failed to create client1: %v", err)
+	}
+	client1 := client1Iface.(*redis.ClusterClient)
 	defer client1.Close()
 
 	tracker1 := NewTrackingNotificationsHook()
@@ -457,13 +490,16 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 
 	// Test 4: Create second client DURING the migration (should receive SMIGRATING)
 	t.Log("Creating second client during migration...")
-	client2 := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    clusterAddrs,
+	client2Iface, err := factory.Create("client2", &CreateClientOptions{
 		Protocol: 3,
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeEnabled,
 		},
 	})
+	if err != nil {
+		t.Fatalf("Failed to create client2: %v", err)
+	}
+	client2 := client2Iface.(*redis.ClusterClient)
 	defer client2.Close()
 
 	tracker2 := NewTrackingNotificationsHook()
@@ -538,4 +574,264 @@ func TestProxyFaultInjectorServer_NewConnectionsReceiveNotifications(t *testing.
 	}
 
 	t.Log("✓ New connections receive active notifications test passed")
+}
+
+
+// TestSlotMigrate_AllEffects tests the new /slot-migrate API endpoint with all effects
+// This tests the OSS Cluster API client behavior during endpoint topology changes
+func TestSlotMigrate_AllEffects(t *testing.T) {
+	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
+		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
+	}
+
+	ctx := context.Background()
+
+	// Create fault injector client
+	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+	defer cleanup()
+
+	// Setup mode-aware database and client factory
+	_, factory, testMode, factoryCleanup := SetupTestDatabaseAndFactory(t, ctx, "")
+	defer factoryCleanup()
+
+	t.Logf("✓ Running test in %s mode", testMode.Mode)
+
+	// Create Redis cluster client via factory
+	redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
+		Protocol: 3,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeEnabled,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Failed to create Redis client: %v", err)
+	}
+	redisClient := redisClientIface.(*redis.ClusterClient)
+	defer redisClient.Close()
+
+	// Set up notification tracking
+	tracker := NewTrackingNotificationsHook()
+	setupNotificationHook(redisClient, tracker)
+
+	// Verify connection
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		t.Fatalf("Failed to connect to cluster: %v", err)
+	}
+	t.Log("✓ Connected to cluster")
+
+	// Keep connections active by continuously executing commands
+	stopChan := make(chan struct{})
+	defer close(stopChan)
+
+	go func() {
+		i := 0
+		for {
+			select {
+			case <-stopChan:
+				return
+			default:
+				redisClient.Set(ctx, fmt.Sprintf("slotmigrate-key-%d", i%100), fmt.Sprintf("value-%d", i), 0)
+				redisClient.Get(ctx, fmt.Sprintf("slotmigrate-key-%d", i%100))
+				redisClient.Ping(ctx)
+				i++
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Give the command loop time to establish connections
+	time.Sleep(100 * time.Millisecond)
+
+	// Test all 10 valid effect-variant combinations
+	// Based on ACTIONS.md compatibility matrix:
+	// - remove-add: migrate, maintenance_mode, failover (3)
+	// - remove: migrate, maintenance_mode (2)
+	// - add: migrate, failover (2)
+	// - slot-shuffle: migrate, failover (2)
+	// Note: default variant is alias for migrate
+	//
+	// All effects send both SMIGRATING and SMIGRATED notifications.
+	// What differs is the node count change:
+	// - add: +1 (node added to cluster)
+	// - slot-shuffle: 0 (no node changes, only slot redistribution)
+	// - remove-add: 0 (net zero - one removed, one added)
+	// - remove: -1 (node removed from cluster)
+	//
+	// Each test resets the database to a fresh 2-node state, so order doesn't matter.
+	testCases := []struct {
+		name              string
+		effect            SlotMigrateEffect
+		variant           SlotMigrateVariant
+		expectedNodeDelta int // Expected change in node count
+	}{
+		// add effect (2 variants) - one node added
+		// Run these FIRST to build up node count from 1 -> 3
+		{
+			name:              "Add_Migrate",
+			effect:            SlotMigrateEffectAdd,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: +1,
+		},
+		{
+			name:              "Add_Failover",
+			effect:            SlotMigrateEffectAdd,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: +1,
+		},
+		// slot-shuffle effect (2 variants) - no node changes
+		// Run after add, maintains 3 nodes
+		{
+			name:              "SlotShuffle_Migrate",
+			effect:            SlotMigrateEffectSlotShuffle,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "SlotShuffle_Failover",
+			effect:            SlotMigrateEffectSlotShuffle,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: 0,
+		},
+		// remove-add effect (3 variants) - net zero node change
+		// Requires 2+ nodes, maintains 3 nodes
+		{
+			name:              "RemoveAdd_Migrate",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "RemoveAdd_MaintenanceMode",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantMaintenanceMode,
+			expectedNodeDelta: 0,
+		},
+		{
+			name:              "RemoveAdd_Failover",
+			effect:            SlotMigrateEffectRemoveAdd,
+			variant:           SlotMigrateVariantFailover,
+			expectedNodeDelta: 0,
+		},
+		// remove effect (2 variants) - one node removed
+		// Run these LAST, requires 2+ nodes, reduces 3 -> 2 -> 1
+		{
+			name:              "Remove_Migrate",
+			effect:            SlotMigrateEffectRemove,
+			variant:           SlotMigrateVariantMigrate,
+			expectedNodeDelta: -1,
+		},
+		{
+			name:              "Remove_MaintenanceMode",
+			effect:            SlotMigrateEffectRemove,
+			variant:           SlotMigrateVariantMaintenanceMode,
+			expectedNodeDelta: -1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Clear previous notifications
+			tracker.Clear()
+
+			t.Logf("Testing slot-migrate effect: %s, variant: %s", tc.effect, tc.variant)
+
+			// Get triggers FIRST to retrieve the required dbconfig for this effect/variant
+			triggersBefore, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers: %v", err)
+			}
+
+			// Find the matching trigger for this variant and extract its dbconfig
+			var dbconfig map[string]interface{}
+			for _, trigger := range triggersBefore.Triggers {
+				if trigger.Name == string(tc.variant) {
+					if len(trigger.Requirements) > 0 {
+						dbconfig = trigger.Requirements[0].DBConfig
+					}
+					break
+				}
+			}
+
+			// Reset database to the required state for this effect/variant
+			if _, err := client.DeleteDatabase(ctx, 1, 1); err != nil {
+				t.Logf("Warning: Failed to delete database: %v (may not exist yet)", err)
+			}
+			if _, err := client.CreateDatabaseFromMap(ctx, 1, dbconfig); err != nil {
+				t.Fatalf("Failed to create database: %v", err)
+			}
+
+			// Get node count BEFORE the effect (refresh after database creation)
+			triggersBefore, err = client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers before: %v", err)
+			}
+			nodeCountBefore := triggersBefore.Cluster["nodes"].(float64)
+			t.Logf("Node count before: %.0f", nodeCountBefore)
+
+			// Trigger slot migration using new API
+			resp, err := client.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+				Effect:  tc.effect,
+				BdbID:   "1",
+				Variant: tc.variant,
+			})
+			if err != nil {
+				t.Fatalf("Failed to trigger slot migration: %v", err)
+			}
+
+			t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
+
+			// Wait for action to complete
+			status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
+			if err != nil {
+				t.Fatalf("Failed to wait for action: %v", err)
+			}
+
+			t.Logf("✓ Action completed: %s (status: %s)", status.ActionID, status.Status)
+
+			// Give time for notifications to be processed
+			time.Sleep(500 * time.Millisecond)
+
+			// Get node count AFTER the effect
+			triggersAfter, err := client.GetSlotMigrateTriggers(ctx, tc.effect, 1)
+			if err != nil {
+				t.Fatalf("Failed to get triggers after: %v", err)
+			}
+			nodeCountAfter := triggersAfter.Cluster["nodes"].(float64)
+			t.Logf("Node count after: %.0f", nodeCountAfter)
+
+			// Verify node count delta
+			actualDelta := int(nodeCountAfter - nodeCountBefore)
+			if actualDelta != tc.expectedNodeDelta {
+				t.Errorf("Expected node count delta %d, got %d (before: %.0f, after: %.0f)",
+					tc.expectedNodeDelta, actualDelta, nodeCountBefore, nodeCountAfter)
+			} else {
+				t.Logf("✓ Node count delta matches expected: %d", tc.expectedNodeDelta)
+			}
+
+			// Verify notifications - ALL effects should receive BOTH notifications
+			analysis := tracker.GetAnalysis()
+			analysis.Print(t)
+
+			if analysis.MigratingCount == 0 {
+				t.Errorf("Expected SMIGRATING notification for effect %s, got none", tc.effect)
+			} else {
+				t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
+			}
+
+			if analysis.MigratedCount == 0 {
+				t.Errorf("Expected SMIGRATED notification for effect %s, got none", tc.effect)
+			} else {
+				t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.MigratedCount)
+			}
+
+			if analysis.NotificationProcessingErrors > 0 {
+				t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
+			}
+		})
+	}
+
+	t.Log("✓ All slot-migrate effects tested successfully!")
 }

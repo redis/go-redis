@@ -13,7 +13,8 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
-// TestPushNotifications tests Redis Enterprise push notifications (MOVING, MIGRATING, MIGRATED)
+// TestPushNotifications tests Redis Enterprise push notifications (MOVING, MIGRATING, MIGRATED, FAILING_OVER, FAILED_OVER)
+// This test now works with BOTH the real fault injector and the proxy mock
 func TestPushNotifications(t *testing.T) {
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
@@ -27,11 +28,6 @@ func TestPushNotifications(t *testing.T) {
 	defer cleanup()
 	t.Logf("[PUSH-NOTIFICATIONS] Created test database with bdb_id: %d (mode: %s)", bdbID, testMode.Mode)
 
-	// Skip this test if using proxy mock (requires real fault injector)
-	if testMode.IsProxyMock() {
-		t.Skip("Skipping push notifications test - requires real fault injector")
-	}
-
 	// Wait for database to be fully ready (mode-aware)
 	time.Sleep(testMode.DatabaseReadyDelay)
 
@@ -43,6 +39,9 @@ func TestPushNotifications(t *testing.T) {
 	var found bool
 
 	var status *ActionStatusResponse
+	var bindStatus *ActionStatusResponse
+	var movingNotification []interface{}
+	var commandsRunner2, commandsRunner3 *CommandRunner
 	var errorsDetected = false
 
 	var p = func(format string, args ...interface{}) {
@@ -67,10 +66,20 @@ func TestPushNotifications(t *testing.T) {
 	// Get endpoint config from factory (now connected to new database)
 	endpointConfig := factory.GetConfig()
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create notification injector (works with both proxy mock and real FI)
+	injector, err := NewNotificationInjector()
 	if err != nil {
-		ef("Failed to create fault injector: %v", err)
+		ef("Failed to create notification injector: %v", err)
+	}
+	defer injector.Stop()
+
+	// For real fault injector, we also need the FaultInjectorClient for actions
+	var faultInjector *FaultInjectorClient
+	if !testMode.IsProxyMock() {
+		faultInjector, err = CreateTestFaultInjector()
+		if err != nil {
+			ef("Failed to create fault injector: %v", err)
+		}
 	}
 
 	minIdleConns := 5
@@ -128,16 +137,28 @@ func TestPushNotifications(t *testing.T) {
 	}()
 
 	p("Starting FAILING_OVER / FAILED_OVER notifications test...")
-	// Test: Trigger failover action to generate FAILING_OVER, FAILED_OVER notifications
-	p("Triggering failover action to generate push notifications...")
-	failoverResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
-		Type: "failover",
-		Parameters: map[string]interface{}{
-			"bdb_id": endpointConfig.BdbID,
-		},
-	})
-	if err != nil {
-		ef("Failed to trigger failover action: %v", err)
+
+	// Mode-aware: Proxy mock directly injects notifications, real FI triggers actions
+	var failoverResp *ActionResponse
+	if testMode.IsProxyMock() {
+		// Proxy mock: Directly inject FAILING_OVER notification
+		p("Injecting FAILING_OVER notification (proxy mock mode)...")
+		if err := injector.InjectFAILING_OVER(ctx, 1000); err != nil {
+			ef("Failed to inject FAILING_OVER: %v", err)
+		}
+		time.Sleep(testMode.NotificationDelay)
+	} else {
+		// Real FI: Trigger failover action to generate FAILING_OVER, FAILED_OVER notifications
+		p("Triggering failover action to generate push notifications...")
+		failoverResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+			Type: "failover",
+			Parameters: map[string]interface{}{
+				"bdb_id": endpointConfig.BdbID,
+			},
+		})
+		if err != nil {
+			ef("Failed to trigger failover action: %v", err)
+		}
 	}
 	go func() {
 		p("Waiting for FAILING_OVER notification")
@@ -154,6 +175,16 @@ func TestPushNotifications(t *testing.T) {
 	p("FAILING_OVER notification received. %v", failingOverData)
 	seqIDToObserve = int64(failingOverData["seqID"].(float64))
 	connIDToObserve = uint64(failingOverData["connID"].(float64))
+
+	// Inject FAILED_OVER in proxy mock mode
+	if testMode.IsProxyMock() {
+		p("Injecting FAILED_OVER notification (proxy mock mode)...")
+		if err := injector.InjectFAILED_OVER(ctx, 1001); err != nil {
+			ef("Failed to inject FAILED_OVER: %v", err)
+		}
+		time.Sleep(testMode.NotificationDelay)
+	}
+
 	go func() {
 		p("Waiting for FAILED_OVER notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
@@ -168,27 +199,41 @@ func TestPushNotifications(t *testing.T) {
 	failedOverData := logs2.ExtractDataFromLogMessage(match)
 	p("FAILED_OVER notification received. %v", failedOverData)
 
-	status, err = faultInjector.WaitForAction(ctx, failoverResp.ActionID,
-		WithMaxWaitTime(240*time.Second),
-		WithPollInterval(2*time.Second),
-	)
-	if err != nil {
-		ef("[FI] Failover action failed: %v", err)
+	// Wait for action to complete (real FI only)
+	if !testMode.IsProxyMock() {
+		status, err = faultInjector.WaitForAction(ctx, failoverResp.ActionID,
+			WithMaxWaitTime(240*time.Second),
+			WithPollInterval(2*time.Second),
+		)
+		if err != nil {
+			ef("[FI] Failover action failed: %v", err)
+		}
+		p("Failover action completed: %s %s", status.Status, actionOutputIfFailed(status))
 	}
-	p("[FI] Failover action completed: %v %s", status.Status, actionOutputIfFailed(status))
 
 	p("FAILING_OVER / FAILED_OVER notifications test completed successfully")
 
 	// Test: Trigger migrate action to generate MOVING, MIGRATING, MIGRATED notifications
-	p("Triggering migrate action to generate push notifications...")
-	migrateResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
-		Type: "migrate",
-		Parameters: map[string]interface{}{
-			"bdb_id": endpointConfig.BdbID,
-		},
-	})
-	if err != nil {
-		ef("Failed to trigger migrate action: %v", err)
+	var migrateResp *ActionResponse
+	if testMode.IsProxyMock() {
+		// Proxy mock: Directly inject MIGRATING notification
+		p("Injecting MIGRATING notification (proxy mock mode)...")
+		if err := injector.InjectMIGRATING(ctx, 2000, 5000); err != nil {
+			ef("Failed to inject MIGRATING: %v", err)
+		}
+		time.Sleep(testMode.NotificationDelay)
+	} else {
+		// Real FI: Trigger migrate action
+		p("Triggering migrate action to generate push notifications...")
+		migrateResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+			Type: "migrate",
+			Parameters: map[string]interface{}{
+				"bdb_id": endpointConfig.BdbID,
+			},
+		})
+		if err != nil {
+			ef("Failed to trigger migrate action: %v", err)
+		}
 	}
 	go func() {
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
@@ -198,6 +243,33 @@ func TestPushNotifications(t *testing.T) {
 	}()
 	commandsRunner.FireCommandsUntilStop(ctx)
 	if !found {
+		if !testMode.IsProxyMock() {
+			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+				WithMaxWaitTime(240*time.Second),
+				WithPollInterval(2*time.Second),
+			)
+			if err != nil {
+				ef("[FI] Migrate action failed: %v", err)
+			}
+			p("[FI] Migrate action completed: %s %s", status.Status, actionOutputIfFailed(status))
+		}
+		ef("MIGRATING notification for migrate action was not received within 60 seconds")
+	}
+	migrateData := logs2.ExtractDataFromLogMessage(match)
+	seqIDToObserve = int64(migrateData["seqID"].(float64))
+	connIDToObserve = uint64(migrateData["connID"].(float64))
+	p("MIGRATING notification received: seqID: %d, connID: %d", seqIDToObserve, connIDToObserve)
+
+	// Wait for action to complete and inject MIGRATED (mode-aware)
+	if testMode.IsProxyMock() {
+		// Proxy mock: Directly inject MIGRATED notification
+		p("Injecting MIGRATED notification (proxy mock mode)...")
+		if err := injector.InjectMIGRATED(ctx, 2001, 5000); err != nil {
+			ef("Failed to inject MIGRATED: %v", err)
+		}
+		time.Sleep(testMode.NotificationDelay)
+	} else {
+		// Real FI: Wait for action to complete (generates MIGRATED automatically)
 		status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
 			WithMaxWaitTime(240*time.Second),
 			WithPollInterval(2*time.Second),
@@ -206,21 +278,7 @@ func TestPushNotifications(t *testing.T) {
 			ef("[FI] Migrate action failed: %v", err)
 		}
 		p("[FI] Migrate action completed: %s %s", status.Status, actionOutputIfFailed(status))
-		ef("MIGRATING notification for migrate action was not received within 60 seconds")
 	}
-	migrateData := logs2.ExtractDataFromLogMessage(match)
-	seqIDToObserve = int64(migrateData["seqID"].(float64))
-	connIDToObserve = uint64(migrateData["connID"].(float64))
-	p("MIGRATING notification received: seqID: %d, connID: %d", seqIDToObserve, connIDToObserve)
-
-	status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
-		WithMaxWaitTime(240*time.Second),
-		WithPollInterval(2*time.Second),
-	)
-	if err != nil {
-		ef("[FI] Migrate action failed: %v", err)
-	}
-	p("[FI] Migrate action completed: %s %s", status.Status, actionOutputIfFailed(status))
 
 	go func() {
 		p("Waiting for MIGRATED notification on conn %d with seqID %d...", connIDToObserve, seqIDToObserve+1)
@@ -238,169 +296,210 @@ func TestPushNotifications(t *testing.T) {
 
 	p("MIGRATING / MIGRATED notifications test completed successfully")
 
-	// Trigger bind action to complete the migration process
-	p("Triggering bind action to complete migration...")
+	// Trigger bind action to complete the migration process (or inject MOVING in proxy mock mode)
+	var bindResp *ActionResponse
+	if testMode.IsProxyMock() {
+		// Proxy mock: Start commands BEFORE injecting MOVING notification
+		// This ensures there are active connections that can receive the push notification
+		p("Starting commands before MOVING injection (proxy mock mode)...")
+		go commandsRunner.FireCommandsUntilStop(ctx)
+		// Give commands time to establish connections
+		time.Sleep(1 * time.Second)
 
-	bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
-		Type: "bind",
-		Parameters: map[string]interface{}{
-			"bdb_id": endpointConfig.BdbID,
-		},
-	})
-	if err != nil {
-		ef("Failed to trigger bind action: %v", err)
-	}
-
-	// start a second client but don't execute any commands on it
-	p("Starting a second client to observe notification during moving...")
-	client2, err := factory.Create("push-notification-client-2", &CreateClientOptions{
-		Protocol:       3, // RESP3 required for push notifications
-		PoolSize:       poolSize,
-		MinIdleConns:   minIdleConns,
-		MaxActiveConns: maxConnections,
-		MaintNotificationsConfig: &maintnotifications.Config{
-			Mode:                       maintnotifications.ModeEnabled,
-			HandoffTimeout:             40 * time.Second, // 30 seconds
-			RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
-			PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
-			MaxWorkers:                 20,
-			EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
-		},
-		ClientName: "push-notification-test-client-2",
-	})
-
-	if err != nil {
-		ef("failed to create client: %v", err)
-	}
-	// setup tracking for second client
-	tracker2 := NewTrackingNotificationsHook()
-	logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
-	setupNotificationHooks(client2, tracker2, logger2)
-	commandsRunner2, _ := NewCommandRunner(client2)
-	p("Second client created")
-
-	// Use a channel to communicate errors from the goroutine
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				errChan <- fmt.Errorf("goroutine panic: %v", r)
-			}
-		}()
-
-		p("Waiting for MOVING notification on first client")
-		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
-		}, 3*time.Minute)
-		commandsRunner.Stop()
-		if !found {
-			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A FIRST CLIENT")
-			return
+		// Proxy mock: Directly inject MOVING notification
+		// Format: ["MOVING", seqID, timeS, endpoint]
+		// timeS is the time in seconds until the connection should be handed off
+		p("Injecting MOVING notification (proxy mock mode)...")
+		if err := injector.InjectMOVING(ctx, 3000, 30, ""); err != nil {
+			ef("Failed to inject MOVING: %v", err)
 		}
-
-		// once moving is received, start a second client commands runner
-		p("Starting commands on second client")
-		go commandsRunner2.FireCommandsUntilStop(ctx)
-
-		p("Waiting for MOVING notification on second client")
-		matchNotif, fnd := tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
-		if !fnd {
-			errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A SECOND CLIENT")
-			return
-		} else {
-			p("MOVING notification received on second client %v", matchNotif)
-		}
-
-		// Signal success
-		errChan <- nil
-	}()
-	commandsRunner.FireCommandsUntilStop(ctx)
-	// wait for moving on first client
-	// once the commandRunner stops, it means a waiting
-	// on the logCollector match has completed and we can proceed
-	if !found {
-		ef("MOVING notification was not received within 3 minutes")
-	}
-	movingData := logs2.ExtractDataFromLogMessage(match)
-	p("MOVING notification received. %v", movingData)
-	seqIDToObserve = int64(movingData["seqID"].(float64))
-	connIDToObserve = uint64(movingData["connID"].(float64))
-
-	time.Sleep(3 * time.Second)
-	// start a third client but don't execute any commands on it
-	p("Starting a third client to observe notification during moving...")
-	client3, err := factory.Create("push-notification-client-2", &CreateClientOptions{
-		Protocol:       3, // RESP3 required for push notifications
-		PoolSize:       poolSize,
-		MinIdleConns:   minIdleConns,
-		MaxActiveConns: maxConnections,
-		MaintNotificationsConfig: &maintnotifications.Config{
-			Mode:                       maintnotifications.ModeEnabled,
-			HandoffTimeout:             40 * time.Second, // 30 seconds
-			RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
-			PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
-			MaxWorkers:                 20,
-			EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
-		},
-		ClientName: "push-notification-test-client-3",
-	})
-
-	if err != nil {
-		ef("failed to create client: %v", err)
-	}
-	// setup tracking for second client
-	tracker3 := NewTrackingNotificationsHook()
-	logger3 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
-	setupNotificationHooks(client3, tracker3, logger3)
-	commandsRunner3, _ := NewCommandRunner(client3)
-	p("Third client created")
-	go commandsRunner3.FireCommandsUntilStop(ctx)
-	// wait for moving on third client
-	movingNotification, found := tracker3.FindOrWaitForNotification("MOVING", 3*time.Minute)
-	if !found {
-		p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
+		time.Sleep(testMode.NotificationDelay)
 	} else {
-		p("MOVING notification received on third client. %v", movingNotification)
-		if len(movingNotification) != 4 {
-			p("[NOTICE] Invalid MOVING notification format: %s", movingNotification)
-		}
-		mNotifTimeS, ok := movingNotification[2].(int64)
-		if !ok {
-			p("[NOTICE] Invalid timeS in MOVING notification: %s", movingNotification)
-		}
-		// expect timeS to be less than 15
-		if mNotifTimeS < 15 {
-			p("[NOTICE] Expected timeS < 15, got %d", mNotifTimeS)
+		// Real FI: Trigger bind action
+		p("Triggering bind action to complete migration...")
+		bindResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+			Type: "bind",
+			Parameters: map[string]interface{}{
+				"bdb_id": endpointConfig.BdbID,
+			},
+		})
+		if err != nil {
+			ef("Failed to trigger bind action: %v", err)
 		}
 	}
-	commandsRunner3.Stop()
-	// Wait for the goroutine to complete and check for errors
-	if err := <-errChan; err != nil {
-		ef("Second client goroutine error: %v", err)
+
+	// Multi-client tests - only run if not using proxy mock
+	if !testMode.SkipMultiClientTests {
+		// start a second client but don't execute any commands on it
+		p("Starting a second client to observe notification during moving...")
+		client2, err := factory.Create("push-notification-client-2", &CreateClientOptions{
+			Protocol:       3, // RESP3 required for push notifications
+			PoolSize:       poolSize,
+			MinIdleConns:   minIdleConns,
+			MaxActiveConns: maxConnections,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:                       maintnotifications.ModeEnabled,
+				HandoffTimeout:             40 * time.Second, // 30 seconds
+				RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
+				PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
+				MaxWorkers:                 20,
+				EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
+			},
+			ClientName: "push-notification-test-client-2",
+		})
+
+		if err != nil {
+			ef("failed to create client: %v", err)
+		}
+		// setup tracking for second client
+		tracker2 := NewTrackingNotificationsHook()
+		logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+		setupNotificationHooks(client2, tracker2, logger2)
+		commandsRunner2, _ = NewCommandRunner(client2)
+		p("Second client created")
+
+		// Use a channel to communicate errors from the goroutine
+		errChan := make(chan error, 1)
+
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					errChan <- fmt.Errorf("goroutine panic: %v", r)
+				}
+			}()
+
+			p("Waiting for MOVING notification on first client")
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
+			}, 3*time.Minute)
+			commandsRunner.Stop()
+			if !found {
+				errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A FIRST CLIENT")
+				return
+			}
+
+			// once moving is received, start a second client commands runner
+			p("Starting commands on second client")
+			go commandsRunner2.FireCommandsUntilStop(ctx)
+
+			p("Waiting for MOVING notification on second client")
+			matchNotif, fnd := tracker2.FindOrWaitForNotification("MOVING", 3*time.Minute)
+			if !fnd {
+				errChan <- fmt.Errorf("MOVING notification was not received within 3 minutes ON A SECOND CLIENT")
+				return
+			} else {
+				p("MOVING notification received on second client %v", matchNotif)
+			}
+
+			// Signal success
+			errChan <- nil
+		}()
+		commandsRunner.FireCommandsUntilStop(ctx)
+		// wait for moving on first client
+		// once the commandRunner stops, it means a waiting
+		// on the logCollector match has completed and we can proceed
+		if !found {
+			ef("MOVING notification was not received within 3 minutes")
+		}
+		movingData := logs2.ExtractDataFromLogMessage(match)
+		p("MOVING notification received. %v", movingData)
+		seqIDToObserve = int64(movingData["seqID"].(float64))
+		connIDToObserve = uint64(movingData["connID"].(float64))
+
+		time.Sleep(3 * time.Second)
+		// start a third client but don't execute any commands on it
+		p("Starting a third client to observe notification during moving...")
+		client3, err := factory.Create("push-notification-test-client-3", &CreateClientOptions{
+			Protocol:       3, // RESP3 required for push notifications
+			PoolSize:       poolSize,
+			MinIdleConns:   minIdleConns,
+			MaxActiveConns: maxConnections,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:                       maintnotifications.ModeEnabled,
+				HandoffTimeout:             40 * time.Second, // 30 seconds
+				RelaxedTimeout:             30 * time.Minute, // 30 minutes relaxed timeout for second client
+				PostHandoffRelaxedDuration: 2 * time.Second,  // 2 seconds post-handoff relaxed duration
+				MaxWorkers:                 20,
+				EndpointType:               maintnotifications.EndpointTypeExternalIP, // Use external IP for enterprise
+			},
+			ClientName: "push-notification-test-client-3",
+		})
+
+		if err != nil {
+			ef("failed to create client: %v", err)
+		}
+		// setup tracking for third client
+		tracker3 := NewTrackingNotificationsHook()
+		logger3 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+		setupNotificationHooks(client3, tracker3, logger3)
+		commandsRunner3, _ = NewCommandRunner(client3)
+		p("Third client created")
+		go commandsRunner3.FireCommandsUntilStop(ctx)
+		// wait for moving on third client
+		movingNotification, found = tracker3.FindOrWaitForNotification("MOVING", 3*time.Minute)
+		if !found {
+			p("[NOTICE] MOVING notification was not received within 3 minutes ON A THIRD CLIENT")
+		} else {
+			p("MOVING notification received on third client. %v", movingNotification)
+			if len(movingNotification) != 4 {
+				p("[NOTICE] Invalid MOVING notification format: %s", movingNotification)
+			}
+			mNotifTimeS, ok := movingNotification[2].(int64)
+			if !ok {
+				p("[NOTICE] Invalid timeS in MOVING notification: %s", movingNotification)
+			}
+			// expect timeS to be less than 15
+			if mNotifTimeS < 15 {
+				p("[NOTICE] Expected timeS < 15, got %d", mNotifTimeS)
+			}
+		}
+		commandsRunner3.Stop()
+		// Wait for the goroutine to complete and check for errors
+		if err := <-errChan; err != nil {
+			ef("Second client goroutine error: %v", err)
+		}
+
+		// Wait for bind action to complete
+		bindStatus, err = faultInjector.WaitForAction(ctx, bindResp.ActionID,
+			WithMaxWaitTime(240*time.Second),
+			WithPollInterval(2*time.Second))
+		if err != nil {
+			ef("Bind action failed: %v", err)
+		}
+
+		p("Bind action completed: %s %s", bindStatus.Status, actionOutputIfFailed(bindStatus))
+
+		p("MOVING notification test completed successfully")
+	} else {
+		p("Skipping multi-client MOVING test (proxy mock mode)")
 	}
-
-	// Wait for bind action to complete
-	bindStatus, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
-		WithMaxWaitTime(240*time.Second),
-		WithPollInterval(2*time.Second))
-	if err != nil {
-		ef("Bind action failed: %v", err)
-	}
-
-	p("Bind action completed: %s %s", bindStatus.Status, actionOutputIfFailed(bindStatus))
-
-	p("MOVING notification test completed successfully")
 
 	p("Executing commands and collecting logs for analysis... ")
-	go commandsRunner.FireCommandsUntilStop(ctx)
-	go commandsRunner2.FireCommandsUntilStop(ctx)
-	go commandsRunner3.FireCommandsUntilStop(ctx)
-	time.Sleep(2 * time.Minute)
-	commandsRunner.Stop()
-	commandsRunner2.Stop()
-	commandsRunner3.Stop()
-	time.Sleep(1 * time.Minute)
+
+	// Run commands based on mode
+	if testMode.SkipMultiClientTests {
+		// Single client mode (proxy mock)
+		// Commands are already running (started before MOVING injection)
+		// Need to wait long enough for:
+		// 1. MOVING notification to be processed
+		// 2. Handoff to be scheduled (at timeS/2 = 15 seconds)
+		// 3. Handoff to execute
+		// 4. Post-handoff relaxed timeout to be observed (2 seconds)
+		// Total: ~20 seconds minimum
+		time.Sleep(25 * time.Second)
+		commandsRunner.Stop()
+	} else {
+		// Multi-client mode (real FI)
+		go commandsRunner.FireCommandsUntilStop(ctx)
+		go commandsRunner2.FireCommandsUntilStop(ctx)
+		go commandsRunner3.FireCommandsUntilStop(ctx)
+		time.Sleep(2 * time.Minute)
+		commandsRunner.Stop()
+		commandsRunner2.Stop()
+		commandsRunner3.Stop()
+	}
+
+	time.Sleep(2 * testMode.NotificationDelay)
 	allLogsAnalysis := logCollector.GetAnalysis()
 	trackerAnalysis := tracker.GetAnalysis()
 
@@ -426,9 +525,15 @@ func TestPushNotifications(t *testing.T) {
 		e("Expected relaxed timeouts after post-handoff, got none")
 	}
 	// validate number of connections we do not exceed max connections
-	// we started three clients, so we expect 3x the connections
-	if allLogsAnalysis.ConnectionCount > int64(maxConnections)*3 {
-		e("Expected no more than %d connections, got %d", maxConnections*3, allLogsAnalysis.ConnectionCount)
+	// Adjust expected connections based on mode
+	expectedMaxConns := int64(maxConnections)
+	if !testMode.SkipMultiClientTests {
+		// we started three clients, so we expect 3x the connections
+		expectedMaxConns = int64(maxConnections) * 3
+	}
+
+	if allLogsAnalysis.ConnectionCount > expectedMaxConns {
+		e("Expected no more than %d connections, got %d", expectedMaxConns, allLogsAnalysis.ConnectionCount)
 	}
 
 	if allLogsAnalysis.ConnectionCount < int64(minIdleConns) {

@@ -239,9 +239,9 @@ func (p *ConnPool) checkMinIdleConns() {
 		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
-				// Semaphore is full, can't create more connections
-				p.idleCheckInProgress.Store(false)
-				return
+				// Semaphore is full, can't create more connections right now
+				// Break out of inner loop to check if we need to retry
+				break
 			}
 
 			p.poolSize.Add(1)
