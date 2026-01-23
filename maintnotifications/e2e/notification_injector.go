@@ -656,8 +656,8 @@ func (f *FaultInjectorNotificationInjector) GetTestModeConfig() *TestModeConfig 
 	return &TestModeConfig{
 		Mode:                     TestModeRealFaultInjector,
 		NotificationDelay:        30 * time.Second,
-		ActionWaitTimeout:        240 * time.Second,
-		ActionPollInterval:       2 * time.Second,
+		ActionWaitTimeout:        5 * time.Minute, // Real fault injector can take up to 5 minutes
+		ActionPollInterval:       500 * time.Millisecond,
 		DatabaseReadyDelay:       10 * time.Second,
 		ConnectionEstablishDelay: 2 * time.Second,
 		MaxClients:               3,

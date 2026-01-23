@@ -299,6 +299,8 @@ type LogAnalisis struct {
 	MovingCount        int64
 	MigratingCount     int64
 	MigratedCount      int64
+	SMigratingCount    int64
+	SMigratedCount     int64
 	FailingOverCount   int64
 	FailedOverCount    int64
 	UnexpectedCount    int64
@@ -308,6 +310,9 @@ type LogAnalisis struct {
 	SucceededHandoffCount         int64
 	TotalHandoffRetries           int64
 	TotalHandoffToCurrentEndpoint int64
+
+	// Cluster state reload tracking
+	ClusterStateReloadCount int64
 }
 
 func NewLogAnalysis(logs []string) *LogAnalisis {
@@ -353,6 +358,10 @@ func (la *LogAnalisis) Analyze() {
 			switch {
 			case notificationType(log, "MOVING"):
 				la.MovingCount++
+			case notificationType(log, "SMIGRATING"):
+				la.SMigratingCount++
+			case notificationType(log, "SMIGRATED"):
+				la.SMigratedCount++
 			case notificationType(log, "MIGRATING"):
 				la.MigratingCount++
 			case notificationType(log, "MIGRATED"):
@@ -365,6 +374,11 @@ func (la *LogAnalisis) Analyze() {
 				fmt.Printf("[ERROR] Unexpected notification: %s\n", log)
 				la.UnexpectedCount++
 			}
+		}
+
+		// Track cluster state reloads (triggered by SMIGRATED notifications)
+		if strings.Contains(log, logs2.SlotMigratedMessage) {
+			la.ClusterStateReloadCount++
 		}
 
 		if strings.Contains(log, "conn[") {
@@ -424,6 +438,12 @@ func (la *LogAnalisis) Print(t *testing.T) {
 	t.Logf(" - FAILING_OVER: %d", la.FailingOverCount)
 	t.Logf(" - FAILED_OVER: %d", la.FailedOverCount)
 	t.Logf(" - Unexpected: %d", la.UnexpectedCount)
+	t.Logf("-------------")
+	t.Logf("-Cluster-Specific Notification Analysis-")
+	t.Logf("-------------")
+	t.Logf(" - SMIGRATING: %d", la.SMigratingCount)
+	t.Logf(" - SMIGRATED: %d", la.SMigratedCount)
+	t.Logf(" - Cluster state reloads: %d", la.ClusterStateReloadCount)
 	t.Logf("-------------")
 	t.Logf("Log Analysis completed successfully")
 }

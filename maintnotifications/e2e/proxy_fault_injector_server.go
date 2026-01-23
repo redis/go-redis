@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -224,8 +225,11 @@ func (s *ProxyFaultInjectorServer) Start() error {
 		mux.ServeHTTP(w, r)
 	})
 
-	mux.HandleFunc("/actions", s.handleListActions)
-	mux.HandleFunc("/action", s.handleTriggerAction)
+	// IMPORTANT: The real fault injector uses /action (singular) for both listing and triggering
+	// - GET /action -> list all actions
+	// - POST /action -> trigger a new action
+	// - GET /action/{action_id} -> get status of a specific action
+	mux.HandleFunc("/action", s.handleAction)
 	mux.HandleFunc("/action/", s.handleActionStatus)
 	mux.HandleFunc("/slot-migrate", s.handleSlotMigrate)
 
@@ -322,20 +326,40 @@ func (s *ProxyFaultInjectorServer) addProxyNode(listenPort, targetPort int, targ
 
 // HTTP Handlers - mimic fault injector API
 
+// handleAction handles both GET (list actions) and POST (trigger action) requests to /action
+// This matches the real fault injector API which uses /action (singular) for both operations
+func (s *ProxyFaultInjectorServer) handleAction(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListActions(w, r)
+	case http.MethodPost:
+		s.handleTriggerAction(w, r)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *ProxyFaultInjectorServer) handleListActions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Return list of supported actions
-	actions := []ActionType{
-		ActionSlotMigration,
-		ActionClusterReshard,
-		ActionClusterMigrate,
-		ActionFailover,
-		ActionMigrate,
-		ActionBind,
+	// Return list of actions in the same format as the real fault injector API
+	// The real API returns an array of objects with job_id, action_type, status, and submitted_at
+	actions := []ActionListItem{
+		{
+			JobID:       "mock-job-1",
+			ActionType:  string(ActionSlotMigration),
+			Status:      "completed",
+			SubmittedAt: "2026-01-26T00:00:00+00:00",
+		},
+		{
+			JobID:       "mock-job-2",
+			ActionType:  string(ActionClusterMigrate),
+			Status:      "completed",
+			SubmittedAt: "2026-01-26T00:00:00+00:00",
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -966,73 +990,125 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrate(w http.ResponseWriter, r *h
 
 // handleSlotMigrateGetTriggers returns available triggers for a slot migration effect
 func (s *ProxyFaultInjectorServer) handleSlotMigrateGetTriggers(w http.ResponseWriter, r *http.Request) {
-	effect := SlotMigrateEffect(r.URL.Query().Get("effect"))
+	query := r.URL.Query()
+	effect := SlotMigrateEffect(query.Get("effect"))
 	if effect == "" {
 		http.Error(w, "Missing required parameter: effect", http.StatusBadRequest)
 		return
 	}
 
+	// Parse cluster_index (optional, default: 0)
+	clusterIndex := 0
+	if clusterIndexStr := query.Get("cluster_index"); clusterIndexStr != "" {
+		if _, err := fmt.Sscanf(clusterIndexStr, "%d", &clusterIndex); err != nil {
+			http.Error(w, "Invalid cluster_index parameter", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Build cluster field with proper structure: {index, nodes: [{host, port}, ...]}
+	s.nodesMutex.RLock()
+	nodesArray := make([]map[string]interface{}, len(s.nodes))
+	for i, node := range s.nodes {
+		// Parse host and port from proxyAddr (format: "localhost:7001")
+		parts := strings.Split(node.proxyAddr, ":")
+		host := parts[0]
+		port := node.listenPort
+		nodesArray[i] = map[string]interface{}{
+			"host": host,
+			"port": port,
+		}
+	}
+	s.nodesMutex.RUnlock()
+
+	clusterInfo := map[string]interface{}{
+		"index": clusterIndex,
+		"nodes": nodesArray,
+	}
+
 	// Return mock triggers based on effect
 	var triggers []SlotMigrateTrigger
 
-	// Helper for failover requirements (requires replication)
-	failoverRequirements := []SlotMigrateTriggerRequirement{
-		{
-			DBConfig:    map[string]interface{}{"replication": true},
-			Description: "Requires replication enabled for failover",
-		},
+	// Helper function to create requirements with dbconfig and cluster
+	makeRequirements := func(dbconfig map[string]interface{}, description string) []SlotMigrateTriggerRequirement {
+		return []SlotMigrateTriggerRequirement{
+			{
+				DBConfig:    dbconfig,
+				Cluster:     clusterInfo,
+				Description: description,
+			},
+		}
+	}
+
+	// Default dbconfig for migrate/maintenance_mode (sharded cluster)
+	defaultDBConfig := map[string]interface{}{
+		"shards_count":     3,
+		"shards_placement": "sparse",
+	}
+
+	// Failover requirements (requires replication)
+	failoverDBConfig := map[string]interface{}{
+		"shards_count":     3,
+		"shards_placement": "sparse",
+		"replication":      true,
 	}
 
 	switch effect {
 	case SlotMigrateEffectRemoveAdd:
 		triggers = []SlotMigrateTrigger{
 			{
-				Name:        "migrate",
-				Description: "Migrate all shards from source node to empty node",
+				Name:         "migrate",
+				Description:  "Migrate all shards from source node to empty node",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
-				Name:        "maintenance_mode",
-				Description: "Put source node in maintenance mode",
+				Name:         "maintenance_mode",
+				Description:  "Put source node in maintenance mode",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
 				Name:         "failover",
 				Description:  "Trigger failover (requires replication)",
-				Requirements: failoverRequirements,
+				Requirements: makeRequirements(failoverDBConfig, "Requires replication enabled for failover"),
 			},
 		}
 	case SlotMigrateEffectRemove:
 		triggers = []SlotMigrateTrigger{
 			{
-				Name:        "migrate",
-				Description: "Migrate all shards from source node to existing node",
+				Name:         "migrate",
+				Description:  "Migrate all shards from source node to existing node",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
-				Name:        "maintenance_mode",
-				Description: "Put source node in maintenance mode",
+				Name:         "maintenance_mode",
+				Description:  "Put source node in maintenance mode",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 		}
 	case SlotMigrateEffectAdd:
 		triggers = []SlotMigrateTrigger{
 			{
-				Name:        "migrate",
-				Description: "Migrate one shard to empty node",
+				Name:         "migrate",
+				Description:  "Migrate one shard to empty node",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
 				Name:         "failover",
 				Description:  "Trigger failover (requires replication)",
-				Requirements: failoverRequirements,
+				Requirements: makeRequirements(failoverDBConfig, "Requires replication enabled for failover"),
 			},
 		}
 	case SlotMigrateEffectSlotShuffle:
 		triggers = []SlotMigrateTrigger{
 			{
-				Name:        "migrate",
-				Description: "Migrate one shard between existing nodes",
+				Name:         "migrate",
+				Description:  "Migrate one shard between existing nodes",
+				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
 				Name:         "failover",
 				Description:  "Trigger failover (requires replication)",
-				Requirements: failoverRequirements,
+				Requirements: makeRequirements(failoverDBConfig, "Requires replication enabled for failover"),
 			},
 		}
 	default:
@@ -1042,7 +1118,7 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateGetTriggers(w http.ResponseW
 
 	response := SlotMigrateTriggersResponse{
 		Effect:   effect,
-		Cluster:  map[string]interface{}{"nodes": len(s.nodes)},
+		Cluster:  clusterInfo,
 		Triggers: triggers,
 	}
 
@@ -1055,7 +1131,20 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateTrigger(w http.ResponseWrite
 	query := r.URL.Query()
 	effect := SlotMigrateEffect(query.Get("effect"))
 	bdbID := query.Get("bdb_id")
-	variant := SlotMigrateVariant(query.Get("variant"))
+	// IMPORTANT: The real fault injector API uses "variant" as the query parameter name (rest_api.py line 301)
+	// We use "trigger" as the variable name internally, but must read from "variant" parameter
+	trigger := SlotMigrateVariant(query.Get("variant"))
+	sourceNode := query.Get("source_node")
+	targetNode := query.Get("target_node")
+	clusterIndexStr := query.Get("cluster_index")
+
+	// Parse cluster_index with default of 0
+	clusterIndex := 0
+	if clusterIndexStr != "" {
+		if idx, err := strconv.Atoi(clusterIndexStr); err == nil {
+			clusterIndex = idx
+		}
+	}
 
 	if effect == "" {
 		http.Error(w, "Missing required parameter: effect", http.StatusBadRequest)
@@ -1066,12 +1155,13 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateTrigger(w http.ResponseWrite
 		return
 	}
 
-	// Default variant is "migrate"
-	if variant == "" || variant == SlotMigrateVariantDefault {
-		variant = SlotMigrateVariantMigrate
+	// Default trigger is "migrate"
+	if trigger == "" || trigger == SlotMigrateVariantDefault {
+		trigger = SlotMigrateVariantMigrate
 	}
 
-	fmt.Printf("[ProxyFI] Slot-migrate: effect=%s, bdb_id=%s, variant=%s\n", effect, bdbID, variant)
+	fmt.Printf("[ProxyFI] Slot-migrate: effect=%s, bdb_id=%s, trigger=%s, cluster_index=%d, source_node=%s, target_node=%s\n",
+		effect, bdbID, trigger, clusterIndex, sourceNode, targetNode)
 
 	// Create action
 	actionID := fmt.Sprintf("slot-migrate-%d", s.actionCounter.Add(1))
@@ -1080,9 +1170,12 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateTrigger(w http.ResponseWrite
 		Type:   ActionSlotMigrate,
 		Status: StatusRunning,
 		Parameters: map[string]interface{}{
-			"effect":  string(effect),
-			"bdb_id":  bdbID,
-			"variant": string(variant),
+			"effect":        string(effect),
+			"bdb_id":        bdbID,
+			"variant":       string(trigger),
+			"cluster_index": clusterIndex,
+			"source_node":   sourceNode,
+			"target_node":   targetNode,
 		},
 		StartTime: time.Now(),
 		Output:    make(map[string]interface{}),
@@ -1093,21 +1186,15 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateTrigger(w http.ResponseWrite
 	s.actionsMutex.Unlock()
 
 	// Execute action asynchronously
-	go s.executeSlotMigrateAction(action, effect, variant)
+	go s.executeSlotMigrateAction(action, effect, trigger)
 
-	// Return response
-	resp := ActionResponse{
-		ActionID: actionID,
-		Status:   string(StatusRunning),
-		Message:  fmt.Sprintf("Slot-migrate %s started with variant %s", effect, variant),
-	}
-
+	// Return response per spec: only {"action_id": "..."}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(map[string]string{"action_id": actionID})
 }
 
-// executeSlotMigrateAction executes a slot-migrate action with the specified effect and variant
-func (s *ProxyFaultInjectorServer) executeSlotMigrateAction(action *actionState, effect SlotMigrateEffect, variant SlotMigrateVariant) {
+// executeSlotMigrateAction executes a slot-migrate action with the specified effect and trigger
+func (s *ProxyFaultInjectorServer) executeSlotMigrateAction(action *actionState, effect SlotMigrateEffect, trigger SlotMigrateVariant) {
 	defer func() {
 		action.EndTime = time.Now()
 		if action.Status == StatusRunning {
@@ -1115,17 +1202,17 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateAction(action *actionState,
 		}
 	}()
 
-	fmt.Printf("[ProxyFI] Executing slot-migrate: effect=%s, variant=%s\n", effect, variant)
+	fmt.Printf("[ProxyFI] Executing slot-migrate: effect=%s, trigger=%s\n", effect, trigger)
 
 	switch effect {
 	case SlotMigrateEffectRemoveAdd:
-		s.executeSlotMigrateRemoveAdd(action, variant)
+		s.executeSlotMigrateRemoveAdd(action, trigger)
 	case SlotMigrateEffectRemove:
-		s.executeSlotMigrateRemove(action, variant)
+		s.executeSlotMigrateRemove(action, trigger)
 	case SlotMigrateEffectAdd:
-		s.executeSlotMigrateAdd(action, variant)
+		s.executeSlotMigrateAdd(action, trigger)
 	case SlotMigrateEffectSlotShuffle:
-		s.executeSlotMigrateSlotShuffle(action, variant)
+		s.executeSlotMigrateSlotShuffle(action, trigger)
 	default:
 		action.Status = StatusFailed
 		action.Error = fmt.Errorf("unsupported slot-migrate effect: %s", effect)
@@ -1134,7 +1221,7 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateAction(action *actionState,
 
 // executeSlotMigrateRemoveAdd simulates migrating all shards from one node to a new node
 // Effect: One endpoint removed, one endpoint added
-func (s *ProxyFaultInjectorServer) executeSlotMigrateRemoveAdd(action *actionState, variant SlotMigrateVariant) {
+func (s *ProxyFaultInjectorServer) executeSlotMigrateRemoveAdd(action *actionState, trigger SlotMigrateVariant) {
 	s.nodesMutex.RLock()
 	if len(s.nodes) < 2 {
 		s.nodesMutex.RUnlock()
@@ -1180,12 +1267,12 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateRemoveAdd(action *actionSta
 	action.Output["source_addr"] = sourceAddr
 	action.Output["new_addr"] = newAddr
 	action.Output["slots"] = fmt.Sprintf("%d-%d", slotStart, slotEnd)
-	action.Output["variant"] = string(variant)
+	action.Output["variant"] = string(trigger)
 }
 
 // executeSlotMigrateRemove simulates migrating all shards from one node to an existing node
 // Effect: One endpoint removed (node count decreases by 1)
-func (s *ProxyFaultInjectorServer) executeSlotMigrateRemove(action *actionState, variant SlotMigrateVariant) {
+func (s *ProxyFaultInjectorServer) executeSlotMigrateRemove(action *actionState, trigger SlotMigrateVariant) {
 	s.nodesMutex.Lock()
 	if len(s.nodes) < 2 {
 		s.nodesMutex.Unlock()
@@ -1232,14 +1319,14 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateRemove(action *actionState,
 	action.Output["source_addr"] = sourceAddr
 	action.Output["dest_addr"] = destAddr
 	action.Output["slots"] = fmt.Sprintf("%d-%d", slotStart, slotEnd)
-	action.Output["variant"] = string(variant)
+	action.Output["variant"] = string(trigger)
 	action.Output["nodes_before"] = numNodes
 	action.Output["nodes_after"] = numNodes - 1
 }
 
 // executeSlotMigrateAdd simulates migrating one shard from an existing node to a new node
 // Effect: One endpoint added (net +1 node)
-func (s *ProxyFaultInjectorServer) executeSlotMigrateAdd(action *actionState, variant SlotMigrateVariant) {
+func (s *ProxyFaultInjectorServer) executeSlotMigrateAdd(action *actionState, trigger SlotMigrateVariant) {
 	s.nodesMutex.Lock()
 	if len(s.nodes) < 1 {
 		s.nodesMutex.Unlock()
@@ -1295,14 +1382,14 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateAdd(action *actionState, va
 	action.Output["source_addr"] = sourceAddr
 	action.Output["new_addr"] = newAddr
 	action.Output["slots"] = fmt.Sprintf("%d-%d", slotStart, slotEnd)
-	action.Output["variant"] = string(variant)
+	action.Output["variant"] = string(trigger)
 	action.Output["nodes_before"] = nodesBefore
 	action.Output["nodes_after"] = nodesAfter
 }
 
 // executeSlotMigrateSlotShuffle simulates moving slots between existing nodes
 // Effect: Slots move, no endpoint changes (same nodes, different slot distribution)
-func (s *ProxyFaultInjectorServer) executeSlotMigrateSlotShuffle(action *actionState, variant SlotMigrateVariant) {
+func (s *ProxyFaultInjectorServer) executeSlotMigrateSlotShuffle(action *actionState, trigger SlotMigrateVariant) {
 	s.nodesMutex.RLock()
 	if len(s.nodes) < 2 {
 		s.nodesMutex.RUnlock()
@@ -1347,7 +1434,7 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateSlotShuffle(action *actionS
 	action.Output["source_addr"] = sourceAddr
 	action.Output["dest_addr"] = destAddr
 	action.Output["slots"] = fmt.Sprintf("%d-%d", slotStart, slotEnd)
-	action.Output["variant"] = string(variant)
+	action.Output["variant"] = string(trigger)
 }
 
 // executeDeleteDatabase clears all nodes to simulate database deletion

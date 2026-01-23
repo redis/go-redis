@@ -68,8 +68,8 @@ func GetTestModeConfig() *TestModeConfig {
 		return &TestModeConfig{
 			Mode:                     TestModeRealFaultInjector,
 			NotificationDelay:        30 * time.Second,
-			ActionWaitTimeout:        240 * time.Second,
-			ActionPollInterval:       2 * time.Second,
+			ActionWaitTimeout:        5 * time.Minute, // Real fault injector can take up to 5 minutes
+			ActionPollInterval:       500 * time.Millisecond,
 			DatabaseReadyDelay:       10 * time.Second,
 			ConnectionEstablishDelay: 2 * time.Second,
 			MaxClients:               3,
@@ -113,3 +113,8 @@ func (m TestMode) String() string {
 	}
 }
 
+// DebugE2E returns true if E2E_DEBUG environment variable is set to "true"
+// Use this to control verbose debug logging in e2e tests
+func DebugE2E() bool {
+	return os.Getenv("E2E_DEBUG") == "true"
+}
