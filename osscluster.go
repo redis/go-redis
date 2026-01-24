@@ -96,12 +96,12 @@ type ClusterOptions struct {
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
 
-	PoolFIFO        bool
-	PoolSize        int // applies per cluster node and not for the whole cluster
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int // applies per cluster node and not for the whole cluster
+	PoolFIFO              bool
+	PoolSize              int // applies per cluster node and not for the whole cluster
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int // applies per cluster node and not for the whole cluster
 	ConnMaxIdleTime       time.Duration
 	ConnMaxLifetime       time.Duration
 	ConnMaxLifetimeJitter time.Duration
