@@ -79,13 +79,14 @@ type UniversalOptions struct {
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
-	PoolSize        int
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	PoolSize              int
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
+	ConnMaxLifetimeJitter time.Duration
 
 	TLSConfig *tls.Config
 
@@ -166,13 +167,14 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		PoolFIFO: o.PoolFIFO,
 
-		PoolSize:        o.PoolSize,
-		PoolTimeout:     o.PoolTimeout,
-		MinIdleConns:    o.MinIdleConns,
-		MaxIdleConns:    o.MaxIdleConns,
-		MaxActiveConns:  o.MaxActiveConns,
-		ConnMaxIdleTime: o.ConnMaxIdleTime,
-		ConnMaxLifetime: o.ConnMaxLifetime,
+		PoolSize:              o.PoolSize,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
+		ConnMaxIdleTime:       o.ConnMaxIdleTime,
+		ConnMaxLifetime:       o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,
 
@@ -225,14 +227,15 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
 
-		PoolFIFO:        o.PoolFIFO,
-		PoolSize:        o.PoolSize,
-		PoolTimeout:     o.PoolTimeout,
-		MinIdleConns:    o.MinIdleConns,
-		MaxIdleConns:    o.MaxIdleConns,
-		MaxActiveConns:  o.MaxActiveConns,
-		ConnMaxIdleTime: o.ConnMaxIdleTime,
-		ConnMaxLifetime: o.ConnMaxLifetime,
+		PoolFIFO:              o.PoolFIFO,
+		PoolSize:              o.PoolSize,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
+		ConnMaxIdleTime:       o.ConnMaxIdleTime,
+		ConnMaxLifetime:       o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,
 
