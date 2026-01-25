@@ -1126,7 +1126,8 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *Options that were used to create the client.
+// Any alteration of the returned *Options may result in undefined behaviour.
 func (c *Client) Options() *Options {
 	return c.opt
 }

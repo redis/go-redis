@@ -1103,7 +1103,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *ClusterOptions that were used to create the client.
+// Any alteration of the returned *ClusterOptions may result in undefined behaviour.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
 }

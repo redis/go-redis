@@ -642,7 +642,8 @@ func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *RingOptions that were used to create the client.
+// Any alteration of the returned *RingOptions may result in undefined behaviour.
 func (c *Ring) Options() *RingOptions {
 	return c.opt
 }
