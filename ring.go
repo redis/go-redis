@@ -214,17 +214,6 @@ func (opt *RingOptions) init() {
 	}
 }
 
-func (opt *RingOptions) clone() *RingOptions {
-	clone := *opt
-	clone.Addrs = make(map[string]string, len(opt.Addrs))
-
-	for k, v := range opt.Addrs {
-		clone.Addrs[k] = v
-	}
-
-	return &clone
-}
-
 func (opt *RingOptions) clientOptions() *Options {
 	return &Options{
 		ClientName: opt.ClientName,
@@ -615,8 +604,6 @@ func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")
 	}
-	// clone to not share options with the caller
-	opt = opt.clone()
 	opt.init()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())
@@ -657,7 +644,7 @@ func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
 
 // Options returns read-only Options that were used to create the client.
 func (c *Ring) Options() *RingOptions {
-	return c.opt.clone()
+	return c.opt
 }
 
 func (c *Ring) retryBackoff(attempt int) time.Duration {

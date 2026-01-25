@@ -25,11 +25,10 @@ var _ = Describe("ACL", func() {
 		err := client.Do(ctx, "acl", "setuser", "test", ">test", "on", "allkeys", "+get").Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		opt := redisOptions()
-		opt.Username = "test"
-		opt.Password = "test"
-		opt.DB = 0
-		clientAcl := redis.NewClient(opt)
+		clientAcl := redis.NewClient(redisOptions())
+		clientAcl.Options().Username = "test"
+		clientAcl.Options().Password = "test"
+		clientAcl.Options().DB = 0
 		_ = clientAcl.Set(ctx, "mystring", "foo", 0).Err()
 		_ = clientAcl.HSet(ctx, "myhash", "foo", "bar").Err()
 		_ = clientAcl.SAdd(ctx, "myset", "foo", "bar").Err()
