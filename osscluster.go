@@ -91,7 +91,18 @@ type ClusterOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout           time.Duration
+	DialTimeout time.Duration
+
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	//
+	// default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	//
+	// default: 100 milliseconds
+	DialerRetryTimeout time.Duration
+
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
@@ -399,6 +410,8 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxRetryBackoff: opt.MaxRetryBackoff,
 
 		DialTimeout:           opt.DialTimeout,
+		DialerRetries:         opt.DialerRetries,
+		DialerRetryTimeout:    opt.DialerRetryTimeout,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
