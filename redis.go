@@ -535,9 +535,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// Enable maintnotifications if maintnotifications are configured
 	c.optLock.RLock()
-	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
+	maintNotifEnabled := false
 	protocol := c.opt.Protocol
-	endpointType := c.opt.MaintNotificationsConfig.EndpointType
+	var endpointType maintnotifications.EndpointType
+	if c.opt.MaintNotificationsConfig != nil {
+		maintNotifEnabled = c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
+		endpointType = c.opt.MaintNotificationsConfig.EndpointType
+	}
 	c.optLock.RUnlock()
 	var maintNotifHandshakeErr error
 	if maintNotifEnabled && protocol == 3 {
@@ -1122,7 +1126,8 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *Options that were used to create the client.
+// Any alteration of the returned *Options may result in undefined behaviour.
 func (c *Client) Options() *Options {
 	return c.opt
 }
