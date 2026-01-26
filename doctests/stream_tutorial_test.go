@@ -401,7 +401,7 @@ func ExampleClient_racefrance2() {
 	}
 
 	fmt.Println(res13)
-	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]}]
+	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0}]
 	// STEP_END
 
 	// STEP_START xrange_step_1
@@ -412,7 +412,7 @@ func ExampleClient_racefrance2() {
 	}
 
 	fmt.Println(res14)
-	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]
+	// >>> [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0}]
 	// STEP_END
 
 	// STEP_START xrange_step_2
@@ -425,7 +425,7 @@ func ExampleClient_racefrance2() {
 	}
 
 	fmt.Println(res15)
-	// >>> [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7]} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
+	// >>> [{1692632102976-0 map[location_id:1 position:2 rider:Prickett speed:29.7] 0 0} {1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9] 0 0}]
 	// STEP_END
 
 	// STEP_START xrange_empty
@@ -449,7 +449,7 @@ func ExampleClient_racefrance2() {
 	}
 
 	fmt.Println(res17)
-	// >>> [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9]}]
+	// >>> [{1692632147973-0 map[location_id:2 position:1 rider:Castilla speed:29.9] 0 0}]
 	// STEP_END
 
 	// STEP_START xread
@@ -463,7 +463,7 @@ func ExampleClient_racefrance2() {
 	}
 
 	fmt.Println(res18)
-	// >>> [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2]} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8]}]}]
+	// >>> [{race:france [{1692632086370-0 map[location_id:1 position:1 rider:Castilla speed:30.2] 0 0} {1692632094485-0 map[location_id:1 position:3 rider:Norem speed:28.8] 0 0}]}]
 	// STEP_END
 
 	// Output:
@@ -639,7 +639,7 @@ func ExampleClient_xgroupread() {
 	}
 
 	// fmt.Println(res21)
-	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla] 0 0}]}]
 	// STEP_END
 
 	// REMOVE_START
@@ -754,7 +754,7 @@ func ExampleClient_raceitaly() {
 	}
 
 	fmt.Println(res22)
-	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla]}]}]
+	// >>> [{race:italy [{1692632639151-0 map[rider:Castilla] 0 0}]}]
 	// STEP_END
 
 	// STEP_START xack
@@ -795,7 +795,7 @@ func ExampleClient_raceitaly() {
 	}
 
 	fmt.Println(res25)
-	// >>> [{race:italy [{1692632647899-0 map[rider:Royce]} {1692632662819-0 map[rider:Sam-Bodden]}]}]
+	// >>> [{race:italy [{1692632647899-0 map[rider:Royce] 0 0} {1692632662819-0 map[rider:Sam-Bodden] 0 0}]}]
 
 	// STEP_END
 
@@ -836,7 +836,7 @@ func ExampleClient_raceitaly() {
 		panic(err)
 	}
 
-	fmt.Println(res28) // >>> [{1692632647899-0 map[rider:Royce]}]
+	fmt.Println(res28) // >>> [{1692632647899-0 map[rider:Royce] 0 0}]
 	// STEP_END
 
 	// STEP_START xclaim
@@ -868,7 +868,7 @@ func ExampleClient_raceitaly() {
 		panic(err)
 	}
 
-	fmt.Println(res30)  // >>> [{1692632647899-0 map[rider:Royce]}]
+	fmt.Println(res30)  // >>> [{1692632647899-0 map[rider:Royce] 0 0}]
 	fmt.Println(res30a) // >>> 1692632662819-0
 	// STEP_END
 
@@ -896,8 +896,10 @@ func ExampleClient_raceitaly() {
 		panic(err)
 	}
 
-	fmt.Println(res32)
-	// >>> &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla] 0 0} {1692632678249-0 map[rider:Norem] 0 0} 1692632639151-0 100 100 0 0 0 0}
+	fmt.Println(res32.Length)
+	// >>> 5
+	fmt.Println(res32.FirstEntry)
+	// >>> {1692632639151-0 map[rider:Castilla] 0 0}
 	// STEP_END
 
 	// STEP_START xinfo_groups
@@ -971,7 +973,7 @@ func ExampleClient_raceitaly() {
 	}
 
 	// fmt.Println(res36)
-	// >>> [{1726649529170-1 map[rider:Wood]} {1726649529171-0 map[rider:Henshaw]}]
+	// >>> [{1726649529170-1 map[rider:Wood] 0 0} {1726649529171-0 map[rider:Henshaw] 0 0}]
 	// STEP_END
 
 	// STEP_START xtrim
@@ -1010,7 +1012,8 @@ func ExampleClient_raceitaly() {
 	// 1692632662819-0
 	// []
 	// 0-0
-	// &{5 1 2 1 1692632678249-0 0-0 5 {1692632639151-0 map[rider:Castilla] 0 0} {1692632678249-0 map[rider:Norem] 0 0} 1692632639151-0 100 100 0 0 0 0}
+	// 5
+	// {1692632639151-0 map[rider:Castilla] 0 0}
 	// [{italy_riders 3 2 1692632662819-0 3 2}]
 	// 2
 	// 0
@@ -1064,7 +1067,7 @@ func ExampleClient_xdel() {
 	}
 
 	fmt.Println(res39)
-	// >>> [{1692633198206-0 map[rider:Wood]} {1692633208557-0 map[rider:Henshaw]}]
+	// >>> [{1692633198206-0 map[rider:Wood] 0 0} {1692633208557-0 map[rider:Henshaw] 0 0}]
 
 	res40, err := rdb.XDel(ctx, "race:italy", "1692633208557-0").Result()
 
@@ -1081,7 +1084,7 @@ func ExampleClient_xdel() {
 	}
 
 	fmt.Println(res41)
-	// >>> [{1692633198206-0 map[rider:Wood]}]
+	// >>> [{1692633198206-0 map[rider:Wood] 0 0}]
 	// STEP_END
 
 	// Output:
