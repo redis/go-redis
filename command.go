@@ -37,6 +37,7 @@ var keylessCommands = map[string]struct{}{
 	"failover":     {},
 	"function":     {},
 	"hello":        {},
+	"hotkeys":      {},
 	"latency":      {},
 	"lolwut":       {},
 	"module":       {},
@@ -151,6 +152,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeHotKeys
 )
 
 type (
@@ -4910,6 +4912,216 @@ func (cmd *LatencyCmd) Clone() Cmder {
 
 //-----------------------------------------------------------------------
 
+type HotKeyMetric struct {
+	Key   string
+	Value int64
+}
+
+type HotKeysResult struct {
+	TrackingActive                       bool
+	SampleRatio                          int64
+	SelectedSlots                        []int64
+	TimeSampledCommandSelectedSlots      int64
+	TimeAllCommandsSelectedSlots         int64
+	TimeAllCommandsAllSlots              int64
+	NetBytesSampledCommandsSelectedSlots int64
+	NetBytesAllCommandsSelectedSlots     int64
+	NetBytesAllCommandsAllSlots          int64
+	CollectionStartTime                  int64
+	CollectionDuration                   int64
+	UsedCPUSys                           int64
+	UsedCPUUser                          int64
+	TotalNetBytes                        int64
+	ByCPUTime                            []HotKeyMetric
+	ByNetBytes                           []HotKeyMetric
+}
+
+type HotKeysCmd struct {
+	baseCmd
+
+	val *HotKeysResult
+}
+
+var _ Cmder = (*HotKeysCmd)(nil)
+
+func NewHotKeysCmd(ctx context.Context, args ...interface{}) *HotKeysCmd {
+	return &HotKeysCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeHotKeys,
+		},
+	}
+}
+
+func (cmd *HotKeysCmd) SetVal(val *HotKeysResult) {
+	cmd.val = val
+}
+
+func (cmd *HotKeysCmd) Val() *HotKeysResult {
+	return cmd.val
+}
+
+func (cmd *HotKeysCmd) Result() (*HotKeysResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *HotKeysCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	result := &HotKeysResult{}
+	data := make(map[string]interface{}, n)
+
+	for i := 0; i < n; i++ {
+		k, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		v, err := rd.ReadReply()
+		if err != nil {
+			if err == Nil {
+				data[k] = Nil
+				continue
+			}
+			if err, ok := err.(proto.RedisError); ok {
+				data[k] = err
+				continue
+			}
+			return err
+		}
+		data[k] = v
+	}
+
+	if v, ok := data["tracking-active"].(int64); ok {
+		result.TrackingActive = v == 1
+	}
+	if v, ok := data["sample-ratio"].(int64); ok {
+		result.SampleRatio = v
+	}
+	if v, ok := data["selected-slots"].([]interface{}); ok {
+		result.SelectedSlots = make([]int64, len(v))
+		for i, slot := range v {
+			if s, ok := slot.(int64); ok {
+				result.SelectedSlots[i] = s
+			}
+		}
+	}
+	if v, ok := data["time-sampled-command-selected-slots"].(int64); ok {
+		result.TimeSampledCommandSelectedSlots = v
+	}
+	if v, ok := data["time-all-commands-selected-slots"].(int64); ok {
+		result.TimeAllCommandsSelectedSlots = v
+	}
+	if v, ok := data["time-all-commands-all-slots"].(int64); ok {
+		result.TimeAllCommandsAllSlots = v
+	}
+	if v, ok := data["net-bytes-sampled-commands-selected-slots"].(int64); ok {
+		result.NetBytesSampledCommandsSelectedSlots = v
+	}
+	if v, ok := data["net-bytes-all-commands-selected-slots"].(int64); ok {
+		result.NetBytesAllCommandsSelectedSlots = v
+	}
+	if v, ok := data["net-bytes-all-commands-all-slots"].(int64); ok {
+		result.NetBytesAllCommandsAllSlots = v
+	}
+	if v, ok := data["collection-start-time"].(int64); ok {
+		result.CollectionStartTime = v
+	}
+	if v, ok := data["collection-duration"].(int64); ok {
+		result.CollectionDuration = v
+	}
+	if v, ok := data["used-cpu-sys"].(int64); ok {
+		result.UsedCPUSys = v
+	}
+	if v, ok := data["used-cpu-user"].(int64); ok {
+		result.UsedCPUUser = v
+	}
+	if v, ok := data["total-net-bytes"].(int64); ok {
+		result.TotalNetBytes = v
+	}
+
+	if v, ok := data["by-cpu-time"].([]interface{}); ok {
+		result.ByCPUTime = make([]HotKeyMetric, 0, len(v)/2)
+		for i := 0; i < len(v); i += 2 {
+			if i+1 < len(v) {
+				key, keyOk := v[i].(string)
+				value, valueOk := v[i+1].(int64)
+				if keyOk && valueOk {
+					result.ByCPUTime = append(result.ByCPUTime, HotKeyMetric{
+						Key:   key,
+						Value: value,
+					})
+				}
+			}
+		}
+	}
+
+	if v, ok := data["by-net-bytes"].([]interface{}); ok {
+		result.ByNetBytes = make([]HotKeyMetric, 0, len(v)/2)
+		for i := 0; i < len(v); i += 2 {
+			if i+1 < len(v) {
+				key, keyOk := v[i].(string)
+				value, valueOk := v[i+1].(int64)
+				if keyOk && valueOk {
+					result.ByNetBytes = append(result.ByNetBytes, HotKeyMetric{
+						Key:   key,
+						Value: value,
+					})
+				}
+			}
+		}
+	}
+
+	cmd.val = result
+	return nil
+}
+
+func (cmd *HotKeysCmd) Clone() Cmder {
+	var val *HotKeysResult
+	if cmd.val != nil {
+		val = &HotKeysResult{
+			TrackingActive:                       cmd.val.TrackingActive,
+			SampleRatio:                          cmd.val.SampleRatio,
+			TimeSampledCommandSelectedSlots:      cmd.val.TimeSampledCommandSelectedSlots,
+			TimeAllCommandsSelectedSlots:         cmd.val.TimeAllCommandsSelectedSlots,
+			TimeAllCommandsAllSlots:              cmd.val.TimeAllCommandsAllSlots,
+			NetBytesSampledCommandsSelectedSlots: cmd.val.NetBytesSampledCommandsSelectedSlots,
+			NetBytesAllCommandsSelectedSlots:     cmd.val.NetBytesAllCommandsSelectedSlots,
+			NetBytesAllCommandsAllSlots:          cmd.val.NetBytesAllCommandsAllSlots,
+			CollectionStartTime:                  cmd.val.CollectionStartTime,
+			CollectionDuration:                   cmd.val.CollectionDuration,
+			UsedCPUSys:                           cmd.val.UsedCPUSys,
+			UsedCPUUser:                          cmd.val.UsedCPUUser,
+			TotalNetBytes:                        cmd.val.TotalNetBytes,
+		}
+		if cmd.val.SelectedSlots != nil {
+			val.SelectedSlots = make([]int64, len(cmd.val.SelectedSlots))
+			copy(val.SelectedSlots, cmd.val.SelectedSlots)
+		}
+		if cmd.val.ByCPUTime != nil {
+			val.ByCPUTime = make([]HotKeyMetric, len(cmd.val.ByCPUTime))
+			copy(val.ByCPUTime, cmd.val.ByCPUTime)
+		}
+		if cmd.val.ByNetBytes != nil {
+			val.ByNetBytes = make([]HotKeyMetric, len(cmd.val.ByNetBytes))
+			copy(val.ByNetBytes, cmd.val.ByNetBytes)
+		}
+	}
+	return &HotKeysCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//-----------------------------------------------------------------------
+
 type MapStringInterfaceCmd struct {
 	baseCmd
 
@@ -7480,6 +7692,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return slowLogCmd.Val(), slowLogCmd.Err()
+			}
+		case CmdTypeHotKeys:
+			if hotKeysCmd, ok := cmd.(interface {
+				Val() *HotKeysResult
+				Err() error
+			}); ok {
+				return hotKeysCmd.Val(), hotKeysCmd.Err()
 			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
