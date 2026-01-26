@@ -2,9 +2,9 @@ package redis
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/internal/util"
 )
 
 type TimeseriesCmdable interface {
@@ -96,6 +96,8 @@ const (
 	VarP
 	VarS
 	Twa
+	CountNaN
+	CountAll
 )
 
 func (a Aggregator) String() string {
@@ -128,6 +130,10 @@ func (a Aggregator) String() string {
 		return "VAR.S"
 	case Twa:
 		return "TWA"
+	case CountNaN:
+		return "COUNTNAN"
+	case CountAll:
+		return "COUNTALL"
 	default:
 		return ""
 	}
@@ -525,7 +531,7 @@ func (cmd *TSTimestampValueCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		cmd.val.Timestamp = timestamp
-		cmd.val.Value, err = strconv.ParseFloat(value, 64)
+		cmd.val.Value, err = util.ParseStringToFloat(value)
 		if err != nil {
 			return err
 		}
@@ -752,7 +758,7 @@ func (cmd *TSTimestampValueSliceCmd) readReply(rd *proto.Reader) (err error) {
 			return err
 		}
 		cmd.val[i].Timestamp = timestamp
-		cmd.val[i].Value, err = strconv.ParseFloat(value, 64)
+		cmd.val[i].Value, err = util.ParseStringToFloat(value)
 		if err != nil {
 			return err
 		}
