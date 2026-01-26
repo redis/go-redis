@@ -372,12 +372,18 @@ const (
 
 // FTHybridVectorExpression represents a vector expression in hybrid search
 type FTHybridVectorExpression struct {
-	VectorField  string
-	VectorData   Vector
-	Method       FTHybridVectorMethod
-	MethodParams []interface{}
-	Filter       string
-	YieldScoreAs string
+	VectorField string
+	VectorData  Vector
+	// VectorParamName specifies the parameter name for passing vector data via PARAMS mechanism.
+	// REQUIRED for Redis 8.6+ (inline vector blobs are not supported in 8.6+).
+	// Optional for Redis 8.4-8.5 (both inline and PARAMS are supported).
+	// When set, the vector blob will be passed as: VSIM @field $VectorParamName PARAMS ... VectorParamName <blob>
+	// When empty, the vector blob will be inlined: VSIM @field <blob> (fails on Redis 8.6+)
+	VectorParamName string
+	Method          FTHybridVectorMethod
+	MethodParams    []interface{}
+	Filter          string
+	YieldScoreAs    string
 }
 
 // FTHybridCombineOptions represents options for result fusion
@@ -2892,12 +2898,27 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			// For FT.HYBRID, we need to send just the raw vector bytes, not the Value() format
 			// Value() returns [format, data] but FT.HYBRID expects just the blob
 			vectorValue := vectorExpr.VectorData.Value()
+			var vectorBlob interface{}
 			if len(vectorValue) >= 2 {
 				// vectorValue is [format, data, ...] - we only want the data part
-				args = append(args, vectorValue[1])
+				vectorBlob = vectorValue[1]
 			} else {
 				// Fallback for unexpected format
-				args = append(args, vectorValue...)
+				vectorBlob = vectorValue
+			}
+
+			// If VectorParamName is provided, use PARAMS mechanism (required for Redis 8.6+)
+			// If not provided, inline the vector blob (works on Redis 8.4/8.5, fails on 8.6+)
+			if vectorExpr.VectorParamName != "" {
+				// Use PARAMS mechanism
+				args = append(args, "$"+vectorExpr.VectorParamName)
+				if options.Params == nil {
+					options.Params = make(map[string]interface{})
+				}
+				options.Params[vectorExpr.VectorParamName] = vectorBlob
+			} else {
+				// Inline the vector blob (deprecated in Redis 8.6+)
+				args = append(args, vectorBlob)
 			}
 
 			if vectorExpr.Method != "" {
