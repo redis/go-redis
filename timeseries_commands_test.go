@@ -1254,7 +1254,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 			// NaN Value Support Tests
 			It("should support NaN values in TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Test basic NaN insertion with TSAdd
 				result, err := client.TSAdd(ctx, "nan-test-1", 1000, math.NaN()).Result()
@@ -1275,7 +1275,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSMAdd", Label("timeseries", "tsmadd", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Create time series
 				_, err := client.TSCreate(ctx, "nan-madd-1").Result()
@@ -1303,7 +1303,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should retrieve NaN values with TSGet and TSMGet", Label("timeseries", "tsget", "tsmget", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Add NaN values to multiple time series
 				opt := &redis.TSOptions{Labels: map[string]string{"type": "sensor"}}
@@ -1350,7 +1350,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSRange and TSRevRange", Label("timeseries", "tsrange", "tsrevrange", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "mixed-values").Result()
@@ -1390,7 +1390,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support CountNaN and CountAll aggregators", Label("timeseries", "aggregator", "nan", "countnan", "countall", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN aggregators require Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "agg-test").Result()
@@ -1430,7 +1430,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should ignore NaN values in existing aggregators", Label("timeseries", "aggregator", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "agg-ignore-nan").Result()
@@ -1500,7 +1500,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSMRange and TSMRevRange", Label("timeseries", "tsmrange", "tsmrevrange", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Create multiple time series with NaN values
 				opt := &redis.TSOptions{Labels: map[string]string{"location": "sensor-room"}}
@@ -1531,7 +1531,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN with CountNaN and CountAll in TSMRange", Label("timeseries", "tsmrange", "aggregator", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN aggregators require Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
 
 				// Create multiple time series with NaN values
 				opt := &redis.TSOptions{Labels: map[string]string{"device": "temp-sensor"}}
@@ -1575,7 +1575,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should handle duplicate policy with NaN values", Label("timeseries", "nan", "duplicatepolicy", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.0, "NaN support requires Redis 8.0+")
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
 
 				// Test BLOCK duplicate policy with NaN (should work - just blocks duplicates)
 				opt := &redis.TSOptions{DuplicatePolicy: "BLOCK"}
