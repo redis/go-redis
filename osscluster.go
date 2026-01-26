@@ -1491,7 +1491,13 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				)
 			}
 			slot := c.cmdSlot(cmd, -1)
-			node, err := c.slotReadOnlyNode(state, slot)
+			var node *clusterNode
+			if slot == -1 {
+				// Keyless command - use ShardPicker to select a node
+				node, err = c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
+			} else {
+				node, err = c.slotReadOnlyNode(state, slot)
+			}
 			if err != nil {
 				return err
 			}
@@ -1511,7 +1517,13 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			)
 		}
 		slot := c.cmdSlot(cmd, -1)
-		node, err := state.slotMasterNode(slot)
+		var node *clusterNode
+		if slot == -1 {
+			// Keyless command - use ShardPicker to select a node
+			node, err = c.cmdNodeWithShardPicker(ctx, cmd.Name(), slot, c.opt.ShardPicker)
+		} else {
+			node, err = state.slotMasterNode(slot)
+		}
 		if err != nil {
 			return err
 		}
@@ -2135,7 +2147,8 @@ func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
 		if prefferedRandomSlot != -1 {
 			return prefferedRandomSlot
 		}
-		return hashtag.RandomSlot()
+		// Return -1 for keyless commands to signal that ShardPicker should be used
+		return -1
 	}
 	firstKey := cmd.stringArg(pos)
 	return hashtag.Slot(firstKey)

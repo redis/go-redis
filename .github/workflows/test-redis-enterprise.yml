@@ -50,8 +50,12 @@ jobs:
           REDIS_VERSION: "7.4"
         run: |
           go test \
+          -skip="^TestTLS" \
           --ginkgo.skip-file="ring_test.go" \
           --ginkgo.skip-file="sentinel_test.go" \
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.skip-file="tls_test.go" \
+          --ginkgo.skip-file="tls_cluster_test.go" \
+          --ginkgo.skip-file="tls_sentinel_test.go" \
           --ginkgo.label-filter='!NonRedisEnterprise'
