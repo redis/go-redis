@@ -7737,8 +7737,7 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				res.RadixTreeKeys = 0
 				res.RadixTreeNodes = 0
-
-				Expect(res).To(Equal(&redis.XInfoStream{
+				expectedRes := &redis.XInfoStream{
 					Length:            3,
 					RadixTreeKeys:     0,
 					RadixTreeNodes:    0,
@@ -7761,7 +7760,16 @@ var _ = Describe("Commands", func() {
 					IIDsTracked:          0,
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
-				}))
+				}
+				if RedisVersion < 8.6 {
+					expectedRes.IDMPDuration = 0
+					expectedRes.IDMPMaxSize = 0
+					expectedRes.PIDsTracked = 0
+					expectedRes.IIDsTracked = 0
+					expectedRes.IIDsAdded = 0
+					expectedRes.IIDsDuplicates = 0
+				}
+				Expect(res).To(Equal(expectedRes))
 
 				// stream is empty
 				n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
@@ -7772,8 +7780,7 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				res.RadixTreeKeys = 0
 				res.RadixTreeNodes = 0
-
-				Expect(res).To(Equal(&redis.XInfoStream{
+				expectedRes = &redis.XInfoStream{
 					Length:               0,
 					RadixTreeKeys:        0,
 					RadixTreeNodes:       0,
@@ -7790,7 +7797,17 @@ var _ = Describe("Commands", func() {
 					IIDsTracked:          0,
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
-				}))
+				}
+				if RedisVersion < 8.6 {
+					expectedRes.IDMPDuration = 0
+					expectedRes.IDMPMaxSize = 0
+					expectedRes.PIDsTracked = 0
+					expectedRes.IIDsTracked = 0
+					expectedRes.IIDsAdded = 0
+					expectedRes.IIDsDuplicates = 0
+				}
+
+				Expect(res).To(Equal(expectedRes))
 			})
 
 			It("should XINFO STREAM FULL", func() {
