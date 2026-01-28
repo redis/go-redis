@@ -137,7 +137,8 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 		id            uint64       // First field in pool.Conn
 		usedAt        atomic.Int64 // Second field (atomic)
 		lastPutAt     atomic.Int64 // Third field (atomic)
-		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
+		checkoutAt    atomic.Int64 // Fourth field (atomic)
+		netConnAtomic atomic.Value // atomic.Value for net.Conn
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer
@@ -164,7 +165,8 @@ func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 		id            uint64       // First field in pool.Conn
 		usedAt        atomic.Int64 // Second field (atomic)
 		lastPutAt     atomic.Int64 // Third field (atomic)
-		netConnAtomic interface{}  // atomic.Value (interface{} has same size)
+		checkoutAt    atomic.Int64 // Fourth field (atomic)
+		netConnAtomic atomic.Value // atomic.Value for net.Conn
 		rd            *proto.Reader
 		bw            *bufio.Writer
 		wr            *proto.Writer

@@ -2,7 +2,11 @@ package redis
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/otel"
 )
 
 type StreamCmdable interface {
@@ -299,6 +303,26 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	}
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
+
+	// Record stream lag for each message (if command succeeded)
+	if cmd.Err() == nil {
+		streams := cmd.Val()
+		for _, stream := range streams {
+			for _, msg := range stream.Messages {
+				// Parse message ID to extract timestamp (format: "millisecondsTime-sequenceNumber")
+				if parts := strings.SplitN(msg.ID, "-", 2); len(parts) == 2 {
+					if timestampMs, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
+						// Calculate lag (time since message was created)
+						messageTime := time.Unix(0, timestampMs*int64(time.Millisecond))
+						lag := time.Since(messageTime)
+						// Record lag metric
+						otel.RecordStreamLag(ctx, lag, nil, stream.Stream, a.Group, a.Consumer)
+					}
+				}
+			}
+		}
+	}
+
 	return cmd
 }
 
