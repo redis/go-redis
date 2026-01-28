@@ -21,13 +21,13 @@ const (
 
 // getLibraryVersionAttr returns the redis.client.library attribute
 func getLibraryVersionAttr() attribute.KeyValue {
-	return attribute.String("redis.client.library", fmt.Sprintf("%s:%s", libraryName, redis.Version()))
+	return attribute.String(AttrRedisClientLibrary, fmt.Sprintf("%s:%s", libraryName, redis.Version()))
 }
 
 // addServerPortIfNonDefault adds server.port attribute if port is not the default (6379)
 func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []attribute.KeyValue {
 	if serverPort != "" && serverPort != "6379" {
-		return append(attrs, attribute.String("server.port", serverPort))
+		return append(attrs, attribute.String(AttrServerPort, serverPort))
 	}
 	return attrs
 }
@@ -98,14 +98,14 @@ func (r *metricsRecorder) RecordOperationDuration(
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		// Required attributes
-		attribute.String("db.operation.name", cmd.FullName()),
+		attribute.String(AttrDBOperationName, cmd.FullName()),
 		getLibraryVersionAttr(),
-		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
+		attribute.Int(AttrRedisClientOperationRetryAttempts, attempts-1), // attempts-1 = retry count
 
 		// Recommended attributes
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("db.namespace", strconv.Itoa(dbIndex)),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrServerAddress, serverAddr),
+		attribute.String(AttrDBNamespace, strconv.Itoa(dbIndex)),
 	}
 
 	// Add server.port if not default
@@ -117,19 +117,19 @@ func (r *metricsRecorder) RecordOperationDuration(
 		if remoteAddr != nil {
 			peerAddr, peerPort := splitHostPort(remoteAddr.String())
 			if peerAddr != "" {
-				attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+				attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 			}
 			if peerPort != "" {
-				attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+				attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 			}
 		}
 	}
 
 	if err != nil {
-		attrs = append(attrs, attribute.String("error.type", classifyError(err)))
-		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
+		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
+		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
-			attrs = append(attrs, attribute.String("db.response.status_code", statusCode))
+			attrs = append(attrs, attribute.String(AttrDBResponseStatusCode, statusCode))
 		}
 	}
 
@@ -161,13 +161,13 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.operation.name", operationName),
+		attribute.String(AttrDBOperationName, operationName),
 		getLibraryVersionAttr(),
-		attribute.Int("redis.client.operation.retry_attempts", attempts-1), // attempts-1 = retry count
-		attribute.Int("db.operation.batch.size", cmdCount),                 // number of commands in pipeline
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("db.namespace", strconv.Itoa(dbIndex)),
+		attribute.Int(AttrRedisClientOperationRetryAttempts, attempts-1), // attempts-1 = retry count
+		attribute.Int(AttrDBOperationBatchSize, cmdCount),                // number of commands in pipeline
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrServerAddress, serverAddr),
+		attribute.String(AttrDBNamespace, strconv.Itoa(dbIndex)),
 	}
 
 	// Add server.port if not default
@@ -179,20 +179,20 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 		if remoteAddr != nil {
 			peerAddr, peerPort := splitHostPort(remoteAddr.String())
 			if peerAddr != "" {
-				attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+				attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 			}
 			if peerPort != "" {
-				attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+				attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 			}
 		}
 	}
 
 	// Add error attributes if pipeline failed
 	if err != nil {
-		attrs = append(attrs, attribute.String("error.type", classifyError(err)))
-		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
+		attrs = append(attrs, attribute.String(AttrErrorType, classifyError(err)))
+		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 		if statusCode := extractRedisErrorPrefix(err); statusCode != "" {
-			attrs = append(attrs, attribute.String("db.response.status_code", statusCode))
+			attrs = append(attrs, attribute.String(AttrDBResponseStatusCode, statusCode))
 		}
 	}
 
@@ -521,7 +521,7 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
 
@@ -530,7 +530,7 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	if cn != nil {
 		poolName := cn.PoolName()
 		if poolName != "" {
-			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 		}
 	}
 
@@ -551,7 +551,7 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
 
@@ -559,12 +559,12 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 	if cn != nil {
 		connPoolName := cn.PoolName()
 		if connPoolName != "" {
-			attrs = append(attrs, attribute.String("db.client.connection.pool.name", connPoolName))
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, connPoolName))
 		}
 	}
 
 	// Add notification type
-	attrs = append(attrs, attribute.String("redis.client.connection.notification", notificationType))
+	attrs = append(attrs, attribute.String(AttrRedisClientConnectionNotification, notificationType))
 
 	// Record the counter (delta can be +1 or -1)
 	r.connectionRelaxedTimeout.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
@@ -581,7 +581,7 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	}
 
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
 
@@ -589,7 +589,7 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 	if cn != nil {
 		connPoolName := cn.PoolName()
 		if connPoolName != "" {
-			attrs = append(attrs, attribute.String("db.client.connection.pool.name", connPoolName))
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, connPoolName))
 		}
 	}
 
@@ -620,26 +620,26 @@ func (r *metricsRecorder) RecordError(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("error.type", errorType),
-		attribute.String("redis.client.errors.category", getErrorCategoryFromType(errorType)),
-		attribute.String("db.response.status_code", statusCode),
-		attribute.Bool("redis.client.errors.internal", isInternal),
-		attribute.Int("redis.client.operation.retry_attempts", retryAttempts),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrErrorType, errorType),
+		attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromType(errorType)),
+		attribute.String(AttrDBResponseStatusCode, statusCode),
+		attribute.Bool(AttrRedisClientErrorsInternal, isInternal),
+		attribute.Int(AttrRedisClientOperationRetryAttempts, retryAttempts),
 		getLibraryVersionAttr(),
 	}
 
 	// Add server info if available
 	if serverAddr != "" {
-		attrs = append(attrs, attribute.String("server.address", serverAddr))
+		attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
 		attrs = addServerPortIfNonDefault(attrs, serverPort)
 	}
 
 	// Add peer info if available
 	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+			attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 		}
 	}
 
@@ -664,10 +664,10 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrServerAddress, serverAddr),
 		getLibraryVersionAttr(),
-		attribute.String("redis.client.connection.notification", notificationType),
+		attribute.String(AttrRedisClientConnectionNotification, notificationType),
 	}
 
 	// Add server.port if not default
@@ -675,9 +675,9 @@ func (r *metricsRecorder) RecordMaintenanceNotification(
 
 	// Add peer info if available
 	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+			attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 		}
 	}
 
@@ -697,7 +697,7 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
 
@@ -705,7 +705,7 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 	if cn != nil {
 		poolName := cn.PoolName()
 		if poolName != "" {
-			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 		}
 	}
 
@@ -726,7 +726,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
 		getLibraryVersionAttr(),
 	}
 
@@ -734,7 +734,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 	if cn != nil {
 		poolName := cn.PoolName()
 		if poolName != "" {
-			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 		}
 	}
 
@@ -744,14 +744,14 @@ func (r *metricsRecorder) RecordConnectionClosed(
 		// Normalize the close reason to prevent high cardinality from variable data
 		// (e.g., port numbers, connection IDs in error messages)
 		normalizedReason := classifyError(err)
-		attrs = append(attrs, attribute.String("redis.client.connection.close.reason", normalizedReason))
-		attrs = append(attrs, attribute.String("error.type", normalizedReason))
-		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
+		attrs = append(attrs, attribute.String(AttrRedisClientConnectionCloseReason, normalizedReason))
+		attrs = append(attrs, attribute.String(AttrErrorType, normalizedReason))
+		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategory(err)))
 	} else {
 		// For non-error closures, use reason directly (these are controlled strings like "pool_closed")
-		attrs = append(attrs, attribute.String("redis.client.connection.close.reason", reason))
-		attrs = append(attrs, attribute.String("error.type", reason))
-		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategoryFromType(reason)))
+		attrs = append(attrs, attribute.String(AttrRedisClientConnectionCloseReason, reason))
+		attrs = append(attrs, attribute.String(AttrErrorType, reason))
+		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromType(reason)))
 	}
 
 	// Record the counter
@@ -776,16 +776,16 @@ func (r *metricsRecorder) RecordPubSubMessage(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.pubsub.direction", direction), // "sent" or "received"
-		attribute.Bool("redis.client.pubsub.sharded", sharded),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrServerAddress, serverAddr),
+		attribute.String(AttrRedisClientPubSubDirection, direction), // "sent" or "received"
+		attribute.Bool(AttrRedisClientPubSubSharded, sharded),
 		getLibraryVersionAttr(),
 	}
 
 	// Add channel name if not hidden for cardinality reduction
 	if !r.cfg.hidePubSubChannelNames && channel != "" {
-		attrs = append(attrs, attribute.String("redis.client.pubsub.channel", channel))
+		attrs = append(attrs, attribute.String(AttrRedisClientPubSubChannel, channel))
 	}
 
 	// Add server.port if not default
@@ -793,9 +793,9 @@ func (r *metricsRecorder) RecordPubSubMessage(
 
 	// Add peer info
 	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+			attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 		}
 	}
 
@@ -822,16 +822,16 @@ func (r *metricsRecorder) RecordStreamLag(
 
 	// Build attributes
 	attrs := []attribute.KeyValue{
-		attribute.String("db.system.name", "redis"),
-		attribute.String("server.address", serverAddr),
-		attribute.String("redis.client.stream.consumer_group", consumerGroup),
-		attribute.String("redis.client.stream.consumer_name", consumerName),
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		attribute.String(AttrServerAddress, serverAddr),
+		attribute.String(AttrRedisClientStreamConsumerGroup, consumerGroup),
+		attribute.String(AttrRedisClientStreamConsumerName, consumerName),
 		getLibraryVersionAttr(),
 	}
 
 	// Add stream name if not hidden for cardinality reduction
 	if !r.cfg.hideStreamNames && streamName != "" {
-		attrs = append(attrs, attribute.String("redis.client.stream.name", streamName))
+		attrs = append(attrs, attribute.String(AttrRedisClientStreamName, streamName))
 	}
 
 	// Add server.port if not default
@@ -839,9 +839,9 @@ func (r *metricsRecorder) RecordStreamLag(
 
 	// Add peer info
 	if peerAddr != "" {
-		attrs = append(attrs, attribute.String("network.peer.address", peerAddr))
+		attrs = append(attrs, attribute.String(AttrNetworkPeerAddress, peerAddr))
 		if peerPort != "" {
-			attrs = append(attrs, attribute.String("network.peer.port", peerPort))
+			attrs = append(attrs, attribute.String(AttrNetworkPeerPort, peerPort))
 		}
 	}
 

@@ -391,24 +391,24 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 
 					// Build base attributes
 					baseAttrs := []attribute.KeyValue{
-						attribute.String("db.system.name", "redis"),
+						attribute.String(AttrDBSystemName, DBSystemRedis),
 						getLibraryVersionAttr(),
 					}
 					if serverAddr != "" {
-						baseAttrs = append(baseAttrs, attribute.String("server.address", serverAddr))
+						baseAttrs = append(baseAttrs, attribute.String(AttrServerAddress, serverAddr))
 					}
 					if serverPort != "" && serverPort != "6379" {
-						baseAttrs = append(baseAttrs, attribute.String("server.port", serverPort))
+						baseAttrs = append(baseAttrs, attribute.String(AttrServerPort, serverPort))
 					}
 
 					// Add pool name
-					baseAttrs = append(baseAttrs, attribute.String("db.client.connection.pool.name", poolInfo.name))
+					baseAttrs = append(baseAttrs, attribute.String(AttrDBClientConnectionPoolName, poolInfo.name))
 
 					// Observe idle connections
 					idleAttrs := append([]attribute.KeyValue{}, baseAttrs...)
 					idleAttrs = append(idleAttrs,
-						attribute.String("db.client.connection.state", "idle"),
-						attribute.Bool("redis.client.connection.pubsub", false),
+						attribute.String(AttrDBClientConnectionState, ConnectionStateIdle),
+						attribute.Bool(AttrRedisClientConnectionPubSub, false),
 					)
 					observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.IdleConns),
 						metric.WithAttributes(idleAttrs...))
@@ -417,8 +417,8 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 					usedConns := stats.TotalConns - stats.IdleConns
 					usedAttrs := append([]attribute.KeyValue{}, baseAttrs...)
 					usedAttrs = append(usedAttrs,
-						attribute.String("db.client.connection.state", "used"),
-						attribute.Bool("redis.client.connection.pubsub", false),
+						attribute.String(AttrDBClientConnectionState, ConnectionStateUsed),
+						attribute.Bool(AttrRedisClientConnectionPubSub, false),
 					)
 					observer.ObserveInt64(recorder.connectionCountGauge, int64(usedConns),
 						metric.WithAttributes(usedAttrs...))
@@ -432,25 +432,25 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 
 					// Build base attributes
 					baseAttrs := []attribute.KeyValue{
-						attribute.String("db.system.name", "redis"),
+						attribute.String(AttrDBSystemName, DBSystemRedis),
 						getLibraryVersionAttr(),
-						attribute.String("db.client.connection.pool.name", pubsubPoolInfo.name),
+						attribute.String(AttrDBClientConnectionPoolName, pubsubPoolInfo.name),
 					}
 
 					// PubSub pools report Active connections (not idle/used split
 					// We'll report Active as "used" and 0 as "idle"
 					idleAttrs := append([]attribute.KeyValue{}, baseAttrs...)
 					idleAttrs = append(idleAttrs,
-						attribute.String("db.client.connection.state", "idle"),
-						attribute.Bool("redis.client.connection.pubsub", true),
+						attribute.String(AttrDBClientConnectionState, ConnectionStateIdle),
+						attribute.Bool(AttrRedisClientConnectionPubSub, true),
 					)
 					observer.ObserveInt64(recorder.connectionCountGauge, 0,
 						metric.WithAttributes(idleAttrs...))
 
 					usedAttrs := append([]attribute.KeyValue{}, baseAttrs...)
 					usedAttrs = append(usedAttrs,
-						attribute.String("db.client.connection.state", "used"),
-						attribute.Bool("redis.client.connection.pubsub", true),
+						attribute.String(AttrDBClientConnectionState, ConnectionStateUsed),
+						attribute.Bool(AttrRedisClientConnectionPubSub, true),
 					)
 					observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.Active),
 						metric.WithAttributes(usedAttrs...))
@@ -485,18 +485,18 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 
 					// Build base attributes
 					baseAttrs := []attribute.KeyValue{
-						attribute.String("db.system.name", "redis"),
+						attribute.String(AttrDBSystemName, DBSystemRedis),
 						getLibraryVersionAttr(),
 					}
 					if serverAddr != "" {
-						baseAttrs = append(baseAttrs, attribute.String("server.address", serverAddr))
+						baseAttrs = append(baseAttrs, attribute.String(AttrServerAddress, serverAddr))
 					}
 					if serverPort != "" && serverPort != "6379" {
-						baseAttrs = append(baseAttrs, attribute.String("server.port", serverPort))
+						baseAttrs = append(baseAttrs, attribute.String(AttrServerPort, serverPort))
 					}
 
 					// Add pool name
-					baseAttrs = append(baseAttrs, attribute.String("db.client.connection.pool.name", poolInfo.name))
+					baseAttrs = append(baseAttrs, attribute.String(AttrDBClientConnectionPoolName, poolInfo.name))
 
 					// Observe pending requests count
 					observer.ObserveInt64(recorder.connectionPendingReqsGauge, int64(stats.PendingRequests),
