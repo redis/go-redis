@@ -103,6 +103,7 @@ type UniversalOptions struct {
 	MaxActiveConns  int
 	ConnMaxIdleTime time.Duration
 	ConnMaxLifetime time.Duration
+	ConnMaxLifetimeJitter time.Duration
 
 	TLSConfig *tls.Config
 
@@ -197,6 +198,8 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		MaxActiveConns:     o.MaxActiveConns,
 		ConnMaxIdleTime:    o.ConnMaxIdleTime,
 		ConnMaxLifetime:    o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
+
 
 		TLSConfig: o.TLSConfig,
 
@@ -262,6 +265,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		MaxActiveConns:     o.MaxActiveConns,
 		ConnMaxIdleTime:    o.ConnMaxIdleTime,
 		ConnMaxLifetime:    o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,
 
@@ -321,6 +325,7 @@ func (o *UniversalOptions) Simple() *Options {
 		MaxActiveConns:     o.MaxActiveConns,
 		ConnMaxIdleTime:    o.ConnMaxIdleTime,
 		ConnMaxLifetime:    o.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,
 

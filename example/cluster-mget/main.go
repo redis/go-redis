@@ -49,43 +49,43 @@ func main() {
 	}
 
 	/*
-	// Retrieve all keys using MGET
-	fmt.Println("\n=== Retrieving keys with MGET ===")
-	result, err := rdb.MGet(ctx, keys...).Result()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to execute MGET: %v", err))
-	}
+		// Retrieve all keys using MGET
+		fmt.Println("\n=== Retrieving keys with MGET ===")
+		result, err := rdb.MGet(ctx, keys...).Result()
+		if err != nil {
+			panic(fmt.Sprintf("Failed to execute MGET: %v", err))
+		}
 	*/
 
 	/*
-	// Validate the results
-	fmt.Println("\n=== Validating MGET results ===")
-	allValid := true
-	for i, val := range result {
-		expectedValue := values[i]
-		actualValue, ok := val.(string)
+		// Validate the results
+		fmt.Println("\n=== Validating MGET results ===")
+		allValid := true
+		for i, val := range result {
+			expectedValue := values[i]
+			actualValue, ok := val.(string)
 
-		if !ok {
-			fmt.Printf("✗ %s: expected string, got %T\n", keys[i], val)
-			allValid = false
-			continue
+			if !ok {
+				fmt.Printf("✗ %s: expected string, got %T\n", keys[i], val)
+				allValid = false
+				continue
+			}
+
+			if actualValue != expectedValue {
+				fmt.Printf("✗ %s: expected '%s', got '%s'\n", keys[i], expectedValue, actualValue)
+				allValid = false
+			} else {
+				fmt.Printf("✓ %s: %s\n", keys[i], actualValue)
+			}
 		}
 
-		if actualValue != expectedValue {
-			fmt.Printf("✗ %s: expected '%s', got '%s'\n", keys[i], expectedValue, actualValue)
-			allValid = false
+		// Print summary
+		fmt.Println("\n=== Summary ===")
+		if allValid {
+			fmt.Println("✓ All values retrieved successfully and match expected values!")
 		} else {
-			fmt.Printf("✓ %s: %s\n", keys[i], actualValue)
+			fmt.Println("✗ Some values did not match expected values")
 		}
-	}
-
-	// Print summary
-	fmt.Println("\n=== Summary ===")
-	if allValid {
-		fmt.Println("✓ All values retrieved successfully and match expected values!")
-	} else {
-		fmt.Println("✗ Some values did not match expected values")
-	}
 	*/
 
 	// Clean up - delete the keys
@@ -97,7 +97,7 @@ func main() {
 	}
 	fmt.Println("✓ Cleanup complete")
 
-	err := rdb.Set(ctx, "{tag}exists", "asdf",0).Err()
+	err := rdb.Set(ctx, "{tag}exists", "asdf", 0).Err()
 	if err != nil {
 		panic(err)
 	}
