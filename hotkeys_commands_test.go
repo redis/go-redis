@@ -25,6 +25,8 @@ var _ = Describe("HotKeys Commands", func() {
 
 	Describe("HOTKEYS", func() {
 		It("should start, get, stop, and reset hotkeys tracking", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:      true,
 				NET:      true,
@@ -74,6 +76,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should start hotkeys tracking with CPU metric only", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:   true,
 				NET:   false,
@@ -88,6 +92,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should start hotkeys tracking with NET metric only", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:   false,
 				NET:   true,
@@ -102,6 +108,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should start hotkeys tracking with duration", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:      true,
 				NET:      true,
@@ -122,6 +130,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should start hotkeys tracking with sampling", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:    true,
 				NET:    true,
@@ -137,6 +147,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should start hotkeys tracking with specific slots", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:   true,
 				NET:   true,
@@ -158,6 +170,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should error when starting tracking while already active", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:   true,
 				Count: 10,
@@ -173,6 +187,8 @@ var _ = Describe("HotKeys Commands", func() {
 		})
 
 		It("should error when resetting while tracking is active", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
 			startArgs := &redis.HotKeysStartArgs{
 				CPU:   true,
 				Count: 10,
