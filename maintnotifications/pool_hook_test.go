@@ -700,9 +700,25 @@ func TestConnectionHook(t *testing.T) {
 			t.Errorf("Connection should be pooled after handoff (shouldPool=%v, shouldRemove=%v)", shouldPool, shouldRemove)
 		}
 
-		// Wait for handoff to complete
-		time.Sleep(50 * time.Millisecond)
+		// Wait for handoff to complete with polling instead of fixed sleep
+		// This avoids flakiness on slow CI runners where 50ms may not be enough
+		maxWait := 500 * time.Millisecond
+		pollInterval := 10 * time.Millisecond
+		deadline := time.Now().Add(maxWait)
 
+		handoffCompleted := false
+		for time.Now().Before(deadline) {
+			if conn.IsUsable() && !processor.IsHandoffPending(conn) {
+				handoffCompleted = true
+				break
+			}
+			time.Sleep(pollInterval)
+		}
+
+		if !handoffCompleted {
+			t.Fatalf("Handoff did not complete within %v (IsUsable=%v, IsHandoffPending=%v)",
+				maxWait, conn.IsUsable(), processor.IsHandoffPending(conn))
+		}
 		// After handoff completion, connection should be usable again
 		if !conn.IsUsable() {
 			t.Error("Connection should be usable after handoff completion")
