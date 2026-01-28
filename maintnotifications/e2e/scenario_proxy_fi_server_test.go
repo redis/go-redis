@@ -199,25 +199,25 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to trigger reshard: %v", err)
 	}
-	
+
 	t.Logf("Reshard action: %s", resp.ActionID)
-	
+
 	// Wait for completion
 	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Reshard completed: %+v", status.Output)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	// Verify notifications
 	analysis := tracker.GetAnalysis()
 	if analysis.MigratingCount == 0 || analysis.MigratedCount == 0 {
 		t.Error("Expected both SMIGRATING and SMIGRATED notifications")
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Cluster reshard test passed")
 }
@@ -247,7 +247,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 		Protocol: 3,
 	})
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -276,19 +276,19 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to trigger migration: %v", err)
 	}
-	
+
 	status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 	if err != nil {
 		t.Fatalf("Failed to wait for action: %v", err)
 	}
-	
+
 	t.Logf("Action completed: %s", status.Status)
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	analysis.Print(t)
-	
+
 	t.Log("✓ Test passed with either real or proxy fault injector!")
 }
 
@@ -315,7 +315,7 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		Protocol: 3,
 	})
 	defer redisClient.Close()
-	
+
 	tracker := NewTrackingNotificationsHook()
 	setupNotificationHook(redisClient, tracker)
 
@@ -348,34 +348,34 @@ func TestProxyFaultInjectorServer_MultipleActions(t *testing.T) {
 		{1001, 2000},
 		{2001, 3000},
 	}
-	
+
 	for i, mig := range migrations {
 		t.Logf("Migration %d: slots %d-%d", i+1, mig.start, mig.end)
-		
+
 		resp, err := client.TriggerSlotMigration(ctx, mig.start, mig.end, "node-1", "node-2")
 		if err != nil {
 			t.Fatalf("Failed to trigger migration %d: %v", i+1, err)
 		}
-		
+
 		status, err := client.WaitForAction(ctx, resp.ActionID, WithMaxWaitTime(10*time.Second))
 		if err != nil {
 			t.Fatalf("Failed to wait for migration %d: %v", i+1, err)
 		}
-		
+
 		t.Logf("  ✓ Migration %d completed: %s", i+1, status.Status)
 	}
-	
+
 	time.Sleep(1 * time.Second)
-	
+
 	analysis := tracker.GetAnalysis()
 	t.Logf("Total SMIGRATING: %d", analysis.MigratingCount)
 	t.Logf("Total SMIGRATED: %d", analysis.MigratedCount)
-	
+
 	if analysis.MigratingCount < int64(len(migrations)) {
 		t.Errorf("Expected at least %d SMIGRATING notifications, got %d",
 			len(migrations), analysis.MigratingCount)
 	}
-	
+
 	analysis.Print(t)
 	t.Log("✓ Multiple actions test passed")
 }

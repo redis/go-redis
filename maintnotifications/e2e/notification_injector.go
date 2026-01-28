@@ -67,12 +67,12 @@ func NewNotificationInjector() (NotificationInjector, error) {
 
 // ProxyNotificationInjector implements NotificationInjector using cae-resp-proxy
 type ProxyNotificationInjector struct {
-	apiPort       int
-	apiBaseURL    string
-	cmd           *exec.Cmd
-	httpClient    *http.Client
-	nodes         []proxyNode
-	visibleNodes  []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
+	apiPort      int
+	apiBaseURL   string
+	cmd          *exec.Cmd
+	httpClient   *http.Client
+	nodes        []proxyNode
+	visibleNodes []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
 }
 
 type proxyNode struct {
@@ -574,7 +574,6 @@ func formatMigratedNotification(seqID int64, slot int) string {
 	return fmt.Sprintf(">3\r\n$8\r\nMIGRATED\r\n:%d\r\n$%d\r\n%s\r\n", seqID, len(slotStr), slotStr)
 }
 
-
 // FaultInjectorNotificationInjector implements NotificationInjector using the real fault injector
 type FaultInjectorNotificationInjector struct {
 	client       *FaultInjectorClient
@@ -684,5 +683,3 @@ func (f *FaultInjectorNotificationInjector) InjectMIGRATED(ctx context.Context, 
 	// MIGRATED is generated automatically when migration completes
 	return fmt.Errorf("MIGRATED cannot be directly injected with real fault injector - it's generated when migration completes")
 }
-
-

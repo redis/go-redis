@@ -126,12 +126,12 @@ type FailoverOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
 	ConnMaxLifetimeJitter time.Duration
 
 	TLSConfig *tls.Config
@@ -202,15 +202,15 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,
@@ -256,15 +256,15 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:           opt.PoolFIFO,
-		PoolSize:           opt.PoolSize,
-		MaxConcurrentDials: opt.MaxConcurrentDials,
-		PoolTimeout:        opt.PoolTimeout,
-		MinIdleConns:       opt.MinIdleConns,
-		MaxIdleConns:       opt.MaxIdleConns,
-		MaxActiveConns:     opt.MaxActiveConns,
-		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
-		ConnMaxLifetime:    opt.ConnMaxLifetime,
+		PoolFIFO:              opt.PoolFIFO,
+		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		PoolTimeout:           opt.PoolTimeout,
+		MinIdleConns:          opt.MinIdleConns,
+		MaxIdleConns:          opt.MaxIdleConns,
+		MaxActiveConns:        opt.MaxActiveConns,
+		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
+		ConnMaxLifetime:       opt.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 
 		TLSConfig: opt.TLSConfig,

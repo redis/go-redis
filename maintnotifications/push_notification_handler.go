@@ -343,13 +343,15 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // This is a cluster-level notification that triggers cluster state reload.
 // Expected format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
 // RESP3 wire format:
-//   >3
-//   +SMIGRATED
-//   :SeqID
-//   *<num_entries>
-//     *2
-//       +<host:port>
-//       +<slots-or-ranges>
+//
+//	>3
+//	+SMIGRATED
+//	:SeqID
+//	*<num_entries>
+//	  *2
+//	    +<host:port>
+//	    +<slots-or-ranges>
+//
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {

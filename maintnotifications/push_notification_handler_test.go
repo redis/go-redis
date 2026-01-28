@@ -71,4 +71,3 @@ func TestHandleSMigrated_SingleEndpoint(t *testing.T) {
 		t.Errorf("handleSMigrated failed with single endpoint: %v", err)
 	}
 }
-

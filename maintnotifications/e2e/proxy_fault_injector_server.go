@@ -24,14 +24,14 @@ type ProxyFaultInjectorServer struct {
 	listenAddr string
 
 	// Proxy management
-	proxyCmd      *exec.Cmd
-	proxyAPIPort  int
-	proxyAPIURL   string
-	proxyHTTP     *http.Client
+	proxyCmd     *exec.Cmd
+	proxyAPIPort int
+	proxyAPIURL  string
+	proxyHTTP    *http.Client
 
 	// Cluster node tracking
-	nodes         []proxyNodeInfo
-	nodesMutex    sync.RWMutex
+	nodes      []proxyNodeInfo
+	nodesMutex sync.RWMutex
 
 	// Action tracking
 	actions       map[string]*actionState
@@ -43,11 +43,11 @@ type ProxyFaultInjectorServer struct {
 	startedServer bool
 
 	// Track active notifications for new connections
-	activeNotifications     map[string]string // map[notificationType]notification (RESP format)
+	activeNotifications      map[string]string // map[notificationType]notification (RESP format)
 	activeNotificationsMutex sync.RWMutex
-	knownConnections        map[string]bool // map[connectionID]bool
-	knownConnectionsMutex   sync.RWMutex
-	monitoringActive        atomic.Bool
+	knownConnections         map[string]bool // map[connectionID]bool
+	knownConnectionsMutex    sync.RWMutex
+	monitoringActive         atomic.Bool
 }
 
 type proxyNodeInfo struct {

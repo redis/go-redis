@@ -211,7 +211,7 @@ func TestClusterMaintNotifications_DeduplicationLogic(t *testing.T) {
 func TestClusterMaintNotifications_NotificationTypes(t *testing.T) {
 	// Verify that SMIGRATING and SMIGRATED constants exist
 	// These are defined in maintnotifications package
-	
+
 	expectedTypes := []string{
 		maintnotifications.NotificationSMigrating,
 		maintnotifications.NotificationSMigrated,
@@ -341,4 +341,3 @@ func TestClusterMaintNotifications_ConcurrentCallbacks(t *testing.T) {
 
 	t.Log("Concurrent callbacks test passed")
 }
-

@@ -97,12 +97,12 @@ type UniversalOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
 	ConnMaxLifetimeJitter time.Duration
 
 	TLSConfig *tls.Config
@@ -189,17 +189,16 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MaxConcurrentDials: o.MaxConcurrentDials,
-		PoolTimeout:        o.PoolTimeout,
-		MinIdleConns:       o.MinIdleConns,
-		MaxIdleConns:       o.MaxIdleConns,
-		MaxActiveConns:     o.MaxActiveConns,
-		ConnMaxIdleTime:    o.ConnMaxIdleTime,
-		ConnMaxLifetime:    o.ConnMaxLifetime,
+		PoolFIFO:              o.PoolFIFO,
+		PoolSize:              o.PoolSize,
+		MaxConcurrentDials:    o.MaxConcurrentDials,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
+		ConnMaxIdleTime:       o.ConnMaxIdleTime,
+		ConnMaxLifetime:       o.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
-
 
 		TLSConfig: o.TLSConfig,
 
@@ -256,15 +255,15 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MaxConcurrentDials: o.MaxConcurrentDials,
-		PoolTimeout:        o.PoolTimeout,
-		MinIdleConns:       o.MinIdleConns,
-		MaxIdleConns:       o.MaxIdleConns,
-		MaxActiveConns:     o.MaxActiveConns,
-		ConnMaxIdleTime:    o.ConnMaxIdleTime,
-		ConnMaxLifetime:    o.ConnMaxLifetime,
+		PoolFIFO:              o.PoolFIFO,
+		PoolSize:              o.PoolSize,
+		MaxConcurrentDials:    o.MaxConcurrentDials,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
+		ConnMaxIdleTime:       o.ConnMaxIdleTime,
+		ConnMaxLifetime:       o.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,
@@ -316,15 +315,15 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
 
-		PoolFIFO:           o.PoolFIFO,
-		PoolSize:           o.PoolSize,
-		MaxConcurrentDials: o.MaxConcurrentDials,
-		PoolTimeout:        o.PoolTimeout,
-		MinIdleConns:       o.MinIdleConns,
-		MaxIdleConns:       o.MaxIdleConns,
-		MaxActiveConns:     o.MaxActiveConns,
-		ConnMaxIdleTime:    o.ConnMaxIdleTime,
-		ConnMaxLifetime:    o.ConnMaxLifetime,
+		PoolFIFO:              o.PoolFIFO,
+		PoolSize:              o.PoolSize,
+		MaxConcurrentDials:    o.MaxConcurrentDials,
+		PoolTimeout:           o.PoolTimeout,
+		MinIdleConns:          o.MinIdleConns,
+		MaxIdleConns:          o.MaxIdleConns,
+		MaxActiveConns:        o.MaxActiveConns,
+		ConnMaxIdleTime:       o.ConnMaxIdleTime,
+		ConnMaxLifetime:       o.ConnMaxLifetime,
 		ConnMaxLifetimeJitter: o.ConnMaxLifetimeJitter,
 
 		TLSConfig: o.TLSConfig,

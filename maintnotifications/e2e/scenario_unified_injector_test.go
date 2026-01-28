@@ -82,7 +82,7 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 
 	// Wait for notification processing (mode-aware)
 	time.Sleep(testMode.NotificationDelay)
-	
+
 	// Verify notification was received
 	analysis := tracker.GetAnalysis()
 	if analysis.MigratingCount == 0 {
@@ -90,15 +90,15 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 	} else {
 		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
 	}
-	
+
 	// Verify operations still work (timeouts should be relaxed)
 	if err := client.Set(ctx, "test-key-during-migration", "value", 0).Err(); err != nil {
 		t.Errorf("Expected operations to work during migration, got error: %v", err)
 	}
-	
+
 	// Print analysis
 	analysis.Print(t)
-	
+
 	t.Log("✓ SMIGRATING test passed")
 }
 
@@ -372,21 +372,20 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 		// Wait for notification processing (mode-aware)
 		time.Sleep(testMode.NotificationDelay)
 	}
-	
+
 	// Verify operations still work
 	for i := 0; i < 5; i++ {
 		if err := client.Set(ctx, fmt.Sprintf("post-migration-key%d", i), "value", 0).Err(); err != nil {
 			t.Errorf("Operations failed after migration: %v", err)
 		}
 	}
-	
+
 	// Print final analysis
 	analysis := tracker.GetAnalysis()
 	analysis.Print(t)
-	
+
 	t.Logf("✓ Complex scenario test passed")
 	t.Logf("  - SMIGRATING notifications: %d", analysis.MigratingCount)
 	t.Logf("  - SMIGRATED notifications: %d", analysis.MigratedCount)
 	t.Logf("  - Cluster state reloads: %d", reloadCount.Load())
 }
-
