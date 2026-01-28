@@ -434,7 +434,7 @@ func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recor
 					baseAttrs := []attribute.KeyValue{
 						attribute.String("db.system.name", "redis"),
 						getLibraryVersionAttr(),
-						attribute.String("db.client.connection.pool.name", "pubsub"),
+						attribute.String("db.client.connection.pool.name", pubsubPoolInfo.name),
 					}
 
 					// PubSub pools report Active connections (not idle/used split

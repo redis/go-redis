@@ -290,6 +290,10 @@ type Options struct {
 	// DialerRetryTimeout is the backoff duration between retry attempts.
 	// Default: 100ms
 	DialerRetryTimeout time.Duration
+
+	// Name is a unique identifier for this pool, used in metrics.
+	// Format: addr_uniqueID (e.g., "localhost:6379_a1b2c3d4")
+	Name string
 }
 
 type lastDialErrorWrap struct {
@@ -601,6 +605,8 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			cn.dialStartNs.Store(dialStartNs)
 		}
 		cn.expiresAt = p.calcConnExpiresAt()
+		// Set pool name for metrics
+		cn.SetPoolName(p.cfg.Name)
 
 		return cn, nil
 	}

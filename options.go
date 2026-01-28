@@ -2,7 +2,9 @@ package redis
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -20,6 +22,15 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
+
+// generateUniqueID generates a short unique identifier for pool names.
+func generateUniqueID() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
+}
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
 type Limiter interface {
@@ -694,6 +705,7 @@ func getUserPassword(u *url.URL) (string, string) {
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+	poolName string,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -735,10 +747,14 @@ func newConnPool(
 		ReadBufferSize:           opt.ReadBufferSize,
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
+		Name:                     poolName,
 	}), nil
 }
 
-func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+func newPubSubPool(
+	opt *Options,
+	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+	poolName string,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -777,5 +793,6 @@ func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr 
 		ReadBufferSize:           32 * 1024,
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,
+		Name:                     poolName,
 	}, dialer), nil
 }

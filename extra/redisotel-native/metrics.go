@@ -32,17 +32,6 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 	return attrs
 }
 
-// formatPoolName formats the pool name according to OpenTelemetry semantic conventions
-func formatPoolName(serverAddr, serverPort string) string {
-	poolName := serverAddr
-
-	if serverPort != "" && serverPort != "6379" {
-		poolName = fmt.Sprintf("%s:%s", poolName, serverPort)
-	}
-
-	return poolName
-}
-
 // poolInfo stores information about a registered main connection pool
 type poolInfo struct {
 	name string
@@ -218,16 +207,14 @@ func classifyError(err error) string {
 		return ""
 	}
 
-	errStr := err.Error()
-
-	// Network errors
-	if isNetworkError(err) {
-		return fmt.Sprintf("network:%s", errStr)
-	}
-
 	// Timeout errors
 	if isTimeoutError(err) {
 		return "timeout"
+	}
+
+	// Network errors - normalize to avoid high cardinality
+	if isNetworkError(err) {
+		return normalizeNetworkError(err)
 	}
 
 	// Redis errors (start with error prefix like ERR, WRONGTYPE, etc.)
@@ -235,8 +222,96 @@ func classifyError(err error) string {
 		return fmt.Sprintf("redis:%s", prefix)
 	}
 
-	// Generic error
-	return errStr
+	// Generic error - normalize to avoid high cardinality
+	return normalizeGenericError(err.Error())
+}
+
+// normalizeNetworkError normalizes network error messages to prevent high cardinality
+// by removing variable data like port numbers and connection details
+func normalizeNetworkError(err error) string {
+	if err == nil {
+		return "network:unknown"
+	}
+
+	errStr := strings.ToLower(err.Error())
+
+	// I/O timeout errors
+	if strings.Contains(errStr, "i/o timeout") {
+		return "network:io_timeout"
+	}
+
+	// Connection refused errors
+	if strings.Contains(errStr, "connection refused") {
+		return "network:connection_refused"
+	}
+
+	// Connection reset errors
+	if strings.Contains(errStr, "connection reset") {
+		return "network:connection_reset"
+	}
+
+	// EOF errors
+	if strings.Contains(errStr, "eof") {
+		return "network:eof"
+	}
+
+	// Broken pipe
+	if strings.Contains(errStr, "broken pipe") {
+		return "network:broken_pipe"
+	}
+
+	// Connection closed
+	if strings.Contains(errStr, "use of closed") || strings.Contains(errStr, "connection closed") {
+		return "network:connection_closed"
+	}
+
+	// DNS/hostname errors
+	if strings.Contains(errStr, "no such host") || strings.Contains(errStr, "lookup") {
+		return "network:dns_error"
+	}
+
+	// Default to generic network error
+	return "network:other"
+}
+
+// normalizeGenericError normalizes generic error messages to prevent high cardinality
+func normalizeGenericError(errStr string) string {
+	// Remove common variable patterns
+	// Port numbers, IP addresses, etc. would create high cardinality
+	errLower := strings.ToLower(errStr)
+
+	// Context deadline exceeded
+	if strings.Contains(errLower, "context deadline exceeded") {
+		return "context_deadline_exceeded"
+	}
+
+	// Context canceled
+	if strings.Contains(errLower, "context canceled") {
+		return "context_canceled"
+	}
+
+	// Pool errors
+	if strings.Contains(errLower, "pool") {
+		if strings.Contains(errLower, "timeout") {
+			return "pool_timeout"
+		}
+		if strings.Contains(errLower, "closed") {
+			return "pool_closed"
+		}
+		return "pool_error"
+	}
+
+	// Return first word if it looks like a category, otherwise return "other"
+	parts := strings.SplitN(errStr, " ", 2)
+	if len(parts) > 0 && len(parts[0]) > 0 && len(parts[0]) <= 30 {
+		// Only use the first word if it doesn't contain variable data
+		firstWord := strings.TrimSuffix(strings.TrimSuffix(parts[0], ":"), ",")
+		if !strings.ContainsAny(firstWord, "0123456789./[]") {
+			return strings.ToLower(firstWord)
+		}
+	}
+
+	return "other"
 }
 
 // extractRedisErrorPrefix extracts the Redis error prefix (e.g., "ERR", "WRONGTYPE")
@@ -444,18 +519,20 @@ func (r *metricsRecorder) RecordConnectionCreateTime(
 	// Convert duration to seconds (OTel convention)
 	durationSeconds := duration.Seconds()
 
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+	// Use pool name from connection (set when connection was created)
+	// This ensures consistency with gauge metrics which also use the registered pool name
+	if cn != nil {
+		poolName := cn.PoolName()
+		if poolName != "" {
+			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+		}
+	}
 
 	// Record the histogram
 	r.connectionCreateTime.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
@@ -472,18 +549,19 @@ func (r *metricsRecorder) RecordConnectionRelaxedTimeout(
 		return
 	}
 
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add pool name (computed from server info, not using the passed poolName parameter)
-	computedPoolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
+	// Use pool name from connection (set when connection was created)
+	if cn != nil {
+		connPoolName := cn.PoolName()
+		if connPoolName != "" {
+			attrs = append(attrs, attribute.String("db.client.connection.pool.name", connPoolName))
+		}
+	}
 
 	// Add notification type
 	attrs = append(attrs, attribute.String("redis.client.connection.notification", notificationType))
@@ -502,17 +580,18 @@ func (r *metricsRecorder) RecordConnectionHandoff(
 		return
 	}
 
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add pool name (computed from server info, not using the passed poolName parameter)
-	computedPoolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", computedPoolName))
+	// Use pool name from connection (set when connection was created)
+	if cn != nil {
+		connPoolName := cn.PoolName()
+		if connPoolName != "" {
+			attrs = append(attrs, attribute.String("db.client.connection.pool.name", connPoolName))
+		}
+	}
 
 	// Record the counter
 	r.connectionHandoff.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -616,18 +695,19 @@ func (r *metricsRecorder) RecordConnectionWaitTime(
 		return
 	}
 
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+	// Use pool name from connection (set when connection was created)
+	if cn != nil {
+		poolName := cn.PoolName()
+		if poolName != "" {
+			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+		}
+	}
 
 	// Record the histogram (duration in seconds)
 	r.connectionWaitTime.Record(ctx, duration.Seconds(), metric.WithAttributes(attrs...))
@@ -644,28 +724,32 @@ func (r *metricsRecorder) RecordConnectionClosed(
 		return
 	}
 
-	// Extract server address from connection
-	serverAddr, serverPort := extractServerInfo(cn)
-
 	// Build attributes
 	attrs := []attribute.KeyValue{
 		attribute.String("db.system.name", "redis"),
 		getLibraryVersionAttr(),
 	}
 
-	// Add pool name
-	poolName := formatPoolName(serverAddr, serverPort)
-	attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
-
-	// Add close reason
-	attrs = append(attrs, attribute.String("redis.client.connection.close.reason", reason))
+	// Use pool name from connection (set when connection was created)
+	if cn != nil {
+		poolName := cn.PoolName()
+		if poolName != "" {
+			attrs = append(attrs, attribute.String("db.client.connection.pool.name", poolName))
+		}
+	}
 
 	// Add error type and category (always required per spec)
+	// Use classifyError to normalize error messages and prevent high cardinality
 	if err != nil {
-		attrs = append(attrs, attribute.String("error.type", err.Error()))
+		// Normalize the close reason to prevent high cardinality from variable data
+		// (e.g., port numbers, connection IDs in error messages)
+		normalizedReason := classifyError(err)
+		attrs = append(attrs, attribute.String("redis.client.connection.close.reason", normalizedReason))
+		attrs = append(attrs, attribute.String("error.type", normalizedReason))
 		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategory(err)))
 	} else {
-		// For non-error closures, use reason as error type and derive category
+		// For non-error closures, use reason directly (these are controlled strings like "pool_closed")
+		attrs = append(attrs, attribute.String("redis.client.connection.close.reason", reason))
 		attrs = append(attrs, attribute.String("error.type", reason))
 		attrs = append(attrs, attribute.String("redis.client.errors.category", getErrorCategoryFromType(reason)))
 	}

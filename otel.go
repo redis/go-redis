@@ -12,6 +12,7 @@ import (
 // ConnInfo provides information about a Redis connection for metrics.
 type ConnInfo interface {
 	RemoteAddr() net.Addr
+	PoolName() string
 }
 
 type Pooler interface {

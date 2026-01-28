@@ -105,6 +105,7 @@ type Conn struct {
 	closed    atomic.Bool
 	createdAt time.Time
 	expiresAt time.Time
+	poolName  string // Name of the pool this connection belongs to (for metrics)
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 
@@ -189,6 +190,18 @@ func (cn *Conn) SetLastPutAtNs(ns int64) {
 // This is used to calculate the full connection creation time (TCP + handshake).
 func (cn *Conn) GetDialStartNs() int64 {
 	return cn.dialStartNs.Load()
+}
+
+// PoolName returns the name of the pool this connection belongs to.
+// This is used for metrics to identify which pool a connection is from.
+func (cn *Conn) PoolName() string {
+	return cn.poolName
+}
+
+// SetPoolName sets the name of the pool this connection belongs to.
+// This should be called when the connection is added to a pool.
+func (cn *Conn) SetPoolName(name string) {
+	cn.poolName = name
 }
 
 // Backward-compatible wrapper methods for state machine
