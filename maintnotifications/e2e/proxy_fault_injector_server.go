@@ -486,15 +486,21 @@ func (s *ProxyFaultInjectorServer) executeSlotMigration(action *actionState) {
 	time.Sleep(500 * time.Millisecond)
 
 	// Step 2: Inject SMIGRATED notification
+	// Get source and target addresses from nodes
 	s.nodesMutex.RLock()
-	targetAddr := "localhost:7001" // Default
+	sourceAddr := "localhost:7000" // Default source
+	targetAddr := "localhost:7001" // Default target
+	if len(s.nodes) > 0 {
+		sourceAddr = s.nodes[0].proxyAddr
+	}
 	if len(s.nodes) > 1 {
 		targetAddr = s.nodes[1].proxyAddr
 	}
 	s.nodesMutex.RUnlock()
 
-	endpoint := fmt.Sprintf("%s %s", targetAddr, slotRange)
-	migratedNotif := formatSMigratedNotification(seqID+1, endpoint)
+	// Format as triplet: "source target slots"
+	triplet := fmt.Sprintf("%s %s %s", sourceAddr, targetAddr, slotRange)
+	migratedNotif := formatSMigratedNotification(seqID+1, triplet)
 
 	// Clear SMIGRATING from active notifications before sending SMIGRATED
 	s.clearActiveNotification("SMIGRATING")
@@ -506,7 +512,8 @@ func (s *ProxyFaultInjectorServer) executeSlotMigration(action *actionState) {
 	}
 
 	action.Output["smigrated_injected"] = true
-	action.Output["target_endpoint"] = endpoint
+	action.Output["source_endpoint"] = sourceAddr
+	action.Output["target_endpoint"] = targetAddr
 
 	fmt.Printf("[ProxyFI] Slot migration completed: %s\n", slotRange)
 }
@@ -542,16 +549,21 @@ func (s *ProxyFaultInjectorServer) executeClusterReshard(action *actionState) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	// Inject SMIGRATED
+	// Inject SMIGRATED with triplet format: "source target slots"
 	s.nodesMutex.RLock()
-	targetAddr := "localhost:7001"
+	sourceAddr := "localhost:7000" // Default source
+	targetAddr := "localhost:7001" // Default target
+	if len(s.nodes) > 0 {
+		sourceAddr = s.nodes[0].proxyAddr
+	}
 	if len(s.nodes) > 1 {
 		targetAddr = s.nodes[1].proxyAddr
 	}
 	s.nodesMutex.RUnlock()
 
-	endpoint := fmt.Sprintf("%s %s", targetAddr, strings.Join(slotStrs, ","))
-	migratedNotif := formatSMigratedNotification(seqID+1, endpoint)
+	// Format as triplet: "source target slots"
+	triplet := fmt.Sprintf("%s %s %s", sourceAddr, targetAddr, strings.Join(slotStrs, ","))
+	migratedNotif := formatSMigratedNotification(seqID+1, triplet)
 
 	// Clear SMIGRATING from active notifications before sending SMIGRATED
 	s.clearActiveNotification("SMIGRATING")

@@ -19,8 +19,11 @@ type NotificationInjector interface {
 	// InjectSMIGRATING injects an SMIGRATING notification
 	InjectSMIGRATING(ctx context.Context, seqID int64, slots ...string) error
 
-	// InjectSMIGRATED injects an SMIGRATED notification
-	InjectSMIGRATED(ctx context.Context, seqID int64, hostPort string, slots ...string) error
+	// InjectSMIGRATED injects an SMIGRATED notification with triplet format
+	// sourceHostPort is the node slots are migrating FROM
+	// targetHostPort is the node slots are migrating TO
+	// slots is the comma-separated list of slot ranges
+	InjectSMIGRATED(ctx context.Context, seqID int64, sourceHostPort, targetHostPort string, slots ...string) error
 
 	// InjectMOVING injects a MOVING notification (for standalone)
 	InjectMOVING(ctx context.Context, seqID int64, slot int) error
@@ -452,13 +455,13 @@ func (p *ProxyNotificationInjector) InjectSMIGRATING(ctx context.Context, seqID 
 	return p.injectNotification(notification)
 }
 
-func (p *ProxyNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID int64, hostPort string, slots ...string) error {
+func (p *ProxyNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID int64, sourceHostPort, targetHostPort string, slots ...string) error {
 	// Simulate topology change by swapping visible nodes
 	// If we have 4 nodes and currently showing [0,1,2], swap to [0,1,3]
 	// This simulates node 2 (17002) being replaced by node 3 (17003)
 	if len(p.nodes) >= 4 && len(p.visibleNodes) == 3 {
-		// Check if the hostPort matches node 3 (the "new" node)
-		if hostPort == p.nodes[3].proxyAddr {
+		// Check if the targetHostPort matches node 3 (the "new" node)
+		if targetHostPort == p.nodes[3].proxyAddr {
 			// Swap node 2 for node 3 in visible nodes
 			p.visibleNodes = []int{0, 1, 3}
 
@@ -469,9 +472,9 @@ func (p *ProxyNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID i
 		}
 	}
 
-	// Format endpoint as "host:port slot1,slot2,range1-range2"
-	endpoint := fmt.Sprintf("%s %s", hostPort, strings.Join(slots, ","))
-	notification := formatSMigratedNotification(seqID, endpoint)
+	// Format as triplet: "source target slots"
+	triplet := fmt.Sprintf("%s %s %s", sourceHostPort, targetHostPort, strings.Join(slots, ","))
+	notification := formatSMigratedNotification(seqID, triplet)
 	return p.injectNotification(notification)
 }
 
@@ -661,7 +664,7 @@ func (f *FaultInjectorNotificationInjector) InjectSMIGRATING(ctx context.Context
 	return err
 }
 
-func (f *FaultInjectorNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID int64, hostPort string, slots ...string) error {
+func (f *FaultInjectorNotificationInjector) InjectSMIGRATED(ctx context.Context, seqID int64, sourceHostPort, targetHostPort string, slots ...string) error {
 	// SMIGRATED is generated automatically when migration completes
 	// We can't directly inject it with the real fault injector
 	// This is a limitation of using the real fault injector

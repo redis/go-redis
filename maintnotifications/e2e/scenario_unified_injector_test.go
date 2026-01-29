@@ -195,18 +195,21 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	t.Log("Injecting SMIGRATED notification to swap node 2 for node 3...")
 
 	// Get all node addresses - we want to use node 3 (index 3) as the target
+	// and node 2 (index 2) as the source
 	addrs := injector.GetClusterAddrs()
-	var newNodeAddr string
+	var sourceNodeAddr, targetNodeAddr string
 	if len(addrs) >= 4 {
-		newNodeAddr = addrs[3] // Node 3: 127.0.0.1:17003
-		t.Logf("Using new node address: %s", newNodeAddr)
+		sourceNodeAddr = addrs[2] // Node 2: 127.0.0.1:17002 (source)
+		targetNodeAddr = addrs[3] // Node 3: 127.0.0.1:17003 (target)
+		t.Logf("Using source node: %s, target node: %s", sourceNodeAddr, targetNodeAddr)
 	} else {
-		// Fallback to first node if we don't have 4 nodes
-		newNodeAddr = addrs[0]
-		t.Logf("Warning: Less than 4 nodes available, using %s", newNodeAddr)
+		// Fallback to first two nodes if we don't have 4 nodes
+		sourceNodeAddr = addrs[0]
+		targetNodeAddr = addrs[0]
+		t.Logf("Warning: Less than 4 nodes available, using %s for both", sourceNodeAddr)
 	}
 
-	if err := injector.InjectSMIGRATED(ctx, 12346, newNodeAddr, "1000-2000", "3000"); err != nil {
+	if err := injector.InjectSMIGRATED(ctx, 12346, sourceNodeAddr, targetNodeAddr, "1000-2000", "3000"); err != nil {
 		t.Fatalf("Failed to inject SMIGRATED: %v", err)
 	}
 
@@ -263,10 +266,10 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	}
 
 	// Verify the new node (17003) is in the list
-	if len(addrs) >= 4 && !nodeAddrs[newNodeAddr] {
-		t.Logf("Warning: Client did not discover new node %s", newNodeAddr)
+	if len(addrs) >= 4 && !nodeAddrs[targetNodeAddr] {
+		t.Logf("Warning: Client did not discover new node %s", targetNodeAddr)
 	} else if len(addrs) >= 4 {
-		t.Logf("✓ Client discovered new node %s", newNodeAddr)
+		t.Logf("✓ Client discovered new node %s", targetNodeAddr)
 	}
 
 	// Verify we can still perform operations after SMIGRATED
@@ -363,9 +366,14 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 		// Only inject SMIGRATED with mock injector
 		t.Log("Step 2: Injecting SMIGRATED for completed migration...")
 		addrs := injector.GetClusterAddrs()
-		hostPort := addrs[0]
+		// Use first node as source and second node as target
+		sourceHostPort := addrs[0]
+		targetHostPort := addrs[0]
+		if len(addrs) > 1 {
+			targetHostPort = addrs[1]
+		}
 
-		if err := injector.InjectSMIGRATED(ctx, 10002, hostPort, "0-5000"); err != nil {
+		if err := injector.InjectSMIGRATED(ctx, 10002, sourceHostPort, targetHostPort, "0-5000"); err != nil {
 			t.Fatalf("Failed to inject SMIGRATED: %v", err)
 		}
 
