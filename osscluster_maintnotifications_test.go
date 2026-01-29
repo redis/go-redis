@@ -215,29 +215,39 @@ func formatSMigratingNotification(seqID int64, slots ...string) string {
 }
 
 // formatSMigratedNotification creates a SMIGRATED push notification in RESP3 format
-// New Format: ["SMIGRATED", SeqID, count, [endpoint1, endpoint2, ...]]
-// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
-// Example: >4\r\n$9\r\nSMIGRATED\r\n:15\r\n:2\r\n*2\r\n$31\r\n127.0.0.1:6379 123,456,789-1000\r\n$30\r\n127.0.0.1:6380 124,457,300-500\r\n
-func formatSMigratedNotification(seqID int64, endpoints ...string) string {
-	// >4\r\n - Push notification with 4 elements
-	parts := []string{">4\r\n"}
+// New Format: ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
+// The payload after SeqID is a flat list of triplets:
+//   - source endpoint (the node slots are migrating FROM)
+//   - target endpoint (the node slots are migrating TO)
+//   - comma-separated list of slot ranges
+//
+// Each triplet is formatted as: "source target slots"
+// Example: "127.0.0.1:6379 127.0.0.1:6380 123,456,789-1000"
+func formatSMigratedNotification(seqID int64, triplets ...string) string {
+	// Count total elements: SMIGRATED + SeqID + (3 elements per triplet)
+	totalElements := 2 + len(triplets)*3
+	parts := []string{fmt.Sprintf(">%d\r\n", totalElements)}
 
-	// $9\r\nSMIGRATED\r\n
-	parts = append(parts, "$9\r\nSMIGRATED\r\n")
+	// +SMIGRATED\r\n
+	parts = append(parts, "+SMIGRATED\r\n")
 
 	// :seqID\r\n
 	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
 
-	// :count\r\n - number of endpoints
-	count := len(endpoints)
-	parts = append(parts, fmt.Sprintf(":%d\r\n", count))
+	// Add each triplet as three simple strings
+	for _, triplet := range triplets {
+		// Split triplet into source, target, and slots
+		tripletParts := strings.SplitN(triplet, " ", 3)
+		if len(tripletParts) != 3 {
+			continue
+		}
+		source := tripletParts[0]
+		target := tripletParts[1]
+		slots := tripletParts[2]
 
-	// *count\r\n - array of endpoints
-	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
-
-	// Add each endpoint as bulk string
-	for _, endpoint := range endpoints {
-		parts = append(parts, fmt.Sprintf("$%d\r\n%s\r\n", len(endpoint), endpoint))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", source))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", target))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
 	}
 
 	return strings.Join(parts, "")

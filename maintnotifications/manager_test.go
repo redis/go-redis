@@ -52,6 +52,10 @@ func (mo *MockOptions) GetAddr() string {
 	return "localhost:6379"
 }
 
+func (mo *MockOptions) GetOriginalEndpoint() string {
+	return "localhost:6379"
+}
+
 func (mo *MockOptions) IsTLSEnabled() bool {
 	return false
 }

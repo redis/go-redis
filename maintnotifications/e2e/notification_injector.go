@@ -522,37 +522,47 @@ func formatSMigratingNotification(seqID int64, slots ...string) string {
 	return strings.Join(parts, "")
 }
 
-func formatSMigratedNotification(seqID int64, endpoints ...string) string {
-	// Correct Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
+func formatSMigratedNotification(seqID int64, triplets ...string) string {
+	// New Format: ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
+	// The payload after SeqID is a flat list of triplets:
+	//   - source endpoint (the node slots are migrating FROM)
+	//   - target endpoint (the node slots are migrating TO)
+	//   - comma-separated list of slot ranges
+	//
 	// RESP3 wire format:
-	//   >3
+	//   ><2 + num_triplets*3>
 	//   +SMIGRATED
 	//   :SeqID
-	//   *<num_entries>
-	//     *2
-	//       +<host:port>
-	//       +<slots-or-ranges>
-	// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
-	parts := []string{">3\r\n"}
+	//   +<source1>
+	//   +<target1>
+	//   +<slots1>
+	//   +<source2>
+	//   +<target2>
+	//   +<slots2>
+	//   ...
+	//
+	// Each triplet is formatted as: "source target slots"
+	// Example: "127.0.0.1:6379 127.0.0.1:6380 123,456,789-1000"
+
+	// Count total elements: SMIGRATED + SeqID + (3 elements per triplet)
+	totalElements := 2 + len(triplets)*3
+	parts := []string{fmt.Sprintf(">%d\r\n", totalElements)}
 	parts = append(parts, "+SMIGRATED\r\n")
 	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
 
-	count := len(endpoints)
-	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
-
-	for _, endpoint := range endpoints {
-		// Split endpoint into host:port and slots
-		// endpoint format: "host:port slot1,slot2,range1-range2"
-		endpointParts := strings.SplitN(endpoint, " ", 2)
-		if len(endpointParts) != 2 {
+	for _, triplet := range triplets {
+		// Split triplet into source, target, and slots
+		// triplet format: "source target slots"
+		tripletParts := strings.SplitN(triplet, " ", 3)
+		if len(tripletParts) != 3 {
 			continue
 		}
-		hostPort := endpointParts[0]
-		slots := endpointParts[1]
+		source := tripletParts[0]
+		target := tripletParts[1]
+		slots := tripletParts[2]
 
-		// Each entry is an array with 2 elements
-		parts = append(parts, "*2\r\n")
-		parts = append(parts, fmt.Sprintf("+%s\r\n", hostPort))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", source))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", target))
 		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
 	}
 
