@@ -341,11 +341,17 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // handleSMigrated processes SMIGRATED notifications.
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
-// Expected format: ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
-// The payload after SeqID is a flat list of triplets:
-//   - source endpoint (the node slots are migrating FROM)
-//   - target endpoint (the node slots are migrating TO)
-//   - comma-separated list of slot ranges
+//
+// Expected RESP3 format:
+//
+//	>3
+//	+SMIGRATED
+//	:SeqID
+//	*<num_entries>       <- array of triplet arrays
+//	  *3                 <- each triplet is a 3-element array
+//	    +<source>        <- node from which slots are migrating FROM
+//	    +<destination>   <- node to which slots are migrating TO
+//	    +<slots>         <- comma-separated slots and/or ranges (e.g., "123,789-1000")
 //
 // A source and target endpoint may appear in multiple triplets.
 // The notification is only processed if the connection's OriginalEndpoint matches one of the source endpoints.
@@ -353,18 +359,10 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	// Minimum: ["SMIGRATED", SeqID, source, target, slots] = 5 elements
-	// Each additional triplet adds 3 more elements
-	if len(notification) < 5 {
+	// Expected: ["SMIGRATED", SeqID, [[source, target, slots], ...]]
+	// Minimum 3 elements: SMIGRATED, SeqID, and the array of triplets
+	if len(notification) < 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
-		return ErrInvalidNotification
-	}
-
-	// Check that we have complete triplets after SeqID
-	// notification[0] = "SMIGRATED", notification[1] = SeqID, notification[2:] = triplets
-	tripletElements := len(notification) - 2
-	if tripletElements%3 != 0 {
-		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (incomplete triplets)", notification))
 		return ErrInvalidNotification
 	}
 
@@ -372,6 +370,18 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	seqID, ok := notification[1].(int64)
 	if !ok {
 		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratedNotification(notification[1]))
+		return ErrInvalidNotification
+	}
+
+	// Extract the array of triplets (position 2)
+	triplets, ok := notification[2].([]interface{})
+	if !ok {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplets array)", notification[2]))
+		return ErrInvalidNotification
+	}
+
+	if len(triplets) == 0 {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (empty triplets)", notification))
 		return ErrInvalidNotification
 	}
 
@@ -389,28 +399,32 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	}
 	var allSlotRanges []string
 
-	numTriplets := tripletElements / 3
-	for i := 0; i < numTriplets; i++ {
-		baseIdx := 2 + (i * 3)
+	for _, tripletInterface := range triplets {
+		// Each triplet should be a 3-element array: [source, target, slots]
+		triplet, ok := tripletInterface.([]interface{})
+		if !ok || len(triplet) != 3 {
+			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
+			continue
+		}
 
 		// Extract source endpoint
-		source, ok := notification[baseIdx].(string)
+		source, ok := triplet[0].(string)
 		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (source)", notification[baseIdx]))
+			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
 			continue
 		}
 
 		// Extract target endpoint
-		target, ok := notification[baseIdx+1].(string)
+		target, ok := triplet[1].(string)
 		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (target)", notification[baseIdx+1]))
+			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
 			continue
 		}
 
 		// Extract slots
-		slots, ok := notification[baseIdx+2].(string)
+		slots, ok := triplet[2].(string)
 		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", notification[baseIdx+2]))
+			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
 			continue
 		}
 

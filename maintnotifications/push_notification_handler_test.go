@@ -39,7 +39,7 @@ func createTestManager(originalEndpoint string) *Manager {
 	}
 }
 
-// TestHandleSMigrated_CorrectFormat tests that handleSMigrated correctly parses the new triplet format
+// TestHandleSMigrated_CorrectFormat tests that handleSMigrated correctly parses the nested array format
 func TestHandleSMigrated_CorrectFormat(t *testing.T) {
 	// Create a manager with matching original endpoint
 	manager := createTestManager("127.0.0.1:6379")
@@ -48,13 +48,15 @@ func TestHandleSMigrated_CorrectFormat(t *testing.T) {
 		manager: manager,
 	}
 
-	// Create notification in the new triplet format:
-	// ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
+	// Create notification in the correct nested array format:
+	// ["SMIGRATED", SeqID, [[source, target, slots], [source, target, slots], ...]]
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(12346),
-		"127.0.0.1:6379", "127.0.0.1:6380", "123,456,789-1000",
-		"127.0.0.1:6379", "127.0.0.1:6381", "124,457,300-500",
+		[]interface{}{
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6380", "123,456,789-1000"},
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6381", "124,457,300-500"},
+		},
 	}
 
 	ctx := context.Background()
@@ -77,11 +79,13 @@ func TestHandleSMigrated_SingleTriplet(t *testing.T) {
 		manager: manager,
 	}
 
-	// Single triplet: source, target, slots
+	// Single triplet in nested array format
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(100),
-		"127.0.0.1:6379", "127.0.0.1:6380", "1000,2000-3000",
+		[]interface{}{
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6380", "1000,2000-3000"},
+		},
 	}
 
 	ctx := context.Background()
@@ -108,7 +112,9 @@ func TestHandleSMigrated_NoMatchingSource(t *testing.T) {
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(200),
-		"127.0.0.1:6379", "127.0.0.1:6380", "1000,2000-3000",
+		[]interface{}{
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6380", "1000,2000-3000"},
+		},
 	}
 
 	ctx := context.Background()
@@ -123,19 +129,21 @@ func TestHandleSMigrated_NoMatchingSource(t *testing.T) {
 	}
 }
 
-// TestHandleSMigrated_IncompleteTriplets tests that incomplete triplets are rejected
-func TestHandleSMigrated_IncompleteTriplets(t *testing.T) {
+// TestHandleSMigrated_IncompleteTriplet tests that incomplete triplets are skipped
+func TestHandleSMigrated_IncompleteTriplet(t *testing.T) {
 	manager := createTestManager("127.0.0.1:6379")
 
 	handler := &NotificationHandler{
 		manager: manager,
 	}
 
-	// Incomplete triplet (missing slots)
+	// Triplet with only 2 elements (missing slots) - should be skipped
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(300),
-		"127.0.0.1:6379", "127.0.0.1:6380", // Missing slots
+		[]interface{}{
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6380"}, // Missing slots
+		},
 	}
 
 	ctx := context.Background()
@@ -143,9 +151,10 @@ func TestHandleSMigrated_IncompleteTriplets(t *testing.T) {
 		Conn: nil,
 	}
 
+	// Should not error, just skip the malformed triplet
 	err := handler.handleSMigrated(ctx, handlerCtx, notification)
-	if err == nil {
-		t.Error("handleSMigrated should error with incomplete triplets")
+	if err != nil {
+		t.Errorf("handleSMigrated should not error with incomplete triplet (just skip it): %v", err)
 	}
 }
 
@@ -157,7 +166,7 @@ func TestHandleSMigrated_TooFewElements(t *testing.T) {
 		manager: manager,
 	}
 
-	// Only SMIGRATED and SeqID, no triplets
+	// Only SMIGRATED and SeqID, no triplets array
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(400),
@@ -171,5 +180,57 @@ func TestHandleSMigrated_TooFewElements(t *testing.T) {
 	err := handler.handleSMigrated(ctx, handlerCtx, notification)
 	if err == nil {
 		t.Error("handleSMigrated should error with too few elements")
+	}
+}
+
+// TestHandleSMigrated_EmptyTripletsArray tests that empty triplets array is rejected
+func TestHandleSMigrated_EmptyTripletsArray(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+
+	handler := &NotificationHandler{
+		manager: manager,
+	}
+
+	// Empty triplets array
+	notification := []interface{}{
+		"SMIGRATED",
+		int64(500),
+		[]interface{}{},
+	}
+
+	ctx := context.Background()
+	handlerCtx := push.NotificationHandlerContext{
+		Conn: nil,
+	}
+
+	err := handler.handleSMigrated(ctx, handlerCtx, notification)
+	if err == nil {
+		t.Error("handleSMigrated should error with empty triplets array")
+	}
+}
+
+// TestHandleSMigrated_InvalidTripletsType tests that non-array triplets is rejected
+func TestHandleSMigrated_InvalidTripletsType(t *testing.T) {
+	manager := createTestManager("127.0.0.1:6379")
+
+	handler := &NotificationHandler{
+		manager: manager,
+	}
+
+	// Triplets is a string instead of array
+	notification := []interface{}{
+		"SMIGRATED",
+		int64(600),
+		"not an array",
+	}
+
+	ctx := context.Background()
+	handlerCtx := push.NotificationHandlerContext{
+		Conn: nil,
+	}
+
+	err := handler.handleSMigrated(ctx, handlerCtx, notification)
+	if err == nil {
+		t.Error("handleSMigrated should error with invalid triplets type")
 	}
 }

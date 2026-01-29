@@ -100,25 +100,20 @@ func TestClusterMaintNotifications_SMigratingHandler(t *testing.T) {
 
 // TestClusterMaintNotifications_SMigratedHandler tests SMIGRATED notification handling
 func TestClusterMaintNotifications_SMigratedHandler(t *testing.T) {
-	// Simulate receiving a SMIGRATED notification with new triplet format
-	// Format: ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
+	// Simulate receiving a SMIGRATED notification with nested array format
+	// Format: ["SMIGRATED", SeqID, [[source, target, slots], [source, target, slots], ...]]
 	notification := []interface{}{
 		"SMIGRATED",
 		int64(12346),
-		"127.0.0.1:6379", "127.0.0.1:6380", "123,456,789-1000",
-		"127.0.0.1:6379", "127.0.0.1:6381", "124,457,300-500",
+		[]interface{}{
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6380", "123,456,789-1000"},
+			[]interface{}{"127.0.0.1:6379", "127.0.0.1:6381", "124,457,300-500"},
+		},
 	}
 
-	// Verify notification format
-	// Minimum: SMIGRATED + SeqID + at least one triplet (3 elements) = 5 elements
-	if len(notification) < 5 {
-		t.Fatalf("SMIGRATED notification should have at least 5 elements, got %d", len(notification))
-	}
-
-	// Check that we have complete triplets after SeqID
-	tripletElements := len(notification) - 2
-	if tripletElements%3 != 0 {
-		t.Fatalf("SMIGRATED notification should have complete triplets, got %d elements after SeqID", tripletElements)
+	// Verify notification format: SMIGRATED + SeqID + triplets array = 3 elements
+	if len(notification) != 3 {
+		t.Fatalf("SMIGRATED notification should have exactly 3 elements, got %d", len(notification))
 	}
 
 	notifType, ok := notification[0].(string)
@@ -134,32 +129,49 @@ func TestClusterMaintNotifications_SMigratedHandler(t *testing.T) {
 		t.Errorf("Expected SeqID 12346, got %d", seqID)
 	}
 
+	// Verify triplets array
+	triplets, ok := notification[2].([]interface{})
+	if !ok {
+		t.Fatalf("Expected triplets to be array, got %T", notification[2])
+	}
+	if len(triplets) != 2 {
+		t.Fatalf("Expected 2 triplets, got %d", len(triplets))
+	}
+
 	// Verify first triplet (source, target, slots)
-	source1, ok := notification[2].(string)
+	triplet1, ok := triplets[0].([]interface{})
+	if !ok || len(triplet1) != 3 {
+		t.Fatalf("Expected first triplet to be 3-element array, got %v", triplets[0])
+	}
+	source1, ok := triplet1[0].(string)
 	if !ok || source1 != "127.0.0.1:6379" {
-		t.Errorf("Expected first triplet source '127.0.0.1:6379', got %v", notification[2])
+		t.Errorf("Expected first triplet source '127.0.0.1:6379', got %v", triplet1[0])
 	}
-	target1, ok := notification[3].(string)
+	target1, ok := triplet1[1].(string)
 	if !ok || target1 != "127.0.0.1:6380" {
-		t.Errorf("Expected first triplet target '127.0.0.1:6380', got %v", notification[3])
+		t.Errorf("Expected first triplet target '127.0.0.1:6380', got %v", triplet1[1])
 	}
-	slots1, ok := notification[4].(string)
+	slots1, ok := triplet1[2].(string)
 	if !ok || slots1 != "123,456,789-1000" {
-		t.Errorf("Expected first triplet slots '123,456,789-1000', got %v", notification[4])
+		t.Errorf("Expected first triplet slots '123,456,789-1000', got %v", triplet1[2])
 	}
 
 	// Verify second triplet
-	source2, ok := notification[5].(string)
+	triplet2, ok := triplets[1].([]interface{})
+	if !ok || len(triplet2) != 3 {
+		t.Fatalf("Expected second triplet to be 3-element array, got %v", triplets[1])
+	}
+	source2, ok := triplet2[0].(string)
 	if !ok || source2 != "127.0.0.1:6379" {
-		t.Errorf("Expected second triplet source '127.0.0.1:6379', got %v", notification[5])
+		t.Errorf("Expected second triplet source '127.0.0.1:6379', got %v", triplet2[0])
 	}
-	target2, ok := notification[6].(string)
+	target2, ok := triplet2[1].(string)
 	if !ok || target2 != "127.0.0.1:6381" {
-		t.Errorf("Expected second triplet target '127.0.0.1:6381', got %v", notification[6])
+		t.Errorf("Expected second triplet target '127.0.0.1:6381', got %v", triplet2[1])
 	}
-	slots2, ok := notification[7].(string)
+	slots2, ok := triplet2[2].(string)
 	if !ok || slots2 != "124,457,300-500" {
-		t.Errorf("Expected second triplet slots '124,457,300-500', got %v", notification[7])
+		t.Errorf("Expected second triplet slots '124,457,300-500', got %v", triplet2[2])
 	}
 
 	t.Log("SMIGRATED notification format validation passed")

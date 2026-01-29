@@ -523,32 +523,25 @@ func formatSMigratingNotification(seqID int64, slots ...string) string {
 }
 
 func formatSMigratedNotification(seqID int64, triplets ...string) string {
-	// New Format: ["SMIGRATED", SeqID, source1, target1, slots1, source2, target2, slots2, ...]
-	// The payload after SeqID is a flat list of triplets:
-	//   - source endpoint (the node slots are migrating FROM)
-	//   - target endpoint (the node slots are migrating TO)
-	//   - comma-separated list of slot ranges
-	//
-	// RESP3 wire format:
-	//   ><2 + num_triplets*3>
-	//   +SMIGRATED
-	//   :SeqID
-	//   +<source1>
-	//   +<target1>
-	//   +<slots1>
-	//   +<source2>
-	//   +<target2>
-	//   +<slots2>
-	//   ...
+	// RESP3 wire format for SMIGRATED:
+	//   >3                      <- push frame with 3 top-level elements
+	//   +SMIGRATED              <- message name
+	//   :SeqID                  <- sequence id integer
+	//   *<num_entries>          <- array of triplet arrays
+	//     *3                    <- each triplet is a 3-element array
+	//       +<source>           <- node from which slots are migrating FROM
+	//       +<destination>      <- node to which slots are migrating TO
+	//       +<slots>            <- comma-separated slots and/or ranges
 	//
 	// Each triplet is formatted as: "source target slots"
-	// Example: "127.0.0.1:6379 127.0.0.1:6380 123,456,789-1000"
+	// Example: "abc.com:6789 abc.com:6790 123,789-1000"
 
-	// Count total elements: SMIGRATED + SeqID + (3 elements per triplet)
-	totalElements := 2 + len(triplets)*3
-	parts := []string{fmt.Sprintf(">%d\r\n", totalElements)}
+	parts := []string{">3\r\n"}
 	parts = append(parts, "+SMIGRATED\r\n")
 	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
+
+	// Outer array containing all triplets
+	parts = append(parts, fmt.Sprintf("*%d\r\n", len(triplets)))
 
 	for _, triplet := range triplets {
 		// Split triplet into source, target, and slots
@@ -561,6 +554,8 @@ func formatSMigratedNotification(seqID int64, triplets ...string) string {
 		target := tripletParts[1]
 		slots := tripletParts[2]
 
+		// Each triplet is a 3-element array
+		parts = append(parts, "*3\r\n")
 		parts = append(parts, fmt.Sprintf("+%s\r\n", source))
 		parts = append(parts, fmt.Sprintf("+%s\r\n", target))
 		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
