@@ -476,10 +476,6 @@ type clusterNode struct {
 	lastLatencyMeasurement int64 // atomic
 }
 
-func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
-	return newClusterNodeWithOriginalEndpoint(clOpt, addr, "")
-}
-
 func newClusterNodeWithOriginalEndpoint(clOpt *ClusterOptions, addr, originalEndpoint string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr

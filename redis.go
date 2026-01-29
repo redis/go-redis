@@ -847,10 +847,6 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
-func (c *baseClient) getOriginalEndpoint() string {
-	return c.opt.OriginalEndpoint
-}
-
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds); err != nil {
 		return err
