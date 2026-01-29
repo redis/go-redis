@@ -477,8 +477,13 @@ type clusterNode struct {
 }
 
 func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
+	return newClusterNodeWithOriginalEndpoint(clOpt, addr, "")
+}
+
+func newClusterNodeWithOriginalEndpoint(clOpt *ClusterOptions, addr, originalEndpoint string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
+	opt.OriginalEndpoint = originalEndpoint
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
@@ -706,6 +711,10 @@ func (c *clusterNodes) GC(generation uint32) {
 }
 
 func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
+	return c.GetOrCreateWithOriginalEndpoint(addr, "")
+}
+
+func (c *clusterNodes) GetOrCreateWithOriginalEndpoint(addr, originalEndpoint string) (*clusterNode, error) {
 	node, err := c.get(addr)
 	if err != nil {
 		return nil, err
@@ -726,7 +735,7 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 		return node, nil
 	}
 
-	node = newClusterNode(c.opt, addr)
+	node = newClusterNodeWithOriginalEndpoint(c.opt, addr, originalEndpoint)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
 	}
@@ -823,12 +832,14 @@ func newClusterState(
 	for _, slot := range slots {
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
-			addr := slotNode.Addr
+			// slotNode.Addr is the original endpoint from CLUSTER SLOTS
+			originalEndpoint := slotNode.Addr
+			addr := originalEndpoint
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
 
-			node, err := c.nodes.GetOrCreate(addr)
+			node, err := c.nodes.GetOrCreateWithOriginalEndpoint(addr, originalEndpoint)
 			if err != nil {
 				return nil, err
 			}

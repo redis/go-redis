@@ -847,6 +847,10 @@ func (c *baseClient) getAddr() string {
 	return c.opt.Addr
 }
 
+func (c *baseClient) getOriginalEndpoint() string {
+	return c.opt.OriginalEndpoint
+}
+
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
 	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds); err != nil {
 		return err
@@ -1125,6 +1129,14 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// OriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
+// before any resolution or transformation. This is useful for matching
+// the source field in smigrating notifications.
+// Returns empty string if not set (e.g., for non-cluster clients).
+func (c *Client) OriginalEndpoint() string {
+	return c.opt.OriginalEndpoint
 }
 
 // GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.

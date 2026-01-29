@@ -42,6 +42,11 @@ type Options struct {
 	// Addr is the address formated as host:port
 	Addr string
 
+	// OriginalEndpoint is the exact endpoint string returned by CLUSTER SLOTS
+	// before any resolution or transformation (e.g., loopback replacement).
+	// This is used to match the source field in smigrating notifications.
+	OriginalEndpoint string
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
