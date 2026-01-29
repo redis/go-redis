@@ -1129,7 +1129,7 @@ func (c *Client) Options() *Options {
 
 // OriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
 // before any resolution or transformation. This is useful for matching
-// the source field in smigrating notifications.
+// the source field in SMIGRATED notifications.
 // Returns empty string if not set (e.g., for non-cluster clients).
 func (c *Client) OriginalEndpoint() string {
 	return c.opt.OriginalEndpoint
