@@ -92,12 +92,12 @@ func (tlc *TestLogCollector) DoPrint() {
 // MatchFunc is a slice of functions that check the logs for a specific condition
 // use in WaitForLogMatchFunc
 type MatchFunc struct {
-	completed   atomic.Bool
-	F           func(lstring string) bool
-	matches     []string
-	matchesMu   sync.Mutex // protects matches slice
-	found       chan struct{} // channel to notify when match is found, will be closed
-	done        func()
+	completed atomic.Bool
+	F         func(lstring string) bool
+	matches   []string
+	matchesMu sync.Mutex    // protects matches slice
+	found     chan struct{} // channel to notify when match is found, will be closed
+	done      func()
 }
 
 func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {

@@ -637,10 +637,10 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 	// the master and replica just swap roles. The real fault injector may not generate
 	// any notifications for this case since no actual slot migration occurs.
 	testCases := []struct {
-		name                string
-		effect              SlotMigrateEffect
-		trigger             SlotMigrateVariant
-		expectNoNotif       bool // If true, don't expect any notifications (e.g., slot-shuffle + failover)
+		name          string
+		effect        SlotMigrateEffect
+		trigger       SlotMigrateVariant
+		expectNoNotif bool // If true, don't expect any notifications (e.g., slot-shuffle + failover)
 	}{
 		// slot-shuffle effect (2 variants) - no node changes
 		{
