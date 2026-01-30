@@ -91,9 +91,7 @@ type ClusterOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout time.Duration
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
 	//
@@ -105,21 +103,23 @@ type ClusterOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
-
-	PoolFIFO bool
-	PoolSize int // applies per cluster node and not for the whole cluster
 
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int // applies per cluster node and not for the whole cluster
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	PoolFIFO              bool
+	PoolSize              int // applies per cluster node and not for the whole cluster
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int // applies per cluster node and not for the whole cluster
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
+	ConnMaxLifetimeJitter time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -372,6 +372,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxActiveConns = q.int("max_active_conns")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	if q.has("conn_max_lifetime_jitter") {
+		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
+	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
 
@@ -439,6 +442,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxActiveConns:        opt.MaxActiveConns,
 		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
 		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
 		DisableIdentity:       opt.DisableIdentity,

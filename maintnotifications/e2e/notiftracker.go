@@ -89,6 +89,7 @@ func (tnh *TrackingNotificationsHook) Clear() {
 	tnh.unexpectedNotificationCount.Store(0)
 	tnh.connectionCount.Store(0)
 }
+
 // wait for notification in prehook
 func (tnh *TrackingNotificationsHook) FindOrWaitForNotification(notificationType string, timeout time.Duration) (notification []interface{}, found bool) {
 	if notification, found := tnh.FindNotification(notificationType); found {

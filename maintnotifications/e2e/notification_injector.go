@@ -74,12 +74,12 @@ func NewNotificationInjector() (NotificationInjector, error) {
 
 // ProxyNotificationInjector implements NotificationInjector using cae-resp-proxy
 type ProxyNotificationInjector struct {
-	apiPort       int
-	apiBaseURL    string
-	cmd           *exec.Cmd
-	httpClient    *http.Client
-	nodes         []proxyNode
-	visibleNodes  []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
+	apiPort      int
+	apiBaseURL   string
+	cmd          *exec.Cmd
+	httpClient   *http.Client
+	nodes        []proxyNode
+	visibleNodes []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
 }
 
 type proxyNode struct {

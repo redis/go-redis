@@ -467,7 +467,6 @@ func TestClusterMaintNotifications_Deduplication(t *testing.T) {
 	t.Log("Deduplication test passed")
 }
 
-
 // TestClusterMaintNotifications_MultiNode tests notifications across multiple cluster nodes
 func TestClusterMaintNotifications_MultiNode(t *testing.T) {
 	if os.Getenv("CLUSTER_MAINT_INTEGRATION_TEST") != "true" {
@@ -674,5 +673,3 @@ func TestClusterMaintNotifications_ComplexMigration(t *testing.T) {
 
 	t.Log("Complex migration test passed")
 }
-
-
