@@ -358,6 +358,8 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 //
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
+// In the case when the connection is from MOVED/ASK, the connection's original endpoint is not set,
+// so we will not be able to match the source endpoint. In such case, we will trigger the reload callback with the first target endpoint.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	// Expected: ["SMIGRATED", SeqID, [[source, target, slots], ...]]
 	// Minimum 3 elements: SMIGRATED, SeqID, and the array of triplets
@@ -399,49 +401,51 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	}
 	var allSlotRanges []string
 
-	for _, tripletInterface := range triplets {
-		// Each triplet should be a 3-element array: [source, target, slots]
-		triplet, ok := tripletInterface.([]interface{})
-		if !ok || len(triplet) != 3 {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
-			continue
-		}
+	if connectionOriginalEndpoint != "" {
+		for _, tripletInterface := range triplets {
+			// Each triplet should be a 3-element array: [source, target, slots]
+			triplet, ok := tripletInterface.([]interface{})
+			if !ok || len(triplet) != 3 {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
+				continue
+			}
 
-		// Extract source endpoint
-		source, ok := triplet[0].(string)
-		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
-			continue
-		}
+			// Extract source endpoint
+			source, ok := triplet[0].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
+				continue
+			}
 
-		// Extract target endpoint
-		target, ok := triplet[1].(string)
-		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
-			continue
-		}
+			// Extract target endpoint
+			target, ok := triplet[1].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
+				continue
+			}
 
-		// Extract slots
-		slots, ok := triplet[2].(string)
-		if !ok {
-			internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
-			continue
-		}
+			// Extract slots
+			slots, ok := triplet[2].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
+				continue
+			}
 
-		// Check if this triplet's source matches our connection's original endpoint
-		if connectionOriginalEndpoint != "" && source == connectionOriginalEndpoint {
-			matchingTriplets = append(matchingTriplets, struct {
-				source string
-				target string
-				slots  string
-			}{source, target, slots})
-			slotRanges := strings.Split(slots, ",")
-			allSlotRanges = append(allSlotRanges, slotRanges...)
+			// Check if this triplet's source matches our connection's original endpoint
+			if connectionOriginalEndpoint != "" && source == connectionOriginalEndpoint {
+				matchingTriplets = append(matchingTriplets, struct {
+					source string
+					target string
+					slots  string
+				}{source, target, slots})
+				slotRanges := strings.Split(slots, ",")
+				allSlotRanges = append(allSlotRanges, slotRanges...)
+			}
 		}
 	}
 
 	// Only process if we found matching triplets (source matches our endpoint)
-	if len(matchingTriplets) == 0 {
+	if len(matchingTriplets) == 0 && connectionOriginalEndpoint != "" {
 		// No matching source - this notification is not for us
 		// Still clear relaxed timeout if we have a connection
 		if handlerCtx.Conn != nil {
@@ -459,9 +463,16 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 			// Log with the first matching target for context
 			internal.Logger.Printf(ctx, logs.SlotMigrated(seqID, matchingTriplets[0].target, allSlotRanges))
 		}
+		// if we have a matching triplet, use it, otherwise use the first triplet
+		var target string
+		target = matchingTriplets[0].target
+		if target == "" {
+			target = triplets[0].([]interface{})[1].(string)
+		}
 		// Trigger cluster state reload via callback
 		// Pass the first matching target and all slot ranges from matching triplets
-		snh.manager.TriggerClusterStateReload(ctx, matchingTriplets[0].target, allSlotRanges)
+
+		snh.manager.TriggerClusterStateReload(ctx, target, allSlotRanges)
 	}
 
 	// clear relaxed timeout
