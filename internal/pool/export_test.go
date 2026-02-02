@@ -23,6 +23,10 @@ func (p *ConnPool) QueueLen() int {
 	return int(p.semaphore.Len())
 }
 
+func (p *ConnPool) DialsQueueLen() int {
+	return p.dialsQueue.len()
+}
+
 var NoExpiration = noExpiration
 
 func (p *ConnPool) CalcConnExpiresAt() time.Time {

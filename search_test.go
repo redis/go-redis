@@ -3521,6 +3521,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform basic hybrid search", Label("search", "fthybrid"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// Basic hybrid search combining text and vector search
 		searchQuery := "@color:{red}"
 		vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
@@ -3541,6 +3542,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// Test with TFIDF scorer
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3577,6 +3579,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// This query won't have results from search, so we can validate vector filter
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3620,6 +3623,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3645,6 +3649,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3672,6 +3677,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3702,6 +3708,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3730,6 +3737,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3772,6 +3780,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3796,6 +3805,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
+		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3825,6 +3835,332 @@ var _ = Describe("FT.HYBRID Commands", func() {
 		cmd := client.FTHybridWithArgs(ctx, "hybrid_idx", options)
 
 		res, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 5))
+
+		// Check that results are sorted - first result should have higher price_discount
+		if len(res.Results) > 1 {
+			firstPriceStr := fmt.Sprintf("%v", res.Results[0]["price_discount"])
+			secondPriceStr := fmt.Sprintf("%v", res.Results[1]["price_discount"])
+			firstPrice, err1 := helper.ParseFloat(firstPriceStr)
+			secondPrice, err2 := helper.ParseFloat(secondPriceStr)
+
+			if err1 == nil && err2 == nil && firstPrice != secondPrice {
+				Expect(firstPrice).To(BeNumerically(">=", secondPrice))
+			}
+		}
+	})
+
+	// Redis 8.6+ tests using PARAMS-based vector approach
+	It("should perform basic hybrid search (8.6+ PARAMS)", Label("search", "fthybrid", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		// Basic hybrid search combining text and vector search
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{-100, -200, -200, -300})},
+					VectorParamName: "vec",
+				},
+			},
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically(">", 0))
+
+		// Check that results contain expected fields
+		for _, result := range res.Results {
+			Expect(result).To(HaveKey("__score"))
+			Expect(result).To(HaveKey("__key"))
+		}
+	})
+
+	It("should perform hybrid search with scorer (8.6+ PARAMS)", Label("search", "fthybrid", "scorer", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		// Test with TFIDF scorer
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{
+					Query:  "@color:{red}",
+					Scorer: "TFIDF",
+				},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+					VectorParamName: "vec",
+				},
+			},
+			Load:        []string{"@description", "@color", "@price", "@size", "@__score"},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+
+		// Verify that we got results with the fields we asked for
+		for _, result := range res.Results {
+			// Since we're using TFIDF scorer, the search results should be scored accordingly
+			Expect(result).To(HaveKey("__score"))
+		}
+	})
+
+	It("should perform hybrid search with vector filter (8.6+ PARAMS)", Label("search", "fthybrid", "filter", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		// This query won't have results from search, so we can validate vector filter
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+					VectorParamName: "vec",
+					Filter:          "@price:[15 16] @size:[10 11]",
+				},
+			},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+
+		// Verify that all results match the filter criteria
+		for _, result := range res.Results {
+			if price, exists := result["price"]; exists {
+				priceStr := fmt.Sprintf("%v", price)
+				priceFloat, err := helper.ParseFloat(priceStr)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(priceFloat).To(BeNumerically(">=", 15))
+				Expect(priceFloat).To(BeNumerically("<=", 16))
+			}
+			if size, exists := result["size"]; exists {
+				sizeStr := fmt.Sprintf("%v", size)
+				sizeFloat, err := helper.ParseFloat(sizeStr)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(sizeFloat).To(BeNumerically(">=", 10))
+				Expect(sizeFloat).To(BeNumerically("<=", 11))
+			}
+		}
+	})
+
+	It("should perform hybrid search with KNN method (8.6+ PARAMS)", Label("search", "fthybrid", "knn", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 2, 3})},
+					VectorParamName: "vec",
+					Method:          "KNN",
+					MethodParams:    []interface{}{"K", 3}, // K=3 as key-value pair
+				},
+			},
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(Equal(3)) // Should return exactly K=3 results
+		Expect(len(res.Results)).To(Equal(3))
+	})
+
+	It("should perform hybrid search with RANGE method (8.6+ PARAMS)", Label("search", "fthybrid", "range", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{none}"}, // This won't match anything
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+					Method:          "RANGE",
+					MethodParams:    []interface{}{"RADIUS", 2}, // RADIUS=2 as key-value pair
+				},
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with LINEAR combine method (8.6+ PARAMS)", Label("search", "fthybrid", "combine", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+				},
+			},
+			Combine: &redis.FTHybridCombineOptions{
+				Method: redis.FTHybridCombineLinear,
+				Alpha:  0.5,
+				Beta:   0.5,
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with RRF combine method (8.6+ PARAMS)", Label("search", "fthybrid", "rrf", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+				},
+			},
+			Combine: &redis.FTHybridCombineOptions{
+				Method:   redis.FTHybridCombineRRF,
+				Window:   3,
+				Constant: 0.5,
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+	})
+
+	It("should perform hybrid search with LOAD and APPLY (8.6+ PARAMS)", Label("search", "fthybrid", "load", "apply", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+				},
+			},
+			Load: []string{"@description", "@color", "@price", "@size", "@__score"},
+			Apply: []redis.FTHybridApply{
+				{
+					Expression: "@price - (@price * 0.1)",
+					AsField:    "price_discount",
+				},
+				{
+					Expression: "@price_discount * 0.2",
+					AsField:    "tax_discount",
+				},
+			},
+			LimitOffset: 0,
+			Limit:       3,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res.TotalResults).To(BeNumerically(">", 0))
+		Expect(len(res.Results)).To(BeNumerically("<=", 3))
+
+		// Verify that applied fields exist
+		for _, result := range res.Results {
+			Expect(result).To(HaveKey("price_discount"))
+			Expect(result).To(HaveKey("tax_discount"))
+		}
+	})
+
+	It("should perform hybrid search with LIMIT (8.6+ PARAMS)", Label("search", "fthybrid", "limit", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+				},
+			},
+			LimitOffset: 0,
+			Limit:       2,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(res.Results)).To(BeNumerically("<=", 2))
+	})
+
+	It("should perform hybrid search with SORTBY (8.6+ PARAMS)", Label("search", "fthybrid", "sortby", "params"), func() {
+		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		options := &redis.FTHybridOptions{
+			CountExpressions: 2,
+			SearchExpressions: []redis.FTHybridSearchExpression{
+				{Query: "@color:{red}"},
+			},
+			VectorExpressions: []redis.FTHybridVectorExpression{
+				{
+					VectorField:     "embedding",
+					VectorData:      &redis.VectorFP32{Val: encodeFloat32Vector([]float32{1, 2, 7, 6})},
+					VectorParamName: "vec",
+				},
+			},
+			Load: []string{"@color", "@price"},
+			Apply: []redis.FTHybridApply{
+				{
+					Expression: "@price - (@price * 0.1)",
+					AsField:    "price_discount",
+				},
+			},
+			SortBy: []redis.FTSearchSortBy{
+				{FieldName: "@price_discount", Desc: true},
+				{FieldName: "@color", Asc: true},
+			},
+			LimitOffset: 0,
+			Limit:       5,
+		}
+
+		res, err := client.FTHybridWithArgs(ctx, "hybrid_idx", options).Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(res.TotalResults).To(BeNumerically(">", 0))
 		Expect(len(res.Results)).To(BeNumerically("<=", 5))

@@ -69,6 +69,9 @@ var (
 	// Parameters: ctx, cn, reason, err
 	metricConnectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
+	// errPanicInDial is returned when a panic occurs in the dial function.
+	errPanicInQueuedNewConn = errors.New("panic in queuedNewConn")
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -848,12 +851,15 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		}
 	}()
 
+	p.dialsQueue.discardDoneAtFront()
 	p.dialsQueue.enqueue(w)
 
 	go func(w *wantConn) {
 		var freeTurnCalled bool
 		defer func() {
 			if err := recover(); err != nil {
+				w.tryDeliver(nil, errPanicInQueuedNewConn)
+				p.dialsQueue.discardDoneAtFront()
 				if !freeTurnCalled {
 					p.freeTurn()
 				}
@@ -868,12 +874,14 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		cn, cnErr := p.newConn(dialCtx, true)
 		if cnErr != nil {
 			w.tryDeliver(nil, cnErr) // deliver error to caller, notify connection creation failed
+			p.dialsQueue.discardDoneAtFront()
 			p.freeTurn()
 			freeTurnCalled = true
 			return
 		}
 
 		delivered := w.tryDeliver(cn, cnErr)
+		p.dialsQueue.discardDoneAtFront()
 		if !delivered && p.putIdleConn(dialCtx, cn) {
 			p.freeTurn()
 			freeTurnCalled = true
