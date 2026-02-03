@@ -92,12 +92,12 @@ func (tlc *TestLogCollector) DoPrint() {
 // MatchFunc is a slice of functions that check the logs for a specific condition
 // use in WaitForLogMatchFunc
 type MatchFunc struct {
-	completed   atomic.Bool
-	F           func(lstring string) bool
-	matches     []string
-	matchesMu   sync.Mutex // protects matches slice
-	found       chan struct{} // channel to notify when match is found, will be closed
-	done        func()
+	completed atomic.Bool
+	F         func(lstring string) bool
+	matches   []string
+	matchesMu sync.Mutex    // protects matches slice
+	found     chan struct{} // channel to notify when match is found, will be closed
+	done      func()
 }
 
 func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {
@@ -356,6 +356,11 @@ func (la *LogAnalisis) Analyze() {
 			la.TotalNotifications++
 
 			switch {
+			// ordering here is important, since SMIGRATED contains MIGRATED and SMIGRATING contains MIGRATING
+			case notificationType(log, "SMIGRATING"):
+				la.SMigratingCount++
+			case notificationType(log, "SMIGRATED"):
+				la.SMigratedCount++
 			case notificationType(log, "MOVING"):
 				la.MovingCount++
 			case notificationType(log, "MIGRATING"):
@@ -370,20 +375,6 @@ func (la *LogAnalisis) Analyze() {
 				fmt.Printf("[ERROR] Unexpected notification: %s\n", log)
 				la.UnexpectedCount++
 			}
-		}
-
-		// Track SMIGRATING notifications (uses SlotMigratingMessage, not ProcessingNotificationMessage)
-		// Log format: "conn[%d] slots migrating, applying relaxed timeout seqID=%d slots=%v"
-		if strings.Contains(log, logs2.SlotMigratingMessage) {
-			la.SMigratingCount++
-			la.TotalNotifications++
-		}
-
-		// Track SMIGRATED notifications received (per-connection log, before filtering)
-		// Log format: "conn[%d] SMIGRATED notification received seqID=%d"
-		if strings.Contains(log, logs2.SMigratedReceivedMessage) {
-			la.SMigratedCount++
-			la.TotalNotifications++
 		}
 
 		// Track cluster state reloads (deduplicated, once per seqID)

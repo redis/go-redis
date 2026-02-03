@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -94,10 +95,6 @@ const (
 
 	// SlotMigrateVariantMigrate uses rladmin migrate to move shards
 	SlotMigrateVariantMigrate SlotMigrateVariant = "migrate"
-
-	// SlotMigrateVariantMaintenanceMode puts node in maintenance mode
-	// Only supported for remove-add and remove effects
-	SlotMigrateVariantMaintenanceMode SlotMigrateVariant = "maintenance_mode"
 
 	// SlotMigrateVariantFailover triggers failover to swap master/replica roles
 	// Requires replication to be enabled
@@ -957,4 +954,64 @@ func FormatSlotRange(start, end int) string {
 		return strconv.Itoa(start)
 	}
 	return fmt.Sprintf("%d-%d", start, end)
+}
+
+// DebugE2E returns true if E2E_DEBUG environment variable is set to "true"
+// Use this to control verbose debug logging in e2e tests
+func DebugE2E() bool {
+	return os.Getenv("E2E_DEBUG") == "true"
+}
+
+// formatSMigratingNotification formats an SMIGRATING notification in RESP3 wire format
+func formatSMigratingNotification(seqID int64, slots ...string) string {
+	// Format: ["SMIGRATING", seqID, slot1, slot2, ...]
+	parts := []string{
+		fmt.Sprintf(">%d\r\n", len(slots)+2),
+		"$10\r\nSMIGRATING\r\n",
+		fmt.Sprintf(":%d\r\n", seqID),
+	}
+
+	for _, slot := range slots {
+		parts = append(parts, fmt.Sprintf("$%d\r\n%s\r\n", len(slot), slot))
+	}
+
+	return strings.Join(parts, "")
+}
+
+// formatSMigratedNotification formats an SMIGRATED notification in RESP3 wire format
+func formatSMigratedNotification(seqID int64, endpoints ...string) string {
+	// Correct Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
+	// RESP3 wire format:
+	//   >3
+	//   +SMIGRATED
+	//   :SeqID
+	//   *<num_entries>
+	//     *2
+	//       +<host:port>
+	//       +<slots-or-ranges>
+	// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
+	parts := []string{">3\r\n"}
+	parts = append(parts, "+SMIGRATED\r\n")
+	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
+
+	count := len(endpoints)
+	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
+
+	for _, endpoint := range endpoints {
+		// Split endpoint into host:port and slots
+		// endpoint format: "host:port slot1,slot2,range1-range2"
+		endpointParts := strings.SplitN(endpoint, " ", 2)
+		if len(endpointParts) != 2 {
+			continue
+		}
+		hostPort := endpointParts[0]
+		slots := endpointParts[1]
+
+		// Each entry is an array with 2 elements
+		parts = append(parts, "*2\r\n")
+		parts = append(parts, fmt.Sprintf("+%s\r\n", hostPort))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
+	}
+
+	return strings.Join(parts, "")
 }

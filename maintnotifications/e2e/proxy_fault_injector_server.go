@@ -1053,7 +1053,7 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateGetTriggers(w http.ResponseW
 		}
 	}
 
-	// Default dbconfig for migrate/maintenance_mode (sharded cluster)
+	// Default dbconfig for migrate (sharded cluster)
 	defaultDBConfig := map[string]interface{}{
 		"shards_count":     3,
 		"shards_placement": "sparse",
@@ -1075,11 +1075,6 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateGetTriggers(w http.ResponseW
 				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 			{
-				Name:         "maintenance_mode",
-				Description:  "Put source node in maintenance mode",
-				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
-			},
-			{
 				Name:         "failover",
 				Description:  "Trigger failover (requires replication)",
 				Requirements: makeRequirements(failoverDBConfig, "Requires replication enabled for failover"),
@@ -1090,11 +1085,6 @@ func (s *ProxyFaultInjectorServer) handleSlotMigrateGetTriggers(w http.ResponseW
 			{
 				Name:         "migrate",
 				Description:  "Migrate all shards from source node to existing node",
-				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
-			},
-			{
-				Name:         "maintenance_mode",
-				Description:  "Put source node in maintenance mode",
 				Requirements: makeRequirements(defaultDBConfig, "Requires sharded cluster"),
 			},
 		}

@@ -64,10 +64,8 @@ type TrackingNotificationsHook struct {
 	connLogs       map[uint64][]DiagnosticsEvent
 	mutex          sync.RWMutex
 
-	// shard identifier for debug output
+	// shard identifier
 	shardAddr string
-	// debug printing enabled
-	debugPrint bool
 	// track last notification time for waiting
 	lastNotificationTime atomic.Value // stores time.Time
 }
@@ -83,27 +81,21 @@ func NewTrackingNotificationsHook() *TrackingNotificationsHook {
 	return hook
 }
 
-// NewTrackingNotificationsHookWithShard creates a hook with shard identifier for debug output
-func NewTrackingNotificationsHookWithShard(shardAddr string, debugPrint bool) *TrackingNotificationsHook {
+// NewTrackingNotificationsHookWithShard creates a hook with shard identifier
+func NewTrackingNotificationsHookWithShard(shardAddr string) *TrackingNotificationsHook {
 	hook := &TrackingNotificationsHook{
 		diagnosticsLog: make([]DiagnosticsEvent, 0),
 		connIds:        make(map[uint64]bool),
 		connLogs:       make(map[uint64][]DiagnosticsEvent),
 		shardAddr:      shardAddr,
-		debugPrint:     debugPrint,
 	}
 	hook.lastNotificationTime.Store(time.Time{})
 	return hook
 }
 
-// SetShardAddr sets the shard address for debug output
+// SetShardAddr sets the shard address
 func (tnh *TrackingNotificationsHook) SetShardAddr(addr string) {
 	tnh.shardAddr = addr
-}
-
-// SetDebugPrint enables or disables debug printing
-func (tnh *TrackingNotificationsHook) SetDebugPrint(enabled bool) {
-	tnh.debugPrint = enabled
 }
 
 // GetLastNotificationTime returns the time of the last notification received
@@ -169,22 +161,8 @@ func (tnh *TrackingNotificationsHook) FindNotification(notificationType string) 
 
 // PreHook captures timeout-related events before processing
 func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
-	now := time.Now()
-	connID := tnh.getConnID(notificationCtx)
-	seqID := tnh.getSeqID(notification)
-
 	// Update last notification time
-	tnh.lastNotificationTime.Store(now)
-
-	// Debug print if enabled
-	if tnh.debugPrint {
-		shardInfo := tnh.shardAddr
-		if shardInfo == "" {
-			shardInfo = "unknown"
-		}
-		fmt.Printf("[DEBUG] %s Notification received: type=%s shard=%s conn=%d seqID=%d notification=%v\n",
-			now.Format("15:04:05.000"), notificationType, shardInfo, connID, seqID, notification)
-	}
+	tnh.lastNotificationTime.Store(time.Now())
 
 	tnh.increaseNotificationCount(notificationType)
 	tnh.storeDiagnosticsEvent(notificationType, notification, notificationCtx)

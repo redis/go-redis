@@ -323,21 +323,10 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 		return ErrInvalidNotification
 	}
 
-	// Extract SeqID (position 1)
-	seqID, ok := notification[1].(int64)
-	if !ok {
+	// Validate SeqID (position 1)
+	if _, ok := notification[1].(int64); !ok {
 		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratingNotification(notification[1]))
 		return ErrInvalidNotification
-	}
-
-	// Extract slot ranges (position 2+)
-	// For now, we just extract them for logging
-	// Format can be: single slot "1234" or range "100-200"
-	var slotRanges []string
-	for i := 2; i < len(notification); i++ {
-		if slotRange, ok := notification[i].(string); ok {
-			slotRanges = append(slotRanges, slotRange)
-		}
 	}
 
 	if handlerCtx.Conn == nil {
@@ -353,7 +342,7 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 
 	// Apply relaxed timeout to this specific connection
 	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(ctx, logs.SlotMigrating(conn.GetID(), seqID, slotRanges))
+		internal.Logger.Printf(ctx, logs.RelaxedTimeoutDueToNotification(conn.GetID(), "SMIGRATING", snh.manager.config.RelaxedTimeout))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
@@ -382,7 +371,6 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // In the case when the connection is from MOVED/ASK, the connection's original endpoint is not set,
 // so we will not be able to match the source endpoint. In such case, we will trigger the reload callback with the first target endpoint.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-
 	// Expected: ["SMIGRATED", SeqID, [[source, target, slots], ...]]
 	// Minimum 3 elements: SMIGRATED, SeqID, and the array of triplets
 	if len(notification) < 3 {
@@ -395,18 +383,6 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	if !ok {
 		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratedNotification(notification[1]))
 		return ErrInvalidNotification
-	}
-
-	// Log SMIGRATED received for ALL connections (before any filtering)
-	// This allows tracking all SMIGRATED notifications received
-	var earlyConnID uint64
-	if handlerCtx.Conn != nil {
-		if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
-			earlyConnID = conn.GetID()
-		}
-	}
-	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(ctx, logs.SMigratedReceived(earlyConnID, seqID))
 	}
 
 	// Extract the array of triplets (position 2)
@@ -496,32 +472,23 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		}
 	}
 
-	// Only process if we found matching triplets (source matches our endpoint)
-	// or if we have no endpoints to match against (MOVED/ASK case)
-	if len(matchingTriplets) == 0 && hasEndpointToMatch {
-		// No matching source - this notification is not for us
-		// Still clear relaxed timeout if we have a connection
-		if handlerCtx.Conn != nil {
-			conn, ok := handlerCtx.Conn.(*pool.Conn)
-			if ok {
-				conn.ClearRelaxedTimeout()
-			}
-		}
-		return nil
-	}
-
-	// Log per-connection and clear relaxed timeout
 	var connID uint64
+	// Reset relaxed timeout for this specific connection
 	if handlerCtx.Conn != nil {
 		conn, ok := handlerCtx.Conn.(*pool.Conn)
 		if ok {
-			connID = conn.GetID()
-			// Log per-connection (matches SMIGRATING per-connection logging)
 			if internal.LogLevel.InfoOrAbove() {
-				internal.Logger.Printf(ctx, logs.SlotMigrated(connID, seqID, allSlotRanges))
+				connID = conn.GetID()
+				internal.Logger.Printf(ctx, logs.UnrelaxedTimeout(connID))
 			}
 			conn.ClearRelaxedTimeout()
 		}
+	}
+
+	// if we have no matching triplets and we have endpoints to match against, we can return
+	// only the matching or if there is no endpoint to match will trigger cluster state reload
+	if len(matchingTriplets) == 0 && hasEndpointToMatch {
+		return nil
 	}
 
 	// Deduplicate by SeqID - multiple connections may receive the same notification

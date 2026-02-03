@@ -524,57 +524,6 @@ func (p *ProxyNotificationInjector) injectNotification(notification string) erro
 }
 
 // Helper functions to format notifications
-func formatSMigratingNotification(seqID int64, slots ...string) string {
-	// Format: ["SMIGRATING", seqID, slot1, slot2, ...]
-	parts := []string{
-		fmt.Sprintf(">%d\r\n", len(slots)+2),
-		"$10\r\nSMIGRATING\r\n",
-		fmt.Sprintf(":%d\r\n", seqID),
-	}
-
-	for _, slot := range slots {
-		parts = append(parts, fmt.Sprintf("$%d\r\n%s\r\n", len(slot), slot))
-	}
-
-	return strings.Join(parts, "")
-}
-
-func formatSMigratedNotification(seqID int64, endpoints ...string) string {
-	// Correct Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
-	// RESP3 wire format:
-	//   >3
-	//   +SMIGRATED
-	//   :SeqID
-	//   *<num_entries>
-	//     *2
-	//       +<host:port>
-	//       +<slots-or-ranges>
-	// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
-	parts := []string{">3\r\n"}
-	parts = append(parts, "+SMIGRATED\r\n")
-	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
-
-	count := len(endpoints)
-	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
-
-	for _, endpoint := range endpoints {
-		// Split endpoint into host:port and slots
-		// endpoint format: "host:port slot1,slot2,range1-range2"
-		endpointParts := strings.SplitN(endpoint, " ", 2)
-		if len(endpointParts) != 2 {
-			continue
-		}
-		hostPort := endpointParts[0]
-		slots := endpointParts[1]
-
-		// Each entry is an array with 2 elements
-		parts = append(parts, "*2\r\n")
-		parts = append(parts, fmt.Sprintf("+%s\r\n", hostPort))
-		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
-	}
-
-	return strings.Join(parts, "")
-}
 
 func formatMovingNotification(seqID int64, timeS int64, endpoint string) string {
 	// Format: ["MOVING", seqID, timeS, endpoint]

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -206,7 +207,8 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 
 	// Set up notification tracking
 	tracker := NewTrackingNotificationsHook()
-	setupNotificationHooks(redisClient, tracker)
+	logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(redisClient, tracker, logger)
 
 	// Verify connection
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -343,7 +345,8 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	}
 
 	tracker := NewTrackingNotificationsHook()
-	setupNotificationHook(clusterClient, tracker)
+	logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(clusterClient, tracker, logger)
 
 	if err := clusterClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -360,8 +363,8 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		addr := nodeClient.Options().Addr
 		originalEndpoint := nodeClient.OriginalEndpoint()
 
-		// Create per-shard tracking hook with debug output enabled
-		hook := NewTrackingNotificationsHookWithShard(addr, debugE2E())
+		// Create per-shard tracking hook
+		hook := NewTrackingNotificationsHookWithShard(addr)
 		manager := nodeClient.GetMaintNotificationsManager()
 		if manager != nil {
 			manager.AddNotificationHook(hook)
@@ -502,7 +505,8 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	defer redisClient.Close()
 
 	tracker := NewTrackingNotificationsHook()
-	setupNotificationHooks(redisClient, tracker)
+	logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(redisClient, tracker, logger)
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -522,8 +526,8 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 			addr := nodeClient.Options().Addr
 			originalEndpoint := nodeClient.OriginalEndpoint()
 
-			// Create per-shard tracking hook with debug output enabled
-			hook := NewTrackingNotificationsHookWithShard(addr, debugE2E())
+			// Create per-shard tracking hook
+			hook := NewTrackingNotificationsHookWithShard(addr)
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.AddNotificationHook(hook)
@@ -637,7 +641,8 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	defer redisClient.Close()
 
 	tracker := NewTrackingNotificationsHook()
-	setupNotificationHooks(redisClient, tracker)
+	logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(redisClient, tracker, logger)
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -657,8 +662,8 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 			addr := nodeClient.Options().Addr
 			originalEndpoint := nodeClient.OriginalEndpoint()
 
-			// Create per-shard tracking hook with debug output enabled
-			hook := NewTrackingNotificationsHookWithShard(addr, debugE2E())
+			// Create per-shard tracking hook
+			hook := NewTrackingNotificationsHookWithShard(addr)
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.AddNotificationHook(hook)
@@ -796,7 +801,8 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	defer client1.Close()
 
 	tracker1 := NewTrackingNotificationsHook()
-	setupNotificationHook(client1, tracker1)
+	logger1 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(client1, tracker1, logger1)
 
 	if err := client1.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect client1: %v", err)
@@ -860,7 +866,8 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	defer client2.Close()
 
 	tracker2 := NewTrackingNotificationsHook()
-	setupNotificationHook(client2, tracker2)
+	logger2 := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+	setupNotificationHooks(client2, tracker2, logger2)
 
 	if err := client2.Ping(ctx).Err(); err != nil {
 		t.Fatalf("Failed to connect client2: %v", err)
@@ -995,25 +1002,15 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 			trigger: SlotMigrateVariantMigrate,
 		},
 		{
-			name:    "RemoveAdd_MaintenanceMode",
-			effect:  SlotMigrateEffectRemoveAdd,
-			trigger: SlotMigrateVariantMaintenanceMode,
-		},
-		{
 			name:    "RemoveAdd_Failover",
 			effect:  SlotMigrateEffectRemoveAdd,
 			trigger: SlotMigrateVariantFailover,
 		},
-		// remove effect (2 variants) - one node removed
+		// remove effect - one node removed
 		{
 			name:    "Remove_Migrate",
 			effect:  SlotMigrateEffectRemove,
 			trigger: SlotMigrateVariantMigrate,
-		},
-		{
-			name:    "Remove_MaintenanceMode",
-			effect:  SlotMigrateEffectRemove,
-			trigger: SlotMigrateVariantMaintenanceMode,
 		},
 	}
 
@@ -1070,8 +1067,8 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				addr := nodeClient.Options().Addr
 				originalEndpoint := nodeClient.OriginalEndpoint()
 
-				// Create per-shard tracking hook with debug output enabled
-				hook := NewTrackingNotificationsHookWithShard(addr, debugE2E())
+				// Create per-shard tracking hook
+				hook := NewTrackingNotificationsHookWithShard(addr)
 				manager := nodeClient.GetMaintNotificationsManager()
 				if manager != nil {
 					manager.AddNotificationHook(hook)
@@ -1094,7 +1091,8 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 
 			// Also set up a global tracker for backward compatibility
 			tracker := NewTrackingNotificationsHook()
-			setupNotificationHook(redisClient, tracker)
+			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+			setupNotificationHooks(redisClient, tracker, logger)
 
 			// Start background traffic to keep connections active on all shards
 			stopTraffic := startBackgroundTraffic(ctx, redisClient)

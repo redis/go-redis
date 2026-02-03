@@ -123,10 +123,6 @@ const (
 	FailedToMarkForHandoffMessage                 = "failed to mark connection for handoff"
 	InvalidSeqIDInSMigratingNotificationMessage   = "invalid SeqID in SMIGRATING notification"
 	InvalidSeqIDInSMigratedNotificationMessage    = "invalid SeqID in SMIGRATED notification"
-	InvalidHostPortInSMigratedNotificationMessage = "invalid host:port in SMIGRATED notification"
-	SlotMigratingMessage                          = "slots migrating, applying relaxed timeout"
-	SlotMigratedMessage                           = "slots migrated, clearing relaxed timeout"
-	SMigratedReceivedMessage                      = "SMIGRATED notification received"
 	TriggeringClusterStateReloadMessage           = "triggering cluster state reload"
 
 	// ========================================
@@ -653,42 +649,6 @@ func InvalidSeqIDInSMigratedNotification(seqID interface{}) string {
 	message := fmt.Sprintf("%s: %v", InvalidSeqIDInSMigratedNotificationMessage, seqID)
 	return appendJSONIfDebug(message, map[string]interface{}{
 		"seqID": fmt.Sprintf("%v", seqID),
-	})
-}
-
-func InvalidHostPortInSMigratedNotification(hostPort interface{}) string {
-	message := fmt.Sprintf("%s: %v", InvalidHostPortInSMigratedNotificationMessage, hostPort)
-	return appendJSONIfDebug(message, map[string]interface{}{
-		"hostPort": fmt.Sprintf("%v", hostPort),
-	})
-}
-
-func SlotMigrating(connID uint64, seqID int64, slotRanges []string) string {
-	message := fmt.Sprintf("conn[%d] %s seqID=%d slots=%v", connID, SlotMigratingMessage, seqID, slotRanges)
-	return appendJSONIfDebug(message, map[string]interface{}{
-		"connID":     connID,
-		"seqID":      seqID,
-		"slotRanges": slotRanges,
-	})
-}
-
-// SlotMigrated logs when a connection receives SMIGRATED notification (per-connection log)
-func SlotMigrated(connID uint64, seqID int64, slotRanges []string) string {
-	message := fmt.Sprintf("conn[%d] %s seqID=%d slots=%v", connID, SlotMigratedMessage, seqID, slotRanges)
-	return appendJSONIfDebug(message, map[string]interface{}{
-		"connID":     connID,
-		"seqID":      seqID,
-		"slotRanges": slotRanges,
-	})
-}
-
-// SMigratedReceived logs when a connection receives SMIGRATED notification (per-connection, before filtering)
-// This is logged for ALL connections that receive SMIGRATED, regardless of whether the source matches
-func SMigratedReceived(connID uint64, seqID int64) string {
-	message := fmt.Sprintf("conn[%d] %s seqID=%d", connID, SMigratedReceivedMessage, seqID)
-	return appendJSONIfDebug(message, map[string]interface{}{
-		"connID": connID,
-		"seqID":  seqID,
 	})
 }
 

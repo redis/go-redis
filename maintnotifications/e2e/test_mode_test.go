@@ -112,9 +112,3 @@ func (m TestMode) String() string {
 		return "Unknown"
 	}
 }
-
-// DebugE2E returns true if E2E_DEBUG environment variable is set to "true"
-// Use this to control verbose debug logging in e2e tests
-func DebugE2E() bool {
-	return os.Getenv("E2E_DEBUG") == "true"
-}
