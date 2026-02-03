@@ -84,6 +84,7 @@ EOF
 # Parse command line arguments
 TIMEOUT="30m"
 RUN_PATTERN=""
+SKIP_PATTERN=""
 DRY_RUN=false
 LIST_TESTS=false
 JSON_OUTPUT=true
@@ -170,9 +171,8 @@ elif [[ "$SINGLE_ONLY" == true ]]; then
     if [[ -n "$RUN_PATTERN" ]]; then
         log_warning "Overriding -r pattern with --single"
     fi
-    # Match tests that don't have "Cluster" in the name
-    # Using negative lookahead alternative: match Test followed by anything not containing Cluster
-    RUN_PATTERN="^Test[^C]|^Test.*[^r]$"
+    # Use -skip to exclude Cluster tests (requires Go 1.21+)
+    SKIP_PATTERN="Cluster"
 fi
 
 # Validate configuration file exists
@@ -208,6 +208,10 @@ if [[ -n "$RUN_PATTERN" ]]; then
     TEST_CMD="$TEST_CMD -run '$RUN_PATTERN'"
 fi
 
+if [[ -n "$SKIP_PATTERN" ]]; then
+    TEST_CMD="$TEST_CMD -skip '$SKIP_PATTERN'"
+fi
+
 TEST_CMD="$TEST_CMD ./maintnotifications/e2e/"
 
 # List tests if requested
@@ -229,6 +233,9 @@ echo "  JSON Output: $JSON_OUTPUT" >&2
 echo "  Debug Mode: $DEBUG_MODE" >&2
 if [[ -n "$RUN_PATTERN" ]]; then
     echo "  Test Pattern: $RUN_PATTERN" >&2
+fi
+if [[ -n "$SKIP_PATTERN" ]]; then
+    echo "  Skip Pattern: $SKIP_PATTERN" >&2
 fi
 echo "" >&2
 

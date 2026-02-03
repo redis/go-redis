@@ -23,6 +23,10 @@ type DiagnosticsEvent struct {
 	ConnID uint64 `json:"connID"`
 	SeqID  int64  `json:"seqID"`
 
+	// ShardAddr is the address of the shard that received this notification
+	// Only populated when using NewTrackingNotificationsHookWithShard
+	ShardAddr string `json:"shardAddr,omitempty"`
+
 	Error error `json:"error"`
 
 	Pre       bool                   `json:"pre"`
@@ -52,19 +56,59 @@ type TrackingNotificationsHook struct {
 	movingCount                 atomic.Int64
 	unexpectedNotificationCount atomic.Int64
 
+	// cluster state reload tracking (actual reloads, not just SMIGRATED notifications)
+	clusterStateReloadCount atomic.Int64
+
 	diagnosticsLog []DiagnosticsEvent
 	connIds        map[uint64]bool
 	connLogs       map[uint64][]DiagnosticsEvent
 	mutex          sync.RWMutex
+
+	// shard identifier for debug output
+	shardAddr string
+	// debug printing enabled
+	debugPrint bool
+	// track last notification time for waiting
+	lastNotificationTime atomic.Value // stores time.Time
 }
 
 // NewTrackingNotificationsHook creates a new notification hook with counters
 func NewTrackingNotificationsHook() *TrackingNotificationsHook {
-	return &TrackingNotificationsHook{
+	hook := &TrackingNotificationsHook{
 		diagnosticsLog: make([]DiagnosticsEvent, 0),
 		connIds:        make(map[uint64]bool),
 		connLogs:       make(map[uint64][]DiagnosticsEvent),
 	}
+	hook.lastNotificationTime.Store(time.Time{})
+	return hook
+}
+
+// NewTrackingNotificationsHookWithShard creates a hook with shard identifier for debug output
+func NewTrackingNotificationsHookWithShard(shardAddr string, debugPrint bool) *TrackingNotificationsHook {
+	hook := &TrackingNotificationsHook{
+		diagnosticsLog: make([]DiagnosticsEvent, 0),
+		connIds:        make(map[uint64]bool),
+		connLogs:       make(map[uint64][]DiagnosticsEvent),
+		shardAddr:      shardAddr,
+		debugPrint:     debugPrint,
+	}
+	hook.lastNotificationTime.Store(time.Time{})
+	return hook
+}
+
+// SetShardAddr sets the shard address for debug output
+func (tnh *TrackingNotificationsHook) SetShardAddr(addr string) {
+	tnh.shardAddr = addr
+}
+
+// SetDebugPrint enables or disables debug printing
+func (tnh *TrackingNotificationsHook) SetDebugPrint(enabled bool) {
+	tnh.debugPrint = enabled
+}
+
+// GetLastNotificationTime returns the time of the last notification received
+func (tnh *TrackingNotificationsHook) GetLastNotificationTime() time.Time {
+	return tnh.lastNotificationTime.Load().(time.Time)
 }
 
 // it is not reusable, but just to keep it consistent
@@ -88,6 +132,7 @@ func (tnh *TrackingNotificationsHook) Clear() {
 	tnh.movingCount.Store(0)
 	tnh.unexpectedNotificationCount.Store(0)
 	tnh.connectionCount.Store(0)
+	tnh.clusterStateReloadCount.Store(0)
 }
 
 // wait for notification in prehook
@@ -124,6 +169,23 @@ func (tnh *TrackingNotificationsHook) FindNotification(notificationType string) 
 
 // PreHook captures timeout-related events before processing
 func (tnh *TrackingNotificationsHook) PreHook(_ context.Context, notificationCtx push.NotificationHandlerContext, notificationType string, notification []interface{}) ([]interface{}, bool) {
+	now := time.Now()
+	connID := tnh.getConnID(notificationCtx)
+	seqID := tnh.getSeqID(notification)
+
+	// Update last notification time
+	tnh.lastNotificationTime.Store(now)
+
+	// Debug print if enabled
+	if tnh.debugPrint {
+		shardInfo := tnh.shardAddr
+		if shardInfo == "" {
+			shardInfo = "unknown"
+		}
+		fmt.Printf("[DEBUG] %s Notification received: type=%s shard=%s conn=%d seqID=%d notification=%v\n",
+			now.Format("15:04:05.000"), notificationType, shardInfo, connID, seqID, notification)
+	}
+
 	tnh.increaseNotificationCount(notificationType)
 	tnh.storeDiagnosticsEvent(notificationType, notification, notificationCtx)
 	tnh.increaseRelaxedTimeoutCount(notificationType)
@@ -169,10 +231,18 @@ func (tnh *TrackingNotificationsHook) PostHook(_ context.Context, notificationCt
 
 func (tnh *TrackingNotificationsHook) storeDiagnosticsEvent(notificationType string, notification []interface{}, notificationCtx push.NotificationHandlerContext) {
 	connID := tnh.getConnID(notificationCtx)
+
+	// Get shard address - prefer explicit shardAddr, fall back to connection's remote address
+	shardAddr := tnh.shardAddr
+	if shardAddr == "" {
+		shardAddr = tnh.getShardAddrFromContext(notificationCtx)
+	}
+
 	event := DiagnosticsEvent{
 		Type:      notificationType,
 		ConnID:    connID,
 		SeqID:     tnh.getSeqID(notification),
+		ShardAddr: shardAddr,
 		Pre:       true,
 		Timestamp: time.Now(),
 		Details: map[string]interface{}{
@@ -189,6 +259,16 @@ func (tnh *TrackingNotificationsHook) storeDiagnosticsEvent(notificationType str
 	tnh.connLogs[connID] = append(tnh.connLogs[connID], event)
 	tnh.diagnosticsLog = append(tnh.diagnosticsLog, event)
 	tnh.mutex.Unlock()
+}
+
+// getShardAddrFromContext extracts the shard address from the notification context
+func (tnh *TrackingNotificationsHook) getShardAddrFromContext(notificationCtx push.NotificationHandlerContext) string {
+	if conn, ok := notificationCtx.Conn.(*pool.Conn); ok {
+		if remoteAddr := conn.RemoteAddr(); remoteAddr != nil {
+			return remoteAddr.String()
+		}
+	}
+	return ""
 }
 
 // GetRelaxedTimeoutCount returns the count of relaxed timeout events
@@ -298,9 +378,6 @@ type DiagnosticsAnalysis struct {
 	UnexpectedNotificationCount  int64
 	TotalNotifications           int64
 
-	// Cluster state reload tracking (each SMIGRATED triggers a reload)
-	ClusterStateReloadCount int64
-
 	diagnosticsLog []DiagnosticsEvent
 	connLogs       map[uint64][]DiagnosticsEvent
 	connIds        map[uint64]bool
@@ -331,8 +408,6 @@ func (a *DiagnosticsAnalysis) Analyze() {
 			a.SMigratingCount++
 		case "SMIGRATED":
 			a.SMigratedCount++
-			// Each SMIGRATED notification triggers a cluster state reload
-			a.ClusterStateReloadCount++
 		case "FAILING_OVER":
 			a.FailingOverCount++
 		case "FAILED_OVER":
@@ -387,11 +462,75 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 	t.Logf("-------------")
 	t.Logf(" - SMIGRATING: %d", a.SMigratingCount)
 	t.Logf(" - SMIGRATED: %d", a.SMigratedCount)
-	t.Logf(" - Cluster state reloads: %d", a.ClusterStateReloadCount)
 	t.Logf("-------------")
 	t.Logf(" - Total Notifications: %d", a.TotalNotifications)
 	t.Logf(" - Notification Processing Errors: %d", a.NotificationProcessingErrors)
 	t.Logf(" - Connection Count: %d", a.ConnectionCount)
+	t.Logf("-------------")
+
+	// Print detailed notification events grouped by seqID and type
+	t.Logf("-Detailed Notification Events (grouped by seqID)-")
+	t.Logf("-------------")
+
+	// Group events by (seqID, type)
+	type eventKey struct {
+		seqID int64
+		typ   string
+	}
+	type shardEvent struct {
+		shardAddr    string
+		connID       uint64
+		timestamp    time.Time
+		notification []interface{}
+	}
+	groupedEvents := make(map[eventKey][]shardEvent)
+	var seqIDOrder []eventKey // Track order of first occurrence
+
+	for _, event := range a.diagnosticsLog {
+		if !event.Pre {
+			continue
+		}
+		key := eventKey{seqID: event.SeqID, typ: event.Type}
+		if _, exists := groupedEvents[key]; !exists {
+			seqIDOrder = append(seqIDOrder, key)
+		}
+
+		// Extract notification from details
+		var notification []interface{}
+		if event.Details != nil {
+			if notif, ok := event.Details["notification"].([]interface{}); ok {
+				notification = notif
+			}
+		}
+
+		groupedEvents[key] = append(groupedEvents[key], shardEvent{
+			shardAddr:    event.ShardAddr,
+			connID:       event.ConnID,
+			timestamp:    event.Timestamp,
+			notification: notification,
+		})
+	}
+
+	// Print grouped events
+	for _, key := range seqIDOrder {
+		events := groupedEvents[key]
+		t.Logf("  seqID=%d type=%s (received on %d shard(s)):", key.seqID, key.typ, len(events))
+
+		// Print notification content once (should be same for all shards)
+		if len(events) > 0 && events[0].notification != nil {
+			t.Logf("    notification: %v", events[0].notification)
+		}
+
+		// Print which shards received it
+		for _, se := range events {
+			shardInfo := se.shardAddr
+			if shardInfo == "" {
+				shardInfo = "unknown"
+			}
+			t.Logf("    - shard=%s connID=%d time=%s",
+				shardInfo, se.connID, se.timestamp.Format("15:04:05.000"))
+		}
+	}
 	t.Logf("-------------")
 	t.Logf("Diagnostics Analysis completed successfully")
 }

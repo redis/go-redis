@@ -280,16 +280,17 @@ func NewClientFactory(config *RedisConnectionConfig) *ClientFactory {
 
 // CreateClientOptions represents options for creating Redis clients
 type CreateClientOptions struct {
-	Protocol                 int
-	MaintNotificationsConfig *maintnotifications.Config
-	MaxRetries               int
-	PoolSize                 int
-	MinIdleConns             int
-	MaxActiveConns           int
-	ClientName               string
-	DB                       int
-	ReadTimeout              time.Duration
-	WriteTimeout             time.Duration
+	Protocol                   int
+	MaintNotificationsConfig   *maintnotifications.Config
+	MaxRetries                 int
+	PoolSize                   int
+	MinIdleConns               int
+	MaxActiveConns             int
+	ClientName                 string
+	DB                         int
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ClusterStateReloadInterval time.Duration // For cluster clients, interval for automatic state reloads
 }
 
 // DefaultCreateClientOptions returns default options for creating Redis clients
@@ -340,16 +341,17 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 	if len(cf.config.Endpoints) > 1 || cf.isClusterEndpoint() {
 		// Create cluster client
 		clusterOptions := &redis.ClusterOptions{
-			Addrs:                    cf.getAddresses(),
-			Username:                 cf.config.Username,
-			Password:                 cf.config.Password,
-			Protocol:                 options.Protocol,
-			MaintNotificationsConfig: options.MaintNotificationsConfig,
-			MaxRetries:               options.MaxRetries,
-			PoolSize:                 options.PoolSize,
-			MinIdleConns:             options.MinIdleConns,
-			MaxActiveConns:           options.MaxActiveConns,
-			ClientName:               options.ClientName,
+			Addrs:                      cf.getAddresses(),
+			Username:                   cf.config.Username,
+			Password:                   cf.config.Password,
+			Protocol:                   options.Protocol,
+			MaintNotificationsConfig:   options.MaintNotificationsConfig,
+			MaxRetries:                 options.MaxRetries,
+			PoolSize:                   options.PoolSize,
+			MinIdleConns:               options.MinIdleConns,
+			MaxActiveConns:             options.MaxActiveConns,
+			ClientName:                 options.ClientName,
+			ClusterStateReloadInterval: 10 * time.Minute,
 		}
 
 		if options.ReadTimeout > 0 {
@@ -357,6 +359,9 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 		}
 		if options.WriteTimeout > 0 {
 			clusterOptions.WriteTimeout = options.WriteTimeout
+		}
+		if options.ClusterStateReloadInterval > 0 {
+			clusterOptions.ClusterStateReloadInterval = options.ClusterStateReloadInterval
 		}
 
 		if cf.config.TLS {

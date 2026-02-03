@@ -74,12 +74,12 @@ func NewNotificationInjector() (NotificationInjector, error) {
 
 // ProxyNotificationInjector implements NotificationInjector using cae-resp-proxy
 type ProxyNotificationInjector struct {
-	apiPort       int
-	apiBaseURL    string
-	cmd           *exec.Cmd
-	httpClient    *http.Client
-	nodes         []proxyNode
-	visibleNodes  []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
+	apiPort      int
+	apiBaseURL   string
+	cmd          *exec.Cmd
+	httpClient   *http.Client
+	nodes        []proxyNode
+	visibleNodes []int // Indices of nodes visible in CLUSTER SLOTS (for migration simulation)
 }
 
 type proxyNode struct {
@@ -606,7 +606,6 @@ func formatFailedOverNotification(seqID int64) string {
 	return fmt.Sprintf(">2\r\n$11\r\nFAILED_OVER\r\n:%d\r\n", seqID)
 }
 
-
 // FaultInjectorNotificationInjector implements NotificationInjector using the real fault injector
 type FaultInjectorNotificationInjector struct {
 	client       *FaultInjectorClient
@@ -726,4 +725,3 @@ func (f *FaultInjectorNotificationInjector) InjectFAILED_OVER(ctx context.Contex
 	// FAILED_OVER is generated automatically when failover completes
 	return fmt.Errorf("FAILED_OVER cannot be directly injected with real fault injector - it's generated when failover completes")
 }
-

@@ -991,11 +991,12 @@ func (s *ProxyFaultInjectorServer) sendToConnection(connID string, notification 
 // GET: Returns available triggers for a slot migration effect
 // POST: Triggers a slot migration action
 func (s *ProxyFaultInjectorServer) handleSlotMigrate(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		s.handleSlotMigrateGetTriggers(w, r)
-	} else if r.Method == http.MethodPost {
+	case http.MethodPost:
 		s.handleSlotMigrateTrigger(w, r)
-	} else {
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }

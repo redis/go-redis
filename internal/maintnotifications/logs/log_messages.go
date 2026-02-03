@@ -125,7 +125,9 @@ const (
 	InvalidSeqIDInSMigratedNotificationMessage    = "invalid SeqID in SMIGRATED notification"
 	InvalidHostPortInSMigratedNotificationMessage = "invalid host:port in SMIGRATED notification"
 	SlotMigratingMessage                          = "slots migrating, applying relaxed timeout"
-	SlotMigratedMessage                           = "slots migrated, triggering cluster state reload"
+	SlotMigratedMessage                           = "slots migrated, clearing relaxed timeout"
+	SMigratedReceivedMessage                      = "SMIGRATED notification received"
+	TriggeringClusterStateReloadMessage           = "triggering cluster state reload"
 
 	// ========================================
 	// used in pool/conn
@@ -670,8 +672,29 @@ func SlotMigrating(connID uint64, seqID int64, slotRanges []string) string {
 	})
 }
 
-func SlotMigrated(seqID int64, hostPort string, slotRanges []string) string {
-	message := fmt.Sprintf("%s seqID=%d host:port=%s slots=%v", SlotMigratedMessage, seqID, hostPort, slotRanges)
+// SlotMigrated logs when a connection receives SMIGRATED notification (per-connection log)
+func SlotMigrated(connID uint64, seqID int64, slotRanges []string) string {
+	message := fmt.Sprintf("conn[%d] %s seqID=%d slots=%v", connID, SlotMigratedMessage, seqID, slotRanges)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"connID":     connID,
+		"seqID":      seqID,
+		"slotRanges": slotRanges,
+	})
+}
+
+// SMigratedReceived logs when a connection receives SMIGRATED notification (per-connection, before filtering)
+// This is logged for ALL connections that receive SMIGRATED, regardless of whether the source matches
+func SMigratedReceived(connID uint64, seqID int64) string {
+	message := fmt.Sprintf("conn[%d] %s seqID=%d", connID, SMigratedReceivedMessage, seqID)
+	return appendJSONIfDebug(message, map[string]interface{}{
+		"connID": connID,
+		"seqID":  seqID,
+	})
+}
+
+// TriggeringClusterStateReload logs when cluster state reload is triggered (deduplicated, once per seqID)
+func TriggeringClusterStateReload(seqID int64, hostPort string, slotRanges []string) string {
+	message := fmt.Sprintf("%s seqID=%d host:port=%s slots=%v", TriggeringClusterStateReloadMessage, seqID, hostPort, slotRanges)
 	return appendJSONIfDebug(message, map[string]interface{}{
 		"seqID":      seqID,
 		"hostPort":   hostPort,

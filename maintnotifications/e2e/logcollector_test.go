@@ -358,10 +358,6 @@ func (la *LogAnalisis) Analyze() {
 			switch {
 			case notificationType(log, "MOVING"):
 				la.MovingCount++
-			case notificationType(log, "SMIGRATING"):
-				la.SMigratingCount++
-			case notificationType(log, "SMIGRATED"):
-				la.SMigratedCount++
 			case notificationType(log, "MIGRATING"):
 				la.MigratingCount++
 			case notificationType(log, "MIGRATED"):
@@ -376,8 +372,23 @@ func (la *LogAnalisis) Analyze() {
 			}
 		}
 
-		// Track cluster state reloads (triggered by SMIGRATED notifications)
-		if strings.Contains(log, logs2.SlotMigratedMessage) {
+		// Track SMIGRATING notifications (uses SlotMigratingMessage, not ProcessingNotificationMessage)
+		// Log format: "conn[%d] slots migrating, applying relaxed timeout seqID=%d slots=%v"
+		if strings.Contains(log, logs2.SlotMigratingMessage) {
+			la.SMigratingCount++
+			la.TotalNotifications++
+		}
+
+		// Track SMIGRATED notifications received (per-connection log, before filtering)
+		// Log format: "conn[%d] SMIGRATED notification received seqID=%d"
+		if strings.Contains(log, logs2.SMigratedReceivedMessage) {
+			la.SMigratedCount++
+			la.TotalNotifications++
+		}
+
+		// Track cluster state reloads (deduplicated, once per seqID)
+		// Log format: "triggering cluster state reload seqID=%d host:port=%s slots=%v"
+		if strings.Contains(log, logs2.TriggeringClusterStateReloadMessage) {
 			la.ClusterStateReloadCount++
 		}
 
