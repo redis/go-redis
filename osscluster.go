@@ -1575,9 +1575,21 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				)
 			}
 			slot := c.cmdSlot(cmd, -1)
-			node, err := c.slotReadOnlyNode(state, slot)
-			if err != nil {
-				return err
+			var node *clusterNode
+			// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
+			if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+				if len(state.Masters) == 0 {
+					return errClusterNoNodes
+				}
+				// For read-only keyless commands, pick from all nodes (masters + slaves)
+				allNodes := append(state.Masters, state.Slaves...)
+				idx := c.opt.ShardPicker.Next(len(allNodes))
+				node = allNodes[idx]
+			} else {
+				node, err = c.slotReadOnlyNode(state, slot)
+				if err != nil {
+					return err
+				}
 			}
 			cmdsMap.Add(node, cmd)
 		}
@@ -1595,9 +1607,19 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			)
 		}
 		slot := c.cmdSlot(cmd, -1)
-		node, err := state.slotMasterNode(slot)
-		if err != nil {
-			return err
+		var node *clusterNode
+		// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
+		if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+			if len(state.Masters) == 0 {
+				return errClusterNoNodes
+			}
+			idx := c.opt.ShardPicker.Next(len(state.Masters))
+			node = state.Masters[idx]
+		} else {
+			node, err = state.slotMasterNode(slot)
+			if err != nil {
+				return err
+			}
 		}
 		cmdsMap.Add(node, cmd)
 	}
@@ -2219,7 +2241,8 @@ func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
 		if prefferedRandomSlot != -1 {
 			return prefferedRandomSlot
 		}
-		return hashtag.RandomSlot()
+		// Return -1 for keyless commands to signal that ShardPicker should be used
+		return -1
 	}
 	firstKey := cmd.stringArg(pos)
 	return hashtag.Slot(firstKey)

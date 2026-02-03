@@ -45,6 +45,8 @@ type TrackingNotificationsHook struct {
 	totalNotifications          atomic.Int64
 	migratingCount              atomic.Int64
 	migratedCount               atomic.Int64
+	sMigratingCount             atomic.Int64
+	sMigratedCount              atomic.Int64
 	failingOverCount            atomic.Int64
 	failedOverCount             atomic.Int64
 	movingCount                 atomic.Int64
@@ -79,7 +81,13 @@ func (tnh *TrackingNotificationsHook) Clear() {
 	tnh.totalNotifications.Store(0)
 	tnh.migratingCount.Store(0)
 	tnh.migratedCount.Store(0)
+	tnh.sMigratingCount.Store(0)
+	tnh.sMigratedCount.Store(0)
 	tnh.failingOverCount.Store(0)
+	tnh.failedOverCount.Store(0)
+	tnh.movingCount.Store(0)
+	tnh.unexpectedNotificationCount.Store(0)
+	tnh.connectionCount.Store(0)
 }
 
 // wait for notification in prehook
@@ -228,10 +236,14 @@ func (tnh *TrackingNotificationsHook) increaseNotificationCount(notificationType
 	switch notificationType {
 	case "MOVING":
 		tnh.movingCount.Add(1)
-	case "MIGRATING", "SMIGRATING":
+	case "MIGRATING":
 		tnh.migratingCount.Add(1)
-	case "MIGRATED", "SMIGRATED":
+	case "MIGRATED":
 		tnh.migratedCount.Add(1)
+	case "SMIGRATING":
+		tnh.sMigratingCount.Add(1)
+	case "SMIGRATED":
+		tnh.sMigratedCount.Add(1)
 	case "FAILING_OVER":
 		tnh.failingOverCount.Add(1)
 	case "FAILED_OVER":
@@ -279,13 +291,19 @@ type DiagnosticsAnalysis struct {
 	MovingCount                  int64
 	MigratingCount               int64
 	MigratedCount                int64
+	SMigratingCount              int64
+	SMigratedCount               int64
 	FailingOverCount             int64
 	FailedOverCount              int64
 	UnexpectedNotificationCount  int64
 	TotalNotifications           int64
-	diagnosticsLog               []DiagnosticsEvent
-	connLogs                     map[uint64][]DiagnosticsEvent
-	connIds                      map[uint64]bool
+
+	// Cluster state reload tracking (each SMIGRATED triggers a reload)
+	ClusterStateReloadCount int64
+
+	diagnosticsLog []DiagnosticsEvent
+	connLogs       map[uint64][]DiagnosticsEvent
+	connIds        map[uint64]bool
 }
 
 func NewDiagnosticsAnalysis(diagnosticsLog []DiagnosticsEvent) *DiagnosticsAnalysis {
@@ -305,10 +323,16 @@ func (a *DiagnosticsAnalysis) Analyze() {
 		switch log.Type {
 		case "MOVING":
 			a.MovingCount++
-		case "MIGRATING", "SMIGRATING":
+		case "MIGRATING":
 			a.MigratingCount++
-		case "MIGRATED", "SMIGRATED":
+		case "MIGRATED":
 			a.MigratedCount++
+		case "SMIGRATING":
+			a.SMigratingCount++
+		case "SMIGRATED":
+			a.SMigratedCount++
+			// Each SMIGRATED notification triggers a cluster state reload
+			a.ClusterStateReloadCount++
 		case "FAILING_OVER":
 			a.FailingOverCount++
 		case "FAILED_OVER":
@@ -358,6 +382,12 @@ func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 	t.Logf(" - FAILING_OVER: %d", a.FailingOverCount)
 	t.Logf(" - FAILED_OVER: %d", a.FailedOverCount)
 	t.Logf(" - Unexpected: %d", a.UnexpectedNotificationCount)
+	t.Logf("-------------")
+	t.Logf("- CLUSTER-SPECIFIC Notification Analysis-")
+	t.Logf("-------------")
+	t.Logf(" - SMIGRATING: %d", a.SMigratingCount)
+	t.Logf(" - SMIGRATED: %d", a.SMigratedCount)
+	t.Logf(" - Cluster state reloads: %d", a.ClusterStateReloadCount)
 	t.Logf("-------------")
 	t.Logf(" - Total Notifications: %d", a.TotalNotifications)
 	t.Logf(" - Notification Processing Errors: %d", a.NotificationProcessingErrors)
