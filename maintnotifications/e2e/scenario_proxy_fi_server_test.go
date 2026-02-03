@@ -1015,16 +1015,28 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Logf("Testing slot-migrate effect: %s, variant: %s", tc.effect, tc.trigger)
+		// Get the number of requirements for this effect/variant
+		// Each requirement represents a different database configuration that should be tested
+		reqCount := GetSlotMigrateRequirementsCount(t, ctx, tc.effect, tc.trigger)
 
-			// Create a fresh database configured for this specific effect/variant
-			// This queries the fault injector for the required database configuration
-			bdbID, factory, testMode, fiClient, factoryCleanup := SetupTestDatabaseForSlotMigrate(t, ctx, tc.effect, tc.trigger)
-			defer factoryCleanup()
+		for reqIdx := 0; reqIdx < reqCount; reqIdx++ {
+			reqIdx := reqIdx // capture loop variable
+			testName := tc.name
+			if reqCount > 1 {
+				testName = fmt.Sprintf("%s_Req%d", tc.name, reqIdx)
+			}
 
-			t.Logf("✓ Created database %d for effect %s, variant %s (mode: %s)",
-				bdbID, tc.effect, tc.trigger, testMode.Mode)
+			t.Run(testName, func(t *testing.T) {
+				t.Logf("Testing slot-migrate effect: %s, variant: %s (requirement %d/%d)",
+					tc.effect, tc.trigger, reqIdx+1, reqCount)
+
+				// Create a fresh database configured for this specific effect/variant/requirement
+				// This queries the fault injector for the required database configuration
+				bdbID, factory, testMode, fiClient, factoryCleanup := SetupTestDatabaseForSlotMigrateWithRequirementIndex(t, ctx, tc.effect, tc.trigger, reqIdx)
+				defer factoryCleanup()
+
+				t.Logf("✓ Created database %d for effect %s, variant %s, requirement %d (mode: %s)",
+					bdbID, tc.effect, tc.trigger, reqIdx, testMode.Mode)
 
 			// Set up log collector to track cluster state reloads
 			logCollector := NewTestLogCollector()
@@ -1170,11 +1182,12 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
 			}
 
-			// Get log analysis for cluster state reloads
-			logAnalysis := logCollector.GetAnalysis()
-			t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
-			logAnalysis.Print(t)
-		})
+				// Get log analysis for cluster state reloads
+				logAnalysis := logCollector.GetAnalysis()
+				t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
+				logAnalysis.Print(t)
+			})
+		}
 	}
 
 	t.Log("✓ All slot-migrate effects tested successfully!")

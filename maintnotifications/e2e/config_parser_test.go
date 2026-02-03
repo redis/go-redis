@@ -1317,6 +1317,37 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	return bdbID, factory, testMode, cleanup
 }
 
+// GetSlotMigrateRequirementsCount returns the number of database requirements for a given effect/variant.
+// This is useful for iterating over all required databases when running tests.
+// Returns 0 if the effect/variant combination is not found or if in proxy mode (which always returns 1).
+func GetSlotMigrateRequirementsCount(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant) int {
+	// Get environment config
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		// No environment config - use Docker proxy setup (always 1 requirement)
+		return 1
+	}
+
+	// Create fault injector client using the URL from environment config
+	fiClient := NewFaultInjectorClient(envConfig.FaultInjectorURL)
+
+	// Query the fault injector for the required database configuration
+	triggersResp, err := fiClient.GetSlotMigrateTriggers(ctx, effect, 0)
+	if err != nil {
+		t.Logf("Warning: Failed to get slot-migrate triggers: %v", err)
+		return 1
+	}
+
+	// Find the trigger that matches our variant
+	for _, trigger := range triggersResp.Triggers {
+		if trigger.Name == string(variant) || (variant == SlotMigrateVariantDefault && trigger.Name == "migrate") {
+			return len(trigger.Requirements)
+		}
+	}
+
+	return 1
+}
+
 // SetupTestDatabaseForSlotMigrate creates a database configured for a specific slot-migrate effect
 // It queries the fault injector's GET /slot-migrate endpoint to get the required database configuration
 // and creates the database with those settings.
@@ -1326,6 +1357,21 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 //	bdbID, factory, testMode, fiClient, cleanup := SetupTestDatabaseForSlotMigrate(t, ctx, SlotMigrateEffectSlotShuffle, SlotMigrateVariantMigrate)
 //	defer cleanup()
 func SetupTestDatabaseForSlotMigrate(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, fiClient *FaultInjectorClient, cleanup func()) {
+	return SetupTestDatabaseForSlotMigrateWithRequirementIndex(t, ctx, effect, variant, 0)
+}
+
+// SetupTestDatabaseForSlotMigrateWithRequirementIndex creates a database configured for a specific slot-migrate effect
+// using the requirement at the specified index. This allows testing against all required database configurations.
+//
+// Usage:
+//
+//	reqCount := GetSlotMigrateRequirementsCount(t, ctx, effect, variant)
+//	for i := 0; i < reqCount; i++ {
+//	    bdbID, factory, testMode, fiClient, cleanup := SetupTestDatabaseForSlotMigrateWithRequirementIndex(t, ctx, effect, variant, i)
+//	    defer cleanup()
+//	    // run test...
+//	}
+func SetupTestDatabaseForSlotMigrateWithRequirementIndex(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant, requirementIndex int) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, fiClient *FaultInjectorClient, cleanup func()) {
 	// Get environment config
 	envConfig, err := GetEnvConfig()
 	if err != nil {
@@ -1393,11 +1439,17 @@ func SetupTestDatabaseForSlotMigrate(t *testing.T, ctx context.Context, effect S
 	var requiredDBConfig map[string]interface{}
 	for _, trigger := range triggersResp.Triggers {
 		if trigger.Name == string(variant) || (variant == SlotMigrateVariantDefault && trigger.Name == "migrate") {
-			if len(trigger.Requirements) > 0 {
-				requiredDBConfig = trigger.Requirements[0].DBConfig
+			if requirementIndex < len(trigger.Requirements) {
+				requiredDBConfig = trigger.Requirements[requirementIndex].DBConfig
 				if debugE2E() {
-					t.Logf("Found required DB config for %s/%s: %v", effect, variant, requiredDBConfig)
+					t.Logf("Found required DB config for %s/%s (requirement %d/%d): %v",
+						effect, variant, requirementIndex+1, len(trigger.Requirements), requiredDBConfig)
 				}
+			} else if len(trigger.Requirements) > 0 {
+				// Fall back to first requirement if index is out of bounds
+				requiredDBConfig = trigger.Requirements[0].DBConfig
+				t.Logf("Warning: requirement index %d out of bounds (max %d), using first requirement",
+					requirementIndex, len(trigger.Requirements)-1)
 			}
 			break
 		}
