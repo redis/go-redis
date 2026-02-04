@@ -37,6 +37,25 @@ func InstrumentMetrics(rdb redis.UniversalClient, opts ...MetricsOption) error {
 			metric.WithInstrumentationVersion("semver:"+redis.Version()),
 		)
 	}
+	if conf.poolName == "" {
+		switch rdb := rdb.(type) {
+		case *redis.Client:
+			conf.poolName = rdb.Options().Addr
+		case *redis.ClusterClient:
+			for _, addr := range rdb.Options().Addrs {
+				conf.poolName = addr
+				break
+			}
+		case *redis.Ring:
+			for _, addr := range rdb.Options().Addrs {
+				conf.poolName = addr
+				break
+			}
+		default:
+			return fmt.Errorf("redisotel: %T not supported", rdb)
+		}
+	}
+	conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
 
 	var state *metricsState
 	if conf.closeChan != nil {
@@ -92,12 +111,6 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 			return nil
 		}
 	}
-
-	if conf.poolName == "" {
-		opt := rdb.Options()
-		conf.poolName = opt.Addr
-	}
-	conf.attrs = append(conf.attrs, attribute.String("pool.name", conf.poolName))
 
 	registration, err := reportPoolStats(rdb, conf)
 	if err != nil {
