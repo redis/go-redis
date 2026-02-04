@@ -1422,11 +1422,21 @@ func (s *ProxyFaultInjectorServer) executeSlotMigrateSlotShuffle(action *actionS
 
 	// Send SMIGRATING notification
 	smigratingMsg := formatSMigratingNotification(seqID, fmt.Sprintf("%d-%d", slotStart, slotEnd))
+
+	// Track this as an active notification for new connections
+	s.setActiveNotification("SMIGRATING", smigratingMsg)
+
 	if err := s.injectNotification(smigratingMsg); err != nil {
+		s.clearActiveNotification("SMIGRATING")
 		fmt.Printf("[ProxyFI] Error sending SMIGRATING: %v\n", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// Wait 500ms to simulate migration in progress - allows tests to create new connections
+	// that should receive the active SMIGRATING notification
+	time.Sleep(500 * time.Millisecond)
+
+	// Clear SMIGRATING from active notifications before sending SMIGRATED
+	s.clearActiveNotification("SMIGRATING")
 
 	// Send SMIGRATED notification with existing destination endpoint
 	smigratedMsg := formatSMigratedNotification(seqID+1, fmt.Sprintf("%s %d-%d", destAddr, slotStart, slotEnd))

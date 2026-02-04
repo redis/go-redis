@@ -1394,6 +1394,24 @@ func SetupTestDatabaseForSlotMigrateWithRequirementIndex(t *testing.T, ctx conte
 		// Create fault injector client for proxy mode using Docker fault injector URL
 		fiClient = NewFaultInjectorClient("http://localhost:15000")
 
+		// Call CreateDatabase to initialize the proxy fault injector with 2 nodes
+		// This is required for slot-shuffle, remove, and remove-add effects which need >= 2 nodes
+		resp, err := fiClient.CreateDatabase(ctx, 0, DatabaseConfig{})
+		if err != nil {
+			t.Fatalf("Failed to trigger CreateDatabase on proxy fault injector: %v", err)
+		}
+
+		// Wait for the action to complete
+		status, err := fiClient.WaitForAction(ctx, resp.ActionID,
+			WithMaxWaitTime(10*time.Second),
+			WithPollInterval(100*time.Millisecond))
+		if err != nil {
+			t.Fatalf("Failed to wait for CreateDatabase action: %v", err)
+		}
+		if status.Status != StatusSuccess {
+			t.Fatalf("CreateDatabase action failed: %v", status.Error)
+		}
+
 		cleanup = func() {
 			factory.DestroyAll()
 		}
