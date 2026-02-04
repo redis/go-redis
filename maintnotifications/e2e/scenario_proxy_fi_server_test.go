@@ -17,9 +17,12 @@ import (
 // to slots spread across all shards (0, 1001, 2002, ...). This ensures connections remain
 // active on all shards to receive notifications. Returns a stop function to call when done.
 // The slotKeys array is defined in slot_keys.go.
+// The stop function waits for the goroutine to finish before returning.
 func startBackgroundTraffic(ctx context.Context, client redis.UniversalClient) (stop func()) {
 	stopChan := make(chan struct{})
+	doneChan := make(chan struct{})
 	go func() {
+		defer close(doneChan)
 		for {
 			// Send commands to slots spread across all shards: 0, 1001, 2002, 3003, ...
 			for slot := 0; slot < 16384; slot += 1001 {
@@ -34,13 +37,17 @@ func startBackgroundTraffic(ctx context.Context, client redis.UniversalClient) (
 			}
 		}
 	}()
-	return func() { close(stopChan) }
+	return func() {
+		close(stopChan)
+		<-doneChan // Wait for goroutine to finish
+	}
 }
 
 // startPubSubConnections creates pubsub subscriptions on channels spread across different slots
 // to ensure pubsub connections are active during slot migrations. Returns a stop function.
 // The pubsub connections use sharded pubsub (SSUBSCRIBE) to ensure they're on specific shards.
 // Returns nil stop function if client is not a ClusterClient.
+// The stop function waits for all goroutines to finish before returning.
 func startPubSubConnections(ctx context.Context, t *testing.T, client redis.UniversalClient) (stop func()) {
 	clusterClient, ok := client.(*redis.ClusterClient)
 	if !ok {
@@ -49,6 +56,7 @@ func startPubSubConnections(ctx context.Context, t *testing.T, client redis.Univ
 	}
 	stopChan := make(chan struct{})
 	var pubsubs []*redis.PubSub
+	var wg sync.WaitGroup
 
 	// Create pubsub subscriptions on channels in different slots
 	// Use channels that hash to slots spread across shards: 0, 1001, 2002, ...
@@ -60,7 +68,9 @@ func startPubSubConnections(ctx context.Context, t *testing.T, client redis.Univ
 		pubsubs = append(pubsubs, pubsub)
 
 		// Start a goroutine to receive messages (keeps connection active)
+		wg.Add(1)
 		go func(ps *redis.PubSub, ch string) {
+			defer wg.Done()
 			msgCh := ps.Channel()
 			for {
 				select {
@@ -79,7 +89,9 @@ func startPubSubConnections(ctx context.Context, t *testing.T, client redis.Univ
 	}
 
 	// Start a goroutine to publish messages periodically to keep connections active
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		msgCount := 0
@@ -106,6 +118,7 @@ func startPubSubConnections(ctx context.Context, t *testing.T, client redis.Univ
 		for _, ps := range pubsubs {
 			_ = ps.Close()
 		}
+		wg.Wait() // Wait for all goroutines to finish
 	}
 }
 
