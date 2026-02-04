@@ -261,7 +261,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	logCollector.Clear() // Clear any previous logs
 	logCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(logCollector)
-	defer redis.SetLogger(nil) // Reset logger after test
+	defer logging.Enable() // Reset logger after test
 
 	t.Logf("✓ Using fault injector client (mode: %s)", testMode.Mode)
 	t.Logf("  Fault injector base URL: %s", fiClient.baseURL)
@@ -401,7 +401,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	logCollector.Clear() // Clear any previous logs
 	logCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(logCollector)
-	defer redis.SetLogger(nil) // Reset logger after test
+	defer logging.Enable() // Reset logger after test
 
 	t.Logf("Running cluster reshard test in %s mode", testMode.Mode)
 	t.Logf("  Fault injector base URL: %s", fiClient.baseURL)
@@ -431,6 +431,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 
 	// Set up per-shard notification tracking
 	var shards []*shardInfo
+	var shardsMu sync.Mutex
 
 	err = clusterClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
 		if err := nodeClient.Ping(ctx).Err(); err != nil {
@@ -450,11 +451,13 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 			t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
 		}
 
+		shardsMu.Lock()
 		shards = append(shards, &shardInfo{
 			addr:             addr,
 			originalEndpoint: originalEndpoint,
 			hook:             hook,
 		})
+		shardsMu.Unlock()
 		return nil
 	})
 	if err != nil {
@@ -572,7 +575,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	logCollector.Clear() // Clear any previous logs
 	logCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(logCollector)
-	defer redis.SetLogger(nil) // Reset logger after test
+	defer logging.Enable() // Reset logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 
@@ -595,6 +598,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 
 	// Set up per-shard notification tracking for cluster clients
 	var shards []*shardInfo
+	var shardsMu sync.Mutex
 
 	// Type assertion for cluster-specific methods
 	clusterClient, isCluster := redisClient.(*redis.ClusterClient)
@@ -617,11 +621,13 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
 			}
 
+			shardsMu.Lock()
 			shards = append(shards, &shardInfo{
 				addr:             addr,
 				originalEndpoint: originalEndpoint,
 				hook:             hook,
 			})
+			shardsMu.Unlock()
 			return nil
 		})
 		if err != nil {
@@ -711,7 +717,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	logCollector.Clear() // Clear any previous logs
 	logCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(logCollector)
-	defer redis.SetLogger(nil) // Reset logger after test
+	defer logging.Enable() // Reset logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 	t.Logf("Database ID: %d", bdbID)
@@ -735,6 +741,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 
 	// Set up per-shard notification tracking for cluster clients
 	var shards []*shardInfo
+	var shardsMu sync.Mutex
 
 	// Type assertion for cluster-specific methods
 	clusterClient, isCluster := redisClient.(*redis.ClusterClient)
@@ -757,11 +764,13 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
 			}
 
+			shardsMu.Lock()
 			shards = append(shards, &shardInfo{
 				addr:             addr,
 				originalEndpoint: originalEndpoint,
 				hook:             hook,
 			})
+			shardsMu.Unlock()
 			return nil
 		})
 		if err != nil {
@@ -871,7 +880,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	logCollector.Clear() // Clear any previous logs
 	logCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(logCollector)
-	defer redis.SetLogger(nil) // Reset logger after test
+	defer logging.Enable() // Reset logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 	t.Logf("Database ID: %d", bdbID)
@@ -1132,7 +1141,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 			logCollector.Clear() // Clear any previous logs
 			logCollector.DoPrint() // Print logs for debugging
 			redis.SetLogger(logCollector)
-			defer redis.SetLogger(nil) // Reset logger after test
+			defer logging.Enable() // Reset logger after test
 
 			// Create Redis cluster client connected to the new database
 			redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
