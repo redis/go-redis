@@ -93,29 +93,19 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 		}
 	}
 
-	// Determine pool name for this specific node. Use the node's address
-	// rather than mutating conf.poolName, which is shared across all nodes
-	// in cluster/ring mode and would cause every node to report the same
-	// pool.name attribute.
-	poolName := conf.poolName
-	if poolName == "" {
-		poolName = rdb.Options().Addr
+	// Shallow-copy the shared config so we don't mutate it across nodes.
+	nodeConf := *conf
+
+	if nodeConf.poolName == "" {
+		nodeConf.poolName = rdb.Options().Addr
 	}
 
-	// Build per-node attrs instead of appending to the shared conf.attrs slice.
 	nodeAttrs := make([]attribute.KeyValue, len(conf.attrs), len(conf.attrs)+1)
 	copy(nodeAttrs, conf.attrs)
-	nodeAttrs = append(nodeAttrs, attribute.String("pool.name", poolName))
+	nodeAttrs = append(nodeAttrs, attribute.String("pool.name", nodeConf.poolName))
+	nodeConf.attrs = nodeAttrs
 
-	nodeConf := &config{
-		dbSystem: conf.dbSystem,
-		attrs:    nodeAttrs,
-		mp:       conf.mp,
-		meter:    conf.meter,
-		poolName: poolName,
-	}
-
-	registration, err := reportPoolStats(rdb, nodeConf)
+	registration, err := reportPoolStats(rdb, &nodeConf)
 	if err != nil {
 		return err
 	}
@@ -124,7 +114,7 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 		state.registrations = append(state.registrations, registration)
 	}
 
-	if err := addMetricsHook(rdb, nodeConf); err != nil {
+	if err := addMetricsHook(rdb, &nodeConf); err != nil {
 		return err
 	}
 	return nil
