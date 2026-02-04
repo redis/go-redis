@@ -36,6 +36,78 @@ func startBackgroundTraffic(ctx context.Context, client redis.UniversalClient) (
 	return func() { close(stopChan) }
 }
 
+// startPubSubConnections creates pubsub subscriptions on channels spread across different slots
+// to ensure pubsub connections are active during slot migrations. Returns a stop function.
+// The pubsub connections use sharded pubsub (SSUBSCRIBE) to ensure they're on specific shards.
+// Returns nil stop function if client is not a ClusterClient.
+func startPubSubConnections(ctx context.Context, t *testing.T, client redis.UniversalClient) (stop func()) {
+	clusterClient, ok := client.(*redis.ClusterClient)
+	if !ok {
+		t.Log("Skipping pubsub connections - client is not a ClusterClient")
+		return func() {}
+	}
+	stopChan := make(chan struct{})
+	var pubsubs []*redis.PubSub
+
+	// Create pubsub subscriptions on channels in different slots
+	// Use channels that hash to slots spread across shards: 0, 1001, 2002, ...
+	for slot := 0; slot < 16384; slot += 1001 {
+		channelName := fmt.Sprintf("test-channel-%s", slotKeys[slot])
+
+		// Use sharded pubsub (SSUBSCRIBE) for cluster-aware subscriptions
+		pubsub := clusterClient.SSubscribe(ctx, channelName)
+		pubsubs = append(pubsubs, pubsub)
+
+		// Start a goroutine to receive messages (keeps connection active)
+		go func(ps *redis.PubSub, ch string) {
+			msgCh := ps.Channel()
+			for {
+				select {
+				case <-stopChan:
+					return
+				case msg, ok := <-msgCh:
+					if !ok {
+						return
+					}
+					if debugE2E() {
+						t.Logf("PubSub received message on %s: %v", ch, msg)
+					}
+				}
+			}
+		}(pubsub, channelName)
+	}
+
+	// Start a goroutine to publish messages periodically to keep connections active
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		msgCount := 0
+		for {
+			select {
+			case <-stopChan:
+				return
+			case <-ticker.C:
+				// Publish to channels in different slots
+				for slot := 0; slot < 16384; slot += 1001 {
+					channelName := fmt.Sprintf("test-channel-%s", slotKeys[slot])
+					// Use SPublish for sharded pubsub
+					_ = clusterClient.SPublish(ctx, channelName, fmt.Sprintf("msg-%d", msgCount)).Err()
+				}
+				msgCount++
+			}
+		}
+	}()
+
+	t.Logf("✓ Started %d pubsub connections across different slots", len(pubsubs))
+
+	return func() {
+		close(stopChan)
+		for _, ps := range pubsubs {
+			_ = ps.Close()
+		}
+	}
+}
+
 // waitForLogsToSettle waits for a fixed duration to allow the log collector
 // to collect all meaningful logs after notifications are received.
 func waitForLogsToSettle(t *testing.T, waitDuration time.Duration) {
@@ -235,7 +307,11 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	stopTraffic := startBackgroundTraffic(ctx, redisClient)
 	defer stopTraffic()
 
-	// Give the background traffic time to establish connections on all shards
+	// Start pubsub connections to test notifications on pubsub connections
+	stopPubSub := startPubSubConnections(ctx, t, redisClient)
+	defer stopPubSub()
+
+	// Give the background traffic and pubsub time to establish connections on all shards
 	time.Sleep(500 * time.Millisecond)
 
 	// Clear all trackers before triggering the fault injector
@@ -389,7 +465,11 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	stopTraffic := startBackgroundTraffic(ctx, clusterClient)
 	defer stopTraffic()
 
-	// Give the background traffic time to establish connections on all shards
+	// Start pubsub connections to test notifications on pubsub connections
+	stopPubSub := startPubSubConnections(ctx, t, clusterClient)
+	defer stopPubSub()
+
+	// Give the background traffic and pubsub time to establish connections on all shards
 	time.Sleep(500 * time.Millisecond)
 
 	// Clear all trackers before triggering the fault injector
@@ -554,7 +634,11 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	stopTraffic := startBackgroundTraffic(ctx, redisClient)
 	defer stopTraffic()
 
-	// Give the background traffic time to establish connections on all shards
+	// Start pubsub connections to test notifications on pubsub connections
+	stopPubSub := startPubSubConnections(ctx, t, redisClient)
+	defer stopPubSub()
+
+	// Give the background traffic and pubsub time to establish connections on all shards
 	time.Sleep(500 * time.Millisecond)
 
 	// Clear all trackers before triggering the fault injector
@@ -690,7 +774,11 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	stopTraffic := startBackgroundTraffic(ctx, redisClient)
 	defer stopTraffic()
 
-	// Give the background traffic time to establish connections on all shards
+	// Start pubsub connections to test notifications on pubsub connections
+	stopPubSub := startPubSubConnections(ctx, t, redisClient)
+	defer stopPubSub()
+
+	// Give the background traffic and pubsub time to establish connections on all shards
 	time.Sleep(500 * time.Millisecond)
 
 	// Clear all trackers before triggering the fault injector
@@ -1110,7 +1198,11 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 			stopTraffic := startBackgroundTraffic(ctx, redisClient)
 			defer stopTraffic()
 
-			// Give the background traffic time to establish connections on all shards
+			// Start pubsub connections to test notifications on pubsub connections
+			stopPubSub := startPubSubConnections(ctx, t, redisClient)
+			defer stopPubSub()
+
+			// Give the background traffic and pubsub time to establish connections on all shards
 			time.Sleep(500 * time.Millisecond)
 
 			// Clear all trackers before triggering the fault injector
