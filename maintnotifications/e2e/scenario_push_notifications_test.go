@@ -530,6 +530,13 @@ func TestPushNotifications(t *testing.T) {
 	if !testMode.SkipMultiClientTests {
 		// we started three clients, so we expect 3x the connections
 		expectedMaxConns = int64(maxConnections) * 3
+	} else {
+		// In proxy mock mode, the proxy simulates a cluster with 4 endpoints (17000-17003)
+		// Handoffs create new connections to different endpoints, and the proxy assigns
+		// global connection IDs. The connection count can grow beyond the initial pool size
+		// because each endpoint can have its own set of connections.
+		// We use a multiplier of 4 to account for the 4 simulated endpoints.
+		expectedMaxConns = int64(maxConnections) * 4
 	}
 
 	if allLogsAnalysis.ConnectionCount > expectedMaxConns {

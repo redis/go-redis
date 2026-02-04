@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -1158,6 +1159,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 			// This ensures ForEachShard will iterate over all shards
 			// Also set up per-shard notification tracking
 			var shards []*shardInfo
+			var shardsMu sync.Mutex
 
 			err = redisClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
 				if err := nodeClient.Ping(ctx).Err(); err != nil {
@@ -1177,11 +1179,13 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
 				}
 
+				shardsMu.Lock()
 				shards = append(shards, &shardInfo{
 					addr:             addr,
 					originalEndpoint: originalEndpoint,
 					hook:             hook,
 				})
+				shardsMu.Unlock()
 				return nil
 			})
 			if err != nil {

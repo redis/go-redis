@@ -311,7 +311,7 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
 	}
 
-	if internal.LogLevel.DebugOrAbove() {
+	if internal.LogLevel.DebugOrAbove() && internal.Logger != nil {
 		internal.Logger.Printf(context.Background(), logs.DebugLoggingEnabled())
 		internal.Logger.Printf(context.Background(), logs.ConfigDebug(result))
 	}
