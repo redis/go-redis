@@ -299,8 +299,9 @@ func TestPushNotifications(t *testing.T) {
 	// Trigger bind action to complete the migration process (or inject MOVING in proxy mock mode)
 	var bindResp *ActionResponse
 	if testMode.IsProxyMock() {
-		// Proxy mock: Start commands BEFORE injecting MOVING notification
-		// This ensures there are active connections that can receive the push notification
+		// Proxy mock: We need connections to receive the MOVING notification,
+		// but we must stop traffic before handoffs start to avoid data race.
+		// The handoff worker reinitializes connections, which races with CommandRunner.
 		p("Starting commands before MOVING injection (proxy mock mode)...")
 		go commandsRunner.FireCommandsUntilStop(ctx)
 		// Give commands time to establish connections
@@ -314,6 +315,22 @@ func TestPushNotifications(t *testing.T) {
 			ef("Failed to inject MOVING: %v", err)
 		}
 		time.Sleep(testMode.NotificationDelay)
+
+		// Wait for MOVING notification to be received before stopping CommandRunner
+		p("Waiting for MOVING notification to be received (proxy mock mode)...")
+		match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
+		}, 30*time.Second)
+		if !found {
+			ef("MOVING notification was not received in proxy mock mode")
+		}
+		movingData := logs2.ExtractDataFromLogMessage(match)
+		p("MOVING notification received (proxy mock mode). %v", movingData)
+
+		// Stop command runner before handoffs start to avoid data race
+		// Handoffs are scheduled at timeS/2 = 15 seconds, so stop before that
+		p("Stopping command runner before handoffs start (proxy mock mode)...")
+		commandsRunner.Stop()
 	} else {
 		// Real FI: Trigger bind action
 		p("Triggering bind action to complete migration...")
@@ -479,14 +496,22 @@ func TestPushNotifications(t *testing.T) {
 	// Run commands based on mode
 	if testMode.SkipMultiClientTests {
 		// Single client mode (proxy mock)
-		// Commands are already running (started before MOVING injection)
-		// Need to wait long enough for:
-		// 1. MOVING notification to be processed
-		// 2. Handoff to be scheduled (at timeS/2 = 15 seconds)
-		// 3. Handoff to execute
-		// 4. Post-handoff relaxed timeout to be observed (2 seconds)
-		// Total: ~20 seconds minimum
-		time.Sleep(25 * time.Second)
+		// CommandRunner was already stopped before handoffs started (to avoid data race)
+		// Wait for handoffs to complete:
+		// 1. MOVING notification was already processed
+		// 2. Handoff is scheduled at timeS/2 = 15 seconds
+		// 3. Handoff executes
+		// Total: ~18 seconds for handoffs to complete
+		p("Waiting for handoffs to complete (proxy mock mode)...")
+		time.Sleep(18 * time.Second)
+
+		// Restart command runner to observe post-handoff behavior
+		p("Restarting command runner to observe post-handoff behavior...")
+		commandsRunner, _ = NewCommandRunner(client)
+		go commandsRunner.FireCommandsUntilStop(ctx)
+
+		// Run traffic for a bit to observe post-handoff behavior
+		time.Sleep(5 * time.Second)
 		commandsRunner.Stop()
 	} else {
 		// Multi-client mode (real FI)

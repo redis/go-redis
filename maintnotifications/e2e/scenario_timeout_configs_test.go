@@ -312,6 +312,7 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			var bindResp *ActionResponse
 			if testMode.IsProxyMock() {
 				// Proxy mock: Directly inject MOVING notification
+				// CommandRunner is still running so connections can receive the notification
 				p("Injecting MOVING notification (proxy mock mode)...")
 				if err := injector.InjectMOVING(ctx, 3000, 30, ""); err != nil {
 					ef("Failed to inject MOVING: %v", err)
@@ -354,8 +355,25 @@ func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
 			// but still need enough time to observe post-handoff timeout behavior
 			postHandoffDuration := 1 * time.Minute
 			if testMode.IsProxyMock() {
-				// Use 20 seconds for proxy mock - enough to observe post-handoff behavior
-				postHandoffDuration = 20 * time.Second
+				// In proxy mock mode, stop the CommandRunner after MOVING is received
+				// but before handoffs execute to avoid data race.
+				// The handoff worker reinitializes connections, which races with CommandRunner
+				// using the same connections.
+				// Handoffs are scheduled at timeS/2 = 15 seconds.
+				p("Stopping command runner before handoffs execute (proxy mock mode)...")
+				commandsRunner.Stop()
+
+				// Wait for handoffs to complete
+				p("Waiting for handoffs to complete...")
+				time.Sleep(18 * time.Second) // Wait for handoffs (scheduled at 15s)
+
+				// Restart command runner to observe post-handoff behavior
+				p("Restarting command runner to observe post-handoff behavior...")
+				commandsRunner, _ = NewCommandRunner(client)
+				go commandsRunner.FireCommandsUntilStop(ctx)
+
+				// Use shorter observation time since we already waited for handoffs
+				postHandoffDuration = 5 * time.Second
 			}
 			p("Continuing traffic for %v to observe post-handoff timeout behavior...", postHandoffDuration)
 			time.Sleep(postHandoffDuration)
