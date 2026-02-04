@@ -85,10 +85,10 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 	
 	// Verify notification was received
 	analysis := tracker.GetAnalysis()
-	if analysis.MigratingCount == 0 {
+	if analysis.SMigratingCount == 0 {
 		t.Errorf("Expected to receive SMIGRATING notification, got 0")
 	} else {
-		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
+		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
 	}
 	
 	// Verify operations still work (timeouts should be relaxed)

@@ -257,11 +257,11 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	defer factoryCleanup()
 
 	// Set up log collector to track cluster state reloads
-	logCollector := NewTestLogCollector()
-	logCollector.Clear() // Clear any previous logs
-	logCollector.DoPrint() // Print logs for debugging
-	redis.SetLogger(logCollector)
-	defer logging.Enable() // Reset logger after test
+	localLogCollector := NewTestLogCollector()
+	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.DoPrint() // Print logs for debugging
+	redis.SetLogger(localLogCollector)
+	defer redis.SetLogger(logCollector) // Restore global logger after test
 
 	t.Logf("✓ Using fault injector client (mode: %s)", testMode.Mode)
 	t.Logf("  Fault injector base URL: %s", fiClient.baseURL)
@@ -317,7 +317,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 
 	// Clear all trackers before triggering the fault injector
 	// This ensures we only count notifications from the actual test action
-	clearAllTrackers(logCollector, tracker, nil)
+	clearAllTrackers(localLogCollector, tracker, nil)
 
 	// Test 3: Trigger slot migration using the /slot-migrate API
 	// The database was configured for slot-shuffle effect via SetupTestDatabaseForSlotMigrate
@@ -376,7 +376,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	analysis.Print(t)
 
 	// Get log analysis for cluster state reloads
-	logAnalysis := logCollector.GetAnalysis()
+	logAnalysis := localLogCollector.GetAnalysis()
 	t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 	logAnalysis.Print(t)
 
@@ -397,11 +397,11 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	defer factoryCleanup()
 
 	// Set up log collector to track cluster state reloads
-	logCollector := NewTestLogCollector()
-	logCollector.Clear() // Clear any previous logs
-	logCollector.DoPrint() // Print logs for debugging
-	redis.SetLogger(logCollector)
-	defer logging.Enable() // Reset logger after test
+	localLogCollector := NewTestLogCollector()
+	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.DoPrint() // Print logs for debugging
+	redis.SetLogger(localLogCollector)
+	defer redis.SetLogger(logCollector) // Restore global logger after test
 
 	t.Logf("Running cluster reshard test in %s mode", testMode.Mode)
 	t.Logf("  Fault injector base URL: %s", fiClient.baseURL)
@@ -478,7 +478,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 
 	// Clear all trackers before triggering the fault injector
 	// This ensures we only count notifications from the actual test action
-	clearAllTrackers(logCollector, tracker, shards)
+	clearAllTrackers(localLogCollector, tracker, shards)
 
 	// Trigger slot migration with slot-shuffle effect
 	// The database was configured for slot-shuffle effect via SetupTestDatabaseForSlotMigrate
@@ -549,7 +549,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	analysis.Print(t)
 
 	// Get log analysis for cluster state reloads
-	logAnalysis := logCollector.GetAnalysis()
+	logAnalysis := localLogCollector.GetAnalysis()
 	t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 	logAnalysis.Print(t)
 
@@ -571,11 +571,11 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	defer factoryCleanup()
 
 	// Set up log collector to track cluster state reloads
-	logCollector := NewTestLogCollector()
-	logCollector.Clear() // Clear any previous logs
-	logCollector.DoPrint() // Print logs for debugging
-	redis.SetLogger(logCollector)
-	defer logging.Enable() // Reset logger after test
+	localLogCollector := NewTestLogCollector()
+	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.DoPrint() // Print logs for debugging
+	redis.SetLogger(localLogCollector)
+	defer redis.SetLogger(logCollector) // Restore global logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 
@@ -650,7 +650,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 
 	// Clear all trackers before triggering the fault injector
 	// This ensures we only count notifications from the actual test action
-	clearAllTrackers(logCollector, tracker, shards)
+	clearAllTrackers(localLogCollector, tracker, shards)
 
 	// Trigger slot migration using the /slot-migrate API with correct bdb_id
 	// The database was configured for slot-shuffle effect via SetupTestDatabaseForSlotMigrate
@@ -692,7 +692,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	analysis.Print(t)
 
 	// Get log analysis for cluster state reloads
-	logAnalysis := logCollector.GetAnalysis()
+	logAnalysis := localLogCollector.GetAnalysis()
 	t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 	logAnalysis.Print(t)
 
@@ -713,11 +713,11 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	defer factoryCleanup()
 
 	// Set up log collector to track cluster state reloads
-	logCollector := NewTestLogCollector()
-	logCollector.Clear() // Clear any previous logs
-	logCollector.DoPrint() // Print logs for debugging
-	redis.SetLogger(logCollector)
-	defer logging.Enable() // Reset logger after test
+	localLogCollector := NewTestLogCollector()
+	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.DoPrint() // Print logs for debugging
+	redis.SetLogger(localLogCollector)
+	defer redis.SetLogger(logCollector) // Restore global logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 	t.Logf("Database ID: %d", bdbID)
@@ -793,7 +793,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 
 	// Clear all trackers before triggering the fault injector
 	// This ensures we only count notifications from the actual test action
-	clearAllTrackers(logCollector, tracker, shards)
+	clearAllTrackers(localLogCollector, tracker, shards)
 
 	// Trigger multiple slot-shuffle migrations using the correct API
 	// The database was configured for slot-shuffle effect via SetupTestDatabaseForSlotMigrate
@@ -853,7 +853,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	analysis.Print(t)
 
 	// Get log analysis for cluster state reloads
-	logAnalysis := logCollector.GetAnalysis()
+	logAnalysis := localLogCollector.GetAnalysis()
 	t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 	logAnalysis.Print(t)
 
@@ -876,11 +876,11 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	defer factoryCleanup()
 
 	// Set up log collector to track cluster state reloads
-	logCollector := NewTestLogCollector()
-	logCollector.Clear() // Clear any previous logs
-	logCollector.DoPrint() // Print logs for debugging
-	redis.SetLogger(logCollector)
-	defer logging.Enable() // Reset logger after test
+	localLogCollector := NewTestLogCollector()
+	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.DoPrint() // Print logs for debugging
+	redis.SetLogger(localLogCollector)
+	defer redis.SetLogger(logCollector) // Restore global logger after test
 
 	t.Logf("Running test in %s mode", testMode.Mode)
 	t.Logf("Database ID: %d", bdbID)
@@ -1038,7 +1038,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	}
 
 	// Get log analysis for cluster state reloads
-	logAnalysis := logCollector.GetAnalysis()
+	logAnalysis := localLogCollector.GetAnalysis()
 	t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 	logAnalysis.Print(t)
 
@@ -1137,11 +1137,11 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					bdbID, tc.effect, tc.trigger, reqIdx, testMode.Mode)
 
 			// Set up log collector to track cluster state reloads
-			logCollector := NewTestLogCollector()
-			logCollector.Clear() // Clear any previous logs
-			logCollector.DoPrint() // Print logs for debugging
-			redis.SetLogger(logCollector)
-			defer logging.Enable() // Reset logger after test
+			localLogCollector := NewTestLogCollector()
+			localLogCollector.Clear() // Clear any previous logs
+			localLogCollector.DoPrint() // Print logs for debugging
+			redis.SetLogger(localLogCollector)
+			defer redis.SetLogger(logCollector) // Restore global logger after test
 
 			// Create Redis cluster client connected to the new database
 			redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
@@ -1220,7 +1220,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 
 			// Clear all trackers before triggering the fault injector
 			// This ensures we only count notifications from the actual test action
-			clearAllTrackers(logCollector, tracker, shards)
+			clearAllTrackers(localLogCollector, tracker, shards)
 
 			// Trigger slot migration on the database we just created
 			bdbIDStr := fmt.Sprintf("%d", bdbID)
@@ -1288,7 +1288,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 			}
 
 				// Get log analysis for cluster state reloads
-				logAnalysis := logCollector.GetAnalysis()
+				logAnalysis := localLogCollector.GetAnalysis()
 				t.Logf("✓ Cluster state reloads: %d", logAnalysis.ClusterStateReloadCount)
 				logAnalysis.Print(t)
 			})
