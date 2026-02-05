@@ -79,8 +79,13 @@ func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
 			if poolSize == 0 {
 				poolSize = 1
 			}
+			// simulate at least 20 connections
+			if poolSize < 20 {
+				poolSize = 20
+			}
 			wg := sync.WaitGroup{}
-			for i := 0; i < int(poolSize); i++ {
+			// run 2x pool size operations
+			for i := 0; i < int(poolSize)*2; i++ {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()

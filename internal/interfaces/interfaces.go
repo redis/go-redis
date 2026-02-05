@@ -40,6 +40,10 @@ type OptionsInterface interface {
 	// GetAddr returns the connection address.
 	GetAddr() string
 
+	// GetOriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
+	// before any resolution or transformation.
+	GetOriginalEndpoint() string
+
 	// IsTLSEnabled returns true if TLS is enabled.
 	IsTLSEnabled() bool
 

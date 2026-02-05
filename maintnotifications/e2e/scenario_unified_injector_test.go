@@ -82,27 +82,30 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 
 	// Wait for notification processing (mode-aware)
 	time.Sleep(testMode.NotificationDelay)
-
+	
 	// Verify notification was received
 	analysis := tracker.GetAnalysis()
-	if analysis.MigratingCount == 0 {
+	if analysis.SMigratingCount == 0 {
 		t.Errorf("Expected to receive SMIGRATING notification, got 0")
 	} else {
-		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
+		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
 	}
-
+	
 	// Verify operations still work (timeouts should be relaxed)
 	if err := client.Set(ctx, "test-key-during-migration", "value", 0).Err(); err != nil {
 		t.Errorf("Expected operations to work during migration, got error: %v", err)
 	}
-
+	
 	// Print analysis
 	analysis.Print(t)
-
+	
 	t.Log("✓ SMIGRATING test passed")
 }
 
 // TestUnifiedInjector_SMIGRATED demonstrates SMIGRATED notification handling
+// This test works with BOTH the real fault injector and the proxy mock
+// - Proxy mock: Can directly inject SMIGRATED
+// - Real FI: Triggers slot migration which generates both SMIGRATING and SMIGRATED
 func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	ctx := context.Background()
 
@@ -119,11 +122,6 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	// Get test mode configuration
 	testMode := injector.GetTestModeConfig()
 	t.Logf("Using %s mode", testMode.Mode)
-
-	// Skip this test if using real fault injector (can't directly inject SMIGRATED)
-	if testMode.IsRealFaultInjector() {
-		t.Skip("Skipping SMIGRATED test - real fault injector cannot directly inject SMIGRATED")
-	}
 
 	// Track cluster state reloads
 	var reloadCount atomic.Int32
@@ -190,24 +188,36 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	// Wait for blocking command to start (mode-aware)
 	time.Sleep(testMode.ConnectionEstablishDelay)
 
-	// Inject SMIGRATED notification with the "new" node (node 3 / 17003)
-	// This will simulate migrating slots from node 2 (17002) to node 3 (17003)
-	t.Log("Injecting SMIGRATED notification to swap node 2 for node 3...")
-
-	// Get all node addresses - we want to use node 3 (index 3) as the target
+	// Get all node addresses - needed for both modes
 	addrs := injector.GetClusterAddrs()
 	var newNodeAddr string
 	if len(addrs) >= 4 {
 		newNodeAddr = addrs[3] // Node 3: 127.0.0.1:17003
-		t.Logf("Using new node address: %s", newNodeAddr)
 	} else {
 		// Fallback to first node if we don't have 4 nodes
 		newNodeAddr = addrs[0]
-		t.Logf("Warning: Less than 4 nodes available, using %s", newNodeAddr)
 	}
 
-	if err := injector.InjectSMIGRATED(ctx, 12346, newNodeAddr, "1000-2000", "3000"); err != nil {
-		t.Fatalf("Failed to inject SMIGRATED: %v", err)
+	// Mode-specific behavior for triggering SMIGRATED
+	if testMode.IsProxyMock() {
+		// Proxy mock: Directly inject SMIGRATED notification
+		t.Log("Injecting SMIGRATED notification to swap node 2 for node 3...")
+		t.Logf("Using new node address: %s", newNodeAddr)
+
+		if err := injector.InjectSMIGRATED(ctx, 12346, newNodeAddr, "1000-2000", "3000"); err != nil {
+			t.Fatalf("Failed to inject SMIGRATED: %v", err)
+		}
+	} else {
+		// Real fault injector: Trigger slot migration which generates both SMIGRATING and SMIGRATED
+		t.Log("Triggering slot migration (will generate SMIGRATING and SMIGRATED)...")
+
+		// First inject SMIGRATING (this triggers the actual migration)
+		if err := injector.InjectSMIGRATING(ctx, 12345, "1000-2000", "3000"); err != nil {
+			t.Fatalf("Failed to trigger slot migration: %v", err)
+		}
+
+		// Wait for migration to complete (real FI takes longer)
+		t.Log("Waiting for migration to complete...")
 	}
 
 	// Wait for notification processing (mode-aware)
@@ -217,14 +227,30 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	<-blockingDone
 
 	// Verify notification was received
-	// Note: SMIGRATED notifications may not always be received in proxy mock mode
-	// because they're sent to all connections, but the client might not be actively
-	// listening on all of them. This is expected behavior.
 	analysis := tracker.GetAnalysis()
-	if analysis.MigratedCount > 0 {
-		t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.MigratedCount)
+
+	if testMode.IsProxyMock() {
+		// Proxy mock: SMIGRATED notifications may not always be received
+		// because they're sent to all connections, but the client might not be actively
+		// listening on all of them. This is expected behavior.
+		if analysis.MigratedCount > 0 {
+			t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.MigratedCount)
+		} else {
+			t.Logf("Note: No SMIGRATED notifications received (expected in proxy mock mode)")
+		}
 	} else {
-		t.Logf("Note: No SMIGRATED notifications received (expected in proxy mock mode)")
+		// Real FI: Should receive both SMIGRATING and SMIGRATED
+		if analysis.MigratingCount == 0 {
+			t.Errorf("Expected to receive SMIGRATING notification with real FI, got 0")
+		} else {
+			t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
+		}
+
+		if analysis.MigratedCount > 0 {
+			t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.MigratedCount)
+		} else {
+			t.Logf("Note: SMIGRATED notification not yet received (migration may still be in progress)")
+		}
 	}
 
 	// Verify cluster state reload callback
@@ -372,20 +398,21 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 		// Wait for notification processing (mode-aware)
 		time.Sleep(testMode.NotificationDelay)
 	}
-
+	
 	// Verify operations still work
 	for i := 0; i < 5; i++ {
 		if err := client.Set(ctx, fmt.Sprintf("post-migration-key%d", i), "value", 0).Err(); err != nil {
 			t.Errorf("Operations failed after migration: %v", err)
 		}
 	}
-
+	
 	// Print final analysis
 	analysis := tracker.GetAnalysis()
 	analysis.Print(t)
-
+	
 	t.Logf("✓ Complex scenario test passed")
 	t.Logf("  - SMIGRATING notifications: %d", analysis.MigratingCount)
 	t.Logf("  - SMIGRATED notifications: %d", analysis.MigratedCount)
 	t.Logf("  - Cluster state reloads: %d", reloadCount.Load())
 }
+

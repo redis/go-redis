@@ -27,7 +27,11 @@ const Nil = proto.Nil
 
 // SetLogger set custom log
 // Use with VoidLogger to disable logging.
+// If logger is nil, the call is ignored and the existing logger is kept.
 func SetLogger(logger internal.Logging) {
+	if logger == nil {
+		return
+	}
 	internal.Logger = logger
 }
 
@@ -1125,6 +1129,14 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// OriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
+// before any resolution or transformation. This is useful for matching
+// the source field in SMIGRATED notifications.
+// Returns empty string if not set (e.g., for non-cluster clients).
+func (c *Client) OriginalEndpoint() string {
+	return c.opt.OriginalEndpoint
 }
 
 // GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.
