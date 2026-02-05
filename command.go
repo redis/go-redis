@@ -4925,22 +4925,22 @@ type HotKeysKeyEntry struct {
 // HotKeysResult represents the response data from HOTKEYS GET command.
 // Field names match the Redis response format.
 type HotKeysResult struct {
-	TrackingActive                      bool
-	SampleRatio                         int64
-	SelectedSlots                       []HotKeysSlotRange
-	SampledCommandSelectedSlotsUs       int64 // Present when sample-ratio > 1 and selected-slots is not empty
-	AllCommandsSelectedSlotsUs          int64 // Present when selected-slots is not empty
-	AllCommandsAllSlotsUs               int64
+	TrackingActive                       bool
+	SampleRatio                          int64
+	SelectedSlots                        []HotKeysSlotRange
+	SampledCommandSelectedSlotsUs        int64 // Present when sample-ratio > 1 and selected-slots is not empty
+	AllCommandsSelectedSlotsUs           int64 // Present when selected-slots is not empty
+	AllCommandsAllSlotsUs                int64
 	NetBytesSampledCommandsSelectedSlots int64 // Present when sample-ratio > 1 and selected-slots is not empty
-	NetBytesAllCommandsSelectedSlots    int64 // Present when selected-slots is not empty
-	NetBytesAllCommandsAllSlots         int64
-	CollectionStartTimeUnixMs           int64
-	CollectionDurationMs                int64
-	UsedCPUSysMs                        int64
-	UsedCPUUserMs                       int64
-	TotalNetBytes                       int64
-	ByCPUTimeUs                         []HotKeysKeyEntry
-	ByNetBytes                          []HotKeysKeyEntry
+	NetBytesAllCommandsSelectedSlots     int64 // Present when selected-slots is not empty
+	NetBytesAllCommandsAllSlots          int64
+	CollectionStartTimeUnixMs            int64
+	CollectionDurationMs                 int64
+	UsedCPUSysMs                         int64
+	UsedCPUUserMs                        int64
+	TotalNetBytes                        int64
+	ByCPUTimeUs                          []HotKeysKeyEntry
+	ByNetBytes                           []HotKeysKeyEntry
 }
 
 type HotKeysCmd struct {
