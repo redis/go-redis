@@ -45,6 +45,14 @@ type Options struct {
 	// OriginalEndpoint is the exact endpoint string returned by CLUSTER SLOTS
 	// before any resolution or transformation (e.g., loopback replacement).
 	// This is used to match the source endpoint in SMIGRATED notifications.
+	//
+	// This field is only populated for cluster node clients created from CLUSTER SLOTS responses.
+	// It will be empty ("") in the following cases:
+	//   - Non-cluster clients (standalone Redis, Sentinel)
+	//   - Cluster nodes discovered via MOVED/ASK redirects
+	//   - Manually created clients
+	//
+	// Use Client.OriginalEndpoint() to access this value.
 	OriginalEndpoint string
 
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.

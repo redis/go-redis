@@ -504,13 +504,27 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		} else {
 			// No matching triplets (connectionOriginalEndpoint was empty - MOVED/ASK case)
 			// Fall back to using the first triplet from the notification
-			firstTriplet, ok := triplets[0].([]interface{})
-			if ok && len(firstTriplet) >= 2 {
-				target, _ = firstTriplet[1].(string)
+			if len(triplets) == 0 {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (empty triplets array)", triplets))
+				return nil
 			}
-			if ok && len(firstTriplet) >= 3 {
+			firstTriplet, ok := triplets[0].([]interface{})
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (first triplet format)", triplets[0]))
+				return nil
+			}
+			if len(firstTriplet) >= 2 {
+				if t, ok := firstTriplet[1].(string); ok {
+					target = t
+				} else {
+					internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (first triplet target)", firstTriplet[1]))
+				}
+			}
+			if len(firstTriplet) >= 3 {
 				if slots, ok := firstTriplet[2].(string); ok {
 					slotsForLog = strings.Split(slots, ",")
+				} else {
+					internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (first triplet slots)", firstTriplet[2]))
 				}
 			}
 		}

@@ -1132,9 +1132,13 @@ func (c *Client) Options() *Options {
 }
 
 // OriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
-// before any resolution or transformation. This is useful for matching
-// the source field in SMIGRATED notifications.
-// Returns empty string if not set (e.g., for non-cluster clients).
+// before any resolution or transformation (e.g., loopback replacement).
+// This is useful for matching the source field in SMIGRATED notifications.
+//
+// Returns empty string ("") in the following cases:
+//   - Non-cluster clients (standalone Redis, Sentinel)
+//   - Cluster nodes discovered via MOVED/ASK redirects
+//   - Manually created clients
 func (c *Client) OriginalEndpoint() string {
 	return c.opt.OriginalEndpoint
 }
