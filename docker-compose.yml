@@ -8,10 +8,11 @@ services:
     environment:
       - TLS_ENABLED=yes
       - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=6379
       - TLS_PORT=6666
-    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional tls-auth-clients-user CN --save ""}
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
     ports:
       - 6379:6379
       - 6666:6666 # TLS port
@@ -49,10 +50,12 @@ services:
       - PORT=6430
       - TLS_PORT=5430
       - TLS_ENABLED=yes
+      - TLS_AUTH_CLIENTS_USER=CN
       - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=yes
       - REPLICAS=1
-    command: "--tls-auth-clients optional tls-auth-clients-user CN --cluster-announce-ip 127.0.0.1"
+    command: "--tls-auth-clients optional --cluster-announce-ip 127.0.0.1"
     ports:
       - "6430-6435:6430-6435"      # Regular ports
       - "5430-5435:5430-5435"      # TLS ports (set via TLS_PORT env var)
@@ -72,9 +75,10 @@ services:
       - NODES=3
       - TLS_ENABLED=yes
       - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=9121
-    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional tls-auth-clients-user CN --save ""}
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
     #ports:
     #  - "9121-9123:9121-9123"
     volumes:
@@ -116,9 +120,10 @@ services:
       - NODES=3
       - TLS_ENABLED=yes
       - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=6390
-    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional tls-auth-clients-user CN --save ""}
+    command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
     ports:
       - 6390:6390
       - 6391:6391
