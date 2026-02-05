@@ -271,7 +271,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.Clear()   // Clear any previous logs
 	localLogCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
@@ -411,7 +411,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.Clear()   // Clear any previous logs
 	localLogCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
@@ -585,7 +585,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.Clear()   // Clear any previous logs
 	localLogCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
@@ -727,7 +727,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.Clear()   // Clear any previous logs
 	localLogCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
@@ -890,7 +890,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear() // Clear any previous logs
+	localLogCollector.Clear()   // Clear any previous logs
 	localLogCollector.DoPrint() // Print logs for debugging
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
@@ -1149,156 +1149,156 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				t.Logf("✓ Created database %d for effect %s, variant %s, requirement %d (mode: %s)",
 					bdbID, tc.effect, tc.trigger, reqIdx, testMode.Mode)
 
-			// Set up log collector to track cluster state reloads
-			localLogCollector := NewTestLogCollector()
-			localLogCollector.Clear() // Clear any previous logs
-			localLogCollector.DoPrint() // Print logs for debugging
-			redis.SetLogger(localLogCollector)
-			defer redis.SetLogger(logCollector) // Restore global logger after test
+				// Set up log collector to track cluster state reloads
+				localLogCollector := NewTestLogCollector()
+				localLogCollector.Clear()   // Clear any previous logs
+				localLogCollector.DoPrint() // Print logs for debugging
+				redis.SetLogger(localLogCollector)
+				defer redis.SetLogger(logCollector) // Restore global logger after test
 
-			// Create Redis cluster client connected to the new database
-			redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
-				Protocol: 3,
-				MaintNotificationsConfig: &maintnotifications.Config{
-					Mode: maintnotifications.ModeEnabled,
-				},
-				// Disable automatic cluster state reloads so we only get notification-triggered reloads
-				ClusterStateReloadInterval: 10 * time.Minute,
-			})
-			if err != nil {
-				t.Fatalf("Failed to create Redis client: %v", err)
-			}
-			redisClient := redisClientIface.(*redis.ClusterClient)
-			defer redisClient.Close()
-
-			// Verify connection first - this triggers cluster discovery
-			if err := redisClient.Ping(ctx).Err(); err != nil {
-				t.Fatalf("Failed to connect to cluster: %v", err)
-			}
-			t.Log("✓ Connected to cluster")
-
-			// Force discovery of all shards by pinging each one
-			// This ensures ForEachShard will iterate over all shards
-			// Also set up per-shard notification tracking
-			var shards []*shardInfo
-			var shardsMu sync.Mutex
-
-			err = redisClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
-				if err := nodeClient.Ping(ctx).Err(); err != nil {
-					return err
-				}
-
-				addr := nodeClient.Options().Addr
-				originalEndpoint := nodeClient.OriginalEndpoint()
-
-				// Create per-shard tracking hook
-				hook := NewTrackingNotificationsHookWithShard(addr)
-				manager := nodeClient.GetMaintNotificationsManager()
-				if manager != nil {
-					manager.AddNotificationHook(hook)
-					t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
-				} else {
-					t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
-				}
-
-				shardsMu.Lock()
-				shards = append(shards, &shardInfo{
-					addr:             addr,
-					originalEndpoint: originalEndpoint,
-					hook:             hook,
+				// Create Redis cluster client connected to the new database
+				redisClientIface, err := factory.Create("redisClient", &CreateClientOptions{
+					Protocol: 3,
+					MaintNotificationsConfig: &maintnotifications.Config{
+						Mode: maintnotifications.ModeEnabled,
+					},
+					// Disable automatic cluster state reloads so we only get notification-triggered reloads
+					ClusterStateReloadInterval: 10 * time.Minute,
 				})
-				shardsMu.Unlock()
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("Failed to ping all shards: %v", err)
-			}
-			t.Logf("✓ Discovered and pinged %d shards", len(shards))
+				if err != nil {
+					t.Fatalf("Failed to create Redis client: %v", err)
+				}
+				redisClient := redisClientIface.(*redis.ClusterClient)
+				defer redisClient.Close()
 
-			// Also set up a global tracker for backward compatibility
-			tracker := NewTrackingNotificationsHook()
-			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
-			setupNotificationHooks(redisClient, tracker, logger)
+				// Verify connection first - this triggers cluster discovery
+				if err := redisClient.Ping(ctx).Err(); err != nil {
+					t.Fatalf("Failed to connect to cluster: %v", err)
+				}
+				t.Log("✓ Connected to cluster")
 
-			// Start background traffic to keep connections active on all shards
-			stopTraffic := startBackgroundTraffic(ctx, redisClient)
-			defer stopTraffic()
+				// Force discovery of all shards by pinging each one
+				// This ensures ForEachShard will iterate over all shards
+				// Also set up per-shard notification tracking
+				var shards []*shardInfo
+				var shardsMu sync.Mutex
 
-			// Start pubsub connections to test notifications on pubsub connections
-			stopPubSub := startPubSubConnections(ctx, t, redisClient)
-			defer stopPubSub()
+				err = redisClient.ForEachShard(ctx, func(ctx context.Context, nodeClient *redis.Client) error {
+					if err := nodeClient.Ping(ctx).Err(); err != nil {
+						return err
+					}
 
-			// Give the background traffic and pubsub time to establish connections on all shards
-			time.Sleep(500 * time.Millisecond)
+					addr := nodeClient.Options().Addr
+					originalEndpoint := nodeClient.OriginalEndpoint()
 
-			// Clear all trackers before triggering the fault injector
-			// This ensures we only count notifications from the actual test action
-			clearAllTrackers(localLogCollector, tracker, shards)
+					// Create per-shard tracking hook
+					hook := NewTrackingNotificationsHookWithShard(addr)
+					manager := nodeClient.GetMaintNotificationsManager()
+					if manager != nil {
+						manager.AddNotificationHook(hook)
+						t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
+					} else {
+						t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
+					}
 
-			// Trigger slot migration on the database we just created
-			bdbIDStr := fmt.Sprintf("%d", bdbID)
-			resp, err := fiClient.TriggerSlotMigrate(ctx, SlotMigrateRequest{
-				Effect:  tc.effect,
-				BdbID:   bdbIDStr,
-				Trigger: tc.trigger,
-			})
-			if err != nil {
-				t.Fatalf("Failed to trigger slot migration: %v", err)
-			}
+					shardsMu.Lock()
+					shards = append(shards, &shardInfo{
+						addr:             addr,
+						originalEndpoint: originalEndpoint,
+						hook:             hook,
+					})
+					shardsMu.Unlock()
+					return nil
+				})
+				if err != nil {
+					t.Fatalf("Failed to ping all shards: %v", err)
+				}
+				t.Logf("✓ Discovered and pinged %d shards", len(shards))
 
-			if debugE2E() {
-				t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
-			}
+				// Also set up a global tracker for backward compatibility
+				tracker := NewTrackingNotificationsHook()
+				logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+				setupNotificationHooks(redisClient, tracker, logger)
 
-			// Wait for action to complete - use testMode timeout
-			status, err := fiClient.WaitForAction(ctx, resp.ActionID,
-				WithMaxWaitTime(testMode.ActionWaitTimeout),
-				WithPollInterval(testMode.ActionPollInterval))
-			if err != nil {
-				t.Fatalf("Failed to wait for action: %v", err)
-			}
+				// Start background traffic to keep connections active on all shards
+				stopTraffic := startBackgroundTraffic(ctx, redisClient)
+				defer stopTraffic()
 
-			if debugE2E() {
-				t.Logf("✓ Action completed: %s (status: %s)", status.ActionID, status.Status)
-			}
+				// Start pubsub connections to test notifications on pubsub connections
+				stopPubSub := startPubSubConnections(ctx, t, redisClient)
+				defer stopPubSub()
 
-			// Wait for appropriate notifications based on the effect/variant combination
-			// For all slot-migrate effects, expect SMIGRATING/SMIGRATED notifications
-			_, foundMigrating := tracker.FindOrWaitForNotification("SMIGRATING", testMode.ActionWaitTimeout)
-			if !foundMigrating {
-				t.Errorf("Timed out waiting for SMIGRATING notification for effect %s", tc.effect)
-			} else {
-				t.Logf("✓ Received SMIGRATING notification")
-			}
+				// Give the background traffic and pubsub time to establish connections on all shards
+				time.Sleep(500 * time.Millisecond)
 
-			// Wait for SMIGRATED notification (may take longer to arrive)
-			// Use the same timeout as action wait - 5 minutes for real fault injector
-			_, foundMigrated := tracker.FindOrWaitForNotification("SMIGRATED", testMode.ActionWaitTimeout)
-			if !foundMigrated {
-				t.Errorf("Timed out waiting for SMIGRATED notification for effect %s", tc.effect)
-			} else {
-				t.Logf("✓ Received SMIGRATED notification")
-			}
+				// Clear all trackers before triggering the fault injector
+				// This ensures we only count notifications from the actual test action
+				clearAllTrackers(localLogCollector, tracker, shards)
 
-			// Wait for SMIGRATED only on shards that received SMIGRATING
-			waitForSMigratedOnShardsWithSMigrating(t, shards, testMode.ActionWaitTimeout)
+				// Trigger slot migration on the database we just created
+				bdbIDStr := fmt.Sprintf("%d", bdbID)
+				resp, err := fiClient.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+					Effect:  tc.effect,
+					BdbID:   bdbIDStr,
+					Trigger: tc.trigger,
+				})
+				if err != nil {
+					t.Fatalf("Failed to trigger slot migration: %v", err)
+				}
 
-			// Wait for logs to settle
-			waitForLogsToSettle(t, 2*time.Second)
+				if debugE2E() {
+					t.Logf("✓ Action triggered: %s (status: %s)", resp.ActionID, resp.Status)
+				}
 
-			// Print per-shard notification summary
-			printPerShardNotificationSummary(t, shards)
+				// Wait for action to complete - use testMode timeout
+				status, err := fiClient.WaitForAction(ctx, resp.ActionID,
+					WithMaxWaitTime(testMode.ActionWaitTimeout),
+					WithPollInterval(testMode.ActionPollInterval))
+				if err != nil {
+					t.Fatalf("Failed to wait for action: %v", err)
+				}
 
-			// Print final notification tracker analysis
-			analysis := tracker.GetAnalysis()
-			analysis.Print(t)
+				if debugE2E() {
+					t.Logf("✓ Action completed: %s (status: %s)", status.ActionID, status.Status)
+				}
 
-			t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
-			t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.SMigratedCount)
+				// Wait for appropriate notifications based on the effect/variant combination
+				// For all slot-migrate effects, expect SMIGRATING/SMIGRATED notifications
+				_, foundMigrating := tracker.FindOrWaitForNotification("SMIGRATING", testMode.ActionWaitTimeout)
+				if !foundMigrating {
+					t.Errorf("Timed out waiting for SMIGRATING notification for effect %s", tc.effect)
+				} else {
+					t.Logf("✓ Received SMIGRATING notification")
+				}
 
-			if analysis.NotificationProcessingErrors > 0 {
-				t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
-			}
+				// Wait for SMIGRATED notification (may take longer to arrive)
+				// Use the same timeout as action wait - 5 minutes for real fault injector
+				_, foundMigrated := tracker.FindOrWaitForNotification("SMIGRATED", testMode.ActionWaitTimeout)
+				if !foundMigrated {
+					t.Errorf("Timed out waiting for SMIGRATED notification for effect %s", tc.effect)
+				} else {
+					t.Logf("✓ Received SMIGRATED notification")
+				}
+
+				// Wait for SMIGRATED only on shards that received SMIGRATING
+				waitForSMigratedOnShardsWithSMigrating(t, shards, testMode.ActionWaitTimeout)
+
+				// Wait for logs to settle
+				waitForLogsToSettle(t, 2*time.Second)
+
+				// Print per-shard notification summary
+				printPerShardNotificationSummary(t, shards)
+
+				// Print final notification tracker analysis
+				analysis := tracker.GetAnalysis()
+				analysis.Print(t)
+
+				t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
+				t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.SMigratedCount)
+
+				if analysis.NotificationProcessingErrors > 0 {
+					t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
+				}
 
 				// Get log analysis for cluster state reloads
 				logAnalysis := localLogCollector.GetAnalysis()

@@ -187,4 +187,3 @@ func (nt *notificationTracker) PostHook(ctx context.Context, notificationCtx pus
 		log.Printf("Notification processing error for %s: %v", notificationType, result)
 	}
 }
-
