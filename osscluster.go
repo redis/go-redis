@@ -91,9 +91,7 @@ type ClusterOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
+	DialTimeout time.Duration
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
 	//
@@ -105,21 +103,23 @@ type ClusterOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
+	ReadTimeout           time.Duration
+	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
-
-	PoolFIFO bool
-	PoolSize int // applies per cluster node and not for the whole cluster
 
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
-	PoolTimeout     time.Duration
-	MinIdleConns    int
-	MaxIdleConns    int
-	MaxActiveConns  int // applies per cluster node and not for the whole cluster
-	ConnMaxIdleTime time.Duration
-	ConnMaxLifetime time.Duration
+	PoolFIFO              bool
+	PoolSize              int // applies per cluster node and not for the whole cluster
+	PoolTimeout           time.Duration
+	MinIdleConns          int
+	MaxIdleConns          int
+	MaxActiveConns        int // applies per cluster node and not for the whole cluster
+	ConnMaxIdleTime       time.Duration
+	ConnMaxLifetime       time.Duration
+	ConnMaxLifetimeJitter time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -372,6 +372,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxActiveConns = q.int("max_active_conns")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
+	if q.has("conn_max_lifetime_jitter") {
+		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
+	}
 	o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	o.FailingTimeoutSeconds = q.int("failing_timeout_seconds")
 
@@ -439,6 +442,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		MaxActiveConns:        opt.MaxActiveConns,
 		ConnMaxIdleTime:       opt.ConnMaxIdleTime,
 		ConnMaxLifetime:       opt.ConnMaxLifetime,
+		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
 		DisableIdentity:       opt.DisableIdentity,
@@ -472,9 +476,10 @@ type clusterNode struct {
 	lastLatencyMeasurement int64 // atomic
 }
 
-func newClusterNode(clOpt *ClusterOptions, addr string) *clusterNode {
+func newClusterNodeWithOriginalEndpoint(clOpt *ClusterOptions, addr, originalEndpoint string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
+	opt.OriginalEndpoint = originalEndpoint
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
@@ -702,6 +707,10 @@ func (c *clusterNodes) GC(generation uint32) {
 }
 
 func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
+	return c.GetOrCreateWithOriginalEndpoint(addr, "")
+}
+
+func (c *clusterNodes) GetOrCreateWithOriginalEndpoint(addr, originalEndpoint string) (*clusterNode, error) {
 	node, err := c.get(addr)
 	if err != nil {
 		return nil, err
@@ -722,7 +731,7 @@ func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
 		return node, nil
 	}
 
-	node = newClusterNode(c.opt, addr)
+	node = newClusterNodeWithOriginalEndpoint(c.opt, addr, originalEndpoint)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
 	}
@@ -819,12 +828,14 @@ func newClusterState(
 	for _, slot := range slots {
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
-			addr := slotNode.Addr
+			// slotNode.Addr is the original endpoint from CLUSTER SLOTS
+			originalEndpoint := slotNode.Addr
+			addr := originalEndpoint
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
 
-			node, err := c.nodes.GetOrCreate(addr)
+			node, err := c.nodes.GetOrCreateWithOriginalEndpoint(addr, originalEndpoint)
 			if err != nil {
 				return nil, err
 			}
@@ -1564,9 +1575,21 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				)
 			}
 			slot := c.cmdSlot(cmd, -1)
-			node, err := c.slotReadOnlyNode(state, slot)
-			if err != nil {
-				return err
+			var node *clusterNode
+			// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
+			if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+				if len(state.Masters) == 0 {
+					return errClusterNoNodes
+				}
+				// For read-only keyless commands, pick from all nodes (masters + slaves)
+				allNodes := append(state.Masters, state.Slaves...)
+				idx := c.opt.ShardPicker.Next(len(allNodes))
+				node = allNodes[idx]
+			} else {
+				node, err = c.slotReadOnlyNode(state, slot)
+				if err != nil {
+					return err
+				}
 			}
 			cmdsMap.Add(node, cmd)
 		}
@@ -1584,9 +1607,19 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			)
 		}
 		slot := c.cmdSlot(cmd, -1)
-		node, err := state.slotMasterNode(slot)
-		if err != nil {
-			return err
+		var node *clusterNode
+		// For keyless commands (slot == -1), use ShardPicker if routing policies are enabled
+		if slot == -1 && !c.opt.DisableRoutingPolicies && c.opt.ShardPicker != nil {
+			if len(state.Masters) == 0 {
+				return errClusterNoNodes
+			}
+			idx := c.opt.ShardPicker.Next(len(state.Masters))
+			node = state.Masters[idx]
+		} else {
+			node, err = state.slotMasterNode(slot)
+			if err != nil {
+				return err
+			}
 		}
 		cmdsMap.Add(node, cmd)
 	}
@@ -2208,7 +2241,8 @@ func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
 		if prefferedRandomSlot != -1 {
 			return prefferedRandomSlot
 		}
-		return hashtag.RandomSlot()
+		// Return -1 for keyless commands to signal that ShardPicker should be used
+		return -1
 	}
 	firstKey := cmd.stringArg(pos)
 	return hashtag.Slot(firstKey)

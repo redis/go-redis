@@ -61,6 +61,12 @@ func (oa *optionsAdapter) GetAddr() string {
 	return oa.options.Addr
 }
 
+// GetOriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
+// before any resolution or transformation.
+func (oa *optionsAdapter) GetOriginalEndpoint() string {
+	return oa.options.OriginalEndpoint
+}
+
 // IsTLSEnabled returns true if TLS is enabled.
 func (oa *optionsAdapter) IsTLSEnabled() bool {
 	return oa.options.TLSConfig != nil

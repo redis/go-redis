@@ -147,7 +147,28 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
 				// Log error but don't fail the goroutine - use background context since original may be cancelled
 				internal.Logger.Printf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+				return
 			}
+
+			// Queue the handoff immediately if the connection is idle in the pool.
+			// If the connection is in use (StateInUse), it will be queued when returned to the pool via OnPut.
+			// This handles the case where the connection is idle and might never be retrieved again.
+			if poolConn.GetStateMachine().GetState() == pool.StateIdle {
+				if snh.manager.poolHooksRef != nil && snh.manager.poolHooksRef.workerManager != nil {
+					if err := snh.manager.poolHooksRef.workerManager.queueHandoff(poolConn); err != nil {
+						internal.Logger.Printf(context.Background(), logs.FailedToQueueHandoff(poolConn.GetID(), err))
+					} else {
+						// Mark the connection as queued for handoff to prevent it from being retrieved
+						// This transitions the connection to StateUnusable
+						if err := poolConn.MarkQueuedForHandoff(); err != nil {
+							internal.Logger.Printf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+						} else {
+							internal.Logger.Printf(context.Background(), logs.MarkedForHandoff(poolConn.GetID()))
+						}
+					}
+				}
+			}
+			// If connection is StateInUse, the handoff will be queued when it's returned to the pool
 		})
 		return nil
 	}
@@ -302,21 +323,10 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 		return ErrInvalidNotification
 	}
 
-	// Extract SeqID (position 1)
-	seqID, ok := notification[1].(int64)
-	if !ok {
+	// Validate SeqID (position 1)
+	if _, ok := notification[1].(int64); !ok {
 		internal.Logger.Printf(ctx, logs.InvalidSeqIDInSMigratingNotification(notification[1]))
 		return ErrInvalidNotification
-	}
-
-	// Extract slot ranges (position 2+)
-	// For now, we just extract them for logging
-	// Format can be: single slot "1234" or range "100-200"
-	var slotRanges []string
-	for i := 2; i < len(notification); i++ {
-		if slotRange, ok := notification[i].(string); ok {
-			slotRanges = append(slotRanges, slotRange)
-		}
 	}
 
 	if handlerCtx.Conn == nil {
@@ -332,7 +342,7 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 
 	// Apply relaxed timeout to this specific connection
 	if internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(ctx, logs.SlotMigrating(conn.GetID(), seqID, slotRanges))
+		internal.Logger.Printf(ctx, logs.RelaxedTimeoutDueToNotification(conn.GetID(), "SMIGRATING", snh.manager.config.RelaxedTimeout))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
@@ -341,19 +351,29 @@ func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx
 // handleSMigrated processes SMIGRATED notifications.
 // SMIGRATED indicates that a cluster slot has finished migrating to a different node.
 // This is a cluster-level notification that triggers cluster state reload.
-// Expected format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
-// RESP3 wire format:
-//   >3
-//   +SMIGRATED
-//   :SeqID
-//   *<num_entries>
-//     *2
-//       +<host:port>
-//       +<slots-or-ranges>
+//
+// Expected RESP3 format:
+//
+//	>3
+//	+SMIGRATED
+//	:SeqID
+//	*<num_entries>       <- array of triplet arrays
+//	  *3                 <- each triplet is a 3-element array
+//	    +<source>        <- node from which slots are migrating FROM
+//	    +<destination>   <- node to which slots are migrating TO
+//	    +<slots>         <- comma-separated slots and/or ranges (e.g., "123,789-1000")
+//
+// A source and target endpoint may appear in multiple triplets.
+// The notification is only processed if the connection's OriginalEndpoint matches one of the source endpoints.
+//
 // Note: Multiple connections may receive the same notification, so we deduplicate by SeqID before triggering reload.
 // but we still process the notification on each connection to clear the relaxed timeout.
+// In the case when the connection is from MOVED/ASK, the connection's original endpoint is not set,
+// so we will not be able to match the source endpoint. In such case, we will trigger the reload callback with the first target endpoint.
 func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
-	if len(notification) != 3 {
+	// Expected: ["SMIGRATED", SeqID, [[source, target, slots], ...]]
+	// Minimum 3 elements: SMIGRATED, SeqID, and the array of triplets
+	if len(notification) < 3 {
 		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED", notification))
 		return ErrInvalidNotification
 	}
@@ -365,63 +385,142 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		return ErrInvalidNotification
 	}
 
-	// Extract endpoints array (position 2)
-	// Each entry is an array: [host:port, slots]
-	endpointsArray, ok := notification[2].([]interface{})
+	// Extract the array of triplets (position 2)
+	triplets, ok := notification[2].([]interface{})
 	if !ok {
-		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoints)", notification))
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplets array)", notification[2]))
 		return ErrInvalidNotification
 	}
 
-	// Deduplicate by SeqID - multiple connections may receive the same notification
-	if snh.manager.MarkSMigratedSeqIDProcessed(seqID) {
-		// For logging and triggering reload, we use the first endpoint's host:port
-		// and collect all slot ranges from all endpoints
-		var hostPort string
-		var allSlotRanges []string
-
-		for _, ep := range endpointsArray {
-			// Each endpoint is an array: [host:port, slots]
-			endpointParts, ok := ep.([]interface{})
-			if !ok || len(endpointParts) != 2 {
-				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (endpoint format)", ep))
-				continue
-			}
-
-			// Extract host:port (element 0)
-			hostPortStr, ok := endpointParts[0].(string)
-			if !ok {
-				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (host:port)", endpointParts[0]))
-				continue
-			}
-
-			// Extract slots (element 1)
-			slotsStr, ok := endpointParts[1].(string)
-			if !ok {
-				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", endpointParts[1]))
-				continue
-			}
-
-			hostPort = hostPortStr
-			slotRanges := strings.Split(slotsStr, ",")
-			allSlotRanges = append(allSlotRanges, slotRanges...)
-		}
-
-		if internal.LogLevel.InfoOrAbove() {
-			internal.Logger.Printf(ctx, logs.SlotMigrated(seqID, hostPort, allSlotRanges))
-		}
-		// Trigger cluster state reload via callback, passing host:port and slot ranges
-		// For now, implementations just log these and trigger a full reload
-		// In the future, this could be optimized to reload only the specific slots
-		snh.manager.TriggerClusterStateReload(ctx, hostPort, allSlotRanges)
+	if len(triplets) == 0 {
+		internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (empty triplets)", notification))
+		return ErrInvalidNotification
 	}
 
-	// clear relaxed timeout
+	// Get the connection's endpoints to check if this notification is relevant
+	// We check against both originalEndpoint (from CLUSTER SLOTS) and addr (after loopback replacement)
+	// since we cannot be certain which format the notification source will use
+	var connectionOriginalEndpoint string
+	var connectionAddr string
+	if snh.manager.options != nil {
+		connectionOriginalEndpoint = snh.manager.options.GetOriginalEndpoint()
+		connectionAddr = snh.manager.options.GetAddr()
+	}
+
+	// Helper function to check if source matches either of our endpoints
+	// notification source can be either the original endpoint or the addr after resolution
+	sourceMatchesConnection := func(source string) bool {
+		if connectionOriginalEndpoint != "" && source == connectionOriginalEndpoint {
+			return true
+		}
+		if connectionAddr != "" && source == connectionAddr {
+			return true
+		}
+		return false
+	}
+
+	// Parse triplets and check if any source matches our connection's endpoints
+	var matchingTriplets []struct {
+		source string
+		target string
+		slots  string
+	}
+	var allSlotRanges []string
+
+	// Only try to match if we have at least one endpoint to match against
+	hasEndpointToMatch := connectionOriginalEndpoint != ""
+	if hasEndpointToMatch {
+		for _, tripletInterface := range triplets {
+			// Each triplet should be a 3-element array: [source, target, slots]
+			triplet, ok := tripletInterface.([]interface{})
+			if !ok || len(triplet) != 3 {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
+				continue
+			}
+
+			// Extract source endpoint
+			source, ok := triplet[0].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
+				continue
+			}
+
+			// Extract target endpoint
+			target, ok := triplet[1].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
+				continue
+			}
+
+			// Extract slots
+			slots, ok := triplet[2].(string)
+			if !ok {
+				internal.Logger.Printf(ctx, logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
+				continue
+			}
+
+			// Check if this triplet's source matches our connection's endpoints
+			if sourceMatchesConnection(source) {
+				matchingTriplets = append(matchingTriplets, struct {
+					source string
+					target string
+					slots  string
+				}{source, target, slots})
+				slotRanges := strings.Split(slots, ",")
+				allSlotRanges = append(allSlotRanges, slotRanges...)
+			}
+		}
+	}
+
+	var connID uint64
+	// Reset relaxed timeout for this specific connection
 	if handlerCtx.Conn != nil {
 		conn, ok := handlerCtx.Conn.(*pool.Conn)
 		if ok {
+			if internal.LogLevel.InfoOrAbove() {
+				connID = conn.GetID()
+				internal.Logger.Printf(ctx, logs.UnrelaxedTimeout(connID))
+			}
 			conn.ClearRelaxedTimeout()
 		}
+	}
+
+	// if we have no matching triplets and we have endpoints to match against, we can return
+	// only the matching or if there is no endpoint to match will trigger cluster state reload
+	if len(matchingTriplets) == 0 && hasEndpointToMatch {
+		return nil
+	}
+
+	// Deduplicate by SeqID - multiple connections may receive the same notification
+	// Only trigger cluster state reload once per seqID
+	if snh.manager.MarkSMigratedSeqIDProcessed(seqID) {
+		var target string
+		var slotsForLog []string
+
+		if len(matchingTriplets) > 0 {
+			// We have matching triplets - use the first one
+			target = matchingTriplets[0].target
+			slotsForLog = allSlotRanges
+		} else {
+			// No matching triplets (connectionOriginalEndpoint was empty - MOVED/ASK case)
+			// Fall back to using the first triplet from the notification
+			firstTriplet, ok := triplets[0].([]interface{})
+			if ok && len(firstTriplet) >= 2 {
+				target, _ = firstTriplet[1].(string)
+			}
+			if ok && len(firstTriplet) >= 3 {
+				if slots, ok := firstTriplet[2].(string); ok {
+					slotsForLog = strings.Split(slots, ",")
+				}
+			}
+		}
+
+		if internal.LogLevel.InfoOrAbove() {
+			internal.Logger.Printf(ctx, logs.TriggeringClusterStateReload(seqID, target, slotsForLog))
+		}
+
+		// Trigger cluster state reload via callback
+		snh.manager.TriggerClusterStateReload(ctx, target, slotsForLog)
 	}
 
 	return nil

@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+func (q *wantConnQueue) len() int {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return len(q.items)
+}
+
 func TestWantConn_getCtxForDial(t *testing.T) {
 	ctx := context.Background()
 	w := &wantConn{
@@ -22,8 +28,10 @@ func TestWantConn_getCtxForDial(t *testing.T) {
 	}
 
 	// Test getting context when done
+	w.mu.Lock()
 	w.done = true
 	w.ctx = nil
+	w.mu.Unlock()
 	gotCtx = w.getCtxForDial()
 	if gotCtx != nil {
 		t.Errorf("getCtxForDial() after done = %v, want nil", gotCtx)
@@ -46,12 +54,12 @@ func TestWantConn_tryDeliver_Success(t *testing.T) {
 	}
 
 	// Check that wantConn is marked as done
-	if !w.done {
+	if w.isOngoing() {
 		t.Error("wantConn.done = false, want true after delivery")
 	}
 
 	// Check that context is cleared
-	if w.ctx != nil {
+	if w.getCtxForDial() != nil {
 		t.Error("wantConn.ctx should be nil after delivery")
 	}
 
@@ -134,12 +142,12 @@ func TestWantConn_cancel_NotDone(t *testing.T) {
 	}
 
 	// Check that wantConn is marked as done
-	if !w.done {
+	if w.isOngoing() {
 		t.Error("wantConn.done = false, want true after cancel")
 	}
 
 	// Check that context is cleared
-	if w.ctx != nil {
+	if w.getCtxForDial() != nil {
 		t.Error("wantConn.ctx should be nil after cancel")
 	}
 
@@ -174,12 +182,12 @@ func TestWantConn_cancel_AlreadyDone(t *testing.T) {
 	}
 
 	// Check that wantConn remains done
-	if !w.done {
+	if w.isOngoing() {
 		t.Error("wantConn.done = false, want true")
 	}
 
 	// Check that context is cleared
-	if w.ctx != nil {
+	if w.getCtxForDial() != nil {
 		t.Error("wantConn.ctx should be nil after cancel")
 	}
 }
@@ -488,10 +496,422 @@ func TestWantConn_RaceConditionNilContext(t *testing.T) {
 	wg.Wait()
 
 	// Verify the wantConn state
-	if !w.done {
+	if w.isOngoing() {
 		t.Error("wantConn should be marked as done after cancel")
 	}
-	if w.ctx != nil {
+	if w.getCtxForDial() != nil {
 		t.Error("wantConn.ctx should be nil after cancel")
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_EmptyQueue tests dropFrontDone on an empty queue.
+func TestWantConnQueue_dropFrontDone_EmptyQueue(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Call dropFrontDone on empty queue
+	count := q.discardDoneAtFront()
+
+	// Verify no elements were removed
+	if count != 0 {
+		t.Errorf("dropFrontDone() on empty queue = %d, want 0", count)
+	}
+
+	// Verify queue is still empty
+	if q.len() != 0 {
+		t.Errorf("queue length after dropFrontDone = %d, want 0", q.len())
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_AllDone tests dropFrontDone when all elements are done.
+func TestWantConnQueue_dropFrontDone_AllDone(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Create 3 wantConn items, all marked as done
+	for i := 0; i < 3; i++ {
+		w := &wantConn{
+			ctx:    context.Background(),
+			done:   true, // Mark as done
+			result: make(chan wantConnResult, 1),
+		}
+		q.enqueue(w)
+	}
+
+	// Verify initial queue length
+	if q.len() != 3 {
+		t.Errorf("initial queue length = %d, want 3", q.len())
+	}
+
+	// Call dropFrontDone
+	count := q.discardDoneAtFront()
+
+	// Verify all 3 elements were removed
+	if count != 3 {
+		t.Errorf("dropFrontDone() = %d, want 3", count)
+	}
+
+	// Verify queue is now empty
+	if q.len() != 0 {
+		t.Errorf("queue length after dropFrontDone = %d, want 0", q.len())
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_NoneDone tests dropFrontDone when no elements are done.
+func TestWantConnQueue_dropFrontDone_NoneDone(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Create 3 wantConn items, none marked as done
+	for i := 0; i < 3; i++ {
+		w := &wantConn{
+			ctx:    context.Background(),
+			done:   false, // Not done
+			result: make(chan wantConnResult, 1),
+		}
+		q.enqueue(w)
+	}
+
+	// Verify initial queue length
+	if q.len() != 3 {
+		t.Errorf("initial queue length = %d, want 3", q.len())
+	}
+
+	// Call dropFrontDone
+	count := q.discardDoneAtFront()
+
+	// Verify no elements were removed
+	if count != 0 {
+		t.Errorf("dropFrontDone() = %d, want 0", count)
+	}
+
+	// Verify queue length unchanged
+	if q.len() != 3 {
+		t.Errorf("queue length after dropFrontDone = %d, want 3", q.len())
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_PartialDone tests dropFrontDone with mixed done/not-done elements.
+// This is the core test case that verifies dropFrontDone stops at the first not-done element.
+func TestWantConnQueue_dropFrontDone_PartialDone(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Create pattern: [done, done, not-done, done, not-done]
+	states := []bool{true, true, false, true, false}
+	var items []*wantConn
+
+	for _, done := range states {
+		w := &wantConn{
+			ctx:    context.Background(),
+			done:   done,
+			result: make(chan wantConnResult, 1),
+		}
+		q.enqueue(w)
+		items = append(items, w)
+	}
+
+	// Verify initial queue length
+	if q.len() != 5 {
+		t.Errorf("initial queue length = %d, want 5", q.len())
+	}
+
+	// Call dropFrontDone
+	count := q.discardDoneAtFront()
+
+	// Verify only first 2 elements were removed (stopped at first not-done)
+	if count != 2 {
+		t.Errorf("dropFrontDone() = %d, want 2", count)
+	}
+
+	// Verify queue length is now 3
+	if q.len() != 3 {
+		t.Errorf("queue length after dropFrontDone = %d, want 3", q.len())
+	}
+
+	// Verify the front element is the third item (first not-done)
+	front, ok := q.dequeue()
+	if !ok {
+		t.Fatal("expected to dequeue an item")
+	}
+	if front != items[2] {
+		t.Error("front element should be the third item (first not-done)")
+	}
+
+	// Verify remaining elements are items[3] and items[4]
+	next, ok := q.dequeue()
+	if !ok || next != items[3] {
+		t.Error("second element should be items[3]")
+	}
+	next, ok = q.dequeue()
+	if !ok || next != items[4] {
+		t.Error("third element should be items[4]")
+	}
+
+	// Queue should now be empty
+	if q.len() != 0 {
+		t.Errorf("queue should be empty, got length %d", q.len())
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_SingleElement tests dropFrontDone with single element.
+func TestWantConnQueue_dropFrontDone_SingleElement(t *testing.T) {
+	// Test 1: Single done element
+	q1 := newWantConnQueue()
+	w1 := &wantConn{
+		ctx:    context.Background(),
+		done:   true,
+		result: make(chan wantConnResult, 1),
+	}
+	q1.enqueue(w1)
+
+	count := q1.discardDoneAtFront()
+	if count != 1 {
+		t.Errorf("dropFrontDone() with single done element = %d, want 1", count)
+	}
+	if q1.len() != 0 {
+		t.Errorf("queue should be empty after dropping single done element")
+	}
+
+	// Test 2: Single not-done element
+	q2 := newWantConnQueue()
+	w2 := &wantConn{
+		ctx:    context.Background(),
+		done:   false,
+		result: make(chan wantConnResult, 1),
+	}
+	q2.enqueue(w2)
+
+	count = q2.discardDoneAtFront()
+	if count != 0 {
+		t.Errorf("dropFrontDone() with single not-done element = %d, want 0", count)
+	}
+	if q2.len() != 1 {
+		t.Errorf("queue length should remain 1 after dropFrontDone")
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_MultipleCalls tests consecutive calls to dropFrontDone.
+func TestWantConnQueue_dropFrontDone_MultipleCalls(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Add initial elements: [done, done, not-done]
+	w1 := &wantConn{ctx: context.Background(), done: true, result: make(chan wantConnResult, 1)}
+	w2 := &wantConn{ctx: context.Background(), done: true, result: make(chan wantConnResult, 1)}
+	w3 := &wantConn{ctx: context.Background(), done: false, result: make(chan wantConnResult, 1)}
+	q.enqueue(w1)
+	q.enqueue(w2)
+	q.enqueue(w3)
+
+	// First call: should remove 2 done elements
+	count1 := q.discardDoneAtFront()
+	if count1 != 2 {
+		t.Errorf("first dropFrontDone() = %d, want 2", count1)
+	}
+	if q.len() != 1 {
+		t.Errorf("queue length after first drop = %d, want 1", q.len())
+	}
+
+	// Mark w3 as done and add more elements
+	w3.mu.Lock()
+	w3.done = true
+	w3.mu.Unlock()
+	w4 := &wantConn{ctx: context.Background(), done: true, result: make(chan wantConnResult, 1)}
+	w5 := &wantConn{ctx: context.Background(), done: false, result: make(chan wantConnResult, 1)}
+	q.enqueue(w4)
+	q.enqueue(w5)
+
+	// Second call: should remove w3 and w4 (now both done)
+	count2 := q.discardDoneAtFront()
+	if count2 != 2 {
+		t.Errorf("second dropFrontDone() = %d, want 2", count2)
+	}
+	if q.len() != 1 {
+		t.Errorf("queue length after second drop = %d, want 1", q.len())
+	}
+
+	// Verify remaining element is w5
+	remaining, ok := q.dequeue()
+	if !ok || remaining != w5 {
+		t.Error("remaining element should be w5")
+	}
+}
+
+// TestWantConnQueue_dropFrontDone_ConcurrentWithEnqueue tests concurrent dropFrontDone and enqueue.
+func TestWantConnQueue_dropFrontDone_ConcurrentWithEnqueue(t *testing.T) {
+	q := newWantConnQueue()
+	const numOperations = 1000
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	// Goroutine 1: Continuously enqueue elements
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numOperations; i++ {
+			w := &wantConn{
+				ctx:    context.Background(),
+				done:   i%2 == 0, // Alternate between done and not-done
+				result: make(chan wantConnResult, 1),
+			}
+			q.enqueue(w)
+			time.Sleep(time.Microsecond)
+		}
+		close(done)
+	}()
+
+	// Goroutine 2: Continuously call dropFrontDone
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		totalDropped := 0
+		for {
+			select {
+			case <-done:
+				// Final cleanup
+				totalDropped += q.discardDoneAtFront()
+				t.Logf("Total elements dropped: %d", totalDropped)
+				return
+			default:
+				dropped := q.discardDoneAtFront()
+				totalDropped += dropped
+				time.Sleep(time.Microsecond)
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	// No panic or race condition is success
+	t.Logf("Final queue length: %d", q.len())
+}
+
+// TestWantConnQueue_dropFrontDone_ConcurrentWithDequeue tests concurrent operations.
+func TestWantConnQueue_dropFrontDone_ConcurrentWithDequeue(t *testing.T) {
+	q := newWantConnQueue()
+	const numOperations = 500
+
+	var wg sync.WaitGroup
+
+	// Pre-populate queue
+	for i := 0; i < 100; i++ {
+		w := &wantConn{
+			ctx:    context.Background(),
+			done:   i%3 == 0,
+			result: make(chan wantConnResult, 1),
+		}
+		q.enqueue(w)
+	}
+
+	// Goroutine 1: enqueue
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numOperations; i++ {
+			w := &wantConn{
+				ctx:    context.Background(),
+				done:   i%2 == 0,
+				result: make(chan wantConnResult, 1),
+			}
+			q.enqueue(w)
+		}
+	}()
+
+	// Goroutine 2: dequeue
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numOperations/2; i++ {
+			q.dequeue()
+			time.Sleep(time.Microsecond)
+		}
+	}()
+
+	// Goroutine 3: dropFrontDone
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < numOperations/4; i++ {
+			q.discardDoneAtFront()
+			time.Sleep(time.Microsecond)
+		}
+	}()
+
+	wg.Wait()
+
+	// No panic or race condition is success
+	t.Logf("Final queue length: %d", q.len())
+}
+
+// TestWantConnQueue_len tests the len() method.
+func TestWantConnQueue_len(t *testing.T) {
+	q := newWantConnQueue()
+
+	// Test empty queue
+	if length := q.len(); length != 0 {
+		t.Errorf("empty queue len() = %d, want 0", length)
+	}
+
+	// Add elements and verify length
+	for i := 1; i <= 5; i++ {
+		w := &wantConn{
+			ctx:    context.Background(),
+			result: make(chan wantConnResult, 1),
+		}
+		q.enqueue(w)
+
+		if length := q.len(); length != i {
+			t.Errorf("queue len() after %d enqueues = %d, want %d", i, length, i)
+		}
+	}
+
+	// Remove elements and verify length
+	for i := 4; i >= 0; i-- {
+		q.dequeue()
+		if length := q.len(); length != i {
+			t.Errorf("queue len() after dequeue = %d, want %d", length, i)
+		}
+	}
+}
+
+// TestWantConnQueue_len_Concurrent tests len() thread safety.
+func TestWantConnQueue_len_Concurrent(t *testing.T) {
+	q := newWantConnQueue()
+	const numReaders = 10
+	const numWriters = 5
+	const operations = 100
+
+	var wg sync.WaitGroup
+
+	// Multiple readers calling len()
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < operations; j++ {
+				_ = q.len() // Just read, don't care about value
+				time.Sleep(time.Microsecond)
+			}
+		}()
+	}
+
+	// Writers enqueueing
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < operations; j++ {
+				w := &wantConn{
+					ctx:    context.Background(),
+					result: make(chan wantConnResult, 1),
+				}
+				q.enqueue(w)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify final length is correct
+	expectedLength := numWriters * operations
+	if length := q.len(); length != expectedLength {
+		t.Errorf("final queue len() = %d, want %d", length, expectedLength)
 	}
 }

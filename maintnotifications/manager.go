@@ -24,7 +24,7 @@ const (
 	NotificationFailingOver = "FAILING_OVER" // Per-connection failover start notification - relaxes timeouts
 	NotificationFailedOver  = "FAILED_OVER"  // Per-connection failover complete notification - clears relaxed timeouts
 	NotificationSMigrating  = "SMIGRATING"   // Cluster slot migrating notification - relaxes timeouts
-	NotificationSMigrated   = "SMIGRATED"    // Cluster slot migrated notification - triggers cluster state reload
+	NotificationSMigrated   = "SMIGRATED"    // Cluster slot migrated notification -  unrelaxes timeouts and triggers cluster state reload
 )
 
 // maintenanceNotificationTypes contains all notification types that maintenance handles

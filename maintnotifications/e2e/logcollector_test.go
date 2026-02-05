@@ -95,19 +95,31 @@ type MatchFunc struct {
 	completed atomic.Bool
 	F         func(lstring string) bool
 	matches   []string
+	matchesMu sync.Mutex    // protects matches slice
 	found     chan struct{} // channel to notify when match is found, will be closed
 	done      func()
 }
 
 func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {
 	tlc.mu.Lock()
-	defer tlc.mu.Unlock()
 	lstr := fmt.Sprintf(format, v...)
-	if len(tlc.matchFuncs) > 0 {
+
+	// Check if there are match functions to process
+	// Use matchFuncsMutex to safely read matchFuncs
+	tlc.matchFuncsMutex.Lock()
+	hasMatchFuncs := len(tlc.matchFuncs) > 0
+	// Create a copy of matchFuncs to avoid holding the lock while processing
+	matchFuncsCopy := make([]*MatchFunc, len(tlc.matchFuncs))
+	copy(matchFuncsCopy, tlc.matchFuncs)
+	tlc.matchFuncsMutex.Unlock()
+
+	if hasMatchFuncs {
 		go func(lstr string) {
-			for _, matchFunc := range tlc.matchFuncs {
+			for _, matchFunc := range matchFuncsCopy {
 				if matchFunc.F(lstr) {
+					matchFunc.matchesMu.Lock()
 					matchFunc.matches = append(matchFunc.matches, lstr)
+					matchFunc.matchesMu.Unlock()
 					matchFunc.done()
 					return
 				}
@@ -118,6 +130,7 @@ func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...inter
 		fmt.Println(lstr)
 	}
 	tlc.l = append(tlc.l, fmt.Sprintf(format, v...))
+	tlc.mu.Unlock()
 }
 
 func (tlc *TestLogCollector) WaitForLogContaining(searchString string, timeout time.Duration) bool {
@@ -170,7 +183,12 @@ func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout t
 
 	select {
 	case <-matchFunc.found:
-		return matchFunc.matches[0], true
+		matchFunc.matchesMu.Lock()
+		defer matchFunc.matchesMu.Unlock()
+		if len(matchFunc.matches) > 0 {
+			return matchFunc.matches[0], true
+		}
+		return "", false
 	case <-time.After(timeout):
 		return "", false
 	}
@@ -281,6 +299,8 @@ type LogAnalisis struct {
 	MovingCount        int64
 	MigratingCount     int64
 	MigratedCount      int64
+	SMigratingCount    int64
+	SMigratedCount     int64
 	FailingOverCount   int64
 	FailedOverCount    int64
 	UnexpectedCount    int64
@@ -290,6 +310,9 @@ type LogAnalisis struct {
 	SucceededHandoffCount         int64
 	TotalHandoffRetries           int64
 	TotalHandoffToCurrentEndpoint int64
+
+	// Cluster state reload tracking
+	ClusterStateReloadCount int64
 }
 
 func NewLogAnalysis(logs []string) *LogAnalisis {
@@ -333,6 +356,11 @@ func (la *LogAnalisis) Analyze() {
 			la.TotalNotifications++
 
 			switch {
+			// ordering here is important, since SMIGRATED contains MIGRATED and SMIGRATING contains MIGRATING
+			case notificationType(log, "SMIGRATING"):
+				la.SMigratingCount++
+			case notificationType(log, "SMIGRATED"):
+				la.SMigratedCount++
 			case notificationType(log, "MOVING"):
 				la.MovingCount++
 			case notificationType(log, "MIGRATING"):
@@ -347,6 +375,12 @@ func (la *LogAnalisis) Analyze() {
 				fmt.Printf("[ERROR] Unexpected notification: %s\n", log)
 				la.UnexpectedCount++
 			}
+		}
+
+		// Track cluster state reloads (deduplicated, once per seqID)
+		// Log format: "triggering cluster state reload seqID=%d host:port=%s slots=%v"
+		if strings.Contains(log, logs2.TriggeringClusterStateReloadMessage) {
+			la.ClusterStateReloadCount++
 		}
 
 		if strings.Contains(log, "conn[") {
@@ -406,6 +440,12 @@ func (la *LogAnalisis) Print(t *testing.T) {
 	t.Logf(" - FAILING_OVER: %d", la.FailingOverCount)
 	t.Logf(" - FAILED_OVER: %d", la.FailedOverCount)
 	t.Logf(" - Unexpected: %d", la.UnexpectedCount)
+	t.Logf("-------------")
+	t.Logf("-Cluster-Specific Notification Analysis-")
+	t.Logf("-------------")
+	t.Logf(" - SMIGRATING: %d", la.SMigratingCount)
+	t.Logf(" - SMIGRATED: %d", la.SMigratedCount)
+	t.Logf(" - Cluster state reloads: %d", la.ClusterStateReloadCount)
 	t.Logf("-------------")
 	t.Logf("Log Analysis completed successfully")
 }

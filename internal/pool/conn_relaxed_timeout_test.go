@@ -78,7 +78,7 @@ func TestRelaxedTimeoutCounterRaceCondition(t *testing.T) {
 	if count := cn.relaxedCounter.Load(); count != 0 {
 		t.Errorf("Expected relaxed counter to be 0 after concurrent clearing, got %d", count)
 	}
-	
+
 	// Verify timeouts are actually cleared
 	if timeout := cn.relaxedReadTimeoutNs.Load(); timeout != 0 {
 		t.Errorf("Expected relaxed read timeout to be cleared, got %d", timeout)

@@ -2892,6 +2892,13 @@ type XInfoStream struct {
 	FirstEntry           XMessage
 	LastEntry            XMessage
 	RecordedFirstEntryID string
+
+	IDMPDuration   int64
+	IDMPMaxSize    int64
+	PIDsTracked    int64
+	IIDsTracked    int64
+	IIDsAdded      int64
+	IIDsDuplicates int64
 }
 
 var _ Cmder = (*XInfoStreamCmd)(nil)
@@ -2985,6 +2992,36 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return err
 			}
+		case "idmp-duration":
+			cmd.val.IDMPDuration, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "idmp-maxsize":
+			cmd.val.IDMPMaxSize, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "pids-tracked":
+			cmd.val.PIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-tracked":
+			cmd.val.IIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-added":
+			cmd.val.IIDsAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-duplicates":
+			cmd.val.IIDsDuplicates, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM reply", key)
 		}
@@ -3048,6 +3085,12 @@ type XInfoStreamFull struct {
 	Entries              []XMessage
 	Groups               []XInfoStreamGroup
 	RecordedFirstEntryID string
+	IDMPDuration         int64
+	IDMPMaxSize          int64
+	PIDsTracked          int64
+	IIDsTracked          int64
+	IIDsAdded            int64
+	IIDsDuplicates       int64
 }
 
 type XInfoStreamGroup struct {
@@ -3166,6 +3209,36 @@ func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
 			}
 		case "recorded-first-entry-id":
 			cmd.val.RecordedFirstEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "idmp-duration":
+			cmd.val.IDMPDuration, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "idmp-maxsize":
+			cmd.val.IDMPMaxSize, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "pids-tracked":
+			cmd.val.PIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-tracked":
+			cmd.val.IIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-added":
+			cmd.val.IIDsAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-duplicates":
+			cmd.val.IIDsDuplicates, err = rd.ReadInt()
 			if err != nil {
 				return err
 			}
