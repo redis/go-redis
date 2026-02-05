@@ -46,13 +46,13 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 	// The user can read/write keys but has limited command access
 	err := setupClient.ACLSetUser(ctx,
 		testUsername,
-		"on",           // Enable the user
-		"nopass",       // No password required (will use cert auth)
-		"~*",           // Can access all keys
-		"+get",         // Allow GET command
-		"+set",         // Allow SET command
-		"+ping",        // Allow PING command
-		"+acl|whoami",  // Allow ACL WHOAMI command
+		"on",          // Enable the user
+		"nopass",      // No password required (will use cert auth)
+		"~*",          // Can access all keys
+		"+get",        // Allow GET command
+		"+set",        // Allow SET command
+		"+ping",       // Allow PING command
+		"+acl|whoami", // Allow ACL WHOAMI command
 	).Err()
 	if err != nil {
 		t.Fatalf("Failed to create ACL user: %v", err)
@@ -67,12 +67,12 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 	t.Logf("ACL users: %v", users)
 
 	// Step 3: Load CA certificate and key to sign our custom client cert
-	caCertPEM, err := os.ReadFile("dockers/standalone/tls/ca.crt")
+	caCertPEM, err := os.ReadFile("dockers/standalone/tls/testcertuser.crt")
 	if err != nil {
 		t.Skipf("Skipping test - CA cert not found: %v", err)
 	}
 
-	caKeyPEM, err := os.ReadFile("dockers/standalone/tls/ca.key")
+	caKeyPEM, err := os.ReadFile("dockers/standalone/tls/testcertuser.key")
 	if err != nil {
 		t.Skipf("Skipping test - CA key not found: %v", err)
 	}
@@ -184,8 +184,7 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 	}
 
 	if whoami != testUsername {
-		t.Skipf("Expected to be authenticated as %q, but got %q", testUsername, whoami)
-		t.Skipf("This indicates Redis is not using the certificate CN for authentication")
+		t.Fatalf("Expected to be authenticated as %q, but got %q", testUsername, whoami)
 		t.Skipf("Ensure Redis is configured with: tls-auth-clients-user CN")
 	} else {
 		t.Skipf("✅ Successfully authenticated as %q using certificate CN", whoami)
@@ -219,4 +218,3 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 
 	t.Log("✅ TLS certificate authentication test passed")
 }
-
