@@ -141,7 +141,7 @@ var _ = Describe("HotKeys Commands", func() {
 			Expect(stop.Err()).NotTo(HaveOccurred())
 		})
 
-		It("should start hotkeys tracking with specific slots", func() {
+		It("should error when using slots in non-cluster mode", func() {
 			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
 
 			startArgs := &redis.HotKeysStartArgs{
@@ -150,17 +150,8 @@ var _ = Describe("HotKeys Commands", func() {
 				Slots:   []int64{0, 1, 2, 100, 200},
 			}
 			start := client.HotKeysStart(ctx, startArgs)
-			Expect(start.Err()).NotTo(HaveOccurred())
-			Expect(start.Val()).To(Equal("OK"))
-
-			get := client.HotKeysGet(ctx)
-			Expect(get.Err()).NotTo(HaveOccurred())
-			result := get.Val()
-			Expect(result).NotTo(BeNil())
-			Expect(len(result.SelectedSlots)).To(BeNumerically(">", 0))
-
-			stop := client.HotKeysStop(ctx)
-			Expect(stop.Err()).NotTo(HaveOccurred())
+			Expect(start.Err()).To(HaveOccurred())
+			Expect(start.Err().Error()).To(ContainSubstring("SLOTS parameter cannot be used in non-cluster mode"))
 		})
 
 		It("should error when starting tracking while already active", func() {
