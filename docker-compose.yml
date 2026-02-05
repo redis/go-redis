@@ -2,7 +2,7 @@
 
 services:
   redis:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21651605017-debian-amd64}
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21709191493-debian-amd64}
     platform: linux/amd64
     container_name: redis-standalone
     environment:
@@ -25,7 +25,7 @@ services:
       - all
 
   osscluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21651605017-debian-amd64}
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21709191493-debian-amd64}
     platform: linux/amd64
     container_name: redis-osscluster
     environment:
@@ -67,7 +67,7 @@ services:
       - all
 
   sentinel-cluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21651605017-debian-amd64}
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21709191493-debian-amd64}
     platform: linux/amd64
     container_name: redis-sentinel-cluster
     network_mode: "host"
@@ -89,7 +89,7 @@ services:
       - all
 
   sentinel:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21651605017-debian-amd64}
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21709191493-debian-amd64}
     platform: linux/amd64
     container_name: redis-sentinel
     depends_on:
@@ -113,7 +113,7 @@ services:
       - all
 
   ring-cluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21651605017-debian-amd64}
+    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21709191493-debian-amd64}
     platform: linux/amd64
     container_name: redis-ring-cluster
     environment:
