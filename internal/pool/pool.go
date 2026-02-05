@@ -750,7 +750,7 @@ func (p *ConnPool) popIdle() (*Conn, error) {
 			break
 		}
 
-		// Connection is in UNUSABLE, INITIALIZING, or other state - skip it
+		// Connection is in UNUSABLE, INITIALIZING, CLOSED, or other state
 
 		// Connection is not in a valid state (might be UNUSABLE for handoff/re-auth, INITIALIZING, etc.)
 		// Put it back in the pool and try the next one
@@ -1003,9 +1003,12 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 	var firstErr error
 	for _, cn := range p.conns {
 		if fn(cn) {
+			// Close the connection and remove it from the pool
+			// This properly cleans up both the connection and removes it from idleConns
 			if err := p.closeConn(cn); err != nil && firstErr == nil {
 				firstErr = err
 			}
+			p.removeConn(cn)
 		}
 	}
 	return firstErr

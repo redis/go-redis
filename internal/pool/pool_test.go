@@ -1397,6 +1397,92 @@ var _ = Describe("queuedNewConn", func() {
 			"dialsQueue should be empty after all requests complete")
 	})
 
+	It("should remove closed connections from idleConns", func() {
+		// This test simulates the sentinel failover scenario where connections
+		// are closed via Filter (state becomes CLOSED) but remain in the idle pool
+		
+		// Create a dialer that gives each connection a unique address
+		connID := uint32(0)
+		uniqueDialer := func(ctx context.Context) (net.Conn, error) {
+			id := atomic.AddUint32(&connID, 1)
+			return &dummyConnWithAddr{
+				dummyConn: newDummyConn().(*dummyConn),
+				addr: &net.TCPAddr{
+					IP:   net.IPv4(127, 0, 0, byte(id)),
+					Port: int(id),
+				},
+			}, nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             uniqueDialer,
+			PoolSize:           int32(3),
+			MaxConcurrentDials: 3,
+			PoolTimeout:        time.Hour,
+			DialTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Create and get 3 connections, then put them back to idle pool
+		var conns []*pool.Conn
+		for i := 0; i < 3; i++ {
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			conns = append(conns, cn)
+		}
+
+		// Get the remote address of the second connection to use with Filter
+		targetAddr := conns[1].RemoteAddr().String()
+
+		// Put connections back to idle pool
+		for _, cn := range conns {
+			testPool.Put(ctx, cn)
+		}
+
+		// Verify all connections are in idle pool
+		Eventually(func() int {
+			return testPool.IdleLen()
+		}, "1s", "10ms").Should(Equal(3))
+
+		stats := testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(3)), "Should have 3 total connections before filter")
+
+		// Use Filter to close one connection (simulating sentinel failover)
+		// Filter should close the connection AND remove it from the pool
+		err := testPool.Filter(func(cn *pool.Conn) bool {
+			return cn.RemoteAddr().String() == targetAddr
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// After Filter, the closed connection should be removed from the pool
+		stats = testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(2)), "Should have exactly 2 total connections after filter")
+		Expect(stats.IdleConns).To(Equal(uint32(2)), "Should have exactly 2 idle connections after filter")
+
+		// Try to get a connection - should get one of the healthy connections
+		cn, err := testPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cn).NotTo(BeNil())
+		Expect(cn.IsClosed()).To(BeFalse(), "Retrieved connection should not be closed")
+
+		// Clean up
+		testPool.Put(ctx, cn)
+
+		// After multiple Get/Put cycles, verify no zombie connections remain
+		for i := 0; i < 10; i++ {
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cn).NotTo(BeNil(), "Should get a connection")
+			Expect(cn.IsClosed()).To(BeFalse(), "Connection should not be closed")
+			testPool.Put(ctx, cn)
+		}
+
+		// Verify final stats - should still have exactly 2 connections
+		stats = testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(2)), "Should have exactly 2 total connections")
+		Expect(stats.IdleConns).To(BeNumerically("<=", 2), "Should have at most 2 idle connections")
+	})
+
 	Describe("calcConnExpiresAt", func() {
 		// Case 1: lifetime <= 0 returns noExpiration
 		It("returns noExpiration when ConnMaxLifetime is not positive", func() {

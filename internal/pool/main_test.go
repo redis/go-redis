@@ -99,6 +99,16 @@ type dummyRawConn struct {
 	closed bool
 }
 
+// dummyConnWithAddr is a dummyConn with a custom address
+type dummyConnWithAddr struct {
+	*dummyConn
+	addr net.Addr
+}
+
+func (d *dummyConnWithAddr) RemoteAddr() net.Addr {
+	return d.addr
+}
+
 func (d *dummyRawConn) Control(f func(fd uintptr)) error {
 	return nil
 }
