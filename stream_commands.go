@@ -43,6 +43,7 @@ type StreamCmdable interface {
 	XInfoStream(ctx context.Context, key string) *XInfoStreamCmd
 	XInfoStreamFull(ctx context.Context, key string, count int) *XInfoStreamFullCmd
 	XInfoConsumers(ctx context.Context, key string, group string) *XInfoConsumersCmd
+	XCfgSet(ctx context.Context, a *XCfgSetArgs) *StatusCmd
 }
 
 // XAddArgs accepts values in the following formats:
@@ -52,25 +53,51 @@ type StreamCmdable interface {
 //
 // Note that map will not preserve the order of key-value pairs.
 // MaxLen/MaxLenApprox and MinID are in conflict, only one of them can be used.
+//
+// For idempotent production (at-most-once production):
+//   - ProducerID: A unique identifier for the producer (required for both IDMP and IDMPAUTO)
+//   - IdempotentID: A unique identifier for the message (used with IDMP)
+//   - IdempotentAuto: If true, Redis will auto-generate an idempotent ID based on message content (IDMPAUTO)
+//
+// ProducerID and IdempotentID are mutually exclusive with IdempotentAuto.
+// When using idempotent production, ID must be "*" or empty.
 type XAddArgs struct {
 	Stream     string
 	NoMkStream bool
 	MaxLen     int64 // MAXLEN N
 	MinID      string
 	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
-	Approx bool
-	Limit  int64
-	Mode   string
-	ID     string
-	Values interface{}
+	Approx         bool
+	Limit          int64
+	Mode           string
+	ID             string
+	Values         interface{}
+	ProducerID     string // Producer ID for idempotent production (IDMP or IDMPAUTO)
+	IdempotentID   string // Idempotent ID for IDMP
+	IdempotentAuto bool   // Use IDMPAUTO to auto-generate idempotent ID based on content
 }
 
 func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
-	args := make([]interface{}, 0, 11)
+	args := make([]interface{}, 0, 15)
 	args = append(args, "xadd", a.Stream)
 	if a.NoMkStream {
 		args = append(args, "nomkstream")
 	}
+
+	if a.Mode != "" {
+		args = append(args, a.Mode)
+	}
+
+	if a.ProducerID != "" {
+		if a.IdempotentAuto {
+			// IDMPAUTO pid
+			args = append(args, "idmpauto", a.ProducerID)
+		} else if a.IdempotentID != "" {
+			// IDMP pid iid
+			args = append(args, "idmp", a.ProducerID, a.IdempotentID)
+		}
+	}
+
 	switch {
 	case a.MaxLen > 0:
 		if a.Approx {
@@ -87,10 +114,6 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 	}
 	if a.Limit > 0 {
 		args = append(args, "limit", a.Limit)
-	}
-
-	if a.Mode != "" {
-		args = append(args, a.Mode)
 	}
 
 	if a.ID != "" {
@@ -524,6 +547,31 @@ func (c cmdable) XInfoStreamFull(ctx context.Context, key string, count int) *XI
 		args = append(args, "count", count)
 	}
 	cmd := NewXInfoStreamFullCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// XCfgSetArgs represents the arguments for the XCFGSET command.
+// Duration is the duration, in seconds, that Redis keeps each idempotent ID.
+// MaxSize is the maximum number of most recent idempotent IDs that Redis keeps for each producer ID.
+type XCfgSetArgs struct {
+	Stream   string
+	Duration int64
+	MaxSize  int64
+}
+
+// XCfgSet sets the idempotent production configuration for a stream.
+// XCFGSET key [IDMP-DURATION duration] [IDMP-MAXSIZE maxsize]
+func (c cmdable) XCfgSet(ctx context.Context, a *XCfgSetArgs) *StatusCmd {
+	args := make([]interface{}, 0, 6)
+	args = append(args, "xcfgset", a.Stream)
+	if a.Duration > 0 {
+		args = append(args, "idmp-duration", a.Duration)
+	}
+	if a.MaxSize > 0 {
+		args = append(args, "idmp-maxsize", a.MaxSize)
+	}
+	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
