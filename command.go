@@ -4912,28 +4912,35 @@ func (cmd *LatencyCmd) Clone() Cmder {
 
 //-----------------------------------------------------------------------
 
-type HotKeyMetric struct {
+// HotKeysSlotRange represents a slot or slot range in the response.
+// Single element slice = individual slot, two element slice = slot range [start, end].
+type HotKeysSlotRange []int64
+
+// HotKeysKeyEntry represents a hot key entry with its metric value.
+type HotKeysKeyEntry struct {
 	Key   string
-	Value int64
+	Value interface{} // Can be int64 or string
 }
 
+// HotKeysResult represents the response data from HOTKEYS GET command.
+// Field names match the Redis response format.
 type HotKeysResult struct {
-	TrackingActive                       bool
-	SampleRatio                          int64
-	SelectedSlots                        []int64
-	TimeSampledCommandSelectedSlots      int64
-	TimeAllCommandsSelectedSlots         int64
-	TimeAllCommandsAllSlots              int64
-	NetBytesSampledCommandsSelectedSlots int64
-	NetBytesAllCommandsSelectedSlots     int64
-	NetBytesAllCommandsAllSlots          int64
-	CollectionStartTime                  int64
-	CollectionDuration                   int64
-	UsedCPUSys                           int64
-	UsedCPUUser                          int64
-	TotalNetBytes                        int64
-	ByCPUTime                            []HotKeyMetric
-	ByNetBytes                           []HotKeyMetric
+	TrackingActive                      bool
+	SampleRatio                         int64
+	SelectedSlots                       []HotKeysSlotRange
+	SampledCommandSelectedSlotsUs       int64 // Present when sample-ratio > 1 and selected-slots is not empty
+	AllCommandsSelectedSlotsUs          int64 // Present when selected-slots is not empty
+	AllCommandsAllSlotsUs               int64
+	NetBytesSampledCommandsSelectedSlots int64 // Present when sample-ratio > 1 and selected-slots is not empty
+	NetBytesAllCommandsSelectedSlots    int64 // Present when selected-slots is not empty
+	NetBytesAllCommandsAllSlots         int64
+	CollectionStartTimeUnixMs           int64
+	CollectionDurationMs                int64
+	UsedCPUSysMs                        int64
+	UsedCPUUserMs                       int64
+	TotalNetBytes                       int64
+	ByCPUTimeUs                         []HotKeysKeyEntry
+	ByNetBytes                          []HotKeysKeyEntry
 }
 
 type HotKeysCmd struct {
@@ -4971,6 +4978,19 @@ func (cmd *HotKeysCmd) String() string {
 }
 
 func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
+	// HOTKEYS GET response is wrapped in an array for aggregation support
+	arrayLen, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	if arrayLen == 0 {
+		// Empty array means no tracking was started or after reset
+		cmd.val = nil
+		return nil
+	}
+
+	// Read the first (and typically only) element which is a map
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
@@ -5006,21 +5026,32 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 		result.SampleRatio = v
 	}
 	if v, ok := data["selected-slots"].([]interface{}); ok {
-		result.SelectedSlots = make([]int64, len(v))
-		for i, slot := range v {
-			if s, ok := slot.(int64); ok {
-				result.SelectedSlots[i] = s
+		result.SelectedSlots = make([]HotKeysSlotRange, 0, len(v))
+		for _, slot := range v {
+			switch s := slot.(type) {
+			case int64:
+				// Single slot
+				result.SelectedSlots = append(result.SelectedSlots, HotKeysSlotRange{s})
+			case []interface{}:
+				// Slot range
+				slotRange := make(HotKeysSlotRange, 0, len(s))
+				for _, sr := range s {
+					if val, ok := sr.(int64); ok {
+						slotRange = append(slotRange, val)
+					}
+				}
+				result.SelectedSlots = append(result.SelectedSlots, slotRange)
 			}
 		}
 	}
-	if v, ok := data["time-sampled-command-selected-slots"].(int64); ok {
-		result.TimeSampledCommandSelectedSlots = v
+	if v, ok := data["sampled-command-selected-slots-us"].(int64); ok {
+		result.SampledCommandSelectedSlotsUs = v
 	}
-	if v, ok := data["time-all-commands-selected-slots"].(int64); ok {
-		result.TimeAllCommandsSelectedSlots = v
+	if v, ok := data["all-commands-selected-slots-us"].(int64); ok {
+		result.AllCommandsSelectedSlotsUs = v
 	}
-	if v, ok := data["time-all-commands-all-slots"].(int64); ok {
-		result.TimeAllCommandsAllSlots = v
+	if v, ok := data["all-commands-all-slots-us"].(int64); ok {
+		result.AllCommandsAllSlotsUs = v
 	}
 	if v, ok := data["net-bytes-sampled-commands-selected-slots"].(int64); ok {
 		result.NetBytesSampledCommandsSelectedSlots = v
@@ -5031,56 +5062,49 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 	if v, ok := data["net-bytes-all-commands-all-slots"].(int64); ok {
 		result.NetBytesAllCommandsAllSlots = v
 	}
-	if v, ok := data["collection-start-time"].(int64); ok {
-		result.CollectionStartTime = v
+	if v, ok := data["collection-start-time-unix-ms"].(int64); ok {
+		result.CollectionStartTimeUnixMs = v
 	}
-	if v, ok := data["collection-duration"].(int64); ok {
-		result.CollectionDuration = v
+	if v, ok := data["collection-duration-ms"].(int64); ok {
+		result.CollectionDurationMs = v
 	}
-	if v, ok := data["used-cpu-sys"].(int64); ok {
-		result.UsedCPUSys = v
+	if v, ok := data["used-cpu-sys-ms"].(int64); ok {
+		result.UsedCPUSysMs = v
 	}
-	if v, ok := data["used-cpu-user"].(int64); ok {
-		result.UsedCPUUser = v
+	if v, ok := data["used-cpu-user-ms"].(int64); ok {
+		result.UsedCPUUserMs = v
 	}
 	if v, ok := data["total-net-bytes"].(int64); ok {
 		result.TotalNetBytes = v
 	}
 
-	if v, ok := data["by-cpu-time"].([]interface{}); ok {
-		result.ByCPUTime = make([]HotKeyMetric, 0, len(v)/2)
-		for i := 0; i < len(v); i += 2 {
-			if i+1 < len(v) {
-				key, keyOk := v[i].(string)
-				value, valueOk := v[i+1].(int64)
-				if keyOk && valueOk {
-					result.ByCPUTime = append(result.ByCPUTime, HotKeyMetric{
-						Key:   key,
-						Value: value,
-					})
-				}
-			}
-		}
+	if v, ok := data["by-cpu-time-us"].([]interface{}); ok {
+		result.ByCPUTimeUs = parseHotKeysKeyEntries(v)
 	}
 
 	if v, ok := data["by-net-bytes"].([]interface{}); ok {
-		result.ByNetBytes = make([]HotKeyMetric, 0, len(v)/2)
-		for i := 0; i < len(v); i += 2 {
-			if i+1 < len(v) {
-				key, keyOk := v[i].(string)
-				value, valueOk := v[i+1].(int64)
-				if keyOk && valueOk {
-					result.ByNetBytes = append(result.ByNetBytes, HotKeyMetric{
-						Key:   key,
-						Value: value,
-					})
-				}
-			}
-		}
+		result.ByNetBytes = parseHotKeysKeyEntries(v)
 	}
 
 	cmd.val = result
 	return nil
+}
+
+// parseHotKeysKeyEntries parses the key-value pairs from HOTKEYS GET response.
+func parseHotKeysKeyEntries(v []interface{}) []HotKeysKeyEntry {
+	entries := make([]HotKeysKeyEntry, 0, len(v)/2)
+	for i := 0; i < len(v); i += 2 {
+		if i+1 < len(v) {
+			key, keyOk := v[i].(string)
+			if keyOk {
+				entries = append(entries, HotKeysKeyEntry{
+					Key:   key,
+					Value: v[i+1], // Can be int64 or string
+				})
+			}
+		}
+	}
+	return entries
 }
 
 func (cmd *HotKeysCmd) Clone() Cmder {
@@ -5089,28 +5113,31 @@ func (cmd *HotKeysCmd) Clone() Cmder {
 		val = &HotKeysResult{
 			TrackingActive:                       cmd.val.TrackingActive,
 			SampleRatio:                          cmd.val.SampleRatio,
-			TimeSampledCommandSelectedSlots:      cmd.val.TimeSampledCommandSelectedSlots,
-			TimeAllCommandsSelectedSlots:         cmd.val.TimeAllCommandsSelectedSlots,
-			TimeAllCommandsAllSlots:              cmd.val.TimeAllCommandsAllSlots,
+			SampledCommandSelectedSlotsUs:        cmd.val.SampledCommandSelectedSlotsUs,
+			AllCommandsSelectedSlotsUs:           cmd.val.AllCommandsSelectedSlotsUs,
+			AllCommandsAllSlotsUs:                cmd.val.AllCommandsAllSlotsUs,
 			NetBytesSampledCommandsSelectedSlots: cmd.val.NetBytesSampledCommandsSelectedSlots,
 			NetBytesAllCommandsSelectedSlots:     cmd.val.NetBytesAllCommandsSelectedSlots,
 			NetBytesAllCommandsAllSlots:          cmd.val.NetBytesAllCommandsAllSlots,
-			CollectionStartTime:                  cmd.val.CollectionStartTime,
-			CollectionDuration:                   cmd.val.CollectionDuration,
-			UsedCPUSys:                           cmd.val.UsedCPUSys,
-			UsedCPUUser:                          cmd.val.UsedCPUUser,
+			CollectionStartTimeUnixMs:            cmd.val.CollectionStartTimeUnixMs,
+			CollectionDurationMs:                 cmd.val.CollectionDurationMs,
+			UsedCPUSysMs:                         cmd.val.UsedCPUSysMs,
+			UsedCPUUserMs:                        cmd.val.UsedCPUUserMs,
 			TotalNetBytes:                        cmd.val.TotalNetBytes,
 		}
 		if cmd.val.SelectedSlots != nil {
-			val.SelectedSlots = make([]int64, len(cmd.val.SelectedSlots))
-			copy(val.SelectedSlots, cmd.val.SelectedSlots)
+			val.SelectedSlots = make([]HotKeysSlotRange, len(cmd.val.SelectedSlots))
+			for i, sr := range cmd.val.SelectedSlots {
+				val.SelectedSlots[i] = make(HotKeysSlotRange, len(sr))
+				copy(val.SelectedSlots[i], sr)
+			}
 		}
-		if cmd.val.ByCPUTime != nil {
-			val.ByCPUTime = make([]HotKeyMetric, len(cmd.val.ByCPUTime))
-			copy(val.ByCPUTime, cmd.val.ByCPUTime)
+		if cmd.val.ByCPUTimeUs != nil {
+			val.ByCPUTimeUs = make([]HotKeysKeyEntry, len(cmd.val.ByCPUTimeUs))
+			copy(val.ByCPUTimeUs, cmd.val.ByCPUTimeUs)
 		}
 		if cmd.val.ByNetBytes != nil {
-			val.ByNetBytes = make([]HotKeyMetric, len(cmd.val.ByNetBytes))
+			val.ByNetBytes = make([]HotKeysKeyEntry, len(cmd.val.ByNetBytes))
 			copy(val.ByNetBytes, cmd.val.ByNetBytes)
 		}
 	}

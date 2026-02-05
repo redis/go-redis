@@ -2,6 +2,17 @@ package redis
 
 import (
 	"context"
+	"strings"
+)
+
+// HotKeysMetric represents the metrics that can be tracked by the HOTKEYS command.
+type HotKeysMetric string
+
+const (
+	// HotKeysMetricCPU tracks CPU time spent on the key (in microseconds).
+	HotKeysMetricCPU HotKeysMetric = "CPU"
+	// HotKeysMetricNET tracks network bytes used by the key (ingress + egress + replication).
+	HotKeysMetricNET HotKeysMetric = "NET"
 )
 
 // HotKeysCmdable is the interface for Redis HOTKEYS commands.
@@ -14,39 +25,35 @@ type HotKeysCmdable interface {
 
 // HotKeysStartArgs contains the arguments for the HOTKEYS START command.
 type HotKeysStartArgs struct {
-	CPU      bool    // Track CPU consumption metrics
-	NET      bool    // Track network utilization metrics
-	Count    int64   // Number of top keys to track per metric
-	Duration int64   // Auto-stop collection after duration seconds (0 for manual stop)
-	Sample   int64   // Sample ratio: 1/ratio probability (1 = no sampling)
-	Slots    []int64 // Specific hash slots to track
+	// Metrics to track. At least one must be specified.
+	Metrics []HotKeysMetric
+	// Count is the number of top keys to report.
+	// Default: 10, Min: 10, Max: 64
+	Count int64
+	// Duration is the auto-stop tracking after this many seconds.
+	// Default: 0 (no auto-stop)
+	Duration int64
+	// Sample is the sample ratio - track keys with probability 1/sample.
+	// Default: 1 (track every key), Min: 1
+	Sample int64
+	// Slots specifies specific hash slots to track.
+	// All specified slots must be hosted by the receiving node.
+	// If not specified, all slots are tracked.
+	Slots []int64
 }
 
 // HotKeysStart starts collecting hotkeys data.
-// If no metrics are specified (CPU and NET both false), defaults to tracking both.
+// At least one metric must be specified in args.Metrics.
 func (c cmdable) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *StatusCmd {
 	cmdArgs := make([]interface{}, 0, 16)
 	cmdArgs = append(cmdArgs, "hotkeys", "start")
 
-	metricsCount := 0
-	if args.CPU {
-		metricsCount++
-	}
-	if args.NET {
-		metricsCount++
-	}
-	if metricsCount == 0 {
-		metricsCount = 2
-		args.CPU = true
-		args.NET = true
-	}
-
-	cmdArgs = append(cmdArgs, "metrics", metricsCount)
-	if args.CPU {
-		cmdArgs = append(cmdArgs, "cpu")
-	}
-	if args.NET {
-		cmdArgs = append(cmdArgs, "net")
+	// Metrics are required - at least one must be specified
+	if len(args.Metrics) > 0 {
+		cmdArgs = append(cmdArgs, "metrics", len(args.Metrics))
+		for _, metric := range args.Metrics {
+			cmdArgs = append(cmdArgs, strings.ToLower(string(metric)))
+		}
 	}
 
 	if args.Count > 0 {
