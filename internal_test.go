@@ -77,7 +77,272 @@ var _ = Describe("newClusterState", func() {
 			Expect(slotAddr(state.slots[3])).To(Equal(":1234"))
 		})
 	})
+
+	Describe("OriginalEndpoint", func() {
+		BeforeEach(func() {
+			state = createClusterState([]ClusterSlot{{
+				Nodes: []ClusterNode{{Addr: "127.0.0.1:7001"}},
+			}, {
+				Nodes: []ClusterNode{{Addr: "127.0.0.1:7002"}},
+			}, {
+				Nodes: []ClusterNode{{Addr: "1.2.3.4:1234"}},
+			}, {
+				Nodes: []ClusterNode{{Addr: ":1234"}},
+			}})
+		})
+
+		It("preserves original endpoint from ClusterSlots before loopback replacement", func() {
+			slotOriginalEndpoint := func(slot *clusterSlot) string {
+				return slot.nodes[0].Client.OriginalEndpoint()
+			}
+
+			// Original endpoints should be preserved even when Addr is transformed
+			Expect(slotOriginalEndpoint(state.slots[0])).To(Equal("127.0.0.1:7001"))
+			Expect(slotOriginalEndpoint(state.slots[1])).To(Equal("127.0.0.1:7002"))
+			Expect(slotOriginalEndpoint(state.slots[2])).To(Equal("1.2.3.4:1234"))
+			Expect(slotOriginalEndpoint(state.slots[3])).To(Equal(":1234"))
+		})
+
+		It("has different Addr and OriginalEndpoint when loopback is replaced", func() {
+			// For loopback addresses, Addr should be transformed but OriginalEndpoint preserved
+			slot0 := state.slots[0]
+			Expect(slot0.nodes[0].Client.Options().Addr).To(Equal("10.10.10.10:7001"))
+			Expect(slot0.nodes[0].Client.OriginalEndpoint()).To(Equal("127.0.0.1:7001"))
+
+			// For non-loopback addresses, Addr and OriginalEndpoint should be the same
+			slot2 := state.slots[2]
+			Expect(slot2.nodes[0].Client.Options().Addr).To(Equal("1.2.3.4:1234"))
+			Expect(slot2.nodes[0].Client.OriginalEndpoint()).To(Equal("1.2.3.4:1234"))
+		})
+	})
+
+	Describe("OriginalEndpoint with FQDN", func() {
+		BeforeEach(func() {
+			// Simulate FQDN endpoints that might be resolved/transformed
+			state = createClusterState([]ClusterSlot{{
+				Nodes: []ClusterNode{{Addr: "redis-master.example.com:6379"}},
+			}, {
+				Nodes: []ClusterNode{{Addr: "redis-replica-1.example.com:6379"}},
+			}, {
+				Nodes: []ClusterNode{{Addr: "redis-replica-2.example.com:6379"}},
+			}})
+		})
+
+		It("preserves FQDN original endpoints", func() {
+			slotOriginalEndpoint := func(slot *clusterSlot) string {
+				return slot.nodes[0].Client.OriginalEndpoint()
+			}
+
+			Expect(slotOriginalEndpoint(state.slots[0])).To(Equal("redis-master.example.com:6379"))
+			Expect(slotOriginalEndpoint(state.slots[1])).To(Equal("redis-replica-1.example.com:6379"))
+			Expect(slotOriginalEndpoint(state.slots[2])).To(Equal("redis-replica-2.example.com:6379"))
+		})
+	})
+
+	Describe("OriginalEndpoint with multiple nodes per slot", func() {
+		BeforeEach(func() {
+			state = createClusterState([]ClusterSlot{{
+				Start: 0,
+				End:   5460,
+				Nodes: []ClusterNode{
+					{Addr: "127.0.0.1:7001"}, // master
+					{Addr: "127.0.0.1:7004"}, // replica
+				},
+			}, {
+				Start: 5461,
+				End:   10922,
+				Nodes: []ClusterNode{
+					{Addr: "master-2.redis.local:6379"},  // master
+					{Addr: "replica-2.redis.local:6379"}, // replica
+				},
+			}})
+		})
+
+		It("preserves original endpoints for all nodes in a slot", func() {
+			// First slot - loopback addresses
+			slot0 := state.slots[0]
+			Expect(slot0.nodes[0].Client.OriginalEndpoint()).To(Equal("127.0.0.1:7001"))
+			Expect(slot0.nodes[1].Client.OriginalEndpoint()).To(Equal("127.0.0.1:7004"))
+
+			// Verify Addr is transformed for loopback
+			Expect(slot0.nodes[0].Client.Options().Addr).To(Equal("10.10.10.10:7001"))
+			Expect(slot0.nodes[1].Client.Options().Addr).To(Equal("10.10.10.10:7004"))
+
+			// Second slot - FQDN addresses (no transformation)
+			slot1 := state.slots[1]
+			Expect(slot1.nodes[0].Client.OriginalEndpoint()).To(Equal("master-2.redis.local:6379"))
+			Expect(slot1.nodes[1].Client.OriginalEndpoint()).To(Equal("replica-2.redis.local:6379"))
+
+			// Verify Addr is same as OriginalEndpoint for non-loopback
+			Expect(slot1.nodes[0].Client.Options().Addr).To(Equal("master-2.redis.local:6379"))
+			Expect(slot1.nodes[1].Client.Options().Addr).To(Equal("replica-2.redis.local:6379"))
+		})
+	})
 })
+
+// TestOriginalEndpoint tests that OriginalEndpoint is correctly preserved
+// when cluster nodes are created from ClusterSlots responses.
+func TestOriginalEndpoint(t *testing.T) {
+	t.Run("preserves original endpoint when loopback is replaced", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		// Create cluster state with loopback addresses
+		// Origin is non-loopback, so loopback addresses will be replaced
+		slots := []ClusterSlot{{
+			Start: 0,
+			End:   5460,
+			Nodes: []ClusterNode{{Addr: "127.0.0.1:7001"}},
+		}, {
+			Start: 5461,
+			End:   10922,
+			Nodes: []ClusterNode{{Addr: "127.0.0.1:7002"}},
+		}}
+
+		state, err := newClusterState(nodes, slots, "10.10.10.10:1234")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		// Verify Addr is transformed (loopback replaced with origin host)
+		if got := state.slots[0].nodes[0].Client.Options().Addr; got != "10.10.10.10:7001" {
+			t.Errorf("Addr = %q, want %q", got, "10.10.10.10:7001")
+		}
+		if got := state.slots[1].nodes[0].Client.Options().Addr; got != "10.10.10.10:7002" {
+			t.Errorf("Addr = %q, want %q", got, "10.10.10.10:7002")
+		}
+
+		// Verify OriginalEndpoint is preserved (original from ClusterSlots)
+		if got := state.slots[0].nodes[0].Client.OriginalEndpoint(); got != "127.0.0.1:7001" {
+			t.Errorf("OriginalEndpoint = %q, want %q", got, "127.0.0.1:7001")
+		}
+		if got := state.slots[1].nodes[0].Client.OriginalEndpoint(); got != "127.0.0.1:7002" {
+			t.Errorf("OriginalEndpoint = %q, want %q", got, "127.0.0.1:7002")
+		}
+	})
+
+	t.Run("preserves FQDN original endpoints", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		slots := []ClusterSlot{{
+			Start: 0,
+			End:   5460,
+			Nodes: []ClusterNode{{Addr: "redis-master.example.com:6379"}},
+		}, {
+			Start: 5461,
+			End:   10922,
+			Nodes: []ClusterNode{{Addr: "redis-replica.example.com:6379"}},
+		}}
+
+		state, err := newClusterState(nodes, slots, "10.10.10.10:1234")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		// For non-loopback addresses, Addr and OriginalEndpoint should be the same
+		if got := state.slots[0].nodes[0].Client.Options().Addr; got != "redis-master.example.com:6379" {
+			t.Errorf("Addr = %q, want %q", got, "redis-master.example.com:6379")
+		}
+		if got := state.slots[0].nodes[0].Client.OriginalEndpoint(); got != "redis-master.example.com:6379" {
+			t.Errorf("OriginalEndpoint = %q, want %q", got, "redis-master.example.com:6379")
+		}
+
+		if got := state.slots[1].nodes[0].Client.Options().Addr; got != "redis-replica.example.com:6379" {
+			t.Errorf("Addr = %q, want %q", got, "redis-replica.example.com:6379")
+		}
+		if got := state.slots[1].nodes[0].Client.OriginalEndpoint(); got != "redis-replica.example.com:6379" {
+			t.Errorf("OriginalEndpoint = %q, want %q", got, "redis-replica.example.com:6379")
+		}
+	})
+
+	t.Run("preserves original endpoint for multiple nodes per slot", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		slots := []ClusterSlot{{
+			Start: 0,
+			End:   5460,
+			Nodes: []ClusterNode{
+				{Addr: "127.0.0.1:7001"}, // master
+				{Addr: "127.0.0.1:7004"}, // replica
+			},
+		}}
+
+		state, err := newClusterState(nodes, slots, "10.10.10.10:1234")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		// Master node
+		if got := state.slots[0].nodes[0].Client.Options().Addr; got != "10.10.10.10:7001" {
+			t.Errorf("Master Addr = %q, want %q", got, "10.10.10.10:7001")
+		}
+		if got := state.slots[0].nodes[0].Client.OriginalEndpoint(); got != "127.0.0.1:7001" {
+			t.Errorf("Master OriginalEndpoint = %q, want %q", got, "127.0.0.1:7001")
+		}
+
+		// Replica node
+		if got := state.slots[0].nodes[1].Client.Options().Addr; got != "10.10.10.10:7004" {
+			t.Errorf("Replica Addr = %q, want %q", got, "10.10.10.10:7004")
+		}
+		if got := state.slots[0].nodes[1].Client.OriginalEndpoint(); got != "127.0.0.1:7004" {
+			t.Errorf("Replica OriginalEndpoint = %q, want %q", got, "127.0.0.1:7004")
+		}
+	})
+
+	t.Run("GetOrCreate without original endpoint leaves it empty", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		// GetOrCreate without original endpoint (e.g., from MOVED/ASK error)
+		node, err := nodes.GetOrCreate("10.10.10.10:7001")
+		if err != nil {
+			t.Fatalf("GetOrCreate failed: %v", err)
+		}
+
+		// OriginalEndpoint should be empty when not provided
+		if got := node.Client.OriginalEndpoint(); got != "" {
+			t.Errorf("OriginalEndpoint = %q, want empty string", got)
+		}
+
+		// Addr should be set correctly
+		if got := node.Client.Options().Addr; got != "10.10.10.10:7001" {
+			t.Errorf("Addr = %q, want %q", got, "10.10.10.10:7001")
+		}
+	})
+
+	t.Run("GetOrCreateWithOriginalEndpoint sets original endpoint", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		// GetOrCreateWithOriginalEndpoint with original endpoint
+		node, err := nodes.GetOrCreateWithOriginalEndpoint("10.10.10.10:7001", "127.0.0.1:7001")
+		if err != nil {
+			t.Fatalf("GetOrCreateWithOriginalEndpoint failed: %v", err)
+		}
+
+		// OriginalEndpoint should be set
+		if got := node.Client.OriginalEndpoint(); got != "127.0.0.1:7001" {
+			t.Errorf("OriginalEndpoint = %q, want %q", got, "127.0.0.1:7001")
+		}
+
+		// Addr should be the transformed address
+		if got := node.Client.Options().Addr; got != "10.10.10.10:7001" {
+			t.Errorf("Addr = %q, want %q", got, "10.10.10.10:7001")
+		}
+	})
+}
 
 type fixedHash string
 
