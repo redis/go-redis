@@ -50,7 +50,6 @@ services:
       - PORT=6430
       - TLS_PORT=5430
       - TLS_ENABLED=yes
-      - TLS_AUTH_CLIENTS_USER=CN
       - TLS_CLIENT_CNS=testcertuser
       - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=yes
