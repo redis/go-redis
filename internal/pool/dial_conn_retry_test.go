@@ -44,8 +44,14 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 	})
 	defer p.Close()
 
+	// Use a parent context with a bounded timeout so this test fails fast (instead of hanging)
+	// when dialConn does not apply per-attempt DialTimeout via context.
+	parentBudget := dialTimeout*time.Duration(retries) + backoff*time.Duration(retries-1) + 250*time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), parentBudget)
+	defer cancel()
+
 	start := time.Now()
-	_, err := p.dialConn(context.Background(), true)
+	_, err := p.dialConn(ctx, true)
 	elapsed := time.Since(start)
 
 	if err == nil {
