@@ -141,3 +141,62 @@ func TestDialConn_ContextCancelStopsFurtherRetries(t *testing.T) {
 		t.Fatalf("expected dialer to be called once after cancel, got %d", got)
 	}
 }
+
+func TestDialConn_DialTimeoutDisabled_DoesNotSetDeadline(t *testing.T) {
+	var calls atomic.Int32
+
+	p := NewConnPool(&Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			calls.Add(1)
+			if _, ok := ctx.Deadline(); ok {
+				return nil, errors.New("unexpected deadline when DialTimeout disabled")
+			}
+			return nil, errors.New("dial failed")
+		},
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        0,
+		DialerRetries:      1,
+	})
+	defer p.Close()
+
+	_, err := p.dialConn(context.Background(), true)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected 1 dial attempt, got %d", got)
+	}
+}
+
+func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
+	var calls atomic.Int32
+	backoff := 300 * time.Millisecond
+
+	p := NewConnPool(&Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			calls.Add(1)
+			return nil, errors.New("dial failed")
+		},
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        5 * time.Second,
+		DialerRetries:      1,
+		DialerRetryTimeout: backoff,
+	})
+	defer p.Close()
+
+	start := time.Now()
+	_, err := p.dialConn(context.Background(), true)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected 1 dial attempt, got %d", got)
+	}
+	// If we slept after the last attempt, this will be ~backoff.
+	if elapsed >= backoff/2 {
+		t.Fatalf("dialConn took too long (%v); likely slept after last attempt (backoff=%v)", elapsed, backoff)
+	}
+}
