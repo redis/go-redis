@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strings"
 )
 
@@ -36,18 +37,21 @@ type HotKeysStartArgs struct {
 	Metrics []HotKeysMetric
 	// Count is the number of top keys to report.
 	// Default: 10, Min: 10, Max: 64
-	Count int64
+	Count uint8
 	// Duration is the auto-stop tracking after this many seconds.
 	// Default: 0 (no auto-stop)
 	Duration int64
 	// Sample is the sample ratio - track keys with probability 1/sample.
 	// Default: 1 (track every key), Min: 1
 	Sample int64
-	// Slots specifies specific hash slots to track.
+	// Slots specifies specific hash slots to track (0-16383).
 	// All specified slots must be hosted by the receiving node.
 	// If not specified, all slots are tracked.
-	Slots []int64
+	Slots []uint16
 }
+
+// ErrHotKeysNoMetrics is returned when HotKeysStart is called without any metrics specified.
+var ErrHotKeysNoMetrics = errors.New("redis: at least one metric must be specified for HOTKEYS START")
 
 // HotKeysStart starts collecting hotkeys data.
 // At least one metric must be specified in args.Metrics.
@@ -56,11 +60,16 @@ func (c *Client) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *Stat
 	cmdArgs := make([]interface{}, 0, 16)
 	cmdArgs = append(cmdArgs, "hotkeys", "start")
 
-	if len(args.Metrics) > 0 {
-		cmdArgs = append(cmdArgs, "metrics", len(args.Metrics))
-		for _, metric := range args.Metrics {
-			cmdArgs = append(cmdArgs, strings.ToLower(string(metric)))
-		}
+	// Validate that at least one metric is specified
+	if len(args.Metrics) == 0 {
+		cmd := NewStatusCmd(ctx, cmdArgs...)
+		cmd.SetErr(ErrHotKeysNoMetrics)
+		return cmd
+	}
+
+	cmdArgs = append(cmdArgs, "metrics", len(args.Metrics))
+	for _, metric := range args.Metrics {
+		cmdArgs = append(cmdArgs, strings.ToLower(string(metric)))
 	}
 
 	if args.Count > 0 {

@@ -57,7 +57,19 @@ var _ = Describe("HotKeys Commands", func() {
 			result := get.Val()
 			Expect(result).NotTo(BeNil())
 			Expect(result.TrackingActive).To(BeTrue())
-			Expect(result.SampleRatio).To(Equal(int64(1)))
+			Expect(result.SampleRatio).To(Equal(uint8(1)))
+			// Verify that collection start time is set (not zero)
+			Expect(result.CollectionStartTime.IsZero()).To(BeFalse())
+			// Verify that we have some CPU time data after running commands
+			Expect(result.AllCommandsAllSlots).To(BeNumerically(">", 0))
+			// Verify that we have hot keys data (we ran 350 commands on 3 keys)
+			Expect(len(result.ByCPUTime)).To(BeNumerically(">", 0))
+			Expect(len(result.ByNetBytes)).To(BeNumerically(">", 0))
+			// Verify that the first hot key entry has a non-empty key
+			if len(result.ByCPUTime) > 0 {
+				Expect(result.ByCPUTime[0].Key).NotTo(BeEmpty())
+				Expect(result.ByCPUTime[0].Value).NotTo(BeNil())
+			}
 
 			stop := client.HotKeysStop(ctx)
 			Expect(stop.Err()).NotTo(HaveOccurred())
@@ -68,6 +80,8 @@ var _ = Describe("HotKeys Commands", func() {
 			result2 := get2.Val()
 			Expect(result2).NotTo(BeNil())
 			Expect(result2.TrackingActive).To(BeFalse())
+			// After stopping, collection duration should be set
+			Expect(result2.CollectionDuration).To(BeNumerically(">", 0))
 
 			reset := client.HotKeysReset(ctx)
 			Expect(reset.Err()).NotTo(HaveOccurred())
@@ -147,11 +161,20 @@ var _ = Describe("HotKeys Commands", func() {
 			startArgs := &redis.HotKeysStartArgs{
 				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU, redis.HotKeysMetricNET},
 				Count:   10,
-				Slots:   []int64{0, 1, 2, 100, 200},
+				Slots:   []uint16{0, 1, 2, 100, 200},
 			}
 			start := client.HotKeysStart(ctx, startArgs)
 			Expect(start.Err()).To(HaveOccurred())
 			Expect(start.Err().Error()).To(ContainSubstring("SLOTS parameter cannot be used in non-cluster mode"))
+		})
+
+		It("should error when no metrics are specified", func() {
+			startArgs := &redis.HotKeysStartArgs{
+				Count: 10,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).To(HaveOccurred())
+			Expect(start.Err()).To(Equal(redis.ErrHotKeysNoMetrics))
 		})
 
 		It("should error when starting tracking while already active", func() {
