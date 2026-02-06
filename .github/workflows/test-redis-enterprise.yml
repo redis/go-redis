@@ -57,5 +57,4 @@ jobs:
           --ginkgo.skip-file="pubsub_test.go" \
           --ginkgo.skip-file="tls_test.go" \
           --ginkgo.skip-file="tls_cluster_test.go" \
-          --ginkgo.skip-file="tls_sentinel_test.go" \
           --ginkgo.label-filter='!NonRedisEnterprise'

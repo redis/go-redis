@@ -145,3 +145,108 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 
 	t.Log("✅ TLS certificate authentication test passed")
 }
+
+// TestTLSCertificateAuthenticationNoUser tests that when a certificate CN
+// doesn't match any existing ACL user, Redis falls back to the default user.
+//
+// This test:
+// 1. Ensures the testcertuser ACL user does NOT exist
+// 2. Connects with a certificate that has CN=testcertuser
+// 3. Verifies that Redis authenticates as "default" (fallback behavior)
+func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
+	ctx := context.Background()
+	testUsername := "testcertuser"
+	tlsCertDir := "dockers/standalone/tls"
+
+	// Step 1: Create a non-TLS client to ensure the user does NOT exist
+	setupClient := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379", // Non-TLS port
+	})
+	defer setupClient.Close()
+
+	// Verify connection
+	if err := setupClient.Ping(ctx).Err(); err != nil {
+		t.Skipf("Skipping test - Redis not available: %v", err)
+	}
+
+	// Delete the test user if it exists - we want to test fallback behavior
+	setupClient.ACLDelUser(ctx, testUsername)
+
+	// Verify user does not exist
+	users, err := setupClient.ACLUsers(ctx).Result()
+	if err != nil {
+		t.Fatalf("Failed to list ACL users: %v", err)
+	}
+	for _, u := range users {
+		if u == testUsername {
+			t.Fatalf("User %q should not exist for this test", testUsername)
+		}
+	}
+	t.Logf("ACL users (should not contain %s): %v", testUsername, users)
+
+	// Step 2: Load CA certificate for server verification
+	caCertPEM, err := os.ReadFile(tlsCertDir + "/ca.crt")
+	if err != nil {
+		t.Skipf("Skipping test - CA cert not found: %v", err)
+	}
+
+	// Step 3: Load the client certificate with CN=testcertuser
+	// Even though the user doesn't exist, we still use this certificate
+	clientCert, err := tls.LoadX509KeyPair(
+		tlsCertDir+"/"+testUsername+".crt",
+		tlsCertDir+"/"+testUsername+".key",
+	)
+	if err != nil {
+		t.Skipf("Skipping test - client certificate not found: %v (ensure TLS_CLIENT_CNS=%s is set)", err, testUsername)
+	}
+
+	// Step 4: Create TLS config with the client certificate
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCertPEM)
+
+	tlsConfig := &tls.Config{
+		RootCAs:            caCertPool,
+		Certificates:       []tls.Certificate{clientCert},
+		ServerName:         "localhost",
+		InsecureSkipVerify: true, // Using self-signed certs
+	}
+
+	// Step 5: Connect with TLS using the certificate
+	tlsClient := redis.NewClient(&redis.Options{
+		Addr:      "localhost:6666", // TLS port
+		TLSConfig: tlsConfig,
+	})
+	defer tlsClient.Close()
+
+	// Step 6: Verify we're authenticated as "default" (fallback)
+	whoami, err := tlsClient.ACLWhoAmI(ctx).Result()
+	if err != nil {
+		t.Logf("ACL WHOAMI failed: %v", err)
+		t.Skipf("Skipping - Redis may not be configured for certificate-based authentication")
+	}
+
+	// When the CN user doesn't exist, Redis should fall back to "default"
+	if whoami != "default" {
+		t.Fatalf("Expected to be authenticated as %q (fallback), but got %q", "default", whoami)
+	}
+	t.Logf("✅ Correctly fell back to %q user (CN user %q does not exist)", whoami, testUsername)
+
+	// Step 7: Verify we can execute commands as default user
+	err = tlsClient.Set(ctx, "test_cert_auth_fallback_key", "fallback_value", 0).Err()
+	if err != nil {
+		t.Fatalf("SET command failed: %v", err)
+	}
+
+	val, err := tlsClient.Get(ctx, "test_cert_auth_fallback_key").Result()
+	if err != nil {
+		t.Fatalf("GET command failed: %v", err)
+	}
+	if val != "fallback_value" {
+		t.Errorf("Expected 'fallback_value', got %q", val)
+	}
+
+	// Cleanup
+	tlsClient.Del(ctx, "test_cert_auth_fallback_key")
+
+	t.Log("✅ TLS certificate authentication fallback test passed")
+}
