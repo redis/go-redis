@@ -5,6 +5,19 @@ import (
 	"strings"
 )
 
+// HOTKEYS commands are only available on standalone *Client instances.
+// They are NOT available on ClusterClient, Ring, or UniversalClient because
+// HOTKEYS is a stateful command requiring session affinity - all operations
+// (START, GET, STOP, RESET) must be sent to the same Redis node.
+//
+// If you are using UniversalClient and need HOTKEYS functionality, you must
+// type assert to *Client first:
+//
+//	if client, ok := universalClient.(*redis.Client); ok {
+//	    result, err := client.HotKeysStart(ctx, args)
+//	    // ...
+//	}
+
 // HotKeysMetric represents the metrics that can be tracked by the HOTKEYS command.
 type HotKeysMetric string
 
@@ -15,15 +28,9 @@ const (
 	HotKeysMetricNET HotKeysMetric = "NET"
 )
 
-// HotKeysCmdable is the interface for Redis HOTKEYS commands.
-type HotKeysCmdable interface {
-	HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *StatusCmd
-	HotKeysStop(ctx context.Context) *StatusCmd
-	HotKeysReset(ctx context.Context) *StatusCmd
-	HotKeysGet(ctx context.Context) *HotKeysCmd
-}
-
 // HotKeysStartArgs contains the arguments for the HOTKEYS START command.
+// This command is only available on standalone clients due to its stateful nature
+// requiring session affinity. It must NOT be used on cluster or pooled clients.
 type HotKeysStartArgs struct {
 	// Metrics to track. At least one must be specified.
 	Metrics []HotKeysMetric
@@ -44,11 +51,11 @@ type HotKeysStartArgs struct {
 
 // HotKeysStart starts collecting hotkeys data.
 // At least one metric must be specified in args.Metrics.
-func (c cmdable) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *StatusCmd {
+// This command is only available on standalone clients.
+func (c *Client) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *StatusCmd {
 	cmdArgs := make([]interface{}, 0, 16)
 	cmdArgs = append(cmdArgs, "hotkeys", "start")
 
-	// Metrics are required - at least one must be specified
 	if len(args.Metrics) > 0 {
 		cmdArgs = append(cmdArgs, "metrics", len(args.Metrics))
 		for _, metric := range args.Metrics {
@@ -76,28 +83,31 @@ func (c cmdable) HotKeysStart(ctx context.Context, args *HotKeysStartArgs) *Stat
 	}
 
 	cmd := NewStatusCmd(ctx, cmdArgs...)
-	_ = c(ctx, cmd)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
 // HotKeysStop stops the ongoing hotkeys collection session.
-func (c cmdable) HotKeysStop(ctx context.Context) *StatusCmd {
+// This command is only available on standalone clients.
+func (c *Client) HotKeysStop(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "hotkeys", "stop")
-	_ = c(ctx, cmd)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
 // HotKeysReset discards the last hotkeys collection session results.
 // Returns an error if tracking is currently active.
-func (c cmdable) HotKeysReset(ctx context.Context) *StatusCmd {
+// This command is only available on standalone clients.
+func (c *Client) HotKeysReset(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "hotkeys", "reset")
-	_ = c(ctx, cmd)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }
 
 // HotKeysGet retrieves the results of the ongoing or last hotkeys collection session.
-func (c cmdable) HotKeysGet(ctx context.Context) *HotKeysCmd {
+// This command is only available on standalone clients.
+func (c *Client) HotKeysGet(ctx context.Context) *HotKeysCmd {
 	cmd := NewHotKeysCmd(ctx, "hotkeys", "get")
-	_ = c(ctx, cmd)
+	_ = c.Process(ctx, cmd)
 	return cmd
 }

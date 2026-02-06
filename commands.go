@@ -232,7 +232,6 @@ type Cmdable interface {
 	GenericCmdable
 	GeoCmdable
 	HashCmdable
-	HotKeysCmdable
 	HyperLogLogCmdable
 	ListCmdable
 	ProbabilisticCmdable
