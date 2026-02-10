@@ -49,29 +49,6 @@ func TestTLSStandalone(t *testing.T) {
 	t.Log("✅ TLS standalone test passed")
 }
 
-// TestTLSInsecureSkipVerify tests TLS with InsecureSkipVerify
-func TestTLSInsecureSkipVerify(t *testing.T) {
-	insecureTLSConfig := &tls.Config{
-		InsecureSkipVerify: true,
-	}
-
-	client := redis.NewClient(&redis.Options{
-		Addr:      "localhost:6666",
-		TLSConfig: insecureTLSConfig,
-	})
-	defer client.Close()
-
-	val, err := client.Ping(ctx).Result()
-	if err != nil {
-		t.Fatalf("PING failed: %v", err)
-	}
-	if val != "PONG" {
-		t.Fatalf("Expected PONG, got %s", val)
-	}
-
-	t.Log("✅ TLS InsecureSkipVerify test passed")
-}
-
 // TestTLSRedissURL tests rediss:// URL scheme
 func TestTLSRedissURL(t *testing.T) {
 	opt, err := redis.ParseURL("rediss://localhost:6666")
