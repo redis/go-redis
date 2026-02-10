@@ -5,10 +5,30 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
 )
+
+func init() {
+	// Initialize RedisVersion from environment variable for regular Go tests
+	// (Ginkgo tests initialize this in BeforeSuite)
+	if version := os.Getenv("REDIS_VERSION"); version != "" {
+		if v, err := strconv.ParseFloat(strings.Trim(version, "\""), 64); err == nil && v > 0 {
+			RedisVersion = v
+		}
+	}
+}
+
+// skipBeforeRedisVersion checks if Redis version is below the specified version and skips the test if so
+func skipBeforeRedisVersion(t *testing.T, version float64, msg string) {
+	t.Helper()
+	if RedisVersion < version {
+		t.Skipf("Skipping test: Redis version %.1f < %.1f: %s", RedisVersion, version, msg)
+	}
+}
 
 // TestTLSCertificateAuthentication tests that Redis automatically authenticates
 // a user based on the CN field in the client's TLS certificate.
@@ -24,6 +44,8 @@ import (
 // 3. Connect using TLS with that certificate
 // 4. Verify that Redis automatically authenticates as that user (no AUTH command needed)
 func TestTLSCertificateAuthentication(t *testing.T) {
+	skipBeforeRedisVersion(t, 8.6, "tls-auth-clients-user CN requires Redis 8.6+")
+
 	ctx := context.Background()
 	testUsername := "testcertuser"
 	tlsCertDir := "dockers/standalone/tls"
@@ -152,6 +174,8 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 // 2. Connects with a certificate that has CN=testcertuser
 // 3. Verifies that Redis authenticates as "default" (fallback behavior)
 func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
+	skipBeforeRedisVersion(t, 8.6, "tls-auth-clients-user CN requires Redis 8.6+")
+
 	ctx := context.Background()
 	testUsername := "testcertuser"
 	tlsCertDir := "dockers/standalone/tls"
