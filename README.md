@@ -135,6 +135,29 @@ func ExampleClient() {
 }
 ```
 
+### Dial retries and backoff
+
+Connection establishment can be retried by the connection pool when dialing fails.
+
+- **`DialerRetries`**: maximum number of dial attempts (default: 5).
+- **`DialerRetryTimeout`**: default delay between attempts when no custom backoff is provided (default: 100ms).
+- **`DialerRetryBackoff`**: optional function hook to control the delay between attempts.
+
+Example:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+	Addr: "localhost:6379",
+
+	DialerRetries:      5,
+	DialerRetryTimeout: 100 * time.Millisecond, // used when DialerRetryBackoff is nil
+
+	// Optional: exponential backoff with jitter and a cap.
+	DialerRetryBackoff: redis.DialRetryBackoffExponential(100*time.Millisecond, 2*time.Second),
+})
+defer rdb.Close()
+```
+
 ### Authentication
 
 The Redis client supports multiple ways to provide authentication credentials, with a clear priority order. Here are the available options:
