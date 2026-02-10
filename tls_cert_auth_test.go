@@ -36,7 +36,7 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 
 	// Verify connection
 	if err := setupClient.Ping(ctx).Err(); err != nil {
-		t.Skipf("Skipping test - Redis not available: %v", err)
+		t.Fatalf("Redis not available: %v", err)
 	}
 
 	// Clean up any existing test user
@@ -69,7 +69,7 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 	// Step 3: Load CA certificate for server verification
 	caCertPEM, err := os.ReadFile(tlsCertDir + "/ca.crt")
 	if err != nil {
-		t.Skipf("Skipping test - CA cert not found: %v", err)
+		t.Fatalf("CA cert not found: %v", err)
 	}
 
 	// Step 4: Load the pre-generated client certificate with CN=testcertuser
@@ -79,7 +79,7 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 		tlsCertDir+"/"+testUsername+".key",
 	)
 	if err != nil {
-		t.Skipf("Skipping test - client certificate not found: %v (ensure TLS_CLIENT_CNS=%s is set)", err, testUsername)
+		t.Fatalf("Client certificate not found: %v (ensure TLS_CLIENT_CNS=%s is set)", err, testUsername)
 	}
 
 	// Step 5: Create TLS config with the client certificate
@@ -107,9 +107,7 @@ func TestTLSCertificateAuthentication(t *testing.T) {
 	// Step 7: Verify we're authenticated as the correct user
 	whoami, err := tlsClient.ACLWhoAmI(ctx).Result()
 	if err != nil {
-		t.Logf("ACL WHOAMI failed: %v", err)
-		t.Logf("This test requires Redis to be configured with: tls-auth-clients-user CN")
-		t.Skipf("Skipping - Redis may not be configured for certificate-based authentication")
+		t.Fatalf("ACL WHOAMI failed: %v (this test requires Redis to be configured with: tls-auth-clients-user CN)", err)
 	}
 
 	if whoami != testUsername {
@@ -166,7 +164,7 @@ func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
 
 	// Verify connection
 	if err := setupClient.Ping(ctx).Err(); err != nil {
-		t.Skipf("Skipping test - Redis not available: %v", err)
+		t.Fatalf("Redis not available: %v", err)
 	}
 
 	// Delete the test user if it exists - we want to test fallback behavior
@@ -187,7 +185,7 @@ func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
 	// Step 2: Load CA certificate for server verification
 	caCertPEM, err := os.ReadFile(tlsCertDir + "/ca.crt")
 	if err != nil {
-		t.Skipf("Skipping test - CA cert not found: %v", err)
+		t.Fatalf("CA cert not found: %v", err)
 	}
 
 	// Step 3: Load the client certificate with CN=testcertuser
@@ -197,7 +195,7 @@ func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
 		tlsCertDir+"/"+testUsername+".key",
 	)
 	if err != nil {
-		t.Skipf("Skipping test - client certificate not found: %v (ensure TLS_CLIENT_CNS=%s is set)", err, testUsername)
+		t.Fatalf("Client certificate not found: %v (ensure TLS_CLIENT_CNS=%s is set)", err, testUsername)
 	}
 
 	// Step 4: Create TLS config with the client certificate
@@ -221,8 +219,7 @@ func TestTLSCertificateAuthenticationNoUser(t *testing.T) {
 	// Step 6: Verify we're authenticated as "default" (fallback)
 	whoami, err := tlsClient.ACLWhoAmI(ctx).Result()
 	if err != nil {
-		t.Logf("ACL WHOAMI failed: %v", err)
-		t.Skipf("Skipping - Redis may not be configured for certificate-based authentication")
+		t.Fatalf("ACL WHOAMI failed: %v (Redis may not be configured for certificate-based authentication)", err)
 	}
 
 	// When the CN user doesn't exist, Redis should fall back to "default"
