@@ -143,6 +143,13 @@ type Options struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	//
+	// attempt is 0-based: attempt=0 is the delay after the 1st failed dial (before the 2nd attempt).
+	//
+	// If nil, dial retry backoff is constant and equals DialerRetryTimeout (default: 100ms).
+	DialerRetryBackoff func(attempt int) time.Duration
+
 	// ReadTimeout for socket reads. If reached, commands will fail
 	// with a timeout instead of blocking. Supported values:
 	//
@@ -755,6 +762,7 @@ func newConnPool(
 		DialTimeout:              opt.DialTimeout,
 		DialerRetries:            opt.DialerRetries,
 		DialerRetryTimeout:       opt.DialerRetryTimeout,
+		DialerRetryBackoff:       opt.DialerRetryBackoff,
 		MinIdleConns:             minIdleConns,
 		MaxIdleConns:             maxIdleConns,
 		MaxActiveConns:           maxActiveConns,
@@ -801,6 +809,7 @@ func newPubSubPool(
 		DialTimeout:              opt.DialTimeout,
 		DialerRetries:            opt.DialerRetries,
 		DialerRetryTimeout:       opt.DialerRetryTimeout,
+		DialerRetryBackoff:       opt.DialerRetryBackoff,
 		MinIdleConns:             minIdleConns,
 		MaxIdleConns:             maxIdleConns,
 		MaxActiveConns:           maxActiveConns,
