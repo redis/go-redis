@@ -4928,7 +4928,7 @@ type HotKeysResult struct {
 	TrackingActive                       bool
 	SampleRatio                          uint8
 	SelectedSlots                        []HotKeysSlotRange
-	SampledCommandSelectedSlots          time.Duration // Present when sample-ratio > 1 and selected-slots is not empty
+	SampledCommandsSelectedSlots         time.Duration // Present when sample-ratio > 1 and selected-slots is not empty
 	AllCommandsSelectedSlots             time.Duration // Present when selected-slots is not empty
 	AllCommandsAllSlots                  time.Duration
 	NetBytesSampledCommandsSelectedSlots int64 // Present when sample-ratio > 1 and selected-slots is not empty
@@ -5044,8 +5044,8 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 			}
 		}
 	}
-	if v, ok := data["sampled-command-selected-slots-us"].(int64); ok {
-		result.SampledCommandSelectedSlots = time.Duration(v) * time.Microsecond
+	if v, ok := data["sampled-commands-selected-slots-us"].(int64); ok {
+		result.SampledCommandsSelectedSlots = time.Duration(v) * time.Microsecond
 	}
 	if v, ok := data["all-commands-selected-slots-us"].(int64); ok {
 		result.AllCommandsSelectedSlots = time.Duration(v) * time.Microsecond
@@ -5113,7 +5113,7 @@ func (cmd *HotKeysCmd) Clone() Cmder {
 		val = &HotKeysResult{
 			TrackingActive:                       cmd.val.TrackingActive,
 			SampleRatio:                          cmd.val.SampleRatio,
-			SampledCommandSelectedSlots:          cmd.val.SampledCommandSelectedSlots,
+			SampledCommandsSelectedSlots:         cmd.val.SampledCommandsSelectedSlots,
 			AllCommandsSelectedSlots:             cmd.val.AllCommandsSelectedSlots,
 			AllCommandsAllSlots:                  cmd.val.AllCommandsAllSlots,
 			NetBytesSampledCommandsSelectedSlots: cmd.val.NetBytesSampledCommandsSelectedSlots,
