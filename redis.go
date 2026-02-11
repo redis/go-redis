@@ -538,7 +538,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
 	protocol := c.opt.Protocol
 	var endpointType maintnotifications.EndpointType
-	if c.opt.MaintNotificationsConfig != nil {
+	if maintNotifEnabled {
 		endpointType = c.opt.MaintNotificationsConfig.EndpointType
 	}
 	c.optLock.RUnlock()
