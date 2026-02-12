@@ -1,12 +1,16 @@
 ---
 
+x-default-image: &default-image ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+
 services:
   redis:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+    image: *default-image
     platform: linux/amd64
     container_name: redis-standalone
     environment:
       - TLS_ENABLED=yes
+      - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=6379
       - TLS_PORT=6666
@@ -23,7 +27,7 @@ services:
       - all
 
   osscluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+    image: *default-image
     platform: linux/amd64
     container_name: redis-osscluster
     environment:
@@ -39,14 +43,40 @@ services:
       - all-stack
       - all
 
+  osscluster-tls:
+    image: *default-image
+    platform: linux/amd64
+    container_name: redis-osscluster-tls
+    environment:
+      - NODES=6
+      - PORT=6430
+      - TLS_PORT=5430
+      - TLS_ENABLED=yes
+      - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
+      - REDIS_CLUSTER=yes
+      - REPLICAS=1
+    command: "--tls-auth-clients optional --cluster-announce-ip 127.0.0.1"
+    ports:
+      - "6430-6435:6430-6435"      # Regular ports
+      - "5430-5435:5430-5435"      # TLS ports (set via TLS_PORT env var)
+      - "16430-16435:16430-16435"  # Cluster bus ports (PORT + 10000)
+    volumes:
+      - "./dockers/osscluster-tls:/redis/work"
+    profiles:
+      - cluster-tls
+      - all
+
   sentinel-cluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+    image: *default-image
     platform: linux/amd64
     container_name: redis-sentinel-cluster
     network_mode: "host"
     environment:
       - NODES=3
       - TLS_ENABLED=yes
+      - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=9121
     command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
@@ -60,7 +90,7 @@ services:
       - all
 
   sentinel:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+    image: *default-image
     platform: linux/amd64
     container_name: redis-sentinel
     depends_on:
@@ -84,12 +114,14 @@ services:
       - all
 
   ring-cluster:
-    image: ${CLIENT_LIBS_TEST_IMAGE:-redislabs/client-libs-test:custom-21860421418-debian-amd64}
+    image: *default-image
     platform: linux/amd64
     container_name: redis-ring-cluster
     environment:
       - NODES=3
       - TLS_ENABLED=yes
+      - TLS_CLIENT_CNS=testcertuser
+      - TLS_AUTH_CLIENTS_USER=CN
       - REDIS_CLUSTER=no
       - PORT=6390
     command: ${REDIS_EXTRA_ARGS:---enable-debug-command yes --enable-module-command yes --tls-auth-clients optional --save ""}
