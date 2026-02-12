@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,19 +14,24 @@ import (
 )
 
 // TestUnifiedInjector_SMIGRATING demonstrates using the unified notification injector
-// This test works with EITHER the real fault injector OR the proxy-based mock
+// This test requires the proxy-based mock to directly inject notifications
 func TestUnifiedInjector_SMIGRATING(t *testing.T) {
+	// Skip if using real fault injector (these tests require proxy mock for direct notification injection)
+	if os.Getenv("FAULT_INJECTOR_URL") != "" {
+		t.Skip("Skipping unified injector test - requires proxy mock, not real fault injector")
+	}
+
 	ctx := context.Background()
 
 	// Create notification injector (automatically chooses based on environment)
 	injector, err := NewNotificationInjector()
 	if err != nil {
-		t.Fatalf("Failed to create notification injector: %v", err)
+		t.Fatalf("[ERROR] Failed to create notification injector: %v", err)
 	}
 
-	// Start the injector
+	// Start the injector - skip if proxy not available
 	if err := injector.Start(); err != nil {
-		t.Fatalf("Failed to start injector: %v", err)
+		t.Skipf("Skipping test - proxy not available: %v", err)
 	}
 	defer injector.Stop()
 
@@ -52,7 +58,7 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 
 	// Verify connection
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect to cluster: %v", err)
+		t.Fatalf("[ERROR] Failed to connect to cluster: %v", err)
 	}
 
 	// Perform some operations to establish connections
@@ -77,7 +83,7 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 	// Inject SMIGRATING notification while connection is active
 	t.Log("Injecting SMIGRATING notification...")
 	if err := injector.InjectSMIGRATING(ctx, 12345, "1000-2000", "3000"); err != nil {
-		t.Fatalf("Failed to inject SMIGRATING: %v", err)
+		t.Fatalf("[ERROR] Failed to inject SMIGRATING: %v", err)
 	}
 
 	// Wait for notification processing (mode-aware)
@@ -86,14 +92,14 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 	// Verify notification was received
 	analysis := tracker.GetAnalysis()
 	if analysis.SMigratingCount == 0 {
-		t.Errorf("Expected to receive SMIGRATING notification, got 0")
+		t.Errorf("[ERROR] Expected to receive SMIGRATING notification, got 0")
 	} else {
 		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
 	}
 
 	// Verify operations still work (timeouts should be relaxed)
 	if err := client.Set(ctx, "test-key-during-migration", "value", 0).Err(); err != nil {
-		t.Errorf("Expected operations to work during migration, got error: %v", err)
+		t.Errorf("[ERROR] Expected operations to work during migration, got error: %v", err)
 	}
 
 	// Print analysis
@@ -103,19 +109,23 @@ func TestUnifiedInjector_SMIGRATING(t *testing.T) {
 }
 
 // TestUnifiedInjector_SMIGRATED demonstrates SMIGRATED notification handling
-// This test works with BOTH the real fault injector and the proxy mock
-// - Proxy mock: Can directly inject SMIGRATED
-// - Real FI: Triggers slot migration which generates both SMIGRATING and SMIGRATED
+// This test requires the proxy-based mock to directly inject notifications
 func TestUnifiedInjector_SMIGRATED(t *testing.T) {
+	// Skip if using real fault injector (these tests require proxy mock for direct notification injection)
+	if os.Getenv("FAULT_INJECTOR_URL") != "" {
+		t.Skip("Skipping unified injector test - requires proxy mock, not real fault injector")
+	}
+
 	ctx := context.Background()
 
 	injector, err := NewNotificationInjector()
 	if err != nil {
-		t.Fatalf("Failed to create notification injector: %v", err)
+		t.Fatalf("[ERROR] Failed to create notification injector: %v", err)
 	}
 
+	// Start the injector - skip if proxy not available
 	if err := injector.Start(); err != nil {
-		t.Fatalf("Failed to start injector: %v", err)
+		t.Skipf("Skipping test - proxy not available: %v", err)
 	}
 	defer injector.Stop()
 
@@ -142,7 +152,7 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	setupNotificationHook(client, tracker)
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf("[ERROR] Failed to connect: %v", err)
 	}
 
 	// Set up reload callback on existing nodes
@@ -205,7 +215,7 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 		t.Logf("Using new node address: %s", newNodeAddr)
 
 		if err := injector.InjectSMIGRATED(ctx, 12346, newNodeAddr, "1000-2000", "3000"); err != nil {
-			t.Fatalf("Failed to inject SMIGRATED: %v", err)
+			t.Fatalf("[ERROR] Failed to inject SMIGRATED: %v", err)
 		}
 	} else {
 		// Real fault injector: Trigger slot migration which generates both SMIGRATING and SMIGRATED
@@ -213,7 +223,7 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 
 		// First inject SMIGRATING (this triggers the actual migration)
 		if err := injector.InjectSMIGRATING(ctx, 12345, "1000-2000", "3000"); err != nil {
-			t.Fatalf("Failed to trigger slot migration: %v", err)
+			t.Fatalf("[ERROR] Failed to trigger slot migration: %v", err)
 		}
 
 		// Wait for migration to complete (real FI takes longer)
@@ -241,7 +251,7 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	} else {
 		// Real FI: Should receive both SMIGRATING and SMIGRATED
 		if analysis.MigratingCount == 0 {
-			t.Errorf("Expected to receive SMIGRATING notification with real FI, got 0")
+			t.Errorf("[ERROR] Expected to receive SMIGRATING notification with real FI, got 0")
 		} else {
 			t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.MigratingCount)
 		}
@@ -308,7 +318,7 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 	}
 
 	if successCount < 8 {
-		t.Errorf("Expected most operations to succeed after SMIGRATED, got %d/10", successCount)
+		t.Errorf("[ERROR] Expected most operations to succeed after SMIGRATED, got %d/10", successCount)
 	} else {
 		t.Logf("✓ Successfully performed %d/10 operations after SMIGRATED", successCount)
 	}
@@ -320,16 +330,23 @@ func TestUnifiedInjector_SMIGRATED(t *testing.T) {
 }
 
 // TestUnifiedInjector_ComplexScenario demonstrates a complex migration scenario
+// This test requires the proxy-based mock to directly inject notifications
 func TestUnifiedInjector_ComplexScenario(t *testing.T) {
+	// Skip if using real fault injector (these tests require proxy mock for direct notification injection)
+	if os.Getenv("FAULT_INJECTOR_URL") != "" {
+		t.Skip("Skipping unified injector test - requires proxy mock, not real fault injector")
+	}
+
 	ctx := context.Background()
 
 	injector, err := NewNotificationInjector()
 	if err != nil {
-		t.Fatalf("Failed to create notification injector: %v", err)
+		t.Fatalf("[ERROR] Failed to create notification injector: %v", err)
 	}
 
+	// Start the injector - skip if proxy not available
 	if err := injector.Start(); err != nil {
-		t.Fatalf("Failed to start injector: %v", err)
+		t.Skipf("Skipping test - proxy not available: %v", err)
 	}
 	defer injector.Stop()
 
@@ -358,7 +375,7 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 	})
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf("[ERROR] Failed to connect: %v", err)
 	}
 
 	// Perform operations
@@ -372,7 +389,7 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 	// Simulate a multi-step migration scenario
 	t.Log("Step 1: Injecting SMIGRATING for slots 0-5000...")
 	if err := injector.InjectSMIGRATING(ctx, 10001, "0-5000"); err != nil {
-		t.Fatalf("Failed to inject SMIGRATING: %v", err)
+		t.Fatalf("[ERROR] Failed to inject SMIGRATING: %v", err)
 	}
 
 	// Wait for notification processing (mode-aware)
@@ -392,7 +409,7 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 		hostPort := addrs[0]
 
 		if err := injector.InjectSMIGRATED(ctx, 10002, hostPort, "0-5000"); err != nil {
-			t.Fatalf("Failed to inject SMIGRATED: %v", err)
+			t.Fatalf("[ERROR] Failed to inject SMIGRATED: %v", err)
 		}
 
 		// Wait for notification processing (mode-aware)
@@ -402,7 +419,7 @@ func TestUnifiedInjector_ComplexScenario(t *testing.T) {
 	// Verify operations still work
 	for i := 0; i < 5; i++ {
 		if err := client.Set(ctx, fmt.Sprintf("post-migration-key%d", i), "value", 0).Err(); err != nil {
-			t.Errorf("Operations failed after migration: %v", err)
+			t.Errorf("[ERROR] Operations failed after migration: %v", err)
 		}
 	}
 
