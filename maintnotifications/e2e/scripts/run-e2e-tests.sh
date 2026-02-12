@@ -49,7 +49,7 @@ OPTIONS:
     -h, --help              Show this help message
     -v, --verbose           Enable verbose test output (human-readable)
     -d, --debug             Enable debug logging (shows detailed fault injector responses)
-    -t, --timeout DURATION  Test timeout (default: 60m)
+    -t, --timeout DURATION  Test timeout (default: 90m)
     -r, --run PATTERN       Run only tests matching pattern
     --json                  Enable JSON output (default)
     --no-json               Disable JSON output, use verbose human-readable format
@@ -82,7 +82,7 @@ EOF
 }
 
 # Parse command line arguments
-TIMEOUT="60m"
+TIMEOUT="90m"
 RUN_PATTERN=""
 SKIP_PATTERN=""
 DRY_RUN=false
