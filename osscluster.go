@@ -476,10 +476,10 @@ type clusterNode struct {
 	lastLatencyMeasurement int64 // atomic
 }
 
-func newClusterNodeWithOriginalEndpoint(clOpt *ClusterOptions, addr, originalEndpoint string) *clusterNode {
+func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string) *clusterNode {
 	opt := clOpt.clientOptions()
 	opt.Addr = addr
-	opt.OriginalEndpoint = originalEndpoint
+	opt.NodeAddress = nodeAddress
 	node := clusterNode{
 		Client: clOpt.NewClient(opt),
 	}
@@ -707,10 +707,10 @@ func (c *clusterNodes) GC(generation uint32) {
 }
 
 func (c *clusterNodes) GetOrCreate(addr string) (*clusterNode, error) {
-	return c.GetOrCreateWithOriginalEndpoint(addr, "")
+	return c.GetOrCreateWithNodeAddress(addr, "")
 }
 
-func (c *clusterNodes) GetOrCreateWithOriginalEndpoint(addr, originalEndpoint string) (*clusterNode, error) {
+func (c *clusterNodes) GetOrCreateWithNodeAddress(addr, nodeAddress string) (*clusterNode, error) {
 	node, err := c.get(addr)
 	if err != nil {
 		return nil, err
@@ -731,7 +731,7 @@ func (c *clusterNodes) GetOrCreateWithOriginalEndpoint(addr, originalEndpoint st
 		return node, nil
 	}
 
-	node = newClusterNodeWithOriginalEndpoint(c.opt, addr, originalEndpoint)
+	node = newClusterNodeWithNodeAddress(c.opt, addr, nodeAddress)
 	for _, fn := range c.onNewNode {
 		fn(node.Client)
 	}
@@ -828,14 +828,14 @@ func newClusterState(
 	for _, slot := range slots {
 		var nodes []*clusterNode
 		for i, slotNode := range slot.Nodes {
-			// slotNode.Addr is the original endpoint from CLUSTER SLOTS
-			originalEndpoint := slotNode.Addr
-			addr := originalEndpoint
+			// slotNode.Addr is the node address from CLUSTER SLOTS
+			nodeAddress := slotNode.Addr
+			addr := nodeAddress
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
 
-			node, err := c.nodes.GetOrCreateWithOriginalEndpoint(addr, originalEndpoint)
+			node, err := c.nodes.GetOrCreateWithNodeAddress(addr, nodeAddress)
 			if err != nil {
 				return nil, err
 			}

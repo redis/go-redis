@@ -1134,16 +1134,14 @@ func (c *Client) Options() *Options {
 	return c.opt
 }
 
-// OriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
-// before any resolution or transformation (e.g., loopback replacement).
-// This is useful for matching the source field in SMIGRATED notifications.
+// NodeAddress returns the address of the Redis node as reported by the server.
+// For cluster clients, this is the endpoint from CLUSTER SLOTS before any transformation
+// (e.g., loopback replacement). For standalone clients, this defaults to Addr.
 //
-// Returns empty string ("") in the following cases:
-//   - Non-cluster clients (standalone Redis, Sentinel)
-//   - Cluster nodes discovered via MOVED/ASK redirects
-//   - Manually created clients
-func (c *Client) OriginalEndpoint() string {
-	return c.opt.OriginalEndpoint
+// This is useful for matching the source field in maintenance notifications
+// (e.g. SMIGRATED).
+func (c *Client) NodeAddress() string {
+	return c.opt.NodeAddress
 }
 
 // GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.

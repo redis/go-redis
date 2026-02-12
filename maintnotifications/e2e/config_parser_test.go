@@ -643,7 +643,19 @@ func GetAvailableDatabases(configPath string) ([]string, error) {
 }
 
 // ConvertEnvDatabaseConfigToFaultInjectorConfig converts EnvDatabaseConfig to fault injector DatabaseConfig
+// This creates an OSS Cluster database by default for backward compatibility.
+// Use ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode for explicit control over cluster mode.
 func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, name string) (DatabaseConfig, error) {
+	return ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envConfig, name, true)
+}
+
+// ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode converts EnvDatabaseConfig to fault injector DatabaseConfig
+// with explicit control over whether to create a cluster or standalone database.
+// Parameters:
+//   - envConfig: The environment database configuration
+//   - name: The name for the new database
+//   - clusterMode: If true, creates an OSS Cluster database (ClusterClient). If false, creates a standalone database (Client).
+func ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envConfig EnvDatabaseConfig, name string, clusterMode bool) (DatabaseConfig, error) {
 	var port int
 
 	// Extract port and DNS name from raw_endpoints or endpoints
@@ -670,53 +682,76 @@ func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, 
 
 	randomPortOffset := 1 + rand.Intn(5) + rand.Intn(10) + rand.Intn(10) + rand.Intn(10) // Random port offset to avoid conflicts
 
-	// Build the database config for fault injector
-	// Create OSS Cluster database to support cluster-specific features like SMIGRATING notifications
-	dbConfig := DatabaseConfig{
-		Name:           name,
-		Port:           port + randomPortOffset,
-		MemorySize:     268435456, // 256MB default
-		Replication:    true,
-		EvictionPolicy: "noeviction",
-		ProxyPolicy:    "all-master-shards", // OSS Cluster API requires all-master-shards
-		AutoUpgrade:    true,
-		Sharding:       true,
-		ShardsCount:    2,
-		ShardKeyRegex: []ShardKeyRegexPattern{
-			{Regex: ".*\\{(?<tag>.*)\\}.*"},
-			{Regex: "(?<tag>.*)"},
-		},
-		ShardsPlacement: "sparse", // Use sparse placement to distribute shards across nodes (required for slot-shuffle)
-		ModuleList: []DatabaseModule{
-			{ModuleArgs: "", ModuleName: "ReJSON"},
-			{ModuleArgs: "", ModuleName: "search"},
-			{ModuleArgs: "", ModuleName: "timeseries"},
-			{ModuleArgs: "", ModuleName: "bf"},
-		},
-		OSSCluster: true, // Enable OSS Cluster API for ClusterClient support
-	}
+	var dbConfig DatabaseConfig
 
-	// If we have raw_endpoints with cluster info, configure for cluster
-	if len(envConfig.RawEndpoints) > 0 {
-		endpoint := envConfig.RawEndpoints[0]
-
-		// Check if this is a cluster configuration
-		if endpoint.ProxyPolicy != "" && endpoint.ProxyPolicy != "single" {
-			dbConfig.OSSCluster = true
-			dbConfig.Sharding = true
-			dbConfig.ShardsCount = 3 // default for cluster
-			dbConfig.ProxyPolicy = endpoint.ProxyPolicy
-			dbConfig.Replication = true
+	if clusterMode {
+		// Build OSS Cluster database config for ClusterClient support
+		// Supports cluster-specific features like SMIGRATING notifications
+		dbConfig = DatabaseConfig{
+			Name:           name,
+			Port:           port + randomPortOffset,
+			MemorySize:     268435456, // 256MB default
+			Replication:    true,
+			EvictionPolicy: "noeviction",
+			ProxyPolicy:    "all-master-shards", // OSS Cluster API requires all-master-shards
+			AutoUpgrade:    true,
+			Sharding:       true,
+			ShardsCount:    2,
+			ShardKeyRegex: []ShardKeyRegexPattern{
+				{Regex: ".*\\{(?<tag>.*)\\}.*"},
+				{Regex: "(?<tag>.*)"},
+			},
+			ShardsPlacement: "sparse", // Use sparse placement to distribute shards across nodes (required for slot-shuffle)
+			ModuleList: []DatabaseModule{
+				{ModuleArgs: "", ModuleName: "ReJSON"},
+				{ModuleArgs: "", ModuleName: "search"},
+				{ModuleArgs: "", ModuleName: "timeseries"},
+				{ModuleArgs: "", ModuleName: "bf"},
+			},
+			OSSCluster: true, // Enable OSS Cluster API for ClusterClient support
 		}
 
-		// Note: We ignore endpoint.OSSClusterAPIPreferredIPType here because
-		// e2e tests run from outside the cluster network and need external IPs
-	}
+		// If we have raw_endpoints with cluster info, configure for cluster
+		if len(envConfig.RawEndpoints) > 0 {
+			endpoint := envConfig.RawEndpoints[0]
 
-	// For OSS Cluster databases, always use external IPs since e2e tests
-	// run from outside the cluster network and cannot reach internal IPs
-	if dbConfig.OSSCluster {
+			// Check if this is a cluster configuration
+			if endpoint.ProxyPolicy != "" && endpoint.ProxyPolicy != "single" {
+				dbConfig.OSSCluster = true
+				dbConfig.Sharding = true
+				dbConfig.ShardsCount = 3 // default for cluster
+				dbConfig.ProxyPolicy = endpoint.ProxyPolicy
+				dbConfig.Replication = true
+			}
+
+			// Note: We ignore endpoint.OSSClusterAPIPreferredIPType here because
+			// e2e tests run from outside the cluster network and need external IPs
+		}
+
+		// For OSS Cluster databases, always use external IPs since e2e tests
+		// run from outside the cluster network and cannot reach internal IPs
 		dbConfig.OSSClusterAPIPreferredIPType = "external"
+	} else {
+		// Build standalone database config for regular Client support
+		// Supports MOVING, MIGRATING, MIGRATED, FAILING_OVER, FAILED_OVER notifications
+		dbConfig = DatabaseConfig{
+			Name:           name,
+			Port:           port + randomPortOffset,
+			MemorySize:     268435456, // 256MB default
+			Replication:    true,      // Enable replication for failover support
+			EvictionPolicy: "noeviction",
+			ProxyPolicy:    "single", // Single proxy for standalone database
+			AutoUpgrade:    true,
+			Sharding:       false, // No sharding for standalone
+			ShardsCount:    1,     // Single shard
+			ModuleList: []DatabaseModule{
+				{ModuleArgs: "", ModuleName: "ReJSON"},
+				{ModuleArgs: "", ModuleName: "search"},
+				{ModuleArgs: "", ModuleName: "timeseries"},
+				{ModuleArgs: "", ModuleName: "bf"},
+			},
+			OSSCluster: false, // Disable OSS Cluster API for standalone Client support
+		}
 	}
 
 	return dbConfig, nil
@@ -1104,8 +1139,11 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		// No environment config - use Docker proxy setup
 		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
 
+		// Determine cluster mode based on database name
+		// "standalone" creates a non-cluster client for testing FAILING_OVER/FAILED_OVER notifications
+		isClusterMode := databaseName != "standalone"
+
 		// Create a simple Redis connection config for Docker proxy
-		// The proxy simulates a cluster, so we set IsClusterMode to true
 		redisConfig := &RedisConnectionConfig{
 			Host:          "127.0.0.1", // Use 127.0.0.1 to force IPv4
 			Port:          17000,
@@ -1113,7 +1151,7 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 			Password:      "",
 			TLS:           false,
 			BdbID:         0,
-			IsClusterMode: true, // Docker proxy simulates a cluster
+			IsClusterMode: isClusterMode,
 		}
 
 		factory = NewClientFactory(redisConfig)
@@ -1153,8 +1191,13 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Convert to DatabaseConfig
-	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()))
+	// Determine cluster mode based on database name
+	// "standalone" creates a non-OSS-Cluster database for testing FAILING_OVER/FAILED_OVER notifications
+	// Other names create OSS Cluster databases for testing SMIGRATING/SMIGRATED notifications
+	clusterMode := databaseName != "standalone"
+
+	// Convert to DatabaseConfig with appropriate cluster mode
+	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()), clusterMode)
 	if err != nil {
 		t.Fatalf("Failed to convert config: %v", err)
 	}

@@ -12,14 +12,14 @@ import (
 
 // testOptions implements interfaces.OptionsInterface for testing SMIGRATED
 type testOptions struct {
-	originalEndpoint string
+	nodeAddress string
 }
 
 func (to *testOptions) GetReadTimeout() time.Duration  { return 5 * time.Second }
 func (to *testOptions) GetWriteTimeout() time.Duration { return 5 * time.Second }
 func (to *testOptions) GetNetwork() string             { return "tcp" }
 func (to *testOptions) GetAddr() string                { return "localhost:6379" }
-func (to *testOptions) GetOriginalEndpoint() string    { return to.originalEndpoint }
+func (to *testOptions) GetNodeAddress() string         { return to.nodeAddress }
 func (to *testOptions) IsTLSEnabled() bool             { return false }
 func (to *testOptions) GetProtocol() int               { return 3 }
 func (to *testOptions) GetPoolSize() int               { return 10 }
@@ -27,11 +27,11 @@ func (to *testOptions) NewDialer() func(context.Context) (net.Conn, error) {
 	return func(ctx context.Context) (net.Conn, error) { return nil, nil }
 }
 
-func createTestManager(originalEndpoint string) *Manager {
+func createTestManager(nodeAddress string) *Manager {
 	config := DefaultConfig()
 	var opts interfaces.OptionsInterface
-	if originalEndpoint != "" {
-		opts = &testOptions{originalEndpoint: originalEndpoint}
+	if nodeAddress != "" {
+		opts = &testOptions{nodeAddress: nodeAddress}
 	}
 	return &Manager{
 		config:  config,

@@ -7,7 +7,7 @@ Seamless Redis connection handoffs during cluster maintenance operations without
 **Cluster notifications are now supported for ClusterClient!**
 
 - **SMIGRATING**: `["SMIGRATING", SeqID, slot/range, ...]` - Relaxes timeouts when slots are being migrated
-- **SMIGRATED**: `["SMIGRATED", SeqID, host:port, slot/range, ...]` - Reloads cluster state when slot migration completes
+- **SMIGRATED**: `["SMIGRATED", SeqID, src host:port, dst host:port, slot/range, ...]` - Reloads cluster state when slot migration completes
 
 **Note:** Other maintenance notifications (MOVING, MIGRATING, MIGRATED, FAILING_OVER, FAILED_OVER) are supported only in standalone Redis clients. Cluster clients support SMIGRATING and SMIGRATED for cluster-specific slot migration handling.
 

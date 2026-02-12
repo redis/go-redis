@@ -167,19 +167,19 @@ func waitForSMigratedOnShardsWithSMigrating(t *testing.T, shards []*shardInfo, t
 	// Log results for shards that received SMIGRATING
 	for _, shard := range shardsWithSMigrating {
 		if _, found := shard.hook.FindNotification("SMIGRATED"); found {
-			t.Logf("  ✓ Shard %s (originalEndpoint=%s): received SMIGRATING + SMIGRATED",
-				shard.addr, shard.originalEndpoint)
+			t.Logf("  ✓ Shard %s (nodeAddress=%s): received SMIGRATING + SMIGRATED",
+				shard.addr, shard.nodeAddress)
 		} else {
-			t.Logf("  ✗ Shard %s (originalEndpoint=%s): received SMIGRATING but NO SMIGRATED",
-				shard.addr, shard.originalEndpoint)
+			t.Logf("  ✗ Shard %s (nodeAddress=%s): received SMIGRATING but NO SMIGRATED",
+				shard.addr, shard.nodeAddress)
 		}
 	}
 
 	// Log shards that didn't receive SMIGRATING (for debugging)
 	for _, shard := range shards {
 		if _, found := shard.hook.FindNotification("SMIGRATING"); !found {
-			t.Logf("  - Shard %s (originalEndpoint=%s): no SMIGRATING received",
-				shard.addr, shard.originalEndpoint)
+			t.Logf("  - Shard %s (nodeAddress=%s): no SMIGRATING received",
+				shard.addr, shard.nodeAddress)
 		}
 	}
 
@@ -189,9 +189,9 @@ func waitForSMigratedOnShardsWithSMigrating(t *testing.T, shards []*shardInfo, t
 
 // shardInfo holds information about a cluster shard for notification tracking
 type shardInfo struct {
-	addr             string
-	originalEndpoint string
-	hook             *TrackingNotificationsHook
+	addr        string
+	nodeAddress string
+	hook        *TrackingNotificationsHook
 }
 
 // printPerShardNotificationSummary prints a summary of notifications received on each shard.
@@ -200,12 +200,12 @@ func printPerShardNotificationSummary(t *testing.T, shards []*shardInfo) {
 	t.Logf("--- Per-Shard Notification Summary ---")
 	for _, shard := range shards {
 		if shard.hook == nil {
-			t.Logf("  Shard %s (originalEndpoint=%s): hook is nil", shard.addr, shard.originalEndpoint)
+			t.Logf("  Shard %s (nodeAddress=%s): hook is nil", shard.addr, shard.nodeAddress)
 			continue
 		}
 		analysis := shard.hook.GetAnalysis()
-		t.Logf("  Shard %s (originalEndpoint=%s): SMIGRATING=%d, SMIGRATED=%d, Total=%d",
-			shard.addr, shard.originalEndpoint,
+		t.Logf("  Shard %s (nodeAddress=%s): SMIGRATING=%d, SMIGRATED=%d, Total=%d",
+			shard.addr, shard.nodeAddress,
 			analysis.SMigratingCount, analysis.SMigratedCount, analysis.TotalNotifications)
 	}
 	t.Logf("--------------------------------------")
@@ -452,23 +452,23 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		}
 
 		addr := nodeClient.Options().Addr
-		originalEndpoint := nodeClient.OriginalEndpoint()
+		nodeAddress := nodeClient.NodeAddress()
 
 		// Create per-shard tracking hook
 		hook := NewTrackingNotificationsHookWithShard(addr)
 		manager := nodeClient.GetMaintNotificationsManager()
 		if manager != nil {
 			manager.AddNotificationHook(hook)
-			t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
+			t.Logf("  ✓ Added per-shard hook for %s (nodeAddress=%s)", addr, nodeAddress)
 		} else {
-			t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
+			t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (nodeAddress=%s)", addr, nodeAddress)
 		}
 
 		shardsMu.Lock()
 		shards = append(shards, &shardInfo{
-			addr:             addr,
-			originalEndpoint: originalEndpoint,
-			hook:             hook,
+			addr:        addr,
+			nodeAddress: nodeAddress,
+			hook:        hook,
 		})
 		shardsMu.Unlock()
 		return nil
@@ -622,23 +622,23 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 			}
 
 			addr := nodeClient.Options().Addr
-			originalEndpoint := nodeClient.OriginalEndpoint()
+			nodeAddress := nodeClient.NodeAddress()
 
 			// Create per-shard tracking hook
 			hook := NewTrackingNotificationsHookWithShard(addr)
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.AddNotificationHook(hook)
-				t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
+				t.Logf("  ✓ Added per-shard hook for %s (nodeAddress=%s)", addr, nodeAddress)
 			} else {
-				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
+				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (nodeAddress=%s)", addr, nodeAddress)
 			}
 
 			shardsMu.Lock()
 			shards = append(shards, &shardInfo{
-				addr:             addr,
-				originalEndpoint: originalEndpoint,
-				hook:             hook,
+				addr:        addr,
+				nodeAddress: nodeAddress,
+				hook:        hook,
 			})
 			shardsMu.Unlock()
 			return nil
@@ -765,23 +765,23 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 			}
 
 			addr := nodeClient.Options().Addr
-			originalEndpoint := nodeClient.OriginalEndpoint()
+			nodeAddress := nodeClient.NodeAddress()
 
 			// Create per-shard tracking hook
 			hook := NewTrackingNotificationsHookWithShard(addr)
 			manager := nodeClient.GetMaintNotificationsManager()
 			if manager != nil {
 				manager.AddNotificationHook(hook)
-				t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
+				t.Logf("  ✓ Added per-shard hook for %s (nodeAddress=%s)", addr, nodeAddress)
 			} else {
-				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
+				t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (nodeAddress=%s)", addr, nodeAddress)
 			}
 
 			shardsMu.Lock()
 			shards = append(shards, &shardInfo{
-				addr:             addr,
-				originalEndpoint: originalEndpoint,
-				hook:             hook,
+				addr:        addr,
+				nodeAddress: nodeAddress,
+				hook:        hook,
 			})
 			shardsMu.Unlock()
 			return nil
@@ -1189,23 +1189,23 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					}
 
 					addr := nodeClient.Options().Addr
-					originalEndpoint := nodeClient.OriginalEndpoint()
+					nodeAddress := nodeClient.NodeAddress()
 
 					// Create per-shard tracking hook
 					hook := NewTrackingNotificationsHookWithShard(addr)
 					manager := nodeClient.GetMaintNotificationsManager()
 					if manager != nil {
 						manager.AddNotificationHook(hook)
-						t.Logf("  ✓ Added per-shard hook for %s (originalEndpoint=%s)", addr, originalEndpoint)
+						t.Logf("  ✓ Added per-shard hook for %s (nodeAddress=%s)", addr, nodeAddress)
 					} else {
-						t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (originalEndpoint=%s)", addr, originalEndpoint)
+						t.Logf("  ⚠️  WARNING: MaintNotificationsManager is nil for %s (nodeAddress=%s)", addr, nodeAddress)
 					}
 
 					shardsMu.Lock()
 					shards = append(shards, &shardInfo{
-						addr:             addr,
-						originalEndpoint: originalEndpoint,
-						hook:             hook,
+						addr:        addr,
+						nodeAddress: nodeAddress,
+						hook:        hook,
 					})
 					shardsMu.Unlock()
 					return nil

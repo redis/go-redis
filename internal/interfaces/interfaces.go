@@ -40,9 +40,10 @@ type OptionsInterface interface {
 	// GetAddr returns the connection address.
 	GetAddr() string
 
-	// GetOriginalEndpoint returns the original endpoint string from CLUSTER SLOTS
-	// before any resolution or transformation.
-	GetOriginalEndpoint() string
+	// GetNodeAddress returns the address of the Redis node as reported by the server.
+	// For cluster clients, this is the endpoint from CLUSTER SLOTS before any transformation.
+	// For standalone clients, this defaults to Addr.
+	GetNodeAddress() string
 
 	// IsTLSEnabled returns true if TLS is enabled.
 	IsTLSEnabled() bool
