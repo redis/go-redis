@@ -32,22 +32,27 @@ type CommandRunner struct {
 
 // NewCommandRunner creates a new command runner
 func NewCommandRunner(client redis.UniversalClient) (*CommandRunner, func()) {
-	stopCh := make(chan struct{})
+	// Use buffered channel so Stop() can always send without blocking
+	stopCh := make(chan struct{}, 1)
 	return &CommandRunner{
 			client: client,
 			stopCh: stopCh,
 			errors: make([]error, 0),
 		}, func() {
-			stopCh <- struct{}{}
+			select {
+			case stopCh <- struct{}{}:
+			default:
+				// Already stopped
+			}
 		}
 }
 
 func (cr *CommandRunner) Stop() {
+	// Non-blocking send to buffered channel
 	select {
 	case cr.stopCh <- struct{}{}:
-		return
-	case <-time.After(500 * time.Millisecond):
-		return
+	default:
+		// Already has a stop signal pending
 	}
 }
 

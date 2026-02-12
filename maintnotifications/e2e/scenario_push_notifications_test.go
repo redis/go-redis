@@ -238,12 +238,27 @@ func TestPushNotifications(t *testing.T) {
 		}
 	}
 	go func() {
+		if DebugE2E() {
+			fmt.Printf("[DEBUG] Goroutine started: waiting for MIGRATING notification...\n")
+		}
 		match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
-			return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
+			return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MIGRATING")
 		}, 60*time.Second)
+		if DebugE2E() {
+			fmt.Printf("[DEBUG] Goroutine: MatchOrWaitForLogMatchFunc returned, found=%v, calling Stop()...\n", found)
+		}
 		commandsRunner.Stop()
+		if DebugE2E() {
+			fmt.Printf("[DEBUG] Goroutine: Stop() returned\n")
+		}
 	}()
+	if DebugE2E() {
+		fmt.Printf("[DEBUG] Main thread: calling FireCommandsUntilStop...\n")
+	}
 	commandsRunner.FireCommandsUntilStop(ctx)
+	if DebugE2E() {
+		fmt.Printf("[DEBUG] Main thread: FireCommandsUntilStop returned\n")
+	}
 	if !found {
 		if !testMode.IsProxyMock() {
 			status, err = faultInjector.WaitForAction(ctx, migrateResp.ActionID,
@@ -476,6 +491,7 @@ func TestPushNotifications(t *testing.T) {
 			}
 		}
 		commandsRunner3.Stop()
+		commandsRunner2.Stop() // Stop commandsRunner2 before the final section
 		// Wait for the goroutine to complete and check for errors
 		if err := <-errChan; err != nil {
 			ef("Second client goroutine error: %v", err)
@@ -556,17 +572,19 @@ func TestPushNotifications(t *testing.T) {
 	}
 	// validate number of connections we do not exceed max connections
 	// Adjust expected connections based on mode
+	// During handoffs, new connections are created before old ones are closed,
+	// so the connection count can temporarily exceed the pool size.
+	// We use a multiplier to account for this.
 	expectedMaxConns := int64(maxConnections)
 	if !testMode.SkipMultiClientTests {
-		// we started three clients, so we expect 3x the connections
-		expectedMaxConns = int64(maxConnections) * 3
-	} else {
-		// In proxy mock mode, the proxy simulates a cluster with 4 endpoints (17000-17003)
-		// Handoffs create new connections to different endpoints, and the proxy assigns
-		// global connection IDs. The connection count can grow beyond the initial pool size
-		// because each endpoint can have its own set of connections.
-		// We use a multiplier of 4 to account for the 4 simulated endpoints.
+		// We started three clients, and during handoffs each connection can temporarily
+		// have both old and new connections active. We allow 4x the base connections
+		// to account for handoff overhead across all clients.
 		expectedMaxConns = int64(maxConnections) * 4
+	} else {
+		// In proxy mock mode, we test with a standalone client,
+		// During handoffs, new connections are created before old ones are closed,
+		expectedMaxConns = int64(maxConnections) * 2
 	}
 
 	if allLogsAnalysis.ConnectionCount > expectedMaxConns {

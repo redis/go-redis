@@ -111,7 +111,9 @@ func startPubSubConnections(ctx context.Context, t *testing.T, client redis.Univ
 		}
 	}()
 
-	t.Logf("✓ Started %d pubsub connections across different slots", len(pubsubs))
+	if debugE2E() {
+		t.Logf("✓ Started %d pubsub connections across different slots", len(pubsubs))
+	}
 
 	return func() {
 		close(stopChan)
@@ -271,8 +273,10 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear()   // Clear any previous logs
-	localLogCollector.DoPrint() // Print logs for debugging
+	localLogCollector.Clear() // Clear any previous logs
+	if debugE2E() {
+		localLogCollector.DoPrint() // Print logs for debugging
+	}
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -287,7 +291,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to create Redis client: %v", err)
+		t.Fatalf("[ERROR] Failed to create Redis client: %v", err)
 	}
 	// Note: factoryCleanup() handles closing clients via factory.DestroyAll()
 
@@ -298,7 +302,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 
 	// Verify connection
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect to cluster: %v", err)
+		t.Fatalf("[ERROR] Failed to connect to cluster: %v", err)
 	}
 
 	// Debug: Check if maintnotifications manager exists on nodes
@@ -342,7 +346,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	bdbIDStr := fmt.Sprintf("%d", bdbID)
 	resp, err := fiClient.TriggerSlotMigrateSlotShuffle(ctx, bdbIDStr, SlotMigrateVariantMigrate)
 	if err != nil {
-		t.Fatalf("Failed to trigger slot migration: %v", err)
+		t.Fatalf("[ERROR] Failed to trigger slot migration: %v", err)
 	}
 
 	if debugE2E() {
@@ -355,7 +359,7 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 		WithMaxWaitTime(testMode.ActionWaitTimeout),
 		WithPollInterval(testMode.ActionPollInterval))
 	if err != nil {
-		t.Fatalf("Failed to wait for action: %v", err)
+		t.Fatalf("[ERROR] Failed to wait for action: %v", err)
 	}
 
 	if debugE2E() {
@@ -374,13 +378,13 @@ func TestProxyFaultInjectorServer_ClusterExistingE2ETest(t *testing.T) {
 	// Verify notifications were received
 	analysis := tracker.GetAnalysis()
 	if analysis.SMigratingCount == 0 {
-		t.Error("Expected to receive SMIGRATING notification")
+		t.Error("[ERROR] Expected to receive SMIGRATING notification")
 	} else {
 		t.Logf("✓ Received %d SMIGRATING notification(s)", analysis.SMigratingCount)
 	}
 
 	if analysis.SMigratedCount == 0 {
-		t.Error("Expected to receive SMIGRATED notification")
+		t.Error("[ERROR] Expected to receive SMIGRATED notification")
 	} else {
 		t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.SMigratedCount)
 	}
@@ -411,8 +415,10 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear()   // Clear any previous logs
-	localLogCollector.DoPrint() // Print logs for debugging
+	localLogCollector.Clear() // Clear any previous logs
+	if debugE2E() {
+		localLogCollector.DoPrint() // Print logs for debugging
+	}
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -424,14 +430,14 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		Protocol: 3,
 	})
 	if err != nil {
-		t.Fatalf("Failed to create Redis client: %v", err)
+		t.Fatalf("[ERROR] Failed to create Redis client: %v", err)
 	}
 	defer redisClient.Close()
 
 	// Type assertion for cluster-specific methods
 	clusterClient, ok := redisClient.(*redis.ClusterClient)
 	if !ok {
-		t.Fatal("Expected ClusterClient but got different type")
+		t.Fatal("[ERROR] Expected ClusterClient but got different type")
 	}
 
 	tracker := NewTrackingNotificationsHook()
@@ -439,7 +445,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	setupNotificationHooks(clusterClient, tracker, logger)
 
 	if err := clusterClient.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf("[ERROR] Failed to connect: %v", err)
 	}
 
 	// Set up per-shard notification tracking
@@ -474,7 +480,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("Failed to ping all shards: %v", err)
+		t.Fatalf("[ERROR] Failed to ping all shards: %v", err)
 	}
 	t.Logf("✓ Discovered and pinged %d shards", len(shards))
 
@@ -503,10 +509,10 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	bdbIDStr := fmt.Sprintf("%d", bdbID)
 	resp, err := fiClient.TriggerSlotMigrateSlotShuffle(ctx, bdbIDStr, SlotMigrateVariantMigrate)
 	if err != nil {
-		t.Logf("ERROR: Failed to trigger slot migration")
+		t.Logf("[ERROR] Failed to trigger slot migration")
 		t.Logf("  Error type: %T", err)
 		t.Logf("  Error details: %v", err)
-		t.Fatalf("Failed to trigger slot migration: %v", err)
+		t.Fatalf("[ERROR] Failed to trigger slot migration: %v", err)
 	}
 
 	if debugE2E() {
@@ -520,7 +526,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 		WithMaxWaitTime(testMode.ActionWaitTimeout),
 		WithPollInterval(testMode.ActionPollInterval))
 	if err != nil {
-		t.Fatalf("Failed to wait for action: %v", err)
+		t.Fatalf("[ERROR] Failed to wait for action: %v", err)
 	}
 
 	if debugE2E() {
@@ -535,7 +541,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	// Wait for SMIGRATING notification
 	_, foundMigrating := tracker.FindOrWaitForNotification("SMIGRATING", testMode.ActionWaitTimeout)
 	if !foundMigrating {
-		t.Errorf("Timed out waiting for SMIGRATING notification")
+		t.Errorf("[ERROR] Timed out waiting for SMIGRATING notification")
 	} else {
 		t.Logf("✓ Received SMIGRATING notification")
 	}
@@ -543,7 +549,7 @@ func TestProxyFaultInjectorServer_ClusterReshard(t *testing.T) {
 	// Wait for SMIGRATED notification (at least one)
 	_, foundMigrated := tracker.FindOrWaitForNotification("SMIGRATED", testMode.ActionWaitTimeout)
 	if !foundMigrated {
-		t.Errorf("Timed out waiting for SMIGRATED notification")
+		t.Errorf("[ERROR] Timed out waiting for SMIGRATED notification")
 	} else {
 		t.Logf("✓ Received SMIGRATED notification")
 	}
@@ -585,8 +591,10 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear()   // Clear any previous logs
-	localLogCollector.DoPrint() // Print logs for debugging
+	localLogCollector.Clear() // Clear any previous logs
+	if debugE2E() {
+		localLogCollector.DoPrint() // Print logs for debugging
+	}
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -597,7 +605,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 		Protocol: 3,
 	})
 	if err != nil {
-		t.Fatalf("Failed to create Redis client: %v", err)
+		t.Fatalf("[ERROR] Failed to create Redis client: %v", err)
 	}
 	defer redisClient.Close()
 
@@ -606,7 +614,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	setupNotificationHooks(redisClient, tracker, logger)
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf("[ERROR] Failed to connect: %v", err)
 	}
 
 	// Set up per-shard notification tracking for cluster clients
@@ -644,7 +652,7 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("Failed to ping all shards: %v", err)
+			t.Fatalf("[ERROR] Failed to ping all shards: %v", err)
 		}
 		t.Logf("✓ Discovered and pinged %d shards", len(shards))
 
@@ -671,14 +679,14 @@ func TestProxyFaultInjectorServer_WithEnvironment(t *testing.T) {
 	bdbIDStr := fmt.Sprintf("%d", bdbID)
 	resp, err := client.TriggerSlotMigrateSlotShuffle(ctx, bdbIDStr, SlotMigrateVariantMigrate)
 	if err != nil {
-		t.Fatalf("Failed to trigger migration: %v", err)
+		t.Fatalf("[ERROR] Failed to trigger migration: %v", err)
 	}
 
 	status, err := client.WaitForAction(ctx, resp.ActionID,
 		WithMaxWaitTime(testMode.ActionWaitTimeout),
 		WithPollInterval(testMode.ActionPollInterval))
 	if err != nil {
-		t.Fatalf("Failed to wait for action: %v", err)
+		t.Fatalf("[ERROR] Failed to wait for action: %v", err)
 	}
 
 	if debugE2E() {
@@ -727,8 +735,10 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear()   // Clear any previous logs
-	localLogCollector.DoPrint() // Print logs for debugging
+	localLogCollector.Clear() // Clear any previous logs
+	if debugE2E() {
+		localLogCollector.DoPrint() // Print logs for debugging
+	}
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -740,7 +750,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 		Protocol: 3,
 	})
 	if err != nil {
-		t.Fatalf("Failed to create Redis client: %v", err)
+		t.Fatalf("[ERROR] Failed to create Redis client: %v", err)
 	}
 	defer redisClient.Close()
 
@@ -749,7 +759,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	setupNotificationHooks(redisClient, tracker, logger)
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf("[ERROR] Failed to connect: %v", err)
 	}
 
 	// Set up per-shard notification tracking for cluster clients
@@ -787,7 +797,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 			return nil
 		})
 		if err != nil {
-			t.Fatalf("Failed to ping all shards: %v", err)
+			t.Fatalf("[ERROR] Failed to ping all shards: %v", err)
 		}
 		t.Logf("✓ Discovered and pinged %d shards", len(shards))
 
@@ -820,14 +830,14 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 
 		resp, err := client.TriggerSlotMigrateSlotShuffle(ctx, bdbIDStr, SlotMigrateVariantMigrate)
 		if err != nil {
-			t.Fatalf("Failed to trigger migration %d: %v", i+1, err)
+			t.Fatalf("[ERROR] Failed to trigger migration %d: %v", i+1, err)
 		}
 
 		status, err := client.WaitForAction(ctx, resp.ActionID,
 			WithMaxWaitTime(testMode.ActionWaitTimeout),
 			WithPollInterval(testMode.ActionPollInterval))
 		if err != nil {
-			t.Fatalf("Failed to wait for migration %d: %v", i+1, err)
+			t.Fatalf("[ERROR] Failed to wait for migration %d: %v", i+1, err)
 		}
 
 		if debugE2E() {
@@ -848,7 +858,7 @@ func TestProxyFaultInjectorServer_ClusterMultipleActions(t *testing.T) {
 	t.Logf("Total SMIGRATED: %d", analysis.SMigratedCount)
 
 	if analysis.SMigratingCount < int64(numMigrations) {
-		t.Errorf("Expected at least %d SMIGRATING notifications, got %d",
+		t.Errorf("[ERROR] Expected at least %d SMIGRATING notifications, got %d",
 			numMigrations, analysis.SMigratingCount)
 	}
 
@@ -890,8 +900,10 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 
 	// Set up log collector to track cluster state reloads
 	localLogCollector := NewTestLogCollector()
-	localLogCollector.Clear()   // Clear any previous logs
-	localLogCollector.DoPrint() // Print logs for debugging
+	localLogCollector.Clear() // Clear any previous logs
+	if debugE2E() {
+		localLogCollector.DoPrint() // Print logs for debugging
+	}
 	redis.SetLogger(localLogCollector)
 	defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -906,7 +918,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to create client1: %v", err)
+		t.Fatalf("[ERROR] Failed to create client1: %v", err)
 	}
 	client1 := client1Iface.(*redis.ClusterClient)
 	defer client1.Close()
@@ -916,7 +928,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	setupNotificationHooks(client1, tracker1, logger1)
 
 	if err := client1.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect client1: %v", err)
+		t.Fatalf("[ERROR] Failed to connect client1: %v", err)
 	}
 
 	// Enable CLIENT TRACKING to ensure the proxy sends push notifications
@@ -953,7 +965,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	bdbIDStr := fmt.Sprintf("%d", bdbID)
 	resp, err := fiClient.TriggerSlotMigrateSlotShuffle(ctx, bdbIDStr, SlotMigrateVariantMigrate)
 	if err != nil {
-		t.Fatalf("Failed to trigger slot migration: %v", err)
+		t.Fatalf("[ERROR] Failed to trigger slot migration: %v", err)
 	}
 	if debugE2E() {
 		t.Logf("Action triggered: %s", resp.ActionID)
@@ -971,7 +983,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 		},
 	})
 	if err != nil {
-		t.Fatalf("Failed to create client2: %v", err)
+		t.Fatalf("[ERROR] Failed to create client2: %v", err)
 	}
 	client2 := client2Iface.(*redis.ClusterClient)
 	defer client2.Close()
@@ -981,7 +993,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 	setupNotificationHooks(client2, tracker2, logger2)
 
 	if err := client2.Ping(ctx).Err(); err != nil {
-		t.Fatalf("Failed to connect client2: %v", err)
+		t.Fatalf("[ERROR] Failed to connect client2: %v", err)
 	}
 
 	// Enable CLIENT TRACKING to ensure the proxy sends push notifications
@@ -1016,7 +1028,7 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 		WithMaxWaitTime(testMode.ActionWaitTimeout),
 		WithPollInterval(testMode.ActionPollInterval))
 	if err != nil {
-		t.Fatalf("Failed to wait for action: %v", err)
+		t.Fatalf("[ERROR] Failed to wait for action: %v", err)
 	}
 	if status.Status == StatusFailed {
 		t.Logf("⚠️  Action failed with error: %v", status.Error)
@@ -1038,16 +1050,16 @@ func TestProxyFaultInjectorServer_ClusterNewConnectionsReceiveNotifications(t *t
 
 	// Client1 should have received both SMIGRATING and SMIGRATED
 	if analysis1.SMigratingCount == 0 {
-		t.Error("Client1 should have received SMIGRATING notification")
+		t.Error("[ERROR] Client1 should have received SMIGRATING notification")
 	}
 	if analysis1.SMigratedCount == 0 {
-		t.Error("Client1 should have received SMIGRATED notification")
+		t.Error("[ERROR] Client1 should have received SMIGRATED notification")
 	}
 
 	// Client2 (joined late) should have received at least SMIGRATING
 	// It might also receive SMIGRATED if it joined early enough
 	if analysis2.SMigratingCount == 0 {
-		t.Error("Client2 (joined during migration) should have received SMIGRATING notification from active notification tracking")
+		t.Error("[ERROR] Client2 (joined during migration) should have received SMIGRATING notification from active notification tracking")
 	}
 
 	// Get log analysis for cluster state reloads
@@ -1151,8 +1163,10 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 
 				// Set up log collector to track cluster state reloads
 				localLogCollector := NewTestLogCollector()
-				localLogCollector.Clear()   // Clear any previous logs
-				localLogCollector.DoPrint() // Print logs for debugging
+				localLogCollector.Clear() // Clear any previous logs
+				if debugE2E() {
+					localLogCollector.DoPrint() // Print logs for debugging
+				}
 				redis.SetLogger(localLogCollector)
 				defer redis.SetLogger(logCollector) // Restore global logger after test
 
@@ -1166,14 +1180,14 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					ClusterStateReloadInterval: 10 * time.Minute,
 				})
 				if err != nil {
-					t.Fatalf("Failed to create Redis client: %v", err)
+					t.Fatalf("[ERROR] Failed to create Redis client: %v", err)
 				}
 				redisClient := redisClientIface.(*redis.ClusterClient)
 				defer redisClient.Close()
 
 				// Verify connection first - this triggers cluster discovery
 				if err := redisClient.Ping(ctx).Err(); err != nil {
-					t.Fatalf("Failed to connect to cluster: %v", err)
+					t.Fatalf("[ERROR] Failed to connect to cluster: %v", err)
 				}
 				t.Log("✓ Connected to cluster")
 
@@ -1211,7 +1225,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					return nil
 				})
 				if err != nil {
-					t.Fatalf("Failed to ping all shards: %v", err)
+					t.Fatalf("[ERROR] Failed to ping all shards: %v", err)
 				}
 				t.Logf("✓ Discovered and pinged %d shards", len(shards))
 
@@ -1243,7 +1257,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					Trigger: tc.trigger,
 				})
 				if err != nil {
-					t.Fatalf("Failed to trigger slot migration: %v", err)
+					t.Fatalf("[ERROR] Failed to trigger slot migration: %v", err)
 				}
 
 				if debugE2E() {
@@ -1255,7 +1269,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 					WithMaxWaitTime(testMode.ActionWaitTimeout),
 					WithPollInterval(testMode.ActionPollInterval))
 				if err != nil {
-					t.Fatalf("Failed to wait for action: %v", err)
+					t.Fatalf("[ERROR] Failed to wait for action: %v", err)
 				}
 
 				if debugE2E() {
@@ -1266,7 +1280,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				// For all slot-migrate effects, expect SMIGRATING/SMIGRATED notifications
 				_, foundMigrating := tracker.FindOrWaitForNotification("SMIGRATING", testMode.ActionWaitTimeout)
 				if !foundMigrating {
-					t.Errorf("Timed out waiting for SMIGRATING notification for effect %s", tc.effect)
+					t.Errorf("[ERROR] Timed out waiting for SMIGRATING notification for effect %s", tc.effect)
 				} else {
 					t.Logf("✓ Received SMIGRATING notification")
 				}
@@ -1275,7 +1289,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				// Use the same timeout as action wait - 5 minutes for real fault injector
 				_, foundMigrated := tracker.FindOrWaitForNotification("SMIGRATED", testMode.ActionWaitTimeout)
 				if !foundMigrated {
-					t.Errorf("Timed out waiting for SMIGRATED notification for effect %s", tc.effect)
+					t.Errorf("[ERROR] Timed out waiting for SMIGRATED notification for effect %s", tc.effect)
 				} else {
 					t.Logf("✓ Received SMIGRATED notification")
 				}
@@ -1297,7 +1311,7 @@ func TestClusterSlotMigrate_AllEffects(t *testing.T) {
 				t.Logf("✓ Received %d SMIGRATED notification(s)", analysis.SMigratedCount)
 
 				if analysis.NotificationProcessingErrors > 0 {
-					t.Errorf("Got %d notification processing errors", analysis.NotificationProcessingErrors)
+					t.Errorf("[ERROR] Got %d notification processing errors", analysis.NotificationProcessingErrors)
 				}
 
 				// Get log analysis for cluster state reloads

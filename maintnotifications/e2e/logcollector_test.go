@@ -149,13 +149,25 @@ func (tlc *TestLogCollector) WaitForLogContaining(searchString string, timeout t
 }
 
 func (tlc *TestLogCollector) MatchOrWaitForLogMatchFunc(mf func(string) bool, timeout time.Duration) (string, bool) {
+	if DebugE2E() {
+		fmt.Printf("[LOG-COLLECTOR] MatchOrWaitForLogMatchFunc: checking existing logs...\n")
+	}
 	if logs := tlc.GetLogsFiltered(mf); len(logs) > 0 {
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] MatchOrWaitForLogMatchFunc: found matching log in existing logs\n")
+		}
 		return logs[0], true
+	}
+	if DebugE2E() {
+		fmt.Printf("[LOG-COLLECTOR] MatchOrWaitForLogMatchFunc: no match in existing logs, waiting with timeout %v...\n", timeout)
 	}
 	return tlc.WaitForLogMatchFunc(mf, timeout)
 }
 
 func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout time.Duration) (string, bool) {
+	if DebugE2E() {
+		fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: starting with timeout %v\n", timeout)
+	}
 	matchFunc := &MatchFunc{
 		completed: atomic.Bool{},
 		F:         mf,
@@ -163,33 +175,74 @@ func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout t
 		matches:   make([]string, 0),
 	}
 	matchFunc.done = func() {
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] done(): starting\n")
+		}
 		if !matchFunc.completed.CompareAndSwap(false, true) {
+			if DebugE2E() {
+				fmt.Printf("[LOG-COLLECTOR] done(): already completed, returning\n")
+			}
 			return
 		}
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] done(): closing found channel\n")
+		}
 		close(matchFunc.found)
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] done(): acquiring matchFuncsMutex...\n")
+		}
 		tlc.matchFuncsMutex.Lock()
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] done(): matchFuncsMutex acquired\n")
+		}
 		defer tlc.matchFuncsMutex.Unlock()
 		for i, mf := range tlc.matchFuncs {
 			if mf == matchFunc {
 				tlc.matchFuncs = append(tlc.matchFuncs[:i], tlc.matchFuncs[i+1:]...)
+				if DebugE2E() {
+					fmt.Printf("[LOG-COLLECTOR] done(): removed matchFunc from list\n")
+				}
 				return
 			}
+		}
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] done(): matchFunc not found in list\n")
 		}
 	}
 
 	tlc.matchFuncsMutex.Lock()
 	tlc.matchFuncs = append(tlc.matchFuncs, matchFunc)
 	tlc.matchFuncsMutex.Unlock()
+	if DebugE2E() {
+		fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: registered match func, waiting...\n")
+	}
 
 	select {
 	case <-matchFunc.found:
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: match found! Acquiring matchesMu...\n")
+		}
 		matchFunc.matchesMu.Lock()
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: matchesMu acquired, matches len=%d\n", len(matchFunc.matches))
+		}
 		defer matchFunc.matchesMu.Unlock()
 		if len(matchFunc.matches) > 0 {
+			if DebugE2E() {
+				fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: returning match\n")
+			}
 			return matchFunc.matches[0], true
+		}
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: match found but no log message, this should not happen\n")
 		}
 		return "", false
 	case <-time.After(timeout):
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: TIMEOUT after %v\n", timeout)
+		}
+		// Clean up the matchFunc from the list on timeout
+		matchFunc.done()
 		return "", false
 	}
 }
@@ -411,6 +464,14 @@ func (la *LogAnalisis) Analyze() {
 	}
 }
 
+// PrintSummary prints a compact summary without detailed information
+func (la *LogAnalisis) PrintSummary(t *testing.T) {
+	t.Logf("Log Summary: %d logs, %d connections | Handoffs: %d (ok:%d fail:%d) | Notifications: %d | TimeoutErrors: %d",
+		len(la.logs), len(la.connIds),
+		la.TotalHandoffCount, la.SucceededHandoffCount, la.FailedHandoffCount,
+		la.TotalNotifications, la.TimeoutErrorsCount)
+}
+
 func (la *LogAnalisis) Print(t *testing.T) {
 	t.Logf("Log Analysis results for %d logs and %d connections:", len(la.logs), len(la.connIds))
 	t.Logf("Connection Count: %d", la.ConnectionCount)
@@ -465,6 +526,12 @@ func extractConnID(log string) uint64 {
 
 func notificationType(log string, nt string) bool {
 	return strings.Contains(log, nt)
+}
+
+// notificationTypeWithSeqID matches logs that contain the notification type AND have seqID
+// This matches "processing notification started" logs which include seqID in the JSON
+func notificationTypeWithSeqID(log string, nt string) bool {
+	return strings.Contains(log, nt) && strings.Contains(log, "seqID")
 }
 func connID(log string, connID uint64) bool {
 	return strings.Contains(log, fmt.Sprintf("conn[%d]", connID))

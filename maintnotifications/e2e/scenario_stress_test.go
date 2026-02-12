@@ -307,10 +307,10 @@ func TestStressPushNotifications(t *testing.T) {
 	p("Error rate: %.2f%%, Notification processing errors: %d/%d",
 		errorRate, totalProcessingErrors, totalTrackerNotifications)
 
-	// Print final analysis
-	allLogsAnalysis.Print(t)
+	// Print final analysis (summary only for stress tests to reduce output)
+	allLogsAnalysis.PrintSummary(t)
 	for i, tracker := range trackers {
-		p("=== Stress Client %d Analysis ===", i)
-		tracker.GetAnalysis().Print(t)
+		p("=== Stress Client %d ===", i)
+		tracker.GetAnalysis().PrintSummary(t)
 	}
 }

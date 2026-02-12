@@ -417,6 +417,16 @@ func (a *DiagnosticsAnalysis) Analyze() {
 	}
 }
 
+// PrintSummary prints a compact summary without detailed per-event information
+func (a *DiagnosticsAnalysis) PrintSummary(t *testing.T) {
+	t.Logf("Notification Summary: %d events, %d connections | MOVING:%d MIGRATING:%d MIGRATED:%d FAILING_OVER:%d FAILED_OVER:%d SMIGRATING:%d SMIGRATED:%d | Errors:%d",
+		len(a.diagnosticsLog), len(a.connIds),
+		a.MovingCount, a.MigratingCount, a.MigratedCount,
+		a.FailingOverCount, a.FailedOverCount,
+		a.SMigratingCount, a.SMigratedCount,
+		a.NotificationProcessingErrors)
+}
+
 func (a *DiagnosticsAnalysis) Print(t *testing.T) {
 	t.Logf("Notification Analysis results for %d events and %d connections:", len(a.diagnosticsLog), len(a.connIds))
 	t.Logf("-------------")

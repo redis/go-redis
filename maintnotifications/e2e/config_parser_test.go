@@ -1079,7 +1079,7 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 	bdbID, err = dbManager.CreateDatabaseFromEnvConfig(ctx, envDbConfig, testDBName)
 	if err != nil {
 		fiCleanup()
-		t.Fatalf("Failed to create test database: %v", err)
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Return combined cleanup function
@@ -1110,7 +1110,7 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 	bdbID, err = dbManager.CreateDatabase(ctx, dbConfig)
 	if err != nil {
 		fiCleanup()
-		t.Fatalf("Failed to create test database: %v", err)
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Return combined cleanup function
@@ -1215,7 +1215,7 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
 		fiCleanup()
-		t.Fatalf("Failed to create test database: %v", err)
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Use certificate location from original config if not provided by fault injector
@@ -1328,7 +1328,7 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
 		fiCleanup()
-		t.Fatalf("Failed to create test database: %v", err)
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Use certificate location from original config if not provided by fault injector
@@ -1597,7 +1597,7 @@ func SetupTestDatabaseForSlotMigrateWithRequirementIndex(t *testing.T, ctx conte
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
 		fiCleanup()
-		t.Fatalf("Failed to create test database: %v", err)
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Use certificate location from original config if not provided by fault injector
