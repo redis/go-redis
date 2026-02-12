@@ -2920,8 +2920,15 @@ var _ = Describe("Command Tips tests", func() {
 			}
 			Expect(shardsWithEcho).To(Equal(1))
 
+			// Reset stats before multi-ECHO test to get clean counts
+			err = client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				return master.ConfigResetStat(ctx).Err()
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			// Test Multiple ECHO commands should distribute across all shards using round robin
-			numCommands := numMasters * 5
+			// With round robin, sending numMasters commands should hit each shard exactly once
+			numCommands := numMasters
 
 			for i := 0; i < numCommands; i++ {
 				result := client.Echo(ctx, fmt.Sprintf("multi_test_%d", i))
@@ -2941,11 +2948,11 @@ var _ = Describe("Command Tips tests", func() {
 				totalEchos += count
 			}
 
-			// All shards should now have some ECHO commands
+			// All shards should have received commands with round robin distribution
 			Expect(shardsWithEchos).To(Equal(numMasters))
 
-			expectedTotal := 1 + numCommands
-			Expect(totalEchos).To(Equal(expectedTotal))
+			// Total should match what we sent
+			Expect(totalEchos).To(Equal(numCommands))
 		})
 	})
 

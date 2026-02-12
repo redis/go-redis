@@ -13,3 +13,7 @@ tmp/*
 
 # maintenanceNotifications upgrade documentation (temporary)
 maintenanceNotifications/docs/
+
+# Docker-generated files (TLS certificates, cluster data, etc.)
+dockers/*/tls/
+dockers/osscluster-tls/
