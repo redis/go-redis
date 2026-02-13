@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -13,6 +14,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// timeoutError is an interface for errors that have a Timeout() method
+type timeoutError interface {
+	Timeout() bool
+}
 
 const (
 	// Library name for redis.client.library attribute
@@ -354,63 +360,51 @@ func isTimeoutError(err error) bool {
 		return false
 	}
 
-	// Check for net.Error with Timeout() method (standard way)
-	if netErr, ok := err.(net.Error); ok {
+	// Check for timeoutError interface (works with wrapped errors)
+	var te timeoutError
+	if errors.As(err, &te) {
+		return te.Timeout()
+	}
+
+	// Check for net.Error specifically (common case for network timeouts)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		return netErr.Timeout()
 	}
 
 	return false
 }
 
+// getErrorCategory returns the error category from an error.
+// It checks for TLS, auth, network, and server errors.
 func getErrorCategory(err error) string {
 	if err == nil {
 		return ""
 	}
 
-	errStr := strings.ToLower(err.Error())
+	errStr := err.Error()
 
-	// Check for TLS errors
-	if strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate") ||
-		strings.Contains(errStr, "x509") || strings.Contains(errStr, "ssl") {
-		return "tls"
-	}
-
-	// Check for auth errors
-	if strings.Contains(errStr, "auth") || strings.Contains(errStr, "noauth") ||
-		strings.Contains(errStr, "wrongpass") || strings.Contains(errStr, "noperm") ||
-		strings.Contains(errStr, "permission") {
-		return "auth"
-	}
-
-	// Check for network errors (transport/DNS/socket issues)
-	if isNetworkError(err) || isTimeoutError(err) ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "no route to host") ||
-		strings.Contains(errStr, "network is unreachable") ||
-		strings.Contains(errStr, "dns") ||
-		strings.Contains(errStr, "lookup") ||
-		strings.Contains(errStr, "dial") ||
-		strings.Contains(errStr, "eof") ||
-		strings.Contains(errStr, "broken pipe") {
+	// For actual errors, also check error types
+	if isNetworkError(err) || isTimeoutError(err) {
 		return "network"
 	}
 
-	// Check for Redis server errors (including cluster errors)
+	// Check for Redis server errors by prefix
 	if prefix := extractRedisErrorPrefix(err); prefix != "" {
 		return "server"
 	}
 
-	// Uncategorized errors
-	return "other"
+	return getErrorCategoryFromString(errStr)
 }
 
-func getErrorCategoryFromType(errorType string) string {
-	if errorType == "" {
+// getErrorCategoryFromString returns the error category from an error string or error type.
+// This is used both by getErrorCategory (for errors) and directly for error type strings.
+func getErrorCategoryFromString(errStr string) string {
+	if errStr == "" {
 		return ""
 	}
 
-	errLower := strings.ToLower(errorType)
+	errLower := strings.ToLower(errStr)
 
 	// Check for TLS errors
 	if strings.Contains(errLower, "tls") || strings.Contains(errLower, "certificate") ||
@@ -425,11 +419,16 @@ func getErrorCategoryFromType(errorType string) string {
 		return "auth"
 	}
 
-	// Check for network errors
+	// Check for network errors (transport/DNS/socket issues)
 	if strings.Contains(errLower, "network") || strings.Contains(errLower, "timeout") ||
-		strings.Contains(errLower, "connection refused") || strings.Contains(errLower, "connection reset") ||
-		strings.Contains(errLower, "dns") || strings.Contains(errLower, "dial") ||
-		strings.Contains(errLower, "eof") || strings.Contains(errLower, "broken pipe") ||
+		strings.Contains(errLower, "connection refused") ||
+		strings.Contains(errLower, "connection reset") ||
+		strings.Contains(errLower, "no route to host") ||
+		strings.Contains(errLower, "network is unreachable") ||
+		strings.Contains(errLower, "dns lookup") ||
+		strings.Contains(errLower, "dial") ||
+		strings.Contains(errLower, "eof") ||
+		strings.Contains(errLower, "broken pipe") ||
 		strings.Contains(errLower, "i/o") {
 		return "network"
 	}
@@ -437,7 +436,7 @@ func getErrorCategoryFromType(errorType string) string {
 	// Check for Redis server errors (including cluster errors)
 	// Common Redis error prefixes: ERR, WRONGTYPE, CLUSTERDOWN, MOVED, ASK, READONLY, etc.
 	serverErrors := []string{"err", "wrongtype", "clusterdown", "moved", "ask", "readonly",
-		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum"}
+		"crossslot", "tryagain", "loading", "busy", "noscript", "oom", "execabort", "noquorum", "redis:"}
 	for _, prefix := range serverErrors {
 		if strings.Contains(errLower, prefix) {
 			return "server"
@@ -445,10 +444,11 @@ func getErrorCategoryFromType(errorType string) string {
 	}
 
 	// If it looks like an uppercase Redis error prefix, it's a server error
-	if len(errorType) > 0 && errorType == strings.ToUpper(errorType) {
+	if len(errStr) > 0 && errStr == strings.ToUpper(errStr) {
 		return "server"
 	}
 
+	// Uncategorized errors
 	return "other"
 }
 
@@ -622,7 +622,7 @@ func (r *metricsRecorder) RecordError(
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		attribute.String(AttrErrorType, errorType),
-		attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromType(errorType)),
+		attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromString(errorType)),
 		attribute.String(AttrDBResponseStatusCode, statusCode),
 		attribute.Bool(AttrRedisClientErrorsInternal, isInternal),
 		attribute.Int(AttrRedisClientOperationRetryAttempts, retryAttempts),
@@ -751,7 +751,7 @@ func (r *metricsRecorder) RecordConnectionClosed(
 		// For non-error closures, use reason directly (these are controlled strings like "pool_closed")
 		attrs = append(attrs, attribute.String(AttrRedisClientConnectionCloseReason, reason))
 		attrs = append(attrs, attribute.String(AttrErrorType, reason))
-		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromType(reason)))
+		attrs = append(attrs, attribute.String(AttrRedisClientErrorsCategory, getErrorCategoryFromString(reason)))
 	}
 
 	// Record the counter

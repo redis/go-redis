@@ -2,9 +2,7 @@ package redis
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
@@ -23,13 +22,14 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// generateUniqueID generates a short unique identifier for pool names.
+// poolIDCounter is a global auto-increment counter for generating unique pool IDs.
+var poolIDCounter atomic.Uint64
+
+// generateUniqueID generates a short unique identifier for pool names using auto-increment.
+// This makes it easier to identify and track pools in order of creation.
 func generateUniqueID() string {
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b)
+	id := poolIDCounter.Add(1)
+	return strconv.FormatUint(id, 10)
 }
 
 // Limiter is the interface of a rate limiter or a circuit breaker.

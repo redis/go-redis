@@ -13,6 +13,35 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// Metric name constants
+const (
+	// Operation metrics
+	MetricOperationDuration = "db.client.operation.duration"
+
+	// Connection metrics
+	MetricConnectionCount          = "db.client.connection.count"
+	MetricConnectionCreateTime     = "db.client.connection.create_time"
+	MetricConnectionWaitTime       = "db.client.connection.wait_time"
+	MetricConnectionPendingReqs    = "db.client.connection.pending_requests"
+	MetricConnectionRelaxedTimeout = "redis.client.connection.relaxed_timeout"
+	MetricConnectionHandoff        = "redis.client.connection.handoff"
+	MetricConnectionClosed         = "redis.client.connection.closed"
+
+	// Resiliency metrics
+	MetricClientErrors             = "redis.client.errors"
+	MetricMaintenanceNotifications = "redis.client.maintenance.notifications"
+
+	// Pub/Sub metrics
+	MetricPubSubMessages = "redis.client.pubsub.messages"
+
+	// Stream metrics
+	MetricStreamLag = "redis.client.stream.lag"
+
+	// Special pool names
+	PoolNameMain   = "main"
+	PoolNamePubSub = "pubsub"
+)
+
 var (
 	// Global observability instance
 	observabilityInstance     *ObservabilityInstance
@@ -164,7 +193,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 			)
 		}
 		operationDuration, err = meter.Float64Histogram(
-			"db.client.operation.duration",
+			MetricOperationDuration,
 			operationDurationOpts...,
 		)
 		if err != nil {
@@ -179,7 +208,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
 		connectionCountGauge, err = meter.Int64ObservableGauge(
-			"db.client.connection.count",
+			MetricConnectionCount,
 			metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
 			metric.WithUnit("{connection}"),
 		)
@@ -198,7 +227,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 			)
 		}
 		connectionCreateTime, err = meter.Float64Histogram(
-			"db.client.connection.create_time",
+			MetricConnectionCreateTime,
 			connectionCreateTimeOpts...,
 		)
 		if err != nil {
@@ -206,7 +235,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		connectionRelaxedTimeout, err = meter.Int64UpDownCounter(
-			"redis.client.connection.relaxed_timeout",
+			MetricConnectionRelaxedTimeout,
 			metric.WithDescription("How many times the connection timeout has been increased/decreased (after a server maintenance notification)"),
 			metric.WithUnit("{relaxation}"),
 		)
@@ -215,7 +244,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		connectionHandoff, err = meter.Int64Counter(
-			"redis.client.connection.handoff",
+			MetricConnectionHandoff,
 			metric.WithDescription("Connections that have been handed off to another node (e.g after a MOVING notification)"),
 		)
 		if err != nil {
@@ -228,7 +257,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	if cfg.isMetricGroupEnabled(MetricGroupResiliency) {
 		clientErrors, err = meter.Int64Counter(
-			"redis.client.errors",
+			MetricClientErrors,
 			metric.WithDescription("Number of errors handled by the Redis client"),
 			metric.WithUnit("{error}"),
 		)
@@ -237,7 +266,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		maintenanceNotifications, err = meter.Int64Counter(
-			"redis.client.maintenance.notifications",
+			MetricMaintenanceNotifications,
 			metric.WithDescription("Number of maintenance notifications received"),
 			metric.WithUnit("{notification}"),
 		)
@@ -262,7 +291,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 			)
 		}
 		connectionWaitTime, err = meter.Float64Histogram(
-			"db.client.connection.wait_time",
+			MetricConnectionWaitTime,
 			connectionWaitTimeOpts...,
 		)
 		if err != nil {
@@ -270,7 +299,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		connectionClosed, err = meter.Int64Counter(
-			"redis.client.connection.closed",
+			MetricConnectionClosed,
 			metric.WithDescription("The number of connections that have been closed"),
 			metric.WithUnit("{connection}"),
 		)
@@ -279,7 +308,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		connectionPendingReqsGauge, err = meter.Int64ObservableGauge(
-			"db.client.connection.pending_requests",
+			MetricConnectionPendingReqs,
 			metric.WithDescription("The number of pending requests waiting for a connection"),
 			metric.WithUnit("{request}"),
 		)
@@ -292,7 +321,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	if cfg.isMetricGroupEnabled(MetricGroupPubSub) {
 		pubsubMessages, err = meter.Int64Counter(
-			"redis.client.pubsub.messages",
+			MetricPubSubMessages,
 			metric.WithDescription("The number of Pub/Sub messages sent or received"),
 			metric.WithUnit("{message}"),
 		)
@@ -315,7 +344,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 			)
 		}
 		streamLag, err = meter.Float64Histogram(
-			"redis.client.stream.lag",
+			MetricStreamLag,
 			streamLagOpts...,
 		)
 		if err != nil {
@@ -355,7 +384,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 // Returns: (serverAddr, serverPort, dbIndex)
 func parsePoolName(poolName string) (string, string, string) {
 	// Handle special pool names
-	if poolName == "main" || poolName == "pubsub" {
+	if poolName == PoolNameMain || poolName == PoolNamePubSub {
 		return "", "", ""
 	}
 

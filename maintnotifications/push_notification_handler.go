@@ -201,7 +201,7 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 
 	// Record relaxed timeout metric
 	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
-		relaxedTimeoutCallback(ctx, 1, conn, "main", "MIGRATING")
+		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "MIGRATING")
 	}
 
 	return nil
@@ -265,7 +265,7 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 
 	// Record relaxed timeout metric
 	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
-		relaxedTimeoutCallback(ctx, 1, conn, "main", "FAILING_OVER")
+		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "FAILING_OVER")
 	}
 
 	return nil

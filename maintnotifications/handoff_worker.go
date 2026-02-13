@@ -13,6 +13,9 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+// PoolNameMain is the name used for the main connection pool in metrics.
+const PoolNameMain = "main"
+
 // handoffWorkerManager manages background workers and queue for connection handoffs
 type handoffWorkerManager struct {
 	// Event-driven handoff support
@@ -436,7 +439,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 
 		// Record relaxed timeout metric (post-handoff)
 		if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
-			relaxedTimeoutCallback(ctx, 1, conn, "main", "HANDOFF")
+			relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "HANDOFF")
 		}
 
 		if internal.LogLevel.InfoOrAbove() {
@@ -469,7 +472,7 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	// successfully completed the handoff, no retry needed and no error
 	// Notify metrics: connection handoff succeeded
 	if handoffCallback := pool.GetMetricConnectionHandoffCallback(); handoffCallback != nil {
-		handoffCallback(ctx, conn, "main")
+		handoffCallback(ctx, conn, PoolNameMain)
 	}
 
 	return false, nil
