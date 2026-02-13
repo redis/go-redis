@@ -69,6 +69,9 @@ var (
 	// Parameters: ctx, cn, reason, err
 	metricConnectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
+	// errPanicInDial is returned when a panic occurs in the dial function.
+	errPanicInQueuedNewConn = errors.New("panic in queuedNewConn")
+
 	// popAttempts is the maximum number of attempts to find a usable connection
 	// when popping from the idle connection pool. This handles cases where connections
 	// are temporarily marked as unusable (e.g., during maintenanceNotifications upgrades or network issues).
@@ -415,9 +418,9 @@ func (p *ConnPool) checkMinIdleConns() {
 		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
 			// Try to acquire a semaphore token
 			if !p.semaphore.TryAcquire() {
-				// Semaphore is full, can't create more connections
-				p.idleCheckInProgress.Store(false)
-				return
+				// Semaphore is full, can't create more connections right now
+				// Break out of inner loop to check if we need to retry
+				break
 			}
 
 			p.poolSize.Add(1)
@@ -848,12 +851,15 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		}
 	}()
 
+	p.dialsQueue.discardDoneAtFront()
 	p.dialsQueue.enqueue(w)
 
 	go func(w *wantConn) {
 		var freeTurnCalled bool
 		defer func() {
 			if err := recover(); err != nil {
+				w.tryDeliver(nil, errPanicInQueuedNewConn)
+				p.dialsQueue.discardDoneAtFront()
 				if !freeTurnCalled {
 					p.freeTurn()
 				}
@@ -868,12 +874,14 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		cn, cnErr := p.newConn(dialCtx, true)
 		if cnErr != nil {
 			w.tryDeliver(nil, cnErr) // deliver error to caller, notify connection creation failed
+			p.dialsQueue.discardDoneAtFront()
 			p.freeTurn()
 			freeTurnCalled = true
 			return
 		}
 
 		delivered := w.tryDeliver(cn, cnErr)
+		p.dialsQueue.discardDoneAtFront()
 		if !delivered && p.putIdleConn(dialCtx, cn) {
 			p.freeTurn()
 			freeTurnCalled = true
@@ -1030,6 +1038,15 @@ func (p *ConnPool) putConnWithoutTurn(ctx context.Context, cn *Conn) {
 
 // putConn is the internal implementation of Put that optionally frees a turn.
 func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
+	// Guard against nil connection
+	if cn == nil {
+		internal.Logger.Printf(ctx, "putConn called with nil connection")
+		if freeTurn {
+			p.freeTurn()
+		}
+		return
+	}
+
 	// Process connection using the hooks system
 	shouldPool := true
 	shouldRemove := false
@@ -1080,7 +1097,14 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		if !transitionedToIdle {
 			// Fast path failed - hook might have changed state (e.g., to UNUSABLE for handoff)
 			// Keep the state set by the hook and pool the connection anyway
-			currentState := cn.GetStateMachine().GetState()
+			sm := cn.GetStateMachine()
+			if sm == nil {
+				// State machine is nil - connection is in an invalid state, remove it
+				internal.Logger.Printf(ctx, "conn[%d] has nil state machine, removing it", cn.GetID())
+				p.removeConnInternal(ctx, cn, errConnNotPooled, freeTurn)
+				return
+			}
+			currentState := sm.GetState()
 			switch currentState {
 			case StateUnusable:
 				// expected state, don't log it

@@ -88,7 +88,18 @@ type FailoverOptions struct {
 	MinRetryBackoff time.Duration
 	MaxRetryBackoff time.Duration
 
-	DialTimeout           time.Duration
+	DialTimeout time.Duration
+
+	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	//
+	// default: 5
+	DialerRetries int
+
+	// DialerRetryTimeout is the backoff duration between retry attempts.
+	//
+	// default: 100 milliseconds
+	DialerRetryTimeout time.Duration
+
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
@@ -109,7 +120,12 @@ type FailoverOptions struct {
 
 	PoolFIFO bool
 
-	PoolSize              int
+	PoolSize int
+
+	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
+	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
+	MaxConcurrentDials int
+
 	PoolTimeout           time.Duration
 	MinIdleConns          int
 	MaxIdleConns          int
@@ -140,6 +156,10 @@ type FailoverOptions struct {
 	FailingTimeoutSeconds int
 
 	UnstableResp3 bool
+
+	// PushNotificationProcessor is the processor for handling push notifications.
+	// If nil, a default processor will be created for RESP3 connections.
+	PushNotificationProcessor push.NotificationProcessor
 
 	// MaintNotificationsConfig is not supported for FailoverClients at the moment
 	// MaintNotificationsConfig provides custom configuration for maintnotifications upgrades.
@@ -174,13 +194,17 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
 
-		DialTimeout:           opt.DialTimeout,
-		ReadTimeout:           opt.ReadTimeout,
-		WriteTimeout:          opt.WriteTimeout,
+		DialTimeout:        opt.DialTimeout,
+		DialerRetries:      opt.DialerRetries,
+		DialerRetryTimeout: opt.DialerRetryTimeout,
+		ReadTimeout:        opt.ReadTimeout,
+		WriteTimeout:       opt.WriteTimeout,
+
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
 		PoolTimeout:           opt.PoolTimeout,
 		MinIdleConns:          opt.MinIdleConns,
 		MaxIdleConns:          opt.MaxIdleConns,
@@ -194,8 +218,9 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 
-		IdentitySuffix: opt.IdentitySuffix,
-		UnstableResp3:  opt.UnstableResp3,
+		IdentitySuffix:            opt.IdentitySuffix,
+		UnstableResp3:             opt.UnstableResp3,
+		PushNotificationProcessor: opt.PushNotificationProcessor,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -223,13 +248,17 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
 
-		DialTimeout:           opt.DialTimeout,
-		ReadTimeout:           opt.ReadTimeout,
-		WriteTimeout:          opt.WriteTimeout,
+		DialTimeout:        opt.DialTimeout,
+		DialerRetries:      opt.DialerRetries,
+		DialerRetryTimeout: opt.DialerRetryTimeout,
+		ReadTimeout:        opt.ReadTimeout,
+		WriteTimeout:       opt.WriteTimeout,
+
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
+		MaxConcurrentDials:    opt.MaxConcurrentDials,
 		PoolTimeout:           opt.PoolTimeout,
 		MinIdleConns:          opt.MinIdleConns,
 		MaxIdleConns:          opt.MaxIdleConns,
@@ -243,8 +272,9 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		DisableIdentity:  opt.DisableIdentity,
 		DisableIndentity: opt.DisableIndentity,
 
-		IdentitySuffix: opt.IdentitySuffix,
-		UnstableResp3:  opt.UnstableResp3,
+		IdentitySuffix:            opt.IdentitySuffix,
+		UnstableResp3:             opt.UnstableResp3,
+		PushNotificationProcessor: opt.PushNotificationProcessor,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -278,26 +308,31 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
 
-		DialTimeout:           opt.DialTimeout,
-		ReadTimeout:           opt.ReadTimeout,
-		WriteTimeout:          opt.WriteTimeout,
+		DialTimeout:        opt.DialTimeout,
+		DialerRetries:      opt.DialerRetries,
+		DialerRetryTimeout: opt.DialerRetryTimeout,
+		ReadTimeout:        opt.ReadTimeout,
+		WriteTimeout:       opt.WriteTimeout,
+
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
 
-		PoolFIFO:        opt.PoolFIFO,
-		PoolSize:        opt.PoolSize,
-		PoolTimeout:     opt.PoolTimeout,
-		MinIdleConns:    opt.MinIdleConns,
-		MaxIdleConns:    opt.MaxIdleConns,
-		MaxActiveConns:  opt.MaxActiveConns,
-		ConnMaxIdleTime: opt.ConnMaxIdleTime,
-		ConnMaxLifetime: opt.ConnMaxLifetime,
+		PoolFIFO:           opt.PoolFIFO,
+		PoolSize:           opt.PoolSize,
+		MaxConcurrentDials: opt.MaxConcurrentDials,
+		PoolTimeout:        opt.PoolTimeout,
+		MinIdleConns:       opt.MinIdleConns,
+		MaxIdleConns:       opt.MaxIdleConns,
+		MaxActiveConns:     opt.MaxActiveConns,
+		ConnMaxIdleTime:    opt.ConnMaxIdleTime,
+		ConnMaxLifetime:    opt.ConnMaxLifetime,
 
 		TLSConfig: opt.TLSConfig,
 
-		DisableIdentity:       opt.DisableIdentity,
-		DisableIndentity:      opt.DisableIndentity,
-		IdentitySuffix:        opt.IdentitySuffix,
-		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
+		DisableIdentity:           opt.DisableIdentity,
+		DisableIndentity:          opt.DisableIndentity,
+		IdentitySuffix:            opt.IdentitySuffix,
+		FailingTimeoutSeconds:     opt.FailingTimeoutSeconds,
+		PushNotificationProcessor: opt.PushNotificationProcessor,
 
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
@@ -401,11 +436,14 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
 	o.MaxRetryBackoff = q.duration("max_retry_backoff")
 	o.DialTimeout = q.duration("dial_timeout")
+	o.DialerRetries = q.int("dialer_retries")
+	o.DialerRetryTimeout = q.duration("dialer_retry_timeout")
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.ContextTimeoutEnabled = q.bool("context_timeout_enabled")
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
+	o.MaxConcurrentDials = q.int("max_concurrent_dials")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")

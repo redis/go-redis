@@ -24,6 +24,7 @@ runs:
 
         # Mapping of redis version to redis testing containers
         declare -A redis_version_mapping=(
+          ["8.6.x"]="custom-21860421418-debian-amd64"
           ["8.4.x"]="8.4.0"
           ["8.2.x"]="8.2.1-pre"
           ["8.0.x"]="8.0.2"
@@ -42,6 +43,7 @@ runs:
     - name: Set up Docker Compose environment with redis ${{ inputs.redis-version }}
       run: |
         make docker.start
+        sleep 5
       shell: bash
     - name: Run tests
       env:
