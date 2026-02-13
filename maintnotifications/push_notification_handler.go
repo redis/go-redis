@@ -59,6 +59,13 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 		err = nil
 	}
 
+	// Record maintenance notification metric
+	if maintenanceCallback := pool.GetMetricMaintenanceNotificationCallback(); maintenanceCallback != nil {
+		if conn, ok := handlerCtx.Conn.(*pool.Conn); ok {
+			maintenanceCallback(ctx, conn, notificationType)
+		}
+	}
+
 	// Process post-hooks with the result
 	snh.manager.processPostHooks(ctx, handlerCtx, notificationType, modifiedNotification, err)
 
@@ -220,6 +227,12 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 		internal.Logger.Printf(ctx, logs.RelaxedTimeoutDueToNotification(conn.GetID(), "MIGRATING", snh.manager.config.RelaxedTimeout))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+
+	// Record relaxed timeout metric
+	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "MIGRATING")
+	}
+
 	return nil
 }
 
@@ -280,6 +293,12 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 		internal.Logger.Printf(ctx, logs.RelaxedTimeoutDueToNotification(connID, "FAILING_OVER", snh.manager.config.RelaxedTimeout))
 	}
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
+
+	// Record relaxed timeout metric
+	if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+		relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "FAILING_OVER")
+	}
+
 	return nil
 }
 

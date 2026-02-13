@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
@@ -20,6 +21,16 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
+
+// poolIDCounter is a global auto-increment counter for generating unique pool IDs.
+var poolIDCounter atomic.Uint64
+
+// generateUniqueID generates a short unique identifier for pool names using auto-increment.
+// This makes it easier to identify and track pools in order of creation.
+func generateUniqueID() string {
+	id := poolIDCounter.Add(1)
+	return strconv.FormatUint(id, 10)
+}
 
 // Limiter is the interface of a rate limiter or a circuit breaker.
 type Limiter interface {
@@ -711,6 +722,7 @@ func getUserPassword(u *url.URL) (string, string) {
 func newConnPool(
 	opt *Options,
 	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+	poolName string,
 ) (*pool.ConnPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -752,10 +764,14 @@ func newConnPool(
 		ReadBufferSize:           opt.ReadBufferSize,
 		WriteBufferSize:          opt.WriteBufferSize,
 		PushNotificationsEnabled: opt.Protocol == 3,
+		Name:                     poolName,
 	}), nil
 }
 
-func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+func newPubSubPool(
+	opt *Options,
+	dialer func(ctx context.Context, network, addr string) (net.Conn, error),
+	poolName string,
 ) (*pool.PubSubPool, error) {
 	poolSize, err := util.SafeIntToInt32(opt.PoolSize, "PoolSize")
 	if err != nil {
@@ -794,5 +810,6 @@ func newPubSubPool(opt *Options, dialer func(ctx context.Context, network, addr 
 		ReadBufferSize:           32 * 1024,
 		WriteBufferSize:          32 * 1024,
 		PushNotificationsEnabled: opt.Protocol == 3,
+		Name:                     poolName,
 	}, dialer), nil
 }

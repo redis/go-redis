@@ -533,12 +533,17 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	// Use void processor by default for RESP2 connections
 	rdb.pushProcessor = initializePushProcessor(opt)
 
+	// Generate unique pool names for metrics
+	uniqueID := generateUniqueID()
+	mainPoolName := opt.Addr + "_" + uniqueID
+	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
+
 	var err error
-	rdb.connPool, err = newConnPool(opt, rdb.dialHook)
+	rdb.connPool, err = newConnPool(opt, rdb.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook)
+	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
@@ -617,12 +622,18 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 		dial:    c.baseClient.dial,
 		process: c.baseClient.process,
 	})
+
+	// Generate unique pool names for metrics
+	uniqueID := generateUniqueID()
+	mainPoolName := opt.Addr + "_" + uniqueID
+	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
+
 	var err error
-	c.connPool, err = newConnPool(opt, c.dialHook)
+	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	c.pubSubPool, err = newPubSubPool(opt, c.dialHook)
+	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}

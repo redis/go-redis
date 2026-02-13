@@ -10,7 +10,7 @@ coverage.txt
 .vscode
 tmp/*
 *.test
-
+extra/redisotel-native/metrics-collector-app/
 # maintenanceNotifications upgrade documentation (temporary)
 maintenanceNotifications/docs/
 
