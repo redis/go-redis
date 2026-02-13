@@ -23,12 +23,17 @@ func TestStressPushNotifications(t *testing.T) {
 	defer cancel()
 
 	// Setup: Create fresh database and client factory for this test
-	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 	defer cleanup()
-	t.Logf("[STRESS] Created test database with bdb_id: %d", bdbID)
+	t.Logf("[STRESS] Created test database with bdb_id: %d (mode: %s)", bdbID, testMode.Mode)
 
-	// Wait for database to be fully ready
-	time.Sleep(10 * time.Second)
+	// Skip this test if using proxy mock (stress test requires real fault injector)
+	if testMode.IsProxyMock() {
+		t.Skip("Skipping stress test - requires real fault injector")
+	}
+
+	// Wait for database to be fully ready (mode-aware)
+	time.Sleep(testMode.DatabaseReadyDelay)
 
 	var dump = true
 	var errorsDetected = false
@@ -302,10 +307,10 @@ func TestStressPushNotifications(t *testing.T) {
 	p("Error rate: %.2f%%, Notification processing errors: %d/%d",
 		errorRate, totalProcessingErrors, totalTrackerNotifications)
 
-	// Print final analysis
-	allLogsAnalysis.Print(t)
+	// Print final analysis (summary only for stress tests to reduce output)
+	allLogsAnalysis.PrintSummary(t)
 	for i, tracker := range trackers {
-		p("=== Stress Client %d Analysis ===", i)
-		tracker.GetAnalysis().Print(t)
+		p("=== Stress Client %d ===", i)
+		tracker.GetAnalysis().PrintSummary(t)
 	}
 }

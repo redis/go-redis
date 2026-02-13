@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
@@ -17,6 +18,17 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
+
+// debugE2E returns true if E2E_DEBUG environment variable is set to "true"
+// Use this to control verbose debug logging in e2e tests
+func debugE2E() bool {
+	return os.Getenv("E2E_DEBUG") == "true"
+}
+
+// isPortUnavailableErrorString checks if the error string indicates a port unavailable error
+func isPortUnavailableErrorString(errStr string) bool {
+	return strings.Contains(errStr, "port_unavailable") || strings.Contains(errStr, "Unavailable or invalid port")
+}
 
 // DatabaseEndpoint represents a single database endpoint configuration
 type DatabaseEndpoint struct {
@@ -39,6 +51,7 @@ type EnvDatabaseConfig struct {
 	CertificatesLocation string             `json:"certificatesLocation,omitempty"`
 	RawEndpoints         []DatabaseEndpoint `json:"raw_endpoints,omitempty"`
 	Endpoints            []string           `json:"endpoints"`
+	OSSCluster           bool               `json:"oss_cluster,omitempty"`
 }
 
 // EnvDatabasesConfig represents the complete configuration file structure
@@ -60,6 +73,7 @@ type RedisConnectionConfig struct {
 	BdbID                int
 	CertificatesLocation string
 	Endpoints            []string
+	IsClusterMode        bool // Force cluster mode even with single endpoint
 }
 
 // GetEnvConfig reads environment variables required for the test scenario
@@ -245,6 +259,7 @@ func ConvertEnvDatabaseConfigToRedisConnectionConfig(dbConfig EnvDatabaseConfig)
 		BdbID:                bdbId,
 		CertificatesLocation: dbConfig.CertificatesLocation,
 		Endpoints:            dbConfig.Endpoints,
+		IsClusterMode:        dbConfig.OSSCluster,
 	}, nil
 }
 
@@ -265,16 +280,17 @@ func NewClientFactory(config *RedisConnectionConfig) *ClientFactory {
 
 // CreateClientOptions represents options for creating Redis clients
 type CreateClientOptions struct {
-	Protocol                 int
-	MaintNotificationsConfig *maintnotifications.Config
-	MaxRetries               int
-	PoolSize                 int
-	MinIdleConns             int
-	MaxActiveConns           int
-	ClientName               string
-	DB                       int
-	ReadTimeout              time.Duration
-	WriteTimeout             time.Duration
+	Protocol                   int
+	MaintNotificationsConfig   *maintnotifications.Config
+	MaxRetries                 int
+	PoolSize                   int
+	MinIdleConns               int
+	MaxActiveConns             int
+	ClientName                 string
+	DB                         int
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ClusterStateReloadInterval time.Duration // For cluster clients, interval for automatic state reloads
 }
 
 // DefaultCreateClientOptions returns default options for creating Redis clients
@@ -325,16 +341,17 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 	if len(cf.config.Endpoints) > 1 || cf.isClusterEndpoint() {
 		// Create cluster client
 		clusterOptions := &redis.ClusterOptions{
-			Addrs:                    cf.getAddresses(),
-			Username:                 cf.config.Username,
-			Password:                 cf.config.Password,
-			Protocol:                 options.Protocol,
-			MaintNotificationsConfig: options.MaintNotificationsConfig,
-			MaxRetries:               options.MaxRetries,
-			PoolSize:                 options.PoolSize,
-			MinIdleConns:             options.MinIdleConns,
-			MaxActiveConns:           options.MaxActiveConns,
-			ClientName:               options.ClientName,
+			Addrs:                      cf.getAddresses(),
+			Username:                   cf.config.Username,
+			Password:                   cf.config.Password,
+			Protocol:                   options.Protocol,
+			MaintNotificationsConfig:   options.MaintNotificationsConfig,
+			MaxRetries:                 options.MaxRetries,
+			PoolSize:                   options.PoolSize,
+			MinIdleConns:               options.MinIdleConns,
+			MaxActiveConns:             options.MaxActiveConns,
+			ClientName:                 options.ClientName,
+			ClusterStateReloadInterval: 10 * time.Minute,
 		}
 
 		if options.ReadTimeout > 0 {
@@ -342,6 +359,9 @@ func (cf *ClientFactory) Create(key string, options *CreateClientOptions) (redis
 		}
 		if options.WriteTimeout > 0 {
 			clusterOptions.WriteTimeout = options.WriteTimeout
+		}
+		if options.ClusterStateReloadInterval > 0 {
+			clusterOptions.ClusterStateReloadInterval = options.ClusterStateReloadInterval
 		}
 
 		if cf.config.TLS {
@@ -465,6 +485,11 @@ func (cf *ClientFactory) GetConfig() *RedisConnectionConfig {
 
 // isClusterEndpoint determines if the configuration represents a cluster
 func (cf *ClientFactory) isClusterEndpoint() bool {
+	// Check if cluster mode is explicitly set
+	if cf.config.IsClusterMode {
+		return true
+	}
+
 	// Check if any endpoint contains cluster-related keywords
 	for _, endpoint := range cf.config.Endpoints {
 		if strings.Contains(strings.ToLower(endpoint), "cluster") {
@@ -548,13 +573,58 @@ func CreateTestClientFactoryWithBdbID(databaseName string, bdbID int) (*ClientFa
 }
 
 // CreateTestFaultInjector creates a fault injector client from environment configuration
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it automatically starts a proxy fault injector server
+//
+// Deprecated: Use CreateTestFaultInjectorWithCleanup instead for proper cleanup
 func CreateTestFaultInjector() (*FaultInjectorClient, error) {
+	client, _, err := CreateTestFaultInjectorWithCleanup()
+	return client, err
+}
+
+// CreateTestFaultInjectorWithCleanup creates a fault injector client and returns a cleanup function
+//
+// Decision logic based on environment:
+// 1. If REDIS_ENDPOINTS_CONFIG_PATH is set -> use real fault injector from FAULT_INJECTION_API_URL
+// 2. If REDIS_ENDPOINTS_CONFIG_PATH is NOT set -> use Docker fault injector at http://localhost:15000
+//
+// Both the Docker proxy and fault injector should already be running (started via Docker Compose)
+// This function does NOT start any services - it only connects to existing ones
+//
+// Usage:
+//
+//	client, cleanup, err := CreateTestFaultInjectorWithCleanup()
+//	if err != nil { ... }
+//	defer cleanup()
+func CreateTestFaultInjectorWithCleanup() (*FaultInjectorClient, func(), error) {
+	// Try to get environment config
 	envConfig, err := GetEnvConfig()
+
+	// If environment config fails, use Docker fault injector
+	// Note: GetEnvConfig() only fails if REDIS_ENDPOINTS_CONFIG_PATH is not set
 	if err != nil {
-		return nil, fmt.Errorf("failed to get environment config: %w", err)
+		// Use Docker fault injector at http://localhost:15000 (updated to avoid macOS Control Center conflict)
+		// The fault injector should already be running via docker-compose
+		faultInjectorURL := "http://localhost:15000"
+
+		// Check if fault injector is accessible
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get(faultInjectorURL + "/actions")
+		if err != nil {
+			return nil, nil, fmt.Errorf("Docker fault injector not accessible at %s (did you run 'make docker.e2e.start'?): %w", faultInjectorURL, err)
+		}
+		resp.Body.Close()
+
+		fmt.Printf("✓ Using Docker fault injector at %s\n", faultInjectorURL)
+
+		// Return client with no-op cleanup (Docker manages the fault injector lifecycle)
+		noopCleanup := func() {}
+		return NewFaultInjectorClient(faultInjectorURL), noopCleanup, nil
 	}
 
-	return NewFaultInjectorClient(envConfig.FaultInjectorURL), nil
+	// Using real fault injector - no cleanup needed
+	fmt.Printf("✓ Using real fault injector at %s\n", envConfig.FaultInjectorURL)
+	noopCleanup := func() {}
+	return NewFaultInjectorClient(envConfig.FaultInjectorURL), noopCleanup, nil
 }
 
 // GetAvailableDatabases returns a list of available database names from the configuration
@@ -573,7 +643,19 @@ func GetAvailableDatabases(configPath string) ([]string, error) {
 }
 
 // ConvertEnvDatabaseConfigToFaultInjectorConfig converts EnvDatabaseConfig to fault injector DatabaseConfig
+// This creates an OSS Cluster database by default for backward compatibility.
+// Use ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode for explicit control over cluster mode.
 func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, name string) (DatabaseConfig, error) {
+	return ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envConfig, name, true)
+}
+
+// ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode converts EnvDatabaseConfig to fault injector DatabaseConfig
+// with explicit control over whether to create a cluster or standalone database.
+// Parameters:
+//   - envConfig: The environment database configuration
+//   - name: The name for the new database
+//   - clusterMode: If true, creates an OSS Cluster database (ClusterClient). If false, creates a standalone database (Client).
+func ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envConfig EnvDatabaseConfig, name string, clusterMode bool) (DatabaseConfig, error) {
 	var port int
 
 	// Extract port and DNS name from raw_endpoints or endpoints
@@ -598,50 +680,77 @@ func ConvertEnvDatabaseConfigToFaultInjectorConfig(envConfig EnvDatabaseConfig, 
 		return DatabaseConfig{}, fmt.Errorf("no endpoints found in configuration")
 	}
 
-	randomPortOffset := 1 + rand.Intn(10) // Random port offset to avoid conflicts
+	randomPortOffset := 1 + rand.Intn(5) + rand.Intn(10) + rand.Intn(10) + rand.Intn(10) // Random port offset to avoid conflicts
 
-	// Build the database config for fault injector
-	// TODO: Make this configurable
-	// IT is the defaults for a sharded database at the moment
-	dbConfig := DatabaseConfig{
-		Name:           name,
-		Port:           port + randomPortOffset,
-		MemorySize:     268435456, // 256MB default
-		Replication:    true,
-		EvictionPolicy: "noeviction",
-		ProxyPolicy:    "single",
-		AutoUpgrade:    true,
-		Sharding:       true,
-		ShardsCount:    2,
-		ShardKeyRegex: []ShardKeyRegexPattern{
-			{Regex: ".*\\{(?<tag>.*)\\}.*"},
-			{Regex: "(?<tag>.*)"},
-		},
-		ShardsPlacement: "dense",
-		ModuleList: []DatabaseModule{
-			{ModuleArgs: "", ModuleName: "ReJSON"},
-			{ModuleArgs: "", ModuleName: "search"},
-			{ModuleArgs: "", ModuleName: "timeseries"},
-			{ModuleArgs: "", ModuleName: "bf"},
-		},
-		OSSCluster: false,
-	}
+	var dbConfig DatabaseConfig
 
-	// If we have raw_endpoints with cluster info, configure for cluster
-	if len(envConfig.RawEndpoints) > 0 {
-		endpoint := envConfig.RawEndpoints[0]
-
-		// Check if this is a cluster configuration
-		if endpoint.ProxyPolicy != "" && endpoint.ProxyPolicy != "single" {
-			dbConfig.OSSCluster = true
-			dbConfig.Sharding = true
-			dbConfig.ShardsCount = 3 // default for cluster
-			dbConfig.ProxyPolicy = endpoint.ProxyPolicy
-			dbConfig.Replication = true
+	if clusterMode {
+		// Build OSS Cluster database config for ClusterClient support
+		// Supports cluster-specific features like SMIGRATING notifications
+		dbConfig = DatabaseConfig{
+			Name:           name,
+			Port:           port + randomPortOffset,
+			MemorySize:     268435456, // 256MB default
+			Replication:    true,
+			EvictionPolicy: "noeviction",
+			ProxyPolicy:    "all-master-shards", // OSS Cluster API requires all-master-shards
+			AutoUpgrade:    true,
+			Sharding:       true,
+			ShardsCount:    2,
+			ShardKeyRegex: []ShardKeyRegexPattern{
+				{Regex: ".*\\{(?<tag>.*)\\}.*"},
+				{Regex: "(?<tag>.*)"},
+			},
+			ShardsPlacement: "sparse", // Use sparse placement to distribute shards across nodes (required for slot-shuffle)
+			ModuleList: []DatabaseModule{
+				{ModuleArgs: "", ModuleName: "ReJSON"},
+				{ModuleArgs: "", ModuleName: "search"},
+				{ModuleArgs: "", ModuleName: "timeseries"},
+				{ModuleArgs: "", ModuleName: "bf"},
+			},
+			OSSCluster: true, // Enable OSS Cluster API for ClusterClient support
 		}
 
-		if endpoint.OSSClusterAPIPreferredIPType != "" {
-			dbConfig.OSSClusterAPIPreferredIPType = endpoint.OSSClusterAPIPreferredIPType
+		// If we have raw_endpoints with cluster info, configure for cluster
+		if len(envConfig.RawEndpoints) > 0 {
+			endpoint := envConfig.RawEndpoints[0]
+
+			// Check if this is a cluster configuration
+			if endpoint.ProxyPolicy != "" && endpoint.ProxyPolicy != "single" {
+				dbConfig.OSSCluster = true
+				dbConfig.Sharding = true
+				dbConfig.ShardsCount = 3 // default for cluster
+				dbConfig.ProxyPolicy = endpoint.ProxyPolicy
+				dbConfig.Replication = true
+			}
+
+			// Note: We ignore endpoint.OSSClusterAPIPreferredIPType here because
+			// e2e tests run from outside the cluster network and need external IPs
+		}
+
+		// For OSS Cluster databases, always use external IPs since e2e tests
+		// run from outside the cluster network and cannot reach internal IPs
+		dbConfig.OSSClusterAPIPreferredIPType = "external"
+	} else {
+		// Build standalone database config for regular Client support
+		// Supports MOVING, MIGRATING, MIGRATED, FAILING_OVER, FAILED_OVER notifications
+		dbConfig = DatabaseConfig{
+			Name:           name,
+			Port:           port + randomPortOffset,
+			MemorySize:     268435456, // 256MB default
+			Replication:    true,      // Enable replication for failover support
+			EvictionPolicy: "noeviction",
+			ProxyPolicy:    "single", // Single proxy for standalone database
+			AutoUpgrade:    true,
+			Sharding:       false, // No sharding for standalone
+			ShardsCount:    1,     // Single shard
+			ModuleList: []DatabaseModule{
+				{ModuleArgs: "", ModuleName: "ReJSON"},
+				{ModuleArgs: "", ModuleName: "search"},
+				{ModuleArgs: "", ModuleName: "timeseries"},
+				{ModuleArgs: "", ModuleName: "bf"},
+			},
+			OSSCluster: false, // Disable OSS Cluster API for standalone Client support
 		}
 	}
 
@@ -680,10 +789,15 @@ func (m *TestDatabaseManager) CreateDatabaseFromEnvConfig(ctx context.Context, e
 
 // CreateDatabase creates a database and waits for it to be ready
 // Returns the bdb_id of the created database
+// If the port is unavailable, it will retry with incremented port numbers
 func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig DatabaseConfig) (int, error) {
-	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
+	resp, finalPort, err := m.faultInjector.CreateDatabaseConfigWithPortRetry(ctx, m.clusterIndex, dbConfig, 100)
 	if err != nil {
 		return 0, fmt.Errorf("failed to trigger database creation: %w", err)
+	}
+
+	if finalPort != dbConfig.Port && debugE2E() {
+		fmt.Printf("[TestDatabaseManager] Database created on port %d (originally requested %d)\n", finalPort, dbConfig.Port)
 	}
 
 	// Wait for creation to complete
@@ -721,22 +835,67 @@ func (m *TestDatabaseManager) CreateDatabase(ctx context.Context, dbConfig Datab
 
 // CreateDatabaseAndGetConfig creates a database and returns both the bdb_id and the full connection config from the fault injector response
 // This includes endpoints, username, password, TLS settings, and raw_endpoints
+// If the port is unavailable, it will retry with incremented port numbers
 func (m *TestDatabaseManager) CreateDatabaseAndGetConfig(ctx context.Context, dbConfig DatabaseConfig) (int, EnvDatabaseConfig, error) {
-	resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
-	if err != nil {
-		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to trigger database creation: %w", err)
-	}
+	const maxPortRetries = 100
+	currentPort := dbConfig.Port
 
-	// Wait for creation to complete
-	status, err := m.faultInjector.WaitForAction(ctx, resp.ActionID,
-		WithMaxWaitTime(5*time.Minute),
-		WithPollInterval(5*time.Second))
-	if err != nil {
-		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to wait for database creation: %w", err)
-	}
+	var status *ActionStatusResponse
 
-	if status.Status != StatusSuccess {
+	// Retry loop for port unavailable errors
+	for attempt := 0; attempt < maxPortRetries; attempt++ {
+		// Update the port in the config
+		dbConfig.Port = currentPort
+
+		resp, err := m.faultInjector.CreateDatabase(ctx, m.clusterIndex, dbConfig)
+		if err != nil {
+			// Check if it's a port unavailable error at trigger time
+			if isPortUnavailableErrorString(err.Error()) {
+				if debugE2E() {
+					fmt.Printf("[TestDatabaseManager] Port %d unavailable at trigger, trying port %d\n", currentPort, currentPort+1)
+				}
+				currentPort++
+				continue
+			}
+			return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to trigger database creation: %w", err)
+		}
+
+		// Wait for creation to complete
+		status, err = m.faultInjector.WaitForAction(ctx, resp.ActionID,
+			WithMaxWaitTime(5*time.Minute),
+			WithPollInterval(5*time.Second))
+		if err != nil {
+			return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to wait for database creation: %w", err)
+		}
+
+		if status.Status == StatusSuccess {
+			// Success! Break out of retry loop
+			if currentPort != dbConfig.Port && debugE2E() {
+				fmt.Printf("[TestDatabaseManager] Database created on port %d (originally requested %d)\n", currentPort, dbConfig.Port)
+			}
+			break
+		}
+
+		// Check if the error is port unavailable
+		errorStr := ""
+		if status.Error != nil {
+			errorStr = fmt.Sprintf("%v", status.Error)
+		}
+		if isPortUnavailableErrorString(errorStr) {
+			if debugE2E() {
+				fmt.Printf("[TestDatabaseManager] Port %d unavailable after action, trying port %d\n", currentPort, currentPort+1)
+			}
+			currentPort++
+			continue
+		}
+
+		// Different error, don't retry
 		return 0, EnvDatabaseConfig{}, fmt.Errorf("database creation failed: %v", status.Error)
+	}
+
+	// Check if we exhausted retries
+	if status == nil || status.Status != StatusSuccess {
+		return 0, EnvDatabaseConfig{}, fmt.Errorf("failed to create database after %d port retries (last port tried: %d)", maxPortRetries, currentPort)
 	}
 
 	// Extract database configuration from output
@@ -906,8 +1065,8 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -919,12 +1078,14 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 	testDBName := fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix())
 	bdbID, err = dbManager.CreateDatabaseFromEnvConfig(ctx, envDbConfig, testDBName)
 	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
+		fiCleanup()
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
-	// Return cleanup function
+	// Return combined cleanup function
 	cleanup = func() {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, cleanup
@@ -936,8 +1097,8 @@ func SetupTestDatabaseFromEnv(t *testing.T, ctx context.Context, databaseName st
 //	bdbID, cleanup := SetupTestDatabaseWithConfig(t, ctx, dbConfig)
 //	defer cleanup()
 func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig DatabaseConfig) (bdbID int, cleanup func()) {
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -948,28 +1109,62 @@ func SetupTestDatabaseWithConfig(t *testing.T, ctx context.Context, dbConfig Dat
 	// Create the database
 	bdbID, err = dbManager.CreateDatabase(ctx, dbConfig)
 	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
+		fiCleanup()
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
-	// Return cleanup function
+	// Return combined cleanup function
 	cleanup = func() {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
 	return bdbID, cleanup
 }
 
-// SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, and cleanup function
+// SetupTestDatabaseAndFactory creates a database from environment config and returns both bdbID, factory, test mode config, and cleanup function
 // This is the recommended way to setup tests as it ensures the client factory connects to the newly created database
+//
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (127.0.0.1:17000) instead of creating a new database.
+// This allows tests to work with either the real fault injector OR the Docker proxy setup.
+//
 // Usage:
 //
-//	bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+//	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 //	defer cleanup()
-func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, cleanup func()) {
+func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName string) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, cleanup func()) {
 	// Get environment config
 	envConfig, err := GetEnvConfig()
 	if err != nil {
-		t.Fatalf("Failed to get environment config: %v", err)
+		// No environment config - use Docker proxy setup
+		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
+
+		// Determine cluster mode based on database name
+		// "standalone" creates a non-cluster client for testing FAILING_OVER/FAILED_OVER notifications
+		isClusterMode := databaseName != "standalone"
+
+		// Create a simple Redis connection config for Docker proxy
+		redisConfig := &RedisConnectionConfig{
+			Host:          "127.0.0.1", // Use 127.0.0.1 to force IPv4
+			Port:          17000,
+			Username:      "",
+			Password:      "",
+			TLS:           false,
+			BdbID:         0,
+			IsClusterMode: isClusterMode,
+		}
+
+		factory = NewClientFactory(redisConfig)
+
+		// Get proxy mock test mode config
+		testMode = GetTestModeConfig()
+
+		// No-op cleanup since we're not creating a database
+		cleanup = func() {
+			factory.DestroyAll()
+		}
+
+		return 0, factory, testMode, cleanup
 	}
 
 	// Get database config from environment
@@ -996,14 +1191,19 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Convert to DatabaseConfig
-	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()))
+	// Determine cluster mode based on database name
+	// "standalone" creates a non-OSS-Cluster database for testing FAILING_OVER/FAILED_OVER notifications
+	// Other names create OSS Cluster databases for testing SMIGRATING/SMIGRATED notifications
+	clusterMode := databaseName != "standalone"
+
+	// Convert to DatabaseConfig with appropriate cluster mode
+	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfigWithMode(envDbConfig, fmt.Sprintf("e2e-test-%s-%d", databaseName, time.Now().Unix()), clusterMode)
 	if err != nil {
 		t.Fatalf("Failed to convert config: %v", err)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -1014,7 +1214,8 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 	// Create the database and get the actual connection config from fault injector
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
+		fiCleanup()
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Use certificate location from original config if not provided by fault injector
@@ -1022,35 +1223,72 @@ func SetupTestDatabaseAndFactory(t *testing.T, ctx context.Context, databaseName
 		newEnvConfig.CertificatesLocation = envDbConfig.CertificatesLocation
 	}
 
+	// Propagate OSSCluster flag since fault injector response may not include it
+	newEnvConfig.OSSCluster = dbConfig.OSSCluster
+
 	// Convert EnvDatabaseConfig to RedisConnectionConfig
 	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
 	if err != nil {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 		t.Fatalf("Failed to convert database config: %v", err)
 	}
 
 	// Create client factory with the actual config from fault injector
 	factory = NewClientFactory(redisConfig)
 
+	// Get real fault injector test mode config
+	testMode = GetTestModeConfig()
+
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
-	return bdbID, factory, cleanup
+	return bdbID, factory, testMode, cleanup
 }
 
-// SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, and cleanup function
+// SetupTestDatabaseAndFactoryWithConfig creates a database with custom config and returns both bdbID, factory, test mode config, and cleanup function
+//
+// If REDIS_ENDPOINTS_CONFIG_PATH is not set, it will use the Docker proxy setup (127.0.0.1:17000) instead of creating a new database.
+// This allows tests to work with either the real fault injector OR the Docker proxy setup.
+//
 // Usage:
 //
-//	bdbID, factory, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
+//	bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactoryWithConfig(t, ctx, "standalone", dbConfig)
 //	defer cleanup()
-func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, cleanup func()) {
+func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, databaseName string, dbConfig DatabaseConfig) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, cleanup func()) {
 	// Get environment config to use as template for connection details
 	envConfig, err := GetEnvConfig()
 	if err != nil {
-		t.Fatalf("Failed to get environment config: %v", err)
+		// No environment config - use Docker proxy setup
+		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
+
+		// Create a simple Redis connection config for Docker proxy
+		// The proxy simulates a cluster, so we set IsClusterMode to true
+		redisConfig := &RedisConnectionConfig{
+			Host:          "127.0.0.1", // Use 127.0.0.1 to force IPv4
+			Port:          17000,
+			Username:      "",
+			Password:      "",
+			TLS:           false,
+			BdbID:         0,
+			IsClusterMode: true, // Docker proxy simulates a cluster
+		}
+
+		factory = NewClientFactory(redisConfig)
+
+		// Get proxy mock test mode config
+		testMode = GetTestModeConfig()
+
+		// No-op cleanup since we're not creating a database
+		cleanup = func() {
+			factory.DestroyAll()
+		}
+
+		return 0, factory, testMode, cleanup
 	}
 
 	// Get database config from environment
@@ -1077,8 +1315,8 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 		t.Fatalf("Database %s not found in configuration", databaseName)
 	}
 
-	// Create fault injector
-	faultInjector, err := CreateTestFaultInjector()
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 	if err != nil {
 		t.Fatalf("Failed to create fault injector: %v", err)
 	}
@@ -1089,7 +1327,8 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	// Create the database and get the actual connection config from fault injector
 	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
 	if err != nil {
-		t.Fatalf("Failed to create test database: %v", err)
+		fiCleanup()
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
 	}
 
 	// Use certificate location from original config if not provided by fault injector
@@ -1101,17 +1340,294 @@ func SetupTestDatabaseAndFactoryWithConfig(t *testing.T, ctx context.Context, da
 	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
 	if err != nil {
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 		t.Fatalf("Failed to convert database config: %v", err)
 	}
 
 	// Create client factory with the actual config from fault injector
 	factory = NewClientFactory(redisConfig)
 
+	// Get real fault injector test mode config
+	testMode = GetTestModeConfig()
+
 	// Combined cleanup function
 	cleanup = func() {
 		factory.DestroyAll()
 		dbManager.Cleanup(ctx)
+		fiCleanup()
 	}
 
-	return bdbID, factory, cleanup
+	return bdbID, factory, testMode, cleanup
+}
+
+// GetSlotMigrateRequirementsCount returns the number of database requirements for a given effect/variant.
+// This is useful for iterating over all required databases when running tests.
+// Returns 0 if the effect/variant combination is not found or if in proxy mode (which always returns 1).
+func GetSlotMigrateRequirementsCount(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant) int {
+	// Get environment config
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		// No environment config - use Docker proxy setup (always 1 requirement)
+		return 1
+	}
+
+	// Create fault injector client using the URL from environment config
+	fiClient := NewFaultInjectorClient(envConfig.FaultInjectorURL)
+
+	// Query the fault injector for the required database configuration
+	triggersResp, err := fiClient.GetSlotMigrateTriggers(ctx, effect, 0)
+	if err != nil {
+		t.Logf("Warning: Failed to get slot-migrate triggers: %v", err)
+		return 1
+	}
+
+	// Find the trigger that matches our variant
+	for _, trigger := range triggersResp.Triggers {
+		if trigger.Name == string(variant) || (variant == SlotMigrateVariantDefault && trigger.Name == "migrate") {
+			return len(trigger.Requirements)
+		}
+	}
+
+	return 1
+}
+
+// SetupTestDatabaseForSlotMigrate creates a database configured for a specific slot-migrate effect
+// It queries the fault injector's GET /slot-migrate endpoint to get the required database configuration
+// and creates the database with those settings.
+//
+// Usage:
+//
+//	bdbID, factory, testMode, fiClient, cleanup := SetupTestDatabaseForSlotMigrate(t, ctx, SlotMigrateEffectSlotShuffle, SlotMigrateVariantMigrate)
+//	defer cleanup()
+func SetupTestDatabaseForSlotMigrate(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, fiClient *FaultInjectorClient, cleanup func()) {
+	return SetupTestDatabaseForSlotMigrateWithRequirementIndex(t, ctx, effect, variant, 0)
+}
+
+// SetupTestDatabaseForSlotMigrateWithRequirementIndex creates a database configured for a specific slot-migrate effect
+// using the requirement at the specified index. This allows testing against all required database configurations.
+//
+// Usage:
+//
+//	reqCount := GetSlotMigrateRequirementsCount(t, ctx, effect, variant)
+//	for i := 0; i < reqCount; i++ {
+//	    bdbID, factory, testMode, fiClient, cleanup := SetupTestDatabaseForSlotMigrateWithRequirementIndex(t, ctx, effect, variant, i)
+//	    defer cleanup()
+//	    // run test...
+//	}
+func SetupTestDatabaseForSlotMigrateWithRequirementIndex(t *testing.T, ctx context.Context, effect SlotMigrateEffect, variant SlotMigrateVariant, requirementIndex int) (bdbID int, factory *ClientFactory, testMode *TestModeConfig, fiClient *FaultInjectorClient, cleanup func()) {
+	// Get environment config
+	envConfig, err := GetEnvConfig()
+	if err != nil {
+		// No environment config - use Docker proxy setup
+		t.Logf("No environment config found, using Docker proxy setup at 127.0.0.1:17000")
+
+		redisConfig := &RedisConnectionConfig{
+			Host:          "127.0.0.1",
+			Port:          17000,
+			Username:      "",
+			Password:      "",
+			TLS:           false,
+			BdbID:         0,
+			IsClusterMode: true,
+		}
+
+		factory = NewClientFactory(redisConfig)
+		testMode = GetTestModeConfig()
+
+		// Create fault injector client for proxy mode using Docker fault injector URL
+		fiClient = NewFaultInjectorClient("http://localhost:15000")
+
+		// Call CreateDatabase to initialize the proxy fault injector with 2 nodes
+		// This is required for slot-shuffle, remove, and remove-add effects which need >= 2 nodes
+		resp, err := fiClient.CreateDatabase(ctx, 0, DatabaseConfig{})
+		if err != nil {
+			t.Fatalf("Failed to trigger CreateDatabase on proxy fault injector: %v", err)
+		}
+
+		// Wait for the action to complete
+		status, err := fiClient.WaitForAction(ctx, resp.ActionID,
+			WithMaxWaitTime(10*time.Second),
+			WithPollInterval(100*time.Millisecond))
+		if err != nil {
+			t.Fatalf("Failed to wait for CreateDatabase action: %v", err)
+		}
+		if status.Status != StatusSuccess {
+			t.Fatalf("CreateDatabase action failed: %v", status.Error)
+		}
+
+		cleanup = func() {
+			factory.DestroyAll()
+		}
+
+		return 0, factory, testMode, fiClient, cleanup
+	}
+
+	// Create fault injector client using the URL from environment config
+	fiClient = NewFaultInjectorClient(envConfig.FaultInjectorURL)
+
+	// Query the fault injector for the required database configuration
+	t.Logf("Querying fault injector for %s effect requirements...", effect)
+	if debugE2E() {
+		slotMigrateURL := fmt.Sprintf("%s/slot-migrate?effect=%s&cluster_index=0", envConfig.FaultInjectorURL, effect)
+		t.Logf("  URL: %s", slotMigrateURL)
+
+		// Get raw response for debugging
+		rawResp, err := fiClient.GetSlotMigrateTriggersRaw(ctx, effect, 0)
+		if err != nil {
+			t.Logf("Warning: Failed to get raw slot-migrate triggers: %v", err)
+		} else {
+			t.Logf("  Raw response: %s", string(rawResp))
+		}
+	}
+
+	triggersResp, err := fiClient.GetSlotMigrateTriggers(ctx, effect, 0)
+	if err != nil {
+		t.Fatalf("Failed to get slot-migrate triggers: %v", err)
+	}
+
+	// Log the full response (only in debug mode)
+	if debugE2E() {
+		t.Logf("  Response: Effect=%s, Triggers=%d", triggersResp.Effect, len(triggersResp.Triggers))
+		for i, trigger := range triggersResp.Triggers {
+			t.Logf("    Trigger[%d]: Name=%s, Description=%s, Requirements=%d", i, trigger.Name, trigger.Description, len(trigger.Requirements))
+			for j, req := range trigger.Requirements {
+				t.Logf("      Requirement[%d]: DBConfig=%v, Cluster=%v, Description=%s", j, req.DBConfig, req.Cluster, req.Description)
+			}
+		}
+	}
+
+	// Find the trigger that matches our variant
+	var requiredDBConfig map[string]interface{}
+	for _, trigger := range triggersResp.Triggers {
+		if trigger.Name == string(variant) || (variant == SlotMigrateVariantDefault && trigger.Name == "migrate") {
+			if requirementIndex < len(trigger.Requirements) {
+				requiredDBConfig = trigger.Requirements[requirementIndex].DBConfig
+				if debugE2E() {
+					t.Logf("Found required DB config for %s/%s (requirement %d/%d): %v",
+						effect, variant, requirementIndex+1, len(trigger.Requirements), requiredDBConfig)
+				}
+			} else if len(trigger.Requirements) > 0 {
+				// Fall back to first requirement if index is out of bounds
+				requiredDBConfig = trigger.Requirements[0].DBConfig
+				t.Logf("Warning: requirement index %d out of bounds (max %d), using first requirement",
+					requirementIndex, len(trigger.Requirements)-1)
+			}
+			break
+		}
+	}
+
+	// Get database config from environment
+	databasesConfig, err := GetDatabaseConfigFromEnv(envConfig.RedisEndpointsConfigPath)
+	if err != nil {
+		t.Fatalf("Failed to get database config: %v", err)
+	}
+
+	// Get the first database config
+	var envDbConfig EnvDatabaseConfig
+	for _, config := range databasesConfig {
+		envDbConfig = config
+		break
+	}
+
+	// Convert to DatabaseConfig
+	dbConfig, err := ConvertEnvDatabaseConfigToFaultInjectorConfig(envDbConfig, fmt.Sprintf("e2e-slotmigrate-%d", time.Now().Unix()))
+	if err != nil {
+		t.Fatalf("Failed to convert config: %v", err)
+	}
+
+	// Apply the required configuration from fault injector
+	if requiredDBConfig != nil {
+		if shardsCount, ok := requiredDBConfig["shards_count"]; ok {
+			if sc, ok := shardsCount.(float64); ok {
+				dbConfig.ShardsCount = int(sc)
+				if debugE2E() {
+					t.Logf("Setting ShardsCount to %d (from fault injector)", dbConfig.ShardsCount)
+				}
+			}
+		}
+		if shardsPlacement, ok := requiredDBConfig["shards_placement"]; ok {
+			if sp, ok := shardsPlacement.(string); ok {
+				dbConfig.ShardsPlacement = sp
+				if debugE2E() {
+					t.Logf("Setting ShardsPlacement to %s (from fault injector)", dbConfig.ShardsPlacement)
+				}
+			}
+		}
+		if replication, ok := requiredDBConfig["replication"]; ok {
+			if r, ok := replication.(bool); ok {
+				dbConfig.Replication = r
+				if debugE2E() {
+					t.Logf("Setting Replication to %v (from fault injector)", dbConfig.Replication)
+				}
+			}
+		}
+		if ossCluster, ok := requiredDBConfig["oss_cluster"]; ok {
+			if oc, ok := ossCluster.(bool); ok {
+				dbConfig.OSSCluster = oc
+				if debugE2E() {
+					t.Logf("Setting OSSCluster to %v (from fault injector)", dbConfig.OSSCluster)
+				}
+			}
+		}
+		if sharding, ok := requiredDBConfig["sharding"]; ok {
+			if s, ok := sharding.(bool); ok {
+				dbConfig.Sharding = s
+				if debugE2E() {
+					t.Logf("Setting Sharding to %v (from fault injector)", dbConfig.Sharding)
+				}
+			}
+		}
+	}
+
+	if debugE2E() {
+		t.Logf("Creating database with config: ShardsCount=%d, ShardsPlacement=%s, Replication=%v, OSSCluster=%v",
+			dbConfig.ShardsCount, dbConfig.ShardsPlacement, dbConfig.Replication, dbConfig.OSSCluster)
+	}
+
+	// Create fault injector with cleanup
+	faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
+	if err != nil {
+		t.Fatalf("Failed to create fault injector: %v", err)
+	}
+
+	// Create database manager
+	dbManager := NewTestDatabaseManager(t, faultInjector, 0)
+
+	// Create the database and get the actual connection config from fault injector
+	bdbID, newEnvConfig, err := dbManager.CreateDatabaseAndGetConfig(ctx, dbConfig)
+	if err != nil {
+		fiCleanup()
+		t.Fatalf("[ERROR] Failed to create test database: %v", err)
+	}
+
+	// Use certificate location from original config if not provided by fault injector
+	if newEnvConfig.CertificatesLocation == "" && envDbConfig.CertificatesLocation != "" {
+		newEnvConfig.CertificatesLocation = envDbConfig.CertificatesLocation
+	}
+
+	// Propagate OSSCluster flag since fault injector response may not include it
+	newEnvConfig.OSSCluster = dbConfig.OSSCluster
+
+	// Convert EnvDatabaseConfig to RedisConnectionConfig
+	redisConfig, err := ConvertEnvDatabaseConfigToRedisConnectionConfig(newEnvConfig)
+	if err != nil {
+		dbManager.Cleanup(ctx)
+		fiCleanup()
+		t.Fatalf("Failed to convert database config: %v", err)
+	}
+
+	// Create client factory with the actual config from fault injector
+	factory = NewClientFactory(redisConfig)
+
+	// Get real fault injector test mode config
+	testMode = GetTestModeConfig()
+
+	// Combined cleanup function
+	cleanup = func() {
+		factory.DestroyAll()
+		dbManager.Cleanup(ctx)
+		fiCleanup()
+	}
+
+	return bdbID, factory, testMode, fiClient, cleanup
 }
