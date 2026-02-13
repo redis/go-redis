@@ -42,6 +42,17 @@ type Options struct {
 	// Addr is the address formated as host:port
 	Addr string
 
+	// NodeAddress is the address of the Redis node as reported by the server.
+	// For cluster clients, this is the exact endpoint string returned by CLUSTER SLOTS
+	// before any resolution or transformation (e.g., loopback replacement).
+	// For standalone clients, this defaults to Addr.
+	//
+	// This is used to match the source endpoint in maintenance notifications
+	// (e.g. SMIGRATED).
+	//
+	// Use Client.NodeAddress() to access this value.
+	NodeAddress string
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
@@ -294,6 +305,12 @@ func (opt *Options) init() {
 		} else {
 			opt.Network = "tcp"
 		}
+	}
+	// For standalone clients, default NodeAddress to Addr if not set.
+	// This ensures maintenance notifications (SMIGRATED, etc.) can match
+	// the connection's endpoint even for non-cluster clients.
+	if opt.NodeAddress == "" {
+		opt.NodeAddress = opt.Addr
 	}
 	if opt.Protocol < 2 {
 		opt.Protocol = 3

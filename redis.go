@@ -27,7 +27,11 @@ const Nil = proto.Nil
 
 // SetLogger set custom log
 // Use with VoidLogger to disable logging.
+// If logger is nil, the call is ignored and the existing logger is kept.
 func SetLogger(logger internal.Logging) {
+	if logger == nil {
+		return
+	}
 	internal.Logger = logger
 }
 
@@ -1128,6 +1132,16 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 // Options returns read-only Options that were used to create the client.
 func (c *Client) Options() *Options {
 	return c.opt
+}
+
+// NodeAddress returns the address of the Redis node as reported by the server.
+// For cluster clients, this is the endpoint from CLUSTER SLOTS before any transformation
+// (e.g., loopback replacement). For standalone clients, this defaults to Addr.
+//
+// This is useful for matching the source field in maintenance notifications
+// (e.g. SMIGRATED).
+func (c *Client) NodeAddress() string {
+	return c.opt.NodeAddress
 }
 
 // GetMaintNotificationsManager returns the maintnotifications manager instance for monitoring and control.
