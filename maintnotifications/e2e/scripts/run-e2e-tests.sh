@@ -12,7 +12,7 @@ E2E_DIR="${REPO_ROOT}/maintnotifications/e2e"
 
 # Configuration
 FAULT_INJECTOR_URL="http://127.0.0.1:20324"
-CONFIG_PATH="${REPO_ROOT}/maintnotifications/e2e/infra/cae-client-testing/endpoints.json"
+CONFIG_PATH="${REPO_ROOT}/maintnotifications/e2e/infra/cae-client-testing/config/endpoints.json"
 
 # Colors for output
 RED='\033[0;31m'
@@ -47,37 +47,50 @@ Usage: $0 [OPTIONS]
 
 OPTIONS:
     -h, --help              Show this help message
-    -v, --verbose           Enable verbose test output
-    -t, --timeout DURATION Test timeout (default: 30m)
+    -v, --verbose           Enable verbose test output (human-readable)
+    -d, --debug             Enable debug logging (shows detailed fault injector responses)
+    -t, --timeout DURATION  Test timeout (default: 90m)
     -r, --run PATTERN       Run only tests matching pattern
-    --dry-run              Show what would be executed without running
-    --list                 List available tests
-    --config PATH          Override config path (default: infra/cae-client-testing/endpoints.json)
-    --fault-injector URL   Override fault injector URL (default: http://127.0.0.1:20324)
+    --json                  Enable JSON output (default)
+    --no-json               Disable JSON output, use verbose human-readable format
+    --cluster               Run only cluster tests (tests with 'Cluster' in name)
+    --single                Run only non-cluster tests (exclude tests with 'Cluster' in name)
+    --dry-run               Show what would be executed without running
+    --list                  List available tests
+    --config PATH           Override config path (default: infra/cae-client-testing/endpoints.json)
+    --fault-injector URL    Override fault injector URL (default: http://127.0.0.1:20324)
 
 EXAMPLES:
-    $0                                    # Run all E2E tests
-    $0 -v                                # Run with verbose output
-    $0 -r TestPushNotifications         # Run only push notification tests
-    $0 -t 45m                           # Run with 45 minute timeout
-    $0 --dry-run                        # Show what would be executed
-    $0 --list                           # List available tests
+    $0                                    # Run all E2E tests with JSON output
+    $0 --no-json                         # Run all tests with verbose human-readable output
+    $0 --debug                           # Run with debug logging enabled
+    $0 --cluster                         # Run only cluster tests (OSS Cluster API)
+    $0 --single                          # Run only non-cluster tests
+    $0 -r TestPushNotifications          # Run only tests matching pattern
+    $0 -t 45m                            # Run with 45 minute timeout
+    $0 --dry-run                         # Show what would be executed
+    $0 --list                            # List available tests
 
 ENVIRONMENT:
     The script automatically sets up the required environment variables:
     - REDIS_ENDPOINTS_CONFIG_PATH: Path to Redis endpoints configuration
     - FAULT_INJECTION_API_URL: URL of the fault injector server
     - E2E_SCENARIO_TESTS: Enables scenario tests
+    - E2E_DEBUG: Enables debug logging (set by --debug flag)
 
 EOF
 }
 
 # Parse command line arguments
-VERBOSE=""
-TIMEOUT="30m"
+TIMEOUT="90m"
 RUN_PATTERN=""
+SKIP_PATTERN=""
 DRY_RUN=false
 LIST_TESTS=false
+JSON_OUTPUT=true
+CLUSTER_ONLY=false
+SINGLE_ONLY=false
+DEBUG_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -86,7 +99,12 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         -v|--verbose)
-            VERBOSE="-v"
+            # Verbose is now the same as --no-json for backward compatibility
+            JSON_OUTPUT=false
+            shift
+            ;;
+        -d|--debug)
+            DEBUG_MODE=true
             shift
             ;;
         -t|--timeout)
@@ -96,6 +114,22 @@ while [[ $# -gt 0 ]]; do
         -r|--run)
             RUN_PATTERN="$2"
             shift 2
+            ;;
+        --json)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --no-json)
+            JSON_OUTPUT=false
+            shift
+            ;;
+        --cluster)
+            CLUSTER_ONLY=true
+            shift
+            ;;
+        --single)
+            SINGLE_ONLY=true
+            shift
             ;;
         --dry-run)
             DRY_RUN=true
@@ -121,6 +155,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate mutually exclusive options
+if [[ "$CLUSTER_ONLY" == true && "$SINGLE_ONLY" == true ]]; then
+    log_error "Cannot use --cluster and --single together"
+    exit 1
+fi
+
+# Set run pattern based on cluster/single options
+if [[ "$CLUSTER_ONLY" == true ]]; then
+    if [[ -n "$RUN_PATTERN" ]]; then
+        log_warning "Overriding -r pattern with --cluster"
+    fi
+    RUN_PATTERN="Cluster"
+elif [[ "$SINGLE_ONLY" == true ]]; then
+    if [[ -n "$RUN_PATTERN" ]]; then
+        log_warning "Overriding -r pattern with --single"
+    fi
+    # Use -skip to exclude Cluster tests (requires Go 1.21+)
+    SKIP_PATTERN="Cluster"
+fi
+
 # Validate configuration file exists
 if [[ ! -f "$CONFIG_PATH" ]]; then
     log_error "Configuration file not found: $CONFIG_PATH"
@@ -132,22 +186,33 @@ fi
 export REDIS_ENDPOINTS_CONFIG_PATH="$CONFIG_PATH"
 export FAULT_INJECTION_API_URL="$FAULT_INJECTOR_URL"
 export E2E_SCENARIO_TESTS="true"
+if [[ "$DEBUG_MODE" == true ]]; then
+    export E2E_DEBUG="true"
+fi
 
 # Build test command
-TEST_CMD="go test -json -tags=e2e"
+TEST_CMD="go test -tags=e2e"
+
+# Add JSON or verbose output
+if [[ "$JSON_OUTPUT" == true ]]; then
+    TEST_CMD="$TEST_CMD -json"
+else
+    TEST_CMD="$TEST_CMD -v"
+fi
 
 if [[ -n "$TIMEOUT" ]]; then
     TEST_CMD="$TEST_CMD -timeout=$TIMEOUT"
 fi
 
-# Note: -v flag is not compatible with -json output format
-# The -json format already provides verbose test information
-
 if [[ -n "$RUN_PATTERN" ]]; then
-    TEST_CMD="$TEST_CMD -run $RUN_PATTERN"
+    TEST_CMD="$TEST_CMD -run '$RUN_PATTERN'"
 fi
 
-TEST_CMD="$TEST_CMD ./maintnotifications/e2e/ "
+if [[ -n "$SKIP_PATTERN" ]]; then
+    TEST_CMD="$TEST_CMD -skip '$SKIP_PATTERN'"
+fi
+
+TEST_CMD="$TEST_CMD ./maintnotifications/e2e/"
 
 # List tests if requested
 if [[ "$LIST_TESTS" == true ]]; then
@@ -164,8 +229,13 @@ echo "  E2E Directory: $E2E_DIR" >&2
 echo "  Config Path: $CONFIG_PATH" >&2
 echo "  Fault Injector URL: $FAULT_INJECTOR_URL" >&2
 echo "  Test Timeout: $TIMEOUT" >&2
+echo "  JSON Output: $JSON_OUTPUT" >&2
+echo "  Debug Mode: $DEBUG_MODE" >&2
 if [[ -n "$RUN_PATTERN" ]]; then
     echo "  Test Pattern: $RUN_PATTERN" >&2
+fi
+if [[ -n "$SKIP_PATTERN" ]]; then
+    echo "  Skip Pattern: $SKIP_PATTERN" >&2
 fi
 echo "" >&2
 
@@ -189,6 +259,9 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "  export REDIS_ENDPOINTS_CONFIG_PATH=\"$CONFIG_PATH\"" >&2
     echo "  export FAULT_INJECTION_API_URL=\"$FAULT_INJECTOR_URL\"" >&2
     echo "  export E2E_SCENARIO_TESTS=\"true\"" >&2
+    if [[ "$DEBUG_MODE" == true ]]; then
+        echo "  export E2E_DEBUG=\"true\"" >&2
+    fi
     echo "  $TEST_CMD" >&2
     exit 0
 fi
