@@ -1,0 +1,63 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [master, v9, 'v9.*']
+  pull_request:
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/**', 'ofekshenawa/**', 'ce/**']
+
+permissions:
+  contents: read
+
+jobs:
+  test-e2e-mock:
+    name: E2E Tests (Mock Proxy)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version:
+          - "1.23.x"
+          - stable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Start Docker services for E2E tests
+        run: make docker.e2e.start
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for Redis to be ready..."
+          timeout 30 bash -c 'until docker exec redis-standalone redis-cli ping 2>/dev/null; do sleep 1; done'
+          echo "Waiting for cae-resp-proxy to be ready..."
+          timeout 30 bash -c 'until curl -s http://localhost:18100/stats > /dev/null; do sleep 1; done'
+          echo "All services are ready!"
+
+      - name: Run E2E tests with mock proxy
+        env:
+          E2E_SCENARIO_TESTS: "true"
+        run: |
+          go test -v ./maintnotifications/e2e/ -timeout 30m -race
+        continue-on-error: false
+
+      - name: Stop Docker services
+        if: always()
+        run: make docker.e2e.stop
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: |
+          echo "=== Redis logs ==="
+          docker logs redis-standalone 2>&1 | tail -100
+          echo "=== cae-resp-proxy logs ==="
+          docker logs cae-resp-proxy 2>&1 | tail -100
+          echo "=== proxy-fault-injector logs ==="
+          docker logs proxy-fault-injector 2>&1 | tail -100
+
