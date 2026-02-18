@@ -448,6 +448,20 @@ func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
 	return cmd
 }
 
+// DoRaw executes a command and returns the raw RESP protocol bytes without parsing.
+func (c cmdable) DoRaw(ctx context.Context, args ...interface{}) *RawCmd {
+	cmd := NewRawCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// DoRawWriteTo executes a command and streams raw RESP bytes directly to w without intermediate allocations.
+func (c cmdable) DoRawWriteTo(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	cmd := NewRawWriteToCmd(ctx, w, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // Quit closes the connection.
 //
 // Deprecated: Just close the connection instead as of Redis 7.2.0.

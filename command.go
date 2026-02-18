@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"regexp"
@@ -714,6 +715,114 @@ func (cmd *Cmd) Clone() Cmder {
 	return &Cmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawCmd returns raw RESP protocol bytes without parsing.
+type RawCmd struct {
+	baseCmd
+	val []byte
+}
+
+var _ Cmder = (*RawCmd)(nil)
+
+func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
+	return &RawCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+	}
+}
+
+func (cmd *RawCmd) SetVal(val []byte) {
+	cmd.val = val
+}
+
+func (cmd *RawCmd) Val() []byte {
+	return cmd.val
+}
+
+func (cmd *RawCmd) Result() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) Bytes() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *RawCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.val, err = rd.ReadRawReply()
+	return err
+}
+
+func (cmd *RawCmd) Clone() Cmder {
+	var val []byte
+	if cmd.val != nil {
+		val = make([]byte, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &RawCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawWriteToCmd streams raw RESP protocol bytes directly to an io.Writer without intermediate allocations.
+type RawWriteToCmd struct {
+	baseCmd
+	w       io.Writer
+	written int64
+}
+
+var _ Cmder = (*RawWriteToCmd)(nil)
+
+func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	return &RawWriteToCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+		w: w,
+	}
+}
+
+func (cmd *RawWriteToCmd) SetVal(written int64) {
+	cmd.written = written
+}
+
+func (cmd *RawWriteToCmd) Val() int64 {
+	return cmd.written
+}
+
+func (cmd *RawWriteToCmd) Result() (int64, error) {
+	return cmd.written, cmd.err
+}
+
+func (cmd *RawWriteToCmd) String() string {
+	return cmdString(cmd, cmd.written)
+}
+
+func (cmd *RawWriteToCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.written, err = rd.ReadRawReplyWriteTo(cmd.w)
+	return err
+}
+
+func (cmd *RawWriteToCmd) Clone() Cmder {
+	return &RawWriteToCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		w:       cmd.w,
+		written: cmd.written,
 	}
 }
 
