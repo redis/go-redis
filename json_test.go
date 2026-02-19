@@ -832,7 +832,8 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd := client.JSONType(ctx, "person:1", "$.person.nickname")
 					nicknameType, err := typeCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.TYPE failed")
-					Expect(nicknameType[0]).To(Equal([]interface{}{"string"}), "JSON.TYPE mismatch for nickname")
+					// RESP2 v RESP3
+					Expect(nicknameType[0]).To(Or(Equal([]interface{}{"string"}), Equal("string")), "JSON.TYPE mismatch for nickname")
 
 					createIndexCmd := client.Do(ctx, "FT.CREATE", "person_idx", "ON", "JSON",
 						"PREFIX", "1", "person:", "SCHEMA",
