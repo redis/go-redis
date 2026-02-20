@@ -55,6 +55,11 @@ func appendArgs(dst, src []interface{}) []interface{} {
 		return appendArg(dst, src[0])
 	}
 
+	if cap(dst) < len(dst)+len(src) {
+		newDst := make([]interface{}, len(dst), len(dst)+len(src))
+		copy(newDst, dst)
+		dst = newDst
+	}
 	dst = append(dst, src...)
 	return dst
 }

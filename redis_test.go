@@ -88,6 +88,28 @@ var _ = Describe("Client", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("should support PubSub with WithTimeout", func() {
+		// Create a new client with a custom timeout
+		newClient := client.WithTimeout(5 * time.Second)
+
+		// Subscribe to a channel using the cloned client
+		pubsub := newClient.Subscribe(ctx, "test-channel")
+		defer pubsub.Close()
+
+		// Verify that we can receive the subscription confirmation
+		_, err := pubsub.ReceiveTimeout(ctx, time.Second)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Publish a message using the original client
+		err = client.Publish(ctx, "test-channel", "test-message").Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Receive the message
+		msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(msg).NotTo(BeNil())
+	})
+
 	It("do", func() {
 		val, err := client.Do(ctx, "ping").Result()
 		Expect(err).NotTo(HaveOccurred())

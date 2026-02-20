@@ -52,6 +52,10 @@ func (mo *MockOptions) GetAddr() string {
 	return "localhost:6379"
 }
 
+func (mo *MockOptions) GetNodeAddress() string {
+	return "localhost:6379"
+}
+
 func (mo *MockOptions) IsTLSEnabled() bool {
 	return false
 }
@@ -217,6 +221,8 @@ func TestManagerRefactoring(t *testing.T) {
 			NotificationMigrated,
 			NotificationFailingOver,
 			NotificationFailedOver,
+			NotificationSMigrating,
+			NotificationSMigrated,
 		}
 
 		if len(maintenanceNotificationTypes) != len(expectedTypes) {

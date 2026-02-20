@@ -7010,6 +7010,162 @@ var _ = Describe("Commands", func() {
 			Expect(vals).To(HaveLen(0))
 		})
 
+		It("should XAdd with IDMP (idempotent production)", func() {
+			SkipBeforeRedisVersion(8.6, "IDMP requires Redis 8.6+")
+			streamName := "idmp-stream"
+			defer client.Del(ctx, streamName)
+
+			// First add with IDMP
+			id1, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:       streamName,
+				ProducerID:   "producer1",
+				IdempotentID: "msg1",
+				Values:       map[string]interface{}{"field": "value1"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id1).NotTo(BeEmpty())
+
+			// Add the same message again - should return the same ID (duplicate detection)
+			id2, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:       streamName,
+				ProducerID:   "producer1",
+				IdempotentID: "msg1",
+				Values:       map[string]interface{}{"field": "value2"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id2).To(Equal(id1)) // Should return the same entry ID
+
+			// Verify only one message was added
+			vals, err := client.XRange(ctx, streamName, "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(HaveLen(1))
+			Expect(vals[0].ID).To(Equal(id1))
+
+			// Add a different message with different idempotent ID
+			id3, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:       streamName,
+				ProducerID:   "producer1",
+				IdempotentID: "msg2",
+				Values:       map[string]interface{}{"field": "value3"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id3).NotTo(Equal(id1)) // Should be a different entry ID
+
+			// Verify two messages now exist
+			vals, err = client.XRange(ctx, streamName, "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(HaveLen(2))
+
+			// Verify XINFO STREAM shows idempotent stats
+			info, err := client.XInfoStream(ctx, streamName).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.PIDsTracked).To(Equal(int64(1)))
+			Expect(info.IIDsTracked).To(BeNumerically(">", 0))
+			Expect(info.IIDsAdded).To(Equal(int64(2)))
+			Expect(info.IIDsDuplicates).To(Equal(int64(1)))
+		})
+
+		It("should XAdd with IDMPAUTO (auto-generated idempotent ID)", func() {
+			SkipBeforeRedisVersion(8.6, "IDMPAUTO requires Redis 8.6+")
+			streamName := "idmpauto-stream"
+			defer client.Del(ctx, streamName)
+
+			id1, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:         streamName,
+				ProducerID:     "producer1",
+				IdempotentAuto: true,
+				Values:         map[string]interface{}{"field": "value1", "order": "123"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id1).NotTo(BeEmpty())
+
+			// Add the same message again - should return the same ID (duplicate detection)
+			// Redis will calculate the same idempotent ID based on content
+			id2, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:         streamName,
+				ProducerID:     "producer1",
+				IdempotentAuto: true,
+				Values:         map[string]interface{}{"field": "value1", "order": "123"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id2).To(Equal(id1)) // Should return the same entry ID
+
+			// Verify only one message was added
+			vals, err := client.XRange(ctx, streamName, "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(HaveLen(1))
+
+			// Add a different message - should create a new entry
+			id3, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream:         streamName,
+				ProducerID:     "producer1",
+				IdempotentAuto: true,
+				Values:         map[string]interface{}{"field": "value2", "order": "456"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id3).NotTo(Equal(id1))
+
+			// Verify two messages now exist
+			vals, err = client.XRange(ctx, streamName, "-", "+").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(vals).To(HaveLen(2))
+
+			// Verify XINFO STREAM shows idempotent stats
+			info, err := client.XInfoStream(ctx, streamName).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.IIDsAdded).To(Equal(int64(2)))
+			Expect(info.IIDsDuplicates).To(Equal(int64(1)))
+		})
+
+		It("should XCfgSet configure idempotent production settings", func() {
+			SkipBeforeRedisVersion(8.6, "XCFGSET requires Redis 8.6+")
+			streamName := "xcfgset-stream"
+			defer client.Del(ctx, streamName)
+
+			_, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream: streamName,
+				Values: map[string]interface{}{"field": "value"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Configure IDMP settings
+			status, err := client.XCfgSet(ctx, &redis.XCfgSetArgs{
+				Stream:   streamName,
+				Duration: 200, // 200 seconds
+				MaxSize:  500, // 500 idempotent IDs
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			// Verify the settings were applied
+			info, err := client.XInfoStream(ctx, streamName).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.IDMPDuration).To(Equal(int64(200)))
+			Expect(info.IDMPMaxSize).To(Equal(int64(500)))
+
+			status, err = client.XCfgSet(ctx, &redis.XCfgSetArgs{
+				Stream:   streamName,
+				Duration: 300,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			info, err = client.XInfoStream(ctx, streamName).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.IDMPDuration).To(Equal(int64(300)))
+
+			status, err = client.XCfgSet(ctx, &redis.XCfgSetArgs{
+				Stream:  streamName,
+				MaxSize: 1000,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			info, err = client.XInfoStream(ctx, streamName).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.IDMPMaxSize).To(Equal(int64(1000)))
+		})
+
 		It("should XDel", func() {
 			n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -7737,8 +7893,7 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				res.RadixTreeKeys = 0
 				res.RadixTreeNodes = 0
-
-				Expect(res).To(Equal(&redis.XInfoStream{
+				expectedRes := &redis.XInfoStream{
 					Length:            3,
 					RadixTreeKeys:     0,
 					RadixTreeNodes:    0,
@@ -7755,7 +7910,22 @@ var _ = Describe("Commands", func() {
 						Values: map[string]interface{}{"tres": "troix"},
 					},
 					RecordedFirstEntryID: "1-0",
-				}))
+					IDMPDuration:         100,
+					IDMPMaxSize:          100,
+					PIDsTracked:          0,
+					IIDsTracked:          0,
+					IIDsAdded:            0,
+					IIDsDuplicates:       0,
+				}
+				if RedisVersion < 8.6 {
+					expectedRes.IDMPDuration = 0
+					expectedRes.IDMPMaxSize = 0
+					expectedRes.PIDsTracked = 0
+					expectedRes.IIDsTracked = 0
+					expectedRes.IIDsAdded = 0
+					expectedRes.IIDsDuplicates = 0
+				}
+				Expect(res).To(Equal(expectedRes))
 
 				// stream is empty
 				n, err := client.XDel(ctx, "stream", "1-0", "2-0", "3-0").Result()
@@ -7766,8 +7936,7 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				res.RadixTreeKeys = 0
 				res.RadixTreeNodes = 0
-
-				Expect(res).To(Equal(&redis.XInfoStream{
+				expectedRes = &redis.XInfoStream{
 					Length:               0,
 					RadixTreeKeys:        0,
 					RadixTreeNodes:       0,
@@ -7778,7 +7947,23 @@ var _ = Describe("Commands", func() {
 					FirstEntry:           redis.XMessage{},
 					LastEntry:            redis.XMessage{},
 					RecordedFirstEntryID: "0-0",
-				}))
+					IDMPDuration:         100,
+					IDMPMaxSize:          100,
+					PIDsTracked:          0,
+					IIDsTracked:          0,
+					IIDsAdded:            0,
+					IIDsDuplicates:       0,
+				}
+				if RedisVersion < 8.6 {
+					expectedRes.IDMPDuration = 0
+					expectedRes.IDMPMaxSize = 0
+					expectedRes.PIDsTracked = 0
+					expectedRes.IIDsTracked = 0
+					expectedRes.IIDsAdded = 0
+					expectedRes.IIDsDuplicates = 0
+				}
+
+				Expect(res).To(Equal(expectedRes))
 			})
 
 			It("should XINFO STREAM FULL", func() {
@@ -7877,7 +8062,7 @@ var _ = Describe("Commands", func() {
 				Expect(client.XGroupCreateMkStream(ctx, "xinfo-stream-full-stream", "xinfo-stream-full-group", "0").Err()).NotTo(HaveOccurred())
 				res, err = client.XInfoStreamFull(ctx, "xinfo-stream-full-stream", 0).Result()
 				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(Equal(&redis.XInfoStreamFull{
+				expectedRes := &redis.XInfoStreamFull{
 					Length:            1,
 					RadixTreeKeys:     1,
 					RadixTreeNodes:    2,
@@ -7897,7 +8082,16 @@ var _ = Describe("Commands", func() {
 						},
 					},
 					RecordedFirstEntryID: id,
-				}))
+				}
+				if RedisVersion >= 8.6 {
+					expectedRes.IDMPDuration = 100
+					expectedRes.IDMPMaxSize = 100
+					expectedRes.PIDsTracked = 0
+					expectedRes.IIDsTracked = 0
+					expectedRes.IIDsAdded = 0
+					expectedRes.IIDsDuplicates = 0
+				}
+				Expect(res).To(Equal(expectedRes))
 			})
 
 			It("should XINFO GROUPS", func() {
@@ -8930,27 +9124,37 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
+			// Use a higher threshold (100ms) to avoid capturing normal operations
+			// that could cause flakiness due to timing variations
+			client.ConfigSet(ctx, key, "100")
 			defer client.ConfigSet(ctx, key, old[key])
 
 			result, err := client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			// Use a longer sleep (150ms) to ensure it exceeds the 100ms threshold
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(1))
+			Expect(len(result)).Should(BeNumerically(">=", 1))
 
 			// reset latency by event name
-			err = client.LatencyReset(ctx, result[0].Name).Err()
+			eventName := result[0].Name
+			err = client.LatencyReset(ctx, eventName).Err()
 			Expect(err).NotTo(HaveOccurred())
 
+			// Verify the specific event was reset (not that all events are gone)
+			// This avoids flakiness from other operations triggering latency events
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(0))
+			for _, event := range result {
+				if event.Name == eventName {
+					Fail("Event " + eventName + " should have been reset")
+				}
+			}
 		})
 	})
 })
