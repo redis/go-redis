@@ -224,7 +224,7 @@ func TestMonitorWithContextCancellation(t *testing.T) {
 	// Try to read from channel - should eventually close
 	timeout := time.After(2 * time.Second)
 	channelClosed := false
-	for {
+	for !channelClosed {
 		select {
 		case _, ok := <-ress:
 			if !ok {
@@ -232,11 +232,8 @@ func TestMonitorWithContextCancellation(t *testing.T) {
 				t.Log("Channel was properly closed")
 			}
 		case <-timeout:
-		}
-		if channelClosed || timeout == nil {
 			break
 		}
-		break
 	}
 
 	if !channelClosed {
