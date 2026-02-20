@@ -14,7 +14,7 @@ This example demonstrates how to enable OpenTelemetry metrics for Redis operatio
 
 ## Prerequisites
 
-- Go 1.23.0 or later
+- Go 1.24.0 or later
 - Redis server running on `localhost:6379`
 - OTLP collector running on `localhost:4317` (optional)
 
