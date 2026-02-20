@@ -3,7 +3,7 @@ description: 'Runs go-redis tests against different Redis versions and configura
 inputs:
   go-version:
     description: 'Go version to use for running tests'
-    default: '1.23'
+    default: '1.24'
   redis-version:
     description: 'Redis version to test against'
     required: true
@@ -11,7 +11,7 @@ runs:
   using: "composite"
   steps:
     - name: Set up ${{ inputs.go-version }}
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v6
       with:
         go-version: ${{ inputs.go-version }}
 

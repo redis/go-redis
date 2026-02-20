@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/v9
 
-go 1.22
+go 1.24
 
 require (
 	github.com/bsm/ginkgo/v2 v2.12.0

@@ -49,7 +49,7 @@ test.ci:
 	    export RE_CLUSTER=$(RE_CLUSTER) && \
 	    export RCE_DOCKER=$(RCE_DOCKER) && \
 	    export REDIS_VERSION=$(REDIS_VERSION) && \
-	    go mod tidy -compat=1.18 && \
+	    go mod tidy && \
 	    go vet && \
 	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race -skip Example); \
 	done
@@ -63,7 +63,7 @@ test.ci.skip-vectorsets:
 	    export RE_CLUSTER=$(RE_CLUSTER) && \
 	    export RCE_DOCKER=$(RCE_DOCKER) && \
 	    export REDIS_VERSION=$(REDIS_VERSION) && \
-	    go mod tidy -compat=1.18 && \
+	    go mod tidy && \
 	    go vet && \
 	    go test -v -coverprofile=coverage.txt -covermode=atomic ./... -race \
 	      -run '^(?!.*(?:VectorSet|vectorset|ExampleClient_vectorset)).*$$' -skip Example); \
@@ -118,5 +118,5 @@ go_mod_tidy:
 	  echo "go mod tidy in $${dir}"; \
 	  (cd "$${dir}" && \
 	    go get -u ./... && \
-	    go mod tidy -compat=1.18); \
+	    go mod tidy); \
 	done
