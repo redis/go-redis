@@ -7369,6 +7369,7 @@ type MonitorCmd struct {
 	baseCmd
 	ch     chan string
 	status MonitorStatus
+	closed bool
 	mu     sync.Mutex
 }
 
@@ -7381,6 +7382,7 @@ func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 		},
 		ch:     ch,
 		status: monitorStatusIdle,
+		closed: false,
 		mu:     sync.Mutex{},
 	}
 }
@@ -7410,22 +7412,57 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 
 func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
 	for {
+		// Check if context is done first
+		select {
+		case <-cmd.ctx.Done():
+			cmd.closeChannel()
+			cancel()
+			return cmd.ctx.Err()
+		default:
+		}
+
 		cmd.mu.Lock()
 		st := cmd.status
-		pk, _ := rd.Peek(1)
 		cmd.mu.Unlock()
-		if len(pk) != 0 && st == monitorStatusStart {
-			cmd.mu.Lock()
-			line, err := rd.ReadString()
-			cmd.mu.Unlock()
-			if err != nil {
-				return err
-			}
-			cmd.ch <- line
-		}
+
 		if st == monitorStatusStop {
+			cmd.closeChannel()
 			cancel()
 			break
+		}
+
+		if st == monitorStatusStart {
+			cmd.mu.Lock()
+			pk, peekErr := rd.Peek(1)
+			cmd.mu.Unlock()
+
+			if peekErr != nil {
+				// Check if it's a timeout error - if so, ignore and continue
+				if isTimeout, _ := isTimeoutError(peekErr); isTimeout {
+					continue
+				}
+				// For non-timeout errors, close channel and return
+				cmd.closeChannel()
+				cancel()
+				return peekErr
+			}
+
+			if len(pk) != 0 {
+				cmd.mu.Lock()
+				line, err := rd.ReadString()
+				cmd.mu.Unlock()
+				if err != nil {
+					// Check if it's a timeout error - if so, ignore and continue
+					if isTimeout, _ := isTimeoutError(err); isTimeout {
+						continue
+					}
+					// For non-timeout errors, close channel and return
+					cmd.closeChannel()
+					cancel()
+					return err
+				}
+				cmd.ch <- line
+			}
 		}
 	}
 	return nil
@@ -7441,6 +7478,16 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.mu.Lock()
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
+}
+
+// closeChannel safely closes the channel if it hasn't been closed yet.
+func (cmd *MonitorCmd) closeChannel() {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	if !cmd.closed {
+		close(cmd.ch)
+		cmd.closed = true
+	}
 }
 
 type VectorScoreSliceCmd struct {
