@@ -548,7 +548,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// Enable maintnotifications if maintnotifications are configured
 	c.optLock.RLock()
-	maintNotifEnabled := false
+	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
 	protocol := c.opt.Protocol
 	var endpointType maintnotifications.EndpointType
 	if maintNotifEnabled {
@@ -1196,6 +1196,7 @@ type Client struct {
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
+// Passing nil Options will cause a panic.
 func NewClient(opt *Options) *Client {
 	if opt == nil {
 		panic("redis: NewClient nil options")

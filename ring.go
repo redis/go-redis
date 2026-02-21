@@ -600,6 +600,8 @@ type Ring struct {
 	heartbeatCancelFn context.CancelFunc
 }
 
+// NewRing returns a Redis Ring client to the Redis Server specified by RingOptions.
+// Passing nil RingOptions will cause a panic.
 func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")

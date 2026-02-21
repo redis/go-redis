@@ -494,6 +494,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 // NewFailoverClient returns a Redis client that uses Redis Sentinel
 // for automatic failover. It's safe for concurrent use by multiple
 // goroutines.
+// Passing nil FailoverOptions will cause a panic.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	if failoverOpt == nil {
 		panic("redis: NewFailoverClient nil options")
@@ -603,6 +604,8 @@ type SentinelClient struct {
 	*baseClient
 }
 
+// NewSentinelClient returns a Redis Sentinel client.
+// Passing nil Options will cause a panic.
 func NewSentinelClient(opt *Options) *SentinelClient {
 	if opt == nil {
 		panic("redis: NewSentinelClient nil options")
@@ -1175,6 +1178,7 @@ func contains(slice []string, str string) bool {
 
 // NewFailoverClusterClient returns a client that supports routing read-only commands
 // to a replica node.
+// Passing nil FailoverOptions will cause a panic.
 func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	if failoverOpt == nil {
 		panic("redis: NewFailoverClusterClient nil options")
