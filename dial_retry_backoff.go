@@ -26,6 +26,9 @@ func DialRetryBackoffExponential(minBackoff, maxBackoff time.Duration) func(atte
 	if maxBackoff < 0 {
 		maxBackoff = 0
 	}
+	if minBackoff > maxBackoff {
+		minBackoff = maxBackoff
+	}
 	return func(attempt int) time.Duration {
 		// internal.RetryBackoff expects retry >= 0.
 		if attempt < 0 {
