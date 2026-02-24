@@ -442,9 +442,9 @@ func loadClusterTLSConfig(certDir string) (*tls.Config, error) {
 	}
 
 	return &tls.Config{
-		RootCAs:      caCertPool,
-		Certificates: []tls.Certificate{cert},
-		ServerName:   "localhost",
+		RootCAs:            caCertPool,
+		Certificates:       []tls.Certificate{cert},
+		ServerName:         "localhost",
 		InsecureSkipVerify: true,
 	}, nil
 }
