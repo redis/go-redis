@@ -63,13 +63,13 @@ func isContextError(err error) bool {
 func isTimeoutError(err error) (isTimeout bool, hasTimeoutFlag bool) {
 	// Check for timeoutError interface (works with wrapped errors)
 	var te timeoutError
-	if errors.As(err, &te) {
+	if errors.As(err, &te) && te.Timeout() {
 		return true, te.Timeout()
 	}
 
 	// Check for net.Error specifically (common case for network timeouts)
 	var netErr net.Error
-	if errors.As(err, &netErr) {
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true, netErr.Timeout()
 	}
 

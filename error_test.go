@@ -61,7 +61,7 @@ var _ = Describe("error", func() {
 		Expect(redis.ShouldRetry(t1, false)).To(Equal(false))
 
 		t2 := testTimeout{timeout: false}
-		Expect(redis.ShouldRetry(t2, true)).To(Equal(true))
-		Expect(redis.ShouldRetry(t2, false)).To(Equal(true))
+		Expect(redis.ShouldRetry(t2, true)).To(Equal(false))
+		Expect(redis.ShouldRetry(t2, false)).To(Equal(false))
 	})
 })
