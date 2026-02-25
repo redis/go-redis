@@ -5,8 +5,6 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"io"
-	"os"
-	"strings"
 	"sync"
 )
 
@@ -25,33 +23,34 @@ var (
 	_ Scripter = (*ClusterClient)(nil)
 )
 
-var disableClientSHA1 bool
-
-func init() {
-	gd := os.Getenv("GODEBUG")
-	if strings.Contains(gd, "fips140=only") || strings.Contains(gd, "fips140=on") {
-		disableClientSHA1 = true
-	}
-	if v := os.Getenv("GO_REDIS_DISABLE_CLIENT_SHA1"); v == "1" || strings.EqualFold(v, "true") {
-		disableClientSHA1 = true
-	}
-}
-
 type Script struct {
 	src  string
 	mu   sync.RWMutex
 	hash string
+	serverSHA bool // if true: do not compute SHA-1 in Go; load digest from Redis (SCRIPT LOAD)
 }
 
 func NewScript(src string) *Script {
-	s := &Script{src: src}
-	if !disableClientSHA1 {
-		h := sha1.New()
-		_, _ = io.WriteString(h, src)
-		s.hash = hex.EncodeToString(h.Sum(nil))
-	}
-	return s
+    h := sha1.New()
+    _, _ = io.WriteString(h, src)
+
+    return &Script{
+        src:       src,
+        hash:      hex.EncodeToString(h.Sum(nil)),
+        serverSHA: false,
+    }
 }
+
+// NewScriptServerSHA creates a Script that avoids computing SHA-1 in Go.
+// The digest is obtained from Redis via SCRIPT LOAD (server-side hashing),
+// then EVALSHA/EVALSHA_RO is used.
+func NewScriptServerSHA(src string) *Script {
+    return &Script{
+        src:       src,
+        serverSHA: true,
+    }
+}
+
 
 func (s *Script) Hash() string {
 	s.mu.RLock()
@@ -72,12 +71,22 @@ func (s *Script) Load(ctx context.Context, c Scripter) *StringCmd {
 func (s *Script) Exists(ctx context.Context, c Scripter) *BoolSliceCmd {
 	s.mu.RLock()
 	hash := s.hash
+	serverSHA := s.serverSHA
 	s.mu.RUnlock()
-	if hash == "" {
-		// If we don't have a hash yet, this checks an empty hash.
-		// We don't force a load here to keep API behavior simple.
-		return c.ScriptExists(ctx, "")
+	if hash == "" && serverSHA {
+		 // For server-side scripts, obtain digest from Redis first.
+		 // If hash is empty, it means SCRIPT LOAD was not called yet, so we check existence of empty hash which will return false.
+		 // This avoids unnecessary SCRIPT LOAD just to check existence.
+		if err := s.ensureHash(ctx, c); err != nil {
+            return c.ScriptExists(ctx, "")
+        }
+	s.mu.RLock()
+        hash = s.hash
+        s.mu.RUnlock()
 	}
+	if hash == "" {
+        return c.ScriptExists(ctx, "")
+    }
 	return c.ScriptExists(ctx, hash)
 }
 
@@ -117,17 +126,16 @@ func (s *Script) ensureHash(ctx context.Context, c Scripter) error {
 }
 
 func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
-	// Non-FIPS: behave like upstream go-redis (client-side SHA-1, direct EVALSHA).
-	if !disableClientSHA1 {
+	// Default behavior: use client-side SHA-1 computed in NewScript.
+	if !s.serverSHA{
 		s.mu.RLock()
 		hash := s.hash
 		s.mu.RUnlock()
 		return c.EvalSha(ctx, hash, keys, args...)
 	}
 
-	// FIPS: server-side SHA via SCRIPT LOAD + EVALSHA.
+	  // Server-side SHA via SCRIPT LOAD + EVALSHA.
 	if err := s.ensureHash(ctx, c); err != nil {
-		// If we cannot load the script, fall back to EVAL so we don't fail.
 		return s.Eval(ctx, c, keys, args...)
 	}
 
@@ -151,7 +159,7 @@ func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ..
 }
 
 func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
-	if !disableClientSHA1 {
+	if !s.serverSHA {
 		s.mu.RLock()
 		hash := s.hash
 		s.mu.RUnlock()
