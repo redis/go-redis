@@ -72,14 +72,14 @@ parameter arg1 leaks to {heap} for setArgs2 with derefs=0:
 - ❌ Not without major refactoring
 - Same issue as #1
 
-### 3. Connection Check Closure (1 alloc)
+### 3. Connection Check Closure (1 alloc?)
 
 **Location**: `internal/pool/conn_check.go:34`
 ```go
 if err := rawConn.Read(func(fd uintptr) bool {
     var buf [1]byte
     n, _, err := syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
-    
+
     switch {
     case n == 0 && err == nil:
         sysErr = io.EOF  // Captures sysErr
@@ -93,18 +93,19 @@ if err := rawConn.Read(func(fd uintptr) bool {
 }
 ```
 
-**Problem**: The closure captures `sysErr` variable, causing heap allocation
+**Problem**: The closure captures `sysErr` variable, which might cause heap allocation
 
 **Why**:
-- Closures that capture variables allocate on the heap
+- Closures that capture variables can allocate on the heap
 - The `rawConn.Read` API requires a closure
 - This is a syscall interface limitation
 
 **Can we fix it?**
-- ⚠️ Possible but complex
-- Would require restructuring the connection check logic
-- Could use a pre-allocated closure pool (very complex)
-- Trade-off: complexity vs 1 allocation
+- ❌ **No - all alternatives are slower**
+- Tried: Global checker with mutex → **37% slower** (serializes all connCheck calls)
+- Tried: sync.Pool → **34% slower** (pool overhead > allocation cost)
+- Tried: Atomic lock-free pool → **33% slower** (atomic overhead > allocation cost)
+- **Conclusion**: The original closure is the fastest approach, even if it allocates
 
 ### 4. Context or Other Internal Allocation (1 alloc)
 
@@ -132,7 +133,7 @@ if err := rawConn.Read(func(fd uintptr) bool {
 |------------|--------|----------|--------|--------|
 | #1 | Interface conversion ("get") | ❌ No | Massive refactor | -1 alloc |
 | #2 | Interface conversion (key) | ❌ No | Massive refactor | -1 alloc |
-| #3 | connCheck closure | ⚠️ Maybe | High complexity | -1 alloc |
+| #3 | connCheck closure | ❌ No | All alternatives slower | -1 alloc (but slower) |
 | #4 | Context/Error/Network | ⚠️ Maybe | Varies | -1 alloc |
 
 ## Why Interface Conversions Allocate
