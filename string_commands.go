@@ -44,7 +44,8 @@ type StringCmdable interface {
 
 func (c cmdable) Append(ctx context.Context, key, value string) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"append", key, value}}
+	cmd.ctx = ctx
+	cmd.args = setArgs(cmd.args, "append", key, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -56,7 +57,8 @@ func (c cmdable) Append(ctx context.Context, key, value string) (int64, error) {
 
 func (c cmdable) Decr(ctx context.Context, key string) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"decr", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs(cmd.args, "decr", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -126,7 +128,8 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) (int64,
 	}
 
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -216,7 +219,8 @@ func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration
 	}
 
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -322,7 +326,8 @@ func (c cmdable) MGet(ctx context.Context, keys ...string) ([]interface{}, error
 		args[1+i] = key
 	}
 	cmd := getSliceCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putSliceCmd(cmd)
@@ -342,7 +347,8 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) (string, error
 	args[0] = "mset"
 	args = appendArgs(args, values)
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -362,7 +368,8 @@ func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) (bool, error
 	args[0] = "msetnx"
 	args = appendArgs(args, values)
 	cmd := getBoolCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putBoolCmd(cmd)
@@ -411,7 +418,8 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 	}
 
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: cmdArgs}
+	cmd.ctx = ctx
+	cmd.args = cmdArgs
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -443,7 +451,8 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 	}
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -527,7 +536,8 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 	}
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -576,7 +586,8 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 	}
 
 	cmd := getBoolCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putBoolCmd(cmd)
@@ -607,7 +618,8 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 	}
 
 	cmd := getBoolCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putBoolCmd(cmd)
@@ -642,7 +654,8 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 	args = append(args, "ifeq", matchValue)
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -678,7 +691,8 @@ func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, 
 	args = append(args, "ifeq", matchValue, "get")
 
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -713,7 +727,8 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 	args = append(args, "ifne", matchValue)
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -749,7 +764,8 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 	args = append(args, "ifne", matchValue, "get")
 
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -791,7 +807,8 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 	args = append(args, "ifdeq", fmt.Sprintf("%016x", matchDigest))
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -834,7 +851,8 @@ func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{},
 	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest), "get")
 
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -876,7 +894,8 @@ func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, ma
 	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest))
 
 	cmd := getStatusCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)
@@ -919,7 +938,8 @@ func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{},
 	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest), "get")
 
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	cmd.ctx = ctx
+	cmd.args = args
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)

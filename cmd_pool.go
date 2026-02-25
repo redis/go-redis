@@ -276,6 +276,17 @@ var (
 
 // Helper functions to get and put Cmd objects from/to pools
 
+// setArgs reuses the args slice if it has enough capacity, otherwise creates a new one
+// This reduces allocations by reusing the args slice from pooled Cmd objects
+func setArgs(dst []interface{}, args ...interface{}) []interface{} {
+	if cap(dst) >= len(args) {
+		dst = dst[:len(args)]
+		copy(dst, args)
+		return dst
+	}
+	return args
+}
+
 func getStringCmd() *StringCmd {
 	return stringCmdPool.Get().(*StringCmd)
 }
@@ -283,7 +294,7 @@ func getStringCmd() *StringCmd {
 func putStringCmd(cmd *StringCmd) {
 	cmd.val = ""
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	stringCmdPool.Put(cmd)
 }
@@ -295,7 +306,7 @@ func getIntCmd() *IntCmd {
 func putIntCmd(cmd *IntCmd) {
 	cmd.val = 0
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	intCmdPool.Put(cmd)
 }
@@ -307,7 +318,7 @@ func getBoolCmd() *BoolCmd {
 func putBoolCmd(cmd *BoolCmd) {
 	cmd.val = false
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	boolCmdPool.Put(cmd)
 }
@@ -319,7 +330,7 @@ func getStatusCmd() *StatusCmd {
 func putStatusCmd(cmd *StatusCmd) {
 	cmd.val = ""
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	statusCmdPool.Put(cmd)
 }
@@ -331,7 +342,7 @@ func getSliceCmd() *SliceCmd {
 func putSliceCmd(cmd *SliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	sliceCmdPool.Put(cmd)
 }
@@ -343,7 +354,7 @@ func getFloatCmd() *FloatCmd {
 func putFloatCmd(cmd *FloatCmd) {
 	cmd.val = 0
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	floatCmdPool.Put(cmd)
 }
@@ -355,7 +366,7 @@ func getStringSliceCmd() *StringSliceCmd {
 func putStringSliceCmd(cmd *StringSliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	stringSliceCmdPool.Put(cmd)
 }
@@ -367,7 +378,7 @@ func getIntSliceCmd() *IntSliceCmd {
 func putIntSliceCmd(cmd *IntSliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	intSliceCmdPool.Put(cmd)
 }
@@ -379,7 +390,7 @@ func getFloatSliceCmd() *FloatSliceCmd {
 func putFloatSliceCmd(cmd *FloatSliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	floatSliceCmdPool.Put(cmd)
 }
@@ -391,7 +402,7 @@ func getBoolSliceCmd() *BoolSliceCmd {
 func putBoolSliceCmd(cmd *BoolSliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	boolSliceCmdPool.Put(cmd)
 }
@@ -403,7 +414,7 @@ func getDurationCmd() *DurationCmd {
 func putDurationCmd(cmd *DurationCmd) {
 	cmd.val = 0
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	durationCmdPool.Put(cmd)
 }
@@ -415,7 +426,7 @@ func getTimeCmd() *TimeCmd {
 func putTimeCmd(cmd *TimeCmd) {
 	cmd.val = time.Time{}
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	timeCmdPool.Put(cmd)
 }
@@ -427,7 +438,7 @@ func getMapStringStringCmd() *MapStringStringCmd {
 func putMapStringStringCmd(cmd *MapStringStringCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	mapStringStringCmdPool.Put(cmd)
 }
@@ -439,7 +450,7 @@ func getMapStringIntCmd() *MapStringIntCmd {
 func putMapStringIntCmd(cmd *MapStringIntCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	mapStringIntCmdPool.Put(cmd)
 }
@@ -451,7 +462,7 @@ func getMapStringInterfaceCmd() *MapStringInterfaceCmd {
 func putMapStringInterfaceCmd(cmd *MapStringInterfaceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	mapStringInterfaceCmdPool.Put(cmd)
 }
@@ -463,7 +474,7 @@ func getZSliceCmd() *ZSliceCmd {
 func putZSliceCmd(cmd *ZSliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	zSliceCmdPool.Put(cmd)
 }
@@ -475,7 +486,7 @@ func getDigestCmd() *DigestCmd {
 func putDigestCmd(cmd *DigestCmd) {
 	cmd.val = 0
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	digestCmdPool.Put(cmd)
 }
@@ -488,7 +499,7 @@ func putLCSCmd(cmd *LCSCmd) {
 	cmd.val = nil
 	cmd.readType = 0
 	cmd.err = nil
-	cmd.args = nil
+	cmd.args = cmd.args[:0]
 	cmd.ctx = nil
 	lcsCmdPool.Put(cmd)
 }

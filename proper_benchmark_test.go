@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Benchmark actual client command execution WITHOUT pooling (master branch)
+// Benchmark actual client command execution with pooling
 // This tests the real command flow
 
 func BenchmarkClientCommands(b *testing.B) {
@@ -19,14 +19,14 @@ func BenchmarkClientCommands(b *testing.B) {
 	})
 	defer client.Close()
 
-	// We'll benchmark the client-side processing (serialization, etc.)
+	// We'll benchmark the client-side processing (serialization, pooling, etc.)
 	// even if Redis isn't running
 
 	b.Run("Get", func(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = client.Get(ctx, "key").Result()
+			_, _ = client.Get(ctx, "key")
 		}
 	})
 
@@ -34,7 +34,7 @@ func BenchmarkClientCommands(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = client.Set(ctx, "key", "value", 0).Result()
+			_, _ = client.Set(ctx, "key", "value", 0)
 		}
 	})
 
@@ -42,7 +42,7 @@ func BenchmarkClientCommands(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = client.Incr(ctx, "counter").Result()
+			_, _ = client.Incr(ctx, "counter")
 		}
 	})
 
@@ -50,7 +50,7 @@ func BenchmarkClientCommands(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = client.MGet(ctx, "key1", "key2", "key3").Result()
+			_, _ = client.MGet(ctx, "key1", "key2", "key3")
 		}
 	})
 
@@ -58,9 +58,9 @@ func BenchmarkClientCommands(b *testing.B) {
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, _ = client.Get(ctx, "key").Result()
-			_, _ = client.Set(ctx, "key", "value", 0).Result()
-			_, _ = client.Incr(ctx, "counter").Result()
+			_, _ = client.Get(ctx, "key")
+			_, _ = client.Set(ctx, "key", "value", 0)
+			_, _ = client.Incr(ctx, "counter")
 		}
 	})
 
@@ -69,7 +69,7 @@ func BenchmarkClientCommands(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				_, _ = client.Get(ctx, "key").Result()
+				_, _ = client.Get(ctx, "key")
 			}
 		})
 	})
