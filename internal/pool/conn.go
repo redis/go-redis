@@ -81,6 +81,10 @@ type Conn struct {
 	bw *bufio.Writer
 	wr *proto.Writer
 
+	// Per-connection checker for health checks - avoids closure and RawConn allocations
+	// This is not thread-safe, but connections are only used by one goroutine at a time
+	checker connChecker
+
 	// Lightweight mutex to protect reader operations during handoff
 	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
 	readerMu sync.RWMutex
@@ -603,6 +607,9 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.readerMu.Unlock()
 
 	cn.bw.Reset(netConn)
+
+	// Reset the cached RawConn since the underlying connection changed
+	cn.checker.resetRawConn()
 }
 
 // GetNetConn safely returns the current network connection using atomic load (lock-free).
@@ -903,15 +910,22 @@ func (cn *Conn) Close() error {
 	return nil
 }
 
+// ConnCheck checks if the connection is still alive and if there is data in the socket.
+// It uses a per-connection checker to avoid closure and RawConn allocations.
+// Returns nil if healthy, io.EOF if closed, errUnexpectedRead if data available.
+func (cn *Conn) ConnCheck() error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	return cn.checker.check(netConn)
+}
+
 // MaybeHasData tries to peek at the next byte in the socket without consuming it
 // This is used to check if there are push notifications available
 // Important: This will work on Linux, but not on Windows
 func (cn *Conn) MaybeHasData() bool {
-	// Lock-free netConn access for better performance
-	if netConn := cn.getNetConn(); netConn != nil {
-		return maybeHasData(netConn)
-	}
-	return false
+	return cn.ConnCheck() == errUnexpectedRead
 }
 
 // deadline computes the effective deadline time based on context and timeout.

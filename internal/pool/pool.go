@@ -32,42 +32,50 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
-	// metricCallbackMu protects all global metric callback functions for thread-safe access.
-	metricCallbackMu sync.RWMutex
+)
 
-	// Global metric callbacks for connection state changes
-	metricConnectionStateChangeCallback func(ctx context.Context, cn *Conn, fromState, toState string)
+// Metric callback function types for atomic.Pointer usage
+type (
+	connectionStateChangeCallback    func(ctx context.Context, cn *Conn, fromState, toState string)
+	connectionCreateTimeCallback     func(ctx context.Context, duration time.Duration, cn *Conn)
+	connectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
+	connectionHandoffCallback        func(ctx context.Context, cn *Conn, poolName string)
+	errorCallback                    func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
+	maintenanceNotificationCallback  func(ctx context.Context, cn *Conn, notificationType string)
+	connectionWaitTimeCallback       func(ctx context.Context, duration time.Duration, cn *Conn)
+	connectionTimeoutCallback        func(ctx context.Context, cn *Conn, timeoutType string)
+	connectionClosedCallback         func(ctx context.Context, cn *Conn, reason string, err error)
+)
 
-	// Global metric callback for connection creation time
-	metricConnectionCreateTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+// Global metric callbacks using atomic.Pointer for lock-free reads in hot paths.
+// This eliminates RWMutex contention that was causing ~95ns overhead per read under parallel load.
+var (
+	// metricConnectionStateChangeCallback is called when connection state changes
+	metricConnectionStateChangeCallback atomic.Pointer[connectionStateChangeCallback]
 
-	// Global metric callback for connection relaxed timeout changes
-	// Parameters: ctx, delta (+1/-1), cn, poolName, notificationType
-	metricConnectionRelaxedTimeoutCallback func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string)
+	// metricConnectionCreateTimeCallback is called when a new connection is created
+	metricConnectionCreateTimeCallback atomic.Pointer[connectionCreateTimeCallback]
 
-	// Global metric callback for connection handoff
-	// Parameters: ctx, cn, poolName
-	metricConnectionHandoffCallback func(ctx context.Context, cn *Conn, poolName string)
+	// metricConnectionRelaxedTimeoutCallback is called when connection timeout is relaxed/unrelaxed
+	metricConnectionRelaxedTimeoutCallback atomic.Pointer[connectionRelaxedTimeoutCallback]
 
-	// Global metric callback for error tracking
-	// Parameters: ctx, errorType, cn, statusCode, isInternal, retryAttempts
-	metricErrorCallback func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int)
+	// metricConnectionHandoffCallback is called when a connection is handed off
+	metricConnectionHandoffCallback atomic.Pointer[connectionHandoffCallback]
 
-	// Global metric callback for maintenance notifications
-	// Parameters: ctx, cn, notificationType
-	metricMaintenanceNotificationCallback func(ctx context.Context, cn *Conn, notificationType string)
+	// metricErrorCallback is called when an error occurs
+	metricErrorCallback atomic.Pointer[errorCallback]
 
-	// Global metric callback for connection wait time
-	// Parameters: ctx, duration, cn
-	metricConnectionWaitTimeCallback func(ctx context.Context, duration time.Duration, cn *Conn)
+	// metricMaintenanceNotificationCallback is called when a maintenance notification is received
+	metricMaintenanceNotificationCallback atomic.Pointer[maintenanceNotificationCallback]
 
-	// Global metric callback for connection timeouts
-	// Parameters: ctx, cn, timeoutType
-	metricConnectionTimeoutCallback func(ctx context.Context, cn *Conn, timeoutType string)
+	// metricConnectionWaitTimeCallback is called to record time spent waiting for a connection
+	metricConnectionWaitTimeCallback atomic.Pointer[connectionWaitTimeCallback]
 
-	// Global metric callback for connection closed
-	// Parameters: ctx, cn, reason, err
-	metricConnectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
+	// metricConnectionTimeoutCallback is called when a connection times out
+	metricConnectionTimeoutCallback atomic.Pointer[connectionTimeoutCallback]
+
+	// metricConnectionClosedCallback is called when a connection is closed
+	metricConnectionClosedCallback atomic.Pointer[connectionClosedCallback]
 
 	// errPanicInDial is returned when a panic occurs in the dial function.
 	errPanicInQueuedNewConn = errors.New("panic in queuedNewConn")
@@ -118,109 +126,148 @@ type MetricCallbacks struct {
 
 // SetAllMetricCallbacks sets all metric callbacks atomically.
 // Pass nil to clear all callbacks (disable metrics).
-// This ensures all callbacks are set together under a single lock,
-// preventing inconsistent state during registration.
 //
-// Note on thread safety: After returning, there is a small window where
-// concurrent getMetric* calls may return the old callback value. This is
-// acceptable for metrics - at most one event may go to the old recorder
+// Note on thread safety: Each callback is stored atomically, so there's a small
+// window where concurrent getMetric* calls may see a mix of old and new callbacks.
+// This is acceptable for metrics - at most one event may go to the old recorder
 // or be missed during the transition. The callbacks themselves are immutable
 // function pointers, so calling an "old" callback is safe.
 func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
-	metricCallbackMu.Lock()
-	defer metricCallbackMu.Unlock()
-
 	if callbacks == nil {
-		metricConnectionCreateTimeCallback = nil
-		metricConnectionRelaxedTimeoutCallback = nil
-		metricConnectionHandoffCallback = nil
-		metricErrorCallback = nil
-		metricMaintenanceNotificationCallback = nil
-		metricConnectionWaitTimeCallback = nil
-		metricConnectionClosedCallback = nil
+		metricConnectionCreateTimeCallback.Store(nil)
+		metricConnectionRelaxedTimeoutCallback.Store(nil)
+		metricConnectionHandoffCallback.Store(nil)
+		metricErrorCallback.Store(nil)
+		metricMaintenanceNotificationCallback.Store(nil)
+		metricConnectionWaitTimeCallback.Store(nil)
+		metricConnectionClosedCallback.Store(nil)
+		metricConnectionStateChangeCallback.Store(nil)
+		metricConnectionTimeoutCallback.Store(nil)
 		return
 	}
 
-	metricConnectionCreateTimeCallback = callbacks.ConnectionCreateTime
-	metricConnectionRelaxedTimeoutCallback = callbacks.ConnectionRelaxedTimeout
-	metricConnectionHandoffCallback = callbacks.ConnectionHandoff
-	metricErrorCallback = callbacks.Error
-	metricMaintenanceNotificationCallback = callbacks.MaintenanceNotification
-	metricConnectionWaitTimeCallback = callbacks.ConnectionWaitTime
-	metricConnectionClosedCallback = callbacks.ConnectionClosed
+	if callbacks.ConnectionCreateTime != nil {
+		cb := connectionCreateTimeCallback(callbacks.ConnectionCreateTime)
+		metricConnectionCreateTimeCallback.Store(&cb)
+	} else {
+		metricConnectionCreateTimeCallback.Store(nil)
+	}
+
+	if callbacks.ConnectionRelaxedTimeout != nil {
+		cb := connectionRelaxedTimeoutCallback(callbacks.ConnectionRelaxedTimeout)
+		metricConnectionRelaxedTimeoutCallback.Store(&cb)
+	} else {
+		metricConnectionRelaxedTimeoutCallback.Store(nil)
+	}
+
+	if callbacks.ConnectionHandoff != nil {
+		cb := connectionHandoffCallback(callbacks.ConnectionHandoff)
+		metricConnectionHandoffCallback.Store(&cb)
+	} else {
+		metricConnectionHandoffCallback.Store(nil)
+	}
+
+	if callbacks.Error != nil {
+		cb := errorCallback(callbacks.Error)
+		metricErrorCallback.Store(&cb)
+	} else {
+		metricErrorCallback.Store(nil)
+	}
+
+	if callbacks.MaintenanceNotification != nil {
+		cb := maintenanceNotificationCallback(callbacks.MaintenanceNotification)
+		metricMaintenanceNotificationCallback.Store(&cb)
+	} else {
+		metricMaintenanceNotificationCallback.Store(nil)
+	}
+
+	if callbacks.ConnectionWaitTime != nil {
+		cb := connectionWaitTimeCallback(callbacks.ConnectionWaitTime)
+		metricConnectionWaitTimeCallback.Store(&cb)
+	} else {
+		metricConnectionWaitTimeCallback.Store(nil)
+	}
+
+	if callbacks.ConnectionClosed != nil {
+		cb := connectionClosedCallback(callbacks.ConnectionClosed)
+		metricConnectionClosedCallback.Store(&cb)
+	} else {
+		metricConnectionClosedCallback.Store(nil)
+	}
 }
 
 // getMetricConnectionStateChangeCallback returns the metric callback for connection state changes.
+// Uses atomic.Pointer for lock-free reads (~0.07ns vs ~95ns with RWMutex).
 func getMetricConnectionStateChangeCallback() func(ctx context.Context, cn *Conn, fromState, toState string) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionStateChangeCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionStateChangeCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // GetMetricConnectionCreateTimeCallback returns the metric callback for connection creation time.
 func GetMetricConnectionCreateTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionCreateTimeCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionCreateTimeCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // GetMetricConnectionRelaxedTimeoutCallback returns the metric callback for connection relaxed timeout changes.
 // This is used by maintnotifications to record relaxed timeout metrics.
 func GetMetricConnectionRelaxedTimeoutCallback() func(ctx context.Context, delta int, cn *Conn, poolName, notificationType string) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionRelaxedTimeoutCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionRelaxedTimeoutCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // GetMetricConnectionHandoffCallback returns the metric callback for connection handoffs.
 // This is used by maintnotifications to record handoff metrics.
 func GetMetricConnectionHandoffCallback() func(ctx context.Context, cn *Conn, poolName string) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionHandoffCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionHandoffCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // GetMetricErrorCallback returns the metric callback for error tracking.
 // This is used by cluster and client code to record error metrics.
 func GetMetricErrorCallback() func(ctx context.Context, errorType string, cn *Conn, statusCode string, isInternal bool, retryAttempts int) {
-	metricCallbackMu.RLock()
-	cb := metricErrorCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricErrorCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // GetMetricMaintenanceNotificationCallback returns the metric callback for maintenance notifications.
 // This is used by maintnotifications to record notification metrics.
 func GetMetricMaintenanceNotificationCallback() func(ctx context.Context, cn *Conn, notificationType string) {
-	metricCallbackMu.RLock()
-	cb := metricMaintenanceNotificationCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricMaintenanceNotificationCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 func getMetricConnectionWaitTimeCallback() func(ctx context.Context, duration time.Duration, cn *Conn) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionWaitTimeCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionWaitTimeCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 func getMetricConnectionTimeoutCallback() func(ctx context.Context, cn *Conn, timeoutType string) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionTimeoutCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionTimeoutCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 func getMetricConnectionClosedCallback() func(ctx context.Context, cn *Conn, reason string, err error) {
-	metricCallbackMu.RLock()
-	cb := metricConnectionClosedCallback
-	metricCallbackMu.RUnlock()
-	return cb
+	if cb := metricConnectionClosedCallback.Load(); cb != nil {
+		return *cb
+	}
+	return nil
 }
 
 // Stats contains pool state information and accumulated stats.
@@ -1325,6 +1372,11 @@ func (p *ConnPool) Close() error {
 	return firstErr
 }
 
+// connCheckSkipThresholdNs is the threshold for skipping ConnCheck on recently used connections.
+// If a connection was used within this time, we skip the expensive syscall.
+// 100ms is a reasonable default - connections used within 100ms are very likely still healthy.
+const connCheckSkipThresholdNs = int64(100 * 1e6) // 100ms in nanoseconds
+
 func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	// Performance optimization: check conditions from cheapest to most expensive,
 	// and from most likely to fail to least likely to fail.
@@ -1339,14 +1391,27 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 
 	// Most pools set ConnMaxIdleTime, and idle connections are common.
 	// Checking this first allows us to fail fast without expensive syscalls.
+	idleTimeNs := nowNs - cn.UsedAtNs()
 	if p.cfg.ConnMaxIdleTime > 0 {
-		if nowNs-cn.UsedAtNs() >= int64(p.cfg.ConnMaxIdleTime) {
+		if idleTimeNs >= int64(p.cfg.ConnMaxIdleTime) {
 			return false // Connection has been idle too long
 		}
 	}
 
+	// Performance optimization: skip ConnCheck for recently used connections.
+	// In LIFO mode, connections are reused quickly, so the most recently used
+	// connection is very likely still healthy. This avoids an expensive syscall
+	// (Recvfrom with MSG_PEEK) on the hot path.
+	// We only skip if the connection was used within the last 100ms.
+	if idleTimeNs < connCheckSkipThresholdNs {
+		// Connection was used very recently, assume it's healthy
+		cn.SetUsedAtNs(nowNs)
+		return true
+	}
+
 	// Only run this if the cheap checks passed.
-	if err := connCheck(cn.getNetConn()); err != nil {
+	// Use the per-connection checker to avoid closure and RawConn allocations.
+	if err := cn.ConnCheck(); err != nil {
 		// If there's unexpected data, it might be push notifications (RESP3)
 		if p.cfg.PushNotificationsEnabled && err == errUnexpectedRead {
 			// Peek at the reply type to check if it's a push notification

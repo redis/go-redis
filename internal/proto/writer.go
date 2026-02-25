@@ -52,6 +52,27 @@ func (w *Writer) WriteArgs(args []interface{}) error {
 	return nil
 }
 
+// WriteStringArgs writes a string-only command to the wire.
+// This is an optimization that avoids interface{} boxing for commands
+// that only have string arguments (e.g., GET, DEL, KEYS).
+func (w *Writer) WriteStringArgs(args []string) error {
+	if err := w.WriteByte(RespArray); err != nil {
+		return err
+	}
+
+	if err := w.writeLen(len(args)); err != nil {
+		return err
+	}
+
+	for _, arg := range args {
+		if err := w.string(arg); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (w *Writer) writeLen(n int) error {
 	w.lenBuf = strconv.AppendUint(w.lenBuf[:0], uint64(n), 10)
 	w.lenBuf = append(w.lenBuf, '\r', '\n')

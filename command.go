@@ -244,7 +244,21 @@ func writeCmds(wr *proto.Writer, cmds []Cmder) error {
 	return nil
 }
 
+// StringArgsCmd is an optional interface that commands can implement
+// to provide string-only args for optimized wire encoding.
+// This avoids interface{} boxing allocations for string-only commands.
+type StringArgsCmd interface {
+	StringArgs() []string
+}
+
 func writeCmd(wr *proto.Writer, cmd Cmder) error {
+	// Fast path: use WriteStringArgs for string-only commands to avoid allocations
+	if sc, ok := cmd.(StringArgsCmd); ok {
+		if args := sc.StringArgs(); args != nil {
+			return wr.WriteStringArgs(args)
+		}
+	}
+	// Fallback to generic WriteArgs
 	return wr.WriteArgs(cmd.Args())
 }
 
@@ -307,6 +321,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 type baseCmd struct {
 	ctx          context.Context
 	args         []interface{}
+	stringArgs   []string // Optional: string-only args for zero-allocation wire encoding
 	err          error
 	keyPos       int8
 	_stepCount   int8
@@ -318,6 +333,10 @@ type baseCmd struct {
 var _ Cmder = (*Cmd)(nil)
 
 func (cmd *baseCmd) Name() string {
+	// Fast path: use stringArgs if available
+	if len(cmd.stringArgs) > 0 {
+		return internal.ToLower(cmd.stringArgs[0])
+	}
 	if len(cmd.args) == 0 {
 		return ""
 	}
@@ -328,6 +347,10 @@ func (cmd *baseCmd) Name() string {
 func (cmd *baseCmd) FullName() string {
 	switch name := cmd.Name(); name {
 	case "cluster", "command":
+		// Check stringArgs first
+		if len(cmd.stringArgs) > 1 {
+			return name + " " + cmd.stringArgs[1]
+		}
 		if len(cmd.args) == 1 {
 			return name
 		}
@@ -341,10 +364,28 @@ func (cmd *baseCmd) FullName() string {
 }
 
 func (cmd *baseCmd) Args() []interface{} {
+	// If we have stringArgs but no args, convert on demand
+	// This maintains backward compatibility for code that calls Args()
+	if cmd.args == nil && len(cmd.stringArgs) > 0 {
+		cmd.args = make([]interface{}, len(cmd.stringArgs))
+		for i, s := range cmd.stringArgs {
+			cmd.args[i] = s
+		}
+	}
 	return cmd.args
 }
 
+// StringArgs returns the string-only args if available.
+// This is used for optimized wire encoding that avoids interface{} boxing.
+func (cmd *baseCmd) StringArgs() []string {
+	return cmd.stringArgs
+}
+
 func (cmd *baseCmd) stringArg(pos int) string {
+	// Fast path: use stringArgs if available
+	if len(cmd.stringArgs) > pos && pos >= 0 {
+		return cmd.stringArgs[pos]
+	}
 	if pos < 0 || pos >= len(cmd.args) {
 		return ""
 	}
@@ -409,12 +450,23 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 	}
 
 	// Create a copy of args slice
-	args := make([]interface{}, len(cmd.args))
-	copy(args, cmd.args)
+	var args []interface{}
+	if len(cmd.args) > 0 {
+		args = make([]interface{}, len(cmd.args))
+		copy(args, cmd.args)
+	}
+
+	// Create a copy of stringArgs slice
+	var stringArgs []string
+	if len(cmd.stringArgs) > 0 {
+		stringArgs = make([]string, len(cmd.stringArgs))
+		copy(stringArgs, cmd.stringArgs)
+	}
 
 	return baseCmd{
 		ctx:          cmd.ctx,
 		args:         args,
+		stringArgs:   stringArgs,
 		err:          cmd.err,
 		keyPos:       cmd.keyPos,
 		_stepCount:   cmd._stepCount,

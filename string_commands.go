@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -169,7 +170,7 @@ func (c cmdable) Digest(ctx context.Context, key string) (uint64, error) {
 func (c cmdable) Get(ctx context.Context, key string) (string, error) {
 	cmd := getStringCmd()
 	cmd.ctx = ctx
-	cmd.args = setArgs2(cmd.args, "get", key)
+	cmd.stringArgs = setStringArgs2(cmd.stringArgs, "get", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -252,7 +253,7 @@ func (c cmdable) GetDel(ctx context.Context, key string) (string, error) {
 func (c cmdable) Incr(ctx context.Context, key string) (int64, error) {
 	cmd := getIntCmd()
 	cmd.ctx = ctx
-	cmd.args = setArgs2(cmd.args, "incr", key)
+	cmd.stringArgs = setStringArgs2(cmd.stringArgs, "incr", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -329,14 +330,9 @@ func (c cmdable) LCS(ctx context.Context, q *LCSQuery) (*LCSMatch, error) {
 }
 
 func (c cmdable) MGet(ctx context.Context, keys ...string) ([]interface{}, error) {
-	args := make([]interface{}, 1+len(keys))
-	args[0] = "mget"
-	for i, key := range keys {
-		args[1+i] = key
-	}
 	cmd := getSliceCmd()
 	cmd.ctx = ctx
-	cmd.args = args
+	cmd.stringArgs = setStringArgsN(cmd.stringArgs, "mget", keys)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putSliceCmd(cmd)
@@ -445,23 +441,40 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
 func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) (string, error) {
-	args := make([]interface{}, 3, 5)
-	args[0] = "set"
-	args[1] = key
-	args[2] = value
-	if expiration > 0 {
-		if usePrecise(expiration) {
-			args = append(args, "px", formatMs(ctx, expiration))
-		} else {
-			args = append(args, "ex", formatSec(ctx, expiration))
-		}
-	} else if expiration == KeepTTL {
-		args = append(args, "keepttl")
-	}
-
 	cmd := getStatusCmd()
 	cmd.ctx = ctx
-	cmd.args = args
+
+	// Fast path: use stringArgs for string value (avoids interface{} boxing)
+	if strVal, ok := value.(string); ok {
+		if expiration > 0 {
+			if usePrecise(expiration) {
+				cmd.stringArgs = setStringArgs5(cmd.stringArgs, "set", key, strVal, "px", strconv.FormatInt(formatMs(ctx, expiration), 10))
+			} else {
+				cmd.stringArgs = setStringArgs5(cmd.stringArgs, "set", key, strVal, "ex", strconv.FormatInt(formatSec(ctx, expiration), 10))
+			}
+		} else if expiration == KeepTTL {
+			cmd.stringArgs = setStringArgs4(cmd.stringArgs, "set", key, strVal, "keepttl")
+		} else {
+			cmd.stringArgs = setStringArgs3(cmd.stringArgs, "set", key, strVal)
+		}
+	} else {
+		// Slow path: use interface{} args for non-string values
+		args := make([]interface{}, 3, 5)
+		args[0] = "set"
+		args[1] = key
+		args[2] = value
+		if expiration > 0 {
+			if usePrecise(expiration) {
+				args = append(args, "px", formatMs(ctx, expiration))
+			} else {
+				args = append(args, "ex", formatSec(ctx, expiration))
+			}
+		} else if expiration == KeepTTL {
+			args = append(args, "keepttl")
+		}
+		cmd.args = args
+	}
+
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStatusCmd(cmd)

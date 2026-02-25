@@ -327,6 +327,75 @@ func setArgs(dst []interface{}, args ...interface{}) []interface{} {
 	return args
 }
 
+// String-only arg setters - these avoid interface{} boxing allocations
+
+// setStringArgs2 sets exactly 2 string args without allocation
+func setStringArgs2(dst []string, arg0, arg1 string) []string {
+	if cap(dst) >= 2 {
+		dst = dst[:2]
+	} else {
+		dst = make([]string, 2)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	return dst
+}
+
+// setStringArgs3 sets exactly 3 string args without allocation
+func setStringArgs3(dst []string, arg0, arg1, arg2 string) []string {
+	if cap(dst) >= 3 {
+		dst = dst[:3]
+	} else {
+		dst = make([]string, 3)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	dst[2] = arg2
+	return dst
+}
+
+// setStringArgs4 sets exactly 4 string args without allocation
+func setStringArgs4(dst []string, arg0, arg1, arg2, arg3 string) []string {
+	if cap(dst) >= 4 {
+		dst = dst[:4]
+	} else {
+		dst = make([]string, 4)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	dst[2] = arg2
+	dst[3] = arg3
+	return dst
+}
+
+// setStringArgs5 sets exactly 5 string args without allocation
+func setStringArgs5(dst []string, arg0, arg1, arg2, arg3, arg4 string) []string {
+	if cap(dst) >= 5 {
+		dst = dst[:5]
+	} else {
+		dst = make([]string, 5)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	dst[2] = arg2
+	dst[3] = arg3
+	dst[4] = arg4
+	return dst
+}
+
+// setStringArgsN sets a command name followed by N string keys without interface{} boxing
+func setStringArgsN(dst []string, cmd string, keys []string) []string {
+	n := 1 + len(keys)
+	if cap(dst) >= n {
+		dst = dst[:n]
+	} else {
+		dst = make([]string, n)
+	}
+	dst[0] = cmd
+	copy(dst[1:], keys)
+	return dst
+}
+
 func getStringCmd() *StringCmd {
 	return stringCmdPool.Get().(*StringCmd)
 }
@@ -334,7 +403,8 @@ func getStringCmd() *StringCmd {
 func putStringCmd(cmd *StringCmd) {
 	cmd.val = ""
 	cmd.err = nil
-	cmd.args = cmd.args[:0] // Keep slice, just reset length
+	cmd.args = cmd.args[:0]             // Keep slice, just reset length
+	cmd.stringArgs = cmd.stringArgs[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	stringCmdPool.Put(cmd)
 }
@@ -346,7 +416,8 @@ func getIntCmd() *IntCmd {
 func putIntCmd(cmd *IntCmd) {
 	cmd.val = 0
 	cmd.err = nil
-	cmd.args = cmd.args[:0] // Keep slice, just reset length
+	cmd.args = cmd.args[:0]             // Keep slice, just reset length
+	cmd.stringArgs = cmd.stringArgs[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	intCmdPool.Put(cmd)
 }
@@ -370,7 +441,8 @@ func getStatusCmd() *StatusCmd {
 func putStatusCmd(cmd *StatusCmd) {
 	cmd.val = ""
 	cmd.err = nil
-	cmd.args = cmd.args[:0]
+	cmd.args = cmd.args[:0]             // Keep slice, just reset length
+	cmd.stringArgs = cmd.stringArgs[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	statusCmdPool.Put(cmd)
 }
@@ -382,7 +454,8 @@ func getSliceCmd() *SliceCmd {
 func putSliceCmd(cmd *SliceCmd) {
 	cmd.val = nil
 	cmd.err = nil
-	cmd.args = cmd.args[:0]
+	cmd.args = cmd.args[:0]             // Keep slice, just reset length
+	cmd.stringArgs = cmd.stringArgs[:0] // Keep slice, just reset length
 	cmd.ctx = nil
 	sliceCmdPool.Put(cmd)
 }

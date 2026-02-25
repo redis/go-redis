@@ -227,6 +227,14 @@ type baseClient struct {
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
 
+	// enablePushNotificationProcessing is a computed flag that determines whether
+	// push notification processing should be performed. This is an optimization to
+	// avoid the overhead of checking for push notifications when no features require it.
+	// Currently, this is true only when MaintNotifications are enabled (or auto mode
+	// before handshake determines the final state). In the future, this may also be
+	// true for client-side caching.
+	enablePushNotificationProcessing atomic.Bool
+
 	// Maintenance notifications manager
 	maintNotificationsManager     *maintnotifications.Manager
 	maintNotificationsManagerLock sync.RWMutex
@@ -249,6 +257,8 @@ func (c *baseClient) clone() *baseClient {
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
 	}
+	// Copy the atomic flag value
+	clone.enablePushNotificationProcessing.Store(c.enablePushNotificationProcessing.Load())
 	return clone
 }
 
@@ -593,6 +603,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 					// Log error but continue - auto mode should be resilient
 					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", initErr)
 				}
+				// Disable push notification processing since MaintNotifications are now disabled
+				c.enablePushNotificationProcessing.Store(false)
 			}
 		} else {
 			// handshake was executed successfully
@@ -1259,6 +1271,9 @@ func NewClient(opt *Options) *Client {
 				panic(fmt.Errorf("failed to enable maintnotifications: %w", err))
 			}
 		}
+		// Enable push notification processing for MaintNotifications.
+		// The flag may be disabled later if handshake fails in auto mode.
+		c.enablePushNotificationProcessing.Store(true)
 	}
 
 	// Register pools with OTel recorder if it supports pool registration
@@ -1501,6 +1516,12 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
 
+	// Set push notification processing flag based on MaintNotifications config
+	// This inherits the computed state from the parent client's options
+	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
+		c.enablePushNotificationProcessing.Store(true)
+	}
+
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
 	c.initHooks(hooks{
@@ -1562,7 +1583,14 @@ func (c *Conn) TxPipeline() Pipeliner {
 // was performed recently (within 5 seconds). The health check already verified the connection
 // is healthy and checked for unexpected data (push notifications).
 func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn) error {
-	// Only process push notifications for RESP3 connections with a processor
+	// Fast path: skip push notification processing if not needed.
+	// This is an optimization to avoid the overhead of checking for push notifications
+	// when no features require it (e.g., MaintNotifications disabled).
+	if !c.enablePushNotificationProcessing.Load() {
+		return nil
+	}
+
+	// Additional safety checks (should rarely be needed if flag is correctly maintained)
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return nil
 	}
@@ -1609,8 +1637,15 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection
 // This method should be called by the client in WithReader before reading the reply
 func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
-	// if we have the reader, we don't need to check for data on the socket, we are waiting
-	// for either a reply or a push notification, so we can block until we get a reply or reach the timeout
+	// Fast path: skip push notification processing if not needed.
+	// This is an optimization to avoid the overhead of checking for push notifications
+	// when no features require it (e.g., MaintNotifications disabled).
+	// The enablePushNotificationProcessing flag is computed based on enabled features.
+	if !c.enablePushNotificationProcessing.Load() {
+		return nil
+	}
+
+	// Additional safety checks (should rarely be needed if flag is correctly maintained)
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return nil
 	}
