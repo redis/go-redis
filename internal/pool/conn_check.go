@@ -48,7 +48,7 @@ func connCheck(conn net.Conn) error {
 
 	var sysErr error
 
-	if err := rawConn.Read(readConnChecker); err != nil {
+	if err := rawConn.Read(readConnChecker(e)); err != nil {
 		return err
 	}
 
