@@ -276,8 +276,48 @@ var (
 
 // Helper functions to get and put Cmd objects from/to pools
 
+// setArgs2 sets exactly 2 args without allocation
+func setArgs2(dst []interface{}, arg0, arg1 interface{}) []interface{} {
+	if cap(dst) >= 2 {
+		dst = dst[:2]
+	} else {
+		dst = make([]interface{}, 2)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	return dst
+}
+
+// setArgs3 sets exactly 3 args without allocation
+func setArgs3(dst []interface{}, arg0, arg1, arg2 interface{}) []interface{} {
+	if cap(dst) >= 3 {
+		dst = dst[:3]
+	} else {
+		dst = make([]interface{}, 3)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	dst[2] = arg2
+	return dst
+}
+
+// setArgs4 sets exactly 4 args without allocation
+func setArgs4(dst []interface{}, arg0, arg1, arg2, arg3 interface{}) []interface{} {
+	if cap(dst) >= 4 {
+		dst = dst[:4]
+	} else {
+		dst = make([]interface{}, 4)
+	}
+	dst[0] = arg0
+	dst[1] = arg1
+	dst[2] = arg2
+	dst[3] = arg3
+	return dst
+}
+
 // setArgs reuses the args slice if it has enough capacity, otherwise creates a new one
 // This reduces allocations by reusing the args slice from pooled Cmd objects
+// Use setArgs2, setArgs3, setArgs4 for fixed-size args to avoid variadic allocation
 func setArgs(dst []interface{}, args ...interface{}) []interface{} {
 	if cap(dst) >= len(args) {
 		dst = dst[:len(args)]

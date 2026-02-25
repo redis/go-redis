@@ -45,7 +45,7 @@ type StringCmdable interface {
 func (c cmdable) Append(ctx context.Context, key, value string) (int64, error) {
 	cmd := getIntCmd()
 	cmd.ctx = ctx
-	cmd.args = setArgs(cmd.args, "append", key, value)
+	cmd.args = setArgs3(cmd.args, "append", key, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -58,7 +58,7 @@ func (c cmdable) Append(ctx context.Context, key, value string) (int64, error) {
 func (c cmdable) Decr(ctx context.Context, key string) (int64, error) {
 	cmd := getIntCmd()
 	cmd.ctx = ctx
-	cmd.args = setArgs(cmd.args, "decr", key)
+	cmd.args = setArgs2(cmd.args, "decr", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -70,7 +70,8 @@ func (c cmdable) Decr(ctx context.Context, key string) (int64, error) {
 
 func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"decrby", key, decrement}}
+	cmd.ctx = ctx
+	cmd.args = setArgs3(cmd.args, "decrby", key, decrement)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -153,7 +154,8 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) (int64,
 // it's signature and behaviour may change
 func (c cmdable) Digest(ctx context.Context, key string) (uint64, error) {
 	cmd := getDigestCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"digest", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs2(cmd.args, "digest", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putDigestCmd(cmd)
@@ -166,7 +168,8 @@ func (c cmdable) Digest(ctx context.Context, key string) (uint64, error) {
 // Get Redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c cmdable) Get(ctx context.Context, key string) (string, error) {
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"get", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs2(cmd.args, "get", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -178,7 +181,8 @@ func (c cmdable) Get(ctx context.Context, key string) (string, error) {
 
 func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getrange", key, start, end}}
+	cmd.ctx = ctx
+	cmd.args = setArgs4(cmd.args, "getrange", key, start, end)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -193,7 +197,8 @@ func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) (st
 // Deprecated: Use SetArgs with Get option instead as of Redis 6.2.0.
 func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) (string, error) {
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getset", key, value}}
+	cmd.ctx = ctx
+	cmd.args = setArgs3(cmd.args, "getset", key, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -233,7 +238,8 @@ func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration
 // GetDel redis-server version >= 6.2.0.
 func (c cmdable) GetDel(ctx context.Context, key string) (string, error) {
 	cmd := getStringCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getdel", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs2(cmd.args, "getdel", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putStringCmd(cmd)
@@ -245,7 +251,8 @@ func (c cmdable) GetDel(ctx context.Context, key string) (string, error) {
 
 func (c cmdable) Incr(ctx context.Context, key string) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incr", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs2(cmd.args, "incr", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -257,7 +264,8 @@ func (c cmdable) Incr(ctx context.Context, key string) (int64, error) {
 
 func (c cmdable) IncrBy(ctx context.Context, key string, value int64) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incrby", key, value}}
+	cmd.ctx = ctx
+	cmd.args = setArgs3(cmd.args, "incrby", key, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -269,7 +277,8 @@ func (c cmdable) IncrBy(ctx context.Context, key string, value int64) (int64, er
 
 func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) (float64, error) {
 	cmd := getFloatCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incrbyfloat", key, value}}
+	cmd.ctx = ctx
+	cmd.args = setArgs3(cmd.args, "incrbyfloat", key, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putFloatCmd(cmd)
@@ -951,7 +960,8 @@ func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{},
 
 func (c cmdable) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"setrange", key, offset, value}}
+	cmd.ctx = ctx
+	cmd.args = setArgs4(cmd.args, "setrange", key, offset, value)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
@@ -963,7 +973,8 @@ func (c cmdable) SetRange(ctx context.Context, key string, offset int64, value s
 
 func (c cmdable) StrLen(ctx context.Context, key string) (int64, error) {
 	cmd := getIntCmd()
-	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"strlen", key}}
+	cmd.ctx = ctx
+	cmd.args = setArgs2(cmd.args, "strlen", key)
 	err := c(ctx, cmd)
 	val, cmdErr := cmd.Val(), cmd.Err()
 	putIntCmd(cmd)
