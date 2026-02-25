@@ -12,6 +12,24 @@ import (
 
 var errUnexpectedRead = errors.New("unexpected read from socket")
 
+func readConnChecker(fd uintptr) bool {
+	var buf [1]byte
+	// Use MSG_PEEK to peek at data without consuming it
+	n, _, err := syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
+
+	switch {
+	case n == 0 && err == nil:
+		sysErr = io.EOF
+	case n > 0:
+		sysErr = errUnexpectedRead
+	case err == syscall.EAGAIN || err == syscall.EWOULDBLOCK:
+		sysErr = nil
+	default:
+		sysErr = err
+	}
+	return true
+}
+
 // connCheck checks if the connection is still alive and if there is data in the socket
 // it will try to peek at the next byte without consuming it since we may want to work with it
 // later on (e.g. push notifications)
@@ -30,23 +48,7 @@ func connCheck(conn net.Conn) error {
 
 	var sysErr error
 
-	if err := rawConn.Read(func(fd uintptr) bool {
-		var buf [1]byte
-		// Use MSG_PEEK to peek at data without consuming it
-		n, _, err := syscall.Recvfrom(int(fd), buf[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
-
-		switch {
-		case n == 0 && err == nil:
-			sysErr = io.EOF
-		case n > 0:
-			sysErr = errUnexpectedRead
-		case err == syscall.EAGAIN || err == syscall.EWOULDBLOCK:
-			sysErr = nil
-		default:
-			sysErr = err
-		}
-		return true
-	}); err != nil {
+	if err := rawConn.Read(readConnChecker); err != nil {
 		return err
 	}
 
