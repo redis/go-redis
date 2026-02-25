@@ -7,57 +7,75 @@ import (
 )
 
 type StringCmdable interface {
-	Append(ctx context.Context, key, value string) *IntCmd
-	Decr(ctx context.Context, key string) *IntCmd
-	DecrBy(ctx context.Context, key string, decrement int64) *IntCmd
-	DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
-	Digest(ctx context.Context, key string) *DigestCmd
-	Get(ctx context.Context, key string) *StringCmd
-	GetRange(ctx context.Context, key string, start, end int64) *StringCmd
-	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
-	GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd
-	GetDel(ctx context.Context, key string) *StringCmd
-	Incr(ctx context.Context, key string) *IntCmd
-	IncrBy(ctx context.Context, key string, value int64) *IntCmd
-	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
-	LCS(ctx context.Context, q *LCSQuery) *LCSCmd
-	MGet(ctx context.Context, keys ...string) *SliceCmd
-	MSet(ctx context.Context, values ...interface{}) *StatusCmd
-	MSetNX(ctx context.Context, values ...interface{}) *BoolCmd
-	MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
-	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
-	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
-	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
-	SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
-	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
-	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd
-	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd
-	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd
-	SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd
-	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
-	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd
-	SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd
-	StrLen(ctx context.Context, key string) *IntCmd
+	Append(ctx context.Context, key, value string) (int64, error)
+	Decr(ctx context.Context, key string) (int64, error)
+	DecrBy(ctx context.Context, key string, decrement int64) (int64, error)
+	DelExArgs(ctx context.Context, key string, a DelExArgs) (int64, error)
+	Digest(ctx context.Context, key string) (uint64, error)
+	Get(ctx context.Context, key string) (string, error)
+	GetRange(ctx context.Context, key string, start, end int64) (string, error)
+	GetSet(ctx context.Context, key string, value interface{}) (string, error)
+	GetEx(ctx context.Context, key string, expiration time.Duration) (string, error)
+	GetDel(ctx context.Context, key string) (string, error)
+	Incr(ctx context.Context, key string) (int64, error)
+	IncrBy(ctx context.Context, key string, value int64) (int64, error)
+	IncrByFloat(ctx context.Context, key string, value float64) (float64, error)
+	LCS(ctx context.Context, q *LCSQuery) (*LCSMatch, error)
+	MGet(ctx context.Context, keys ...string) ([]interface{}, error)
+	MSet(ctx context.Context, values ...interface{}) (string, error)
+	MSetNX(ctx context.Context, values ...interface{}) (bool, error)
+	MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) (int64, error)
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) (string, error)
+	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) (string, error)
+	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) (string, error)
+	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error)
+	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error)
+	SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error)
+	SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error)
+	SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error)
+	SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error)
+	SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error)
+	SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error)
+	SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
+	SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error)
+	SetRange(ctx context.Context, key string, offset int64, value string) (int64, error)
+	StrLen(ctx context.Context, key string) (int64, error)
 }
 
-func (c cmdable) Append(ctx context.Context, key, value string) *IntCmd {
-	cmd := NewIntCmd(ctx, "append", key, value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) Append(ctx context.Context, key, value string) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"append", key, value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) Decr(ctx context.Context, key string) *IntCmd {
-	cmd := NewIntCmd(ctx, "decr", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) Decr(ctx context.Context, key string) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"decr", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) *IntCmd {
-	cmd := NewIntCmd(ctx, "decrby", key, decrement)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) DecrBy(ctx context.Context, key string, decrement int64) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"decrby", key, decrement}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
 // DelExArgs provides arguments for the DelExArgs function.
@@ -88,7 +106,7 @@ type DelExArgs struct {
 //
 // NOTE DelExArgs is still experimental
 // it's signature and behaviour may change
-func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd {
+func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) (int64, error) {
 	args := []interface{}{"delex", key}
 
 	if a.Mode != "" {
@@ -107,9 +125,15 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 		}
 	}
 
-	cmd := NewIntCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
 // Digest returns the xxh3 hash (uint64) of the specified key's value.
@@ -124,37 +148,61 @@ func (c cmdable) DelExArgs(ctx context.Context, key string, a DelExArgs) *IntCmd
 //
 // NOTE Digest is still experimental
 // it's signature and behaviour may change
-func (c cmdable) Digest(ctx context.Context, key string) *DigestCmd {
-	cmd := NewDigestCmd(ctx, "digest", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) Digest(ctx context.Context, key string) (uint64, error) {
+	cmd := getDigestCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"digest", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putDigestCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
 // Get Redis `GET key` command. It returns redis.Nil error when key does not exist.
-func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
-	cmd := NewStringCmd(ctx, "get", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) Get(ctx context.Context, key string) (string, error) {
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"get", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) *StringCmd {
-	cmd := NewStringCmd(ctx, "getrange", key, start, end)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) GetRange(ctx context.Context, key string, start, end int64) (string, error) {
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getrange", key, start, end}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // GetSet returns the old value stored at key and sets it to the new value.
 //
 // Deprecated: Use SetArgs with Get option instead as of Redis 6.2.0.
-func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) *StringCmd {
-	cmd := NewStringCmd(ctx, "getset", key, value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) GetSet(ctx context.Context, key string, value interface{}) (string, error) {
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getset", key, value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // GetEx An expiration of zero removes the TTL associated with the key (i.e. GETEX key persist).
 // Requires Redis >= 6.2.0.
-func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd {
+func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration) (string, error) {
 	args := make([]interface{}, 0, 4)
 	args = append(args, "getex", key)
 	if expiration > 0 {
@@ -167,34 +215,64 @@ func (c cmdable) GetEx(ctx context.Context, key string, expiration time.Duration
 		args = append(args, "persist")
 	}
 
-	cmd := NewStringCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // GetDel redis-server version >= 6.2.0.
-func (c cmdable) GetDel(ctx context.Context, key string) *StringCmd {
-	cmd := NewStringCmd(ctx, "getdel", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) GetDel(ctx context.Context, key string) (string, error) {
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"getdel", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) Incr(ctx context.Context, key string) *IntCmd {
-	cmd := NewIntCmd(ctx, "incr", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) Incr(ctx context.Context, key string) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incr", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) IncrBy(ctx context.Context, key string, value int64) *IntCmd {
-	cmd := NewIntCmd(ctx, "incrby", key, value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) IncrBy(ctx context.Context, key string, value int64) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incrby", key, value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd {
-	cmd := NewFloatCmd(ctx, "incrbyfloat", key, value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) (float64, error) {
+	cmd := getFloatCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"incrbyfloat", key, value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putFloatCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
 type SetCondition string
@@ -226,21 +304,32 @@ type ExpirationOption struct {
 	Value int64
 }
 
-func (c cmdable) LCS(ctx context.Context, q *LCSQuery) *LCSCmd {
+func (c cmdable) LCS(ctx context.Context, q *LCSQuery) (*LCSMatch, error) {
 	cmd := NewLCSCmd(ctx, q)
-	_ = c(ctx, cmd)
-	return cmd
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	// Note: LCS is complex and doesn't use pooling yet due to custom initialization in NewLCSCmd
+	if err != nil {
+		return nil, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
+func (c cmdable) MGet(ctx context.Context, keys ...string) ([]interface{}, error) {
 	args := make([]interface{}, 1+len(keys))
 	args[0] = "mget"
 	for i, key := range keys {
 		args[1+i] = key
 	}
-	cmd := NewSliceCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getSliceCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putSliceCmd(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return val, cmdErr
 }
 
 // MSet is like Set but accepts multiple values:
@@ -248,13 +337,19 @@ func (c cmdable) MGet(ctx context.Context, keys ...string) *SliceCmd {
 //   - MSet([]string{"key1", "value1", "key2", "value2"})
 //   - MSet(map[string]interface{}{"key1": "value1", "key2": "value2"})
 //   - MSet(struct), For struct types, see HSet description.
-func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
+func (c cmdable) MSet(ctx context.Context, values ...interface{}) (string, error) {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "mset"
 	args = appendArgs(args, values)
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // MSetNX is like SetNX but accepts multiple values:
@@ -262,13 +357,19 @@ func (c cmdable) MSet(ctx context.Context, values ...interface{}) *StatusCmd {
 //   - MSetNX([]string{"key1", "value1", "key2", "value2"})
 //   - MSetNX(map[string]interface{}{"key1": "value1", "key2": "value2"})
 //   - MSetNX(struct), For struct types, see HSet description.
-func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) *BoolCmd {
+func (c cmdable) MSetNX(ctx context.Context, values ...interface{}) (bool, error) {
 	args := make([]interface{}, 1, 1+len(values))
 	args[0] = "msetnx"
 	args = appendArgs(args, values)
-	cmd := NewBoolCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getBoolCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putBoolCmd(cmd)
+	if err != nil {
+		return false, err
+	}
+	return val, cmdErr
 }
 
 type MSetEXArgs struct {
@@ -282,7 +383,7 @@ type MSetEXArgs struct {
 // Important: When this method is used with Cluster clients, all keys
 // must be in the same hash slot, otherwise CROSSSLOT error will be returned.
 // For more information, see https://redis.io/commands/msetex
-func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) *IntCmd {
+func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interface{}) (int64, error) {
 	expandedArgs := appendArgs([]interface{}{}, values)
 	numkeys := len(expandedArgs) / 2
 
@@ -309,9 +410,15 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 		}
 	}
 
-	cmd := NewIntCmd(ctx, cmdArgs...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: cmdArgs}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
 // Set Redis `SET key value [expiration]` command.
@@ -320,7 +427,7 @@ func (c cmdable) MSetEX(ctx context.Context, args MSetEXArgs, values ...interfac
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
+func (c cmdable) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) (string, error) {
 	args := make([]interface{}, 3, 5)
 	args[0] = "set"
 	args[1] = key
@@ -335,9 +442,15 @@ func (c cmdable) Set(ctx context.Context, key string, value interface{}, expirat
 		args = append(args, "keepttl")
 	}
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetArgs provides arguments for the SetArgs function.
@@ -375,7 +488,7 @@ type SetArgs struct {
 // SetArgs supports all the options that the SET command supports.
 // It is the alternative to the Set function when you want
 // to have more control over the options.
-func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd {
+func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if a.KeepTTL {
@@ -413,18 +526,30 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 		args = append(args, "get")
 	}
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetEx sets the value and expiration of a key.
 //
 // Deprecated: Use Set with expiration instead as of Redis 2.6.12.
-func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
-	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) (string, error) {
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"setex", key, formatSec(ctx, expiration), value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetNX sets the value of a key only if the key does not exist.
@@ -434,24 +559,31 @@ func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expir
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
-	var cmd *BoolCmd
+func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	var args []interface{}
 	switch expiration {
 	case 0:
 		// Use old `SETNX` to support old Redis versions.
-		cmd = NewBoolCmd(ctx, "setnx", key, value)
+		args = []interface{}{"setnx", key, value}
 	case KeepTTL:
-		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "nx")
+		args = []interface{}{"set", key, value, "keepttl", "nx"}
 	default:
 		if usePrecise(expiration) {
-			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "nx")
+			args = []interface{}{"set", key, value, "px", formatMs(ctx, expiration), "nx"}
 		} else {
-			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "nx")
+			args = []interface{}{"set", key, value, "ex", formatSec(ctx, expiration), "nx"}
 		}
 	}
 
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getBoolCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putBoolCmd(cmd)
+	if err != nil {
+		return false, err
+	}
+	return val, cmdErr
 }
 
 // SetXX Redis `SET key value [expiration] XX` command.
@@ -459,23 +591,30 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
-func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) *BoolCmd {
-	var cmd *BoolCmd
+func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	var args []interface{}
 	switch expiration {
 	case 0:
-		cmd = NewBoolCmd(ctx, "set", key, value, "xx")
+		args = []interface{}{"set", key, value, "xx"}
 	case KeepTTL:
-		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "xx")
+		args = []interface{}{"set", key, value, "keepttl", "xx"}
 	default:
 		if usePrecise(expiration) {
-			cmd = NewBoolCmd(ctx, "set", key, value, "px", formatMs(ctx, expiration), "xx")
+			args = []interface{}{"set", key, value, "px", formatMs(ctx, expiration), "xx"}
 		} else {
-			cmd = NewBoolCmd(ctx, "set", key, value, "ex", formatSec(ctx, expiration), "xx")
+			args = []interface{}{"set", key, value, "ex", formatSec(ctx, expiration), "xx"}
 		}
 	}
 
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getBoolCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putBoolCmd(cmd)
+	if err != nil {
+		return false, err
+	}
+	return val, cmdErr
 }
 
 // SetIFEQ Redis `SET key value [expiration] IFEQ match-value` command.
@@ -487,7 +626,7 @@ func (c cmdable) SetXX(ctx context.Context, key string, value interface{}, expir
 //
 // NOTE SetIFEQ is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -502,9 +641,15 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 
 	args = append(args, "ifeq", matchValue)
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFEQGet Redis `SET key value [expiration] IFEQ match-value GET` command.
@@ -517,7 +662,7 @@ func (c cmdable) SetIFEQ(ctx context.Context, key string, value interface{}, mat
 //
 // NOTE SetIFEQGet is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -532,9 +677,15 @@ func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, 
 
 	args = append(args, "ifeq", matchValue, "get")
 
-	cmd := NewStringCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFNE Redis `SET key value [expiration] IFNE match-value` command.
@@ -546,7 +697,7 @@ func (c cmdable) SetIFEQGet(ctx context.Context, key string, value interface{}, 
 //
 // NOTE SetIFNE is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -561,9 +712,15 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 
 	args = append(args, "ifne", matchValue)
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFNEGet Redis `SET key value [expiration] IFNE match-value GET` command.
@@ -576,7 +733,7 @@ func (c cmdable) SetIFNE(ctx context.Context, key string, value interface{}, mat
 //
 // NOTE SetIFNEGet is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -591,9 +748,15 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 
 	args = append(args, "ifne", matchValue, "get")
 
-	cmd := NewStringCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFDEQ sets the value only if the current value's digest equals matchDigest.
@@ -612,7 +775,7 @@ func (c cmdable) SetIFNEGet(ctx context.Context, key string, value interface{}, 
 //
 // NOTE SetIFNEQ is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -627,9 +790,15 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 
 	args = append(args, "ifdeq", fmt.Sprintf("%016x", matchDigest))
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFDEQGet sets the value only if the current value's digest equals matchDigest,
@@ -649,7 +818,7 @@ func (c cmdable) SetIFDEQ(ctx context.Context, key string, value interface{}, ma
 //
 // NOTE SetIFNEQGet is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -662,11 +831,17 @@ func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{},
 		args = append(args, "keepttl")
 	}
 
-	args = append(args, "ifdeq", fmt.Sprintf("%016x", matchDigest), "get")
+	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest), "get")
 
-	cmd := NewStringCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFDNE sets the value only if the current value's digest does NOT equal matchDigest.
@@ -685,7 +860,7 @@ func (c cmdable) SetIFDEQGet(ctx context.Context, key string, value interface{},
 //
 // NOTE SetIFDNE is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StatusCmd {
+func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -700,9 +875,15 @@ func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, ma
 
 	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest))
 
-	cmd := NewStatusCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStatusCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStatusCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
 // SetIFDNEGet sets the value only if the current value's digest does NOT equal matchDigest,
@@ -722,7 +903,7 @@ func (c cmdable) SetIFDNE(ctx context.Context, key string, value interface{}, ma
 //
 // NOTE SetIFDNEGet is still experimental
 // it's signature and behaviour may change
-func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) *StringCmd {
+func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{}, matchDigest uint64, expiration time.Duration) (string, error) {
 	args := []interface{}{"set", key, value}
 
 	if expiration > 0 {
@@ -737,19 +918,37 @@ func (c cmdable) SetIFDNEGet(ctx context.Context, key string, value interface{},
 
 	args = append(args, "ifdne", fmt.Sprintf("%016x", matchDigest), "get")
 
-	cmd := NewStringCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
+	cmd := getStringCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: args}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putStringCmd(cmd)
+	if err != nil {
+		return "", err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) SetRange(ctx context.Context, key string, offset int64, value string) *IntCmd {
-	cmd := NewIntCmd(ctx, "setrange", key, offset, value)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) SetRange(ctx context.Context, key string, offset int64, value string) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"setrange", key, offset, value}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
 
-func (c cmdable) StrLen(ctx context.Context, key string) *IntCmd {
-	cmd := NewIntCmd(ctx, "strlen", key)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) StrLen(ctx context.Context, key string) (int64, error) {
+	cmd := getIntCmd()
+	cmd.baseCmd = baseCmd{ctx: ctx, args: []interface{}{"strlen", key}}
+	err := c(ctx, cmd)
+	val, cmdErr := cmd.Val(), cmd.Err()
+	putIntCmd(cmd)
+	if err != nil {
+		return 0, err
+	}
+	return val, cmdErr
 }
