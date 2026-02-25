@@ -24,33 +24,32 @@ var (
 )
 
 type Script struct {
-	src  string
-	mu   sync.RWMutex
-	hash string
+	src       string
+	mu        sync.RWMutex
+	hash      string
 	serverSHA bool // if true: do not compute SHA-1 in Go; load digest from Redis (SCRIPT LOAD)
 }
 
 func NewScript(src string) *Script {
-    h := sha1.New()
-    _, _ = io.WriteString(h, src)
+	h := sha1.New()
+	_, _ = io.WriteString(h, src)
 
-    return &Script{
-        src:       src,
-        hash:      hex.EncodeToString(h.Sum(nil)),
-        serverSHA: false,
-    }
+	return &Script{
+		src:       src,
+		hash:      hex.EncodeToString(h.Sum(nil)),
+		serverSHA: false,
+	}
 }
 
 // NewScriptServerSHA creates a Script that avoids computing SHA-1 in Go.
 // The digest is obtained from Redis via SCRIPT LOAD (server-side hashing),
 // then EVALSHA/EVALSHA_RO is used.
 func NewScriptServerSHA(src string) *Script {
-    return &Script{
-        src:       src,
-        serverSHA: true,
-    }
+	return &Script{
+		src:       src,
+		serverSHA: true,
+	}
 }
-
 
 func (s *Script) Hash() string {
 	s.mu.RLock()
@@ -74,19 +73,19 @@ func (s *Script) Exists(ctx context.Context, c Scripter) *BoolSliceCmd {
 	serverSHA := s.serverSHA
 	s.mu.RUnlock()
 	if hash == "" && serverSHA {
-		 // For server-side scripts, obtain digest from Redis first.
-		 // If hash is empty, it means SCRIPT LOAD was not called yet, so we check existence of empty hash which will return false.
-		 // This avoids unnecessary SCRIPT LOAD just to check existence.
+		// For server-side scripts, obtain digest from Redis first.
+		// If hash is empty, it means SCRIPT LOAD was not called yet, so we check existence of empty hash which will return false.
+		// This avoids unnecessary SCRIPT LOAD just to check existence.
 		if err := s.ensureHash(ctx, c); err != nil {
-            return c.ScriptExists(ctx, "")
-        }
-	s.mu.RLock()
-        hash = s.hash
-        s.mu.RUnlock()
+			return c.ScriptExists(ctx, "")
+		}
+		s.mu.RLock()
+		hash = s.hash
+		s.mu.RUnlock()
 	}
 	if hash == "" {
-        return c.ScriptExists(ctx, "")
-    }
+		return c.ScriptExists(ctx, "")
+	}
 	return c.ScriptExists(ctx, hash)
 }
 
@@ -127,14 +126,14 @@ func (s *Script) ensureHash(ctx context.Context, c Scripter) error {
 
 func (s *Script) EvalSha(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	// Default behavior: use client-side SHA-1 computed in NewScript.
-	if !s.serverSHA{
+	if !s.serverSHA {
 		s.mu.RLock()
 		hash := s.hash
 		s.mu.RUnlock()
 		return c.EvalSha(ctx, hash, keys, args...)
 	}
 
-	  // Server-side SHA via SCRIPT LOAD + EVALSHA.
+	// Server-side SHA via SCRIPT LOAD + EVALSHA.
 	if err := s.ensureHash(ctx, c); err != nil {
 		return s.Eval(ctx, c, keys, args...)
 	}
