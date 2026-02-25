@@ -1,0 +1,11 @@
+goos: darwin
+goarch: arm64
+cpu: Apple M4 Max
+BenchmarkClientCommands/Get-16         	   12295	    295233 ns/op	      40 B/op	       3 allocs/op
+BenchmarkClientCommands/Set-16         	   12122	    297121 ns/op	     122 B/op	       5 allocs/op
+BenchmarkClientCommands/Incr-16        	   12177	    297323 ns/op	      40 B/op	       3 allocs/op
+BenchmarkClientCommands/MGet-16        	   10000	    300744 ns/op	     184 B/op	       7 allocs/op
+BenchmarkClientCommands/MixedWorkload-16         	    3997	    891163 ns/op	     204 B/op	      11 allocs/op
+BenchmarkClientCommands/Parallel_Get-16          	   77392	     46672 ns/op	      40 B/op	       3 allocs/op
+PASS
+ok  	command-line-arguments	30.775s
