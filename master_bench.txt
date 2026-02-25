@@ -1,0 +1,15 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/redis/go-redis/v9
+cpu: Apple M4 Max
+BenchmarkCmdAllocation/StringCmd-16   	454157070	        13.10 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCmdAllocation/IntCmd-16      	1000000000	         0.2375 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCmdAllocation/StatusCmd-16   	478969767	        12.29 ns/op	      48 B/op	       1 allocs/op
+BenchmarkCmdAllocation/BoolCmd-16     	1000000000	         0.2320 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCmdAllocation/FloatCmd-16    	1000000000	         0.2435 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCmdAllocation/SliceCmd-16    	231401583	        25.17 ns/op	     112 B/op	       2 allocs/op
+BenchmarkCmdAllocation_Mixed/Mixed100ops-16         	 7121149	       861.8 ns/op	    2672 B/op	      67 allocs/op
+BenchmarkCmdAllocation_Parallel/StringCmd_Parallel-16         	643888024	         9.135 ns/op	      32 B/op	       1 allocs/op
+BenchmarkCmdAllocation_Parallel/IntCmd_Parallel-16            	1000000000	         0.09682 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	github.com/redis/go-redis/v9	37.903s

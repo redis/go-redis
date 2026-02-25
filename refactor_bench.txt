@@ -1,0 +1,14 @@
+# github.com/redis/go-redis/v9_test [github.com/redis/go-redis/v9.test]
+./acl_commands_test.go:32:7: multiple-value clientAcl.Set(ctx, "mystring", "foo", 0) (value of type (string, error)) in single-value context
+./acl_commands_test.go:184:12: multiple-value connection.Get(ctx, "anykey") (value of type (string, error)) in single-value context
+./acl_commands_test.go:206:13: multiple-value connection.Set(ctx, "anykey", "anyvalue", 0) (value of type (string, error)) in single-value context
+./acl_commands_test.go:211:17: multiple-value connection.Get(ctx, "anykey") (value of type (string, error)) in single-value context
+./acl_commands_test.go:234:17: multiple-value connection.Get(ctx, "anykey") (value of type (string, error)) in single-value context
+./bench_test.go:59:12: multiple-value rdb.Set(ctx, "hello", "world", 0) (value of type (string, error)) in single-value context
+./bench_test.go:79:14: multiple-value client.Get(ctx, "key") (value of type (string, error)) in single-value context
+./bench_test.go:121:13: multiple-value client.Set(ctx, "key", value, 0) (value of type (string, error)) in single-value context
+./bench_test.go:142:14: multiple-value client.Set(ctx, "key", value, 0) (value of type (string, error)) in single-value context
+./bench_test.go:146:16: multiple-value client.Get(ctx, "key") (value of type (string, error)) in single-value context
+./bench_test.go:146:16: too many errors
+FAIL	github.com/redis/go-redis/v9 [build failed]
+FAIL
