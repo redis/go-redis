@@ -57,18 +57,21 @@ func ParseErrorReply(line []byte) error {
 //------------------------------------------------------------------------------
 
 type Reader struct {
-	rd *bufio.Reader
+	rd  *bufio.Reader
+	buf []byte // reusable buffer for reading strings
 }
 
 func NewReader(rd io.Reader) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, DefaultBufferSize),
+		rd:  bufio.NewReaderSize(rd, DefaultBufferSize),
+		buf: make([]byte, 0, 64), // start with small capacity
 	}
 }
 
 func NewReaderSize(rd io.Reader, size int) *Reader {
 	return &Reader{
-		rd: bufio.NewReaderSize(rd, size),
+		rd:  bufio.NewReaderSize(rd, size),
+		buf: make([]byte, 0, 64), // start with small capacity
 	}
 }
 
@@ -315,13 +318,20 @@ func (r *Reader) readStringReply(line []byte) (string, error) {
 		return "", err
 	}
 
-	b := make([]byte, n+2)
-	_, err = io.ReadFull(r.rd, b)
+	// Reuse buffer if it has enough capacity
+	needed := n + 2
+	if cap(r.buf) >= needed {
+		r.buf = r.buf[:needed]
+	} else {
+		r.buf = make([]byte, needed)
+	}
+
+	_, err = io.ReadFull(r.rd, r.buf)
 	if err != nil {
 		return "", err
 	}
 
-	return util.BytesToString(b[:n]), nil
+	return util.BytesToString(r.buf[:n]), nil
 }
 
 func (r *Reader) readVerb(line []byte) (string, error) {
