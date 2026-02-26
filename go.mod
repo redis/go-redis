@@ -11,11 +11,14 @@ require (
 )
 
 require (
-	github.com/dgryski/go-xxh3 v0.0.0-20190317160639-1675ae87ac49
+	github.com/alicebob/miniredis/v2 v2.37.0
 	go.uber.org/atomic v1.11.0
 )
 
-require github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+require (
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
+)
 
 retract (
 	v9.15.1 // This version is used to retract v9.15.0
