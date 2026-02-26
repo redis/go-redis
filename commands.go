@@ -171,6 +171,7 @@ func isEmptyValue(v reflect.Value) bool {
 }
 
 type Cmdable interface {
+	AutoPipeline() *AutoPipeliner
 	Pipeline() Pipeliner
 	Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error)
 
@@ -264,6 +265,7 @@ var (
 	_ Cmdable = (*Ring)(nil)
 	_ Cmdable = (*ClusterClient)(nil)
 	_ Cmdable = (*Pipeline)(nil)
+	_ Cmdable = (*AutoPipeliner)(nil)
 )
 
 type cmdable func(ctx context.Context, cmd Cmder) error

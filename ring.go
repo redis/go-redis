@@ -137,17 +137,25 @@ type RingOptions struct {
 	ConnMaxLifetimeJitter time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
-	// Larger buffers can improve performance for commands that return large responses.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for commands that return large responses.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
-	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for large pipelines and commands with many arguments.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	WriteBufferSize int
 
 	TLSConfig *tls.Config
@@ -806,6 +814,10 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 
 func (c *Ring) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(ctx, fn)
+}
+
+func (c *Ring) AutoPipeline() *AutoPipeliner {
+	return nil
 }
 
 func (c *Ring) Pipeline() Pipeliner {

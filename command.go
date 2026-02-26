@@ -862,6 +862,17 @@ func NewStatusCmd(ctx context.Context, args ...interface{}) *StatusCmd {
 	}
 }
 
+// newStatusCmd3 creates a StatusCmd with 3 pre-allocated args to avoid variadic overhead
+// This is an internal optimization for common cases like SET without expiration
+func newStatusCmd3(ctx context.Context, arg1, arg2 string, arg3 interface{}) *StatusCmd {
+	return &StatusCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: []interface{}{arg1, arg2, arg3},
+		},
+	}
+}
+
 func (cmd *StatusCmd) SetVal(val string) {
 	cmd.val = val
 }
@@ -1269,6 +1280,17 @@ func NewStringCmd(ctx context.Context, args ...interface{}) *StringCmd {
 			ctx:     ctx,
 			args:    args,
 			cmdType: CmdTypeString,
+		},
+	}
+}
+
+// newStringCmd2 creates a StringCmd with 2 pre-allocated args to avoid variadic overhead
+// This is an internal optimization for common cases like GET
+func newStringCmd2(ctx context.Context, arg1, arg2 string) *StringCmd {
+	return &StringCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: []interface{}{arg1, arg2},
 		},
 	}
 }

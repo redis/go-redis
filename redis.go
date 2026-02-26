@@ -213,6 +213,12 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 	return hs.current.txPipeline(ctx, cmds)
 }
 
+// ------------------------------------------------------------------------------
+type AutoPipelinedClient interface {
+	Cmdable
+	Close() error
+}
+
 //------------------------------------------------------------------------------
 
 type baseClient struct {
@@ -221,6 +227,11 @@ type baseClient struct {
 	connPool   pool.Pooler
 	pubSubPool *pool.PubSubPool
 	hooksMixin
+
+	// pipelinePool is a separate connection pool for pipelining operations.
+	// Created only if PipelineReadBufferSize or PipelineWriteBufferSize is set in Options.
+	// This allows using large buffers for pipelining while keeping regular buffers small.
+	pipelinePool pool.Pooler
 
 	onClose func() error // hook called when client is closed
 
@@ -251,7 +262,8 @@ func (c *baseClient) clone() *baseClient {
 	clone := &baseClient{
 		opt:                         c.opt,
 		connPool:                    c.connPool,
-		pubSubPool:                  c.pubSubPool,
+pubSubPool:                  c.pubSubPool,
+		pipelinePool:                c.pipelinePool,
 		onClose:                     c.onClose,
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
@@ -422,7 +434,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 			if finalState == pool.StateInitializing {
 				// Another goroutine is initializing - WAIT for it to complete
-				// Use a context with timeout = min(remaining command timeout, DialTimeout)
+// Use a context with timeout = min(remaining command timeout, DialTimeout)
 				// This prevents waiting too long while respecting the caller's deadline
 				var waitCtx context.Context
 				var cancel context.CancelFunc
@@ -586,10 +598,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 				c.optLock.Unlock()
 				cn.GetStateMachine().Transition(pool.StateClosed)
 
+
 				// Record handshake failure metric
 				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
 				}
+
 
 				return fmt.Errorf("failed to enable maintnotifications: %w", maintNotifHandshakeErr)
 			default: // will handle auto and any other
@@ -689,6 +703,55 @@ func (c *baseClient) withConn(
 	fnErr = fn(ctx, cn)
 
 	return fnErr
+}
+
+// withPipelineConn executes fn with a connection from the pipeline pool (if available),
+// otherwise from the regular pool.
+func (c *baseClient) withPipelineConn(
+	ctx context.Context, fn func(context.Context, *pool.Conn) error,
+) error {
+	// Use pipeline pool if available, otherwise fall back to regular pool
+	if c.pipelinePool != nil {
+		cn, err := c.pipelinePool.Get(ctx)
+		if err != nil {
+			return err
+		}
+
+		// Initialize connection if needed
+		if !cn.IsInited() {
+			if err := c.initConn(ctx, cn); err != nil {
+				c.pipelinePool.Remove(ctx, cn, err)
+				if err := errors.Unwrap(err); err != nil {
+					return err
+				}
+				return err
+			}
+
+			// initConn will transition to IDLE state, so we need to acquire it
+			if !cn.TryAcquire() {
+				return fmt.Errorf("redis: connection is not usable")
+			}
+		}
+
+		var fnErr error
+		defer func() {
+			if isBadConn(fnErr, false, c.opt.Addr) {
+				c.pipelinePool.Remove(ctx, cn, fnErr)
+			} else {
+				// process any pending push notifications before returning the connection to the pool
+				if err := c.processPushNotifications(ctx, cn); err != nil {
+					internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+				}
+				c.pipelinePool.Put(ctx, cn)
+			}
+		}()
+
+		fnErr = fn(ctx, cn)
+		return fnErr
+	}
+
+	// Fall back to regular pool
+	return c.withConn(ctx, fn)
 }
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -979,6 +1042,12 @@ func (c *baseClient) Close() error {
 			firstErr = err
 		}
 	}
+	// Close pipeline pool if it exists
+	if c.pipelinePool != nil {
+		if err := c.pipelinePool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	return firstErr
 }
 
@@ -987,6 +1056,14 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
+// Use pipeline pool if available
+	if c.pipelinePool != nil {
+		if err := c.generalProcessPipelineWithPool(ctx, cmds, c.pipelineProcessCmds); err != nil {
+			return err
+		}
+		return cmdsFirstErr(cmds)
+	}
+	// Fall back to regular pool
 	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE"); err != nil {
 		return err
 	}
@@ -1070,6 +1147,41 @@ func (c *baseClient) generalProcessPipeline(
 		errorCallback(ctx, errorType, lastConn, statusCode, isInternal, totalAttempts-1)
 	}
 
+	return lastErr
+}
+
+// generalProcessPipelineWithPool is like generalProcessPipeline but uses the pipeline pool.
+func (c *baseClient) generalProcessPipelineWithPool(
+	ctx context.Context, cmds []Cmder, p pipelineProcessor,
+) error {
+	var lastErr error
+	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+		if attempt > 0 {
+			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+		}
+
+		// Enable retries by default to retry dial errors returned by withPipelineConn.
+		canRetry := true
+		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			// Process any pending push notifications before executing the pipeline
+			if err := c.processPushNotifications(ctx, cn); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
+			}
+			var err error
+			canRetry, err = p(ctx, cn, cmds)
+			return err
+		})
+		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+			// The error should be set here only when failing to obtain the conn.
+			if !isRedisError(lastErr) {
+				setCmdsErr(cmds, lastErr)
+			}
+			return lastErr
+		}
+	}
 	return lastErr
 }
 
@@ -1205,6 +1317,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 type Client struct {
 	*baseClient
 	cmdable
+	autopipeliner *AutoPipeliner
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -1252,6 +1365,37 @@ func NewClient(opt *Options) *Client {
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 	}
 
+	// Create separate pipeline pool if custom buffer sizes are configured
+	// This must be done after streamingCredentialsManager is created
+	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 {
+		pipelineOpt := opt.clone()
+
+		// Use pipeline buffer sizes (fall back to regular sizes if not set)
+		if opt.PipelineReadBufferSize > 0 {
+			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+		}
+		if opt.PipelineWriteBufferSize > 0 {
+			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
+		}
+
+		// Use pipeline pool size (default: 10)
+		if opt.PipelinePoolSize > 0 {
+			pipelineOpt.PoolSize = opt.PipelinePoolSize
+		} else {
+			pipelineOpt.PoolSize = 10 // Default smaller pool for pipelining
+		}
+
+		c.pipelinePool, err = newConnPool(pipelineOpt, c.dialHook, "pipeline")
+		if err != nil {
+			panic(fmt.Errorf("redis: failed to create pipeline pool: %w", err))
+		}
+
+		// Add streaming credentials hook to pipeline pool if configured
+		if c.streamingCredentialsManager != nil {
+			c.pipelinePool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+		}
+	}
+
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
 		err := c.enableMaintNotificationsUpgrades()
@@ -1291,6 +1435,16 @@ func (c *Client) init() {
 		pipeline:   c.baseClient.processPipeline,
 		txPipeline: c.baseClient.processTxPipeline,
 	})
+}
+
+func (c *Client) WithAutoPipeline() AutoPipelinedClient {
+	if c.autopipeliner != nil {
+		if !c.autopipeliner.closed.Load() {
+			return c.autopipeliner
+		}
+	}
+	c.autopipeliner = c.AutoPipeline()
+	return c.autopipeliner
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
@@ -1370,6 +1524,10 @@ type PoolStats pool.Stats
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
 	stats.PubSubStats = *(c.pubSubPool.Stats())
+	// Include pipeline pool stats if available
+	if c.pipelinePool != nil {
+		stats.PipelineStats = c.pipelinePool.Stats()
+	}
 	return (*PoolStats)(stats)
 }
 
@@ -1378,11 +1536,42 @@ func (c *Client) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmd
 }
 
 func (c *Client) Pipeline() Pipeliner {
-	pipe := Pipeline{
-		exec: pipelineExecer(c.processPipelineHook),
-	}
+	pipe := pipelinePool.Get().(*Pipeline)
+	pipe.exec = pipelineExecer(c.processPipelineHook)
+	pipe.cmds = getCmdSlice()
 	pipe.init()
-	return &pipe
+	return pipe
+}
+
+// AutoPipeline creates a new autopipeliner that automatically batches commands.
+// Commands are automatically flushed based on batch size and time interval.
+// The autopipeliner must be closed when done to flush pending commands.
+//
+// Example:
+//
+//	ap := client.AutoPipeline()
+//	defer ap.Close()
+//
+//	var wg sync.WaitGroup
+//	for i := 0; i < 1000; i++ {
+//	    wg.Add(1)
+//	    go func(idx int) {
+//	        defer wg.Done()
+//	        ap.Do(ctx, "SET", fmt.Sprintf("key%d", idx), idx)
+//	    }(i)
+//	}
+//	wg.Wait()
+//
+// Note: AutoPipeline requires AutoPipelineConfig to be set in Options.
+// If not set, default configuration will be used.
+func (c *Client) AutoPipeline() *AutoPipeliner {
+	if c.autopipeliner != nil {
+		return c.autopipeliner
+	}
+	if c.opt.AutoPipelineConfig == nil {
+		c.opt.AutoPipelineConfig = DefaultAutoPipelineConfig()
+	}
+	return NewAutoPipeliner(c, c.opt.AutoPipelineConfig)
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -1583,7 +1772,7 @@ func (c *Conn) TxPipeline() Pipeliner {
 // was performed recently (within 5 seconds). The health check already verified the connection
 // is healthy and checked for unexpected data (push notifications).
 func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn) error {
-	// Fast path: skip push notification processing if not needed.
+// Fast path: skip push notification processing if not needed.
 	// This is an optimization to avoid the overhead of checking for push notifications
 	// when no features require it (e.g., MaintNotifications disabled).
 	if !c.enablePushNotificationProcessing.Load() {

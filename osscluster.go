@@ -40,6 +40,8 @@ var (
 // ClusterOptions are used to configure a cluster client and should be
 // passed to NewClusterClient.
 type ClusterOptions struct {
+	AutoPipelineConfig *AutoPipelineConfig
+
 	// A seed list of host:port addresses of cluster nodes.
 	Addrs []string
 
@@ -123,17 +125,25 @@ type ClusterOptions struct {
 	ConnMaxLifetimeJitter time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
-	// Larger buffers can improve performance for commands that return large responses.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for commands that return large responses.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
-	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for large pipelines and commands with many arguments.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	WriteBufferSize int
 
 	TLSConfig *tls.Config
@@ -1134,6 +1144,7 @@ type ClusterClient struct {
 	state           *clusterStateHolder
 	cmdsInfoCache   *cmdsInfoCache
 	cmdInfoResolver *commandInfoResolver
+	autopipeliner   *AutoPipeliner
 	cmdable
 	hooksMixin
 }
@@ -1183,6 +1194,14 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	return c
+}
+
+func (c *ClusterClient) WithAutoPipeline() AutoPipelinedClient {
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner
+	}
+	c.autopipeliner = c.AutoPipeline()
+	return c.autopipeliner
 }
 
 // Options returns read-only Options that were used to create the client.
@@ -1527,6 +1546,37 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// AutoPipeline creates a new autopipeliner that automatically batches commands.
+// Commands are automatically flushed based on batch size and time interval.
+// The autopipeliner must be closed when done to flush pending commands.
+//
+// For ClusterClient, commands are automatically routed to the correct nodes
+// based on key slots, just like regular pipelined commands.
+//
+// Example:
+//
+//	ap := client.AutoPipeline()
+//	defer ap.Close()
+//
+//	var wg sync.WaitGroup
+//	for i := 0; i < 1000; i++ {
+//	    wg.Add(1)
+//	    go func(idx int) {
+//	        defer wg.Done()
+//	        ap.Do(ctx, "SET", fmt.Sprintf("key%d", idx), idx)
+//	    }(i)
+//	}
+//	wg.Wait()
+//
+// Note: AutoPipeline requires AutoPipelineConfig to be set in ClusterOptions.
+// If not set, default configuration will be used.
+func (c *ClusterClient) AutoPipeline() *AutoPipeliner {
+	if c.opt.AutoPipelineConfig == nil {
+		c.opt.AutoPipelineConfig = DefaultAutoPipelineConfig()
+	}
+	return NewAutoPipeliner(c, c.opt.AutoPipelineConfig)
 }
 
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

@@ -284,7 +284,8 @@ type Stats struct {
 	StaleConns      uint32 // number of stale connections removed from the pool
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
-	PubSubStats PubSubStats
+	PubSubStats   PubSubStats
+	PipelineStats *Stats // stats for the pipeline pool (if separate)
 }
 
 type Pooler interface {

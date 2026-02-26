@@ -166,18 +166,80 @@ type Options struct {
 	ContextTimeoutEnabled bool
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
-	// Larger buffers can improve performance for commands that return large responses.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for commands that return large responses.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	ReadBufferSize int
 
 	// WriteBufferSize is the size of the bufio.Writer buffer for each connection.
-	// Larger buffers can improve performance for large pipelines and commands with many arguments.
+	// Buffers are allocated once per connection and persist for the connection's lifetime.
+	//
+	// Larger buffers can significantly improve performance for large pipelines and commands with many arguments.
+	// For high-throughput scenarios, consider using 512 KiB.
+	//
 	// Smaller buffers can improve memory usage for larger pools.
 	//
-	// default: 32KiB (32768 bytes)
+	// default: 64 KiB (65536 bytes)
 	WriteBufferSize int
+
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// ReadBufferSize buffers.
+	//
+	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	//
+	// Example:
+	//   client := redis.NewClient(&redis.Options{
+	//       Addr:                    "localhost:6379",
+	//       ReadBufferSize:          64 * 1024,   // 64 KiB for regular commands
+	//       PipelineReadBufferSize:  512 * 1024,  // 512 KiB for pipelining
+	//       PipelineWriteBufferSize: 512 * 1024,
+	//   })
+	//
+	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
+	//   - Without pipeline pool: 100 conns × 1 MiB = 100 MB (if all use 512 KiB buffers)
+	//   - With pipeline pool: (100 × 128 KiB) + (10 × 1 MiB) = 22.8 MB (77% savings)
+	//
+	// default: 0 (use ReadBufferSize)
+	PipelineReadBufferSize int
+
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// WriteBufferSize buffers.
+	//
+	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	//
+	// default: 0 (use WriteBufferSize)
+	PipelineWriteBufferSize int
+
+	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
+	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	//
+	// Pipelining typically needs fewer connections than regular operations because
+	// batching reduces connection contention. A smaller pool saves memory while
+	// maintaining high throughput.
+	//
+	// If not set (0), defaults to 10 connections.
+	//
+	// default: 10
+	PipelinePoolSize int
 
 	// PoolFIFO type of connection pool.
 	//
@@ -304,6 +366,15 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// AutoPipelineConfig enables automatic pipelining of commands.
+	// When set, commands will be automatically batched and sent in pipelines
+	// to reduce network round-trips and improve throughput.
+	// If nil, autopipelining is disabled.
+	AutoPipelineConfig *AutoPipelineConfig
+
+	// AutoPipelineEnabled enables automatic pipelining of commands.
+	AutoPipelineEnabled bool
 }
 
 func (opt *Options) init() {

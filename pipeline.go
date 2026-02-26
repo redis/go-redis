@@ -3,9 +3,40 @@ package redis
 import (
 	"context"
 	"errors"
+	"sync"
 )
 
 type pipelineExecer func(context.Context, []Cmder) error
+
+// pipelinePool is a sync.Pool for Pipeline objects to reduce allocations
+var pipelinePool = sync.Pool{
+	New: func() interface{} {
+		return &Pipeline{}
+	},
+}
+
+// cmdSlicePool is a sync.Pool for command slices to reduce allocations
+var cmdSlicePool = sync.Pool{
+	New: func() interface{} {
+		// Pre-allocate with reasonable capacity for typical batch sizes
+		return make([]Cmder, 0, 100)
+	},
+}
+
+// getCmdSlice gets a command slice from the pool
+func getCmdSlice() []Cmder {
+	slice := cmdSlicePool.Get().([]Cmder)
+	// Clear the slice but keep capacity
+	return slice[:0]
+}
+
+// putCmdSlice returns a command slice to the pool
+func putCmdSlice(slice []Cmder) {
+	// Only pool slices that aren't too large (avoid memory bloat)
+	if cap(slice) <= 1000 {
+		cmdSlicePool.Put(slice)
+	}
+}
 
 // Pipeliner is a mechanism to realise Redis Pipeline technique.
 //
@@ -116,11 +147,41 @@ func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 	if err := fn(c); err != nil {
 		return nil, err
 	}
-	return c.Exec(ctx)
+	cmds, err := c.Exec(ctx)
+	// Return pipeline to pool after execution
+	putPipeline(c)
+	return cmds, err
 }
+
+// putPipeline returns a Pipeline to the pool for reuse
+func putPipeline(pipe *Pipeline) {
+	// Return cmds slice to pool
+	if pipe.cmds != nil {
+		putCmdSlice(pipe.cmds)
+	}
+	// Clear the pipeline to avoid memory leaks
+	pipe.exec = nil
+	pipe.cmds = nil
+	pipe.cmdable = nil
+	pipe.statefulCmdable = nil
+	pipelinePool.Put(pipe)
+}
+
+// putPipeliner returns a Pipeliner to the pool for reuse (if it's a *Pipeline)
+func putPipeliner(pipe Pipeliner) {
+	if p, ok := pipe.(*Pipeline); ok {
+		putPipeline(p)
+	}
+}
+
+
 
 func (c *Pipeline) Pipeline() Pipeliner {
 	return c
+}
+
+func (c *Pipeline) AutoPipeline() *AutoPipeliner {
+	return nil
 }
 
 func (c *Pipeline) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
