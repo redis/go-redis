@@ -190,11 +190,16 @@ func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
 		DialerRetries:      1,
 		DialerRetryTimeout: backoff,
 	})
-	defer p.Close()
 
 	start := time.Now()
 	_, err := p.dialConn(context.Background(), true)
 	elapsed := time.Since(start)
+
+	// Close the pool immediately to prevent tryDial() background goroutine
+	// from making additional dial attempts. When dialErrorsNum reaches PoolSize,
+	// a background tryDial() is spawned which would increment our calls counter.
+	p.Close()
+
 	if err == nil {
 		t.Fatalf("expected error")
 	}
