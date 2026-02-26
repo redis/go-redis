@@ -13,9 +13,9 @@ import (
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
-// TODO ADD TLS CONFIGS
 // TestTLSConfigurationsPushNotifications tests push notifications with different TLS configurations
-func ТestTLSConfigurationsPushNotifications(t *testing.T) {
+func TestTLSConfigurationsPushNotifications(t *testing.T) {
+	t.Skip("Test disabled due to tls environment missing in test environment")
 	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
 		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
 	}
@@ -74,9 +74,14 @@ func ТestTLSConfigurationsPushNotifications(t *testing.T) {
 	for _, tlsTest := range tlsConfigs {
 		t.Run(tlsTest.name, func(t *testing.T) {
 			// Setup: Create fresh database and client factory for THIS TLS config test
-			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 			defer cleanup()
-			t.Logf("[TLS-CONFIGS-%s] Created test database with bdb_id: %d", tlsTest.name, bdbID)
+			t.Logf("[TLS-CONFIGS-%s] Created test database with bdb_id: %d (mode: %s)", tlsTest.name, bdbID, testMode.Mode)
+
+			// Skip this test if using proxy mock (requires real fault injector)
+			if testMode.IsProxyMock() {
+				t.Skip("Skipping TLS config test - requires real fault injector")
+			}
 
 			// Get endpoint config from factory (now connected to new database)
 			endpointConfig := factory.GetConfig()

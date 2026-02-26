@@ -14,6 +14,9 @@ import (
 	"github.com/redis/go-redis/v9/logging"
 )
 
+// PoolNameMain is the name used for the main connection pool in metrics.
+const PoolNameMain = "main"
+
 // handoffWorkerManager manages background workers and queue for connection handoffs
 type handoffWorkerManager struct {
 	// Event-driven handoff support
@@ -423,6 +426,10 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 		conn.SetRelaxedTimeoutWithDeadline(relaxedTimeout, relaxedTimeout, deadline)
 
 		hwm.logger().Infof(context.Background(), logs.ApplyingRelaxedTimeoutDueToPostHandoff(connID, relaxedTimeout, deadline.Format("15:04:05.000")))
+		// Record relaxed timeout metric (post-handoff)
+		if relaxedTimeoutCallback := pool.GetMetricConnectionRelaxedTimeoutCallback(); relaxedTimeoutCallback != nil {
+			relaxedTimeoutCallback(ctx, 1, conn, PoolNameMain, "HANDOFF")
+		}
 	}
 
 	// Replace the connection and execute initialization
@@ -448,6 +455,11 @@ func (hwm *handoffWorkerManager) performHandoffInternal(
 	hwm.logger().Infof(ctx, logs.HandoffSucceeded(connID, newEndpoint))
 
 	// successfully completed the handoff, no retry needed and no error
+	// Notify metrics: connection handoff succeeded
+	if handoffCallback := pool.GetMetricConnectionHandoffCallback(); handoffCallback != nil {
+		handoffCallback(ctx, conn, PoolNameMain)
+	}
+
 	return false, nil
 }
 
@@ -487,7 +499,7 @@ func (hwm *handoffWorkerManager) closeConnFromRequest(ctx context.Context, reque
 	} else {
 		errClose := conn.Close() // Close the connection if no pool provided
 		if errClose != nil {
-			internal.Logger.Printf(ctx, "redis: failed to close connection: %v", errClose)
+			hwm.logger().Errorf(ctx, "redis: failed to close connection: %v", errClose)
 		}
 		hwm.logger().Warnf(ctx, logs.NoPoolProvidedCannotRemove(conn.GetID(), err))
 	}

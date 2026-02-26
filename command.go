@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"regexp"
 	"strconv"
@@ -36,6 +37,7 @@ var keylessCommands = map[string]struct{}{
 	"failover":     {},
 	"function":     {},
 	"hello":        {},
+	"hotkeys":      {},
 	"latency":      {},
 	"lolwut":       {},
 	"module":       {},
@@ -63,6 +65,7 @@ var keylessCommands = map[string]struct{}{
 	"subscribe":    {},
 	"swapdb":       {},
 	"sync":         {},
+	"time":         {},
 	"unsubscribe":  {},
 	"unwatch":      {},
 	"wait":         {},
@@ -150,6 +153,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeHotKeys
 )
 
 type (
@@ -2003,10 +2007,7 @@ func (cmd *StringStructMapCmd) readReply(rd *proto.Reader) error {
 func (cmd *StringStructMapCmd) Clone() Cmder {
 	var val map[string]struct{}
 	if cmd.val != nil {
-		val = make(map[string]struct{}, len(cmd.val))
-		for k := range cmd.val {
-			val[k] = struct{}{}
-		}
+		val = maps.Clone(cmd.val)
 	}
 	return &StringStructMapCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -2894,6 +2895,13 @@ type XInfoStream struct {
 	FirstEntry           XMessage
 	LastEntry            XMessage
 	RecordedFirstEntryID string
+
+	IDMPDuration   int64
+	IDMPMaxSize    int64
+	PIDsTracked    int64
+	IIDsTracked    int64
+	IIDsAdded      int64
+	IIDsDuplicates int64
 }
 
 var _ Cmder = (*XInfoStreamCmd)(nil)
@@ -2987,6 +2995,36 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return err
 			}
+		case "idmp-duration":
+			cmd.val.IDMPDuration, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "idmp-maxsize":
+			cmd.val.IDMPMaxSize, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "pids-tracked":
+			cmd.val.PIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-tracked":
+			cmd.val.IIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-added":
+			cmd.val.IIDsAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-duplicates":
+			cmd.val.IIDsDuplicates, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM reply", key)
 		}
@@ -3050,6 +3088,12 @@ type XInfoStreamFull struct {
 	Entries              []XMessage
 	Groups               []XInfoStreamGroup
 	RecordedFirstEntryID string
+	IDMPDuration         int64
+	IDMPMaxSize          int64
+	PIDsTracked          int64
+	IIDsTracked          int64
+	IIDsAdded            int64
+	IIDsDuplicates       int64
 }
 
 type XInfoStreamGroup struct {
@@ -3168,6 +3212,36 @@ func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
 			}
 		case "recorded-first-entry-id":
 			cmd.val.RecordedFirstEntryID, err = rd.ReadString()
+			if err != nil {
+				return err
+			}
+		case "idmp-duration":
+			cmd.val.IDMPDuration, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "idmp-maxsize":
+			cmd.val.IDMPMaxSize, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "pids-tracked":
+			cmd.val.PIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-tracked":
+			cmd.val.IIDsTracked, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-added":
+			cmd.val.IIDsAdded, err = rd.ReadInt()
+			if err != nil {
+				return err
+			}
+		case "iids-duplicates":
+			cmd.val.IIDsDuplicates, err = rd.ReadInt()
 			if err != nil {
 				return err
 			}
@@ -4832,6 +4906,243 @@ func (cmd *LatencyCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &LatencyCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//-----------------------------------------------------------------------
+
+// HotKeysSlotRange represents a slot or slot range in the response.
+// Single element slice = individual slot, two element slice = slot range [start, end].
+type HotKeysSlotRange []int64
+
+// HotKeysKeyEntry represents a hot key entry with its metric value.
+type HotKeysKeyEntry struct {
+	Key   string
+	Value interface{} // Can be int64 or string
+}
+
+// HotKeysResult represents the response data from HOTKEYS GET command.
+// Field names match the Redis response format.
+type HotKeysResult struct {
+	TrackingActive                       bool
+	SampleRatio                          uint8
+	SelectedSlots                        []HotKeysSlotRange
+	SampledCommandsSelectedSlots         time.Duration // Present when sample-ratio > 1 and selected-slots is not empty
+	AllCommandsSelectedSlots             time.Duration // Present when selected-slots is not empty
+	AllCommandsAllSlots                  time.Duration
+	NetBytesSampledCommandsSelectedSlots int64 // Present when sample-ratio > 1 and selected-slots is not empty
+	NetBytesAllCommandsSelectedSlots     int64 // Present when selected-slots is not empty
+	NetBytesAllCommandsAllSlots          int64
+	CollectionStartTime                  time.Time
+	CollectionDuration                   time.Duration
+	UsedCPUSys                           time.Duration
+	UsedCPUUser                          time.Duration
+	TotalNetBytes                        int64
+	ByCPUTime                            []HotKeysKeyEntry
+	ByNetBytes                           []HotKeysKeyEntry
+}
+
+type HotKeysCmd struct {
+	baseCmd
+
+	val *HotKeysResult
+}
+
+var _ Cmder = (*HotKeysCmd)(nil)
+
+func NewHotKeysCmd(ctx context.Context, args ...interface{}) *HotKeysCmd {
+	return &HotKeysCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeHotKeys,
+		},
+	}
+}
+
+func (cmd *HotKeysCmd) SetVal(val *HotKeysResult) {
+	cmd.val = val
+}
+
+func (cmd *HotKeysCmd) Val() *HotKeysResult {
+	return cmd.val
+}
+
+func (cmd *HotKeysCmd) Result() (*HotKeysResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *HotKeysCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
+	// HOTKEYS GET response is wrapped in an array for aggregation support
+	arrayLen, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	if arrayLen == 0 {
+		// Empty array means no tracking was started or after reset
+		cmd.val = nil
+		return nil
+	}
+
+	// Read the first (and typically only) element which is a map
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	result := &HotKeysResult{}
+	data := make(map[string]interface{}, n)
+
+	for i := 0; i < n; i++ {
+		k, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		v, err := rd.ReadReply()
+		if err != nil {
+			if err == Nil {
+				data[k] = Nil
+				continue
+			}
+			if err, ok := err.(proto.RedisError); ok {
+				data[k] = err
+				continue
+			}
+			return err
+		}
+		data[k] = v
+	}
+
+	if v, ok := data["tracking-active"].(int64); ok {
+		result.TrackingActive = v == 1
+	}
+	if v, ok := data["sample-ratio"].(int64); ok {
+		result.SampleRatio = uint8(v)
+	}
+	if v, ok := data["selected-slots"].([]interface{}); ok {
+		result.SelectedSlots = make([]HotKeysSlotRange, 0, len(v))
+		for _, slot := range v {
+			switch s := slot.(type) {
+			case int64:
+				// Single slot
+				result.SelectedSlots = append(result.SelectedSlots, HotKeysSlotRange{s})
+			case []interface{}:
+				// Slot range
+				slotRange := make(HotKeysSlotRange, 0, len(s))
+				for _, sr := range s {
+					if val, ok := sr.(int64); ok {
+						slotRange = append(slotRange, val)
+					}
+				}
+				result.SelectedSlots = append(result.SelectedSlots, slotRange)
+			}
+		}
+	}
+	if v, ok := data["sampled-commands-selected-slots-us"].(int64); ok {
+		result.SampledCommandsSelectedSlots = time.Duration(v) * time.Microsecond
+	}
+	if v, ok := data["all-commands-selected-slots-us"].(int64); ok {
+		result.AllCommandsSelectedSlots = time.Duration(v) * time.Microsecond
+	}
+	if v, ok := data["all-commands-all-slots-us"].(int64); ok {
+		result.AllCommandsAllSlots = time.Duration(v) * time.Microsecond
+	}
+	if v, ok := data["net-bytes-sampled-commands-selected-slots"].(int64); ok {
+		result.NetBytesSampledCommandsSelectedSlots = v
+	}
+	if v, ok := data["net-bytes-all-commands-selected-slots"].(int64); ok {
+		result.NetBytesAllCommandsSelectedSlots = v
+	}
+	if v, ok := data["net-bytes-all-commands-all-slots"].(int64); ok {
+		result.NetBytesAllCommandsAllSlots = v
+	}
+	if v, ok := data["collection-start-time-unix-ms"].(int64); ok {
+		result.CollectionStartTime = time.UnixMilli(v)
+	}
+	if v, ok := data["collection-duration-ms"].(int64); ok {
+		result.CollectionDuration = time.Duration(v) * time.Millisecond
+	}
+	if v, ok := data["used-cpu-sys-ms"].(int64); ok {
+		result.UsedCPUSys = time.Duration(v) * time.Millisecond
+	}
+	if v, ok := data["used-cpu-user-ms"].(int64); ok {
+		result.UsedCPUUser = time.Duration(v) * time.Millisecond
+	}
+	if v, ok := data["total-net-bytes"].(int64); ok {
+		result.TotalNetBytes = v
+	}
+
+	if v, ok := data["by-cpu-time-us"].([]interface{}); ok {
+		result.ByCPUTime = parseHotKeysKeyEntries(v)
+	}
+
+	if v, ok := data["by-net-bytes"].([]interface{}); ok {
+		result.ByNetBytes = parseHotKeysKeyEntries(v)
+	}
+
+	cmd.val = result
+	return nil
+}
+
+// parseHotKeysKeyEntries parses the key-value pairs from HOTKEYS GET response.
+func parseHotKeysKeyEntries(v []interface{}) []HotKeysKeyEntry {
+	entries := make([]HotKeysKeyEntry, 0, len(v)/2)
+	for i := 0; i < len(v); i += 2 {
+		if i+1 < len(v) {
+			key, keyOk := v[i].(string)
+			if keyOk {
+				entries = append(entries, HotKeysKeyEntry{
+					Key:   key,
+					Value: v[i+1], // Can be int64 or string
+				})
+			}
+		}
+	}
+	return entries
+}
+
+func (cmd *HotKeysCmd) Clone() Cmder {
+	var val *HotKeysResult
+	if cmd.val != nil {
+		val = &HotKeysResult{
+			TrackingActive:                       cmd.val.TrackingActive,
+			SampleRatio:                          cmd.val.SampleRatio,
+			SampledCommandsSelectedSlots:         cmd.val.SampledCommandsSelectedSlots,
+			AllCommandsSelectedSlots:             cmd.val.AllCommandsSelectedSlots,
+			AllCommandsAllSlots:                  cmd.val.AllCommandsAllSlots,
+			NetBytesSampledCommandsSelectedSlots: cmd.val.NetBytesSampledCommandsSelectedSlots,
+			NetBytesAllCommandsSelectedSlots:     cmd.val.NetBytesAllCommandsSelectedSlots,
+			NetBytesAllCommandsAllSlots:          cmd.val.NetBytesAllCommandsAllSlots,
+			CollectionStartTime:                  cmd.val.CollectionStartTime,
+			CollectionDuration:                   cmd.val.CollectionDuration,
+			UsedCPUSys:                           cmd.val.UsedCPUSys,
+			UsedCPUUser:                          cmd.val.UsedCPUUser,
+			TotalNetBytes:                        cmd.val.TotalNetBytes,
+		}
+		if cmd.val.SelectedSlots != nil {
+			val.SelectedSlots = make([]HotKeysSlotRange, len(cmd.val.SelectedSlots))
+			for i, sr := range cmd.val.SelectedSlots {
+				val.SelectedSlots[i] = make(HotKeysSlotRange, len(sr))
+				copy(val.SelectedSlots[i], sr)
+			}
+		}
+		if cmd.val.ByCPUTime != nil {
+			val.ByCPUTime = make([]HotKeysKeyEntry, len(cmd.val.ByCPUTime))
+			copy(val.ByCPUTime, cmd.val.ByCPUTime)
+		}
+		if cmd.val.ByNetBytes != nil {
+			val.ByNetBytes = make([]HotKeysKeyEntry, len(cmd.val.ByNetBytes))
+			copy(val.ByNetBytes, cmd.val.ByNetBytes)
+		}
+	}
+	return &HotKeysCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
@@ -7409,6 +7720,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return slowLogCmd.Val(), slowLogCmd.Err()
+			}
+		case CmdTypeHotKeys:
+			if hotKeysCmd, ok := cmd.(interface {
+				Val() *HotKeysResult
+				Err() error
+			}); ok {
+				return hotKeysCmd.Val(), hotKeysCmd.Err()
 			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {

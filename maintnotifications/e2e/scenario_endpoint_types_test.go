@@ -58,15 +58,21 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 	for _, endpointTest := range endpointTypes {
 		t.Run(endpointTest.name, func(t *testing.T) {
 			// Setup: Create fresh database and client factory for THIS endpoint type test
-			bdbID, factory, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
 			defer cleanup()
-			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d", endpointTest.name, bdbID)
+			t.Logf("[ENDPOINT-TYPES-%s] Created test database with bdb_id: %d (mode: %s)", endpointTest.name, bdbID, testMode.Mode)
 
-			// Create fault injector
-			faultInjector, err := CreateTestFaultInjector()
+			// Skip this test if using proxy mock (requires real fault injector)
+			if testMode.IsProxyMock() {
+				t.Skip("Skipping endpoint type test - requires real fault injector")
+			}
+
+			// Create fault injector with cleanup
+			faultInjector, fiCleanup, err := CreateTestFaultInjectorWithCleanup()
 			if err != nil {
 				t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
 			}
+			defer fiCleanup()
 
 			// Get endpoint config from factory (now connected to new database)
 			endpointConfig := factory.GetConfig()
@@ -245,10 +251,22 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("MIGRATED notification received for %s. %v", endpointTest.name, migratedData)
 
 			// Complete migration with bind action
+			// Pass endpoint_type to the bind action so it knows what format to use
+			var endpointTypeStr string
+			switch endpointTest.endpointType {
+			case maintnotifications.EndpointTypeExternalIP:
+				endpointTypeStr = "external-ip"
+			case maintnotifications.EndpointTypeExternalFQDN:
+				endpointTypeStr = "external-fqdn"
+			case maintnotifications.EndpointTypeNone:
+				endpointTypeStr = "none"
+			}
+
 			bindResp, err := faultInjector.TriggerAction(ctx, ActionRequest{
 				Type: "bind",
 				Parameters: map[string]interface{}{
-					"bdb_id": endpointConfig.BdbID,
+					"bdb_id":        endpointConfig.BdbID,
+					"endpoint_type": endpointTypeStr,
 				},
 			})
 			if err != nil {
@@ -287,12 +305,14 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 				var expectedAddress string
 				hostParts := strings.SplitN(endpointConfig.Host, ".", 2)
 				if len(hostParts) != 2 {
-					e("invalid host %s", endpointConfig.Host)
+					// Docker proxy setup uses "localhost" without domain suffix
+					// In this case, skip FQDN validation
+					p("Skipping FQDN validation for Docker proxy setup (host=%s)", endpointConfig.Host)
 				} else {
 					expectedAddress = hostParts[1]
-				}
-				if address != expectedAddress {
-					e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
+					if address != expectedAddress {
+						e("invalid fqdn, expected: %s, got: %s", expectedAddress, address)
+					}
 				}
 
 			case maintnotifications.EndpointTypeExternalIP:
@@ -317,7 +337,7 @@ func TestEndpointTypesPushNotifications(t *testing.T) {
 			p("Bind action completed for %s: %s %s", endpointTest.name, bindStatus.Status, actionOutputIfFailed(bindStatus))
 
 			// Continue traffic for analysis
-			time.Sleep(30 * time.Second)
+			time.Sleep(60 * time.Second)
 			commandsRunner.Stop()
 
 			// Analyze results for this endpoint type

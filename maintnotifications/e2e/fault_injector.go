@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,14 @@ import (
 
 // ActionType represents the type of fault injection action
 type ActionType string
+
+// ActionListItem represents a single action in the list actions response
+type ActionListItem struct {
+	JobID       string `json:"job_id"`
+	ActionType  string `json:"action_type"`
+	Status      string `json:"status"`
+	SubmittedAt string `json:"submitted_at"`
+}
 
 const (
 	// Redis cluster actions
@@ -39,7 +48,7 @@ const (
 	// Redis configuration actions
 	ActionConfigChange    ActionType = "config_change"
 	ActionMaintenanceMode ActionType = "maintenance_mode"
-	ActionSlotMigration   ActionType = "slot_migration"
+	ActionSlotMigration   ActionType = "slot_migrate"
 
 	// Sequence and complex actions
 	ActionSequence       ActionType = "sequence_of_actions"
@@ -48,7 +57,80 @@ const (
 	// Database management actions
 	ActionDeleteDatabase ActionType = "delete_database"
 	ActionCreateDatabase ActionType = "create_database"
+	ActionFailover       ActionType = "failover"
+	ActionMigrate        ActionType = "migrate"
+	ActionBind           ActionType = "bind"
+
+	// Slot migrate action (OSS Cluster API testing)
+	ActionSlotMigrate ActionType = "slot_migrate"
 )
+
+// SlotMigrateEffect represents the effect type for slot migration
+type SlotMigrateEffect string
+
+const (
+	// SlotMigrateEffectRemoveAdd migrates all shards from source node to empty node
+	// Result: One endpoint removed, one endpoint added
+	SlotMigrateEffectRemoveAdd SlotMigrateEffect = "remove-add"
+
+	// SlotMigrateEffectRemove migrates all shards from source node to existing node
+	// Result: One endpoint removed
+	SlotMigrateEffectRemove SlotMigrateEffect = "remove"
+
+	// SlotMigrateEffectAdd migrates one shard to empty node
+	// Result: One endpoint added
+	SlotMigrateEffectAdd SlotMigrateEffect = "add"
+
+	// SlotMigrateEffectSlotShuffle migrates one shard between existing nodes
+	// Result: Slots move, endpoints unchanged
+	SlotMigrateEffectSlotShuffle SlotMigrateEffect = "slot-shuffle"
+)
+
+// SlotMigrateVariant represents the mechanism to achieve the slot migration effect
+type SlotMigrateVariant string
+
+const (
+	// SlotMigrateVariantDefault is an alias for migrate
+	SlotMigrateVariantDefault SlotMigrateVariant = "default"
+
+	// SlotMigrateVariantMigrate uses rladmin migrate to move shards
+	SlotMigrateVariantMigrate SlotMigrateVariant = "migrate"
+
+	// SlotMigrateVariantFailover triggers failover to swap master/replica roles
+	// Requires replication to be enabled
+	SlotMigrateVariantFailover SlotMigrateVariant = "failover"
+)
+
+// SlotMigrateRequest represents a request to trigger a slot migration
+type SlotMigrateRequest struct {
+	Effect       SlotMigrateEffect  `json:"effect"`
+	BdbID        string             `json:"bdb_id"`
+	ClusterIndex int                `json:"cluster_index,omitempty"`
+	Trigger      SlotMigrateVariant `json:"variant,omitempty"`
+	SourceNode   *int               `json:"source_node,omitempty"`
+	TargetNode   *int               `json:"target_node,omitempty"`
+}
+
+// SlotMigrateTrigger represents a trigger configuration for slot migration
+type SlotMigrateTrigger struct {
+	Name         string                          `json:"name"`
+	Description  string                          `json:"description"`
+	Requirements []SlotMigrateTriggerRequirement `json:"requirements"`
+}
+
+// SlotMigrateTriggerRequirement represents database configuration requirements
+type SlotMigrateTriggerRequirement struct {
+	DBConfig    map[string]interface{} `json:"dbconfig"`
+	Cluster     map[string]interface{} `json:"cluster"`
+	Description string                 `json:"description"`
+}
+
+// SlotMigrateTriggersResponse represents the response from GET /slot-migrate
+type SlotMigrateTriggersResponse struct {
+	Effect   SlotMigrateEffect      `json:"effect"`
+	Cluster  map[string]interface{} `json:"cluster"`
+	Triggers []SlotMigrateTrigger   `json:"triggers"`
+}
 
 // ActionStatus represents the status of an action
 type ActionStatus string
@@ -114,11 +196,16 @@ func (c *FaultInjectorClient) GetBaseURL() string {
 	return c.baseURL
 }
 
+// ActionsListResponse is the wrapper response from the /action GET endpoint
+type ActionsListResponse struct {
+	Actions []ActionListItem `json:"actions"`
+}
+
 // ListActions lists all available actions
-func (c *FaultInjectorClient) ListActions(ctx context.Context) ([]ActionType, error) {
-	var actions []ActionType
-	err := c.request(ctx, "GET", "/actions", nil, &actions)
-	return actions, err
+func (c *FaultInjectorClient) ListActions(ctx context.Context) ([]ActionListItem, error) {
+	var response ActionsListResponse
+	err := c.request(ctx, "GET", "/action", nil, &response)
+	return response.Actions, err
 }
 
 // TriggerAction triggers a specific action
@@ -194,19 +281,14 @@ func (c *FaultInjectorClient) TriggerClusterFailover(ctx context.Context, nodeID
 	})
 }
 
-// TriggerClusterReshard triggers cluster resharding
+// TriggerClusterReshard is DEPRECATED - use TriggerSlotMigrateSlotShuffle instead
+// The fault injector does not support a 'cluster_reshard' action type.
+// Use the /slot-migrate endpoint with effect=slot-shuffle instead.
 func (c *FaultInjectorClient) TriggerClusterReshard(ctx context.Context, slots []int, sourceNode, targetNode string) (*ActionResponse, error) {
-	return c.TriggerAction(ctx, ActionRequest{
-		Type: ActionClusterReshard,
-		Parameters: map[string]interface{}{
-			"slots":       slots,
-			"source_node": sourceNode,
-			"target_node": targetNode,
-		},
-	})
+	return nil, fmt.Errorf("TriggerClusterReshard is deprecated: action type 'cluster_reshard' does not exist in fault injector. Use TriggerSlotMigrateSlotShuffle instead")
 }
 
-// TriggerSlotMigration triggers migration of specific slots
+// TriggerSlotMigration triggers migration of specific slots (legacy API)
 func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlot, endSlot int, sourceNode, targetNode string) (*ActionResponse, error) {
 	return c.TriggerAction(ctx, ActionRequest{
 		Type: ActionSlotMigration,
@@ -216,6 +298,127 @@ func (c *FaultInjectorClient) TriggerSlotMigration(ctx context.Context, startSlo
 			"source_node": sourceNode,
 			"target_node": targetNode,
 		},
+	})
+}
+
+// Slot Migrate Actions (OSS Cluster API Testing)
+// These methods use the /slot-migrate endpoint for testing cluster topology changes
+
+// GetSlotMigrateTriggers returns available triggers for a slot migration effect
+// This is useful for discovering what database configurations are needed for each effect/variant
+func (c *FaultInjectorClient) GetSlotMigrateTriggers(ctx context.Context, effect SlotMigrateEffect, clusterIndex int) (*SlotMigrateTriggersResponse, error) {
+	var response SlotMigrateTriggersResponse
+	path := fmt.Sprintf("/slot-migrate?effect=%s&cluster_index=%d", effect, clusterIndex)
+	fmt.Printf("[FI] GET slot-migrate: %+v\n", path)
+	err := c.request(ctx, "GET", path, nil, &response)
+	return &response, err
+}
+
+// GetSlotMigrateTriggersRaw returns the raw JSON response from GET /slot-migrate
+// This is useful for debugging when the response structure doesn't match expectations
+func (c *FaultInjectorClient) GetSlotMigrateTriggersRaw(ctx context.Context, effect SlotMigrateEffect, clusterIndex int) ([]byte, error) {
+	path := fmt.Sprintf("/slot-migrate?effect=%s&cluster_index=%d", effect, clusterIndex)
+	url := c.baseURL + path
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return respBody, nil
+}
+
+// TriggerSlotMigrate triggers a slot migration with the specified effect and variant
+// This is the new API for testing OSS Cluster API client behavior during endpoint changes
+//
+// Effects:
+//   - remove-add: One endpoint removed, one added (migrate all shards to empty node)
+//   - remove: One endpoint removed (migrate all shards to existing node)
+//   - add: One endpoint added (migrate one shard to empty node)
+//   - slot-shuffle: Slots moved without endpoint change (migrate one shard between existing nodes)
+//
+// Variants:
+//   - default/migrate: Use rladmin migrate to move shards
+//   - maintenance_mode: Put node in maintenance mode (only for remove-add, remove)
+//   - failover: Trigger failover to swap master/replica roles (requires replication)
+func (c *FaultInjectorClient) TriggerSlotMigrate(ctx context.Context, req SlotMigrateRequest) (*ActionResponse, error) {
+	var response ActionResponse
+
+	// Build query parameters
+	path := fmt.Sprintf("/slot-migrate?effect=%s&bdb_id=%s&cluster_index=%d",
+		req.Effect, req.BdbID, req.ClusterIndex)
+
+	if req.Trigger != "" {
+		path += fmt.Sprintf("&trigger=%s", req.Trigger)
+	}
+	if req.SourceNode != nil {
+		path += fmt.Sprintf("&source_node=%d", *req.SourceNode)
+	}
+	if req.TargetNode != nil {
+		path += fmt.Sprintf("&target_node=%d", *req.TargetNode)
+	}
+
+	fmt.Printf("[FI] POST slot-migrate: %+v\n %+v\n", path, req)
+	err := c.request(ctx, "POST", path, nil, &response)
+	return &response, err
+}
+
+// TriggerSlotMigrateRemoveAdd triggers a remove-add slot migration
+// This migrates all shards from source node to an empty node
+// Result: One endpoint removed, one endpoint added
+func (c *FaultInjectorClient) TriggerSlotMigrateRemoveAdd(ctx context.Context, bdbID string, trigger SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectRemoveAdd,
+		BdbID:   bdbID,
+		Trigger: trigger,
+	})
+}
+
+// TriggerSlotMigrateRemove triggers a remove slot migration
+// This migrates all shards from source node to an existing node
+// Result: One endpoint removed
+func (c *FaultInjectorClient) TriggerSlotMigrateRemove(ctx context.Context, bdbID string, trigger SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectRemove,
+		BdbID:   bdbID,
+		Trigger: trigger,
+	})
+}
+
+// TriggerSlotMigrateAdd triggers an add slot migration
+// This migrates one shard to an empty node
+// Result: One endpoint added
+func (c *FaultInjectorClient) TriggerSlotMigrateAdd(ctx context.Context, bdbID string, trigger SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectAdd,
+		BdbID:   bdbID,
+		Trigger: trigger,
+	})
+}
+
+// TriggerSlotMigrateSlotShuffle triggers a slot-shuffle migration
+// This migrates one shard between existing nodes
+// Result: Slots move, endpoints unchanged
+func (c *FaultInjectorClient) TriggerSlotMigrateSlotShuffle(ctx context.Context, bdbID string, trigger SlotMigrateVariant) (*ActionResponse, error) {
+	return c.TriggerSlotMigrate(ctx, SlotMigrateRequest{
+		Effect:  SlotMigrateEffectSlotShuffle,
+		BdbID:   bdbID,
+		Trigger: trigger,
 	})
 }
 
@@ -427,6 +630,116 @@ func (c *FaultInjectorClient) CreateDatabaseFromMap(ctx context.Context, cluster
 			"database_config": databaseConfig,
 		},
 	})
+}
+
+// isPortUnavailableError checks if the error is a port unavailable error
+func isPortUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "port_unavailable") || strings.Contains(errStr, "Unavailable or invalid port")
+}
+
+// CreateDatabaseWithPortRetry creates a new database, retrying with incremented port numbers if the port is unavailable
+// Parameters:
+//   - clusterIndex: The index of the cluster
+//   - databaseConfig: The database configuration as a map (must contain "port" key)
+//   - maxRetries: Maximum number of port increments to try (default 100 if <= 0)
+//
+// Returns the ActionResponse and the final port used
+func (c *FaultInjectorClient) CreateDatabaseWithPortRetry(ctx context.Context, clusterIndex int, databaseConfig map[string]interface{}, maxRetries int) (*ActionResponse, int, error) {
+	if maxRetries <= 0 {
+		maxRetries = 100
+	}
+
+	// Get the initial port from the config
+	port, ok := databaseConfig["port"]
+	if !ok {
+		// No port specified, just try once
+		resp, err := c.CreateDatabaseFromMap(ctx, clusterIndex, databaseConfig)
+		return resp, 0, err
+	}
+
+	// Convert port to int
+	var currentPort int
+	switch p := port.(type) {
+	case int:
+		currentPort = p
+	case int64:
+		currentPort = int(p)
+	case float64:
+		currentPort = int(p)
+	default:
+		// Can't handle this port type, just try once
+		resp, err := c.CreateDatabaseFromMap(ctx, clusterIndex, databaseConfig)
+		return resp, 0, err
+	}
+
+	// Try creating the database, incrementing port on failure
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Update the port in the config
+		databaseConfig["port"] = currentPort
+
+		resp, err := c.CreateDatabaseFromMap(ctx, clusterIndex, databaseConfig)
+		if err == nil {
+			return resp, currentPort, nil
+		}
+
+		// Check if it's a port unavailable error
+		if !isPortUnavailableError(err) {
+			// Different error, don't retry
+			return nil, currentPort, err
+		}
+
+		// Port unavailable, try next port
+		if DebugE2E() {
+			fmt.Printf("[FI] Port %d unavailable, trying port %d\n", currentPort, currentPort+1)
+		}
+		currentPort++
+	}
+
+	return nil, currentPort, fmt.Errorf("failed to create database after %d port retries (last port tried: %d)", maxRetries, currentPort-1)
+}
+
+// CreateDatabaseConfigWithPortRetry creates a new database using DatabaseConfig, retrying with incremented port numbers if the port is unavailable
+// Parameters:
+//   - clusterIndex: The index of the cluster
+//   - databaseConfig: The database configuration
+//   - maxRetries: Maximum number of port increments to try (default 100 if <= 0)
+//
+// Returns the ActionResponse and the final port used
+func (c *FaultInjectorClient) CreateDatabaseConfigWithPortRetry(ctx context.Context, clusterIndex int, databaseConfig DatabaseConfig, maxRetries int) (*ActionResponse, int, error) {
+	if maxRetries <= 0 {
+		maxRetries = 100
+	}
+
+	currentPort := databaseConfig.Port
+
+	// Try creating the database, incrementing port on failure
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Update the port in the config
+		databaseConfig.Port = currentPort
+
+		resp, err := c.CreateDatabase(ctx, clusterIndex, databaseConfig)
+		if err == nil {
+			return resp, currentPort, nil
+		}
+
+		// Check if it's a port unavailable error
+		if !isPortUnavailableError(err) {
+			// Different error, don't retry
+			return nil, currentPort, err
+		}
+
+		// Port unavailable, try next port
+		if DebugE2E() {
+			fmt.Printf("[FI] Port %d unavailable, trying port %d\n", currentPort, currentPort+1)
+		}
+		currentPort++
+	}
+
+	return nil, currentPort, fmt.Errorf("failed to create database after %d port retries (last port tried: %d)", maxRetries, currentPort-1)
 }
 
 // Complex Actions
@@ -641,4 +954,64 @@ func FormatSlotRange(start, end int) string {
 		return strconv.Itoa(start)
 	}
 	return fmt.Sprintf("%d-%d", start, end)
+}
+
+// DebugE2E returns true if E2E_DEBUG environment variable is set to "true"
+// Use this to control verbose debug logging in e2e tests
+func DebugE2E() bool {
+	return os.Getenv("E2E_DEBUG") == "true"
+}
+
+// formatSMigratingNotification formats an SMIGRATING notification in RESP3 wire format
+func formatSMigratingNotification(seqID int64, slots ...string) string {
+	// Format: ["SMIGRATING", seqID, slot1, slot2, ...]
+	parts := []string{
+		fmt.Sprintf(">%d\r\n", len(slots)+2),
+		"$10\r\nSMIGRATING\r\n",
+		fmt.Sprintf(":%d\r\n", seqID),
+	}
+
+	for _, slot := range slots {
+		parts = append(parts, fmt.Sprintf("$%d\r\n%s\r\n", len(slot), slot))
+	}
+
+	return strings.Join(parts, "")
+}
+
+// formatSMigratedNotification formats an SMIGRATED notification in RESP3 wire format
+func formatSMigratedNotification(seqID int64, endpoints ...string) string {
+	// Correct Format: ["SMIGRATED", SeqID, [[host:port, slots], [host:port, slots], ...]]
+	// RESP3 wire format:
+	//   >3
+	//   +SMIGRATED
+	//   :SeqID
+	//   *<num_entries>
+	//     *2
+	//       +<host:port>
+	//       +<slots-or-ranges>
+	// Each endpoint is formatted as: "host:port slot1,slot2,range1-range2"
+	parts := []string{">3\r\n"}
+	parts = append(parts, "+SMIGRATED\r\n")
+	parts = append(parts, fmt.Sprintf(":%d\r\n", seqID))
+
+	count := len(endpoints)
+	parts = append(parts, fmt.Sprintf("*%d\r\n", count))
+
+	for _, endpoint := range endpoints {
+		// Split endpoint into host:port and slots
+		// endpoint format: "host:port slot1,slot2,range1-range2"
+		endpointParts := strings.SplitN(endpoint, " ", 2)
+		if len(endpointParts) != 2 {
+			continue
+		}
+		hostPort := endpointParts[0]
+		slots := endpointParts[1]
+
+		// Each entry is an array with 2 elements
+		parts = append(parts, "*2\r\n")
+		parts = append(parts, fmt.Sprintf("+%s\r\n", hostPort))
+		parts = append(parts, fmt.Sprintf("+%s\r\n", slots))
+	}
+
+	return strings.Join(parts, "")
 }

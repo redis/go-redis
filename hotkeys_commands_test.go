@@ -1,0 +1,214 @@
+package redis_test
+
+import (
+	"context"
+	"time"
+
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
+
+	"github.com/redis/go-redis/v9"
+)
+
+var _ = Describe("HotKeys Commands", func() {
+	ctx := context.TODO()
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	Describe("HOTKEYS", func() {
+		It("should start, get, stop, and reset hotkeys tracking", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics:  []redis.HotKeysMetric{redis.HotKeysMetricCPU, redis.HotKeysMetricNET},
+				Count:    10,
+				Duration: 0,
+				Sample:   1,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+			Expect(start.Val()).To(Equal("OK"))
+
+			for i := 0; i < 100; i++ {
+				client.Set(ctx, "hotkey1", "value1", 0)
+				client.Get(ctx, "hotkey1")
+			}
+			for i := 0; i < 50; i++ {
+				client.Set(ctx, "hotkey2", "value2", 0)
+				client.Get(ctx, "hotkey2")
+			}
+			for i := 0; i < 25; i++ {
+				client.Set(ctx, "hotkey3", "value3", 0)
+				client.Get(ctx, "hotkey3")
+			}
+
+			time.Sleep(100 * time.Millisecond)
+
+			get := client.HotKeysGet(ctx)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			result := get.Val()
+			Expect(result).NotTo(BeNil())
+			Expect(result.TrackingActive).To(BeTrue())
+			Expect(result.SampleRatio).To(Equal(uint8(1)))
+			// Verify that collection start time is set (not zero)
+			Expect(result.CollectionStartTime.IsZero()).To(BeFalse())
+			// Verify that we have some CPU time data after running commands
+			Expect(result.AllCommandsAllSlots).To(BeNumerically(">", 0))
+			// Verify that we have hot keys data (we ran 350 commands on 3 keys)
+			Expect(len(result.ByCPUTime)).To(BeNumerically(">", 0))
+			Expect(len(result.ByNetBytes)).To(BeNumerically(">", 0))
+			// Verify that the first hot key entry has a non-empty key
+			if len(result.ByCPUTime) > 0 {
+				Expect(result.ByCPUTime[0].Key).NotTo(BeEmpty())
+				Expect(result.ByCPUTime[0].Value).NotTo(BeNil())
+			}
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+			Expect(stop.Val()).To(Equal("OK"))
+
+			get2 := client.HotKeysGet(ctx)
+			Expect(get2.Err()).NotTo(HaveOccurred())
+			result2 := get2.Val()
+			Expect(result2).NotTo(BeNil())
+			Expect(result2.TrackingActive).To(BeFalse())
+			// After stopping, collection duration should be set
+			Expect(result2.CollectionDuration).To(BeNumerically(">", 0))
+
+			reset := client.HotKeysReset(ctx)
+			Expect(reset.Err()).NotTo(HaveOccurred())
+			Expect(reset.Val()).To(Equal("OK"))
+		})
+
+		It("should start hotkeys tracking with CPU metric only", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU},
+				Count:   5,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+			Expect(start.Val()).To(Equal("OK"))
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+		})
+
+		It("should start hotkeys tracking with NET metric only", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricNET},
+				Count:   5,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+			Expect(start.Val()).To(Equal("OK"))
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+		})
+
+		It("should start hotkeys tracking with duration", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics:  []redis.HotKeysMetric{redis.HotKeysMetricCPU, redis.HotKeysMetricNET},
+				Count:    10,
+				Duration: 2,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+			Expect(start.Val()).To(Equal("OK"))
+
+			time.Sleep(3 * time.Second)
+
+			get := client.HotKeysGet(ctx)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			result := get.Val()
+			Expect(result).NotTo(BeNil())
+			Expect(result.TrackingActive).To(BeFalse())
+		})
+
+		It("should start hotkeys tracking with sampling", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU, redis.HotKeysMetricNET},
+				Count:   10,
+				Sample:  10,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+			Expect(start.Val()).To(Equal("OK"))
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+		})
+
+		It("should error when using slots in non-cluster mode", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU, redis.HotKeysMetricNET},
+				Count:   10,
+				Slots:   []uint16{0, 1, 2, 100, 200},
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).To(HaveOccurred())
+			Expect(start.Err().Error()).To(ContainSubstring("SLOTS parameter cannot be used in non-cluster mode"))
+		})
+
+		It("should error when no metrics are specified", func() {
+			startArgs := &redis.HotKeysStartArgs{
+				Count: 10,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).To(HaveOccurred())
+			Expect(start.Err()).To(Equal(redis.ErrHotKeysNoMetrics))
+		})
+
+		It("should error when starting tracking while already active", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU},
+				Count:   10,
+			}
+			start1 := client.HotKeysStart(ctx, startArgs)
+			Expect(start1.Err()).NotTo(HaveOccurred())
+
+			start2 := client.HotKeysStart(ctx, startArgs)
+			Expect(start2.Err()).To(HaveOccurred())
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+		})
+
+		It("should error when resetting while tracking is active", func() {
+			SkipBeforeRedisVersion(8.6, "HOTKEYS commands require Redis >= 8.6")
+
+			startArgs := &redis.HotKeysStartArgs{
+				Metrics: []redis.HotKeysMetric{redis.HotKeysMetricCPU},
+				Count:   10,
+			}
+			start := client.HotKeysStart(ctx, startArgs)
+			Expect(start.Err()).NotTo(HaveOccurred())
+
+			reset := client.HotKeysReset(ctx)
+			Expect(reset.Err()).To(HaveOccurred())
+
+			stop := client.HotKeysStop(ctx)
+			Expect(stop.Err()).NotTo(HaveOccurred())
+		})
+	})
+})

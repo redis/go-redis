@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/example/pubsub
 
-go 1.18
+go 1.24
 
 replace github.com/redis/go-redis/v9 => ../..
 

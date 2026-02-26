@@ -127,5 +127,5 @@ func isSimple(b []byte) bool {
 }
 
 func isSimpleByte(c byte) bool {
-	return c >= 0x21 && c <= 0x7e
+	return c >= 0x20 && c <= 0x7e
 }
