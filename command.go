@@ -65,6 +65,7 @@ var keylessCommands = map[string]struct{}{
 	"subscribe":    {},
 	"swapdb":       {},
 	"sync":         {},
+	"time":         {},
 	"unsubscribe":  {},
 	"unwatch":      {},
 	"wait":         {},
