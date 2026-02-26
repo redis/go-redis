@@ -58,7 +58,7 @@ func ExampleParseURL() {
 }
 
 func ExampleNewFailoverClient() {
-	// See http://redis.io/topics/sentinel for instructions how to
+	// See https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel for instructions how to
 	// setup Redis Sentinel.
 	rdb := redis.NewFailoverClient(&redis.FailoverOptions{
 		MasterName:    "master",
@@ -68,7 +68,7 @@ func ExampleNewFailoverClient() {
 }
 
 func ExampleNewClusterClient() {
-	// See http://redis.io/topics/cluster-tutorial for instructions
+	// See https://redis.io/docs/latest/operate/oss_and_stack/management/scaling for instructions
 	// how to setup Redis Cluster.
 	rdb := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002", ":7003", ":7004", ":7005"},

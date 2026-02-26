@@ -1139,7 +1139,7 @@ type ClusterClient struct {
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
-// http://redis.io/topics/cluster-spec.
+// https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
