@@ -169,10 +169,10 @@ func (hm *Manager) TrackMovingOperationWithConnID(ctx context.Context, newEndpoi
 	// Use LoadOrStore for atomic check-and-set operation
 	if _, loaded := hm.activeMovingOps.LoadOrStore(key, movingOp); loaded {
 		// Duplicate MOVING notification, ignore
-		hm.logger().Debugf(context.Background(), logs.DuplicateMovingOperation(connID, newEndpoint, seqID))
+		hm.logger().Debugf(context.Background(), "%s", logs.DuplicateMovingOperation(connID, newEndpoint, seqID))
 		return nil
 	}
-	hm.logger().Debugf(context.Background(), logs.TrackingMovingOperation(connID, newEndpoint, seqID))
+	hm.logger().Debugf(context.Background(), "%s", logs.TrackingMovingOperation(connID, newEndpoint, seqID))
 
 	// Increment active operation count atomically
 	hm.activeOperationCount.Add(1)
@@ -190,11 +190,11 @@ func (hm *Manager) UntrackOperationWithConnID(seqID int64, connID uint64) {
 
 	// Remove from active operations atomically
 	if _, loaded := hm.activeMovingOps.LoadAndDelete(key); loaded {
-		hm.logger().Debugf(context.Background(), logs.UntrackingMovingOperation(connID, seqID))
+		hm.logger().Debugf(context.Background(), "%s", logs.UntrackingMovingOperation(connID, seqID))
 		// Decrement active operation count only if operation existed
 		hm.activeOperationCount.Add(-1)
 	} else {
-		hm.logger().Debugf(context.Background(), logs.OperationNotTracked(connID, seqID))
+		hm.logger().Debugf(context.Background(), "%s", logs.OperationNotTracked(connID, seqID))
 	}
 }
 
@@ -344,6 +344,8 @@ func (hm *Manager) logger() *logging.LoggerWrapper {
 		return logging.NewLoggerWrapper(hm.config.Logger)
 	}
 	return logging.LoggerWithLevel()
+}
+
 // SetClusterStateReloadCallback sets the callback function that will be called when a SMIGRATED notification is received.
 // This allows node clients to notify their parent ClusterClient to reload cluster state.
 func (hm *Manager) SetClusterStateReloadCallback(callback ClusterStateReloadCallback) {

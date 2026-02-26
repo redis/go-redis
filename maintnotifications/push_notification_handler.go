@@ -23,13 +23,13 @@ type NotificationHandler struct {
 // HandlePushNotification processes push notifications with hook support.
 func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) == 0 {
-		snh.logger().Errorf(ctx, logs.InvalidNotificationFormat(notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotificationFormat(notification))
 		return ErrInvalidNotification
 	}
 
 	notificationType, ok := notification[0].(string)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidNotificationTypeFormat(notification[0]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotificationTypeFormat(notification[0]))
 		return ErrInvalidNotification
 	}
 
@@ -79,19 +79,19 @@ func (snh *NotificationHandler) HandlePushNotification(ctx context.Context, hand
 // Expected format: ["MOVING", seqNum, timeS, endpoint]
 func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 3 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("MOVING", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("MOVING", notification))
 		return ErrInvalidNotification
 	}
 	seqID, ok := notification[1].(int64)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidSeqIDInMovingNotification(notification[1]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidSeqIDInMovingNotification(notification[1]))
 		return ErrInvalidNotification
 	}
 
 	// Extract timeS
 	timeS, ok := notification[2].(int64)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidTimeSInMovingNotification(notification[2]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidTimeSInMovingNotification(notification[2]))
 		return ErrInvalidNotification
 	}
 
@@ -105,7 +105,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			if notification[3] == nil || stringified == internal.RedisNull {
 				newEndpoint = ""
 			} else {
-				snh.logger().Errorf(ctx, logs.InvalidNewEndpointInMovingNotification(notification[3]))
+				snh.logger().Errorf(ctx, "%s", logs.InvalidNewEndpointInMovingNotification(notification[3]))
 				return ErrInvalidNotification
 			}
 		}
@@ -114,7 +114,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	// Get the connection that received this notification
 	conn := handlerCtx.Conn
 	if conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("MOVING"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("MOVING"))
 		return ErrInvalidNotification
 	}
 
@@ -123,7 +123,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	if pc, ok := conn.(*pool.Conn); ok {
 		poolConn = pc
 	} else {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("MOVING", conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("MOVING", conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
@@ -139,7 +139,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 	deadline := time.Now().Add(time.Duration(timeS) * time.Second)
 	// If newEndpoint is empty, we should schedule a handoff to the current endpoint in timeS/2 seconds
 	if newEndpoint == "" || newEndpoint == internal.RedisNull {
-		snh.logger().Debugf(ctx, logs.SchedulingHandoffToCurrentEndpoint(poolConn.GetID(), float64(timeS)/2))
+		snh.logger().Debugf(ctx, "%s", logs.SchedulingHandoffToCurrentEndpoint(poolConn.GetID(), float64(timeS)/2))
 		// same as current endpoint
 		newEndpoint = snh.manager.options.GetAddr()
 		// delay the handoff for timeS/2 seconds to the same endpoint
@@ -152,7 +152,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			}
 			if err := snh.markConnForHandoff(poolConn, newEndpoint, seqID, deadline); err != nil {
 				// Log error but don't fail the goroutine - use background context since original may be cancelled
-				snh.logger().Errorf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+				snh.logger().Errorf(context.Background(), "%s", logs.FailedToMarkForHandoff(poolConn.GetID(), err))
 				return
 			}
 
@@ -162,14 +162,14 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 			if poolConn.GetStateMachine().GetState() == pool.StateIdle {
 				if snh.manager.poolHooksRef != nil && snh.manager.poolHooksRef.workerManager != nil {
 					if err := snh.manager.poolHooksRef.workerManager.queueHandoff(poolConn); err != nil {
-						snh.logger().Errorf(context.Background(), logs.FailedToQueueHandoff(poolConn.GetID(), err))
+						snh.logger().Errorf(context.Background(), "%s", logs.FailedToQueueHandoff(poolConn.GetID(), err))
 					} else {
 						// Mark the connection as queued for handoff to prevent it from being retrieved
 						// This transitions the connection to StateUnusable
 						if err := poolConn.MarkQueuedForHandoff(); err != nil {
-							snh.logger().Errorf(context.Background(), logs.FailedToMarkForHandoff(poolConn.GetID(), err))
+							snh.logger().Errorf(context.Background(), "%s", logs.FailedToMarkForHandoff(poolConn.GetID(), err))
 						} else {
-							snh.logger().Infof(context.Background(), logs.MarkedForHandoff(poolConn.GetID()))
+							snh.logger().Infof(context.Background(), "%s", logs.MarkedForHandoff(poolConn.GetID()))
 						}
 					}
 				}
@@ -184,7 +184,7 @@ func (snh *NotificationHandler) handleMoving(ctx context.Context, handlerCtx pus
 
 func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint string, seqID int64, deadline time.Time) error {
 	if err := conn.MarkForHandoff(newEndpoint, seqID); err != nil {
-		snh.logger().Errorf(context.Background(), logs.FailedToMarkForHandoff(conn.GetID(), err))
+		snh.logger().Errorf(context.Background(), "%s", logs.FailedToMarkForHandoff(conn.GetID(), err))
 		// Connection is already marked for handoff, which is acceptable
 		// This can happen if multiple MOVING notifications are received for the same connection
 		return nil
@@ -206,23 +206,23 @@ func (snh *NotificationHandler) markConnForHandoff(conn *pool.Conn, newEndpoint 
 // Expected format: ["MIGRATING", ...]
 func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 2 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("MIGRATING", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("MIGRATING", notification))
 		return ErrInvalidNotification
 	}
 
 	if handlerCtx.Conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("MIGRATING"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("MIGRATING"))
 		return ErrInvalidNotification
 	}
 
 	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("MIGRATING", handlerCtx.Conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("MIGRATING", handlerCtx.Conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
 	// Apply relaxed timeout to this specific connection
-	snh.logger().Infof(ctx, logs.RelaxedTimeoutDueToNotification(conn.GetID(), "MIGRATING", snh.manager.config.RelaxedTimeout))
+	snh.logger().Infof(ctx, "%s", logs.RelaxedTimeoutDueToNotification(conn.GetID(), "MIGRATING", snh.manager.config.RelaxedTimeout))
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 
 	// Record relaxed timeout metric
@@ -239,24 +239,24 @@ func (snh *NotificationHandler) handleMigrating(ctx context.Context, handlerCtx 
 // Expected format: ["MIGRATED", ...]
 func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 2 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("MIGRATED", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("MIGRATED", notification))
 		return ErrInvalidNotification
 	}
 
 	if handlerCtx.Conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("MIGRATED"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("MIGRATED"))
 		return ErrInvalidNotification
 	}
 
 	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("MIGRATED", handlerCtx.Conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("MIGRATED", handlerCtx.Conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
 	// Clear relaxed timeout for this specific connection
 	connID := conn.GetID()
-	snh.logger().Infof(ctx, logs.UnrelaxedTimeout(connID))
+	snh.logger().Infof(ctx, "%s", logs.UnrelaxedTimeout(connID))
 
 	conn.ClearRelaxedTimeout()
 	return nil
@@ -268,24 +268,24 @@ func (snh *NotificationHandler) handleMigrated(ctx context.Context, handlerCtx p
 // Expected format: ["FAILING_OVER", ...]
 func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 2 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("FAILING_OVER", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("FAILING_OVER", notification))
 		return ErrInvalidNotification
 	}
 
 	if handlerCtx.Conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("FAILING_OVER"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("FAILING_OVER"))
 		return ErrInvalidNotification
 	}
 
 	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("FAILING_OVER", handlerCtx.Conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("FAILING_OVER", handlerCtx.Conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
 	// Apply relaxed timeout to this specific connection
 	connID := conn.GetID()
-	snh.logger().Infof(ctx, logs.RelaxedTimeoutDueToNotification(connID, "FAILING_OVER", snh.manager.config.RelaxedTimeout))
+	snh.logger().Infof(ctx, "%s", logs.RelaxedTimeoutDueToNotification(connID, "FAILING_OVER", snh.manager.config.RelaxedTimeout))
 
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 
@@ -303,24 +303,24 @@ func (snh *NotificationHandler) handleFailingOver(ctx context.Context, handlerCt
 // Expected format: ["FAILED_OVER", ...]
 func (snh *NotificationHandler) handleFailedOver(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 2 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("FAILED_OVER", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("FAILED_OVER", notification))
 		return ErrInvalidNotification
 	}
 
 	if handlerCtx.Conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("FAILED_OVER"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("FAILED_OVER"))
 		return ErrInvalidNotification
 	}
 
 	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("FAILED_OVER", handlerCtx.Conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("FAILED_OVER", handlerCtx.Conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
 	// Clear relaxed timeout for this specific connection
 	connID := conn.GetID()
-	snh.logger().Infof(ctx, logs.UnrelaxedTimeout(connID))
+	snh.logger().Infof(ctx, "%s", logs.UnrelaxedTimeout(connID))
 	conn.ClearRelaxedTimeout()
 	return nil
 }
@@ -338,29 +338,29 @@ func (snh *NotificationHandler) logger() *logging.LoggerWrapper {
 // Expected format: ["SMIGRATING", SeqID, slot/range1-range2, ...]
 func (snh *NotificationHandler) handleSMigrating(ctx context.Context, handlerCtx push.NotificationHandlerContext, notification []interface{}) error {
 	if len(notification) < 3 {
-		snh.logger().Errorf((ctx, logs.InvalidNotification("SMIGRATING", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATING", notification))
 		return ErrInvalidNotification
 	}
 
 	// Validate SeqID (position 1)
 	if _, ok := notification[1].(int64); !ok {
-		snh.logger().Errorf(ctx, logs.InvalidSeqIDInSMigratingNotification(notification[1]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidSeqIDInSMigratingNotification(notification[1]))
 		return ErrInvalidNotification
 	}
 
 	if handlerCtx.Conn == nil {
-		snh.logger().Errorf(ctx, logs.NoConnectionInHandlerContext("SMIGRATING"))
+		snh.logger().Errorf(ctx, "%s", logs.NoConnectionInHandlerContext("SMIGRATING"))
 		return ErrInvalidNotification
 	}
 
 	conn, ok := handlerCtx.Conn.(*pool.Conn)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidConnectionTypeInHandlerContext("SMIGRATING", handlerCtx.Conn, handlerCtx))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidConnectionTypeInHandlerContext("SMIGRATING", handlerCtx.Conn, handlerCtx))
 		return ErrInvalidNotification
 	}
 
 	// Apply relaxed timeout to this specific connection
-	snh.logger().Infof(ctx, logs.RelaxedTimeoutDueToNotification(conn.GetID(), "SMIGRATING", snh.manager.config.RelaxedTimeout))
+	snh.logger().Infof(ctx, "%s", logs.RelaxedTimeoutDueToNotification(conn.GetID(), "SMIGRATING", snh.manager.config.RelaxedTimeout))
 	conn.SetRelaxedTimeout(snh.manager.config.RelaxedTimeout, snh.manager.config.RelaxedTimeout)
 	return nil
 }
@@ -391,26 +391,26 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 	// Expected: ["SMIGRATED", SeqID, [[source, target, slots], ...]]
 	// Minimum 3 elements: SMIGRATED, SeqID, and the array of triplets
 	if len(notification) < 3 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED", notification))
 		return ErrInvalidNotification
 	}
 
 	// Extract SeqID (position 1)
 	seqID, ok := notification[1].(int64)
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidSeqIDInSMigratedNotification(notification[1]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidSeqIDInSMigratedNotification(notification[1]))
 		return ErrInvalidNotification
 	}
 
 	// Extract the array of triplets (position 2)
 	triplets, ok := notification[2].([]interface{})
 	if !ok {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (triplets array)", notification[2]))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (triplets array)", notification[2]))
 		return ErrInvalidNotification
 	}
 
 	if len(triplets) == 0 {
-		snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (empty triplets)", notification))
+		snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (empty triplets)", notification))
 		return ErrInvalidNotification
 	}
 
@@ -448,28 +448,28 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		// Each triplet should be a 3-element array: [source, target, slots]
 		triplet, ok := tripletInterface.([]interface{})
 		if !ok || len(triplet) != 3 {
-			snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
+			snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (triplet format)", tripletInterface))
 			continue
 		}
 
 		// Extract source endpoint
 		source, ok := triplet[0].(string)
 		if !ok {
-			snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
+			snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (source)", triplet[0]))
 			continue
 		}
 
 		// Extract target endpoint
 		target, ok := triplet[1].(string)
 		if !ok {
-			snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
+			snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (target)", triplet[1]))
 			continue
 		}
 
 		// Extract slots
 		slots, ok := triplet[2].(string)
 		if !ok {
-			snh.logger().Errorf(ctx, logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
+			snh.logger().Errorf(ctx, "%s", logs.InvalidNotification("SMIGRATED (slots)", triplet[2]))
 			continue
 		}
 
@@ -491,7 +491,7 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		conn, ok := handlerCtx.Conn.(*pool.Conn)
 		if ok {
 			connID = conn.GetID()
-			snh.logger().Infof(ctx, logs.UnrelaxedTimeout(connID)
+			snh.logger().Infof(ctx, "%s", logs.UnrelaxedTimeout(connID))
 			conn.ClearRelaxedTimeout()
 		}
 	}
@@ -508,7 +508,7 @@ func (snh *NotificationHandler) handleSMigrated(ctx context.Context, handlerCtx 
 		target := matchingTriplets[0].target
 		slotsForLog := allSlotRanges
 
-		snh.logger().Infof(ctx, logs.TriggeringClusterStateReload(seqID, target, slotsForLog))
+		snh.logger().Infof(ctx, "%s", logs.TriggeringClusterStateReload(seqID, target, slotsForLog))
 
 		// Trigger cluster state reload via callback
 		snh.manager.TriggerClusterStateReload(ctx, target, slotsForLog)

@@ -148,7 +148,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 
 	if err := ph.workerManager.queueHandoff(conn); err != nil {
 		// Failed to queue handoff, remove the connection
-		ph.logger().Errorf(ctx, logs.FailedToQueueHandoff(conn.GetID(), err))
+		ph.logger().Errorf(ctx, "%s", logs.FailedToQueueHandoff(conn.GetID(), err))
 		// Don't pool, remove connection, no error to caller
 		return false, true, nil
 	}
@@ -168,7 +168,7 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 		// Other error - remove the connection
 		return false, true, nil
 	}
-	ph.logger().Errorf(ctx, logs.MarkedForHandoff(conn.GetID()))
+	ph.logger().Errorf(ctx, "%s", logs.MarkedForHandoff(conn.GetID()))
 	return true, false, nil
 }
 

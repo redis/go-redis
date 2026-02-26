@@ -102,7 +102,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
 				cb.requests.Store(0)
 				cb.successes.Store(0)
-				cb.logger().Infof(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
+				cb.logger().Infof(context.Background(), "%s", logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
 				// Fall through to half-open logic
 			} else {
 				return ErrCircuitBreakerOpen
@@ -142,13 +142,13 @@ func (cb *CircuitBreaker) recordFailure() {
 	case CircuitBreakerClosed:
 		if failures >= int64(cb.failureThreshold) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerClosed), int32(CircuitBreakerOpen)) {
-				cb.logger().Warnf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
+				cb.logger().Warnf(context.Background(), "%s", logs.CircuitBreakerOpened(cb.endpoint, failures))
 			}
 		}
 	case CircuitBreakerHalfOpen:
 		// Any failure in half-open state immediately opens the circuit
 		if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerOpen)) {
-			cb.logger().Warnf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
+			cb.logger().Warnf(context.Background(), "%s", logs.CircuitBreakerReopened(cb.endpoint))
 		}
 	}
 }
@@ -170,7 +170,7 @@ func (cb *CircuitBreaker) recordSuccess() {
 		if successes >= int64(cb.maxRequests) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerClosed)) {
 				cb.failures.Store(0)
-				cb.logger().Infof(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
+				cb.logger().Infof(context.Background(), "%s", logs.CircuitBreakerClosed(cb.endpoint, successes))
 			}
 		}
 	}
@@ -325,7 +325,7 @@ func (cbm *CircuitBreakerManager) cleanup() {
 
 	// Log cleanup results
 	if len(toDelete) > 0 {
-		cbm.logger().Infof(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
+		cbm.logger().Infof(context.Background(), "%s", logs.CircuitBreakerCleanup(len(toDelete), count))
 	}
 
 	cbm.lastCleanup.Store(now.Unix())

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
-	"github.com/redis/go-redis/v9/internal/util"
 	"github.com/redis/go-redis/v9/logging"
 )
 
@@ -315,8 +314,8 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
 	}
 
-	c.logger().Debugf(context.Background(), logs.DebugLoggingEnabled())
-	c.logger().Debugf(context.Background(), logs.ConfigDebug(result))
+	c.logger().Debugf(context.Background(), "%s", logs.DebugLoggingEnabled())
+	c.logger().Debugf(context.Background(), "%s", logs.ConfigDebug(result))
 
 	return result
 }
