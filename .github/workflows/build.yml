@@ -4,7 +4,7 @@ on:
   push:
     branches: [master, v9, 'v9.*']
   pull_request:
-    branches: [master, v9, v9.7, v9.8, 'ndyakov/*', 'ofekshenawa/*', 'htemelski-redis/*', 'ce/*']
+    branches: [master, v9, v9.7, v9.8, 'ndyakov/**', 'ofekshenawa/**', 'ce/**']
 
 permissions:
   contents: read
@@ -23,8 +23,7 @@ jobs:
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
         go-version:
-          - "1.21.x"
-          - "1.23.x"
+          - "1.24.x"
           - oldstable
           - stable
 
@@ -47,7 +46,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.6.x"]="custom-21183968220-debian-amd64"
+            ["8.6.x"]="custom-21860421418-debian-amd64"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
             ["8.0.x"]="8.0.2"
@@ -83,8 +82,7 @@ jobs:
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
           go-version:
-            - "1.21.x"
-            - "1.23.x"
+            - "1.24.x"
             - oldstable
             - stable
 

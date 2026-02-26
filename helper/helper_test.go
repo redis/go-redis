@@ -93,4 +93,3 @@ func BenchmarkDigestBytes(b *testing.B) {
 		})
 	}
 }
-

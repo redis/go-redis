@@ -1,14 +1,16 @@
 module github.com/redis/go-redis/v9
 
-go 1.21
+go 1.24
 
 require (
 	github.com/bsm/ginkgo/v2 v2.12.0
 	github.com/bsm/gomega v1.27.10
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
-	github.com/zeebo/xxh3 v1.0.2
+	github.com/zeebo/xxh3 v1.1.0
 )
+
+require go.uber.org/atomic v1.11.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.37.0
@@ -18,6 +20,10 @@ require (
 require (
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
+)
+
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	golang.org/x/sys v0.30.0 // indirect
 )
 
 retract (

@@ -32,22 +32,27 @@ type CommandRunner struct {
 
 // NewCommandRunner creates a new command runner
 func NewCommandRunner(client redis.UniversalClient) (*CommandRunner, func()) {
-	stopCh := make(chan struct{})
+	// Use buffered channel so Stop() can always send without blocking
+	stopCh := make(chan struct{}, 1)
 	return &CommandRunner{
 			client: client,
 			stopCh: stopCh,
 			errors: make([]error, 0),
 		}, func() {
-			stopCh <- struct{}{}
+			select {
+			case stopCh <- struct{}{}:
+			default:
+				// Already stopped
+			}
 		}
 }
 
 func (cr *CommandRunner) Stop() {
+	// Non-blocking send to buffered channel
 	select {
 	case cr.stopCh <- struct{}{}:
-		return
-	case <-time.After(500 * time.Millisecond):
-		return
+	default:
+		// Already has a stop signal pending
 	}
 }
 
@@ -79,18 +84,22 @@ func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
 			if poolSize == 0 {
 				poolSize = 1
 			}
+			// simulate at least 20 connections
+			if poolSize < 20 {
+				poolSize = 20
+			}
 			wg := sync.WaitGroup{}
-			for i := 0; i < int(poolSize); i++ {
+			// run 2x pool size operations
+			for i := 0; i < int(poolSize)*2; i++ {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
 					key := fmt.Sprintf("timeout-test-key-%d-%d", counter, i)
 					value := fmt.Sprintf("timeout-test-value-%d-%d", counter, i)
 
-					// Use a short timeout context for individual operations
-					opCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-					err := cr.client.Set(opCtx, key, value, time.Minute).Err()
-					cancel()
+					// Use the parent context directly - let the client's configured timeouts
+					// (including relaxed timeouts during failover) handle timing
+					err := cr.client.Set(ctx, key, value, time.Minute).Err()
 
 					cr.operationCount.Add(1)
 					if err != nil {
@@ -103,7 +112,6 @@ func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
 							return
 						}
 
-						fmt.Printf("Error: %v\n", err)
 						cr.errorCount.Add(1)
 
 						// Check if it's a timeout error
