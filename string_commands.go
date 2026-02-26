@@ -429,8 +429,6 @@ func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expir
 
 // SetNX sets the value of a key only if the key does not exist.
 //
-// Deprecated: Use Set with NX option instead as of Redis 2.6.12.
-//
 // Zero expiration means the key has no expiration time.
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.
@@ -438,8 +436,7 @@ func (c cmdable) SetNX(ctx context.Context, key string, value interface{}, expir
 	var cmd *BoolCmd
 	switch expiration {
 	case 0:
-		// Use old `SETNX` to support old Redis versions.
-		cmd = NewBoolCmd(ctx, "setnx", key, value)
+		cmd = NewBoolCmd(ctx, "set", key, value, "nx")
 	case KeepTTL:
 		cmd = NewBoolCmd(ctx, "set", key, value, "keepttl", "nx")
 	default:
