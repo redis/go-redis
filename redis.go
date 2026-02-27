@@ -1196,6 +1196,7 @@ type Client struct {
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
+// Passing nil Options will cause a panic.
 func NewClient(opt *Options) *Client {
 	if opt == nil {
 		panic("redis: NewClient nil options")
@@ -1295,7 +1296,8 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *Options that were used to create the client.
+// Any alteration of the returned *Options may result in undefined behaviour.
 func (c *Client) Options() *Options {
 	return c.opt
 }
