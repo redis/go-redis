@@ -146,13 +146,13 @@ var _ = BeforeSuite(func() {
 		sentinelSlave1, err = connectTo(sentinelSlave1Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = sentinelSlave1.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
+		err = sentinelSlave1.ReplicaOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		sentinelSlave2, err = connectTo(sentinelSlave2Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = sentinelSlave2.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
+		err = sentinelSlave2.ReplicaOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		// populate cluster node information
@@ -442,9 +442,9 @@ func loadClusterTLSConfig(certDir string) (*tls.Config, error) {
 	}
 
 	return &tls.Config{
-		RootCAs:      caCertPool,
-		Certificates: []tls.Certificate{cert},
-		ServerName:   "localhost",
+		RootCAs:            caCertPool,
+		Certificates:       []tls.Certificate{cert},
+		ServerName:         "localhost",
 		InsecureSkipVerify: true,
 	}, nil
 }

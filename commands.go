@@ -215,6 +215,7 @@ type Cmdable interface {
 	ShutdownSave(ctx context.Context) *StatusCmd
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	ReplicaOf(ctx context.Context, host, port string) *StatusCmd
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogLen(ctx context.Context) *IntCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
@@ -678,6 +679,13 @@ func (c cmdable) ShutdownNoSave(ctx context.Context) *StatusCmd {
 // Deprecated: Use ReplicaOf instead as of Redis 5.0.0.
 func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "slaveof", host, port)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ReplicaOf sets a Redis server as a replica of another, or promotes it to being a master.
+func (c cmdable) ReplicaOf(ctx context.Context, host, port string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "replicaof", host, port)
 	_ = c(ctx, cmd)
 	return cmd
 }
