@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/util"
 )
@@ -107,6 +108,10 @@ func (s StructValue) Scan(key string, value string) error {
 		switch scan := v.Interface().(type) {
 		case Scanner:
 			return scan.ScanRedis(value)
+		case *time.Time:
+			return scan.UnmarshalText(util.StringToBytes(value))
+		case encoding.BinaryUnmarshaler:
+			return scan.UnmarshalBinary(util.StringToBytes(value))
 		case encoding.TextUnmarshaler:
 			return scan.UnmarshalText(util.StringToBytes(value))
 		}

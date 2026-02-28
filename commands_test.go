@@ -16,6 +16,20 @@ import (
 	"github.com/redis/go-redis/v9/internal/routing"
 )
 
+type testBinaryID [16]byte
+
+func (id testBinaryID) MarshalBinary() ([]byte, error) {
+	return id[:], nil
+}
+
+func (id *testBinaryID) UnmarshalBinary(data []byte) error {
+	if len(data) != 16 {
+		return fmt.Errorf("invalid binary ID length: %d", len(data))
+	}
+	copy(id[:], data)
+	return nil
+}
+
 type TimeValue struct {
 	time.Time
 }
@@ -3266,6 +3280,33 @@ var _ = Describe("Commands", func() {
 			Expect(d2.Key1).To(Equal("hello2"))
 			Expect(d2.Key2).To(Equal(200))
 			Expect(d2.Time.Unix()).To(Equal(now.Unix()))
+
+			id := testBinaryID{
+				0x7d, 0x44, 0x48, 0x40,
+				0x9d, 0xc0,
+				0x11, 0xd1,
+				0xb2, 0x45,
+				0x5f, 0xfd, 0xce, 0x74, 0xfa, 0xd2,
+			}
+			type data3 struct {
+				Key1 string       `redis:"key1"`
+				UUID testBinaryID `redis:"uuid"`
+			}
+
+			err = client.HSet(ctx, "hash", &data3{
+				Key1: "hello",
+				UUID: id,
+			}).Err()
+
+			Expect(err).NotTo(HaveOccurred())
+
+			res = client.HGetAll(ctx, "hash")
+			Expect(res.Err()).NotTo(HaveOccurred())
+
+			var d3 data3
+			Expect(res.Scan(&d3)).NotTo(HaveOccurred())
+			Expect(d3.Key1).To(Equal("hello"))
+			Expect(d3.UUID).To(Equal(id))
 		})
 
 		It("should HIncrBy", func() {
