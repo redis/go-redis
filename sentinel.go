@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/rand"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -169,6 +169,9 @@ type FailoverOptions struct {
 	// If nil, maintnotifications upgrades are disabled.
 	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
 	//MaintNotificationsConfig *maintnotifications.Config
+
+	// Optional logger for logging
+	Logger logging.LoggerWithLevelI
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -225,6 +228,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
 		},
+
+		Logger: opt.Logger,
 	}
 }
 
@@ -279,6 +284,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
 		},
+
+		Logger: opt.Logger,
 	}
 }
 
@@ -337,6 +344,8 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		MaintNotificationsConfig: &maintnotifications.Config{
 			Mode: maintnotifications.ModeDisabled,
 		},
+
+		Logger: opt.Logger,
 	}
 }
 
@@ -885,7 +894,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				return "", err
 			}
 			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
+			c.logger().Errorf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else {
 			return addr, nil
@@ -903,7 +912,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				return "", err
 			}
 			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
+			c.logger().Errorf(ctx, "sentinel: GetMasterAddrByName name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else {
 			return addr, nil
@@ -932,7 +941,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 			sentinelCli := NewSentinelClient(c.opt.sentinelOptions(addr))
 			addrVal, err := sentinelCli.GetMasterAddrByName(ctx, c.opt.MasterName).Result()
 			if err != nil {
-				internal.Logger.Printf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
+				c.logger().Errorf(ctx, "sentinel: GetMasterAddrByName addr=%s, master=%q failed: %s",
 					addr, c.opt.MasterName, err)
 				_ = sentinelCli.Close()
 				errCh <- err
@@ -943,7 +952,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				// Push working sentinel to the top
 				c.sentinelAddrs[0], c.sentinelAddrs[i] = c.sentinelAddrs[i], c.sentinelAddrs[0]
 				c.setSentinel(ctx, sentinelCli)
-				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
+				c.logger().Infof(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
 				cancel()
 			})
 		}(i, sentinelAddr)
@@ -973,7 +982,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 				return nil, err
 			}
 			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+			c.logger().Errorf(ctx, "sentinel: Replicas name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
 			return addrs, nil
@@ -991,7 +1000,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 				return nil, err
 			}
 			// Continue on other errors
-			internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+			c.logger().Errorf(ctx, "sentinel: Replicas name=%q failed: %s",
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
 			return addrs, nil
@@ -1012,7 +1021,7 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 			if isContextError(ctx.Err()) {
 				return nil, err
 			}
-			internal.Logger.Printf(ctx, "sentinel: Replicas master=%q failed: %s",
+			c.logger().Errorf(ctx, "sentinel: Replicas master=%q failed: %s",
 				c.opt.MasterName, err)
 			continue
 		}
@@ -1045,7 +1054,7 @@ func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *Sentinel
 func (c *sentinelFailover) getReplicaAddrs(ctx context.Context, sentinel *SentinelClient) ([]string, error) {
 	addrs, err := sentinel.Replicas(ctx, c.opt.MasterName).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Replicas name=%q failed: %s",
+		c.logger().Errorf(ctx, "sentinel: Replicas name=%q failed: %s",
 			c.opt.MasterName, err)
 		return nil, err
 	}
@@ -1093,7 +1102,7 @@ func (c *sentinelFailover) trySwitchMaster(ctx context.Context, addr string) {
 	}
 	c.masterAddr = addr
 
-	internal.Logger.Printf(ctx, "sentinel: new master=%q addr=%q",
+	c.logger().Infof(ctx, "sentinel: new master=%q addr=%q",
 		c.opt.MasterName, addr)
 	if c.onFailover != nil {
 		c.onFailover(ctx, addr)
@@ -1114,7 +1123,7 @@ func (c *sentinelFailover) setSentinel(ctx context.Context, sentinel *SentinelCl
 func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 	sentinels, err := c.sentinel.Sentinels(ctx, c.opt.MasterName).Result()
 	if err != nil {
-		internal.Logger.Printf(ctx, "sentinel: Sentinels master=%q failed: %s", c.opt.MasterName, err)
+		c.logger().Errorf(ctx, "sentinel: Sentinels master=%q failed: %s", c.opt.MasterName, err)
 		return
 	}
 	for _, sentinel := range sentinels {
@@ -1129,7 +1138,7 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
 			if !contains(c.sentinelAddrs, sentinelAddr) {
-				internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
+				c.logger().Infof(ctx, "sentinel: discovered new sentinel=%q for master=%q",
 					sentinelAddr, c.opt.MasterName)
 				c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
 			}
@@ -1149,7 +1158,7 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 		if msg.Channel == "+switch-master" {
 			parts := strings.Split(msg.Payload, " ")
 			if parts[0] != c.opt.MasterName {
-				internal.Logger.Printf(pubsub.getContext(), "sentinel: ignore addr for master=%q", parts[0])
+				c.logger().Infof(pubsub.getContext(), "sentinel: ignore addr for master=%q", parts[0])
 				continue
 			}
 			addr := net.JoinHostPort(parts[3], parts[4])
@@ -1160,6 +1169,13 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 			c.onUpdate(ctx)
 		}
 	}
+}
+
+func (c *sentinelFailover) logger() *logging.LoggerWrapper {
+	if c.opt != nil && c.opt.Logger != nil {
+		return logging.NewLoggerWrapper(c.opt.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
 
 func contains(slice []string, str string) bool {
