@@ -19,14 +19,21 @@ type config struct {
 
 	// Tracing options.
 
-	tp     trace.TracerProvider
-	tracer trace.Tracer
+	tp               trace.TracerProvider
+	tracer           trace.Tracer
+	dbStmtEnabled    bool
+	callerEnabled    bool
+	excludedCommands map[string]struct{}
 
-	dbStmtEnabled         bool
-	callerEnabled         bool
+	// Legacy filters
 	filterDial            bool
-	filterProcessPipeline func(cmds []redis.Cmder) bool
 	filterProcess         func(cmd redis.Cmder) bool
+	filterProcessPipeline func(cmds []redis.Cmder) bool
+
+	// Unified filters
+	unifiedProcessFilter         func(cmd redis.Cmder) bool
+	unifiedProcessPipelineFilter func(cmds []redis.Cmder) bool
+	unifiedDialFilter            func(network, addr string) bool
 
 	// Metrics options.
 
@@ -76,6 +83,7 @@ func newConfig(opts ...baseOption) *config {
 			}
 			return false
 		},
+		excludedCommands: make(map[string]struct{}),
 	}
 
 	for _, opt := range opts {
@@ -160,6 +168,48 @@ func WithCommandsFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
 func WithDialFilter(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.filterDial = on
+	})
+}
+
+// WithExcludedCommands provides O(1) command exclusion for performance.
+// Command names are normalized to uppercase for case-insensitive matching.
+func WithExcludedCommands(commands ...string) TracingOption {
+	return tracingOption(func(conf *config) {
+		if len(commands) == 0 {
+			return
+		}
+		// Merge into existing map to accumulate exclusions across multiple calls
+		for _, cmd := range commands {
+			if cmd != "" {
+				conf.excludedCommands[strings.ToUpper(cmd)] = struct{}{}
+			}
+		}
+	})
+}
+
+// WithProcessFilter allows filtering of individual commands with custom logic.
+// The filter function should return true to exclude the command from tracing.
+func WithProcessFilter(filter func(cmd redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.unifiedProcessFilter = filter
+		conf.filterProcess = nil
+	})
+}
+
+// WithProcessPipelineFilter allows filtering of pipeline commands with custom logic.
+// The filter function should return true to exclude the entire pipeline from tracing.
+func WithProcessPipelineFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.unifiedProcessPipelineFilter = filter
+		conf.filterProcessPipeline = nil
+	})
+}
+
+// WithDialFilterFunc allows filtering of dial operations with custom logic.
+// The filter function should return true to exclude the dial operation from tracing.
+func WithDialFilterFunc(filter func(network, addr string) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.unifiedDialFilter = filter
 	})
 }
 
