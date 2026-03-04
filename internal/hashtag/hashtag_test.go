@@ -15,7 +15,7 @@ func TestGinkgoSuite(t *testing.T) {
 }
 
 var _ = Describe("CRC16", func() {
-	// http://redis.io/topics/cluster-spec#keys-distribution-model
+	// https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec#key-distribution-model.
 	It("should calculate CRC16", func() {
 		tests := []struct {
 			s string
