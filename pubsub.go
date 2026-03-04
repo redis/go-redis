@@ -15,7 +15,7 @@ import (
 )
 
 // PubSub implements Pub/Sub commands as described in
-// http://redis.io/topics/pubsub. Message receiving is NOT safe
+// https://redis.io/docs/latest/develop/pubsub. Message receiving is NOT safe
 // for concurrent use by multiple goroutines.
 //
 // PubSub automatically reconnects to Redis Server and resubscribes
