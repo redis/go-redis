@@ -654,6 +654,16 @@ var _ = Describe("Commands", func() {
 			Expect(slaveOf.Val()).To(Equal("OK"))
 		})
 
+		It("should ReplicaOf", Label("NonRedisEnterprise"), func() {
+			replicaOf := client.ReplicaOf(ctx, "localhost", "8888")
+			Expect(replicaOf.Err()).NotTo(HaveOccurred())
+			Expect(replicaOf.Val()).To(Equal("OK"))
+
+			replicaOf = client.ReplicaOf(ctx, "NO", "ONE")
+			Expect(replicaOf.Err()).NotTo(HaveOccurred())
+			Expect(replicaOf.Val()).To(Equal("OK"))
+		})
+
 		It("should Time", func() {
 			tm, err := client.Time(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
