@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/interfaces"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 	"github.com/redis/go-redis/v9/push"
 )
 
@@ -169,14 +169,10 @@ func (hm *Manager) TrackMovingOperationWithConnID(ctx context.Context, newEndpoi
 	// Use LoadOrStore for atomic check-and-set operation
 	if _, loaded := hm.activeMovingOps.LoadOrStore(key, movingOp); loaded {
 		// Duplicate MOVING notification, ignore
-		if internal.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), logs.DuplicateMovingOperation(connID, newEndpoint, seqID))
-		}
+		hm.logger().Debugf(context.Background(), "%s", logs.DuplicateMovingOperation(connID, newEndpoint, seqID))
 		return nil
 	}
-	if internal.LogLevel.DebugOrAbove() { // Debug level
-		internal.Logger.Printf(context.Background(), logs.TrackingMovingOperation(connID, newEndpoint, seqID))
-	}
+	hm.logger().Debugf(context.Background(), "%s", logs.TrackingMovingOperation(connID, newEndpoint, seqID))
 
 	// Increment active operation count atomically
 	hm.activeOperationCount.Add(1)
@@ -194,15 +190,11 @@ func (hm *Manager) UntrackOperationWithConnID(seqID int64, connID uint64) {
 
 	// Remove from active operations atomically
 	if _, loaded := hm.activeMovingOps.LoadAndDelete(key); loaded {
-		if internal.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), logs.UntrackingMovingOperation(connID, seqID))
-		}
+		hm.logger().Debugf(context.Background(), "%s", logs.UntrackingMovingOperation(connID, seqID))
 		// Decrement active operation count only if operation existed
 		hm.activeOperationCount.Add(-1)
 	} else {
-		if internal.LogLevel.DebugOrAbove() { // Debug level
-			internal.Logger.Printf(context.Background(), logs.OperationNotTracked(connID, seqID))
-		}
+		hm.logger().Debugf(context.Background(), "%s", logs.OperationNotTracked(connID, seqID))
 	}
 }
 
@@ -345,6 +337,13 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 	hm.hooksMu.Lock()
 	defer hm.hooksMu.Unlock()
 	hm.hooks = append(hm.hooks, notificationHook)
+}
+
+func (hm *Manager) logger() *logging.LoggerWrapper {
+	if hm.config != nil && hm.config.Logger != nil {
+		return logging.NewLoggerWrapper(hm.config.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
 
 // SetClusterStateReloadCallback sets the callback function that will be called when a SMIGRATED notification is received.
