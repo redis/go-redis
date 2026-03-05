@@ -327,8 +327,10 @@ func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *q
 		ap.queueLen.Store(int32(queueLen))
 		ap.mu.Unlock()
 
-		// Signal the flusher using condition variable
+		// Signal the flusher using condition variable (must hold lock)
+		ap.flushCond.L.Lock()
 		ap.flushCond.Signal()
+		ap.flushCond.L.Unlock()
 		return qc
 	}
 
@@ -339,8 +341,10 @@ func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *q
 	ap.queueLen.Store(int32(queueLen))
 	ap.mu.Unlock()
 
-	// Signal the flusher using condition variable
+	// Signal the flusher using condition variable (must hold lock)
+	ap.flushCond.L.Lock()
 	ap.flushCond.Signal()
+	ap.flushCond.L.Unlock()
 	return qc
 }
 
