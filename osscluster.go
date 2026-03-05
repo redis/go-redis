@@ -1548,6 +1548,13 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	return &pipe
 }
 
+// execPipeline executes a batch of commands as a pipeline directly.
+// This bypasses Pipeline object creation for better performance.
+// Used internally by AutoPipeliner.
+func (c *ClusterClient) execPipeline(ctx context.Context, cmds []Cmder) error {
+	return c.processPipelineHook(ctx, cmds)
+}
+
 // AutoPipeline creates a new autopipeliner that automatically batches commands.
 // Commands are automatically flushed based on batch size and time interval.
 // The autopipeliner must be closed when done to flush pending commands.

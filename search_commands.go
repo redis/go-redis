@@ -909,6 +909,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 				}
 			}
 		}
+		// group bys ...
 		if options.SortBy != nil {
 			args = append(args, "SORTBY")
 			sortByOptions := []interface{}{}
@@ -929,6 +930,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 			args = append(args, len(sortByOptions))
 			args = append(args, sortByOptions...)
 		}
+		// ... group by  sort by ....
 		if options.SortByMax > 0 {
 			args = append(args, "MAX", options.SortByMax)
 		}
