@@ -347,7 +347,7 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 		if err != nil {
 			if isBadConn(err, false, c.opt.Addr) {
 				// Close the connection to force a reconnection.
-				err := c.connPool.CloseConn(poolCn)
+				err := c.connPool.CloseConn(poolCn, "auth_error")
 				if err != nil {
 					internal.Logger.Printf(context.Background(), "redis: failed to close connection: %v", err)
 					// try to close the network connection directly

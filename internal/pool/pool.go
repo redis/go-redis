@@ -242,7 +242,7 @@ type Stats struct {
 
 type Pooler interface {
 	NewConn(context.Context) (*Conn, error)
-	CloseConn(*Conn) error
+	CloseConn(*Conn, string) error
 
 	Get(context.Context) (*Conn, error)
 	Put(context.Context, *Conn)
@@ -764,7 +764,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		if !p.isHealthyConn(cn, nowNs) {
-			_ = p.CloseConn(cn)
+			_ = p.CloseConn(cn, "stale")
 			continue
 		}
 
@@ -775,7 +775,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			if hookErr != nil || !acceptConn {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
-					_ = p.CloseConn(cn)
+					_ = p.CloseConn(cn, "hook_error")
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Return connection to pool without freeing the turn that this Get() call holds.
@@ -824,7 +824,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
-			_ = p.CloseConn(newcn)
+			_ = p.CloseConn(newcn, "hook_error")
 			return nil, err
 		}
 	}
@@ -1232,12 +1232,12 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	p.checkMinIdleConns()
 }
 
-func (p *ConnPool) CloseConn(cn *Conn) error {
+func (p *ConnPool) CloseConn(cn *Conn, reason string) error {
 	p.removeConnWithLock(cn)
 
-	// Record connection closed metric for stale/unhealthy connections
+	// Record connection closed metric with the specified reason
 	if cb := getMetricConnectionClosedCallback(); cb != nil {
-		cb(context.Background(), cn, "stale", nil)
+		cb(context.Background(), cn, reason, nil)
 	}
 
 	return p.closeConn(cn)
