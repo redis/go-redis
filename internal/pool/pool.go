@@ -1234,6 +1234,12 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 
 func (p *ConnPool) CloseConn(cn *Conn) error {
 	p.removeConnWithLock(cn)
+
+	// Record connection closed metric for stale/unhealthy connections
+	if cb := getMetricConnectionClosedCallback(); cb != nil {
+		cb(context.Background(), cn, "stale", nil)
+	}
+
 	return p.closeConn(cn)
 }
 
