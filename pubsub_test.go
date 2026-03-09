@@ -559,6 +559,23 @@ var _ = Describe("PubSub", func() {
 		}
 	})
 
+	It("should ClientSetName on PubSub connection", func() {
+		pubsub := client.Subscribe(ctx, "test-channel")
+		defer pubsub.Close()
+
+		// Wait for subscription to be established
+		_, err := pubsub.Receive(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		err = pubsub.ClientSetName(ctx, "my-subscriber")
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the name is set via CLIENT LIST
+		clientList, err := client.ClientList(ctx).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(clientList).To(ContainSubstring("name=my-subscriber"))
+	})
+
 	It("should ChannelMessage", func() {
 		pubsub := client.Subscribe(ctx, "mychannel")
 		defer pubsub.Close()
