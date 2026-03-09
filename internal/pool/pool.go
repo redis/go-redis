@@ -1235,6 +1235,12 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 func (p *ConnPool) CloseConn(cn *Conn, reason string) error {
 	p.removeConnWithLock(cn)
 
+	// Record connection state change: connection is being removed from idle state
+	// CloseConn is called for connections that were in idle state (stale, hook_error, etc.)
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+		cb(context.Background(), cn, "idle", "")
+	}
+
 	// Record connection closed metric with the specified reason
 	if cb := getMetricConnectionClosedCallback(); cb != nil {
 		cb(context.Background(), cn, reason, nil)
