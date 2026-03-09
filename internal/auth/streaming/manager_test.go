@@ -87,7 +87,7 @@ func TestManager_Listener_NilConn(t *testing.T) {
 type mockPooler struct{}
 
 func (m *mockPooler) NewConn(ctx context.Context) (*pool.Conn, error)                      { return nil, nil }
-func (m *mockPooler) CloseConn(*pool.Conn, string) error                                   { return nil }
+func (m *mockPooler) CloseConn(*pool.Conn, string, string) error                           { return nil }
 func (m *mockPooler) Get(ctx context.Context) (*pool.Conn, error)                          { return nil, nil }
 func (m *mockPooler) Put(ctx context.Context, conn *pool.Conn)                             {}
 func (m *mockPooler) Remove(ctx context.Context, conn *pool.Conn, reason error)            {}

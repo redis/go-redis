@@ -61,8 +61,8 @@ func (p *StickyConnPool) NewConn(ctx context.Context) (*Conn, error) {
 	return p.pool.NewConn(ctx)
 }
 
-func (p *StickyConnPool) CloseConn(cn *Conn, reason string) error {
-	return p.pool.CloseConn(cn, reason)
+func (p *StickyConnPool) CloseConn(cn *Conn, reason string, fromState string) error {
+	return p.pool.CloseConn(cn, reason, fromState)
 }
 
 func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
