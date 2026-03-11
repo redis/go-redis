@@ -694,9 +694,12 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 		}
 		return buf, nil
 
-	case RespMap, RespAttr:
+	case RespMap:
 		n, err := replyLen(line)
 		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
 			return buf, err
 		}
 		for i := 0; i < n*2; i++ {
@@ -706,6 +709,26 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 		}
 		return buf, nil
+
+	case RespAttr:
+		// Per RESP3 spec, an attribute is always followed by the actual command reply.
+		// We need to read the attribute's key-value pairs AND the following reply.
+		n, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
+			return buf, err
+		}
+		// Read the attribute key-value pairs
+		for i := 0; i < n*2; i++ {
+			buf, err = r.readRawReplyBuf(buf)
+			if err != nil {
+				return buf, err
+			}
+		}
+		// Read the command reply that follows the attribute
+		return r.readRawReplyBuf(buf)
 	}
 
 	return buf, fmt.Errorf("redis: can't read raw reply: %.100q", line)
@@ -770,9 +793,12 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 		}
 		return written, nil
 
-	case RespMap, RespAttr:
+	case RespMap:
 		count, err := replyLen(line)
 		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
 			return written, err
 		}
 		for i := 0; i < count*2; i++ {
@@ -783,6 +809,29 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 			}
 		}
 		return written, nil
+
+	case RespAttr:
+		// Per RESP3 spec, an attribute is always followed by the actual command reply.
+		// We need to read the attribute's key-value pairs AND the following reply.
+		count, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
+			return written, err
+		}
+		// Read the attribute key-value pairs
+		for i := 0; i < count*2; i++ {
+			n, err := r.readRawReplyWriteTo(w)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+		// Read the command reply that follows the attribute
+		n, err := r.readRawReplyWriteTo(w)
+		written += n
+		return written, err
 	}
 
 	return written, fmt.Errorf("redis: can't read raw reply: %.100q", line)

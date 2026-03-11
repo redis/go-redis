@@ -703,7 +703,9 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		if cn != nil {
 			lastConn = cn
 		}
-		if err == nil || !retry {
+		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
+		// which writes directly to an io.Writer and cannot undo partial writes)
+		if err == nil || !retry || cmd.NoRetry() {
 			// Record total operation duration
 			if opDurationCallback != nil {
 				operationDuration := time.Since(operationStart)

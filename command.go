@@ -216,6 +216,11 @@ type Cmder interface {
 	SetErr(error)
 	Err() error
 
+	// NoRetry returns true if the command should not be retried on failure.
+	// Commands that write directly to an io.Writer should return true since
+	// partial writes cannot be undone on retry.
+	NoRetry() bool
+
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
 }
@@ -397,6 +402,14 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	cmd.rawVal, err = rd.ReadReply()
 	return err
+}
+
+// NoRetry returns true if the command should not be retried on failure.
+// By default, commands can be retried. Commands that write directly to an
+// io.Writer (like RawWriteToCmd) should override this to return true since
+// partial writes cannot be undone on retry.
+func (cmd *baseCmd) NoRetry() bool {
+	return false
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -817,6 +830,14 @@ func (cmd *RawWriteToCmd) String() string {
 func (cmd *RawWriteToCmd) readReply(rd *proto.Reader) (err error) {
 	cmd.written, err = rd.ReadRawReplyWriteTo(cmd.w)
 	return err
+}
+
+// NoRetry returns true because RawWriteToCmd writes directly to an io.Writer.
+// If a retry occurs, partial data from failed attempts would be appended to
+// the writer, causing data corruption. The caller must handle retries manually
+// if needed, using a fresh writer for each attempt.
+func (cmd *RawWriteToCmd) NoRetry() bool {
+	return true
 }
 
 func (cmd *RawWriteToCmd) Clone() Cmder {
