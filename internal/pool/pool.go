@@ -456,10 +456,8 @@ func (p *ConnPool) checkMinIdleConns() {
 }
 
 func (p *ConnPool) addIdleConn() error {
-	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
-	defer cancel()
-
-	cn, err := p.dialConn(ctx, true)
+	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
+	cn, err := p.dialConn(context.Background(), true)
 	if err != nil {
 		return err
 	}
@@ -505,9 +503,9 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		ctx = context.Background()
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, p.cfg.DialTimeout)
-	defer cancel()
-	cn, err := p.dialConn(dialCtx, pooled)
+	// Do not apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
+	// We still propagate ctx so callers can cancel explicitly.
+	cn, err := p.dialConn(ctx, pooled)
 	if err != nil {
 		return nil, err
 	}
@@ -569,8 +567,8 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	}
 
 	// Retry dialing with backoff
-	// the context timeout is already handled by the context passed in
-	// so we may never reach the max retries, higher values don't hurt
+	// Dial timeout is applied per attempt (so retries/backoff don't eat into the next
+	// attempt's dial budget), while still honoring caller cancellation via ctx.
 	maxRetries := p.cfg.DialerRetries
 	if maxRetries <= 0 {
 		maxRetries = 5 // Default value
@@ -587,16 +585,31 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	// instead of a generic context deadline exceeded error
 	attempt := 0
 	for attempt = 0; (attempt < maxRetries) && shouldLoop; attempt++ {
-		netConn, err := p.cfg.Dialer(ctx)
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if p.cfg.DialTimeout > 0 {
+			// Apply DialTimeout per attempt, but never extend an existing earlier deadline.
+			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > p.cfg.DialTimeout {
+				attemptCtx, cancel = context.WithTimeout(ctx, p.cfg.DialTimeout)
+			}
+		}
+
+		netConn, err := p.cfg.Dialer(attemptCtx)
+		if cancel != nil {
+			cancel()
+		}
 		if err != nil {
 			lastErr = err
 			// Add backoff delay for retry attempts
 			// (not for the first attempt, do at least one)
-			select {
-			case <-ctx.Done():
-				shouldLoop = false
-			case <-time.After(backoffDuration):
-				// Continue with retry
+			// Do not sleep after the last attempt.
+			if attempt+1 < maxRetries {
+				select {
+				case <-ctx.Done():
+					shouldLoop = false
+				case <-time.After(backoffDuration):
+					// Continue with retry
+				}
 			}
 			continue
 		}
@@ -648,19 +661,26 @@ func (p *ConnPool) tryDial() {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
+		// Probe dialing even when dialErrorsNum is saturated. Apply DialTimeout per probe
+		// attempt so custom dialers can't hang indefinitely.
+		ctx := context.Background()
+		var cancel context.CancelFunc
+		if p.cfg.DialTimeout > 0 {
+			ctx, cancel = context.WithTimeout(ctx, p.cfg.DialTimeout)
+		}
 
 		conn, err := p.cfg.Dialer(ctx)
+		if cancel != nil {
+			cancel()
+		}
 		if err != nil {
 			p.setLastDialError(err)
 			time.Sleep(time.Second)
-			cancel()
 			continue
 		}
 
 		atomic.StoreUint32(&p.dialErrorsNum, 0)
 		_ = conn.Close()
-		cancel()
 		return
 	}
 }
@@ -835,7 +855,8 @@ func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
 		return nil, ctx.Err()
 	}
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), p.cfg.DialTimeout)
+	// Don't apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
+	dialCtx, cancel := context.WithCancel(context.Background())
 
 	w := &wantConn{
 		ctx:       dialCtx,

@@ -15,7 +15,7 @@ import (
 )
 
 // PubSub implements Pub/Sub commands as described in
-// http://redis.io/topics/pubsub. Message receiving is NOT safe
+// https://redis.io/docs/latest/develop/pubsub. Message receiving is NOT safe
 // for concurrent use by multiple goroutines.
 //
 // PubSub automatically reconnects to Redis Server and resubscribes
@@ -352,6 +352,25 @@ func (c *PubSub) Ping(ctx context.Context, payload ...string) error {
 		args = append(args, payload[0])
 	}
 	cmd := NewCmd(ctx, args...)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cn, err := c.conn(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	err = c.writeCmd(ctx, cn, cmd)
+	c.releaseConn(ctx, cn, err, false)
+	return err
+}
+
+// ClientSetName assigns  a namee to the PubSub connection using  CLIENT SETNAME,
+// The name is visible in CLIENT LIST output and is useful for debugging
+// and identifying connections in a redis instance.
+func (c *PubSub) ClientSetName(ctx context.Context, name string) error {
+	cmd := NewStatusCmd(ctx, "client", "setname", name)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

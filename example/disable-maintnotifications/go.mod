@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/example/disable-maintnotifications
 
-go 1.23
+go 1.24
 
 replace github.com/redis/go-redis/v9 => ../..
 

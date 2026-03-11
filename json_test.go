@@ -832,7 +832,9 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd := client.JSONType(ctx, "person:1", "$.person.nickname")
 					nicknameType, err := typeCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.TYPE failed")
-					Expect(nicknameType[0]).To(Equal([]interface{}{"string"}), "JSON.TYPE mismatch for nickname")
+					Expect(nicknameType).To(HaveLen(1), "JSON.TYPE should return one element")
+					// RESP2 v RESP3
+					Expect(nicknameType[0]).To(Or(Equal([]interface{}{"string"}), Equal("string")), "JSON.TYPE mismatch for nickname")
 
 					createIndexCmd := client.Do(ctx, "FT.CREATE", "person_idx", "ON", "JSON",
 						"PREFIX", "1", "person:", "SCHEMA",
@@ -859,7 +861,10 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					typeCmd = client.JSONType(ctx, "person:1", "$.settings.notifications.email")
 					typeResult, err := typeCmd.Result()
 					Expect(err).ToNot(HaveOccurred())
-					Expect(typeResult[0]).To(BeEmpty(), "Expected JSON.TYPE to be empty for deleted field")
+					// After deletion, JSON.TYPE returns empty slice or slice with empty/nil value
+					if len(typeResult) > 0 {
+						Expect(typeResult[0]).To(Or(BeNil(), BeEmpty()), "Expected JSON.TYPE to be empty for deleted field")
+					}
 				})
 			})
 		}
