@@ -274,7 +274,7 @@ type Stats struct {
 
 type Pooler interface {
 	NewConn(context.Context) (*Conn, error)
-	CloseConn(cn *Conn, reason string, fromState string) error
+	CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error
 
 	Get(context.Context) (*Conn, error)
 	Put(context.Context, *Conn)
@@ -797,7 +797,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 
 		if !p.isHealthyConn(cn, nowNs) {
 			// Connection was popped from idle pool, so fromState is MetricStateIdle
-			_ = p.CloseConn(cn, CloseReasonStale, MetricStateIdle)
+			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateIdle)
 			continue
 		}
 
@@ -809,7 +809,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
 					// Connection was popped from idle pool, so fromState is MetricStateIdle
-					_ = p.CloseConn(cn, CloseReasonHookError, MetricStateIdle)
+					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateIdle)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Return connection to pool without freeing the turn that this Get() call holds.
@@ -859,7 +859,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			// New connection was recorded as "" → MetricStateIdle in newConn, so fromState is MetricStateIdle
-			_ = p.CloseConn(newcn, CloseReasonHookError, MetricStateIdle)
+			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
 			return nil, err
 		}
 	}
@@ -1269,20 +1269,21 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 
 // CloseConn closes a connection and records metrics.
 // Parameters:
+//   - ctx: context for metric callbacks (enables trace-to-metric correlation)
 //   - cn: the connection to close
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
-func (p *ConnPool) CloseConn(cn *Conn, reason string, fromState string) error {
+func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
 	p.removeConnWithLock(cn)
 
 	// Record connection state change: connection is being removed from the specified state
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
-		cb(context.Background(), cn, fromState, "")
+		cb(ctx, cn, fromState, "")
 	}
 
 	// Record connection closed metric with the specified reason
 	if cb := getMetricConnectionClosedCallback(); cb != nil {
-		cb(context.Background(), cn, reason, nil)
+		cb(ctx, cn, reason, nil)
 	}
 
 	return p.closeConn(cn)
