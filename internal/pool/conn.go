@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var noDeadline = time.Time{}
@@ -535,7 +535,7 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
 		newCount := cn.relaxedCounter.Add(-1)
 		if newCount <= 0 {
-			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
+			logging.LoggerWithLevel().Infof(context.Background(), "%s", logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
 			cn.clearRelaxedTimeout()
 		}
 		return normalTimeout
@@ -569,7 +569,7 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
 		newCount := cn.relaxedCounter.Add(-1)
 		if newCount <= 0 {
-			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
+			logging.LoggerWithLevel().Infof(context.Background(), "%s", logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
 			cn.clearRelaxedTimeout()
 		}
 		return normalTimeout

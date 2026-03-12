@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker
@@ -102,9 +102,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
 				cb.requests.Store(0)
 				cb.successes.Store(0)
-				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
-				}
+				cb.logger().Infof(context.Background(), "%s", logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
 				// Fall through to half-open logic
 			} else {
 				return ErrCircuitBreakerOpen
@@ -144,17 +142,13 @@ func (cb *CircuitBreaker) recordFailure() {
 	case CircuitBreakerClosed:
 		if failures >= int64(cb.failureThreshold) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerClosed), int32(CircuitBreakerOpen)) {
-				if internal.LogLevel.WarnOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
-				}
+				cb.logger().Warnf(context.Background(), "%s", logs.CircuitBreakerOpened(cb.endpoint, failures))
 			}
 		}
 	case CircuitBreakerHalfOpen:
 		// Any failure in half-open state immediately opens the circuit
 		if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerOpen)) {
-			if internal.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
-			}
+			cb.logger().Warnf(context.Background(), "%s", logs.CircuitBreakerReopened(cb.endpoint))
 		}
 	}
 }
@@ -176,9 +170,7 @@ func (cb *CircuitBreaker) recordSuccess() {
 		if successes >= int64(cb.maxRequests) {
 			if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerClosed)) {
 				cb.failures.Store(0)
-				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
-				}
+				cb.logger().Infof(context.Background(), "%s", logs.CircuitBreakerClosed(cb.endpoint, successes))
 			}
 		}
 	}
@@ -200,6 +192,13 @@ func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
 		LastFailureTime: time.Unix(cb.lastFailureTime.Load(), 0),
 		LastSuccessTime: time.Unix(cb.lastSuccessTime.Load(), 0),
 	}
+}
+
+func (cb *CircuitBreaker) logger() *logging.LoggerWrapper {
+	if cb.config != nil && cb.config.Logger != nil {
+		return logging.NewLoggerWrapper(cb.config.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
 
 // CircuitBreakerStats provides statistics about a circuit breaker
@@ -325,8 +324,8 @@ func (cbm *CircuitBreakerManager) cleanup() {
 	}
 
 	// Log cleanup results
-	if len(toDelete) > 0 && internal.LogLevel.InfoOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.CircuitBreakerCleanup(len(toDelete), count))
+	if len(toDelete) > 0 {
+		cbm.logger().Infof(context.Background(), "%s", logs.CircuitBreakerCleanup(len(toDelete), count))
 	}
 
 	cbm.lastCleanup.Store(now.Unix())
@@ -350,4 +349,11 @@ func (cbm *CircuitBreakerManager) Reset() {
 		breaker.lastSuccessTime.Store(0)
 		return true
 	})
+}
+
+func (cbm *CircuitBreakerManager) logger() *logging.LoggerWrapper {
+	if cbm.config != nil && cbm.config.Logger != nil {
+		return logging.NewLoggerWrapper(cbm.config.Logger)
+	}
+	return logging.LoggerWithLevel()
 }

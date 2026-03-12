@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 // Mode represents the maintenance notifications mode
@@ -127,6 +127,9 @@ type Config struct {
 	// After this many retries, the connection will be removed from the pool.
 	// Default: 3
 	MaxHandoffRetries int
+
+	// Logger is an optional custom logger for maintenance notifications.
+	Logger logging.LoggerWithLevelI
 }
 
 func (c *Config) IsEnabled() bool {
@@ -311,10 +314,9 @@ func (c *Config) ApplyDefaultsWithPoolConfig(poolSize int, maxActiveConns int) *
 		result.CircuitBreakerMaxRequests = c.CircuitBreakerMaxRequests
 	}
 
-	if internal.LogLevel.DebugOrAbove() {
-		internal.Logger.Printf(context.Background(), logs.DebugLoggingEnabled())
-		internal.Logger.Printf(context.Background(), logs.ConfigDebug(result))
-	}
+	c.logger().Debugf(context.Background(), "%s", logs.DebugLoggingEnabled())
+	c.logger().Debugf(context.Background(), "%s", logs.ConfigDebug(result))
+
 	return result
 }
 
@@ -340,6 +342,8 @@ func (c *Config) Clone() *Config {
 
 		// Configuration fields
 		MaxHandoffRetries: c.MaxHandoffRetries,
+
+		Logger: c.Logger,
 	}
 }
 
@@ -362,6 +366,13 @@ func (c *Config) applyWorkerDefaults(poolSize int) {
 	if c.MaxWorkers < 1 {
 		c.MaxWorkers = 1
 	}
+}
+
+func (c *Config) logger() *logging.LoggerWrapper {
+	if c.Logger != nil {
+		return logging.NewLoggerWrapper(c.Logger)
+	}
+	return logging.LoggerWithLevel()
 }
 
 // DetectEndpointType automatically detects the appropriate endpoint type
