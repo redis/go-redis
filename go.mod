@@ -10,10 +10,14 @@ require (
 	github.com/zeebo/xxh3 v1.1.0
 )
 
-require go.uber.org/atomic v1.11.0
+require (
+	github.com/alicebob/miniredis/v2 v2.37.0
+	go.uber.org/atomic v1.11.0
+)
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 )
 
