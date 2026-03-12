@@ -347,7 +347,11 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 		if err != nil {
 			if isBadConn(err, false, c.opt.Addr) {
 				// Close the connection to force a reconnection.
-				err := c.connPool.CloseConn(poolCn)
+				// Re-auth happens on connections that were idle in the pool (the pool hook
+				// waits for IDLE state before transitioning to UNUSABLE for re-auth).
+				// From metrics perspective, the connection was never "used" by a client.
+				// Note: Using context.Background() as this callback doesn't have access to caller's context.
+				err := c.connPool.CloseConn(context.Background(), poolCn, pool.CloseReasonAuthError, pool.MetricStateIdle)
 				if err != nil {
 					internal.Logger.Printf(context.Background(), "redis: failed to close connection: %v", err)
 					// try to close the network connection directly

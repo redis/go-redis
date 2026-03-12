@@ -33,7 +33,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 		cn, err := connPool.NewConn(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		defer connPool.CloseConn(cn)
+		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that default buffer sizes are used (32KiB)
 		writerBufSize := getWriterBufSizeUnsafe(cn)
@@ -58,7 +58,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 		cn, err := connPool.NewConn(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		defer connPool.CloseConn(cn)
+		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that custom buffer sizes are used
 		writerBufSize := getWriterBufSizeUnsafe(cn)
@@ -80,7 +80,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 		cn, err := connPool.NewConn(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		defer connPool.CloseConn(cn)
+		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that default buffer sizes are used (32KiB)
 		writerBufSize := getWriterBufSizeUnsafe(cn)
@@ -116,7 +116,7 @@ var _ = Describe("Buffer Size Configuration", func() {
 
 		cn, err := connPool.NewConn(ctx)
 		Expect(err).NotTo(HaveOccurred())
-		defer connPool.CloseConn(cn)
+		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Should still get 32KiB defaults because NewConnPool sets them
 		writerBufSize := getWriterBufSizeUnsafe(cn)
