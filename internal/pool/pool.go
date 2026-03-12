@@ -69,6 +69,14 @@ var (
 	// Parameters: ctx, cn, reason, err
 	metricConnectionClosedCallback func(ctx context.Context, cn *Conn, reason string, err error)
 
+	// Global metric callback for connection count changes (UpDownCounter)
+	// Parameters: ctx, delta (+1/-1), cn, state, isPubSub
+	metricConnectionCountCallback func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool)
+
+	// Global metric callback for pending requests changes (UpDownCounter)
+	// Parameters: ctx, delta (+1/-1), cn
+	metricPendingRequestsCallback func(ctx context.Context, delta int, cn *Conn)
+
 	// errPanicInDial is returned when a panic occurs in the dial function.
 	errPanicInQueuedNewConn = errors.New("panic in queuedNewConn")
 
@@ -114,6 +122,16 @@ type MetricCallbacks struct {
 
 	// ConnectionClosed is called when a connection is closed
 	ConnectionClosed func(ctx context.Context, cn *Conn, reason string, err error)
+
+	// ConnectionCount is called when connection count changes (UpDownCounter)
+	// delta: +1 when connection added, -1 when connection removed
+	// state: connection state (e.g., "idle", "used")
+	// isPubSub: true if this is a PubSub connection
+	ConnectionCount func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool)
+
+	// PendingRequests is called when pending requests count changes (UpDownCounter)
+	// delta: +1 when request starts waiting, -1 when request stops waiting
+	PendingRequests func(ctx context.Context, delta int, cn *Conn)
 }
 
 // SetAllMetricCallbacks sets all metric callbacks atomically.
@@ -138,6 +156,8 @@ func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
 		metricMaintenanceNotificationCallback = nil
 		metricConnectionWaitTimeCallback = nil
 		metricConnectionClosedCallback = nil
+		metricConnectionCountCallback = nil
+		metricPendingRequestsCallback = nil
 		return
 	}
 
@@ -148,6 +168,8 @@ func SetAllMetricCallbacks(callbacks *MetricCallbacks) {
 	metricMaintenanceNotificationCallback = callbacks.MaintenanceNotification
 	metricConnectionWaitTimeCallback = callbacks.ConnectionWaitTime
 	metricConnectionClosedCallback = callbacks.ConnectionClosed
+	metricConnectionCountCallback = callbacks.ConnectionCount
+	metricPendingRequestsCallback = callbacks.PendingRequests
 }
 
 // getMetricConnectionStateChangeCallback returns the metric callback for connection state changes.
@@ -219,6 +241,22 @@ func getMetricConnectionTimeoutCallback() func(ctx context.Context, cn *Conn, ti
 func getMetricConnectionClosedCallback() func(ctx context.Context, cn *Conn, reason string, err error) {
 	metricCallbackMu.RLock()
 	cb := metricConnectionClosedCallback
+	metricCallbackMu.RUnlock()
+	return cb
+}
+
+// getMetricConnectionCountCallback returns the metric callback for connection count changes (UpDownCounter).
+func getMetricConnectionCountCallback() func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool) {
+	metricCallbackMu.RLock()
+	cb := metricConnectionCountCallback
+	metricCallbackMu.RUnlock()
+	return cb
+}
+
+// getMetricPendingRequestsCallback returns the metric callback for pending requests changes (UpDownCounter).
+func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn *Conn) {
+	metricCallbackMu.RLock()
+	cb := metricPendingRequestsCallback
 	metricCallbackMu.RUnlock()
 	return cb
 }
@@ -545,6 +583,10 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, cn, "", "idle")
 	}
+	// Record connection count increment (new connection in idle state)
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, 1, cn, "idle", false)
+	}
 
 	return cn, nil
 }
@@ -709,12 +751,19 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	}
 
 	// Track pending requests in pool stats
-	// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
 	atomic.AddUint32(&p.stats.PendingRequests, 1)
+	// Record pending request increment (UpDownCounter)
+	if cb := getMetricPendingRequestsCallback(); cb != nil {
+		cb(ctx, 1, nil) // No connection yet, use nil
+	}
 	defer func() {
 		if err != nil {
 			// Failed to get connection, decrement pending requests
 			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+			// Record pending request decrement on failure
+			if cb := getMetricPendingRequestsCallback(); cb != nil {
+				cb(ctx, -1, nil)
+			}
 		}
 	}()
 
@@ -764,6 +813,10 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		if !p.isHealthyConn(cn, nowNs) {
+			// Record connection count decrement (closing idle connection due to health check)
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "idle", false)
+			}
 			_ = p.CloseConn(cn)
 			continue
 		}
@@ -775,6 +828,10 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			if hookErr != nil || !acceptConn {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
+					// Record connection count decrement (closing idle connection due to hook error)
+					if cb := getMetricConnectionCountCallback(); cb != nil {
+						cb(ctx, -1, cn, "idle", false)
+					}
 					_ = p.CloseConn(cn)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
@@ -793,6 +850,11 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "idle", "used")
 		}
+		// Record connection count state transition: -1 idle, +1 used
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, -1, cn, "idle", false)
+			cb(ctx, 1, cn, "used", false)
+		}
 
 		// Record wait time (use cached callback from above)
 		if waitTimeCallback != nil {
@@ -800,8 +862,11 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		// Decrement pending requests (connection acquired successfully)
-		// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
 		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+		// Record pending request decrement (UpDownCounter)
+		if cb := getMetricPendingRequestsCallback(); cb != nil {
+			cb(ctx, -1, cn)
+		}
 
 		return cn, nil
 	}
@@ -833,6 +898,10 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, newcn, "", "used")
 	}
+	// Record connection count increment (new connection directly in used state)
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, 1, newcn, "used", false)
+	}
 
 	// Record wait time (use cached callback from above)
 	if waitTimeCallback != nil {
@@ -840,8 +909,11 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	}
 
 	// Decrement pending requests (connection acquired successfully)
-	// NOTE: We only track in stats, not via callback. The AsyncGauge reads stats directly.
 	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
+	// Record pending request decrement (UpDownCounter)
+	if cb := getMetricPendingRequestsCallback(); cb != nil {
+		cb(ctx, -1, newcn)
+	}
 
 	return newcn, nil
 }
@@ -1164,6 +1236,11 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "used", "idle")
 		}
+		// Record connection count state transition: -1 used, +1 idle
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, -1, cn, "used", false)
+			cb(ctx, 1, cn, "idle", false)
+		}
 	} else {
 		shouldCloseConn = true
 		p.removeConnWithLock(cn)
@@ -1171,6 +1248,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// Notify metrics: connection removed (used -> nothing)
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, "used", "")
+		}
+		// Record connection count decrement (connection removed while in used state)
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, -1, cn, "used", false)
 		}
 	}
 
@@ -1215,6 +1296,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	// Notify metrics: connection removed (assume from used state)
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, cn, "used", "")
+	}
+	// Record connection count decrement (connection removed, assume from used state)
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, -1, cn, "used", false)
 	}
 
 	// Record connection closed

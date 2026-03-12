@@ -77,6 +77,16 @@ type OTelRecorder interface {
 	// consumerGroup: name of the consumer group
 	// consumerName: name of the consumer
 	RecordStreamLag(ctx context.Context, lag time.Duration, cn ConnInfo, streamName, consumerGroup, consumerName string)
+
+	// RecordConnectionCount records a change in connection count (UpDownCounter)
+	// delta: +1 when connection added, -1 when connection removed
+	// state: connection state (e.g., "idle", "used")
+	// isPubSub: true if this is a PubSub connection
+	RecordConnectionCount(ctx context.Context, delta int, cn ConnInfo, state string, isPubSub bool)
+
+	// RecordPendingRequests records a change in pending requests (UpDownCounter)
+	// delta: +1 when request starts waiting, -1 when request stops waiting
+	RecordPendingRequests(ctx context.Context, delta int, cn ConnInfo)
 }
 
 // This is used for async gauge metrics that need to pull stats from pools periodically.
@@ -161,6 +171,14 @@ func (a *otelRecorderAdapter) RecordPubSubMessage(ctx context.Context, cn *pool.
 
 func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string) {
 	a.recorder.RecordStreamLag(ctx, lag, toConnInfo(cn), streamName, consumerGroup, consumerName)
+}
+
+func (a *otelRecorderAdapter) RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
+	a.recorder.RecordConnectionCount(ctx, delta, toConnInfo(cn), state, isPubSub)
+}
+
+func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn) {
+	a.recorder.RecordPendingRequests(ctx, delta, toConnInfo(cn))
 }
 
 func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {

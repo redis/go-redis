@@ -1,7 +1,6 @@
 package redisotel
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -201,13 +199,13 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 	}
 
-	var connectionCountGauge metric.Int64ObservableGauge
+	var connectionCount metric.Int64UpDownCounter // OTel semconv: UpDownCounter
 	var connectionCreateTime metric.Float64Histogram
 	var connectionRelaxedTimeout metric.Int64UpDownCounter
 	var connectionHandoff metric.Int64Counter
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
-		connectionCountGauge, err = meter.Int64ObservableGauge(
+		connectionCount, err = meter.Int64UpDownCounter(
 			MetricConnectionCount,
 			metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
 			metric.WithUnit("{connection}"),
@@ -277,7 +275,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	var connectionWaitTime metric.Float64Histogram
 	var connectionClosed metric.Int64Counter
-	var connectionPendingReqsGauge metric.Int64ObservableGauge
+	var connectionPendingReqs metric.Int64UpDownCounter // OTel semconv: UpDownCounter
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionAdvanced) {
 		var connectionWaitTimeOpts []metric.Float64HistogramOption
@@ -307,7 +305,7 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 			return nil, fmt.Errorf("failed to create connection closed metric: %w", err)
 		}
 
-		connectionPendingReqsGauge, err = meter.Int64ObservableGauge(
+		connectionPendingReqs, err = meter.Int64UpDownCounter(
 			MetricConnectionPendingReqs,
 			metric.WithDescription("The number of pending requests waiting for a connection"),
 			metric.WithUnit("{request}"),
@@ -354,26 +352,19 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	// Create recorder
 	recorder := &metricsRecorder{
-		operationDuration:          operationDuration,
-		connectionCountGauge:       connectionCountGauge,
-		connectionCreateTime:       connectionCreateTime,
-		connectionRelaxedTimeout:   connectionRelaxedTimeout,
-		connectionHandoff:          connectionHandoff,
-		clientErrors:               clientErrors,
-		maintenanceNotifications:   maintenanceNotifications,
-		connectionWaitTime:         connectionWaitTime,
-		connectionClosed:           connectionClosed,
-		connectionPendingReqsGauge: connectionPendingReqsGauge,
-		pubsubMessages:             pubsubMessages,
-		streamLag:                  streamLag,
-		cfg:                        &cfg,
-		pools:                      make([]poolInfo, 0),
-	}
-
-	// Register async callbacks for ObservableGauges
-	// These callbacks will pull stats from registered pools
-	if err := o.registerAsyncCallbacks(meter, recorder); err != nil {
-		return nil, fmt.Errorf("failed to register async callbacks: %w", err)
+		operationDuration:        operationDuration,
+		connectionCount:          connectionCount,
+		connectionCreateTime:     connectionCreateTime,
+		connectionRelaxedTimeout: connectionRelaxedTimeout,
+		connectionHandoff:        connectionHandoff,
+		clientErrors:             clientErrors,
+		maintenanceNotifications: maintenanceNotifications,
+		connectionWaitTime:       connectionWaitTime,
+		connectionClosed:         connectionClosed,
+		connectionPendingReqs:    connectionPendingReqs,
+		pubsubMessages:           pubsubMessages,
+		streamLag:                streamLag,
+		cfg:                      &cfg,
 	}
 
 	return recorder, nil
@@ -396,150 +387,4 @@ func parsePoolName(poolName string) (string, string, string) {
 	}
 	host, port := parseAddr(addrPart)
 	return host, port, dbIndex
-}
-
-func (o *ObservabilityInstance) registerAsyncCallbacks(meter metric.Meter, recorder *metricsRecorder) error {
-	// Register connection count gauge callback
-	if recorder.connectionCountGauge != nil {
-		_, err := meter.RegisterCallback(
-			func(ctx context.Context, observer metric.Observer) error {
-				recorder.poolsMu.RLock()
-				pools := recorder.pools
-				pubsubPools := recorder.pubsubPools
-				recorder.poolsMu.RUnlock()
-
-				// Iterate over all registered main pools
-				for _, poolInfo := range pools {
-					stats := poolInfo.pool.PoolStats()
-					if stats == nil {
-						continue
-					}
-
-					// Extract server info from pool name
-					serverAddr, serverPort, _ := parsePoolName(poolInfo.name)
-
-					// Build base attributes
-					baseAttrs := []attribute.KeyValue{
-						attribute.String(AttrDBSystemName, DBSystemRedis),
-						getLibraryVersionAttr(),
-					}
-					if serverAddr != "" {
-						baseAttrs = append(baseAttrs, attribute.String(AttrServerAddress, serverAddr))
-					}
-					if serverPort != "" && serverPort != "6379" {
-						baseAttrs = append(baseAttrs, attribute.String(AttrServerPort, serverPort))
-					}
-
-					// Add pool name
-					baseAttrs = append(baseAttrs, attribute.String(AttrDBClientConnectionPoolName, poolInfo.name))
-
-					// Observe idle connections
-					idleAttrs := append([]attribute.KeyValue{}, baseAttrs...)
-					idleAttrs = append(idleAttrs,
-						attribute.String(AttrDBClientConnectionState, ConnectionStateIdle),
-						attribute.Bool(AttrRedisClientConnectionPubSub, false),
-					)
-					observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.IdleConns),
-						metric.WithAttributes(idleAttrs...))
-
-					// Observe used connections
-					usedConns := stats.TotalConns - stats.IdleConns
-					usedAttrs := append([]attribute.KeyValue{}, baseAttrs...)
-					usedAttrs = append(usedAttrs,
-						attribute.String(AttrDBClientConnectionState, ConnectionStateUsed),
-						attribute.Bool(AttrRedisClientConnectionPubSub, false),
-					)
-					observer.ObserveInt64(recorder.connectionCountGauge, int64(usedConns),
-						metric.WithAttributes(usedAttrs...))
-				}
-
-				for _, pubsubPoolInfo := range pubsubPools {
-					stats := pubsubPoolInfo.pool.Stats()
-					if stats == nil {
-						continue
-					}
-
-					// Build base attributes
-					baseAttrs := []attribute.KeyValue{
-						attribute.String(AttrDBSystemName, DBSystemRedis),
-						getLibraryVersionAttr(),
-						attribute.String(AttrDBClientConnectionPoolName, pubsubPoolInfo.name),
-					}
-
-					// PubSub pools report Active connections (not idle/used split
-					// We'll report Active as "used" and 0 as "idle"
-					idleAttrs := append([]attribute.KeyValue{}, baseAttrs...)
-					idleAttrs = append(idleAttrs,
-						attribute.String(AttrDBClientConnectionState, ConnectionStateIdle),
-						attribute.Bool(AttrRedisClientConnectionPubSub, true),
-					)
-					observer.ObserveInt64(recorder.connectionCountGauge, 0,
-						metric.WithAttributes(idleAttrs...))
-
-					usedAttrs := append([]attribute.KeyValue{}, baseAttrs...)
-					usedAttrs = append(usedAttrs,
-						attribute.String(AttrDBClientConnectionState, ConnectionStateUsed),
-						attribute.Bool(AttrRedisClientConnectionPubSub, true),
-					)
-					observer.ObserveInt64(recorder.connectionCountGauge, int64(stats.Active),
-						metric.WithAttributes(usedAttrs...))
-				}
-
-				return nil
-			},
-			recorder.connectionCountGauge,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to register connection count callback: %w", err)
-		}
-	}
-
-	// Register pending requests gauge callback
-	if recorder.connectionPendingReqsGauge != nil {
-		_, err := meter.RegisterCallback(
-			func(ctx context.Context, observer metric.Observer) error {
-				recorder.poolsMu.RLock()
-				pools := recorder.pools
-				recorder.poolsMu.RUnlock()
-
-				// Iterate over all registered pools
-				for _, poolInfo := range pools {
-					stats := poolInfo.pool.PoolStats()
-					if stats == nil {
-						continue
-					}
-
-					// Extract server info from pool name
-					serverAddr, serverPort, _ := parsePoolName(poolInfo.name)
-
-					// Build base attributes
-					baseAttrs := []attribute.KeyValue{
-						attribute.String(AttrDBSystemName, DBSystemRedis),
-						getLibraryVersionAttr(),
-					}
-					if serverAddr != "" {
-						baseAttrs = append(baseAttrs, attribute.String(AttrServerAddress, serverAddr))
-					}
-					if serverPort != "" && serverPort != "6379" {
-						baseAttrs = append(baseAttrs, attribute.String(AttrServerPort, serverPort))
-					}
-
-					// Add pool name
-					baseAttrs = append(baseAttrs, attribute.String(AttrDBClientConnectionPoolName, poolInfo.name))
-
-					// Observe pending requests count
-					observer.ObserveInt64(recorder.connectionPendingReqsGauge, int64(stats.PendingRequests),
-						metric.WithAttributes(baseAttrs...))
-				}
-
-				return nil
-			},
-			recorder.connectionPendingReqsGauge,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to register pending requests callback: %w", err)
-		}
-	}
-
-	return nil
 }
