@@ -2224,13 +2224,29 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 	return pubsub
 }
 
-// SSubscribe Subscribes the client to the specified shard channels.
+// SSubscribe subscribes the client to the specified shard channels.
+// Note: In a Redis cluster, channels that hash to different slots will be
+// served by different nodes. A single PubSub connection can only receive
+// messages from channels on one shard. If you need to subscribe to channels
+// across multiple shards, use SSubscribeSharded instead.
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
 		_ = pubsub.SSubscribe(ctx, channels...)
 	}
 	return pubsub
+}
+
+// SSubscribeSharded subscribes the client to the specified shard channels,
+// automatically managing connections to all relevant cluster nodes.
+// Unlike SSubscribe, this correctly handles channels that hash to different
+// slots by maintaining one connection per shard node.
+func (c *ClusterClient) SSubscribeSharded(ctx context.Context, channels ...string) *ShardedPubSub {
+	sps := newShardedPubSub(c)
+	if len(channels) > 0 {
+		_ = sps.SSubscribe(ctx, channels...)
+	}
+	return sps
 }
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
