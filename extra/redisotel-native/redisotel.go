@@ -7,10 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/semconv/v1.38.0/dbconv"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // Metric name constants
@@ -183,22 +185,17 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 	var operationDuration metric.Float64Histogram
 	if cfg.isMetricGroupEnabled(MetricGroupCommand) {
 		var operationDurationOpts []metric.Float64HistogramOption
-		operationDurationOpts = append(operationDurationOpts,
-			metric.WithDescription("Duration of database client operations"),
-			metric.WithUnit("s"),
-		)
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
 			operationDurationOpts = append(operationDurationOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsOperationDuration...),
 			)
 		}
-		operationDuration, err = meter.Float64Histogram(
-			MetricOperationDuration,
-			operationDurationOpts...,
-		)
+		var operationDurationConv dbconv.ClientOperationDuration
+		operationDurationConv, err = dbconv.NewClientOperationDuration(meter, operationDurationOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create operation duration histogram: %w", err)
 		}
+		operationDuration = operationDurationConv.Inst()
 	}
 
 	var connectionCountGauge metric.Int64ObservableGauge
@@ -208,31 +205,26 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionBasic) {
 		connectionCountGauge, err = meter.Int64ObservableGauge(
-			MetricConnectionCount,
-			metric.WithDescription("The number of connections that are currently in state described by the state attribute"),
-			metric.WithUnit("{connection}"),
+			dbconv.ClientConnectionCount{}.Name(),
+			metric.WithDescription(dbconv.ClientConnectionCount{}.Description()),
+			metric.WithUnit(dbconv.ClientConnectionCount{}.Unit()),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection count metric: %w", err)
 		}
 
 		var connectionCreateTimeOpts []metric.Float64HistogramOption
-		connectionCreateTimeOpts = append(connectionCreateTimeOpts,
-			metric.WithDescription("The time it took to create a new connection"),
-			metric.WithUnit("s"),
-		)
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
 			connectionCreateTimeOpts = append(connectionCreateTimeOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionCreateTime...),
 			)
 		}
-		connectionCreateTime, err = meter.Float64Histogram(
-			MetricConnectionCreateTime,
-			connectionCreateTimeOpts...,
-		)
+		var connectionCreateTimeConv dbconv.ClientConnectionCreateTime
+		connectionCreateTimeConv, err = dbconv.NewClientConnectionCreateTime(meter, connectionCreateTimeOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection create time histogram: %w", err)
 		}
+		connectionCreateTime = connectionCreateTimeConv.Inst()
 
 		connectionRelaxedTimeout, err = meter.Int64UpDownCounter(
 			MetricConnectionRelaxedTimeout,
@@ -281,22 +273,17 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 
 	if cfg.isMetricGroupEnabled(MetricGroupConnectionAdvanced) {
 		var connectionWaitTimeOpts []metric.Float64HistogramOption
-		connectionWaitTimeOpts = append(connectionWaitTimeOpts,
-			metric.WithDescription("The time it took to obtain a connection from the pool"),
-			metric.WithUnit("s"),
-		)
 		if cfg.histAggregation == HistogramAggregationExplicitBucket {
 			connectionWaitTimeOpts = append(connectionWaitTimeOpts,
 				metric.WithExplicitBucketBoundaries(cfg.bucketsConnectionWaitTime...),
 			)
 		}
-		connectionWaitTime, err = meter.Float64Histogram(
-			MetricConnectionWaitTime,
-			connectionWaitTimeOpts...,
-		)
+		var connectionWaitTimeConv dbconv.ClientConnectionWaitTime
+		connectionWaitTimeConv, err = dbconv.NewClientConnectionWaitTime(meter, connectionWaitTimeOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection wait time histogram: %w", err)
 		}
+		connectionWaitTime = connectionWaitTimeConv.Inst()
 
 		connectionClosed, err = meter.Int64Counter(
 			MetricConnectionClosed,
@@ -308,9 +295,9 @@ func (o *ObservabilityInstance) createRecorder(meter metric.Meter, cfg config) (
 		}
 
 		connectionPendingReqsGauge, err = meter.Int64ObservableGauge(
-			MetricConnectionPendingReqs,
-			metric.WithDescription("The number of pending requests waiting for a connection"),
-			metric.WithUnit("{request}"),
+			dbconv.ClientConnectionPendingRequests{}.Name(),
+			metric.WithDescription(dbconv.ClientConnectionPendingRequests{}.Description()),
+			metric.WithUnit(dbconv.ClientConnectionPendingRequests{}.Unit()),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection pending requests metric: %w", err)
