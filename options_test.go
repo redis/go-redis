@@ -5,8 +5,11 @@ package redis
 import (
 	"crypto/tls"
 	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 func TestParseURL(t *testing.T) {
@@ -389,4 +392,48 @@ func TestFailoverOptionsDialerRetries(t *testing.T) {
 	if sentinelOpt.DialerRetryTimeout != 200*time.Millisecond {
 		t.Errorf("expected sentinel DialerRetryTimeout=200ms, got %v", sentinelOpt.DialerRetryTimeout)
 	}
+}
+
+// TestOptionsCloneMaintNotificationsRace verifies that cloning options via
+// baseClient is safe when initConn concurrently writes MaintNotificationsConfig.Mode.
+// Run with -race to detect the data race.
+func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
+	opt := &Options{
+		Addr: "localhost:6379",
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeAuto,
+		},
+	}
+
+	bc := baseClient{opt: opt}
+
+	var wg sync.WaitGroup
+	const iterations = 1000
+
+	// Writer: simulates initConn toggling MaintNotificationsConfig.Mode under optLock
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			bc.optLock.Lock()
+			bc.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+			bc.optLock.Unlock()
+
+			bc.optLock.Lock()
+			bc.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeAuto
+			bc.optLock.Unlock()
+		}
+	}()
+
+	// Reader: simulates newTx / withTimeout calling cloneOpt() (acquires RLock)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			cloned := bc.cloneOpt()
+			_ = cloned
+		}
+	}()
+
+	wg.Wait()
 }
