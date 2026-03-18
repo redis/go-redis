@@ -25,8 +25,10 @@ type ShardedPubSub struct {
 	closed bool
 	exit   chan struct{}
 
-	chOnce sync.Once
-	msgCh  chan *Message
+	chOnce     sync.Once
+	msgCh      chan *Message
+	chOpts     []ChannelOption
+	forwarders sync.WaitGroup
 }
 
 func newShardedPubSub(cluster *ClusterClient) *ShardedPubSub {
@@ -75,7 +77,8 @@ func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
 	// If the message channel is already initialized, start forwarding
 	// messages from this new shard.
 	if s.msgCh != nil {
-		go s.forwardMessages(ps)
+		s.forwarders.Add(1)
+		go s.forwardMessages(ps, s.chOpts)
 	}
 
 	return ps
@@ -84,6 +87,28 @@ func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
 // SSubscribe subscribes to the given shard channels. Channels are automatically
 // routed to the correct cluster node based on their hash slot.
 func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) error {
+	// Check closed state first (quick path).
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return pool.ErrClosed
+	}
+	s.mu.Unlock()
+
+	// Resolve node addresses without holding the mutex to avoid deadlock:
+	// nodeAddrForChannel -> state.Get -> Reload -> onReload -> onTopologyChange
+	// which also needs to acquire s.mu.
+	groups := make(map[string][]string)
+	addrMap := make(map[string]string) // channel -> addr
+	for _, ch := range channels {
+		addr, err := s.nodeAddrForChannel(ctx, ch)
+		if err != nil {
+			return err
+		}
+		groups[addr] = append(groups[addr], ch)
+		addrMap[ch] = addr
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -91,14 +116,7 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 		return pool.ErrClosed
 	}
 
-	// Group channels by target node address.
-	groups := make(map[string][]string)
-	for _, ch := range channels {
-		addr, err := s.nodeAddrForChannel(ctx, ch)
-		if err != nil {
-			return err
-		}
-		groups[addr] = append(groups[addr], ch)
+	for ch, addr := range addrMap {
 		s.chanShard[ch] = addr
 	}
 
@@ -147,15 +165,30 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 
 // Channel returns a Go channel that receives messages from all shards.
 // The channel is closed when Close is called.
+// ChannelOption values (e.g. WithChannelSize) are forwarded to each
+// underlying PubSub shard when forwardMessages calls ps.Channel(opts...).
 func (s *ShardedPubSub) Channel(opts ...ChannelOption) <-chan *Message {
 	s.chOnce.Do(func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 
-		s.msgCh = make(chan *Message, 100)
+		// Determine the channel buffer size. We default to 100 but respect
+		// WithChannelSize if provided. We create a temporary channel struct
+		// just to extract the configured size.
+		size := 100
+		for _, opt := range opts {
+			// Use a probe to extract chanSize from options.
+			probe := &channel{chanSize: 100}
+			opt(probe)
+			size = probe.chanSize
+		}
+
+		s.msgCh = make(chan *Message, size)
+		s.chOpts = opts
 		// Start forwarding from all existing shards.
 		for _, ps := range s.shards {
-			go s.forwardMessages(ps)
+			s.forwarders.Add(1)
+			go s.forwardMessages(ps, opts)
 		}
 	})
 	return s.msgCh
@@ -163,8 +196,9 @@ func (s *ShardedPubSub) Channel(opts ...ChannelOption) <-chan *Message {
 
 // forwardMessages reads from a single PubSub's channel and forwards to the
 // multiplexed channel.
-func (s *ShardedPubSub) forwardMessages(ps *PubSub) {
-	ch := ps.Channel()
+func (s *ShardedPubSub) forwardMessages(ps *PubSub, opts []ChannelOption) {
+	defer s.forwarders.Done()
+	ch := ps.Channel(opts...)
 	for {
 		select {
 		case msg, ok := <-ch:
@@ -186,18 +220,25 @@ func (s *ShardedPubSub) forwardMessages(ps *PubSub) {
 // changes. It re-resolves all subscribed channels and migrates subscriptions
 // to the correct nodes.
 func (s *ShardedPubSub) onTopologyChange() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed || len(s.chanShard) == 0 {
-		return
-	}
-
 	ctx := context.Background()
 
-	// Re-resolve all channels and check for migrations.
+	// Take a snapshot of current channel->shard mappings without holding
+	// the lock during node address resolution, which may trigger further
+	// state reloads and re-enter through notifyShardedPubSubs.
+	s.mu.Lock()
+	if s.closed || len(s.chanShard) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	snapshot := make(map[string]string, len(s.chanShard))
+	for ch, addr := range s.chanShard {
+		snapshot[ch] = addr
+	}
+	s.mu.Unlock()
+
+	// Re-resolve all channels outside the lock.
 	migrations := make(map[string]map[string][]string) // oldAddr -> newAddr -> channels
-	for ch, oldAddr := range s.chanShard {
+	for ch, oldAddr := range snapshot {
 		newAddr, err := s.nodeAddrForChannel(ctx, ch)
 		if err != nil {
 			continue
@@ -210,7 +251,18 @@ func (s *ShardedPubSub) onTopologyChange() {
 		}
 	}
 
-	// Apply migrations.
+	if len(migrations) == 0 {
+		return
+	}
+
+	// Apply migrations under the lock.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return
+	}
+
 	for oldAddr, targets := range migrations {
 		for newAddr, channels := range targets {
 			// Unsubscribe from old shard.
@@ -305,7 +357,12 @@ func (s *ShardedPubSub) Close() error {
 		delete(s.shards, addr)
 	}
 
-	// Give a moment for forwarders to drain, then close the channel.
+	// Wait for all forwarder goroutines to exit before closing msgCh
+	// to avoid a send-on-closed-channel panic.
+	s.mu.Unlock()
+	s.forwarders.Wait()
+	s.mu.Lock()
+
 	if s.msgCh != nil {
 		close(s.msgCh)
 	}
