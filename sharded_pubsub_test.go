@@ -69,3 +69,38 @@ func TestShardedPubSubSSubscribeWhenClosed(t *testing.T) {
 		t.Fatal("expected error when subscribing on closed ShardedPubSub")
 	}
 }
+
+func TestShardedPubSubRegistration(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+
+	sps1 := newShardedPubSub(cluster)
+	sps2 := newShardedPubSub(cluster)
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 2 {
+		t.Fatalf("expected 2 registered, got %d", len(cluster.shardedPubSubs))
+	}
+	cluster.spsMu.Unlock()
+
+	// Close sps1 should deregister it.
+	_ = sps1.Close()
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 1 {
+		t.Fatalf("expected 1 registered after close, got %d", len(cluster.shardedPubSubs))
+	}
+	if cluster.shardedPubSubs[0] != sps2 {
+		t.Fatal("expected sps2 to remain registered")
+	}
+	cluster.spsMu.Unlock()
+
+	_ = sps2.Close()
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 0 {
+		t.Fatalf("expected 0 registered after all closed, got %d", len(cluster.shardedPubSubs))
+	}
+	cluster.spsMu.Unlock()
+}

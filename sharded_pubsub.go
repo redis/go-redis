@@ -30,12 +30,14 @@ type ShardedPubSub struct {
 }
 
 func newShardedPubSub(cluster *ClusterClient) *ShardedPubSub {
-	return &ShardedPubSub{
+	sps := &ShardedPubSub{
 		cluster:   cluster,
 		shards:    make(map[string]*PubSub),
 		chanShard: make(map[string]string),
 		exit:      make(chan struct{}),
 	}
+	cluster.registerShardedPubSub(sps)
+	return sps
 }
 
 // nodeAddrForChannel returns the cluster node address responsible for a channel's slot.
@@ -104,7 +106,10 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
-			return err
+			// Reactive reconnect: close failed shard, re-resolve, and retry once.
+			if reconnErr := s.resubscribeShard(ctx, addr); reconnErr != nil {
+				return err // return original error if reconnect also fails
+			}
 		}
 	}
 
@@ -177,6 +182,107 @@ func (s *ShardedPubSub) forwardMessages(ps *PubSub) {
 	}
 }
 
+// onTopologyChange is called by the ClusterClient when the cluster topology
+// changes. It re-resolves all subscribed channels and migrates subscriptions
+// to the correct nodes.
+func (s *ShardedPubSub) onTopologyChange() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || len(s.chanShard) == 0 {
+		return
+	}
+
+	ctx := context.Background()
+
+	// Re-resolve all channels and check for migrations.
+	migrations := make(map[string]map[string][]string) // oldAddr -> newAddr -> channels
+	for ch, oldAddr := range s.chanShard {
+		newAddr, err := s.nodeAddrForChannel(ctx, ch)
+		if err != nil {
+			continue
+		}
+		if newAddr != oldAddr {
+			if migrations[oldAddr] == nil {
+				migrations[oldAddr] = make(map[string][]string)
+			}
+			migrations[oldAddr][newAddr] = append(migrations[oldAddr][newAddr], ch)
+		}
+	}
+
+	// Apply migrations.
+	for oldAddr, targets := range migrations {
+		for newAddr, channels := range targets {
+			// Unsubscribe from old shard.
+			if ps, ok := s.shards[oldAddr]; ok {
+				_ = ps.SUnsubscribe(ctx, channels...)
+			}
+
+			// Subscribe on new shard.
+			ps := s.getOrCreateShard(newAddr)
+			_ = ps.SSubscribe(ctx, channels...)
+
+			// Update channel->shard mapping.
+			for _, ch := range channels {
+				s.chanShard[ch] = newAddr
+			}
+		}
+
+		// If old shard has no more channels, close it.
+		hasChannels := false
+		for _, addr := range s.chanShard {
+			if addr == oldAddr {
+				hasChannels = true
+				break
+			}
+		}
+		if !hasChannels {
+			if ps, ok := s.shards[oldAddr]; ok {
+				_ = ps.Close()
+				delete(s.shards, oldAddr)
+			}
+		}
+	}
+}
+
+// resubscribeShard closes a failed shard connection, re-resolves the channels
+// that were on it, and re-subscribes them on fresh connections.
+func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string) error {
+	// Close the failed shard.
+	if ps, ok := s.shards[failedAddr]; ok {
+		_ = ps.Close()
+		delete(s.shards, failedAddr)
+	}
+
+	// Collect channels that were on the failed shard.
+	var channels []string
+	for ch, addr := range s.chanShard {
+		if addr == failedAddr {
+			channels = append(channels, ch)
+		}
+	}
+
+	// Re-resolve and re-subscribe.
+	groups := make(map[string][]string)
+	for _, ch := range channels {
+		newAddr, err := s.nodeAddrForChannel(ctx, ch)
+		if err != nil {
+			return err
+		}
+		groups[newAddr] = append(groups[newAddr], ch)
+		s.chanShard[ch] = newAddr
+	}
+
+	for addr, chs := range groups {
+		ps := s.getOrCreateShard(addr)
+		if err := ps.SSubscribe(ctx, chs...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Close closes all underlying PubSub connections and the message channel.
 func (s *ShardedPubSub) Close() error {
 	s.mu.Lock()
@@ -187,6 +293,9 @@ func (s *ShardedPubSub) Close() error {
 	}
 	s.closed = true
 	close(s.exit)
+
+	// Deregister from the cluster client.
+	s.cluster.deregisterShardedPubSub(s)
 
 	var firstErr error
 	for addr, ps := range s.shards {
