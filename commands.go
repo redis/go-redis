@@ -237,6 +237,7 @@ type Cmdable interface {
 	ListCmdable
 	ProbabilisticCmdable
 	PubSubCmdable
+	RateLimitCmdable
 	ScriptingFunctionsCmdable
 	SearchCmdable
 	SetCmdable
