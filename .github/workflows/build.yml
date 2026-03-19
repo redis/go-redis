@@ -43,7 +43,7 @@ jobs:
         run: |
           set -e
           redis_version_np=$(echo "$REDIS_VERSION" | grep -oP '^\d+.\d+')
-          
+
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
             ["8.6.x"]="custom-21860421418-debian-amd64"
@@ -87,9 +87,6 @@ jobs:
             - stable
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
       - name: Run tests
         uses: ./.github/actions/run-tests
         with:
