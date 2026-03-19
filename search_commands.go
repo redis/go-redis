@@ -449,8 +449,9 @@ type FTSynDumpCmd struct {
 }
 
 type FTAggregateResult struct {
-	Total int
-	Rows  []AggregateRow
+	Total    int
+	Rows     []AggregateRow
+	Warnings []string
 }
 
 type AggregateRow struct {
@@ -580,8 +581,9 @@ type SpellCheckSuggestion struct {
 }
 
 type FTSearchResult struct {
-	Total int
-	Docs  []Document
+	Total    int
+	Docs     []Document
+	Warnings []string
 }
 
 type Document struct {
@@ -806,15 +808,189 @@ func (cmd *AggregateCmd) String() string {
 }
 
 func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
-	data, err := rd.ReadSlice()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
 	}
-	cmd.val, err = ProcessAggregateResult(data)
-	if err != nil {
-		return err
+
+	// RESP3 returns a map, RESP2 returns an array
+	if readType == proto.RespMap {
+		cmd.val, err = parseFTAggregateRESP3(rd)
+	} else {
+		data, err := rd.ReadSlice()
+		if err != nil {
+			return err
+		}
+		cmd.val, err = ProcessAggregateResult(data)
 	}
-	return nil
+	return err
+}
+
+// parseFTAggregateRESP3 parses the RESP3 format response from FT.AGGREGATE.
+// RESP3 format:
+//
+//	%5
+//	  $10 attributes => *0
+//	  $13 total_results => :N
+//	  $6 format => $6 STRING
+//	  $7 results => *N (array of maps with extra_attributes, values)
+//	  $7 warning => *N (array of strings)
+func parseFTAggregateRESP3(rd *proto.Reader) (*FTAggregateResult, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return nil, err
+	}
+
+	result := &FTAggregateResult{
+		Rows: make([]AggregateRow, 0),
+	}
+
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "total_results":
+			total, err := rd.ReadInt()
+			if err != nil {
+				return nil, err
+			}
+			result.Total = int(total)
+		case "results":
+			rows, err := parseFTAggregateResultsRESP3(rd)
+			if err != nil {
+				return nil, err
+			}
+			result.Rows = rows
+		case "warning":
+			warnings, err := readStringSlice(rd)
+			if err != nil {
+				return nil, err
+			}
+			result.Warnings = warnings
+		case "attributes", "format":
+			// Ignore these fields as per the spec
+			if err := rd.DiscardNext(); err != nil {
+				return nil, err
+			}
+		default:
+			// Unknown field, discard it
+			if err := rd.DiscardNext(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// parseFTAggregateResultsRESP3 parses the results array from RESP3 FT.AGGREGATE response.
+func parseFTAggregateResultsRESP3(rd *proto.Reader) ([]AggregateRow, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]AggregateRow, 0, n)
+	for i := 0; i < n; i++ {
+		row, err := parseFTAggregateRowRESP3(rd)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+
+	return rows, nil
+}
+
+// parseFTAggregateRowRESP3 parses a single row from RESP3 FT.AGGREGATE response.
+func parseFTAggregateRowRESP3(rd *proto.Reader) (AggregateRow, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return AggregateRow{}, err
+	}
+
+	row := AggregateRow{
+		Fields: make(map[string]interface{}),
+	}
+
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return AggregateRow{}, err
+		}
+
+		switch key {
+		case "extra_attributes":
+			fields, err := readInterfaceMapRESP3(rd)
+			if err != nil {
+				return AggregateRow{}, err
+			}
+			row.Fields = fields
+		case "values":
+			// Ignore values field as per the spec (it's always empty)
+			if err := rd.DiscardNext(); err != nil {
+				return AggregateRow{}, err
+			}
+		default:
+			// Unknown field, discard it
+			if err := rd.DiscardNext(); err != nil {
+				return AggregateRow{}, err
+			}
+		}
+	}
+
+	return row, nil
+}
+
+// readInterfaceMapRESP3 reads a map of string to interface{} from the reader.
+// It handles both RESP3 map format and RESP2 array format.
+func readInterfaceMapRESP3(rd *proto.Reader) (map[string]interface{}, error) {
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]interface{})
+
+	if readType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < n; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			value, err := rd.ReadReply()
+			if err != nil {
+				return nil, err
+			}
+			result[key] = value
+		}
+	} else {
+		// RESP2 array format: [key1, value1, key2, value2, ...]
+		n, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < n; i += 2 {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			value, err := rd.ReadReply()
+			if err != nil {
+				return nil, err
+			}
+			result[key] = value
+		}
+	}
+
+	return result, nil
 }
 
 func (cmd *AggregateCmd) Clone() Cmder {
@@ -834,6 +1010,10 @@ func (cmd *AggregateCmd) Clone() Cmder {
 					}
 				}
 			}
+		}
+		if cmd.val.Warnings != nil {
+			val.Warnings = make([]string, len(cmd.val.Warnings))
+			copy(val.Warnings, cmd.val.Warnings)
 		}
 	}
 	return &AggregateCmd{
@@ -2058,15 +2238,330 @@ func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
 }
 
 func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
-	data, err := rd.ReadSlice()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
 	}
-	cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
-	if err != nil {
-		return err
+
+	// RESP3 returns a map, RESP2 returns an array
+	if readType == proto.RespMap {
+		cmd.val, err = parseFTSearchRESP3(rd)
+	} else {
+		data, err := rd.ReadSlice()
+		if err != nil {
+			return err
+		}
+		cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
 	}
-	return nil
+	return err
+}
+
+// parseFTSearchRESP3 parses the RESP3 format response from FT.SEARCH.
+// RESP3 format:
+//
+//	%5
+//	  $10 attributes => *0
+//	  $13 total_results => :N
+//	  $6 format => $6 STRING
+//	  $7 results => *N (array of maps with id, score, extra_attributes, values)
+//	  $7 warning => *N (array of strings)
+func parseFTSearchRESP3(rd *proto.Reader) (FTSearchResult, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return FTSearchResult{}, err
+	}
+
+	var result FTSearchResult
+	result.Docs = make([]Document, 0)
+
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return FTSearchResult{}, err
+		}
+
+		switch key {
+		case "total_results":
+			total, err := rd.ReadInt()
+			if err != nil {
+				return FTSearchResult{}, err
+			}
+			result.Total = int(total)
+		case "results":
+			docs, err := parseFTSearchResultsRESP3(rd)
+			if err != nil {
+				return FTSearchResult{}, err
+			}
+			result.Docs = docs
+		case "warning":
+			warnings, err := readStringSlice(rd)
+			if err != nil {
+				return FTSearchResult{}, err
+			}
+			result.Warnings = warnings
+		case "attributes", "format":
+			// Ignore these fields as per the spec
+			if err := rd.DiscardNext(); err != nil {
+				return FTSearchResult{}, err
+			}
+		default:
+			// Unknown field, discard it
+			if err := rd.DiscardNext(); err != nil {
+				return FTSearchResult{}, err
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// parseFTSearchResultsRESP3 parses the results array from RESP3 FT.SEARCH response.
+func parseFTSearchResultsRESP3(rd *proto.Reader) ([]Document, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	docs := make([]Document, 0, n)
+	for i := 0; i < n; i++ {
+		doc, err := parseFTSearchDocumentRESP3(rd)
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, doc)
+	}
+
+	return docs, nil
+}
+
+// parseFTSearchDocumentRESP3 parses a single document from RESP3 FT.SEARCH response.
+func parseFTSearchDocumentRESP3(rd *proto.Reader) (Document, error) {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return Document{}, err
+	}
+
+	doc := Document{
+		Fields: make(map[string]string),
+	}
+
+	for i := 0; i < n; i++ {
+		key, err := rd.ReadString()
+		if err != nil {
+			return Document{}, err
+		}
+
+		switch key {
+		case "id":
+			id, err := rd.ReadString()
+			if err != nil {
+				return Document{}, err
+			}
+			doc.ID = id
+		case "score":
+			score, err := rd.ReadFloat()
+			if err != nil {
+				return Document{}, err
+			}
+			doc.Score = &score
+		case "payload":
+			payload, err := rd.ReadString()
+			if err != nil {
+				return Document{}, err
+			}
+			doc.Payload = &payload
+		case "sortkey":
+			sortKey, err := rd.ReadString()
+			if err != nil {
+				return Document{}, err
+			}
+			doc.SortKey = &sortKey
+		case "extra_attributes":
+			fields, err := readStringMapRESP3(rd)
+			if err != nil {
+				return Document{}, err
+			}
+			doc.Fields = fields
+		case "values":
+			// Ignore values field as per the spec (it's always empty)
+			if err := rd.DiscardNext(); err != nil {
+				return Document{}, err
+			}
+		default:
+			// Unknown field, discard it
+			if err := rd.DiscardNext(); err != nil {
+				return Document{}, err
+			}
+		}
+	}
+
+	return doc, nil
+}
+
+// readStringSlice reads an array of strings from the reader.
+func readStringSlice(rd *proto.Reader) ([]string, error) {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		s, err := rd.ReadString()
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+
+	return result, nil
+}
+
+// readStringMapRESP3 reads a map of string to string from the reader.
+// It handles both RESP3 map format and RESP2 array format.
+func readStringMapRESP3(rd *proto.Reader) (map[string]string, error) {
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string)
+
+	if readType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < n; i++ {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			value, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			result[key] = value
+		}
+	} else {
+		// RESP2 array format: [key1, value1, key2, value2, ...]
+		n, err := rd.ReadArrayLen()
+		if err != nil {
+			return nil, err
+		}
+		for i := 0; i < n; i += 2 {
+			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			value, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
+			result[key] = value
+		}
+	}
+
+	return result, nil
+}
+
+// processFTSearchMapResult processes a map result from RESP3 FT.SEARCH response.
+// This is useful for testing and for processing already-parsed map data.
+func processFTSearchMapResult(data map[string]interface{}) (FTSearchResult, error) {
+	var result FTSearchResult
+	result.Docs = make([]Document, 0)
+
+	if total, ok := data["total_results"].(int64); ok {
+		result.Total = int(total)
+	}
+
+	if resultsData, ok := data["results"].([]interface{}); ok {
+		for _, item := range resultsData {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				doc := Document{
+					Fields: make(map[string]string),
+				}
+
+				if id, ok := itemMap["id"].(string); ok {
+					doc.ID = id
+				}
+
+				if score, ok := itemMap["score"].(float64); ok {
+					doc.Score = &score
+				}
+
+				if payload, ok := itemMap["payload"].(string); ok {
+					doc.Payload = &payload
+				}
+
+				if sortKey, ok := itemMap["sortkey"].(string); ok {
+					doc.SortKey = &sortKey
+				}
+
+				if extraAttrs, ok := itemMap["extra_attributes"].(map[string]interface{}); ok {
+					for k, v := range extraAttrs {
+						if strVal, ok := v.(string); ok {
+							doc.Fields[k] = strVal
+						}
+					}
+				}
+
+				result.Docs = append(result.Docs, doc)
+			}
+		}
+	}
+
+	if warningsData, ok := data["warning"].([]interface{}); ok {
+		result.Warnings = make([]string, 0, len(warningsData))
+		for _, w := range warningsData {
+			if ws, ok := w.(string); ok {
+				result.Warnings = append(result.Warnings, ws)
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// processFTAggregateMapResult processes a map result from RESP3 FT.AGGREGATE response.
+// This is useful for testing and for processing already-parsed map data.
+func processFTAggregateMapResult(data map[string]interface{}) (*FTAggregateResult, error) {
+	result := &FTAggregateResult{
+		Rows: make([]AggregateRow, 0),
+	}
+
+	if total, ok := data["total_results"].(int64); ok {
+		result.Total = int(total)
+	}
+
+	if resultsData, ok := data["results"].([]interface{}); ok {
+		for _, item := range resultsData {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				row := AggregateRow{
+					Fields: make(map[string]interface{}),
+				}
+
+				if extraAttrs, ok := itemMap["extra_attributes"].(map[string]interface{}); ok {
+					for k, v := range extraAttrs {
+						row.Fields[k] = v
+					}
+				}
+
+				result.Rows = append(result.Rows, row)
+			}
+		}
+	}
+
+	if warningsData, ok := data["warning"].([]interface{}); ok {
+		result.Warnings = make([]string, 0, len(warningsData))
+		for _, w := range warningsData {
+			if ws, ok := w.(string); ok {
+				result.Warnings = append(result.Warnings, ws)
+			}
+		}
+	}
+
+	return result, nil
 }
 
 func (cmd *FTSearchCmd) Clone() Cmder {
@@ -2089,6 +2584,10 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 				}
 			}
 		}
+	}
+	if cmd.val.Warnings != nil {
+		val.Warnings = make([]string, len(cmd.val.Warnings))
+		copy(val.Warnings, cmd.val.Warnings)
 	}
 	var options *FTSearchOptions
 	if cmd.options != nil {

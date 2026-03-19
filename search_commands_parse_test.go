@@ -368,3 +368,656 @@ func TestParseFTInfo(t *testing.T) {
 
 	t.Logf("Successfully parsed FT.INFO response with %d attributes", len(result.Attributes))
 }
+
+// TestParseFTSearchRESP3 tests the RESP3 parsing for FT.SEARCH results
+func TestParseFTSearchRESP3(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[string]interface{}
+		expected FTSearchResult
+	}{
+		{
+			name: "empty result",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(0),
+				"format":        "STRING",
+				"results":       []interface{}{},
+				"warning":       []interface{}{},
+			},
+			expected: FTSearchResult{
+				Total:    0,
+				Docs:     []Document{},
+				Warnings: []string{},
+			},
+		},
+		{
+			name: "simple query result",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id": "usr:david",
+						"extra_attributes": map[string]interface{}{
+							"first_name": "David",
+							"last_name":  "Maier",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"id": "usr:shaya",
+						"extra_attributes": map[string]interface{}{
+							"first_name": "Shaya",
+							"last_name":  "Potter",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			expected: FTSearchResult{
+				Total: 2,
+				Docs: []Document{
+					{
+						ID:     "usr:david",
+						Fields: map[string]string{"first_name": "David", "last_name": "Maier"},
+					},
+					{
+						ID:     "usr:shaya",
+						Fields: map[string]string{"first_name": "Shaya", "last_name": "Potter"},
+					},
+				},
+				Warnings: []string{},
+			},
+		},
+		{
+			name: "result with scores",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":    "bicycle:hash:1",
+						"score": float64(1.5),
+						"extra_attributes": map[string]interface{}{
+							"price": "1200",
+							"brand": "Bicyk",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			expected: FTSearchResult{
+				Total: 1,
+				Docs: []Document{
+					{
+						ID:     "bicycle:hash:1",
+						Score:  ptrFloat64(1.5),
+						Fields: map[string]string{"price": "1200", "brand": "Bicyk"},
+					},
+				},
+				Warnings: []string{},
+			},
+		},
+		{
+			name: "result with warnings",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id": "doc:1",
+						"extra_attributes": map[string]interface{}{
+							"field1": "value1",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{"Timeout limit was reached"},
+			},
+			expected: FTSearchResult{
+				Total: 1,
+				Docs: []Document{
+					{
+						ID:     "doc:1",
+						Fields: map[string]string{"field1": "value1"},
+					},
+				},
+				Warnings: []string{"Timeout limit was reached"},
+			},
+		},
+		{
+			name: "NOCONTENT result",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(10),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":     "bicycle:hash:2",
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			expected: FTSearchResult{
+				Total: 10,
+				Docs: []Document{
+					{
+						ID:     "bicycle:hash:2",
+						Fields: map[string]string{},
+					},
+				},
+				Warnings: []string{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := processFTSearchMapResult(tt.input)
+			if err != nil {
+				t.Fatalf("processFTSearchMapResult() error = %v", err)
+			}
+
+			if result.Total != tt.expected.Total {
+				t.Errorf("Total = %v, want %v", result.Total, tt.expected.Total)
+			}
+
+			if len(result.Docs) != len(tt.expected.Docs) {
+				t.Errorf("len(Docs) = %v, want %v", len(result.Docs), len(tt.expected.Docs))
+			}
+
+			for i, doc := range result.Docs {
+				if doc.ID != tt.expected.Docs[i].ID {
+					t.Errorf("Docs[%d].ID = %v, want %v", i, doc.ID, tt.expected.Docs[i].ID)
+				}
+				if tt.expected.Docs[i].Score != nil {
+					if doc.Score == nil || *doc.Score != *tt.expected.Docs[i].Score {
+						t.Errorf("Docs[%d].Score = %v, want %v", i, doc.Score, tt.expected.Docs[i].Score)
+					}
+				}
+				for k, v := range tt.expected.Docs[i].Fields {
+					if doc.Fields[k] != v {
+						t.Errorf("Docs[%d].Fields[%s] = %v, want %v", i, k, doc.Fields[k], v)
+					}
+				}
+			}
+
+			if len(result.Warnings) != len(tt.expected.Warnings) {
+				t.Errorf("len(Warnings) = %v, want %v", len(result.Warnings), len(tt.expected.Warnings))
+			}
+			for i, w := range result.Warnings {
+				if w != tt.expected.Warnings[i] {
+					t.Errorf("Warnings[%d] = %v, want %v", i, w, tt.expected.Warnings[i])
+				}
+			}
+		})
+	}
+}
+
+// TestParseFTAggregateRESP3 tests the RESP3 parsing for FT.AGGREGATE results
+func TestParseFTAggregateRESP3(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[string]interface{}
+		expected FTAggregateResult
+	}{
+		{
+			name: "empty result",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(0),
+				"format":        "STRING",
+				"results":       []interface{}{},
+				"warning":       []interface{}{},
+			},
+			expected: FTAggregateResult{
+				Total:    0,
+				Rows:     []AggregateRow{},
+				Warnings: []string{},
+			},
+		},
+		{
+			name: "aggregation with groupby",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(3),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "refurbished",
+							"num_affordable": "158",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "used",
+							"num_affordable": "156",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "new",
+							"num_affordable": "158",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			expected: FTAggregateResult{
+				Total: 3,
+				Rows: []AggregateRow{
+					{Fields: map[string]interface{}{"condition": "refurbished", "num_affordable": "158"}},
+					{Fields: map[string]interface{}{"condition": "used", "num_affordable": "156"}},
+					{Fields: map[string]interface{}{"condition": "new", "num_affordable": "158"}},
+				},
+				Warnings: []string{},
+			},
+		},
+		{
+			name: "aggregation with warnings",
+			input: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"__key":      "bicycle:0",
+							"price":      "270",
+							"discounted": "243",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{"Timeout limit was reached"},
+			},
+			expected: FTAggregateResult{
+				Total: 1,
+				Rows: []AggregateRow{
+					{Fields: map[string]interface{}{"__key": "bicycle:0", "price": "270", "discounted": "243"}},
+				},
+				Warnings: []string{"Timeout limit was reached"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := processFTAggregateMapResult(tt.input)
+			if err != nil {
+				t.Fatalf("processFTAggregateMapResult() error = %v", err)
+			}
+
+			if result.Total != tt.expected.Total {
+				t.Errorf("Total = %v, want %v", result.Total, tt.expected.Total)
+			}
+
+			if len(result.Rows) != len(tt.expected.Rows) {
+				t.Errorf("len(Rows) = %v, want %v", len(result.Rows), len(tt.expected.Rows))
+			}
+
+			for i, row := range result.Rows {
+				for k, v := range tt.expected.Rows[i].Fields {
+					if row.Fields[k] != v {
+						t.Errorf("Rows[%d].Fields[%s] = %v, want %v", i, k, row.Fields[k], v)
+					}
+				}
+			}
+
+			if len(result.Warnings) != len(tt.expected.Warnings) {
+				t.Errorf("len(Warnings) = %v, want %v", len(result.Warnings), len(tt.expected.Warnings))
+			}
+			for i, w := range result.Warnings {
+				if w != tt.expected.Warnings[i] {
+					t.Errorf("Warnings[%d] = %v, want %v", i, w, tt.expected.Warnings[i])
+				}
+			}
+		})
+	}
+}
+
+// Helper function to create a pointer to a float64
+func ptrFloat64(f float64) *float64 {
+	return &f
+}
+
+// TestFTSearchRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
+// produce semantically equivalent results as per the spec requirement R.1.1
+func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
+	tests := []struct {
+		name       string
+		resp2Data  []interface{}
+		resp3Data  map[string]interface{}
+		noContent  bool
+		withScores bool
+	}{
+		{
+			name: "simple hash query",
+			resp2Data: []interface{}{
+				int64(2),
+				"usr:david",
+				[]interface{}{"first_name", "David", "last_name", "Maier"},
+				"usr:shaya",
+				[]interface{}{"first_name", "Shaya", "last_name", "Potter"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(2),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id": "usr:david",
+						"extra_attributes": map[string]interface{}{
+							"first_name": "David",
+							"last_name":  "Maier",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"id": "usr:shaya",
+						"extra_attributes": map[string]interface{}{
+							"first_name": "Shaya",
+							"last_name":  "Potter",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  false,
+			withScores: false,
+		},
+		{
+			name: "query with scores",
+			resp2Data: []interface{}{
+				int64(1),
+				"bicycle:hash:1",
+				"1.5",
+				[]interface{}{"price", "1200", "brand", "Bicyk"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":    "bicycle:hash:1",
+						"score": float64(1.5),
+						"extra_attributes": map[string]interface{}{
+							"price": "1200",
+							"brand": "Bicyk",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  false,
+			withScores: true,
+		},
+		{
+			name: "JSON document query",
+			resp2Data: []interface{}{
+				int64(1),
+				"bicycle:1",
+				[]interface{}{"$", `{"brand":"Bicyk","model":"Hillcraft","price":1200}`},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id": "bicycle:1",
+						"extra_attributes": map[string]interface{}{
+							"$": `{"brand":"Bicyk","model":"Hillcraft","price":1200}`,
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  false,
+			withScores: false,
+		},
+		{
+			name: "NOCONTENT query",
+			resp2Data: []interface{}{
+				int64(10),
+				"bicycle:hash:2",
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(10),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"id":     "bicycle:hash:2",
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+			noContent:  true,
+			withScores: false,
+		},
+		{
+			name: "empty result",
+			resp2Data: []interface{}{
+				int64(0),
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(0),
+				"format":        "STRING",
+				"results":       []interface{}{},
+				"warning":       []interface{}{},
+			},
+			noContent:  false,
+			withScores: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse RESP2
+			resp2Result, err := parseFTSearch(tt.resp2Data, tt.noContent, tt.withScores, false, false)
+			if err != nil {
+				t.Fatalf("parseFTSearch() error = %v", err)
+			}
+
+			// Parse RESP3
+			resp3Result, err := processFTSearchMapResult(tt.resp3Data)
+			if err != nil {
+				t.Fatalf("processFTSearchMapResult() error = %v", err)
+			}
+
+			// Compare Total
+			if resp2Result.Total != resp3Result.Total {
+				t.Errorf("Total mismatch: RESP2=%d, RESP3=%d", resp2Result.Total, resp3Result.Total)
+			}
+
+			// Compare number of documents
+			if len(resp2Result.Docs) != len(resp3Result.Docs) {
+				t.Errorf("Docs count mismatch: RESP2=%d, RESP3=%d", len(resp2Result.Docs), len(resp3Result.Docs))
+				return
+			}
+
+			// Compare each document
+			for i, resp2Doc := range resp2Result.Docs {
+				resp3Doc := resp3Result.Docs[i]
+
+				if resp2Doc.ID != resp3Doc.ID {
+					t.Errorf("Docs[%d].ID mismatch: RESP2=%s, RESP3=%s", i, resp2Doc.ID, resp3Doc.ID)
+				}
+
+				// Compare scores (if present)
+				if tt.withScores {
+					if resp2Doc.Score == nil && resp3Doc.Score != nil {
+						t.Errorf("Docs[%d].Score mismatch: RESP2=nil, RESP3=%v", i, *resp3Doc.Score)
+					} else if resp2Doc.Score != nil && resp3Doc.Score == nil {
+						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=nil", i, *resp2Doc.Score)
+					} else if resp2Doc.Score != nil && resp3Doc.Score != nil && *resp2Doc.Score != *resp3Doc.Score {
+						t.Errorf("Docs[%d].Score mismatch: RESP2=%v, RESP3=%v", i, *resp2Doc.Score, *resp3Doc.Score)
+					}
+				}
+
+				// Compare fields
+				if len(resp2Doc.Fields) != len(resp3Doc.Fields) {
+					t.Errorf("Docs[%d].Fields count mismatch: RESP2=%d, RESP3=%d", i, len(resp2Doc.Fields), len(resp3Doc.Fields))
+				}
+
+				for k, v := range resp2Doc.Fields {
+					if resp3Doc.Fields[k] != v {
+						t.Errorf("Docs[%d].Fields[%s] mismatch: RESP2=%s, RESP3=%s", i, k, v, resp3Doc.Fields[k])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTAggregateRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
+// produce semantically equivalent results for FT.AGGREGATE
+func TestFTAggregateRESP2AndRESP3Equivalence(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp2Data []interface{}
+		resp3Data map[string]interface{}
+	}{
+		{
+			name: "aggregation with groupby",
+			resp2Data: []interface{}{
+				int64(3),
+				[]interface{}{"condition", "refurbished", "num_affordable", "158"},
+				[]interface{}{"condition", "used", "num_affordable", "156"},
+				[]interface{}{"condition", "new", "num_affordable", "158"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(3),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "refurbished",
+							"num_affordable": "158",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "used",
+							"num_affordable": "156",
+						},
+						"values": []interface{}{},
+					},
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"condition":      "new",
+							"num_affordable": "158",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+		},
+		{
+			name: "aggregation with apply",
+			resp2Data: []interface{}{
+				int64(1),
+				[]interface{}{"__key", "bicycle:0", "price", "270", "discounted", "243"},
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(1),
+				"format":        "STRING",
+				"results": []interface{}{
+					map[string]interface{}{
+						"extra_attributes": map[string]interface{}{
+							"__key":      "bicycle:0",
+							"price":      "270",
+							"discounted": "243",
+						},
+						"values": []interface{}{},
+					},
+				},
+				"warning": []interface{}{},
+			},
+		},
+		{
+			name: "empty result",
+			resp2Data: []interface{}{
+				int64(0),
+			},
+			resp3Data: map[string]interface{}{
+				"attributes":    []interface{}{},
+				"total_results": int64(0),
+				"format":        "STRING",
+				"results":       []interface{}{},
+				"warning":       []interface{}{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse RESP2
+			resp2Result, err := ProcessAggregateResult(tt.resp2Data)
+			if err != nil {
+				t.Fatalf("ProcessAggregateResult() error = %v", err)
+			}
+
+			// Parse RESP3
+			resp3Result, err := processFTAggregateMapResult(tt.resp3Data)
+			if err != nil {
+				t.Fatalf("processFTAggregateMapResult() error = %v", err)
+			}
+
+			// Compare Total
+			if resp2Result.Total != resp3Result.Total {
+				t.Errorf("Total mismatch: RESP2=%d, RESP3=%d", resp2Result.Total, resp3Result.Total)
+			}
+
+			// Compare number of rows
+			if len(resp2Result.Rows) != len(resp3Result.Rows) {
+				t.Errorf("Rows count mismatch: RESP2=%d, RESP3=%d", len(resp2Result.Rows), len(resp3Result.Rows))
+				return
+			}
+
+			// Compare each row
+			for i, resp2Row := range resp2Result.Rows {
+				resp3Row := resp3Result.Rows[i]
+
+				// Compare fields count
+				if len(resp2Row.Fields) != len(resp3Row.Fields) {
+					t.Errorf("Rows[%d].Fields count mismatch: RESP2=%d, RESP3=%d", i, len(resp2Row.Fields), len(resp3Row.Fields))
+				}
+
+				// Compare field values
+				for k, v := range resp2Row.Fields {
+					resp3Val, ok := resp3Row.Fields[k]
+					if !ok {
+						t.Errorf("Rows[%d].Fields[%s] missing in RESP3", i, k)
+						continue
+					}
+					if v != resp3Val {
+						t.Errorf("Rows[%d].Fields[%s] mismatch: RESP2=%v, RESP3=%v", i, k, v, resp3Val)
+					}
+				}
+			}
+		})
+	}
+}
