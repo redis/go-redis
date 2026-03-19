@@ -190,6 +190,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 // and discard the attribute type.
 func (r *Reader) ReadLine() ([]byte, error) {
 	line, err := r.readLine()
+	fmt.Printf("DEBUG: ReadLine: %s\n", line)
 	if err != nil {
 		return nil, err
 	}

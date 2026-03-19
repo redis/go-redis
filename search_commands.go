@@ -460,7 +460,14 @@ type AggregateRow struct {
 
 type AggregateCmd struct {
 	baseCmd
-	val *FTAggregateResult
+	val      *FTAggregateResult
+	rawVal   interface{}
+	rawBytes []byte // DEBUG: raw bytes from buffer
+}
+
+// RawBytes returns the raw bytes from the buffer (DEBUG)
+func (cmd *AggregateCmd) RawBytes() []byte {
+	return cmd.rawBytes
 }
 
 type FTInfoResult struct {
@@ -815,9 +822,14 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 
 	// RESP3 returns a map, RESP2 returns an array
 	if readType == proto.RespMap {
-		// DEBUG: Peek raw bytes from buffer
-		if rawBytes, peekErr := rd.Peek(1024); peekErr == nil {
-			fmt.Printf("DEBUG AggregateCmd raw bytes: %s\n", string(rawBytes))
+		fmt.Printf("DEBUG AggregateCmd.readReply: taking RESP3 path (RespMap)\n")
+		// DEBUG: Peek raw bytes from buffer before reading
+		if rawBytes, peekErr := rd.Peek(8192); peekErr == nil {
+			cmd.rawBytes = make([]byte, len(rawBytes))
+			copy(cmd.rawBytes, rawBytes)
+			fmt.Printf("DEBUG AggregateCmd.readReply: peeked %d bytes\n", len(rawBytes))
+		} else {
+			fmt.Printf("DEBUG AggregateCmd.readReply: peek error: %v\n", peekErr)
 		}
 		// Read raw response first for backwards compatibility
 		cmd.rawVal, err = rd.ReadReply()
@@ -827,6 +839,11 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 		// Parse the raw response into structured result
 		if mapVal, ok := cmd.rawVal.(map[interface{}]interface{}); ok {
 			cmd.val, err = parseFTAggregateMapRESP3(mapVal)
+			if err == nil && cmd.val != nil {
+				fmt.Printf("DEBUG AggregateCmd.readReply: after parsing, Total=%d, Rows=%d\n", cmd.val.Total, len(cmd.val.Rows))
+			} else {
+				fmt.Printf("DEBUG AggregateCmd.readReply: RESP3 parsing error: %v\n", err)
+			}
 		} else {
 			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
 		}
@@ -860,14 +877,21 @@ func parseFTAggregateMapRESP3(data map[interface{}]interface{}) (*FTAggregateRes
 		Rows: make([]AggregateRow, 0),
 	}
 
+	// DEBUG: Print all keys and their types
+	for k, v := range data {
+		fmt.Printf("DEBUG parseFTAggregateMapRESP3: key=%v (type=%T), value=%v (type=%T)\n", k, k, v, v)
+	}
+
 	for k, v := range data {
 		key, ok := k.(string)
 		if !ok {
+			fmt.Printf("DEBUG: key %v is not a string, it's %T\n", k, k)
 			continue
 		}
 
 		switch key {
 		case "total_results":
+			fmt.Printf("DEBUG: found total_results, value=%v (type=%T), ToInteger=%d\n", v, v, internal.ToInteger(v))
 			result.Total = internal.ToInteger(v)
 		case "results":
 			if resultsData, ok := v.([]interface{}); ok {
