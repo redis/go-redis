@@ -826,14 +826,19 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 		} else {
 			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
 		}
-	} else {
-		data, err := rd.ReadSlice()
-		if err != nil {
-			return err
-		}
-		cmd.val, err = ProcessAggregateResult(data)
+		return err
 	}
-	return err
+
+	// RESP2 format or error response - use ReadReply to handle errors properly
+	data, err := rd.ReadReply()
+	if err != nil {
+		return err
+	}
+	if dataSlice, ok := data.([]interface{}); ok {
+		cmd.val, err = ProcessAggregateResult(dataSlice)
+		return err
+	}
+	return fmt.Errorf("unexpected response type: %T", data)
 }
 
 // parseFTAggregateMapRESP3 parses the RESP3 format response from FT.AGGREGATE.
@@ -859,9 +864,7 @@ func parseFTAggregateMapRESP3(data map[interface{}]interface{}) (*FTAggregateRes
 
 		switch key {
 		case "total_results":
-			if total, ok := v.(int64); ok {
-				result.Total = int(total)
-			}
+			result.Total = internal.ToInteger(v)
 		case "results":
 			if resultsData, ok := v.([]interface{}); ok {
 				rows, err := parseFTAggregateResultsMapRESP3(resultsData)
@@ -2379,14 +2382,19 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 		} else {
 			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
 		}
-	} else {
-		data, err := rd.ReadSlice()
-		if err != nil {
-			return err
-		}
-		cmd.val, err = parseFTSearch(data, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
+		return err
 	}
-	return err
+
+	// RESP2 format or error response - use ReadReply to handle errors properly
+	data, err := rd.ReadReply()
+	if err != nil {
+		return err
+	}
+	if dataSlice, ok := data.([]interface{}); ok {
+		cmd.val, err = parseFTSearch(dataSlice, cmd.options.NoContent, cmd.options.WithScores, cmd.options.WithPayloads, cmd.options.WithSortKeys)
+		return err
+	}
+	return fmt.Errorf("unexpected response type: %T", data)
 }
 
 // parseFTSearchMapRESP3 parses the RESP3 format response from FT.SEARCH.
@@ -2411,9 +2419,7 @@ func parseFTSearchMapRESP3(data map[interface{}]interface{}) (FTSearchResult, er
 
 		switch key {
 		case "total_results":
-			if total, ok := v.(int64); ok {
-				result.Total = int(total)
-			}
+			result.Total = internal.ToInteger(v)
 		case "results":
 			if resultsData, ok := v.([]interface{}); ok {
 				docs, err := parseFTSearchResultsMapRESP3(resultsData)
