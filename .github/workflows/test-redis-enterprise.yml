@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   build:
-    name: build
+    if: false  # Temporarily disabled, should be enabled when we have a current and stable RE build
+    name: buile
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

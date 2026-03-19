@@ -4228,7 +4228,7 @@ var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "N
 	})
 })
 
-var _ = FDescribe("RediSearch commands Resp 3", Label("search"), func() {
+var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	ctx := context.TODO()
 	var client *redis.Client
 	var client2 *redis.Client
@@ -4243,7 +4243,7 @@ var _ = FDescribe("RediSearch commands Resp 3", Label("search"), func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-	FIt("should handle FTAggregate with RESP3", Label("search", "ftcreate", "ftaggregate"), func() {
+	It("should handle FTAggregate with RESP3", Label("search", "ftcreate", "ftaggregate"), func() {
 		text1 := &redis.FieldSchema{FieldName: "PrimaryKey", FieldType: redis.SearchFieldTypeText, Sortable: true}
 		num1 := &redis.FieldSchema{FieldName: "CreatedDateTimeUTC", FieldType: redis.SearchFieldTypeNumeric, Sortable: true}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1, num1).Result()
@@ -4268,13 +4268,8 @@ var _ = FDescribe("RediSearch commands Resp 3", Label("search"), func() {
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
 
 		// Test Result() also works with UnstableResp3 true
-		cmd2 := client.FTAggregateWithArgs(ctx, "idx1", "*", options)
-		result, err := cmd2.Result()
+		result, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).Result()
 		Expect(err).NotTo(HaveOccurred())
-		// DEBUG: Print raw bytes before assertion
-		fmt.Printf("DEBUG: Raw bytes:\n%s\n", string(cmd2.RawBytes()))
-		fmt.Printf("DEBUG: Parsed result.Total: %d\n", result.Total)
-		fmt.Printf("DEBUG: Parsed result.Rows length: %d\n", len(result.Rows))
 		Expect(result.Total).To(BeEquivalentTo(2))
 		Expect(result.Rows).To(HaveLen(2))
 		Expect(result.Rows[0].Fields["CreatedDateTimeUTC"]).To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
