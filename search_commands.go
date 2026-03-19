@@ -815,6 +815,10 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 
 	// RESP3 returns a map, RESP2 returns an array
 	if readType == proto.RespMap {
+		// DEBUG: Peek raw bytes from buffer
+		if rawBytes, peekErr := rd.Peek(1024); peekErr == nil {
+			fmt.Printf("DEBUG AggregateCmd raw bytes: %s\n", string(rawBytes))
+		}
 		// Read raw response first for backwards compatibility
 		cmd.rawVal, err = rd.ReadReply()
 		if err != nil {
