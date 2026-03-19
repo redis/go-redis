@@ -1022,7 +1022,6 @@ func TestFTAggregateRESP2AndRESP3Equivalence(t *testing.T) {
 	}
 }
 
-
 // TestParseFTSpellCheckRESP3 tests the RESP3 parsing for FT.SPELLCHECK results
 func TestParseFTSpellCheckRESP3(t *testing.T) {
 	tests := []struct {
@@ -1076,8 +1075,8 @@ func TestParseFTSpellCheckRESP3(t *testing.T) {
 			},
 		},
 		{
-			name: "no results key",
-			input: map[interface{}]interface{}{},
+			name:     "no results key",
+			input:    map[interface{}]interface{}{},
 			expected: []SpellCheckResult{},
 		},
 	}
@@ -1150,7 +1149,7 @@ func TestParseFTSynDumpRESP3(t *testing.T) {
 			name: "multiple terms",
 			input: map[interface{}]interface{}{
 				"baby":      []interface{}{"id1"},
-				"child":    []interface{}{"id1"},
+				"child":     []interface{}{"id1"},
 				"offspring": []interface{}{"id1"},
 			},
 			expected: []FTSynDumpResult{
@@ -1218,26 +1217,26 @@ func TestFTInfoRESP3Parsing(t *testing.T) {
 				"flags":      []interface{}{"SORTABLE"},
 			},
 		},
-		"num_docs":             int64(100),
-		"max_doc_id":           int64(100),
-		"num_terms":            int64(500),
-		"num_records":          int64(1000),
-		"inverted_sz_mb":       float64(0.5),
+		"num_docs":                    int64(100),
+		"max_doc_id":                  int64(100),
+		"num_terms":                   int64(500),
+		"num_records":                 int64(1000),
+		"inverted_sz_mb":              float64(0.5),
 		"total_inverted_index_blocks": int64(50),
-		"offset_vectors_sz_mb": float64(0.1),
-		"doc_table_size_mb":    float64(0.2),
-		"sortable_values_size_mb": float64(0.05),
-		"key_table_size_mb":    float64(0.01),
-		"records_per_doc_avg":  float64(10),
-		"bytes_per_record_avg": float64(50),
-		"offsets_per_term_avg": float64(2),
-		"offset_bits_per_record_avg": float64(8),
-		"hash_indexing_failures": int64(0),
-		"total_indexing_time":  int64(100),
-		"indexing":             int64(0),
-		"percent_indexed":      float64(1),
-		"number_of_uses":       int64(10),
-		"cleaning":             int64(0),
+		"offset_vectors_sz_mb":        float64(0.1),
+		"doc_table_size_mb":           float64(0.2),
+		"sortable_values_size_mb":     float64(0.05),
+		"key_table_size_mb":           float64(0.01),
+		"records_per_doc_avg":         float64(10),
+		"bytes_per_record_avg":        float64(50),
+		"offsets_per_term_avg":        float64(2),
+		"offset_bits_per_record_avg":  float64(8),
+		"hash_indexing_failures":      int64(0),
+		"total_indexing_time":         int64(100),
+		"indexing":                    int64(0),
+		"percent_indexed":             float64(1),
+		"number_of_uses":              int64(10),
+		"cleaning":                    int64(0),
 	}
 
 	// Convert to map[string]interface{} as parseFTInfo expects

@@ -879,7 +879,7 @@ func parseFTAggregateMapRESP3(data map[interface{}]interface{}) (*FTAggregateRes
 					}
 				}
 			}
-		// Ignore "attributes", "format", and other fields as per the spec
+			// Ignore "attributes", "format", and other fields as per the spec
 		}
 	}
 
@@ -922,7 +922,7 @@ func parseFTAggregateRowMapRESP3(itemMap map[interface{}]interface{}) (Aggregate
 					}
 				}
 			}
-		// Ignore "values" and other fields as per the spec
+			// Ignore "values" and other fields as per the spec
 		}
 	}
 
@@ -2431,7 +2431,7 @@ func parseFTSearchMapRESP3(data map[interface{}]interface{}) (FTSearchResult, er
 					}
 				}
 			}
-		// Ignore "attributes", "format", and other fields as per the spec
+			// Ignore "attributes", "format", and other fields as per the spec
 		}
 	}
 
@@ -2492,7 +2492,7 @@ func parseFTSearchDocumentMapRESP3(itemMap map[interface{}]interface{}) (Documen
 					}
 				}
 			}
-		// Ignore "values" and other fields as per the spec
+			// Ignore "values" and other fields as per the spec
 		}
 	}
 

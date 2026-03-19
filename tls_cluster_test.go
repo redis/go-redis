@@ -280,4 +280,3 @@ var _ = Describe("TLS Cluster", Label("NonRedisEnterprise"), func() {
 		})
 	})
 })
-
