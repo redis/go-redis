@@ -802,16 +802,9 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 }
 
 func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
-	switch cmd.(type) {
-	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
-		if c.opt.UnstableResp3 {
-			return true, nil
-		} else {
-			return false, fmt.Errorf("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3. See the README and the release notes for guidance")
-		}
-	default:
-		return false, nil
-	}
+	// All search commands (FTSearchCmd, AggregateCmd, FTInfoCmd, FTSpellCheckCmd, FTSynDumpCmd)
+	// now have stable RESP3 parsing. No commands require the UnstableResp3 flag anymore.
+	return false, nil
 }
 
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {

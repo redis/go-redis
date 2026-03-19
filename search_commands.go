@@ -815,7 +815,17 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 
 	// RESP3 returns a map, RESP2 returns an array
 	if readType == proto.RespMap {
-		cmd.val, err = parseFTAggregateRESP3(rd)
+		// Read raw response first for backwards compatibility
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		// Parse the raw response into structured result
+		if mapVal, ok := cmd.rawVal.(map[interface{}]interface{}); ok {
+			cmd.val, err = parseFTAggregateMapRESP3(mapVal)
+		} else {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
 	} else {
 		data, err := rd.ReadSlice()
 		if err != nil {
@@ -826,7 +836,8 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	return err
 }
 
-// parseFTAggregateRESP3 parses the RESP3 format response from FT.AGGREGATE.
+// parseFTAggregateMapRESP3 parses the RESP3 format response from FT.AGGREGATE.
+// It takes a map[interface{}]interface{} which is the raw response from ReadReply().
 // RESP3 format:
 //
 //	%5
@@ -835,162 +846,87 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 //	  $6 format => $6 STRING
 //	  $7 results => *N (array of maps with extra_attributes, values)
 //	  $7 warning => *N (array of strings)
-func parseFTAggregateRESP3(rd *proto.Reader) (*FTAggregateResult, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return nil, err
-	}
-
+func parseFTAggregateMapRESP3(data map[interface{}]interface{}) (*FTAggregateResult, error) {
 	result := &FTAggregateResult{
 		Rows: make([]AggregateRow, 0),
 	}
 
-	for i := 0; i < n; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return nil, err
+	for k, v := range data {
+		key, ok := k.(string)
+		if !ok {
+			continue
 		}
 
 		switch key {
 		case "total_results":
-			total, err := rd.ReadInt()
-			if err != nil {
-				return nil, err
+			if total, ok := v.(int64); ok {
+				result.Total = int(total)
 			}
-			result.Total = int(total)
 		case "results":
-			rows, err := parseFTAggregateResultsRESP3(rd)
-			if err != nil {
-				return nil, err
+			if resultsData, ok := v.([]interface{}); ok {
+				rows, err := parseFTAggregateResultsMapRESP3(resultsData)
+				if err != nil {
+					return nil, err
+				}
+				result.Rows = rows
 			}
-			result.Rows = rows
 		case "warning":
-			warnings, err := readStringSlice(rd)
-			if err != nil {
-				return nil, err
+			if warningsData, ok := v.([]interface{}); ok {
+				result.Warnings = make([]string, 0, len(warningsData))
+				for _, w := range warningsData {
+					if ws, ok := w.(string); ok {
+						result.Warnings = append(result.Warnings, ws)
+					}
+				}
 			}
-			result.Warnings = warnings
-		case "attributes", "format":
-			// Ignore these fields as per the spec
-			if err := rd.DiscardNext(); err != nil {
-				return nil, err
-			}
-		default:
-			// Unknown field, discard it
-			if err := rd.DiscardNext(); err != nil {
-				return nil, err
-			}
+		// Ignore "attributes", "format", and other fields as per the spec
 		}
 	}
 
 	return result, nil
 }
 
-// parseFTAggregateResultsRESP3 parses the results array from RESP3 FT.AGGREGATE response.
-func parseFTAggregateResultsRESP3(rd *proto.Reader) ([]AggregateRow, error) {
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return nil, err
-	}
-
-	rows := make([]AggregateRow, 0, n)
-	for i := 0; i < n; i++ {
-		row, err := parseFTAggregateRowRESP3(rd)
-		if err != nil {
-			return nil, err
+// parseFTAggregateResultsMapRESP3 parses the results array from RESP3 FT.AGGREGATE response.
+func parseFTAggregateResultsMapRESP3(resultsData []interface{}) ([]AggregateRow, error) {
+	rows := make([]AggregateRow, 0, len(resultsData))
+	for _, item := range resultsData {
+		if itemMap, ok := item.(map[interface{}]interface{}); ok {
+			row, err := parseFTAggregateRowMapRESP3(itemMap)
+			if err != nil {
+				return nil, err
+			}
+			rows = append(rows, row)
 		}
-		rows = append(rows, row)
 	}
-
 	return rows, nil
 }
 
-// parseFTAggregateRowRESP3 parses a single row from RESP3 FT.AGGREGATE response.
-func parseFTAggregateRowRESP3(rd *proto.Reader) (AggregateRow, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return AggregateRow{}, err
-	}
-
+// parseFTAggregateRowMapRESP3 parses a single row from RESP3 FT.AGGREGATE response.
+func parseFTAggregateRowMapRESP3(itemMap map[interface{}]interface{}) (AggregateRow, error) {
 	row := AggregateRow{
 		Fields: make(map[string]interface{}),
 	}
 
-	for i := 0; i < n; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return AggregateRow{}, err
+	for k, v := range itemMap {
+		key, ok := k.(string)
+		if !ok {
+			continue
 		}
 
 		switch key {
 		case "extra_attributes":
-			fields, err := readInterfaceMapRESP3(rd)
-			if err != nil {
-				return AggregateRow{}, err
+			if extraAttrs, ok := v.(map[interface{}]interface{}); ok {
+				for ek, ev := range extraAttrs {
+					if ekStr, ok := ek.(string); ok {
+						row.Fields[ekStr] = ev
+					}
+				}
 			}
-			row.Fields = fields
-		case "values":
-			// Ignore values field as per the spec (it's always empty)
-			if err := rd.DiscardNext(); err != nil {
-				return AggregateRow{}, err
-			}
-		default:
-			// Unknown field, discard it
-			if err := rd.DiscardNext(); err != nil {
-				return AggregateRow{}, err
-			}
+		// Ignore "values" and other fields as per the spec
 		}
 	}
 
 	return row, nil
-}
-
-// readInterfaceMapRESP3 reads a map of string to interface{} from the reader.
-// It handles both RESP3 map format and RESP2 array format.
-func readInterfaceMapRESP3(rd *proto.Reader) (map[string]interface{}, error) {
-	readType, err := rd.PeekReplyType()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make(map[string]interface{})
-
-	if readType == proto.RespMap {
-		n, err := rd.ReadMapLen()
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < n; i++ {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			value, err := rd.ReadReply()
-			if err != nil {
-				return nil, err
-			}
-			result[key] = value
-		}
-	} else {
-		// RESP2 array format: [key1, value1, key2, value2, ...]
-		n, err := rd.ReadArrayLen()
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < n; i += 2 {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			value, err := rd.ReadReply()
-			if err != nil {
-				return nil, err
-			}
-			result[key] = value
-		}
-	}
-
-	return result, nil
 }
 
 func (cmd *AggregateCmd) Clone() Cmder {
@@ -1589,6 +1525,60 @@ func (c cmdable) FTExplainCli(ctx context.Context, key, path string) error {
 	return fmt.Errorf("FTExplainCli is not implemented")
 }
 
+// parseFTAttributeFromMap parses an FTAttribute from a RESP3 map format
+func parseFTAttributeFromMap(attrMap map[interface{}]interface{}) FTAttribute {
+	att := FTAttribute{}
+	for k, v := range attrMap {
+		key := internal.ToLower(internal.ToString(k))
+		switch key {
+		case "attribute":
+			att.Attribute = internal.ToString(v)
+		case "identifier":
+			att.Identifier = internal.ToString(v)
+		case "type":
+			att.Type = internal.ToString(v)
+		case "weight":
+			att.Weight = internal.ToFloat(v)
+		case "phonetic":
+			att.PhoneticMatcher = internal.ToString(v)
+		case "algorithm":
+			att.Algorithm = internal.ToString(v)
+		case "data_type":
+			att.DataType = internal.ToString(v)
+		case "dim":
+			att.Dim = internal.ToInteger(v)
+		case "distance_metric":
+			att.DistanceMetric = internal.ToString(v)
+		case "m":
+			att.M = internal.ToInteger(v)
+		case "ef_construction":
+			att.EFConstruction = internal.ToInteger(v)
+		case "flags":
+			// flags is an array of strings like ["SORTABLE", "NOSTEM"]
+			if flags, ok := v.([]interface{}); ok {
+				for _, flag := range flags {
+					flagStr := internal.ToLower(internal.ToString(flag))
+					switch flagStr {
+					case "nostem":
+						att.NoStem = true
+					case "sortable":
+						att.Sortable = true
+					case "noindex":
+						att.NoIndex = true
+					case "unf":
+						att.UNF = true
+					case "case_sensitive":
+						att.CaseSensitive = true
+					case "withsuffixtrie":
+						att.WithSuffixtrie = true
+					}
+				}
+			}
+		}
+	}
+	return att
+}
+
 func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	var ftInfo FTInfoResult
 	// Manually parse each field from the map
@@ -1602,92 +1592,96 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 
 	if attributes, ok := data["attributes"].([]interface{}); ok {
 		for _, attr := range attributes {
-			if attrMap, ok := attr.([]interface{}); ok {
-				att := FTAttribute{}
-				attrLen := len(attrMap)
+			att := FTAttribute{}
+			// Handle RESP2 format: attribute is []interface{}
+			if attrSlice, ok := attr.([]interface{}); ok {
+				attrLen := len(attrSlice)
 				for i := 0; i < attrLen; i++ {
-					if internal.ToLower(internal.ToString(attrMap[i])) == "attribute" && i+1 < attrLen {
-						att.Attribute = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "attribute" && i+1 < attrLen {
+						att.Attribute = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "identifier" && i+1 < attrLen {
-						att.Identifier = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "identifier" && i+1 < attrLen {
+						att.Identifier = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "type" && i+1 < attrLen {
-						att.Type = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "type" && i+1 < attrLen {
+						att.Type = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "weight" && i+1 < attrLen {
-						att.Weight = internal.ToFloat(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "weight" && i+1 < attrLen {
+						att.Weight = internal.ToFloat(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "nostem" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "nostem" {
 						att.NoStem = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "sortable" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "sortable" {
 						att.Sortable = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "noindex" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "noindex" {
 						att.NoIndex = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "unf" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "unf" {
 						att.UNF = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "phonetic" && i+1 < attrLen {
-						att.PhoneticMatcher = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "phonetic" && i+1 < attrLen {
+						att.PhoneticMatcher = internal.ToString(attrSlice[i+1])
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "case_sensitive" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "case_sensitive" {
 						att.CaseSensitive = true
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "withsuffixtrie" {
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "withsuffixtrie" {
 						att.WithSuffixtrie = true
 						continue
 					}
 
 					// vector specific attributes
-					if internal.ToLower(internal.ToString(attrMap[i])) == "algorithm" && i+1 < attrLen {
-						att.Algorithm = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "algorithm" && i+1 < attrLen {
+						att.Algorithm = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "data_type" && i+1 < attrLen {
-						att.DataType = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "data_type" && i+1 < attrLen {
+						att.DataType = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "dim" && i+1 < attrLen {
-						att.Dim = internal.ToInteger(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "dim" && i+1 < attrLen {
+						att.Dim = internal.ToInteger(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "distance_metric" && i+1 < attrLen {
-						att.DistanceMetric = internal.ToString(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "distance_metric" && i+1 < attrLen {
+						att.DistanceMetric = internal.ToString(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "m" && i+1 < attrLen {
-						att.M = internal.ToInteger(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "m" && i+1 < attrLen {
+						att.M = internal.ToInteger(attrSlice[i+1])
 						i++
 						continue
 					}
-					if internal.ToLower(internal.ToString(attrMap[i])) == "ef_construction" && i+1 < attrLen {
-						att.EFConstruction = internal.ToInteger(attrMap[i+1])
+					if internal.ToLower(internal.ToString(attrSlice[i])) == "ef_construction" && i+1 < attrLen {
+						att.EFConstruction = internal.ToInteger(attrSlice[i+1])
 						i++
 						continue
 					}
-
 				}
+				ftInfo.Attributes = append(ftInfo.Attributes, att)
+			} else if attrMap, ok := attr.(map[interface{}]interface{}); ok {
+				// Handle RESP3 format: attribute is map[interface{}]interface{}
+				att = parseFTAttributeFromMap(attrMap)
 				ftInfo.Attributes = append(ftInfo.Attributes, att)
 			}
 		}
@@ -1840,6 +1834,37 @@ func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
 	return cmd.rawVal, cmd.err
 }
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	// RESP3 returns a map, RESP2 returns an array
+	if readType == proto.RespMap {
+		// Read raw response first for backwards compatibility
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+
+		// Convert map[interface{}]interface{} to map[string]interface{}
+		rawMap, ok := cmd.rawVal.(map[interface{}]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
+
+		data := make(map[string]interface{}, len(rawMap))
+		for k, v := range rawMap {
+			if kStr, ok := k.(string); ok {
+				data[kStr] = v
+			}
+		}
+
+		cmd.val, err = parseFTInfo(data)
+		return err
+	}
+
+	// RESP2 format - read as map
 	n, err := rd.ReadMapLen()
 	if err != nil {
 		return err
@@ -1866,11 +1891,7 @@ func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 		data[k] = v
 	}
 	cmd.val, err = parseFTInfo(data)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (cmd *FTInfoCmd) Clone() Cmder {
@@ -2023,15 +2044,117 @@ func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
 }
 
 func (cmd *FTSpellCheckCmd) readReply(rd *proto.Reader) (err error) {
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	// RESP3 returns a map, RESP2 returns an array
+	if readType == proto.RespMap {
+		// Read raw response first for backwards compatibility
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+
+		// Parse the raw response into structured result
+		rawMap, ok := cmd.rawVal.(map[interface{}]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
+
+		cmd.val, err = parseFTSpellCheckRESP3(rawMap)
+		return err
+	}
+
+	// RESP2 format
 	data, err := rd.ReadSlice()
 	if err != nil {
 		return err
 	}
 	cmd.val, err = parseFTSpellCheck(data)
-	if err != nil {
-		return err
+	return err
+}
+
+// parseFTSpellCheckRESP3 parses the RESP3 format response from FT.SPELLCHECK.
+// RESP3 format:
+//
+//	map{
+//	  "results": map{
+//	    "misspelled_term": [
+//	      map{"suggestion": score},
+//	      ...
+//	    ],
+//	    ...
+//	  }
+//	}
+func parseFTSpellCheckRESP3(data map[interface{}]interface{}) ([]SpellCheckResult, error) {
+	results := make([]SpellCheckResult, 0)
+
+	resultsData, ok := data["results"]
+	if !ok {
+		return results, nil
 	}
-	return nil
+
+	resultsMap, ok := resultsData.(map[interface{}]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid results format: expected map, got %T", resultsData)
+	}
+
+	for termKey, suggestionsData := range resultsMap {
+		term, ok := termKey.(string)
+		if !ok {
+			continue
+		}
+
+		suggestionsArray, ok := suggestionsData.([]interface{})
+		if !ok {
+			continue
+		}
+
+		suggestions := make([]SpellCheckSuggestion, 0, len(suggestionsArray))
+		for _, suggestionData := range suggestionsArray {
+			suggestionMap, ok := suggestionData.(map[interface{}]interface{})
+			if !ok {
+				continue
+			}
+
+			for suggKey, scoreVal := range suggestionMap {
+				suggestion, ok := suggKey.(string)
+				if !ok {
+					continue
+				}
+
+				var score float64
+				switch v := scoreVal.(type) {
+				case float64:
+					score = v
+				case int64:
+					score = float64(v)
+				case string:
+					var err error
+					score, err = strconv.ParseFloat(v, 64)
+					if err != nil {
+						continue
+					}
+				default:
+					continue
+				}
+
+				suggestions = append(suggestions, SpellCheckSuggestion{
+					Score:      score,
+					Suggestion: suggestion,
+				})
+			}
+		}
+
+		results = append(results, SpellCheckResult{
+			Term:        term,
+			Suggestions: suggestions,
+		})
+	}
+
+	return results, nil
 }
 
 func parseFTSpellCheck(data []interface{}) ([]SpellCheckResult, error) {
@@ -2245,7 +2368,17 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 
 	// RESP3 returns a map, RESP2 returns an array
 	if readType == proto.RespMap {
-		cmd.val, err = parseFTSearchRESP3(rd)
+		// Read raw response first for backwards compatibility
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		// Parse the raw response into structured result
+		if mapVal, ok := cmd.rawVal.(map[interface{}]interface{}); ok {
+			cmd.val, err = parseFTSearchMapRESP3(mapVal)
+		} else {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
 	} else {
 		data, err := rd.ReadSlice()
 		if err != nil {
@@ -2256,7 +2389,8 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 	return err
 }
 
-// parseFTSearchRESP3 parses the RESP3 format response from FT.SEARCH.
+// parseFTSearchMapRESP3 parses the RESP3 format response from FT.SEARCH.
+// It takes a map[interface{}]interface{} which is the raw response from ReadReply().
 // RESP3 format:
 //
 //	%5
@@ -2265,204 +2399,104 @@ func (cmd *FTSearchCmd) readReply(rd *proto.Reader) (err error) {
 //	  $6 format => $6 STRING
 //	  $7 results => *N (array of maps with id, score, extra_attributes, values)
 //	  $7 warning => *N (array of strings)
-func parseFTSearchRESP3(rd *proto.Reader) (FTSearchResult, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return FTSearchResult{}, err
-	}
-
+func parseFTSearchMapRESP3(data map[interface{}]interface{}) (FTSearchResult, error) {
 	var result FTSearchResult
 	result.Docs = make([]Document, 0)
 
-	for i := 0; i < n; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return FTSearchResult{}, err
+	for k, v := range data {
+		key, ok := k.(string)
+		if !ok {
+			continue
 		}
 
 		switch key {
 		case "total_results":
-			total, err := rd.ReadInt()
-			if err != nil {
-				return FTSearchResult{}, err
+			if total, ok := v.(int64); ok {
+				result.Total = int(total)
 			}
-			result.Total = int(total)
 		case "results":
-			docs, err := parseFTSearchResultsRESP3(rd)
-			if err != nil {
-				return FTSearchResult{}, err
+			if resultsData, ok := v.([]interface{}); ok {
+				docs, err := parseFTSearchResultsMapRESP3(resultsData)
+				if err != nil {
+					return FTSearchResult{}, err
+				}
+				result.Docs = docs
 			}
-			result.Docs = docs
 		case "warning":
-			warnings, err := readStringSlice(rd)
-			if err != nil {
-				return FTSearchResult{}, err
+			if warningsData, ok := v.([]interface{}); ok {
+				result.Warnings = make([]string, 0, len(warningsData))
+				for _, w := range warningsData {
+					if ws, ok := w.(string); ok {
+						result.Warnings = append(result.Warnings, ws)
+					}
+				}
 			}
-			result.Warnings = warnings
-		case "attributes", "format":
-			// Ignore these fields as per the spec
-			if err := rd.DiscardNext(); err != nil {
-				return FTSearchResult{}, err
-			}
-		default:
-			// Unknown field, discard it
-			if err := rd.DiscardNext(); err != nil {
-				return FTSearchResult{}, err
-			}
+		// Ignore "attributes", "format", and other fields as per the spec
 		}
 	}
 
 	return result, nil
 }
 
-// parseFTSearchResultsRESP3 parses the results array from RESP3 FT.SEARCH response.
-func parseFTSearchResultsRESP3(rd *proto.Reader) ([]Document, error) {
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return nil, err
-	}
-
-	docs := make([]Document, 0, n)
-	for i := 0; i < n; i++ {
-		doc, err := parseFTSearchDocumentRESP3(rd)
-		if err != nil {
-			return nil, err
+// parseFTSearchResultsMapRESP3 parses the results array from RESP3 FT.SEARCH response.
+func parseFTSearchResultsMapRESP3(resultsData []interface{}) ([]Document, error) {
+	docs := make([]Document, 0, len(resultsData))
+	for _, item := range resultsData {
+		if itemMap, ok := item.(map[interface{}]interface{}); ok {
+			doc, err := parseFTSearchDocumentMapRESP3(itemMap)
+			if err != nil {
+				return nil, err
+			}
+			docs = append(docs, doc)
 		}
-		docs = append(docs, doc)
 	}
-
 	return docs, nil
 }
 
-// parseFTSearchDocumentRESP3 parses a single document from RESP3 FT.SEARCH response.
-func parseFTSearchDocumentRESP3(rd *proto.Reader) (Document, error) {
-	n, err := rd.ReadMapLen()
-	if err != nil {
-		return Document{}, err
-	}
-
+// parseFTSearchDocumentMapRESP3 parses a single document from RESP3 FT.SEARCH response.
+func parseFTSearchDocumentMapRESP3(itemMap map[interface{}]interface{}) (Document, error) {
 	doc := Document{
 		Fields: make(map[string]string),
 	}
 
-	for i := 0; i < n; i++ {
-		key, err := rd.ReadString()
-		if err != nil {
-			return Document{}, err
+	for k, v := range itemMap {
+		key, ok := k.(string)
+		if !ok {
+			continue
 		}
 
 		switch key {
 		case "id":
-			id, err := rd.ReadString()
-			if err != nil {
-				return Document{}, err
+			if id, ok := v.(string); ok {
+				doc.ID = id
 			}
-			doc.ID = id
 		case "score":
-			score, err := rd.ReadFloat()
-			if err != nil {
-				return Document{}, err
+			if score, ok := v.(float64); ok {
+				doc.Score = &score
 			}
-			doc.Score = &score
 		case "payload":
-			payload, err := rd.ReadString()
-			if err != nil {
-				return Document{}, err
+			if payload, ok := v.(string); ok {
+				doc.Payload = &payload
 			}
-			doc.Payload = &payload
 		case "sortkey":
-			sortKey, err := rd.ReadString()
-			if err != nil {
-				return Document{}, err
+			if sortKey, ok := v.(string); ok {
+				doc.SortKey = &sortKey
 			}
-			doc.SortKey = &sortKey
 		case "extra_attributes":
-			fields, err := readStringMapRESP3(rd)
-			if err != nil {
-				return Document{}, err
+			if extraAttrs, ok := v.(map[interface{}]interface{}); ok {
+				for ek, ev := range extraAttrs {
+					if ekStr, ok := ek.(string); ok {
+						if evStr, ok := ev.(string); ok {
+							doc.Fields[ekStr] = evStr
+						}
+					}
+				}
 			}
-			doc.Fields = fields
-		case "values":
-			// Ignore values field as per the spec (it's always empty)
-			if err := rd.DiscardNext(); err != nil {
-				return Document{}, err
-			}
-		default:
-			// Unknown field, discard it
-			if err := rd.DiscardNext(); err != nil {
-				return Document{}, err
-			}
+		// Ignore "values" and other fields as per the spec
 		}
 	}
 
 	return doc, nil
-}
-
-// readStringSlice reads an array of strings from the reader.
-func readStringSlice(rd *proto.Reader) ([]string, error) {
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		s, err := rd.ReadString()
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, s)
-	}
-
-	return result, nil
-}
-
-// readStringMapRESP3 reads a map of string to string from the reader.
-// It handles both RESP3 map format and RESP2 array format.
-func readStringMapRESP3(rd *proto.Reader) (map[string]string, error) {
-	readType, err := rd.PeekReplyType()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make(map[string]string)
-
-	if readType == proto.RespMap {
-		n, err := rd.ReadMapLen()
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < n; i++ {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			value, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			result[key] = value
-		}
-	} else {
-		// RESP2 array format: [key1, value1, key2, value2, ...]
-		n, err := rd.ReadArrayLen()
-		if err != nil {
-			return nil, err
-		}
-		for i := 0; i < n; i += 2 {
-			key, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			value, err := rd.ReadString()
-			if err != nil {
-				return nil, err
-			}
-			result[key] = value
-		}
-	}
-
-	return result, nil
 }
 
 // processFTSearchMapResult processes a map result from RESP3 FT.SEARCH response.
@@ -3248,6 +3282,30 @@ func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
 }
 
 func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {
+	readType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	// RESP3 returns a map, RESP2 returns an array
+	if readType == proto.RespMap {
+		// Read raw response first for backwards compatibility
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+
+		// Parse the raw response into structured result
+		rawMap, ok := cmd.rawVal.(map[interface{}]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
+
+		cmd.val, err = parseFTSynDumpRESP3(rawMap)
+		return err
+	}
+
+	// RESP2 format
 	termSynonymPairs, err := rd.ReadSlice()
 	if err != nil {
 		return err
@@ -3282,6 +3340,44 @@ func (cmd *FTSynDumpCmd) readReply(rd *proto.Reader) error {
 
 	cmd.val = results
 	return nil
+}
+
+// parseFTSynDumpRESP3 parses the RESP3 format response from FT.SYNDUMP.
+// RESP3 format:
+//
+//	map{
+//	  "term1": ["synonym_group_id1", ...],
+//	  "term2": ["synonym_group_id2", ...],
+//	  ...
+//	}
+func parseFTSynDumpRESP3(data map[interface{}]interface{}) ([]FTSynDumpResult, error) {
+	results := make([]FTSynDumpResult, 0, len(data))
+
+	for termKey, synonymsData := range data {
+		term, ok := termKey.(string)
+		if !ok {
+			continue
+		}
+
+		synonymsArray, ok := synonymsData.([]interface{})
+		if !ok {
+			continue
+		}
+
+		synonymList := make([]string, 0, len(synonymsArray))
+		for _, syn := range synonymsArray {
+			if synonym, ok := syn.(string); ok {
+				synonymList = append(synonymList, synonym)
+			}
+		}
+
+		results = append(results, FTSynDumpResult{
+			Term:     term,
+			Synonyms: synonymList,
+		})
+	}
+
+	return results, nil
 }
 
 func (cmd *FTSynDumpCmd) Clone() Cmder {

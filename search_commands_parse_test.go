@@ -1021,3 +1021,567 @@ func TestFTAggregateRESP2AndRESP3Equivalence(t *testing.T) {
 		})
 	}
 }
+
+
+// TestParseFTSpellCheckRESP3 tests the RESP3 parsing for FT.SPELLCHECK results
+func TestParseFTSpellCheckRESP3(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[interface{}]interface{}
+		expected []SpellCheckResult
+	}{
+		{
+			name: "empty result",
+			input: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{},
+			},
+			expected: []SpellCheckResult{},
+		},
+		{
+			name: "single misspelled term with one suggestion",
+			input: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{
+					"impornant": []interface{}{
+						map[interface{}]interface{}{"important": float64(0.5)},
+					},
+				},
+			},
+			expected: []SpellCheckResult{
+				{
+					Term: "impornant",
+					Suggestions: []SpellCheckSuggestion{
+						{Score: 0.5, Suggestion: "important"},
+					},
+				},
+			},
+		},
+		{
+			name: "single misspelled term with multiple suggestions",
+			input: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{
+					"helo": []interface{}{
+						map[interface{}]interface{}{"hello": float64(0.8)},
+						map[interface{}]interface{}{"help": float64(0.3)},
+					},
+				},
+			},
+			expected: []SpellCheckResult{
+				{
+					Term: "helo",
+					Suggestions: []SpellCheckSuggestion{
+						{Score: 0.8, Suggestion: "hello"},
+						{Score: 0.3, Suggestion: "help"},
+					},
+				},
+			},
+		},
+		{
+			name: "no results key",
+			input: map[interface{}]interface{}{},
+			expected: []SpellCheckResult{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseFTSpellCheckRESP3(tt.input)
+			if err != nil {
+				t.Fatalf("parseFTSpellCheckRESP3 returned error: %v", err)
+			}
+
+			if len(result) != len(tt.expected) {
+				t.Fatalf("expected %d results, got %d", len(tt.expected), len(result))
+			}
+
+			// For single result tests, verify the content
+			if len(tt.expected) == 1 && len(result) == 1 {
+				if result[0].Term != tt.expected[0].Term {
+					t.Errorf("expected term %q, got %q", tt.expected[0].Term, result[0].Term)
+				}
+				if len(result[0].Suggestions) != len(tt.expected[0].Suggestions) {
+					t.Errorf("expected %d suggestions, got %d", len(tt.expected[0].Suggestions), len(result[0].Suggestions))
+				}
+				for i, sugg := range tt.expected[0].Suggestions {
+					if i < len(result[0].Suggestions) {
+						if result[0].Suggestions[i].Suggestion != sugg.Suggestion {
+							t.Errorf("suggestion[%d]: expected %q, got %q", i, sugg.Suggestion, result[0].Suggestions[i].Suggestion)
+						}
+						if result[0].Suggestions[i].Score != sugg.Score {
+							t.Errorf("suggestion[%d] score: expected %f, got %f", i, sugg.Score, result[0].Suggestions[i].Score)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestParseFTSynDumpRESP3 tests the RESP3 parsing for FT.SYNDUMP results
+func TestParseFTSynDumpRESP3(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    map[interface{}]interface{}
+		expected []FTSynDumpResult
+	}{
+		{
+			name:     "empty result",
+			input:    map[interface{}]interface{}{},
+			expected: []FTSynDumpResult{},
+		},
+		{
+			name: "single term with single synonym group",
+			input: map[interface{}]interface{}{
+				"baby": []interface{}{"id1"},
+			},
+			expected: []FTSynDumpResult{
+				{Term: "baby", Synonyms: []string{"id1"}},
+			},
+		},
+		{
+			name: "single term with multiple synonym groups",
+			input: map[interface{}]interface{}{
+				"child": []interface{}{"id1", "id2"},
+			},
+			expected: []FTSynDumpResult{
+				{Term: "child", Synonyms: []string{"id1", "id2"}},
+			},
+		},
+		{
+			name: "multiple terms",
+			input: map[interface{}]interface{}{
+				"baby":      []interface{}{"id1"},
+				"child":    []interface{}{"id1"},
+				"offspring": []interface{}{"id1"},
+			},
+			expected: []FTSynDumpResult{
+				{Term: "baby", Synonyms: []string{"id1"}},
+				{Term: "child", Synonyms: []string{"id1"}},
+				{Term: "offspring", Synonyms: []string{"id1"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseFTSynDumpRESP3(tt.input)
+			if err != nil {
+				t.Fatalf("parseFTSynDumpRESP3 returned error: %v", err)
+			}
+
+			if len(result) != len(tt.expected) {
+				t.Fatalf("expected %d results, got %d", len(tt.expected), len(result))
+			}
+
+			// Create a map for easier lookup since map iteration order is not guaranteed
+			resultMap := make(map[string][]string)
+			for _, r := range result {
+				resultMap[r.Term] = r.Synonyms
+			}
+
+			for _, exp := range tt.expected {
+				synonyms, ok := resultMap[exp.Term]
+				if !ok {
+					t.Errorf("expected term %q not found in result", exp.Term)
+					continue
+				}
+				if len(synonyms) != len(exp.Synonyms) {
+					t.Errorf("term %q: expected %d synonyms, got %d", exp.Term, len(exp.Synonyms), len(synonyms))
+					continue
+				}
+				for i, syn := range exp.Synonyms {
+					if synonyms[i] != syn {
+						t.Errorf("term %q synonym[%d]: expected %q, got %q", exp.Term, i, syn, synonyms[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTInfoRESP3Parsing tests that FTInfoCmd correctly parses RESP3 format
+func TestFTInfoRESP3Parsing(t *testing.T) {
+	// Test data simulating RESP3 response (map[interface{}]interface{})
+	input := map[interface{}]interface{}{
+		"index_name":    "test_idx",
+		"index_options": []interface{}{},
+		"index_definition": map[interface{}]interface{}{
+			"key_type":      "HASH",
+			"prefixes":      []interface{}{"doc:"},
+			"default_score": float64(1),
+		},
+		"attributes": []interface{}{
+			map[interface{}]interface{}{
+				"identifier": "txt",
+				"attribute":  "txt",
+				"type":       "TEXT",
+				"WEIGHT":     float64(1),
+				"flags":      []interface{}{"SORTABLE"},
+			},
+		},
+		"num_docs":             int64(100),
+		"max_doc_id":           int64(100),
+		"num_terms":            int64(500),
+		"num_records":          int64(1000),
+		"inverted_sz_mb":       float64(0.5),
+		"total_inverted_index_blocks": int64(50),
+		"offset_vectors_sz_mb": float64(0.1),
+		"doc_table_size_mb":    float64(0.2),
+		"sortable_values_size_mb": float64(0.05),
+		"key_table_size_mb":    float64(0.01),
+		"records_per_doc_avg":  float64(10),
+		"bytes_per_record_avg": float64(50),
+		"offsets_per_term_avg": float64(2),
+		"offset_bits_per_record_avg": float64(8),
+		"hash_indexing_failures": int64(0),
+		"total_indexing_time":  int64(100),
+		"indexing":             int64(0),
+		"percent_indexed":      float64(1),
+		"number_of_uses":       int64(10),
+		"cleaning":             int64(0),
+	}
+
+	// Convert to map[string]interface{} as parseFTInfo expects
+	data := make(map[string]interface{}, len(input))
+	for k, v := range input {
+		if kStr, ok := k.(string); ok {
+			data[kStr] = v
+		}
+	}
+
+	result, err := parseFTInfo(data)
+	if err != nil {
+		t.Fatalf("parseFTInfo returned error: %v", err)
+	}
+
+	if result.IndexName != "test_idx" {
+		t.Errorf("expected IndexName 'test_idx', got %q", result.IndexName)
+	}
+
+	if result.NumDocs != 100 {
+		t.Errorf("expected NumDocs 100, got %d", result.NumDocs)
+	}
+
+	if len(result.Attributes) != 1 {
+		t.Fatalf("expected 1 attribute, got %d", len(result.Attributes))
+	}
+
+	if result.Attributes[0].Attribute != "txt" {
+		t.Errorf("expected attribute 'txt', got %q", result.Attributes[0].Attribute)
+	}
+}
+
+// TestFTSpellCheckRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
+// produce semantically equivalent results for FT.SPELLCHECK
+func TestFTSpellCheckRESP2AndRESP3Equivalence(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp2Data []interface{}
+		resp3Data map[interface{}]interface{}
+	}{
+		{
+			name: "single misspelled term with suggestions",
+			// RESP2: [["TERM", "impornant", [["0.5", "important"]]]]
+			resp2Data: []interface{}{
+				[]interface{}{
+					"TERM",
+					"impornant",
+					[]interface{}{
+						[]interface{}{"0.5", "important"},
+					},
+				},
+			},
+			// RESP3: {"results": {"impornant": [{"important": 0.5}]}}
+			resp3Data: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{
+					"impornant": []interface{}{
+						map[interface{}]interface{}{"important": float64(0.5)},
+					},
+				},
+			},
+		},
+		{
+			name: "multiple suggestions",
+			// RESP2: [["TERM", "helo", [["0.8", "hello"], ["0.3", "help"]]]]
+			resp2Data: []interface{}{
+				[]interface{}{
+					"TERM",
+					"helo",
+					[]interface{}{
+						[]interface{}{"0.8", "hello"},
+						[]interface{}{"0.3", "help"},
+					},
+				},
+			},
+			// RESP3: {"results": {"helo": [{"hello": 0.8}, {"help": 0.3}]}}
+			resp3Data: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{
+					"helo": []interface{}{
+						map[interface{}]interface{}{"hello": float64(0.8)},
+						map[interface{}]interface{}{"help": float64(0.3)},
+					},
+				},
+			},
+		},
+		{
+			name:      "empty result",
+			resp2Data: []interface{}{},
+			resp3Data: map[interface{}]interface{}{
+				"results": map[interface{}]interface{}{},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse RESP2
+			resp2Result, err := parseFTSpellCheck(tt.resp2Data)
+			if err != nil {
+				t.Fatalf("parseFTSpellCheck (RESP2) returned error: %v", err)
+			}
+
+			// Parse RESP3
+			resp3Result, err := parseFTSpellCheckRESP3(tt.resp3Data)
+			if err != nil {
+				t.Fatalf("parseFTSpellCheckRESP3 returned error: %v", err)
+			}
+
+			// Compare results
+			if len(resp2Result) != len(resp3Result) {
+				t.Fatalf("result count mismatch: RESP2=%d, RESP3=%d", len(resp2Result), len(resp3Result))
+			}
+
+			// For non-empty results, compare content
+			if len(resp2Result) > 0 {
+				// Create maps for comparison since order may differ
+				resp2Map := make(map[string][]SpellCheckSuggestion)
+				for _, r := range resp2Result {
+					resp2Map[r.Term] = r.Suggestions
+				}
+				resp3Map := make(map[string][]SpellCheckSuggestion)
+				for _, r := range resp3Result {
+					resp3Map[r.Term] = r.Suggestions
+				}
+
+				for term, resp2Suggs := range resp2Map {
+					resp3Suggs, ok := resp3Map[term]
+					if !ok {
+						t.Errorf("term %q found in RESP2 but not in RESP3", term)
+						continue
+					}
+					if len(resp2Suggs) != len(resp3Suggs) {
+						t.Errorf("term %q: suggestion count mismatch: RESP2=%d, RESP3=%d", term, len(resp2Suggs), len(resp3Suggs))
+						continue
+					}
+					// Compare suggestions (order may differ)
+					resp2SuggMap := make(map[string]float64)
+					for _, s := range resp2Suggs {
+						resp2SuggMap[s.Suggestion] = s.Score
+					}
+					for _, s := range resp3Suggs {
+						if score, ok := resp2SuggMap[s.Suggestion]; !ok {
+							t.Errorf("term %q: suggestion %q found in RESP3 but not in RESP2", term, s.Suggestion)
+						} else if score != s.Score {
+							t.Errorf("term %q suggestion %q: score mismatch: RESP2=%f, RESP3=%f", term, s.Suggestion, score, s.Score)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTSynDumpRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
+// produce semantically equivalent results for FT.SYNDUMP
+func TestFTSynDumpRESP2AndRESP3Equivalence(t *testing.T) {
+	tests := []struct {
+		name      string
+		resp2Data []interface{}
+		resp3Data map[interface{}]interface{}
+	}{
+		{
+			name: "single term with single synonym group",
+			// RESP2: ["baby", ["id1"]]
+			resp2Data: []interface{}{
+				"baby", []interface{}{"id1"},
+			},
+			// RESP3: {"baby": ["id1"]}
+			resp3Data: map[interface{}]interface{}{
+				"baby": []interface{}{"id1"},
+			},
+		},
+		{
+			name: "multiple terms",
+			// RESP2: ["baby", ["id1"], "child", ["id1"], "offspring", ["id1"]]
+			resp2Data: []interface{}{
+				"baby", []interface{}{"id1"},
+				"child", []interface{}{"id1"},
+				"offspring", []interface{}{"id1"},
+			},
+			// RESP3: {"baby": ["id1"], "child": ["id1"], "offspring": ["id1"]}
+			resp3Data: map[interface{}]interface{}{
+				"baby":      []interface{}{"id1"},
+				"child":     []interface{}{"id1"},
+				"offspring": []interface{}{"id1"},
+			},
+		},
+		{
+			name:      "empty result",
+			resp2Data: []interface{}{},
+			resp3Data: map[interface{}]interface{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Parse RESP2 manually (simulating what readReply does)
+			var resp2Result []FTSynDumpResult
+			for i := 0; i < len(tt.resp2Data); i += 2 {
+				term, ok := tt.resp2Data[i].(string)
+				if !ok {
+					t.Fatalf("invalid RESP2 term format")
+				}
+				synonyms, ok := tt.resp2Data[i+1].([]interface{})
+				if !ok {
+					t.Fatalf("invalid RESP2 synonyms format")
+				}
+				synonymList := make([]string, len(synonyms))
+				for j, syn := range synonyms {
+					synonymList[j] = syn.(string)
+				}
+				resp2Result = append(resp2Result, FTSynDumpResult{
+					Term:     term,
+					Synonyms: synonymList,
+				})
+			}
+
+			// Parse RESP3
+			resp3Result, err := parseFTSynDumpRESP3(tt.resp3Data)
+			if err != nil {
+				t.Fatalf("parseFTSynDumpRESP3 returned error: %v", err)
+			}
+
+			// Compare results
+			if len(resp2Result) != len(resp3Result) {
+				t.Fatalf("result count mismatch: RESP2=%d, RESP3=%d", len(resp2Result), len(resp3Result))
+			}
+
+			// Create maps for comparison since order may differ
+			resp2Map := make(map[string][]string)
+			for _, r := range resp2Result {
+				resp2Map[r.Term] = r.Synonyms
+			}
+			resp3Map := make(map[string][]string)
+			for _, r := range resp3Result {
+				resp3Map[r.Term] = r.Synonyms
+			}
+
+			for term, resp2Syns := range resp2Map {
+				resp3Syns, ok := resp3Map[term]
+				if !ok {
+					t.Errorf("term %q found in RESP2 but not in RESP3", term)
+					continue
+				}
+				if len(resp2Syns) != len(resp3Syns) {
+					t.Errorf("term %q: synonym count mismatch: RESP2=%d, RESP3=%d", term, len(resp2Syns), len(resp3Syns))
+					continue
+				}
+				for i, syn := range resp2Syns {
+					if resp3Syns[i] != syn {
+						t.Errorf("term %q synonym[%d]: RESP2=%q, RESP3=%q", term, i, syn, resp3Syns[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestFTInfoRESP2AndRESP3Equivalence validates that RESP2 and RESP3 parsing
+// produce semantically equivalent results for FT.INFO
+func TestFTInfoRESP2AndRESP3Equivalence(t *testing.T) {
+	// RESP2 format: attributes are arrays like ["identifier", "txt", "attribute", "txt", "type", "TEXT", ...]
+	resp2Data := map[string]interface{}{
+		"index_name":    "test_idx",
+		"index_options": []interface{}{},
+		"attributes": []interface{}{
+			[]interface{}{
+				"identifier", "txt",
+				"attribute", "txt",
+				"type", "TEXT",
+				"WEIGHT", float64(1),
+				"SORTABLE",
+				"NOSTEM",
+			},
+		},
+		"num_docs":    int64(100),
+		"num_terms":   int64(500),
+		"num_records": int64(1000),
+	}
+
+	// RESP3 format: attributes are maps
+	resp3Data := map[string]interface{}{
+		"index_name":    "test_idx",
+		"index_options": []interface{}{},
+		"attributes": []interface{}{
+			map[interface{}]interface{}{
+				"identifier": "txt",
+				"attribute":  "txt",
+				"type":       "TEXT",
+				"WEIGHT":     float64(1),
+				"flags":      []interface{}{"SORTABLE", "NOSTEM"},
+			},
+		},
+		"num_docs":    int64(100),
+		"num_terms":   int64(500),
+		"num_records": int64(1000),
+	}
+
+	// Parse RESP2
+	resp2Result, err := parseFTInfo(resp2Data)
+	if err != nil {
+		t.Fatalf("parseFTInfo (RESP2) returned error: %v", err)
+	}
+
+	// Parse RESP3
+	resp3Result, err := parseFTInfo(resp3Data)
+	if err != nil {
+		t.Fatalf("parseFTInfo (RESP3) returned error: %v", err)
+	}
+
+	// Compare results
+	if resp2Result.IndexName != resp3Result.IndexName {
+		t.Errorf("IndexName mismatch: RESP2=%q, RESP3=%q", resp2Result.IndexName, resp3Result.IndexName)
+	}
+
+	if resp2Result.NumDocs != resp3Result.NumDocs {
+		t.Errorf("NumDocs mismatch: RESP2=%d, RESP3=%d", resp2Result.NumDocs, resp3Result.NumDocs)
+	}
+
+	if resp2Result.NumTerms != resp3Result.NumTerms {
+		t.Errorf("NumTerms mismatch: RESP2=%d, RESP3=%d", resp2Result.NumTerms, resp3Result.NumTerms)
+	}
+
+	if len(resp2Result.Attributes) != len(resp3Result.Attributes) {
+		t.Fatalf("Attributes count mismatch: RESP2=%d, RESP3=%d", len(resp2Result.Attributes), len(resp3Result.Attributes))
+	}
+
+	if len(resp2Result.Attributes) > 0 {
+		attr2 := resp2Result.Attributes[0]
+		attr3 := resp3Result.Attributes[0]
+
+		if attr2.Attribute != attr3.Attribute {
+			t.Errorf("Attribute name mismatch: RESP2=%q, RESP3=%q", attr2.Attribute, attr3.Attribute)
+		}
+		if attr2.Identifier != attr3.Identifier {
+			t.Errorf("Identifier mismatch: RESP2=%q, RESP3=%q", attr2.Identifier, attr3.Identifier)
+		}
+		if attr2.Type != attr3.Type {
+			t.Errorf("Type mismatch: RESP2=%q, RESP3=%q", attr2.Type, attr3.Type)
+		}
+		if attr2.Sortable != attr3.Sortable {
+			t.Errorf("Sortable mismatch: RESP2=%v, RESP3=%v", attr2.Sortable, attr3.Sortable)
+		}
+		if attr2.NoStem != attr3.NoStem {
+			t.Errorf("NoStem mismatch: RESP2=%v, RESP3=%v", attr2.NoStem, attr3.NoStem)
+		}
+	}
+}
