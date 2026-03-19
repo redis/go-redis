@@ -369,6 +369,40 @@ func TestParseFTInfo(t *testing.T) {
 	t.Logf("Successfully parsed FT.INFO response with %d attributes", len(result.Attributes))
 }
 
+// toInterfaceMap converts map[string]interface{} to map[interface{}]interface{}
+// This is needed because RESP3 returns map[interface{}]interface{} but test data
+// is easier to write as map[string]interface{}
+func toInterfaceMap(m map[string]interface{}) map[interface{}]interface{} {
+	result := make(map[interface{}]interface{}, len(m))
+	for k, v := range m {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[k] = toInterfaceMap(val)
+		case []interface{}:
+			result[k] = toInterfaceSlice(val)
+		default:
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// toInterfaceSlice converts []interface{} elements recursively
+func toInterfaceSlice(s []interface{}) []interface{} {
+	result := make([]interface{}, len(s))
+	for i, v := range s {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			result[i] = toInterfaceMap(val)
+		case []interface{}:
+			result[i] = toInterfaceSlice(val)
+		default:
+			result[i] = v
+		}
+	}
+	return result
+}
+
 // TestParseFTSearchRESP3 tests the RESP3 parsing for FT.SEARCH results
 func TestParseFTSearchRESP3(t *testing.T) {
 	tests := []struct {
@@ -520,9 +554,9 @@ func TestParseFTSearchRESP3(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := processFTSearchMapResult(tt.input)
+			result, err := parseFTSearchMapRESP3(toInterfaceMap(tt.input))
 			if err != nil {
-				t.Fatalf("processFTSearchMapResult() error = %v", err)
+				t.Fatalf("parseFTSearchMapRESP3() error = %v", err)
 			}
 
 			if result.Total != tt.expected.Total {
@@ -654,9 +688,9 @@ func TestParseFTAggregateRESP3(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := processFTAggregateMapResult(tt.input)
+			result, err := parseFTAggregateMapRESP3(toInterfaceMap(tt.input))
 			if err != nil {
-				t.Fatalf("processFTAggregateMapResult() error = %v", err)
+				t.Fatalf("parseFTAggregateMapRESP3() error = %v", err)
 			}
 
 			if result.Total != tt.expected.Total {
@@ -838,9 +872,9 @@ func TestFTSearchRESP2AndRESP3Equivalence(t *testing.T) {
 			}
 
 			// Parse RESP3
-			resp3Result, err := processFTSearchMapResult(tt.resp3Data)
+			resp3Result, err := parseFTSearchMapRESP3(toInterfaceMap(tt.resp3Data))
 			if err != nil {
-				t.Fatalf("processFTSearchMapResult() error = %v", err)
+				t.Fatalf("parseFTSearchMapRESP3() error = %v", err)
 			}
 
 			// Compare Total
@@ -981,9 +1015,9 @@ func TestFTAggregateRESP2AndRESP3Equivalence(t *testing.T) {
 			}
 
 			// Parse RESP3
-			resp3Result, err := processFTAggregateMapResult(tt.resp3Data)
+			resp3Result, err := parseFTAggregateMapRESP3(toInterfaceMap(tt.resp3Data))
 			if err != nil {
-				t.Fatalf("processFTAggregateMapResult() error = %v", err)
+				t.Fatalf("parseFTAggregateMapRESP3() error = %v", err)
 			}
 
 			// Compare Total
