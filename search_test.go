@@ -4260,6 +4260,8 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 		// Test with UnstableResp3 true - both RawResult and Result should work
 		res, err := client.FTAggregateWithArgs(ctx, "idx1", "*", options).RawResult()
 		Expect(err).NotTo(HaveOccurred())
+		fmt.Printf("DEBUG: Raw result: %+v\n", res)
+		fmt.Printf("DEBUG: total_results: %+v (type: %T)\n", res.(map[interface{}]interface{})["total_results"], res.(map[interface{}]interface{})["total_results"])
 		results := res.(map[interface{}]interface{})["results"].([]interface{})
 		Expect(results[0].(map[interface{}]interface{})["extra_attributes"].(map[interface{}]interface{})["CreatedDateTimeUTC"]).
 			To(Or(BeEquivalentTo("6373878785249699840"), BeEquivalentTo("6373878758592700416")))
