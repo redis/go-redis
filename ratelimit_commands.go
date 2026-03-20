@@ -45,10 +45,10 @@ type GCRAResult struct {
 
 	// RetryAfter is the number of seconds after which the caller should retry.
 	// Always returns -1 if the request isn't limited.
-	RetryAfter float64
+	RetryAfter int64
 
 	// FullBurstAfter is the number of seconds after which a full burst will be allowed.
-	FullBurstAfter float64
+	FullBurstAfter int64
 }
 
 // GCRA performs rate limiting using the Generic Cell Rate Algorithm (GCRA).

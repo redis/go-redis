@@ -33,7 +33,7 @@ var _ = Describe("GCRA rate limiting", func() {
 			Expect(result.Limited).To(Equal(int64(0)))     // Not limited
 			Expect(result.MaxRequests).To(Equal(int64(6))) // MaxBurst + 1
 			Expect(result.AvailableRequests).To(BeNumerically(">=", 0))
-			Expect(result.RetryAfter).To(Equal(float64(-1))) // Not limited, so -1
+			Expect(result.RetryAfter).To(Equal(int64(-1))) // Not limited, so -1
 		})
 
 		It("should rate limit when exceeding burst", func() {

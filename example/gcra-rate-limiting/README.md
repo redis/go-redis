@@ -37,7 +37,7 @@ if err != nil {
 }
 
 if result.Limited == 1 {
-    fmt.Printf("Rate limited. Retry after %.2f seconds\n", result.RetryAfter)
+    fmt.Printf("Rate limited. Retry after %d seconds\n", result.RetryAfter)
 } else {
     fmt.Printf("Request allowed. %d requests available\n", result.AvailableRequests)
 }

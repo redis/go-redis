@@ -51,7 +51,7 @@ func basicRateLimiting(ctx context.Context, rdb *redis.Client) {
 	fmt.Printf("  Request allowed: %v\n", result.Limited == 0)
 	fmt.Printf("  Max requests: %d\n", result.MaxRequests)
 	fmt.Printf("  Available requests: %d\n", result.AvailableRequests)
-	fmt.Printf("  Full burst available after: %.2f seconds\n", result.FullBurstAfter)
+	fmt.Printf("  Full burst available after: %d seconds\n", result.FullBurstAfter)
 }
 
 func handleRateLimitExceeded(ctx context.Context, rdb *redis.Client) {
@@ -65,7 +65,7 @@ func handleRateLimitExceeded(ctx context.Context, rdb *redis.Client) {
 		}
 
 		if result.Limited == 1 {
-			fmt.Printf("  Request %d: RATE LIMITED - retry after %.2f seconds\n", i, result.RetryAfter)
+			fmt.Printf("  Request %d: RATE LIMITED - retry after %d seconds\n", i, result.RetryAfter)
 		} else {
 			fmt.Printf("  Request %d: ALLOWED - %d requests remaining\n", i, result.AvailableRequests)
 		}
@@ -125,7 +125,7 @@ func weightedRequests(ctx context.Context, rdb *redis.Client) {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  Normal request (cost=1): allowed=%v, retry_after=%.2f\n",
+	fmt.Printf("  Normal request (cost=1): allowed=%v, retry_after=%d\n",
 		result.Limited == 0, result.RetryAfter)
 }
 

@@ -6835,6 +6835,9 @@ type ClientInfo struct {
 	Resp               int           // redis version 7.0, client RESP protocol version
 	LibName            string        // redis version 7.2, client library name
 	LibVer             string        // redis version 7.2, client library version
+	ReadEvents         int64         // redis version 8.8, number of read events
+	AvgPipelineLenSum  int64         // redis version 8.8, sum of pipeline lengths
+	AvgPipelineLenCnt  int64         // redis version 8.8, count of pipeline length samples
 }
 
 type ClientInfoCmd struct {
@@ -7015,6 +7018,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.LibVer = val
 		case "io-thread":
 			info.IoThread, err = strconv.Atoi(val)
+		case "read-events":
+			info.ReadEvents, err = strconv.ParseInt(val, 10, 64)
+		case "avg-pipeline-len-sum":
+			info.AvgPipelineLenSum, err = strconv.ParseInt(val, 10, 64)
+		case "avg-pipeline-len-cnt":
+			info.AvgPipelineLenCnt, err = strconv.ParseInt(val, 10, 64)
 		default:
 			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
 		}
@@ -7055,6 +7064,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			OutputListLength:   cmd.val.OutputListLength,
 			OutputMemory:       cmd.val.OutputMemory,
 			TotalMemory:        cmd.val.TotalMemory,
+			TotalNetIn:         cmd.val.TotalNetIn,
+			TotalNetOut:        cmd.val.TotalNetOut,
+			TotalCmds:          cmd.val.TotalCmds,
 			IoThread:           cmd.val.IoThread,
 			Events:             cmd.val.Events,
 			LastCmd:            cmd.val.LastCmd,
@@ -7063,6 +7075,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			Resp:               cmd.val.Resp,
 			LibName:            cmd.val.LibName,
 			LibVer:             cmd.val.LibVer,
+			ReadEvents:         cmd.val.ReadEvents,
+			AvgPipelineLenSum:  cmd.val.AvgPipelineLenSum,
+			AvgPipelineLenCnt:  cmd.val.AvgPipelineLenCnt,
 		}
 	}
 	return &ClientInfoCmd{
@@ -8094,17 +8109,19 @@ func (cmd *GCRACmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	// Read RetryAfter (float64)
-	cmd.val.RetryAfter, err = rd.ReadFloat()
+	// Read RetryAfter (int64)
+	retryAfter, err := rd.ReadInt()
 	if err != nil {
 		return err
 	}
+	cmd.val.RetryAfter = retryAfter
 
-	// Read FullBurstAfter (float64)
-	cmd.val.FullBurstAfter, err = rd.ReadFloat()
+	// Read FullBurstAfter (int64)
+	fullBurstAfter, err := rd.ReadInt()
 	if err != nil {
 		return err
 	}
+	cmd.val.FullBurstAfter = fullBurstAfter
 
 	return nil
 }
