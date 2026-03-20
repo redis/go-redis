@@ -153,18 +153,18 @@ var _ = Describe("GCRA rate limiting", func() {
 		It("should handle large num requests", func() {
 			key := "user:heavy"
 			args := &redis.GCRAArgs{
-				MaxBurst:          5,
+				MaxBurst:          10,
 				RequestsPerPeriod: 10,
 				Period:            time.Second,
-				NumRequests:       10, // Request costs all available tokens
+				NumRequests:       10, // Request costs all available tokens (MaxBurst + 1 = 11)
 			}
 
-			// First heavy request should succeed but consume all tokens
+			// First heavy request should succeed but consume most tokens
 			result, err := client.GCRAWithArgs(ctx, key, args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Limited).To(Equal(int64(0)))
 
-			// Second request should be limited
+			// Second request should be limited (only 1 token left, need 10)
 			result, err = client.GCRAWithArgs(ctx, key, args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Limited).To(Equal(int64(1)))
