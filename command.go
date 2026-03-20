@@ -7744,6 +7744,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return hotKeysCmd.Val(), hotKeysCmd.Err()
 			}
+		case CmdTypeGCRA:
+			if gcraCmd, ok := cmd.(interface {
+				Val() *GCRAResult
+				Err() error
+			}); ok {
+				return gcraCmd.Val(), gcraCmd.Err()
+			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
 				Val() (string, []string)
