@@ -19,22 +19,22 @@ func main() {
 	// Clean up any existing keys
 	_ = rdb.FlushDB(ctx).Err()
 
-	fmt.Println("=== GCRA Rate Limiting Examples ===\n")
+	fmt.Println("=== GCRA Rate Limiting Examples ===")
 
 	// Example 1: Basic rate limiting
 	fmt.Println("Example 1: Basic rate limiting (10 requests/second, burst of 5)")
 	basicRateLimiting(ctx, rdb)
 
 	// Example 2: Handling rate limit exceeded
-	fmt.Println("\nExample 2: Handling rate limit exceeded")
+	fmt.Println("Example 2: Handling rate limit exceeded")
 	handleRateLimitExceeded(ctx, rdb)
 
 	// Example 3: Weighted requests
-	fmt.Println("\nExample 3: Weighted requests (different costs)")
+	fmt.Println("Example 3: Weighted requests (different costs)")
 	weightedRequests(ctx, rdb)
 
 	// Example 4: Multiple users with independent limits
-	fmt.Println("\nExample 4: Multiple users with independent limits")
+	fmt.Println("Example 4: Multiple users with independent limits")
 	multipleUsers(ctx, rdb)
 }
 
@@ -148,7 +148,7 @@ func multipleUsers(ctx context.Context, rdb *redis.Client) {
 	}
 
 	// Make multiple requests for one user
-	fmt.Println("\n  Making 4 requests for user:alice:")
+	fmt.Println(" Making 4 requests for user:alice:")
 	for i := 1; i <= 4; i++ {
 		result, err := rdb.GCRA(ctx, "user:alice", 2, 5, time.Second).Result()
 		if err != nil {
@@ -169,4 +169,3 @@ func multipleUsers(ctx context.Context, rdb *redis.Client) {
 	}
 	fmt.Printf("\n  user:bob still has %d requests available\n", result.AvailableRequests)
 }
-
