@@ -15,6 +15,7 @@ var _ = Describe("GCRA rate limiting", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
+		SkipBeforeRedisVersion(8.8, "GCRA command requires Redis 8.8+")
 		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
