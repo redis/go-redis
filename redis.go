@@ -252,8 +252,17 @@ func (c *baseClient) clone() *baseClient {
 	return clone
 }
 
+// cloneOpt clones c.opt while holding optLock to prevent races with initConn
+// which writes to MaintNotificationsConfig.Mode under the same lock.
+func (c *baseClient) cloneOpt() *Options {
+	c.optLock.RLock()
+	clone := c.opt.clone()
+	c.optLock.RUnlock()
+	return clone
+}
+
 func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
-	opt := c.opt.clone()
+	opt := c.cloneOpt()
 	opt.ReadTimeout = timeout
 	opt.WriteTimeout = timeout
 

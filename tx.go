@@ -24,7 +24,7 @@ type Tx struct {
 func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
-			opt:           c.opt.clone(), // Clone options to avoid sharing mutable state between transaction and parent client
+			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
 			connPool:      pool.NewStickyConnPool(c.connPool),
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
