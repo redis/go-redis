@@ -28,6 +28,11 @@ var ErrPoolTimeout = pool.ErrPoolTimeout
 // is used on a ClusterClient with keys in different slots.
 var ErrCrossSlot = proto.RedisError("CROSSSLOT Keys in request don't hash to the same slot")
 
+// ErrNoScript is returned when EVALSHA is requested for a script digest that
+// is not available in the script cache. Note that this error text is reproduced
+// literally from that used by Redis.
+var ErrNoScript = proto.RedisError("NOSCRIPT No matching script. Please use EVAL.")
+
 // HasErrorPrefix checks if the err is a Redis error and the message contains a prefix.
 func HasErrorPrefix(err error, prefix string) bool {
 	var rErr Error

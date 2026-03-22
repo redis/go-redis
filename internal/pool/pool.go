@@ -13,6 +13,38 @@ import (
 	"github.com/redis/go-redis/v9/internal/rand"
 )
 
+// Connection close reason constants for metrics.
+// These are used as the "reason" parameter in CloseConn() calls.
+const (
+	// CloseReasonStale indicates the connection was closed because it exceeded
+	// the idle timeout or max lifetime.
+	CloseReasonStale = "stale"
+
+	// CloseReasonHookError indicates the connection was closed due to an error
+	// in a pool hook (OnGet or OnPut).
+	CloseReasonHookError = "hook_error"
+
+	// CloseReasonAuthError indicates the connection was closed due to an
+	// authentication error during re-authentication.
+	CloseReasonAuthError = "auth_error"
+
+	// CloseReasonTest is used in tests when closing connections.
+	CloseReasonTest = "test"
+)
+
+// Metric state constants for connection state tracking.
+// These represent the logical state of a connection from a metrics perspective,
+// not the internal state machine state (ConnState).
+const (
+	// MetricStateIdle indicates the connection is idle in the pool,
+	// ready to be acquired.
+	MetricStateIdle = "idle"
+
+	// MetricStateUsed indicates the connection is currently being used
+	// by a client operation.
+	MetricStateUsed = "used"
+)
+
 var (
 	// ErrClosed performs any operation on the closed client will return this error.
 	ErrClosed = errors.New("redis: client is closed")
@@ -242,7 +274,7 @@ type Stats struct {
 
 type Pooler interface {
 	NewConn(context.Context) (*Conn, error)
-	CloseConn(*Conn) error
+	CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error
 
 	Get(context.Context) (*Conn, error)
 	Put(context.Context, *Conn)
@@ -293,6 +325,10 @@ type Options struct {
 	// DialerRetryTimeout is the backoff duration between retry attempts.
 	// Default: 100ms
 	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// If nil, dial retry backoff is constant and equals DialerRetryTimeout (default: 100ms).
+	DialerRetryBackoff func(attempt int) time.Duration
 
 	// Name is a unique identifier for this pool, used in metrics.
 	// Format: addr_uniqueID (e.g., "localhost:6379_a1b2c3d4")
@@ -543,7 +579,7 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 
 	// Notify metrics: new connection created and idle
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, cn, "", "idle")
+		cb(ctx, cn, "", MetricStateIdle)
 	}
 
 	return cn, nil
@@ -573,10 +609,6 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	if maxRetries <= 0 {
 		maxRetries = 5 // Default value
 	}
-	backoffDuration := p.cfg.DialerRetryTimeout
-	if backoffDuration <= 0 {
-		backoffDuration = 100 * time.Millisecond // Default value
-	}
 
 	var lastErr error
 	shouldLoop := true
@@ -604,6 +636,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 			// (not for the first attempt, do at least one)
 			// Do not sleep after the last attempt.
 			if attempt+1 < maxRetries {
+				backoffDuration := p.dialRetryBackoff(attempt)
 				select {
 				case <-ctx.Done():
 					shouldLoop = false
@@ -634,6 +667,22 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		go p.tryDial()
 	}
 	return nil, lastErr
+}
+
+func (p *ConnPool) dialRetryBackoff(attempt int) time.Duration {
+	if p.cfg.DialerRetryBackoff != nil {
+		d := p.cfg.DialerRetryBackoff(attempt)
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+
+	base := p.cfg.DialerRetryTimeout
+	if base <= 0 {
+		base = 100 * time.Millisecond
+	}
+	return base
 }
 
 // calcConnExpiresAt calculates the expiration time for a connection.
@@ -764,7 +813,8 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		if !p.isHealthyConn(cn, nowNs) {
-			_ = p.CloseConn(cn)
+			// Connection was popped from idle pool, so fromState is MetricStateIdle
+			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateIdle)
 			continue
 		}
 
@@ -775,7 +825,8 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			if hookErr != nil || !acceptConn {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
-					_ = p.CloseConn(cn)
+					// Connection was popped from idle pool, so fromState is MetricStateIdle
+					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateIdle)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
 					// Return connection to pool without freeing the turn that this Get() call holds.
@@ -791,7 +842,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 
 		// Notify metrics: connection moved from idle to used
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, "idle", "used")
+			cb(ctx, cn, MetricStateIdle, MetricStateUsed)
 		}
 
 		// Record wait time (use cached callback from above)
@@ -824,14 +875,15 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		if err != nil || !acceptConn {
 			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
-			_ = p.CloseConn(newcn)
+			// New connection was recorded as "" → MetricStateIdle in newConn, so fromState is MetricStateIdle
+			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
 			return nil, err
 		}
 	}
 
 	// Notify metrics: new connection is created and used
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, newcn, "", "used")
+		cb(ctx, newcn, "", MetricStateUsed)
 	}
 
 	// Record wait time (use cached callback from above)
@@ -1162,7 +1214,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 		// Notify metrics: connection moved from used to idle
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, "used", "idle")
+			cb(ctx, cn, MetricStateUsed, MetricStateIdle)
 		}
 	} else {
 		shouldCloseConn = true
@@ -1170,7 +1222,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 
 		// Notify metrics: connection removed (used -> nothing)
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, "used", "")
+			cb(ctx, cn, MetricStateUsed, "")
 		}
 	}
 
@@ -1214,7 +1266,7 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 
 	// Notify metrics: connection removed (assume from used state)
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, cn, "used", "")
+		cb(ctx, cn, MetricStateUsed, "")
 	}
 
 	// Record connection closed
@@ -1232,8 +1284,25 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 	p.checkMinIdleConns()
 }
 
-func (p *ConnPool) CloseConn(cn *Conn) error {
+// CloseConn closes a connection and records metrics.
+// Parameters:
+//   - ctx: context for metric callbacks (enables trace-to-metric correlation)
+//   - cn: the connection to close
+//   - reason: why the connection is being closed (use CloseReason* constants)
+//   - fromState: the metric state the connection was in (use MetricState* constants)
+func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
 	p.removeConnWithLock(cn)
+
+	// Record connection state change: connection is being removed from the specified state
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
+		cb(ctx, cn, fromState, "")
+	}
+
+	// Record connection closed metric with the specified reason
+	if cb := getMetricConnectionClosedCallback(); cb != nil {
+		cb(ctx, cn, reason, nil)
+	}
+
 	return p.closeConn(cn)
 }
 

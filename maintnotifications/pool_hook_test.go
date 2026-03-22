@@ -55,7 +55,7 @@ func (mp *mockPool) NewConn(ctx context.Context) (*pool.Conn, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (mp *mockPool) CloseConn(conn *pool.Conn) error {
+func (mp *mockPool) CloseConn(ctx context.Context, conn *pool.Conn, reason string, fromState string) error {
 	return nil
 }
 
