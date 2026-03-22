@@ -106,8 +106,9 @@ var (
 	metricConnectionCountCallback func(ctx context.Context, delta int, cn *Conn, state string, isPubSub bool)
 
 	// Global metric callback for pending requests changes (UpDownCounter)
-	// Parameters: ctx, delta (+1/-1), cn
-	metricPendingRequestsCallback func(ctx context.Context, delta int, cn *Conn)
+	// Parameters: ctx, delta (+1/-1), cn, poolName
+	// poolName is passed explicitly because we may not have a connection yet when request starts
+	metricPendingRequestsCallback func(ctx context.Context, delta int, cn *Conn, poolName string)
 
 	// errPanicInDial is returned when a panic occurs in the dial function.
 	errPanicInQueuedNewConn = errors.New("panic in queuedNewConn")
@@ -163,7 +164,8 @@ type MetricCallbacks struct {
 
 	// PendingRequests is called when pending requests count changes (UpDownCounter)
 	// delta: +1 when request starts waiting, -1 when request stops waiting
-	PendingRequests func(ctx context.Context, delta int, cn *Conn)
+	// poolName is passed explicitly because we may not have a connection yet when request starts
+	PendingRequests func(ctx context.Context, delta int, cn *Conn, poolName string)
 }
 
 // SetAllMetricCallbacks sets all metric callbacks atomically.
@@ -286,7 +288,7 @@ func getMetricConnectionCountCallback() func(ctx context.Context, delta int, cn 
 }
 
 // getMetricPendingRequestsCallback returns the metric callback for pending requests changes (UpDownCounter).
-func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn *Conn) {
+func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn *Conn, poolName string) {
 	metricCallbackMu.RLock()
 	cb := metricPendingRequestsCallback
 	metricCallbackMu.RUnlock()
@@ -785,8 +787,10 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	// Track pending requests in pool stats
 	atomic.AddUint32(&p.stats.PendingRequests, 1)
 	// Record pending request increment (UpDownCounter)
+	// Pass pool name explicitly since we don't have a connection yet
+	poolName := p.cfg.Name
 	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, 1, nil) // No connection yet, use nil
+		cb(ctx, 1, nil, poolName)
 	}
 	defer func() {
 		if err != nil {
@@ -794,7 +798,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 			// Record pending request decrement on failure
 			if cb := getMetricPendingRequestsCallback(); cb != nil {
-				cb(ctx, -1, nil)
+				cb(ctx, -1, nil, poolName)
 			}
 		}
 	}()
@@ -900,7 +904,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 		// Record pending request decrement (UpDownCounter)
 		if cb := getMetricPendingRequestsCallback(); cb != nil {
-			cb(ctx, -1, cn)
+			cb(ctx, -1, cn, poolName)
 		}
 
 		return cn, nil
@@ -928,6 +932,18 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
 			return nil, err
 		}
+
+		// Record connection creation time metric when hooks are used.
+		// When hookManager is set, ProcessOnGet initializes the connection (AUTH/HELLO),
+		// causing IsInited()=true. This means _getConn() in redis.go will take the
+		// early return path and never reach its create time recording.
+		// When hookManager is nil, _getConn() handles both initialization and create time recording.
+		if dialStartNs := newcn.GetDialStartNs(); dialStartNs > 0 {
+			if cb := GetMetricConnectionCreateTimeCallback(); cb != nil {
+				duration := time.Duration(time.Now().UnixNano() - dialStartNs)
+				cb(ctx, duration, newcn)
+			}
+		}
 	}
 
 	// Notify metrics: new connection is created and used
@@ -948,7 +964,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	atomic.AddUint32(&p.stats.PendingRequests, ^uint32(0)) // -1
 	// Record pending request decrement (UpDownCounter)
 	if cb := getMetricPendingRequestsCallback(); cb != nil {
-		cb(ctx, -1, newcn)
+		cb(ctx, -1, newcn, poolName)
 	}
 
 	return newcn, nil

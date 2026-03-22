@@ -94,7 +94,8 @@ type Recorder interface {
 
 	// RecordPendingRequests records a change in pending requests (UpDownCounter)
 	// delta: +1 when request starts waiting, -1 when request stops waiting
-	RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn)
+	// poolName is passed explicitly because we may not have a connection yet when request starts
+	RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string)
 }
 
 type PubSubPooler interface {
@@ -206,8 +207,8 @@ func SetGlobalRecorder(r Recorder) {
 		ConnectionCount: func(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
 			getRecorder().RecordConnectionCount(ctx, delta, cn, state, isPubSub)
 		},
-		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn) {
-			getRecorder().RecordPendingRequests(ctx, delta, cn)
+		PendingRequests: func(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
+			getRecorder().RecordPendingRequests(ctx, delta, cn, poolName)
 		},
 	})
 }
@@ -263,7 +264,7 @@ func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, str
 func (noopRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
 }
 func (noopRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
-func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn)               {}
+func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
 
 // RegisterPools registers connection pools with the global recorder.
 func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, addr string) {

@@ -877,10 +877,12 @@ func (r *metricsRecorder) RecordConnectionCount(
 // RecordPendingRequests records a change in pending requests (UpDownCounter).
 // Per OTel semantic conventions, db.client.connection.pending_requests is an UpDownCounter.
 // delta: +1 when request starts waiting, -1 when request stops waiting
+// poolName is passed explicitly because we may not have a connection yet when request starts
 func (r *metricsRecorder) RecordPendingRequests(
 	ctx context.Context,
 	delta int,
 	cn redis.ConnInfo,
+	poolName string,
 ) {
 	if r.connectionPendingReqs == nil {
 		return
@@ -892,19 +894,21 @@ func (r *metricsRecorder) RecordPendingRequests(
 		getLibraryVersionAttr(),
 	}
 
-	// Use pool name from connection (set when connection was created)
-	if cn != nil {
-		poolName := cn.PoolName()
-		if poolName != "" {
-			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
+	// Use explicit pool name (preferred) or fall back to connection's pool name
+	effectivePoolName := poolName
+	if effectivePoolName == "" && cn != nil {
+		effectivePoolName = cn.PoolName()
+	}
 
-			// Extract server info from pool name
-			serverAddr, serverPort, _ := parsePoolName(poolName)
-			if serverAddr != "" {
-				attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
-			}
-			attrs = addServerPortIfNonDefault(attrs, serverPort)
+	if effectivePoolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, effectivePoolName))
+
+		// Extract server info from pool name
+		serverAddr, serverPort, _ := parsePoolName(effectivePoolName)
+		if serverAddr != "" {
+			attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
 		}
+		attrs = addServerPortIfNonDefault(attrs, serverPort)
 	}
 
 	// Record the counter (delta can be +1 or -1)

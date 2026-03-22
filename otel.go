@@ -86,7 +86,8 @@ type OTelRecorder interface {
 
 	// RecordPendingRequests records a change in pending requests (UpDownCounter)
 	// delta: +1 when request starts waiting, -1 when request stops waiting
-	RecordPendingRequests(ctx context.Context, delta int, cn ConnInfo)
+	// poolName is passed explicitly because we may not have a connection yet when request starts
+	RecordPendingRequests(ctx context.Context, delta int, cn ConnInfo, poolName string)
 }
 
 // This is used for async gauge metrics that need to pull stats from pools periodically.
@@ -177,8 +178,8 @@ func (a *otelRecorderAdapter) RecordConnectionCount(ctx context.Context, delta i
 	a.recorder.RecordConnectionCount(ctx, delta, toConnInfo(cn), state, isPubSub)
 }
 
-func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn) {
-	a.recorder.RecordPendingRequests(ctx, delta, toConnInfo(cn))
+func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
+	a.recorder.RecordPendingRequests(ctx, delta, toConnInfo(cn), poolName)
 }
 
 func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {
