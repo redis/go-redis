@@ -914,32 +914,3 @@ func (r *metricsRecorder) RecordPendingRequests(
 	// Record the counter (delta can be +1 or -1)
 	r.connectionPendingReqs.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
 }
-
-// RegisterPool implements the OTelPoolRegistrar interface.
-// Note: With UpDownCounter implementation, pool registration is no longer needed
-// since metrics are recorded via callbacks at the moment of state change.
-// This method is kept for interface compatibility but is a no-op.
-func (r *metricsRecorder) RegisterPool(poolName string, pool redis.Pooler) {
-	// No-op: UpDownCounters don't need pool registry
-}
-
-// UnregisterPool implements the OTelPoolRegistrar interface.
-// Note: With UpDownCounter implementation, pool registration is no longer needed.
-// This method is kept for interface compatibility but is a no-op.
-func (r *metricsRecorder) UnregisterPool(pool redis.Pooler) {
-	// No-op: UpDownCounters don't need pool registry
-}
-
-// RegisterPubSubPool implements the OTelPoolRegistrar interface.
-// Note: With UpDownCounter implementation, pool registration is no longer needed.
-// This method is kept for interface compatibility but is a no-op.
-func (r *metricsRecorder) RegisterPubSubPool(poolName string, pool redis.PubSubPooler) {
-	// No-op: UpDownCounters don't need pool registry
-}
-
-// UnregisterPubSubPool implements the OTelPoolRegistrar interface.
-// Note: With UpDownCounter implementation, pool registration is no longer needed.
-// This method is kept for interface compatibility but is a no-op.
-func (r *metricsRecorder) UnregisterPubSubPool(pool redis.PubSubPooler) {
-	// No-op: UpDownCounters don't need pool registry
-}
