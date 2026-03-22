@@ -242,6 +242,18 @@ func cmdsFirstErr(cmds []Cmder) error {
 	return nil
 }
 
+// cmdsContainNoRetry returns true if any command in the slice has NoRetry() == true.
+// If a pipeline contains a non-retryable command (e.g., RawWriteToCmd), the entire
+// pipeline must not be retried to prevent data corruption from partial writes.
+func cmdsContainNoRetry(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if cmd.NoRetry() {
+			return true
+		}
+	}
+	return false
+}
+
 func writeCmds(wr *proto.Writer, cmds []Cmder) error {
 	for _, cmd := range cmds {
 		if err := writeCmd(wr, cmd); err != nil {

@@ -1711,7 +1711,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 		if isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
 		}
-		if shouldRetry(err, true) {
+		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
 		setCmdsErr(cmds, err)
@@ -1747,7 +1747,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 
 		if !isRedisError(err) {
-			if shouldRetry(err, true) {
+			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			}
 			setCmdsErr(cmds[i+1:], err)
@@ -1755,7 +1755,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 	}
 
-	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) {
+	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		return err
 	}
@@ -1958,7 +1958,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
-		if shouldRetry(err, true) {
+		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
 		setCmdsErr(cmds, err)
