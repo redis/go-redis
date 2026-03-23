@@ -5,10 +5,11 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -651,11 +652,8 @@ func (o *queryOptions) remaining() []string {
 	if len(o.q) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(o.q))
-	for k := range o.q {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Collect(maps.Keys(o.q))
+	slices.Sort(keys)
 	return keys
 }
 

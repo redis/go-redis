@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -791,20 +793,6 @@ type clusterSlot struct {
 	nodes []*clusterNode
 }
 
-type clusterSlotSlice []*clusterSlot
-
-func (p clusterSlotSlice) Len() int {
-	return len(p)
-}
-
-func (p clusterSlotSlice) Less(i, j int) bool {
-	return p[i].start < p[j].start
-}
-
-func (p clusterSlotSlice) Swap(i, j int) {
-	p[i], p[j] = p[j], p[i]
-}
-
 type clusterState struct {
 	nodes   *clusterNodes
 	Masters []*clusterNode
@@ -863,7 +851,9 @@ func newClusterState(
 		})
 	}
 
-	sort.Sort(clusterSlotSlice(c.slots))
+	slices.SortFunc(c.slots, func(a, b *clusterSlot) int {
+		return cmp.Compare(a.start, b.start)
+	})
 
 	time.AfterFunc(time.Minute, func() {
 		nodes.GC(c.generation)

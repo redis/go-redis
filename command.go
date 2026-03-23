@@ -2218,10 +2218,7 @@ func (cmd *XMessageSliceCmd) Clone() Cmder {
 				ID: msg.ID,
 			}
 			if msg.Values != nil {
-				val[i].Values = make(map[string]interface{}, len(msg.Values))
-				for k, v := range msg.Values {
-					val[i].Values[k] = v
-				}
+				val[i].Values = maps.Clone(msg.Values)
 			}
 		}
 	}
