@@ -13,7 +13,7 @@ inputs:
   ref:
     description: 'Branch to checkout'
     required: false
-  client-libs-test-image:
+  client-libs-test-image-tag:
     description: 'Client libs test image tag'
     required: false
 runs:
@@ -33,7 +33,7 @@ runs:
     - name: Setup Test environment
       env:
         REDIS_VERSION: ${{ inputs.redis-version }}
-        CLIENT_LIBS_TEST_IMAGE: ${{ inputs.client-libs-test-image }}
+        CLIENT_LIBS_TEST_IMAGE_TAG: ${{ inputs.client-libs-test-image-tag }}
       run: |
         set -e
 
@@ -43,8 +43,8 @@ runs:
           echo "REDIS_VERSION=${REDIS_VERSION}" >> "$GITHUB_ENV"
         fi
 
-        if [[ -n "$CLIENT_LIBS_TEST_IMAGE" ]]; then
-          echo "CLIENT_LIBS_TEST_IMAGE=${CLIENT_LIBS_TEST_IMAGE}" >> "$GITHUB_ENV"
+        if [[ -n "$CLIENT_LIBS_TEST_IMAGE_TAG" ]]; then
+          echo "CLIENT_LIBS_TEST_IMAGE=redislabs/client-libs-test:${CLIENT_LIBS_TEST_IMAGE_TAG}" >> "$GITHUB_ENV"
         else
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
