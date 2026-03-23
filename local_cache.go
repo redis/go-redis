@@ -2,7 +2,9 @@ package redis
 
 import (
 	"container/list"
+	"context"
 	"sync"
+	"time"
 )
 
 // CacheEntryState tracks the lifecycle of a local cache entry.
@@ -24,6 +26,7 @@ type CacheEntry struct {
 
 	token      uint64
 	sizeBytes  int64
+	reservedAt time.Time
 	waitCh     chan struct{}
 	waitClosed bool
 	lruElem    *list.Element
@@ -40,11 +43,15 @@ type CacheConfig struct {
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
 	Sizer CacheSizer
+	// StaleTimeout is the duration after which an IN_PROGRESS placeholder is
+	// considered stale and eligible for takeover by a new Reserve call.
+	// If zero, defaults to defaultStaleTimeout (5s).
+	StaleTimeout time.Duration
 }
 
 // Cache is a thread-safe local cache used by client-side caching logic.
 type Cache interface {
-	Get(cacheKey string) ([]byte, bool)
+	Get(ctx context.Context, cacheKey string) ([]byte, bool)
 	Set(cacheKey string, redisKeys []string, value []byte) bool
 	Reserve(cacheKey string, redisKeys []string) (token uint64, shouldFetch bool)
 	Fulfill(cacheKey string, token uint64, value []byte) bool
@@ -57,11 +64,18 @@ type Cache interface {
 	MemoryUsage() int64
 }
 
+const defaultStaleTimeout = 5 * time.Second
+
 // NewLocalCache creates a thread-safe local cache with strict LRU eviction.
 func NewLocalCache(cfg CacheConfig) Cache {
 	sizer := cfg.Sizer
 	if sizer == nil {
 		sizer = defaultCacheSizer
+	}
+
+	staleTimeout := cfg.StaleTimeout
+	if staleTimeout <= 0 {
+		staleTimeout = defaultStaleTimeout
 	}
 
 	return &localCache{
@@ -71,6 +85,7 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		maxEntries:     cfg.MaxEntries,
 		maxMemoryBytes: cfg.MaxMemoryBytes,
 		sizer:          sizer,
+		staleTimeout:   staleTimeout,
 	}
 }
 
@@ -88,6 +103,7 @@ type localCache struct {
 	maxEntries     int
 	maxMemoryBytes int64
 	sizer          CacheSizer
+	staleTimeout   time.Duration
 	nextToken      uint64
 }
 
@@ -104,7 +120,10 @@ func defaultCacheSizer(cacheKey string, redisKeys []string, value []byte) int64 
 	return size
 }
 
-func (c *localCache) Get(cacheKey string) ([]byte, bool) {
+func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for {
 		c.mu.RLock()
 		entry, ok := c.entries[cacheKey]
@@ -118,7 +137,11 @@ func (c *localCache) Get(cacheKey string) ([]byte, bool) {
 			c.mu.RUnlock()
 			// Wait for the in-flight fetch to either publish (Fulfill) or abort (Cancel/Delete/Flush).
 			if waitCh != nil {
-				<-waitCh
+				select {
+				case <-waitCh:
+				case <-ctx.Done():
+					return nil, false
+				}
 			}
 			continue
 		}
@@ -181,7 +204,14 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 			c.touchEntryLocked(entry)
 			return 0, false
 		case CacheEntryInProgress:
-			return entry.token, false
+			if time.Since(entry.reservedAt) < c.staleTimeout {
+				// Active fetch in progress — join the wait, don't take over.
+				return 0, false
+			}
+			// Stale placeholder: the original fetcher likely died without
+			// calling Fulfill/Cancel.  Remove the old entry (unblocking any
+			// waiters) and fall through to create a fresh one.
+			c.removeEntryLocked(cacheKey)
 		default:
 			return 0, false
 		}
@@ -191,11 +221,12 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 	token = c.nextToken
 
 	entry := &CacheEntry{
-		CacheKey:  cacheKey,
-		RedisKeys: keysCopy,
-		State:     CacheEntryInProgress,
-		token:     token,
-		waitCh:    make(chan struct{}),
+		CacheKey:   cacheKey,
+		RedisKeys:  keysCopy,
+		State:      CacheEntryInProgress,
+		token:      token,
+		reservedAt: time.Now(),
+		waitCh:     make(chan struct{}),
 	}
 	entry.sizeBytes = c.computeSizeLocked(cacheKey, keysCopy, nil)
 
