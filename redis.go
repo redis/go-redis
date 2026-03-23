@@ -716,7 +716,9 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		if cn != nil {
 			lastConn = cn
 		}
-		if err == nil || !retry {
+		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
+		// which writes directly to an io.Writer and cannot undo partial writes)
+		if err == nil || !retry || cmd.NoRetry() {
 			// Record total operation duration
 			if opDurationCallback != nil {
 				operationDuration := time.Since(operationStart)
@@ -1041,7 +1043,10 @@ func (c *baseClient) generalProcessPipeline(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+		// Don't retry if any command in the pipeline explicitly disables retries
+		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
+		// undo partial writes on retry)
+		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
