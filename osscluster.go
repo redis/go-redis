@@ -1145,7 +1145,11 @@ type ClusterClient struct {
 
 // NewClusterClient returns a Redis Cluster client as described in
 // https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec.
+// Passing nil ClusterOptions will cause a panic.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
+	if opt == nil {
+		panic("redis: NewClusterClient nil options")
+	}
 	opt.init()
 
 	c := &ClusterClient{
@@ -1190,7 +1194,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *ClusterOptions that were used to create the client.
+// Any alteration of the returned *ClusterOptions may result in undefined behaviour.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
 }
