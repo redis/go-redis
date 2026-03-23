@@ -100,6 +100,10 @@ type FailoverOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// See Options.DialerRetryBackoff for details.
+	DialerRetryBackoff func(attempt int) time.Duration
+
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
 	ContextTimeoutEnabled bool
@@ -197,6 +201,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -251,6 +256,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -311,6 +317,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 

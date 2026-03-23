@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"io"
 )
 
@@ -67,7 +68,7 @@ func (s *Script) EvalShaRO(ctx context.Context, c Scripter, keys []string, args 
 // it is retried using EVAL.
 func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalSha(ctx, c, keys, args...)
-	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
+	if errors.Is(r.Err(), ErrNoScript) {
 		return s.Eval(ctx, c, keys, args...)
 	}
 	return r
@@ -77,7 +78,7 @@ func (s *Script) Run(ctx context.Context, c Scripter, keys []string, args ...int
 // it is retried using EVAL_RO.
 func (s *Script) RunRO(ctx context.Context, c Scripter, keys []string, args ...interface{}) *Cmd {
 	r := s.EvalShaRO(ctx, c, keys, args...)
-	if HasErrorPrefix(r.Err(), "NOSCRIPT") {
+	if errors.Is(r.Err(), ErrNoScript) {
 		return s.EvalRO(ctx, c, keys, args...)
 	}
 	return r

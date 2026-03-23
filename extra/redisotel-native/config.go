@@ -156,22 +156,27 @@ type Config struct {
 // NewConfig creates a new Config with default values.
 // Default configuration:
 // - Enabled: false (must explicitly enable)
-// - MetricGroups: connection-basic + resiliency
+// - MetricGroups: all metric groups (command, connection, resiliency, pubsub, stream)
 // - HistogramAggregation: explicit bucket
 // - Buckets: 0.1ms to 10s (suitable for Redis operations)
 //
 // Example:
 //
 //	config := redisotel.NewConfig().
+//	    WithEnabled(true)
+//
+// To disable specific metric groups, use WithMetricGroups:
+//
+//	config := redisotel.NewConfig().
 //	    WithEnabled(true).
-//	    WithMetricGroups(redisotel.MetricGroupAll)
+//	    WithMetricGroups(redisotel.MetricGroupFlagConnectionBasic | redisotel.MetricGroupFlagResiliency)
 func NewConfig() *Config {
 	return &Config{
 		Enabled:       false,
 		MeterProvider: nil, // Will use global otel.GetMeterProvider() if nil
 
-		// Default metric groups: connection-basic + resiliency
-		MetricGroups: MetricGroupFlagConnectionBasic | MetricGroupFlagResiliency,
+		// Default metric groups: all groups enabled for comprehensive observability
+		MetricGroups: MetricGroupAll,
 
 		// No command filtering by default
 		IncludeCommands: nil,

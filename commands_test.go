@@ -2,6 +2,8 @@ package redis_test
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -652,6 +654,16 @@ var _ = Describe("Commands", func() {
 			slaveOf = client.SlaveOf(ctx, "NO", "ONE")
 			Expect(slaveOf.Err()).NotTo(HaveOccurred())
 			Expect(slaveOf.Val()).To(Equal("OK"))
+		})
+
+		It("should ReplicaOf", Label("NonRedisEnterprise"), func() {
+			replicaOf := client.ReplicaOf(ctx, "localhost", "8888")
+			Expect(replicaOf.Err()).NotTo(HaveOccurred())
+			Expect(replicaOf.Val()).To(Equal("OK"))
+
+			replicaOf = client.ReplicaOf(ctx, "NO", "ONE")
+			Expect(replicaOf.Err()).NotTo(HaveOccurred())
+			Expect(replicaOf.Val()).To(Equal("OK"))
 		})
 
 		It("should Time", func() {
@@ -8638,6 +8650,21 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(BeEmpty())
 		})
+
+		It("propagates NOSCRIPT errors on EVALSHA of an unknown digest", func() {
+			digest := make([]byte, 32)
+			_, err := rand.Read(digest)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.EvalSha(
+				ctx,
+				fmt.Sprintf("%x", sha1.Sum(digest)),
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(redis.ErrNoScript))
+		})
 	})
 
 	Describe("EvalRO", func() {
@@ -8671,6 +8698,21 @@ var _ = Describe("Commands", func() {
 			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(BeEmpty())
+		})
+
+		It("propagates NOSCRIPT errors on EVALSHA_RO of an unknown digest", func() {
+			digest := make([]byte, 32)
+			_, err := rand.Read(digest)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = client.EvalShaRO(
+				ctx,
+				fmt.Sprintf("%x", sha1.Sum(digest)),
+				[]string{},
+				nil,
+			).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(redis.ErrNoScript))
 		})
 	})
 

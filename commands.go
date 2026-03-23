@@ -215,6 +215,7 @@ type Cmdable interface {
 	ShutdownSave(ctx context.Context) *StatusCmd
 	ShutdownNoSave(ctx context.Context) *StatusCmd
 	SlaveOf(ctx context.Context, host, port string) *StatusCmd
+	ReplicaOf(ctx context.Context, host, port string) *StatusCmd
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogLen(ctx context.Context) *IntCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
@@ -444,6 +445,20 @@ func (c cmdable) Ping(ctx context.Context) *StatusCmd {
 
 func (c cmdable) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// DoRaw executes a command and returns the raw RESP protocol bytes without parsing.
+func (c cmdable) DoRaw(ctx context.Context, args ...interface{}) *RawCmd {
+	cmd := NewRawCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// DoRawWriteTo executes a command and streams raw RESP bytes directly to w without intermediate allocations.
+func (c cmdable) DoRawWriteTo(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	cmd := NewRawWriteToCmd(ctx, w, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -678,6 +693,13 @@ func (c cmdable) ShutdownNoSave(ctx context.Context) *StatusCmd {
 // Deprecated: Use ReplicaOf instead as of Redis 5.0.0.
 func (c cmdable) SlaveOf(ctx context.Context, host, port string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "slaveof", host, port)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// ReplicaOf sets a Redis server as a replica of another, or promotes it to being a master.
+func (c cmdable) ReplicaOf(ctx context.Context, host, port string) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "replicaof", host, port)
 	_ = c(ctx, cmd)
 	return cmd
 }
