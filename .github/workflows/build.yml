@@ -2,11 +2,9 @@ name: Go
 
 on:
   push:
-    branches: [master, v9, 'v9.*']
+    branches: [master, v9, 'v9.*', 'RED-187316*']
   pull_request:
     branches: [master, v9, v9.7, v9.8, 'ndyakov/**', 'ofekshenawa/**', 'ce/**']
-  workflow_dispatch:
-
 
 permissions:
   contents: read
@@ -20,13 +18,8 @@ jobs:
         matrix:
           redis-version:
             - "8.6.x" # Redis CE 8.6
-            - "8.4.x" # Redis CE 8.4
-            - "8.2.x" # Redis CE 8.2
-            - "8.0.x" # Redis CE 8.0
           go-version:
             - "1.24.x"
-            - oldstable
-            - stable
 
     steps:
       - name: Run tests
