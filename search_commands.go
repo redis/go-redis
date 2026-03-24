@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -835,6 +836,7 @@ func (cmd *AggregateCmd) readReply(rd *proto.Reader) (err error) {
 	if err != nil {
 		return err
 	}
+	cmd.rawVal = data // Store raw value for debugging
 	if dataSlice, ok := data.([]interface{}); ok {
 		cmd.val, err = ProcessAggregateResult(dataSlice)
 		return err
@@ -1583,15 +1585,113 @@ func parseFTAttributeFromMap(attrMap map[interface{}]interface{}) FTAttribute {
 	return att
 }
 
+// getMapStringKey extracts a string value from a map with interface{} keys
+func getMapStringKey(m map[interface{}]interface{}, key string) interface{} {
+	if v, ok := m[key]; ok {
+		return v
+	}
+	return nil
+}
+
+// parseIndexErrorsRESP3 parses Index Errors from RESP3 map format
+func parseIndexErrorsRESP3(m map[interface{}]interface{}) IndexErrors {
+	return IndexErrors{
+		IndexingFailures:     internal.ToInteger(getMapStringKey(m, "indexing failures")),
+		LastIndexingError:    internal.ToString(getMapStringKey(m, "last indexing error")),
+		LastIndexingErrorKey: internal.ToString(getMapStringKey(m, "last indexing error key")),
+	}
+}
+
+// parseCursorStatsRESP3 parses cursor_stats from RESP3 map format
+func parseCursorStatsRESP3(m map[interface{}]interface{}) CursorStats {
+	return CursorStats{
+		GlobalIdle:    internal.ToInteger(getMapStringKey(m, "global_idle")),
+		GlobalTotal:   internal.ToInteger(getMapStringKey(m, "global_total")),
+		IndexCapacity: internal.ToInteger(getMapStringKey(m, "index_capacity")),
+		IndexTotal:    internal.ToInteger(getMapStringKey(m, "index_total")),
+	}
+}
+
+// parseGCStatsRESP3 parses gc_stats from RESP3 map format
+func parseGCStatsRESP3(m map[interface{}]interface{}) GCStats {
+	// Handle average_cycle_time_ms which can be a float64 (including NaN) or string
+	avgCycleTime := ""
+	if v := getMapStringKey(m, "average_cycle_time_ms"); v != nil {
+		switch val := v.(type) {
+		case string:
+			// Normalize to lowercase for consistency with RESP2
+			avgCycleTime = strings.ToLower(val)
+		case float64:
+			avgCycleTime = internal.FormatFloat(val)
+		}
+	}
+
+	return GCStats{
+		BytesCollected:       internal.ToInteger(getMapStringKey(m, "bytes_collected")),
+		TotalMsRun:           internal.ToInteger(getMapStringKey(m, "total_ms_run")),
+		TotalCycles:          internal.ToInteger(getMapStringKey(m, "total_cycles")),
+		AverageCycleTimeMs:   avgCycleTime,
+		LastRunTimeMs:        internal.ToInteger(getMapStringKey(m, "last_run_time_ms")),
+		GCNumericTreesMissed: internal.ToInteger(getMapStringKey(m, "gc_numeric_trees_missed")),
+		GCBlocksDenied:       internal.ToInteger(getMapStringKey(m, "gc_blocks_denied")),
+	}
+}
+
+// parseIndexDefinitionRESP3 parses index_definition from RESP3 map format
+func parseIndexDefinitionRESP3(m map[interface{}]interface{}) IndexDefinition {
+	def := IndexDefinition{
+		KeyType:      internal.ToString(getMapStringKey(m, "key_type")),
+		DefaultScore: internal.ToFloat(getMapStringKey(m, "default_score")),
+	}
+	if prefixes, ok := getMapStringKey(m, "prefixes").([]interface{}); ok {
+		def.Prefixes = internal.ToStringSlice(prefixes)
+	}
+	return def
+}
+
+// parseDialectStatsRESP3 parses dialect_stats from RESP3 map format
+func parseDialectStatsRESP3(m map[interface{}]interface{}) map[string]int {
+	result := make(map[string]int)
+	for k, v := range m {
+		if kStr, ok := k.(string); ok {
+			result[kStr] = internal.ToInteger(v)
+		}
+	}
+	return result
+}
+
+// parseFieldStatisticsRESP3 parses field statistics from RESP3 format
+func parseFieldStatisticsRESP3(stats []interface{}) []FieldStatistic {
+	result := make([]FieldStatistic, 0, len(stats))
+	for _, stat := range stats {
+		if statMap, ok := stat.(map[interface{}]interface{}); ok {
+			fs := FieldStatistic{
+				Identifier: internal.ToString(getMapStringKey(statMap, "identifier")),
+				Attribute:  internal.ToString(getMapStringKey(statMap, "attribute")),
+			}
+			if indexErrors, ok := getMapStringKey(statMap, "Index Errors").(map[interface{}]interface{}); ok {
+				fs.IndexErrors = parseIndexErrorsRESP3(indexErrors)
+			}
+			result = append(result, fs)
+		}
+	}
+	return result
+}
+
 func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	var ftInfo FTInfoResult
-	// Manually parse each field from the map
+
+	// Parse Index Errors - handle both RESP2 (array) and RESP3 (map) formats
 	if indexErrors, ok := data["Index Errors"].([]interface{}); ok {
+		// RESP2 format: array with key-value pairs
 		ftInfo.IndexErrors = IndexErrors{
 			IndexingFailures:     internal.ToInteger(indexErrors[1]),
 			LastIndexingError:    internal.ToString(indexErrors[3]),
 			LastIndexingErrorKey: internal.ToString(indexErrors[5]),
 		}
+	} else if indexErrors, ok := data["Index Errors"].(map[interface{}]interface{}); ok {
+		// RESP3 format: map
+		ftInfo.IndexErrors = parseIndexErrorsRESP3(indexErrors)
 	}
 
 	if attributes, ok := data["attributes"].([]interface{}); ok {
@@ -1694,27 +1794,39 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	ftInfo.BytesPerRecordAvg = internal.ToString(data["bytes_per_record_avg"])
 	ftInfo.Cleaning = internal.ToInteger(data["cleaning"])
 
+	// Parse cursor_stats - handle both RESP2 (array) and RESP3 (map) formats
 	if cursorStats, ok := data["cursor_stats"].([]interface{}); ok {
+		// RESP2 format
 		ftInfo.CursorStats = CursorStats{
 			GlobalIdle:    internal.ToInteger(cursorStats[1]),
 			GlobalTotal:   internal.ToInteger(cursorStats[3]),
 			IndexCapacity: internal.ToInteger(cursorStats[5]),
 			IndexTotal:    internal.ToInteger(cursorStats[7]),
 		}
+	} else if cursorStats, ok := data["cursor_stats"].(map[interface{}]interface{}); ok {
+		// RESP3 format
+		ftInfo.CursorStats = parseCursorStatsRESP3(cursorStats)
 	}
 
+	// Parse dialect_stats - handle both RESP2 (array) and RESP3 (map) formats
 	if dialectStats, ok := data["dialect_stats"].([]interface{}); ok {
+		// RESP2 format
 		ftInfo.DialectStats = make(map[string]int)
 		for i := 0; i < len(dialectStats); i += 2 {
 			ftInfo.DialectStats[internal.ToString(dialectStats[i])] = internal.ToInteger(dialectStats[i+1])
 		}
+	} else if dialectStats, ok := data["dialect_stats"].(map[interface{}]interface{}); ok {
+		// RESP3 format
+		ftInfo.DialectStats = parseDialectStatsRESP3(dialectStats)
 	}
 
 	ftInfo.DocTableSizeMB = internal.ToFloat(data["doc_table_size_mb"])
 
+	// Parse field statistics - handle both RESP2 and RESP3 formats
 	if fieldStats, ok := data["field statistics"].([]interface{}); ok {
 		for _, stat := range fieldStats {
 			if statMap, ok := stat.([]interface{}); ok {
+				// RESP2 format
 				ftInfo.FieldStatistics = append(ftInfo.FieldStatistics, FieldStatistic{
 					Identifier: internal.ToString(statMap[1]),
 					Attribute:  internal.ToString(statMap[3]),
@@ -1724,11 +1836,23 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 						LastIndexingErrorKey: internal.ToString(statMap[5].([]interface{})[5]),
 					},
 				})
+			} else if statMap, ok := stat.(map[interface{}]interface{}); ok {
+				// RESP3 format
+				fs := FieldStatistic{
+					Identifier: internal.ToString(getMapStringKey(statMap, "identifier")),
+					Attribute:  internal.ToString(getMapStringKey(statMap, "attribute")),
+				}
+				if indexErrors, ok := getMapStringKey(statMap, "Index Errors").(map[interface{}]interface{}); ok {
+					fs.IndexErrors = parseIndexErrorsRESP3(indexErrors)
+				}
+				ftInfo.FieldStatistics = append(ftInfo.FieldStatistics, fs)
 			}
 		}
 	}
 
+	// Parse gc_stats - handle both RESP2 (array) and RESP3 (map) formats
 	if gcStats, ok := data["gc_stats"].([]interface{}); ok {
+		// RESP2 format
 		ftInfo.GCStats = GCStats{}
 		for i := 0; i < len(gcStats); i += 2 {
 			if internal.ToLower(internal.ToString(gcStats[i])) == "bytes_collected" {
@@ -1760,21 +1884,31 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 				continue
 			}
 		}
+	} else if gcStats, ok := data["gc_stats"].(map[interface{}]interface{}); ok {
+		// RESP3 format
+		ftInfo.GCStats = parseGCStatsRESP3(gcStats)
 	}
 
 	ftInfo.GeoshapesSzMB = internal.ToFloat(data["geoshapes_sz_mb"])
 	ftInfo.HashIndexingFailures = internal.ToInteger(data["hash_indexing_failures"])
 
+	// Parse index_definition - handle both RESP2 (array) and RESP3 (map) formats
 	if indexDef, ok := data["index_definition"].([]interface{}); ok {
+		// RESP2 format
 		ftInfo.IndexDefinition = IndexDefinition{
 			KeyType:      internal.ToString(indexDef[1]),
 			Prefixes:     internal.ToStringSlice(indexDef[3]),
 			DefaultScore: internal.ToFloat(indexDef[5]),
 		}
+	} else if indexDef, ok := data["index_definition"].(map[interface{}]interface{}); ok {
+		// RESP3 format
+		ftInfo.IndexDefinition = parseIndexDefinitionRESP3(indexDef)
 	}
 
 	ftInfo.IndexName = internal.ToString(data["index_name"])
-	ftInfo.IndexOptions = internal.ToStringSlice(data["index_options"].([]interface{}))
+	if indexOptions, ok := data["index_options"].([]interface{}); ok {
+		ftInfo.IndexOptions = internal.ToStringSlice(indexOptions)
+	}
 	ftInfo.Indexing = internal.ToInteger(data["indexing"])
 	ftInfo.InvertedSzMB = internal.ToFloat(data["inverted_sz_mb"])
 	ftInfo.KeyTableSizeMB = internal.ToFloat(data["key_table_size_mb"])

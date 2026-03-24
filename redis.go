@@ -26,6 +26,14 @@ type Scanner = hscan.Scanner
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
+// String representations of special float values.
+// Values are lowercase for consistency with Redis RESP2 protocol responses.
+const (
+	NaN  = internal.NaN  // Not a Number
+	Inf  = internal.Inf  // Positive infinity
+	NInf = internal.NInf // Negative infinity
+)
+
 // SetLogger set custom log
 // Use with VoidLogger to disable logging.
 // If logger is nil, the call is ignored and the existing logger is kept.
