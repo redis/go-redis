@@ -1,5 +1,5 @@
 GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
-REDIS_VERSION ?= 8.6
+REDIS_VERSION ?= 8.8
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
 CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:custom-21860421418-debian-amd64
