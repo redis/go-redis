@@ -155,6 +155,7 @@ const (
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
 	CmdTypeHotKeys
+	CmdTypeGCRA
 )
 
 type (
@@ -6973,6 +6974,9 @@ type ClientInfo struct {
 	Resp               int           // redis version 7.0, client RESP protocol version
 	LibName            string        // redis version 7.2, client library name
 	LibVer             string        // redis version 7.2, client library version
+	ReadEvents         int64         // redis version 8.8, number of read events
+	AvgPipelineLenSum  int64         // redis version 8.8, sum of pipeline lengths
+	AvgPipelineLenCnt  int64         // redis version 8.8, count of pipeline length samples
 }
 
 type ClientInfoCmd struct {
@@ -7153,6 +7157,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.LibVer = val
 		case "io-thread":
 			info.IoThread, err = strconv.Atoi(val)
+		case "read-events":
+			info.ReadEvents, err = strconv.ParseInt(val, 10, 64)
+		case "avg-pipeline-len-sum":
+			info.AvgPipelineLenSum, err = strconv.ParseInt(val, 10, 64)
+		case "avg-pipeline-len-cnt":
+			info.AvgPipelineLenCnt, err = strconv.ParseInt(val, 10, 64)
 		default:
 			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
 		}
@@ -7193,6 +7203,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			OutputListLength:   cmd.val.OutputListLength,
 			OutputMemory:       cmd.val.OutputMemory,
 			TotalMemory:        cmd.val.TotalMemory,
+			TotalNetIn:         cmd.val.TotalNetIn,
+			TotalNetOut:        cmd.val.TotalNetOut,
+			TotalCmds:          cmd.val.TotalCmds,
 			IoThread:           cmd.val.IoThread,
 			Events:             cmd.val.Events,
 			LastCmd:            cmd.val.LastCmd,
@@ -7201,6 +7214,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			Resp:               cmd.val.Resp,
 			LibName:            cmd.val.LibName,
 			LibVer:             cmd.val.LibVer,
+			ReadEvents:         cmd.val.ReadEvents,
+			AvgPipelineLenSum:  cmd.val.AvgPipelineLenSum,
+			AvgPipelineLenCnt:  cmd.val.AvgPipelineLenCnt,
 		}
 	}
 	return &ClientInfoCmd{
@@ -7867,6 +7883,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return hotKeysCmd.Val(), hotKeysCmd.Err()
 			}
+		case CmdTypeGCRA:
+			if gcraCmd, ok := cmd.(interface {
+				Val() *GCRAResult
+				Err() error
+			}); ok {
+				return gcraCmd.Val(), gcraCmd.Err()
+			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
 				Val() (string, []string)
@@ -8164,4 +8187,99 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 
 	// If we can't get the command type, return nil
 	return nil, nil
+}
+
+//------------------------------------------------------------------------------
+
+// GCRACmd represents the result of a GCRA rate limiting command.
+type GCRACmd struct {
+	baseCmd
+
+	val *GCRAResult
+}
+
+var _ Cmder = (*GCRACmd)(nil)
+
+func NewGCRACmd(ctx context.Context, args ...interface{}) *GCRACmd {
+	return &GCRACmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGCRA,
+		},
+	}
+}
+
+func (cmd *GCRACmd) SetVal(val *GCRAResult) {
+	cmd.val = val
+}
+
+func (cmd *GCRACmd) Val() *GCRAResult {
+	return cmd.val
+}
+
+func (cmd *GCRACmd) Result() (*GCRAResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *GCRACmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *GCRACmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n != 5 {
+		return fmt.Errorf("redis: GCRA reply expected 5 elements, got %d", n)
+	}
+
+	cmd.val = &GCRAResult{}
+
+	// Read Limited (int64)
+	cmd.val.Limited, err = rd.ReadInt()
+	if err != nil {
+		return err
+	}
+
+	// Read MaxRequests (int64)
+	cmd.val.MaxRequests, err = rd.ReadInt()
+	if err != nil {
+		return err
+	}
+
+	// Read AvailableRequests (int64)
+	cmd.val.AvailableRequests, err = rd.ReadInt()
+	if err != nil {
+		return err
+	}
+
+	// Read RetryAfter (int64)
+	retryAfter, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	cmd.val.RetryAfter = retryAfter
+
+	// Read FullBurstAfter (int64)
+	fullBurstAfter, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	cmd.val.FullBurstAfter = fullBurstAfter
+
+	return nil
+}
+
+func (cmd *GCRACmd) Clone() Cmder {
+	var val *GCRAResult
+	if cmd.val != nil {
+		v := *cmd.val
+		val = &v
+	}
+	return &GCRACmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
 }

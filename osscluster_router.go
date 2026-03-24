@@ -943,6 +943,12 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 				c.SetVal(v)
 			}
 		}
+	case CmdTypeGCRA:
+		if c, ok := cmd.(*GCRACmd); ok {
+			if v, ok := value.(*GCRAResult); ok {
+				c.SetVal(v)
+			}
+		}
 	default:
 		// Fallback to reflection for unknown types
 		return c.setCommandValueReflection(cmd, value)
