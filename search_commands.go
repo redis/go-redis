@@ -449,6 +449,8 @@ type FTSynDumpCmd struct {
 	val []FTSynDumpResult
 }
 
+// FTAggregateResult represents the result of an aggregate operation
+// NOTE: For RESP3 Total is not reliable (before Redis 8.8)
 type FTAggregateResult struct {
 	Total    int
 	Rows     []AggregateRow
