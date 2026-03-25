@@ -22,8 +22,12 @@ type VectorSetCmdable interface {
 	VRem(ctx context.Context, key, element string) *BoolCmd
 	VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd
 	VClearAttributes(ctx context.Context, key, element string) *BoolCmd
-	VSim(ctx context.Context, key string, val Vector) *VSimCmd
-	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *VSimCmd
+	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
+	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
+	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
+	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorScoreSliceCmd
+	VSimWithArgsWithAttribs(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorAttribSliceCmd
+	VSimWithArgsWithScoresWithAttribs(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorScoreAttribSliceCmd
 	VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd
 	VIsMember(ctx context.Context, key, element string) *BoolCmd
 }
@@ -78,23 +82,15 @@ type VectorScore struct {
 	Score float64
 }
 
-type VSimResult struct {
+type VectorAttrib struct {
 	Name    string
-	Score   *float64
 	Attribs *string
 }
 
-type VSimArgs struct {
-	WithScores  bool
-	WithAttribs bool
-
-	Count    int64
-	EF       int64
-	Filter   string
-	FilterEF int64
-	Truth    bool
-	NoThread bool
-	Epsilon  float64
+type VectorScoreAttrib struct {
+	Name    string
+	Score   float64
+	Attribs *string
 }
 
 // `VADD key (FP32 | VALUES num) vector element`
@@ -289,21 +285,27 @@ func (c cmdable) VClearAttributes(ctx context.Context, key, element string) *Boo
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element)`
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSim(ctx context.Context, key string, val Vector) *VSimCmd {
-	args := []any{"vsim", key}
-	args = append(args, val.Value()...)
-	cmd := NewVSimCmd(ctx, &VSimArgs{}, args...)
-	_ = c(ctx, cmd)
-	return cmd
+func (c cmdable) VSim(ctx context.Context, key string, val Vector) *StringSliceCmd {
+	return c.VSimWithArgs(ctx, key, val, &VSimArgs{})
+}
+
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) WITHSCORES`
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd {
+	return c.VSimWithArgsWithScores(ctx, key, val, &VSimArgs{})
+}
+
+type VSimArgs struct {
+	Count    int64
+	EF       int64
+	Filter   string
+	FilterEF int64
+	Truth    bool
+	NoThread bool
+	Epsilon  float64
 }
 
 func (v VSimArgs) appendArgs(args []any) []any {
-	if v.WithScores {
-		args = append(args, "withscores")
-	}
-	if v.WithAttribs {
-		args = append(args, "withattribs")
-	}
 	if v.Count > 0 {
 		args = append(args, "count", v.Count)
 	}
@@ -328,18 +330,67 @@ func (v VSimArgs) appendArgs(args []any) []any {
 	return args
 }
 
-// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [WITHATTRIBS] [COUNT num]
-//  [EPSILON delta] [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort]
-//  [TRUTH] [NOTHREAD]``
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VSimCmd {
+func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *StringSliceCmd {
 	if simArgs == nil {
 		simArgs = &VSimArgs{}
 	}
 	args := []any{"vsim", key}
 	args = append(args, val.Value()...)
 	args = simArgs.appendArgs(args)
-	cmd := NewVSimCmd(ctx, simArgs, args...)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorScoreSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	args = append(args, "withscores")
+	args = simArgs.appendArgs(args)
+	cmd := NewVectorInfoSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHATTRIBS] [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// WITHATTRIBS is only available in Redis v8.2.0+
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithArgsWithAttribs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorAttribSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	args = append(args, "withattribs")
+	args = simArgs.appendArgs(args)
+	cmd := NewVectorAttribSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [WITHATTRIBS] [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// WITHATTRIBS is only available in Redis v8.2.0+
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithArgsWithScoresWithAttribs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorScoreAttribSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	args = append(args, "withscores", "withattribs")
+	args = simArgs.appendArgs(args)
+	cmd := NewVectorScoreAttribSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }

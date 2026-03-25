@@ -225,28 +225,20 @@ func TestVSim(t *testing.T) {
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
 	c.VSim(context.Background(), "k", vec)
-	cmd := m.lastCmd.(*VSimCmd)
+	cmd := m.lastCmd.(*StringSliceCmd)
 	if cmd.args[0] != "vsim" || cmd.args[1] != "k" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
 }
 
-func TestVSim_WithScores(t *testing.T) {
+func TestVSimWithScores(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{WithScores: true}
-	c.VSimWithArgs(context.Background(), "k", vec, args)
-	cmd := m.lastCmd.(*VSimCmd)
-	found := false
-	for _, a := range cmd.args {
-		if s, ok := a.(string); ok && s == "withscores" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("missing withscores arg")
+	c.VSimWithScores(context.Background(), "k", vec)
+	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	if cmd.args[0] != "vsim" || cmd.args[1] != "k" || cmd.args[len(cmd.args)-1] != "withscores" {
+		t.Errorf("unexpected args: %v", cmd.args)
 	}
 }
 
@@ -254,19 +246,134 @@ func TestVSimWithArgs_AllOptions(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{WithScores: true, WithAttribs: true, Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true}
 	c.VSimWithArgs(context.Background(), "k", vec, args)
-	cmd := m.lastCmd.(*VSimCmd)
+	cmd := m.lastCmd.(*StringSliceCmd)
 	found := map[string]bool{}
 	for _, a := range cmd.args {
 		if s, ok := a.(string); ok {
 			found[s] = true
 		}
 	}
-	for _, want := range []string{"vsim", "k", "Values", "withscores", "withattribs", "count", "ef", "filter", "filter-ef", "truth", "nothread"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
+	}
+}
+
+func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+	c.VSimWithArgsWithScores(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withscores"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+}
+
+func TestVSimWithArgsWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+	if found["withscores"] {
+		t.Error("unexpected arg: withscores")
+	}
+}
+
+func TestVSimWithArgsWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withattribs" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("missing withattribs arg")
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withscores", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	foundScores := false
+	foundAttribs := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withscores" {
+			foundScores = true
+		}
+		if s, ok := a.(string); ok && s == "withattribs" {
+			foundAttribs = true
+		}
+	}
+	if !foundScores {
+		t.Error("missing withscores arg")
+	}
+	if !foundAttribs {
+		t.Error("missing withattribs arg")
 	}
 }
 
@@ -348,47 +455,31 @@ func TestVSimWithArgs_NilArgs(t *testing.T) {
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
 	c.VSimWithArgs(context.Background(), "k", vec, nil)
-	cmd := m.lastCmd.(*VSimCmd)
+	cmd := m.lastCmd.(*StringSliceCmd)
 	if cmd.args[0] != "vsim" || cmd.args[1] != "k" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
 }
 
-func TestVSimWithArgs_WithAttribs(t *testing.T) {
+func TestVSimWithArgsWithScores_NilArgs(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{WithAttribs: true}
-	c.VSimWithArgs(context.Background(), "k", vec, args)
-	cmd := m.lastCmd.(*VSimCmd)
+	c.VSimWithArgsWithScores(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	if cmd.args[0] != "vsim" || cmd.args[1] != "k" {
+		t.Errorf("unexpected args: %v", cmd.args)
+	}
+	// Should still have withscores
 	found := false
 	for _, a := range cmd.args {
-		if s, ok := a.(string); ok && s == "withattribs" {
+		if s, ok := a.(string); ok && s == "withscores" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("missing withattribs arg")
-	}
-}
-
-func TestVSimWithArgs_Epsilon(t *testing.T) {
-	m := &mockCmdable{}
-	c := m.asCmdable()
-	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{Epsilon: 0.5}
-	c.VSimWithArgs(context.Background(), "k", vec, args)
-	cmd := m.lastCmd.(*VSimCmd)
-	found := false
-	for _, a := range cmd.args {
-		if s, ok := a.(string); ok && s == "epsilon" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("missing epsilon arg")
+		t.Error("missing withscores arg")
 	}
 }
 
@@ -441,7 +532,7 @@ func TestVSim_WithVectorFP32(t *testing.T) {
 	c := m.asCmdable()
 	vec := &VectorFP32{Val: []byte{1, 2, 3, 4}}
 	c.VSim(context.Background(), "k", vec)
-	cmd := m.lastCmd.(*VSimCmd)
+	cmd := m.lastCmd.(*StringSliceCmd)
 	if cmd.args[0] != "vsim" || cmd.args[1] != "k" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -463,7 +554,7 @@ func TestVSim_WithVectorRef(t *testing.T) {
 	c := m.asCmdable()
 	vec := &VectorRef{Name: "ref-vector"}
 	c.VSim(context.Background(), "k", vec)
-	cmd := m.lastCmd.(*VSimCmd)
+	cmd := m.lastCmd.(*StringSliceCmd)
 	if cmd.args[0] != "vsim" || cmd.args[1] != "k" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -522,8 +613,7 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 		{"FilterEF", &VSimArgs{FilterEF: 15}, "filter-ef"},
 		{"Truth", &VSimArgs{Truth: true}, "truth"},
 		{"NoThread", &VSimArgs{NoThread: true}, "nothread"},
-		{"WithScores", &VSimArgs{WithScores: true}, "withscores"},
-		{"WithAttribs", &VSimArgs{WithAttribs: true}, "withattribs"},
+		{"Epsilon", &VSimArgs{Epsilon: 0.5}, "Epsilon"},
 	}
 
 	for _, tt := range tests {
@@ -532,7 +622,7 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 			c := m.asCmdable()
 			vec := &VectorValues{Val: []float64{1, 2}}
 			c.VSimWithArgs(context.Background(), "k", vec, tt.args)
-			cmd := m.lastCmd.(*VSimCmd)
+			cmd := m.lastCmd.(*StringSliceCmd)
 			found := false
 			for _, a := range cmd.args {
 				if s, ok := a.(string); ok && s == tt.want {

@@ -119,14 +119,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectTrue(ok)
 
-				sim, err := client.VSimWithArgs(ctx, vecName, &redis.VectorValues{
+				sim, err := client.VSimWithScores(ctx, vecName, &redis.VectorValues{
 					Val: []float64{1, 0, 0, 0},
-				}, &redis.VSimArgs{WithScores: true}).Result()
+				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 3)
 				simMap := make(map[string]float64)
 				for _, vi := range sim {
-					simMap[vi.Name] = *vi.Score
+					simMap[vi.Name] = vi.Score
 				}
 				expectTrue(simMap["k1"] > 0.99)
 				expectTrue(simMap["k2"] > 0.99)
@@ -293,7 +293,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
+				expectEqual(sim[0], vals[0].name)
 
 				// test greater than
 				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
@@ -315,7 +315,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
+				expectEqual(sim[0], vals[0].name)
 
 				// test string inequality
 				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
@@ -330,7 +330,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
+				expectEqual(sim[0], vals[0].name)
 
 				// test logical add
 				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
@@ -338,7 +338,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
+				expectEqual(sim[0], vals[0].name)
 
 				// test logical or
 				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
@@ -346,38 +346,37 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				}).Result()
 				expectNil(err)
 				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
-
-				// test withattribs
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
-					WithAttribs: true,
-					Filter:      `.age > 20 and .age < 30`,
-				}).Result()
-				expectNil(err)
-				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
-				expectEqual(*sim[0].Attribs, vals[0].attr)
+				expectEqual(sim[0], vals[0].name)
 
 				// test withscores
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
-					WithScores: true,
-					Filter:     `.age > 20 and .age < 30`,
+				simScores, err := client.VSimWithArgsWithScores(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+					Filter: `.age < 30 or .age > 35`,
 				}).Result()
 				expectNil(err)
-				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
-				expectEqual(*sim[0].Score, float64(1))
+				expectEqual(len(simScores), 1)
+				expectEqual(simScores[0].Name, vals[0].name)
+				expectEqual(simScores[0].Score, float64(1))
 
-				// test withscores && withattribs
-				sim, err = client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
-					WithScores: true,
-					Filter:     `.age > 20 and .age < 30`,
-				}).Result()
-				expectNil(err)
-				expectEqual(len(sim), 1)
-				expectEqual(sim[0].Name, vals[0].name)
-				expectEqual(*sim[0].Score, float64(1))
-				expectEqual(*sim[0].Attribs, vals[0].attr)
+				if RedisVersion >= 8.2 {
+					// test withattribs
+					simAttribs, err := client.VSimWithArgsWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[0].name)
+					expectEqual(*simAttribs[0].Attribs, vals[0].attr)
+
+					// test withscores && withattribs
+					simScoresAttribs, err := client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[0].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(*simScoresAttribs[0].Attribs, vals[0].attr)
+				}
 			})
 		})
 	}

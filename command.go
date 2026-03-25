@@ -7647,47 +7647,218 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
-type VSimCmd struct {
+type VectorAttribSliceCmd struct {
 	baseCmd
 
-	val     []VSimResult
-	options *VSimArgs
+	val []VectorAttrib
 }
 
-var _ Cmder = (*VSimCmd)(nil)
+var _ Cmder = (*VectorAttribSliceCmd)(nil)
 
-func NewVSimCmd(ctx context.Context, options *VSimArgs, args ...any) *VSimCmd {
-	return &VSimCmd{
+func NewVectorAttribSliceCmd(ctx context.Context, args ...any) *VectorAttribSliceCmd {
+	return &VectorAttribSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
-		options: options,
 	}
 }
 
-func (cmd *VSimCmd) SetVal(val []VSimResult) {
+func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
 	cmd.val = val
 }
 
-func (cmd *VSimCmd) Val() []VSimResult {
+func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
 	return cmd.val
 }
 
-func (cmd *VSimCmd) Result() ([]VSimResult, error) {
+func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
 	return cmd.val, cmd.err
 }
 
-func (cmd *VSimCmd) String() string {
+func (cmd *VectorAttribSliceCmd) String() string {
 	return cmdString(cmd, cmd.val)
 }
 
-func (cmd *VSimCmd) readReply(rd *proto.Reader) error {
+func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
+	readAttribOrNil := func() (*string, error) {
+		v, err := rd.ReadReply()
+		if err != nil {
+			if err == proto.Nil {
+				return nil, nil
+			}
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+		}
+		return &s, nil
+	}
+
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			attrib, err := readAttribOrNil()
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%2 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 2", n)
+	}
+	cmd.val = make([]VectorAttrib, n/2)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		attrib, err := readAttribOrNil()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+	}
 	return nil
 }
 
-func (cmd *VSimCmd) Clone() Cmder {
-	return &VSimCmd{
+func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	return &VectorAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+type VectorScoreAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorScoreAttrib
+}
+
+var _ Cmder = (*VectorScoreAttribSliceCmd)(nil)
+
+func NewVectorScoreAttribSliceCmd(ctx context.Context, args ...any) *VectorScoreAttribSliceCmd {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
+	readAttribOrNil := func() (*string, error) {
+		v, err := rd.ReadReply()
+		if err != nil {
+			if err == proto.Nil {
+				return nil, nil
+			}
+			return nil, err
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+		}
+		return &s, nil
+	}
+
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorScoreAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if err := rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+			score, err := rd.ReadFloat()
+			if err != nil {
+				return err
+			}
+			attrib, err := readAttribOrNil()
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%3 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 3", n)
+	}
+	cmd.val = make([]VectorScoreAttrib, n/3)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		attrib, err := readAttribOrNil()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
 	}
