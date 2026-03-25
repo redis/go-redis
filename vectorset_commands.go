@@ -22,11 +22,10 @@ type VectorSetCmdable interface {
 	VRem(ctx context.Context, key, element string) *BoolCmd
 	VSetAttr(ctx context.Context, key, element string, attr interface{}) *BoolCmd
 	VClearAttributes(ctx context.Context, key, element string) *BoolCmd
-	VSim(ctx context.Context, key string, val Vector) *StringSliceCmd
-	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
-	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
-	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorScoreSliceCmd
+	VSim(ctx context.Context, key string, val Vector) *VSimCmd
+	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *VSimCmd
 	VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd
+	VIsMember(ctx context.Context, key, element string) *BoolCmd
 }
 
 type Vector interface {
@@ -77,6 +76,25 @@ var _ Vector = (*VectorRef)(nil)
 type VectorScore struct {
 	Name  string
 	Score float64
+}
+
+type VSimResult struct {
+	Name    string
+	Score   *float64
+	Attribs *string
+}
+
+type VSimArgs struct {
+	WithScores  bool
+	WithAttribs bool
+
+	Count    int64
+	EF       int64
+	Filter   string
+	FilterEF int64
+	Truth    bool
+	NoThread bool
+	Epsilon  float64
 }
 
 // `VADD key (FP32 | VALUES num) vector element`
@@ -271,27 +289,21 @@ func (c cmdable) VClearAttributes(ctx context.Context, key, element string) *Boo
 
 // `VSIM key (ELE | FP32 | VALUES num) (vector | element)`
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSim(ctx context.Context, key string, val Vector) *StringSliceCmd {
-	return c.VSimWithArgs(ctx, key, val, &VSimArgs{})
-}
-
-// `VSIM key (ELE | FP32 | VALUES num) (vector | element) WITHSCORES`
-// note: the API is experimental and may be subject to change.
-func (c cmdable) VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd {
-	return c.VSimWithArgsWithScores(ctx, key, val, &VSimArgs{})
-}
-
-type VSimArgs struct {
-	Count    int64
-	EF       int64
-	Filter   string
-	FilterEF int64
-	Truth    bool
-	NoThread bool
-	Epsilon  float64
+func (c cmdable) VSim(ctx context.Context, key string, val Vector) *VSimCmd {
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	cmd := NewVSimCmd(ctx, &VSimArgs{}, args...)
+	_ = c(ctx, cmd)
+	return cmd
 }
 
 func (v VSimArgs) appendArgs(args []any) []any {
+	if v.WithScores {
+		args = append(args, "withscores")
+	}
+	if v.WithAttribs {
+		args = append(args, "withattribs")
+	}
 	if v.Count > 0 {
 		args = append(args, "count", v.Count)
 	}
@@ -316,33 +328,18 @@ func (v VSimArgs) appendArgs(args []any) []any {
 	return args
 }
 
-// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [COUNT num] [EPSILON delta]
-// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [WITHATTRIBS] [COUNT num]
+//  [EPSILON delta] [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort]
+//  [TRUTH] [NOTHREAD]``
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *StringSliceCmd {
+func (c cmdable) VSimWithArgs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VSimCmd {
 	if simArgs == nil {
 		simArgs = &VSimArgs{}
 	}
 	args := []any{"vsim", key}
 	args = append(args, val.Value()...)
 	args = simArgs.appendArgs(args)
-	cmd := NewStringSliceCmd(ctx, args...)
-	_ = c(ctx, cmd)
-	return cmd
-}
-
-// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [COUNT num] [EPSILON delta]
-// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
-// note: the API is experimental and may be subject to change.
-func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorScoreSliceCmd {
-	if simArgs == nil {
-		simArgs = &VSimArgs{}
-	}
-	args := []any{"vsim", key}
-	args = append(args, val.Value()...)
-	args = append(args, "withscores")
-	args = simArgs.appendArgs(args)
-	cmd := NewVectorInfoSliceCmd(ctx, args...)
+	cmd := NewVSimCmd(ctx, simArgs, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -353,6 +350,15 @@ func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vec
 func (c cmdable) VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd {
 	args := []any{"vrange", key, start, end, count}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VISMEMBER key element`
+// Check if an element exists in a vector set.
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VIsMember(ctx context.Context, key, element string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "vismember", key, element)
 	_ = c(ctx, cmd)
 	return cmd
 }

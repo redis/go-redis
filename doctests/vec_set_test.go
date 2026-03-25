@@ -234,11 +234,11 @@ func ExampleClient_vectorset() {
 	// STEP_END
 
 	// STEP_START vsim_options
-	res23, err := rdb.VSimWithArgsWithScores(
+	res23, err := rdb.VSimWithArgs(
 		ctx,
 		"points",
 		&redis.VectorRef{Name: "pt:A"},
-		&redis.VSimArgs{Count: 4},
+		&redis.VSimArgs{WithScores: true, Count: 4},
 	).Result()
 
 	if err != nil {

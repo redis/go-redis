@@ -7647,6 +7647,52 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
+type VSimCmd struct {
+	baseCmd
+
+	val     []VSimResult
+	options *VSimArgs
+}
+
+var _ Cmder = (*VSimCmd)(nil)
+
+func NewVSimCmd(ctx context.Context, options *VSimArgs, args ...any) *VSimCmd {
+	return &VSimCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		options: options,
+	}
+}
+
+func (cmd *VSimCmd) SetVal(val []VSimResult) {
+	cmd.val = val
+}
+
+func (cmd *VSimCmd) Val() []VSimResult {
+	return cmd.val
+}
+
+func (cmd *VSimCmd) Result() ([]VSimResult, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VSimCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VSimCmd) readReply(rd *proto.Reader) error {
+	return nil
+}
+
+func (cmd *VSimCmd) Clone() Cmder {
+	return &VSimCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel
