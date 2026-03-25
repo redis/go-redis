@@ -7647,6 +7647,157 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
+type VectorAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorAttrib
+}
+
+var _ Cmder = (*VectorAttribSliceCmd)(nil)
+
+func NewVectorAttribSliceCmd(ctx context.Context, args ...any) *VectorAttribSliceCmd {
+	return &VectorAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]VectorAttrib, n)
+	for i := 0; i < n; i++ {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Name = name
+
+		attribs, err := rd.ReadString()
+		if err == Nil {
+			cmd.val[i].Attribs = ""
+		} else if err != nil {
+			return err
+		} else {
+			cmd.val[i].Attribs = attribs
+		}
+	}
+
+	return nil
+}
+
+func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	return &VectorAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+type VectorScoreAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorScoreAttrib
+}
+
+var _ Cmder = (*VectorScoreAttribSliceCmd)(nil)
+
+func NewVectorScoreAttribSliceCmd(ctx context.Context, args ...any) *VectorScoreAttribSliceCmd {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([]VectorScoreAttrib, n)
+	for i := 0; i < n; i++ {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Name = name
+
+		innerLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
+		if innerLen < 1 {
+			return fmt.Errorf("invalid inner array length %d, expected at least 1", innerLen)
+		}
+
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Score = score
+
+		if innerLen >= 2 {
+			attribs, err := rd.ReadString()
+			if err == Nil {
+				cmd.val[i].Attribs = ""
+			} else if err != nil {
+				return err
+			} else {
+				cmd.val[i].Attribs = attribs
+			}
+		}
+	}
+
+	return nil
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel

@@ -345,6 +345,32 @@ func ExampleClient_vectorset() {
 	}
 
 	fmt.Println(res30) // >>> [pt:C pt:B]
+
+	// Return true if point A is a member of the set.
+	res31, err := rdb.VIsMember(ctx, "points", "pt:A").Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res31) // >>> true
+
+	res32, err := rdb.VSimWithArgsWithScoresWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Filter: `.size == "large" && .price > 26.00`},
+	).Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res32) // >>> [{pt:B 0 {"price":35.99,"size":"large"}}]
+
+	// Test VSimWithArgsWithAttribs (only WITHATTRIBS)
+	res33, err := rdb.VSimWithArgsWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Filter: `.size == "large" && .price > 26.00`},
+	).Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(res33) // >>> [{pt:B {"price":35.99,"size":"large"}}]
 	// STEP_END
 
 	// Output:
@@ -378,6 +404,9 @@ func ExampleClient_vectorset() {
 	// true
 	// [pt:A pt:C pt:B]
 	// [pt:C pt:B]
+	// true
+	// [{pt:B 0 {"price":35.99,"size":"large"}}]
+	// [{pt:B {"price":35.99,"size":"large"}}]
 }
 
 func ExampleClient_vectorset_quantization() {
