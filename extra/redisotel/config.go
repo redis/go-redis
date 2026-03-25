@@ -100,6 +100,12 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 	})
 }
 
+func WithPoolName(poolName string) Option {
+	return option(func(conf *config) {
+		conf.poolName = poolName
+	})
+}
+
 //------------------------------------------------------------------------------
 
 type TracingOption interface {

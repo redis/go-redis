@@ -284,9 +284,7 @@ func (c *PubSub) Unsubscribe(ctx context.Context, channels ...string) error {
 		}
 	} else {
 		// Unsubscribe from all channels.
-		for channel := range c.channels {
-			delete(c.channels, channel)
-		}
+		clear(c.channels)
 	}
 
 	err := c.subscribe(ctx, "unsubscribe", channels...)
@@ -305,9 +303,7 @@ func (c *PubSub) PUnsubscribe(ctx context.Context, patterns ...string) error {
 		}
 	} else {
 		// Unsubscribe from all patterns.
-		for pattern := range c.patterns {
-			delete(c.patterns, pattern)
-		}
+		clear(c.patterns)
 	}
 
 	err := c.subscribe(ctx, "punsubscribe", patterns...)
@@ -326,9 +322,7 @@ func (c *PubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
 		}
 	} else {
 		// Unsubscribe from all channels.
-		for channel := range c.schannels {
-			delete(c.schannels, channel)
-		}
+		clear(c.schannels)
 	}
 
 	err := c.subscribe(ctx, "sunsubscribe", channels...)
