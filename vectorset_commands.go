@@ -325,7 +325,7 @@ func (v VSimArgs) appendArgs(args []any) []any {
 		args = append(args, "nothread")
 	}
 	if v.Epsilon > 0 {
-		args = append(args, "Epsilon", v.Epsilon)
+		args = append(args, "epsilon", v.Epsilon)
 	}
 	return args
 }

@@ -275,7 +275,7 @@ func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
 			found[s] = true
 		}
 	}
-	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withscores"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
@@ -298,7 +298,7 @@ func TestVSimWithArgsWithAttribs_AllOptions(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withattribs"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withattribs"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
@@ -344,7 +344,7 @@ func TestVSimWithArgsWithScoresWithAttribs_AllOptions(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "Epsilon", "withscores", "withattribs"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores", "withattribs"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
@@ -613,7 +613,7 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 		{"FilterEF", &VSimArgs{FilterEF: 15}, "filter-ef"},
 		{"Truth", &VSimArgs{Truth: true}, "truth"},
 		{"NoThread", &VSimArgs{NoThread: true}, "nothread"},
-		{"Epsilon", &VSimArgs{Epsilon: 0.5}, "Epsilon"},
+		{"Epsilon", &VSimArgs{Epsilon: 0.5}, "epsilon"},
 	}
 
 	for _, tt := range tests {
