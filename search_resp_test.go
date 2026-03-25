@@ -307,4 +307,3 @@ func waitForIndexing(t *testing.T, client *redis.Client, index string, expectedD
 	}
 	t.Fatalf("Timeout waiting for indexing")
 }
-

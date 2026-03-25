@@ -1662,24 +1662,6 @@ func parseDialectStatsRESP3(m map[interface{}]interface{}) map[string]int {
 	return result
 }
 
-// parseFieldStatisticsRESP3 parses field statistics from RESP3 format
-func parseFieldStatisticsRESP3(stats []interface{}) []FieldStatistic {
-	result := make([]FieldStatistic, 0, len(stats))
-	for _, stat := range stats {
-		if statMap, ok := stat.(map[interface{}]interface{}); ok {
-			fs := FieldStatistic{
-				Identifier: internal.ToString(getMapStringKey(statMap, "identifier")),
-				Attribute:  internal.ToString(getMapStringKey(statMap, "attribute")),
-			}
-			if indexErrors, ok := getMapStringKey(statMap, "Index Errors").(map[interface{}]interface{}); ok {
-				fs.IndexErrors = parseIndexErrorsRESP3(indexErrors)
-			}
-			result = append(result, fs)
-		}
-	}
-	return result
-}
-
 func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	var ftInfo FTInfoResult
 
