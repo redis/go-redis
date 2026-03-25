@@ -6100,8 +6100,8 @@ var _ = Describe("Commands", func() {
 
 			zRange, err := client.ZRangeArgs(ctx, redis.ZRangeArgs{
 				Key:     "zset",
-				Start:   1,
-				Stop:    4,
+				Start:   4,
+				Stop:    1,
 				ByScore: true,
 				Rev:     true,
 				Offset:  1,
@@ -6112,8 +6112,8 @@ var _ = Describe("Commands", func() {
 
 			zRange, err = client.ZRangeArgs(ctx, redis.ZRangeArgs{
 				Key:    "zset",
-				Start:  "-",
-				Stop:   "+",
+				Start:  "+",
+				Stop:   "-",
 				ByLex:  true,
 				Rev:    true,
 				Offset: 2,
@@ -6134,8 +6134,8 @@ var _ = Describe("Commands", func() {
 			// withScores.
 			zSlice, err := client.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 				Key:     "zset",
-				Start:   1,
-				Stop:    4,
+				Start:   4,
+				Stop:    1,
 				ByScore: true,
 				Rev:     true,
 				Offset:  1,
@@ -6297,8 +6297,8 @@ var _ = Describe("Commands", func() {
 
 			rangeStore, err := client.ZRangeStore(ctx, "new-zset", redis.ZRangeArgs{
 				Key:     "zset",
-				Start:   1,
-				Stop:    4,
+				Start:   4,
+				Stop:    1,
 				ByScore: true,
 				Rev:     true,
 				Offset:  1,
@@ -6310,6 +6310,34 @@ var _ = Describe("Commands", func() {
 			zRange, err := client.ZRange(ctx, "new-zset", 0, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(zRange).To(Equal([]string{"two", "three"}))
+
+			// Test the exact scenario from the bug report: ZRangeStore with ByScore+Rev
+			// where Start > Stop (high to low) should return all matching members.
+			added2, err := client.ZAddArgs(ctx, "myzset", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 1, Member: "a"},
+					{Score: 2, Member: "b"},
+					{Score: 3, Member: "c"},
+					{Score: 4, Member: "d"},
+					{Score: 5, Member: "e"},
+				},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(added2).To(Equal(int64(5)))
+
+			rangeStore2, err := client.ZRangeStore(ctx, "myzset2", redis.ZRangeArgs{
+				Key:     "myzset",
+				Start:   5,
+				Stop:    3,
+				ByScore: true,
+				Rev:     true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rangeStore2).To(Equal(int64(3)))
+
+			zRange2, err := client.ZRange(ctx, "myzset2", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(zRange2).To(Equal([]string{"c", "d", "e"}))
 		})
 
 		It("should ZRank", func() {
