@@ -376,6 +376,25 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(simScoresAttribs[0].Name, vals[0].name)
 					expectEqual(simScoresAttribs[0].Score, float64(1))
 					expectEqual(*simScoresAttribs[0].Attribs, vals[0].attr)
+
+					// test withattribs null attrы
+					simAttribs, err = client.VSimWithArgsWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[3].name)
+					expectEqual(simAttribs[0].Attribs, (*string)(nil))
+
+					// test withscores && withattribs null attrы
+					simScoresAttribs, err = client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[3].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(simScoresAttribs[0].Attribs, (*string)(nil))
 				}
 			})
 		})
