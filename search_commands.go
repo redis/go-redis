@@ -463,8 +463,7 @@ type AggregateRow struct {
 
 type AggregateCmd struct {
 	baseCmd
-	val    *FTAggregateResult
-	rawVal interface{}
+	val *FTAggregateResult
 }
 
 type FTInfoResult struct {

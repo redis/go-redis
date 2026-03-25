@@ -186,12 +186,22 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 			Load: []redis.FTAggregateLoad{{Field: "@score"}},
 		}
 
-		result2, err := client2.FTAggregateWithArgs(ctx, "test-idx", "*", options).Result()
+		// Test that RawVal() is populated
+		cmd2 := client2.FTAggregateWithArgs(ctx, "test-idx", "*", options)
+		if cmd2.RawVal() == nil {
+			t.Error("RESP2 RawVal() should not be nil")
+		}
+		cmd3 := client3.FTAggregateWithArgs(ctx, "test-idx", "*", options)
+		if cmd3.RawVal() == nil {
+			t.Error("RESP3 RawVal() should not be nil")
+		}
+
+		result2, err := cmd2.Result()
 		if err != nil {
 			t.Fatalf("FTAggregate RESP2 failed: %v", err)
 		}
 
-		result3, err := client3.FTAggregateWithArgs(ctx, "test-idx", "*", options).Result()
+		result3, err := cmd3.Result()
 		if err != nil {
 			t.Fatalf("FTAggregate RESP3 failed: %v", err)
 		}
