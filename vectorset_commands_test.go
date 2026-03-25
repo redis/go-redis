@@ -656,5 +656,3 @@ func TestVIsMember(t *testing.T) {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
 }
-
-// Tests for VSimCmd readReply with RESP2 and RESP3 formats
