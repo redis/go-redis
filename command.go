@@ -7681,27 +7681,84 @@ func (cmd *VectorAttribSliceCmd) String() string {
 }
 
 func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	reply, err := rd.ReadReply()
 	if err != nil {
 		return err
 	}
 
-	cmd.val = make([]VectorAttrib, n)
-	for i := 0; i < n; i++ {
-		name, err := rd.ReadString()
-		if err != nil {
-			return err
-		}
-		cmd.val[i].Name = name
+	switch v := reply.(type) {
+	case map[interface{}]interface{}:
+		// Handle RESP3 map format
+		cmd.val = make([]VectorAttrib, len(v))
+		i := 0
+		for name, value := range v {
+			nameStr, ok := name.(string)
+			if !ok {
+				// Try to convert to string
+				nameBytes, ok := name.([]byte)
+				if !ok {
+					return fmt.Errorf("redis: expected string key, got %T", name)
+				}
+				nameStr = string(nameBytes)
+			}
+			cmd.val[i].Name = nameStr
 
-		attribs, err := rd.ReadString()
-		if err == Nil {
-			cmd.val[i].Attribs = ""
-		} else if err != nil {
-			return err
-		} else {
-			cmd.val[i].Attribs = attribs
+			if value == nil {
+				cmd.val[i].Attribs = ""
+			} else {
+				attribs, ok := value.(string)
+				if !ok {
+					// Try to convert to string
+					attribsBytes, ok := value.([]byte)
+					if !ok {
+						cmd.val[i].Attribs = ""
+					} else {
+						cmd.val[i].Attribs = string(attribsBytes)
+					}
+				} else {
+					cmd.val[i].Attribs = attribs
+				}
+			}
+			i++
 		}
+	case []interface{}:
+		// Handle RESP2 array format
+		if len(v)%2 != 0 {
+			return fmt.Errorf("redis: the length of the array must be a multiple of 2, got: %d", len(v))
+		}
+
+		cmd.val = make([]VectorAttrib, len(v)/2)
+		for i := 0; i < len(v)/2; i++ {
+			name, ok := v[i*2].(string)
+			if !ok {
+				// Try to convert to string
+				nameBytes, ok := v[i*2].([]byte)
+				if !ok {
+					return fmt.Errorf("redis: expected string name, got %T", v[i*2])
+				}
+				name = string(nameBytes)
+			}
+			cmd.val[i].Name = name
+
+			if v[i*2+1] == nil {
+				cmd.val[i].Attribs = ""
+			} else {
+				attribs, ok := v[i*2+1].(string)
+				if !ok {
+					// Try to convert to string
+					attribsBytes, ok := v[i*2+1].([]byte)
+					if !ok {
+						cmd.val[i].Attribs = ""
+					} else {
+						cmd.val[i].Attribs = string(attribsBytes)
+					}
+				} else {
+					cmd.val[i].Attribs = attribs
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("redis: expected map or array reply, got %T", reply)
 	}
 
 	return nil
@@ -7748,44 +7805,196 @@ func (cmd *VectorScoreAttribSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	reply, err := rd.ReadReply()
 	if err != nil {
 		return err
 	}
 
-	cmd.val = make([]VectorScoreAttrib, n)
-	for i := 0; i < n; i++ {
-		name, err := rd.ReadString()
-		if err != nil {
-			return err
-		}
-		cmd.val[i].Name = name
-
-		innerLen, err := rd.ReadArrayLen()
-		if err != nil {
-			return err
-		}
-
-		if innerLen < 1 {
-			return fmt.Errorf("invalid inner array length %d, expected at least 1", innerLen)
-		}
-
-		score, err := rd.ReadFloat()
-		if err != nil {
-			return err
-		}
-		cmd.val[i].Score = score
-
-		if innerLen >= 2 {
-			attribs, err := rd.ReadString()
-			if err == Nil {
-				cmd.val[i].Attribs = ""
-			} else if err != nil {
-				return err
-			} else {
-				cmd.val[i].Attribs = attribs
+	switch v := reply.(type) {
+	case map[interface{}]interface{}:
+		// Handle RESP3 map format
+		cmd.val = make([]VectorScoreAttrib, len(v))
+		i := 0
+		for name, value := range v {
+			nameStr, ok := name.(string)
+			if !ok {
+				// Try to convert to string
+				nameBytes, ok := name.([]byte)
+				if !ok {
+					return fmt.Errorf("redis: expected string key, got %T", name)
+				}
+				nameStr = string(nameBytes)
 			}
+			cmd.val[i].Name = nameStr
+
+			innerArray, ok := value.([]interface{})
+			if !ok {
+				return fmt.Errorf("redis: expected array value, got %T", value)
+			}
+
+			if len(innerArray) < 1 {
+				return fmt.Errorf("invalid inner array length %d, expected at least 1", len(innerArray))
+			}
+
+			score, ok := innerArray[0].(float64)
+			if !ok {
+				// Try to convert to float64
+				scoreStr, ok := innerArray[0].(string)
+				if !ok {
+					// Try to convert from []byte
+					scoreBytes, ok := innerArray[0].([]byte)
+					if !ok {
+						return fmt.Errorf("redis: expected float64, string, or []byte score, got %T", innerArray[0])
+					}
+					scoreStr = string(scoreBytes)
+				}
+				score, err = strconv.ParseFloat(scoreStr, 64)
+				if err != nil {
+					return err
+				}
+			}
+			cmd.val[i].Score = score
+
+			if len(innerArray) >= 2 {
+				if innerArray[1] == nil {
+					cmd.val[i].Attribs = ""
+				} else {
+					attribs, ok := innerArray[1].(string)
+					if !ok {
+						// Try to convert to string
+						attribsBytes, ok := innerArray[1].([]byte)
+						if !ok {
+							cmd.val[i].Attribs = ""
+						} else {
+							cmd.val[i].Attribs = string(attribsBytes)
+						}
+					} else {
+						cmd.val[i].Attribs = attribs
+					}
+				}
+			}
+			i++
 		}
+	case []interface{}:
+		// Handle RESP2 array format
+		if len(v)%3 == 0 {
+			// Handle as triplet of (name, score, attributes)
+			cmd.val = make([]VectorScoreAttrib, len(v)/3)
+			for i := 0; i < len(v)/3; i++ {
+				name, ok := v[i*3].(string)
+				if !ok {
+					// Try to convert to string
+					nameBytes, ok := v[i*3].([]byte)
+					if !ok {
+						return fmt.Errorf("redis: expected string name, got %T", v[i*3])
+					}
+					name = string(nameBytes)
+				}
+				cmd.val[i].Name = name
+
+				score, ok := v[i*3+1].(float64)
+				if !ok {
+					// Try to convert to float64
+					scoreStr, ok := v[i*3+1].(string)
+					if !ok {
+						// Try to convert from []byte
+						scoreBytes, ok := v[i*3+1].([]byte)
+						if !ok {
+							return fmt.Errorf("redis: expected float64, string, or []byte score, got %T", v[i*3+1])
+						}
+						scoreStr = string(scoreBytes)
+					}
+					score, err = strconv.ParseFloat(scoreStr, 64)
+					if err != nil {
+						return err
+					}
+				}
+				cmd.val[i].Score = score
+
+				if v[i*3+2] == nil {
+					cmd.val[i].Attribs = ""
+				} else {
+					attribs, ok := v[i*3+2].(string)
+					if !ok {
+						// Try to convert to string
+						attribsBytes, ok := v[i*3+2].([]byte)
+						if !ok {
+							cmd.val[i].Attribs = ""
+						} else {
+							cmd.val[i].Attribs = string(attribsBytes)
+						}
+					} else {
+						cmd.val[i].Attribs = attribs
+					}
+				}
+			}
+		} else if len(v)%2 == 0 {
+			// Handle as pair of (name, [score, attributes])
+			cmd.val = make([]VectorScoreAttrib, len(v)/2)
+			for i := 0; i < len(v)/2; i++ {
+				name, ok := v[i*2].(string)
+				if !ok {
+					// Try to convert to string
+					nameBytes, ok := v[i*2].([]byte)
+					if !ok {
+						return fmt.Errorf("redis: expected string name, got %T", v[i*2])
+					}
+					name = string(nameBytes)
+				}
+				cmd.val[i].Name = name
+
+				innerArray, ok := v[i*2+1].([]interface{})
+				if !ok {
+					return fmt.Errorf("redis: expected array value, got %T", v[i*2+1])
+				}
+
+				if len(innerArray) < 1 {
+					return fmt.Errorf("invalid inner array length %d, expected at least 1", len(innerArray))
+				}
+
+				score, ok := innerArray[0].(float64)
+				if !ok {
+					// Try to convert to float64
+					scoreStr, ok := innerArray[0].(string)
+					if !ok {
+						// Try to convert from []byte
+						scoreBytes, ok := innerArray[0].([]byte)
+						if !ok {
+							return fmt.Errorf("redis: expected float64, string, or []byte score, got %T", innerArray[0])
+						}
+						scoreStr = string(scoreBytes)
+					}
+					score, err = strconv.ParseFloat(scoreStr, 64)
+					if err != nil {
+						return err
+					}
+				}
+				cmd.val[i].Score = score
+
+				if len(innerArray) >= 2 {
+					if innerArray[1] == nil {
+						cmd.val[i].Attribs = ""
+					} else {
+						attribs, ok := innerArray[1].(string)
+						if !ok {
+							// Try to convert to string
+							attribsBytes, ok := innerArray[1].([]byte)
+							if !ok {
+								cmd.val[i].Attribs = ""
+							} else {
+								cmd.val[i].Attribs = string(attribsBytes)
+							}
+						} else {
+							cmd.val[i].Attribs = attribs
+						}
+					}
+				}
+			}
+		} else {
+			return fmt.Errorf("redis: the length of the array must be a multiple of 2 or 3, got: %d", len(v))
+		}
+	default:
+		return fmt.Errorf("redis: expected map or array reply, got %T", reply)
 	}
 
 	return nil

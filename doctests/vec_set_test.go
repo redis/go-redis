@@ -22,6 +22,94 @@ func ExampleClient_vectorset() {
 	})
 
 	defer rdb.Close()
+	vectorset_example(ctx, rdb)
+
+	// Output:
+	// true
+	// true
+	// true
+	// true
+	// true
+	// vectorset
+	// 5
+	// 2
+	// [0.9999999403953552 0.9999999403953552]
+	// [-0.9999999403953552 -0.9999999403953552]
+	// [-0.9999999403953552 0.9999999403953552]
+	// [0.9999999403953552 -0.9999999403953552]
+	// [1 0]
+	// true
+	// {"description":"First point added","name":"Point A"}
+	// true
+	// redis: nil
+	// true
+	// 6
+	// true
+	// 5
+	// [pt:E pt:A pt:D pt:C pt:B]
+	// [{pt:A 1} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
+	// true
+	// true
+	// true
+	// true
+	// true
+	// [pt:A pt:C pt:B]
+	// [pt:C pt:B]
+	// true
+	// [{pt:B 0 {"price":35.99,"size":"large"}}]
+	// [{pt:B {"price":35.99,"size":"large"}}]
+
+}
+
+func ExampleClient_vectorset_resp2() {
+	ctx := context.Background()
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+		Protocol: 2,
+	})
+
+	defer rdb.Close()
+	vectorset_example(ctx, rdb)
+
+	// Output:
+	// true
+	// true
+	// true
+	// true
+	// true
+	// vectorset
+	// 5
+	// 2
+	// [0.9999999403953552 0.9999999403953552]
+	// [-0.9999999403953552 -0.9999999403953552]
+	// [-0.9999999403953552 0.9999999403953552]
+	// [0.9999999403953552 -0.9999999403953552]
+	// [1 0]
+	// true
+	// {"description":"First point added","name":"Point A"}
+	// true
+	// redis: nil
+	// true
+	// 6
+	// true
+	// 5
+	// [pt:E pt:A pt:D pt:C pt:B]
+	// [{pt:A 1} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
+	// true
+	// true
+	// true
+	// true
+	// true
+	// [pt:A pt:C pt:B]
+	// [pt:C pt:B]
+	// true
+	// [{pt:B 0 {"price":35.99,"size":"large"}}]
+	// [{pt:B {"price":35.99,"size":"large"}}]
+}
+
+func vectorset_example(ctx context.Context, rdb *redis.Client) {
 	// REMOVE_START
 	rdb.Del(ctx, "points", "quantSetQ8", "quantSetNoQ", "quantSetBin", "setNotReduced", "setReduced")
 	// REMOVE_END
@@ -372,41 +460,6 @@ func ExampleClient_vectorset() {
 	}
 	fmt.Println(res33) // >>> [{pt:B {"price":35.99,"size":"large"}}]
 	// STEP_END
-
-	// Output:
-	// true
-	// true
-	// true
-	// true
-	// true
-	// vectorset
-	// 5
-	// 2
-	// [0.9999999403953552 0.9999999403953552]
-	// [-0.9999999403953552 -0.9999999403953552]
-	// [-0.9999999403953552 0.9999999403953552]
-	// [0.9999999403953552 -0.9999999403953552]
-	// [1 0]
-	// true
-	// {"description":"First point added","name":"Point A"}
-	// true
-	// redis: nil
-	// true
-	// 6
-	// true
-	// 5
-	// [pt:E pt:A pt:D pt:C pt:B]
-	// [{pt:A 1} {pt:C 0.5} {pt:D 0.5} {pt:E 0.8535534143447876}]
-	// true
-	// true
-	// true
-	// true
-	// true
-	// [pt:A pt:C pt:B]
-	// [pt:C pt:B]
-	// true
-	// [{pt:B 0 {"price":35.99,"size":"large"}}]
-	// [{pt:B {"price":35.99,"size":"large"}}]
 }
 
 func ExampleClient_vectorset_quantization() {
