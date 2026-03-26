@@ -541,3 +541,264 @@ var _ = Describe("NoRetry behavior", func() {
 		Expect(cmd.NoRetry()).To(BeTrue())
 	})
 })
+
+var _ = Describe("ZeroCopyStringCmd", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("reads GET response directly into buffer", func() {
+		// Set a value
+		err := client.Set(ctx, "zerocopy_test", "hello world", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Read into buffer using zero-copy
+		buf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "zerocopy_test", buf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+
+		n, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(11))
+		Expect(string(cmd.Bytes())).To(Equal("hello world"))
+	})
+
+	It("handles non-existent key (nil)", func() {
+		buf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "nonexistent_key", buf)
+		Expect(cmd.Err()).To(Equal(redis.Nil))
+	})
+
+	It("handles large values", func() {
+		// Create a large value
+		largeValue := make([]byte, 10000)
+		for i := range largeValue {
+			largeValue[i] = byte('a' + (i % 26))
+		}
+
+		err := client.Set(ctx, "large_key", largeValue, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Read into buffer
+		buf := make([]byte, 15000)
+		cmd := client.GetToBuffer(ctx, "large_key", buf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+
+		n, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(10000))
+		Expect(cmd.Bytes()).To(Equal(largeValue))
+	})
+
+	It("returns error when buffer is too small", func() {
+		err := client.Set(ctx, "big_value", "this is a longer string", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Buffer too small
+		buf := make([]byte, 5)
+		cmd := client.GetToBuffer(ctx, "big_value", buf)
+		Expect(cmd.Err()).To(HaveOccurred())
+		Expect(cmd.Err().Error()).To(ContainSubstring("buffer too small"))
+	})
+
+	It("handles empty string value", func() {
+		err := client.Set(ctx, "empty_key", "", 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		buf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "empty_key", buf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+
+		n, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(0))
+		Expect(cmd.Bytes()).To(BeEmpty())
+	})
+
+	It("handles binary data", func() {
+		// Binary data with null bytes and special characters
+		binaryData := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0x00, 0x10}
+
+		err := client.Set(ctx, "binary_key", binaryData, 0).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		buf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "binary_key", buf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+
+		n, err := cmd.Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(n).To(Equal(len(binaryData)))
+		Expect(cmd.Bytes()).To(Equal(binaryData))
+	})
+
+	It("NoRetry returns true", func() {
+		buf := make([]byte, 100)
+		cmd := redis.NewZeroCopyStringCmd(ctx, buf, "GET", "key")
+		Expect(cmd.NoRetry()).To(BeTrue())
+	})
+})
+
+var _ = Describe("SetFromBuffer", func() {
+	var client *redis.Client
+
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
+
+	It("writes data directly from buffer", func() {
+		buf := []byte("hello world from buffer")
+		err := client.SetFromBuffer(ctx, "zerocopy_set_test", buf).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify the data was written correctly
+		val, err := client.Get(ctx, "zerocopy_set_test").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal("hello world from buffer"))
+	})
+
+	It("handles large values", func() {
+		// Create a large value
+		largeValue := make([]byte, 10000)
+		for i := range largeValue {
+			largeValue[i] = byte('a' + (i % 26))
+		}
+
+		err := client.SetFromBuffer(ctx, "large_set_key", largeValue).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify using GetToBuffer for symmetry
+		readBuf := make([]byte, 15000)
+		cmd := client.GetToBuffer(ctx, "large_set_key", readBuf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal(10000))
+		Expect(cmd.Bytes()).To(Equal(largeValue))
+	})
+
+	It("handles empty buffer", func() {
+		buf := []byte{}
+		err := client.SetFromBuffer(ctx, "empty_set_key", buf).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		val, err := client.Get(ctx, "empty_set_key").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(val).To(Equal(""))
+	})
+
+	It("handles binary data", func() {
+		// Binary data with null bytes and special characters
+		binaryData := []byte{0x00, 0x01, 0x02, 0xFF, 0xFE, 0x00, 0x10}
+
+		err := client.SetFromBuffer(ctx, "binary_set_key", binaryData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify using GetToBuffer
+		readBuf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "binary_set_key", readBuf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Bytes()).To(Equal(binaryData))
+	})
+
+	// Note: SetFromBuffer with expiration is not supported in zero-copy mode
+	// because the RESP protocol requires all arguments to be written in order,
+	// but zero-copy writes the value data after flushing the buffer.
+	// Use SetFromBuffer without expiration, then call Expire separately if needed.
+
+	It("round-trip with GetToBuffer", func() {
+		// Test complete round-trip: SetFromBuffer -> GetToBuffer
+		originalData := []byte("round trip test data with special chars: \x00\xFF\r\n")
+
+		err := client.SetFromBuffer(ctx, "roundtrip_key", originalData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		readBuf := make([]byte, 100)
+		cmd := client.GetToBuffer(ctx, "roundtrip_key", readBuf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Bytes()).To(Equal(originalData))
+	})
+
+	It("handles huge data (50MB) round-trip", func() {
+		// Test with 50MB of data to verify zero-copy works with huge payloads
+		const dataSize = 50 * 1024 * 1024 // 50MB
+
+		// Create deterministic test data
+		hugeData := make([]byte, dataSize)
+		for i := range hugeData {
+			hugeData[i] = byte(i % 256)
+		}
+
+		// Set using SetFromBuffer
+		err := client.SetFromBuffer(ctx, "huge_zerocopy_key", hugeData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Get using GetToBuffer
+		readBuf := make([]byte, dataSize+1000) // Slightly larger to be safe
+		cmd := client.GetToBuffer(ctx, "huge_zerocopy_key", readBuf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal(dataSize))
+
+		// Verify data integrity
+		retrievedData := cmd.Bytes()
+		Expect(len(retrievedData)).To(Equal(dataSize))
+
+		// Check first, middle, and last portions
+		Expect(retrievedData[:1000]).To(Equal(hugeData[:1000]))
+		midPoint := dataSize / 2
+		Expect(retrievedData[midPoint : midPoint+1000]).To(Equal(hugeData[midPoint : midPoint+1000]))
+		Expect(retrievedData[dataSize-1000:]).To(Equal(hugeData[dataSize-1000:]))
+
+		// Full comparison
+		Expect(retrievedData).To(Equal(hugeData))
+	})
+
+	It("handles 500MB data round-trip", func() {
+		// Test with 500MB - under default Redis proto-max-bulk-len (512MB)
+		// Note: Redis internally uses int32 for bulk string lengths,
+		// so the absolute max is 2147483646 bytes (~2GB - 1 byte)
+		const dataSize = 500 * 1024 * 1024 // 500MB
+
+		// Create deterministic test data
+		hugeData := make([]byte, dataSize)
+		for i := range hugeData {
+			hugeData[i] = byte(i % 256)
+		}
+
+		// Set using SetFromBuffer
+		err := client.SetFromBuffer(ctx, "huge_500mb_key", hugeData).Err()
+		Expect(err).NotTo(HaveOccurred())
+
+		// Get using GetToBuffer
+		readBuf := make([]byte, dataSize+1000) // Slightly larger to be safe
+		cmd := client.GetToBuffer(ctx, "huge_500mb_key", readBuf)
+		Expect(cmd.Err()).NotTo(HaveOccurred())
+		Expect(cmd.Val()).To(Equal(dataSize))
+
+		// Verify data integrity
+		retrievedData := cmd.Bytes()
+		Expect(len(retrievedData)).To(Equal(dataSize))
+
+		// Check first, middle, and last portions
+		Expect(retrievedData[:1000]).To(Equal(hugeData[:1000]))
+		midPoint := dataSize / 2
+		Expect(retrievedData[midPoint : midPoint+1000]).To(Equal(hugeData[midPoint : midPoint+1000]))
+		Expect(retrievedData[dataSize-1000:]).To(Equal(hugeData[dataSize-1000:]))
+
+		// Sample verification at 100MB intervals
+		for i := 0; i < 5; i++ {
+			offset := i * 100 * 1024 * 1024
+			Expect(retrievedData[offset : offset+1000]).To(Equal(hugeData[offset : offset+1000]))
+		}
+	})
+})

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type StringCmdable interface {
@@ -17,6 +19,11 @@ type StringCmdable interface {
 	GetSet(ctx context.Context, key string, value interface{}) *StringCmd
 	GetEx(ctx context.Context, key string, expiration time.Duration) *StringCmd
 	GetDel(ctx context.Context, key string) *StringCmd
+	// GetToBuffer performs a GET command and reads the response directly into the provided buffer.
+	// This is a zero-copy operation - data is read directly from the socket into buf.
+	// Returns a ZeroCopyStringCmd where Val() returns the number of bytes read.
+	// The actual data is in buf[:cmd.Val()].
+	GetToBuffer(ctx context.Context, key string, buf []byte) *ZeroCopyStringCmd
 	Incr(ctx context.Context, key string) *IntCmd
 	IncrBy(ctx context.Context, key string, value int64) *IntCmd
 	IncrByFloat(ctx context.Context, key string, value float64) *FloatCmd
@@ -28,6 +35,18 @@ type StringCmdable interface {
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
 	SetArgs(ctx context.Context, key string, value interface{}, a SetArgs) *StatusCmd
 	SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd
+	// SetFromBuffer performs a SET command writing data directly from the provided buffer.
+	// This is a zero-copy operation - data is written directly from buf to the socket,
+	// bypassing intermediate buffering.
+	//
+	// Returns a StatusCmd. Use Err() to check for errors.
+	//
+	// Note: This command cannot be retried automatically on failure since partial data
+	// may have been written to the socket.
+	//
+	// Note: Expiration is not supported with zero-copy writes. Use Expire() separately
+	// if you need to set a TTL on the key.
+	SetFromBuffer(ctx context.Context, key string, buf []byte) *StatusCmd
 	SetIFEQ(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
 	SetIFEQGet(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StringCmd
 	SetIFNE(ctx context.Context, key string, value interface{}, matchValue interface{}, expiration time.Duration) *StatusCmd
@@ -133,6 +152,26 @@ func (c cmdable) Digest(ctx context.Context, key string) *DigestCmd {
 // Get Redis `GET key` command. It returns redis.Nil error when key does not exist.
 func (c cmdable) Get(ctx context.Context, key string) *StringCmd {
 	cmd := NewStringCmd(ctx, "get", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// GetToBuffer performs a GET command and reads the response directly into the provided buffer.
+// This is a zero-copy operation - data is read directly from the socket into buf,
+// bypassing all intermediate buffering.
+//
+// Returns a ZeroCopyStringCmd where:
+//   - Val() returns the number of bytes read
+//   - Bytes() returns buf[:Val()] containing the actual data
+//   - Err() returns any error (including redis.Nil if key doesn't exist)
+//
+// The buffer must be large enough to hold the value. If the value is larger than
+// the buffer, an error is returned.
+//
+// Note: This command cannot be retried automatically on failure since partial data
+// may have been written to the buffer.
+func (c cmdable) GetToBuffer(ctx context.Context, key string, buf []byte) *ZeroCopyStringCmd {
+	cmd := NewZeroCopyStringCmd(ctx, buf, "get", key)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -423,6 +462,23 @@ func (c cmdable) SetArgs(ctx context.Context, key string, value interface{}, a S
 // Deprecated: Use Set with expiration instead as of Redis 2.6.12.
 func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expiration time.Duration) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "setex", key, formatSec(ctx, expiration), value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// SetFromBuffer performs a SET command writing data directly from the provided buffer.
+// This is a zero-copy operation - data is written directly from buf to the socket,
+// bypassing intermediate buffering.
+//
+// Note: This command cannot be retried automatically on failure since partial data
+// may have been written to the socket.
+//
+// Note: Expiration is not supported with zero-copy writes. Use Expire() separately
+// if you need to set a TTL on the key.
+func (c cmdable) SetFromBuffer(ctx context.Context, key string, buf []byte) *StatusCmd {
+	args := []interface{}{"set", key, proto.ZeroCopyBuffer{Data: buf}}
+	cmd := NewStatusCmd(ctx, args...)
+	cmd.SetNoRetry(true)
 	_ = c(ctx, cmd)
 	return cmd
 }

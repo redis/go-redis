@@ -332,6 +332,7 @@ type baseCmd struct {
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
+	noRetry      bool
 }
 
 var _ Cmder = (*Cmd)(nil)
@@ -421,7 +422,14 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
-	return false
+	return cmd.noRetry
+}
+
+// SetNoRetry sets whether this command should not be retried on failure.
+// This is used for commands that perform zero-copy writes where partial
+// data may have been written to the socket.
+func (cmd *baseCmd) SetNoRetry(noRetry bool) {
+	cmd.noRetry = noRetry
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -448,6 +456,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		noRetry:      cmd.noRetry,
 	}
 }
 
@@ -857,6 +866,85 @@ func (cmd *RawWriteToCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		w:       cmd.w,
 		written: cmd.written,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// ZeroCopyStringCmd reads a bulk string response directly into a user-provided buffer.
+// Data is read directly into the buffer through the buffered reader — for large values,
+// bufio.Reader drains its internal buffer first, then reads remaining bytes directly
+// from the underlying socket, achieving near zero-copy for the payload with zero
+// data allocations.
+//
+// This approach works correctly regardless of whether push notifications were
+// processed before the read (which may populate the buffered reader).
+type ZeroCopyStringCmd struct {
+	baseCmd
+	buf []byte // User-provided buffer to read into
+	n   int    // Number of bytes read
+}
+
+var _ Cmder = (*ZeroCopyStringCmd)(nil)
+
+func NewZeroCopyStringCmd(ctx context.Context, buf []byte, args ...interface{}) *ZeroCopyStringCmd {
+	return &ZeroCopyStringCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeString,
+		},
+		buf: buf,
+	}
+}
+
+func (cmd *ZeroCopyStringCmd) SetVal(n int) {
+	cmd.n = n
+}
+
+func (cmd *ZeroCopyStringCmd) Val() int {
+	return cmd.n
+}
+
+// Result returns the number of bytes read and any error.
+func (cmd *ZeroCopyStringCmd) Result() (int, error) {
+	return cmd.n, cmd.err
+}
+
+// Bytes returns the slice of the buffer that contains the read data.
+func (cmd *ZeroCopyStringCmd) Bytes() []byte {
+	return cmd.buf[:cmd.n]
+}
+
+func (cmd *ZeroCopyStringCmd) String() string {
+	return cmdString(cmd, cmd.n)
+}
+
+// readReply reads the response directly into the user's buffer using
+// proto.Reader.ReadStringInto, which handles the RESP header through the
+// buffered reader and reads bulk data directly into cmd.buf.
+func (cmd *ZeroCopyStringCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadStringInto(cmd.buf)
+	if err != nil {
+		return err
+	}
+	cmd.n = n
+	return nil
+}
+
+// NoRetry returns true because zero-copy commands write directly to a buffer.
+// If a retry occurs, partial data from failed attempts would corrupt the buffer.
+func (cmd *ZeroCopyStringCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *ZeroCopyStringCmd) Clone() Cmder {
+	newBuf := make([]byte, len(cmd.buf))
+	copy(newBuf, cmd.buf[:cmd.n])
+	return &ZeroCopyStringCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		buf:     newBuf,
+		n:       cmd.n,
 	}
 }
 

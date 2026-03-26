@@ -464,6 +464,64 @@ func (r *Reader) ReadFloat() (float64, error) {
 	return 0, fmt.Errorf("redis: can't parse float reply: %.100q", line)
 }
 
+// ReadStringInto reads a string reply directly into the provided buffer,
+// avoiding intermediate allocations. It returns the number of bytes written
+// to buf. The caller must ensure buf is large enough to hold the response.
+//
+// This method handles the RESP header through the buffered reader (so push
+// notifications, errors, nil, etc. are processed normally), then reads
+// bulk string data directly into buf via the bufio.Reader. For large values,
+// bufio.Reader.Read drains any internally buffered data first, then reads
+// remaining bytes directly from the underlying socket — achieving near
+// zero-copy for the payload.
+func (r *Reader) ReadStringInto(buf []byte) (int, error) {
+	line, err := r.ReadLine()
+	if err != nil {
+		return 0, err
+	}
+
+	switch line[0] {
+	case RespStatus:
+		// Simple string — data is in the line itself.
+		s := line[1:]
+		if len(s) > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", len(s), len(buf))
+		}
+		return copy(buf, s), nil
+
+	case RespString:
+		n, err := replyLen(line)
+		if err != nil {
+			return 0, err
+		}
+		if n > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", n, len(buf))
+		}
+		// Read data directly into user's buffer through the bufio.Reader.
+		// bufio.Reader.Read first drains its internal buffer, then for
+		// remaining data larger than its buffer size, reads directly from
+		// the underlying reader (socket) — effectively zero-copy.
+		if _, err := io.ReadFull(r.rd, buf[:n]); err != nil {
+			return 0, err
+		}
+		// Discard trailing \r\n.
+		var crlf [2]byte
+		if _, err := io.ReadFull(r.rd, crlf[:]); err != nil {
+			return 0, err
+		}
+		return n, nil
+
+	case RespInt, RespFloat:
+		s := line[1:]
+		if len(s) > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", len(s), len(buf))
+		}
+		return copy(buf, s), nil
+	}
+
+	return 0, fmt.Errorf("redis: can't parse reply=%.100q reading string into buffer", line)
+}
+
 func (r *Reader) ReadString() (string, error) {
 	line, err := r.ReadLine()
 	if err != nil {

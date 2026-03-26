@@ -847,6 +847,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			atomic.StoreUint32(&retryTimeout, 1)
 			return err
 		}
+
 		readReplyFunc := cmd.readReply
 		// Apply unstable RESP3 search module.
 		if c.opt.Protocol != 2 {
