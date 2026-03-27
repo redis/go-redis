@@ -1,55 +1,74 @@
 package redis_test
 
 import (
-	"context"
-	"testing"
-
-	miniredis "github.com/alicebob/miniredis/v2"
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
 )
 
-func TestNewScriptServerSHA_Integration_ReloadAfterScriptFlush(t *testing.T) {
-	ctx := context.Background()
+var _ = Describe("NewScriptServerSHA", func() {
+	var client *redis.Client
 
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis start: %v", err)
-	}
-	defer mr.Close()
+	BeforeEach(func() {
+		client = redis.NewClient(redisOptions())
+		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+	})
 
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
+	AfterEach(func() {
+		Expect(client.Close()).NotTo(HaveOccurred())
+	})
 
-	s := redis.NewScriptServerSHA("return 1")
+	It("should reload script after SCRIPT FLUSH", func() {
+		s := redis.NewScriptServerSHA("return 1")
 
-	if err := s.Run(ctx, rdb, nil).Err(); err != nil {
-		t.Fatalf("first Run failed: %v", err)
-	}
+		// First run should succeed (loads script via SCRIPT LOAD)
+		err := s.Run(ctx, client, nil).Err()
+		Expect(err).NotTo(HaveOccurred())
 
-	if err := rdb.Do(ctx, "SCRIPT", "FLUSH").Err(); err != nil {
-		t.Fatalf("SCRIPT FLUSH failed: %v", err)
-	}
+		// Flush all scripts from Redis
+		err = client.Do(ctx, "SCRIPT", "FLUSH").Err()
+		Expect(err).NotTo(HaveOccurred())
 
-	if err := s.Run(ctx, rdb, nil).Err(); err != nil {
-		t.Fatalf("second Run after flush failed: %v", err)
-	}
-}
+		// Second run should still succeed (reloads script after NOSCRIPT)
+		err = s.Run(ctx, client, nil).Err()
+		Expect(err).NotTo(HaveOccurred())
+	})
 
-func TestNewScriptServerSHA_Integration_RunRO(t *testing.T) {
-	ctx := context.Background()
+	It("should run script with RunRO", func() {
+		s := redis.NewScriptServerSHA("return 1")
 
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis start: %v", err)
-	}
-	defer mr.Close()
+		err := s.RunRO(ctx, client, nil).Err()
+		Expect(err).NotTo(HaveOccurred())
+	})
 
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
+	It("should run script with EvalSha", func() {
+		s := redis.NewScriptServerSHA("return KEYS[1]")
 
-	s := redis.NewScriptServerSHA("return 1")
+		result, err := s.EvalSha(ctx, client, []string{"mykey"}).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("mykey"))
+	})
 
-	if err := s.RunRO(ctx, rdb, nil).Err(); err != nil {
-		t.Fatalf("RunRO failed: %v", err)
-	}
-}
+	It("should run script with EvalShaRO", func() {
+		s := redis.NewScriptServerSHA("return ARGV[1]")
+
+		result, err := s.EvalShaRO(ctx, client, nil, "myarg").Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal("myarg"))
+	})
+
+	It("should cache hash after first load", func() {
+		s := redis.NewScriptServerSHA("return 42")
+
+		// Hash should be empty before first run
+		Expect(s.Hash()).To(Equal(""))
+
+		// Run the script
+		result, err := s.Run(ctx, client, nil).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int64(42)))
+
+		// Hash should be populated after run
+		Expect(s.Hash()).NotTo(Equal(""))
+	})
+})
