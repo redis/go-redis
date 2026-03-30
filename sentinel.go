@@ -1173,7 +1173,6 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 	}
 }
 
-
 //------------------------------------------------------------------------------
 
 // NewFailoverClusterClient returns a client that supports routing read-only commands
