@@ -8,9 +8,10 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
 	github.com/zeebo/xxh3 v1.1.0
+	go.uber.org/atomic v1.11.0
 )
 
-require go.uber.org/atomic v1.11.0
+
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
