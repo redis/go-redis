@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1138,7 +1139,7 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		}
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
-			if !contains(c.sentinelAddrs, sentinelAddr) {
+			if !slices.Contains(c.sentinelAddrs, sentinelAddr) {
 				internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
 					sentinelAddr, c.opt.MasterName)
 				c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
@@ -1172,14 +1173,6 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 	}
 }
 
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
-}
 
 //------------------------------------------------------------------------------
 
