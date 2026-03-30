@@ -18,24 +18,11 @@ type writer interface {
 	WriteString(s string) (n int, err error)
 }
 
-// ZeroCopyBuffer is a marker type for zero-copy writes.
-// When the Writer encounters this type, it writes only the RESP header ($<len>\r\n)
-// and stores the buffer reference. The actual data must be written separately
-// using WriteZeroCopyData after flushing the buffered writer.
-type ZeroCopyBuffer struct {
-	Data []byte
-}
-
 type Writer struct {
 	writer
 
 	lenBuf []byte
 	numBuf []byte
-
-	// zeroCopyBuf holds the buffer for zero-copy write operations.
-	// When set, the caller must write this data directly to the socket
-	// after flushing the buffered writer.
-	zeroCopyBuf []byte
 }
 
 func NewWriter(wr writer) *Writer {
@@ -45,14 +32,6 @@ func NewWriter(wr writer) *Writer {
 		lenBuf: make([]byte, 64),
 		numBuf: make([]byte, 64),
 	}
-}
-
-// ZeroCopyData returns the pending zero-copy buffer and clears it.
-// Returns nil if there's no pending zero-copy data.
-func (w *Writer) ZeroCopyData() []byte {
-	buf := w.zeroCopyBuf
-	w.zeroCopyBuf = nil
-	return buf
 }
 
 func (w *Writer) WriteArgs(args []interface{}) error {
@@ -93,13 +72,6 @@ func (w *Writer) WriteArg(v interface{}) error {
 		return w.string(*v)
 	case []byte:
 		return w.bytes(v)
-	case ZeroCopyBuffer:
-		return w.zeroCopyBytes(v.Data)
-	case *ZeroCopyBuffer:
-		if v == nil {
-			return w.string("")
-		}
-		return w.zeroCopyBytes(v.Data)
 	case int:
 		return w.int(int64(v))
 	case *int:
@@ -243,22 +215,6 @@ func (w *Writer) bytes(b []byte) error {
 	return w.crlf()
 }
 
-// zeroCopyBytes writes only the RESP bulk string header ($<len>\r\n) and stores
-// the buffer reference for later zero-copy write. The actual data and trailing
-// \r\n must be written separately after flushing the buffered writer.
-func (w *Writer) zeroCopyBytes(b []byte) error {
-	if err := w.WriteByte(RespString); err != nil {
-		return err
-	}
-
-	if err := w.writeLen(len(b)); err != nil {
-		return err
-	}
-
-	// Store the buffer for zero-copy write - don't write the data here
-	w.zeroCopyBuf = b
-	return nil
-}
 
 func (w *Writer) string(s string) error {
 	return w.bytes(util.StringToBytes(s))

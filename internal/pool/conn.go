@@ -878,31 +878,6 @@ func (cn *Conn) WithWriter(
 		return err
 	}
 
-	// Check for zero-copy data that needs to be written directly to socket
-	zeroCopyData := cn.wr.ZeroCopyData()
-	if zeroCopyData != nil {
-		// Flush buffered data first (command header)
-		if err := cn.bw.Flush(); err != nil {
-			return err
-		}
-
-		// Write data directly to socket - TRUE ZERO COPY
-		netConn := cn.getNetConn()
-		if netConn == nil {
-			return errConnNotAvailableForWrite
-		}
-		if _, err := netConn.Write(zeroCopyData); err != nil {
-			return err
-		}
-
-		// Write trailing \r\n directly to socket
-		if _, err := netConn.Write([]byte("\r\n")); err != nil {
-			return err
-		}
-
-		return nil
-	}
-
 	return cn.bw.Flush()
 }
 

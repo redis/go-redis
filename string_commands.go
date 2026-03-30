@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 type StringCmdable interface {
@@ -467,18 +465,13 @@ func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expir
 }
 
 // SetFromBuffer performs a SET command writing data directly from the provided buffer.
-// This is a zero-copy operation - data is written directly from buf to the socket,
-// bypassing intermediate buffering.
+// For large values, bufio.Writer bypasses its internal buffer and writes directly
+// to the socket, avoiding intermediate copies.
 //
-// Note: This command cannot be retried automatically on failure since partial data
-// may have been written to the socket.
-//
-// Note: Expiration is not supported with zero-copy writes. Use Expire() separately
-// if you need to set a TTL on the key.
+// Note: Expiration is not supported. Use Expire() separately if needed.
 func (c cmdable) SetFromBuffer(ctx context.Context, key string, buf []byte) *StatusCmd {
-	args := []interface{}{"set", key, proto.ZeroCopyBuffer{Data: buf}}
+	args := []interface{}{"set", key, buf}
 	cmd := NewStatusCmd(ctx, args...)
-	cmd.SetNoRetry(true)
 	_ = c(ctx, cmd)
 	return cmd
 }
