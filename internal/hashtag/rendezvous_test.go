@@ -40,9 +40,12 @@ var _ = Describe("RendezvousHash", func() {
 		}
 
 		// Verify distribution is roughly even (allowing some variance)
+		// With 100 keys and 3 nodes, expect roughly 33 keys per node.
+		// Check that each node receives more than 25 keys to verify fairly even distribution.
 		for _, node := range nodes {
 			count := results[node]
-			Expect(count).To(BeNumerically(">", 0), "node %s should receive at least one key", node)
+			Expect(count).To(BeNumerically(">", 25),
+				"node %s should receive more than 25 keys (got %d)", node, count)
 		}
 	})
 
