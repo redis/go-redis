@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-func randomString(i int) string {
-	return "key-" + strconv.Itoa(i)
-}
-
 func TestRendezvous_Empty(t *testing.T) {
 	h := NewRendezvousHash(nil)
 
@@ -21,7 +17,7 @@ func TestRendezvous_SingleNode(t *testing.T) {
 	h := NewRendezvousHash([]string{"only"})
 
 	for i := 0; i < 100; i++ {
-		if h.Get(randomString(i)) != "only" {
+		if h.Get("key-"+strconv.Itoa(i)) != "only" {
 			t.Fatal("single node should always return itself")
 		}
 	}
