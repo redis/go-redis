@@ -113,6 +113,10 @@ func (th *tracingHook) ProcessHook(hook redis.ProcessHook) redis.ProcessHook {
 			return hook(ctx, cmd)
 		}
 
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
+			return hook(ctx, cmd)
+		}
+
 		attrs := make([]attribute.KeyValue, 0, 8)
 		if th.conf.callerEnabled {
 			fn, file, line := funcFileLine("github.com/redis/go-redis")
@@ -148,6 +152,10 @@ func (th *tracingHook) ProcessPipelineHook(
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 
 		if th.conf.filterProcessPipeline != nil && th.conf.filterProcessPipeline(cmds) {
+			return hook(ctx, cmds)
+		}
+
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
 			return hook(ctx, cmds)
 		}
 
