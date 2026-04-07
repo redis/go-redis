@@ -92,6 +92,10 @@ func (th *tracingHook) DialHook(hook redis.DialHook) redis.DialHook {
 			return hook(ctx, network, addr)
 		}
 
+		if th.conf.skipSpanIfNotRecording && !trace.SpanFromContext(ctx).IsRecording() {
+			return hook(ctx, network, addr)
+		}
+
 		ctx, span := th.conf.tracer.Start(ctx, "redis.dial", th.spanOpts...)
 		defer span.End()
 

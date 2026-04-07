@@ -662,6 +662,79 @@ func TestTracingHook_ProcessPipelineHook_LongCommands(t *testing.T) {
 }
 
 func TestWithSkipSpanIfNotRecording(t *testing.T) {
+	t.Run("dial: skips span when no parent and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(context.Background(), "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
+	t.Run("dial: creates span when parent is recording and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := provider.Tracer("test").Start(context.Background(), "parent")
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(ctx, "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		parentSpan.End()
+
+		spans := imsb.GetSpans()
+		found := false
+		for _, s := range spans {
+			if s.Name == "redis.dial" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("expected dial span to be created when parent is recording")
+		}
+	})
+
+	t.Run("dial: skips span when parent is sampled out and flag is true", func(t *testing.T) {
+		imsb := tracetest.NewInMemoryExporter()
+		sampledOutProvider := sdktrace.NewTracerProvider(
+			sdktrace.WithSyncer(imsb),
+			sdktrace.WithSampler(sdktrace.NeverSample()),
+		)
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(sampledOutProvider),
+			WithSkipSpanIfNotRecording(true),
+		)
+
+		ctx, parentSpan := sampledOutProvider.Tracer("test").Start(context.Background(), "parent")
+		defer parentSpan.End()
+
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return nil, nil
+		})
+		if _, err := dialHook(ctx, "tcp", "localhost:6379"); err != nil {
+			t.Fatal(err)
+		}
+		assertEqual(t, 0, len(imsb.GetSpans()))
+	})
+
 	t.Run("process: skips span when no parent and flag is true", func(t *testing.T) {
 		imsb := tracetest.NewInMemoryExporter()
 		provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(imsb))
