@@ -7591,13 +7591,18 @@ type VectorScoreSliceCmd struct {
 
 var _ Cmder = (*VectorScoreSliceCmd)(nil)
 
-func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+func NewVectorScoreSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
 	return &VectorScoreSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
 	}
+}
+
+// NewVectorInfoSliceCmd is an alias for NewVectorScoreSliceCmd kept for backwards compatibility.
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return NewVectorScoreSliceCmd(ctx, args...)
 }
 
 func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {

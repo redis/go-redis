@@ -595,7 +595,7 @@ func TestVectorScoreSliceCmdReadReply(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rd := proto.NewReader(newMockConn(tt.respData))
-			cmd := NewVectorInfoSliceCmd(context.Background(), "vsim", "key", "withscores")
+			cmd := NewVectorScoreSliceCmd(context.Background(), "vsim", "key", "withscores")
 			err := cmd.readReply(rd)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
