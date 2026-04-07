@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -797,12 +798,12 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					getCmdRaw := client.JSONGet(ctx, "person:1", ".")
 					rawJSON, err := getCmdRaw.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (raw) failed")
-					GinkgoWriter.Printf("Raw JSON: %s\n", rawJSON)
+					fmt.Printf("Raw JSON: %s\n", rawJSON)
 
 					getCmdExpanded := client.JSONGet(ctx, "person:1", ".")
 					expandedJSON, err := getCmdExpanded.Expanded()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (expanded) failed")
-					GinkgoWriter.Printf("Expanded JSON: %+v\n", expandedJSON)
+					fmt.Printf("Expanded JSON: %+v\n", expandedJSON)
 
 					Expect(rawJSON).To(MatchJSON(jsonMustMarshal(expandedJSON)))
 
@@ -848,7 +849,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					searchCmd := client.FTSearchWithArgs(ctx, "person_idx", "@contact_value:(alice\\@example\\.com alice_wonder)", &redis.FTSearchOptions{Return: []redis.FTSearchReturn{{FieldName: "$.person.name"}, {FieldName: "$.person.age"}, {FieldName: "$.person.address.city"}}})
 					searchResult, err := searchCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "FT.SEARCH failed")
-					GinkgoWriter.Printf("Advanced Search result: %+v\n", searchResult)
+					fmt.Printf("Advanced Search result: %+v\n", searchResult)
 
 					incrCmd := client.JSONNumIncrBy(ctx, "person:1", "$.person.age", 5)
 					incrResult, err := incrCmd.Result()

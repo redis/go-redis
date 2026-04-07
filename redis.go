@@ -26,6 +26,14 @@ type Scanner = hscan.Scanner
 // Nil reply returned by Redis when key does not exist.
 const Nil = proto.Nil
 
+// String representations of special float values.
+// Values are lowercase for consistency with Redis RESP2 protocol responses.
+const (
+	NaN  = internal.NaN  // Not a Number
+	Inf  = internal.Inf  // Positive infinity
+	NInf = internal.NInf // Negative infinity
+)
+
 // SetLogger set custom log
 // Use with VoidLogger to disable logging.
 // If logger is nil, the call is ignored and the existing logger is kept.
@@ -813,16 +821,9 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 }
 
 func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
-	switch cmd.(type) {
-	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
-		if c.opt.UnstableResp3 {
-			return true, nil
-		} else {
-			return false, fmt.Errorf("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3. See the README and the release notes for guidance")
-		}
-	default:
-		return false, nil
-	}
+	// All search commands (FTSearchCmd, AggregateCmd, FTInfoCmd, FTSpellCheckCmd, FTSynDumpCmd)
+	// now have stable RESP3 parsing. No commands require the UnstableResp3 flag anymore.
+	return false, nil
 }
 
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
