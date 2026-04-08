@@ -553,6 +553,12 @@ func (p *ConnPool) addIdleConn() error {
 
 	p.conns[cn.GetID()] = cn
 	p.idleConns = append(p.idleConns, cn)
+
+	// Record connection count increment (new idle connection from min-idle prewarm)
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(context.Background(), 1, cn, "idle", false)
+	}
+
 	return nil
 }
 
@@ -866,11 +872,6 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		if !p.isHealthyConn(cn, nowNs) {
-			// Record connection count decrement (closing idle connection due to health check)
-			if cb := getMetricConnectionCountCallback(); cb != nil {
-				cb(ctx, -1, cn, "idle", false)
-			}
-
 			// Connection was popped from idle pool, so fromState is MetricStateIdle
 			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateIdle)
 			continue
@@ -883,10 +884,6 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			if hookErr != nil || !acceptConn {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
-					// Record connection count decrement (closing idle connection due to hook error)
-					if cb := getMetricConnectionCountCallback(); cb != nil {
-						cb(ctx, -1, cn, "idle", false)
-					}
 					// Connection was popped from idle pool, so fromState is MetricStateIdle
 					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateIdle)
 				} else {
@@ -955,10 +952,6 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			// New connection was recorded as "" → MetricStateIdle in newConn, so fromState is MetricStateIdle
-			// Record connection count decrement to compensate newConn's +1 idle
-			if cb := getMetricConnectionCountCallback(); cb != nil {
-				cb(ctx, -1, newcn, "idle", false)
-			}
 			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
 			return nil, err
 		}
@@ -1414,6 +1407,11 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 		cb(ctx, cn, fromState, "")
 	}
 
+	// Record connection count decrement (UpDownCounter) for the state the connection was in
+	if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
+		cb(ctx, -1, cn, fromState, false)
+	}
+
 	// Record connection closed metric with the specified reason
 	if cb := getMetricConnectionClosedCallback(); cb != nil {
 		cb(ctx, cn, reason, nil)
@@ -1517,7 +1515,23 @@ func (p *ConnPool) Close() error {
 
 	var firstErr error
 	p.connsMu.Lock()
+
+	// Emit -1 for each connection being closed during pool shutdown.
+	// Determine which connections are idle vs in-use for correct state attribution.
+	cb := getMetricConnectionCountCallback()
+	idleSet := make(map[uint64]struct{}, len(p.idleConns))
+	for _, cn := range p.idleConns {
+		idleSet[cn.GetID()] = struct{}{}
+	}
+	ctx := context.Background()
 	for _, cn := range p.conns {
+		if cb != nil {
+			if _, isIdle := idleSet[cn.GetID()]; isIdle {
+				cb(ctx, -1, cn, "idle", false)
+			} else {
+				cb(ctx, -1, cn, "used", false)
+			}
+		}
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
 			firstErr = err
 		}

@@ -77,7 +77,15 @@ type OTelRecorder interface {
 	// consumerGroup: name of the consumer group
 	// consumerName: name of the consumer
 	RecordStreamLag(ctx context.Context, lag time.Duration, cn ConnInfo, streamName, consumerGroup, consumerName string)
+}
 
+// OTelConnectionCounter is an optional capability interface for recording
+// connection count and pending request changes via UpDownCounters.
+// Implementations of OTelRecorder can optionally implement this interface
+// to receive connection count and pending request delta notifications.
+// This is kept separate from OTelRecorder to avoid breaking existing
+// third-party implementations when new methods are added.
+type OTelConnectionCounter interface {
 	// RecordConnectionCount records a change in connection count (UpDownCounter)
 	// delta: +1 when connection added, -1 when connection removed
 	// state: connection state (e.g., "idle", "used")
@@ -175,11 +183,15 @@ func (a *otelRecorderAdapter) RecordStreamLag(ctx context.Context, lag time.Dura
 }
 
 func (a *otelRecorderAdapter) RecordConnectionCount(ctx context.Context, delta int, cn *pool.Conn, state string, isPubSub bool) {
-	a.recorder.RecordConnectionCount(ctx, delta, toConnInfo(cn), state, isPubSub)
+	if counter, ok := a.recorder.(OTelConnectionCounter); ok {
+		counter.RecordConnectionCount(ctx, delta, toConnInfo(cn), state, isPubSub)
+	}
 }
 
 func (a *otelRecorderAdapter) RecordPendingRequests(ctx context.Context, delta int, cn *pool.Conn, poolName string) {
-	a.recorder.RecordPendingRequests(ctx, delta, toConnInfo(cn), poolName)
+	if counter, ok := a.recorder.(OTelConnectionCounter); ok {
+		counter.RecordPendingRequests(ctx, delta, toConnInfo(cn), poolName)
+	}
 }
 
 func (a *otelRecorderAdapter) RegisterPool(poolName string, p pool.Pooler) {
