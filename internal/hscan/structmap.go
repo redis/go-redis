@@ -110,8 +110,8 @@ func (s StructValue) Scan(key string, value string) error {
 		case encoding.TextUnmarshaler:
 			return scan.UnmarshalText(util.StringToBytes(value))
 		case encoding.BinaryUnmarshaler:
-			return scan.UnmarshalBinary(util.StringToBytes(value))			
-			}
+			return scan.UnmarshalBinary(util.StringToBytes(value))
+		}
 	}
 
 	if isPtr {
