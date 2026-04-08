@@ -891,6 +891,15 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateIdle)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
+					// Connection is still in idle state (hook rejected without error).
+					// Record idle→used transition so putConn's used→idle accounting is balanced.
+					if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+						cb(ctx, cn, MetricStateIdle, MetricStateUsed)
+					}
+					if cb := getMetricConnectionCountCallback(); cb != nil {
+						cb(ctx, -1, cn, "idle", false)
+						cb(ctx, 1, cn, "used", false)
+					}
 					// Return connection to pool without freeing the turn that this Get() call holds.
 					// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
 					p.putConnWithoutTurn(ctx, cn)
@@ -946,6 +955,10 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
 			// New connection was recorded as "" → MetricStateIdle in newConn, so fromState is MetricStateIdle
+			// Record connection count decrement to compensate newConn's +1 idle
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, newcn, "idle", false)
+			}
 			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
 			return nil, err
 		}
@@ -967,8 +980,9 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 		cb(ctx, newcn, "", MetricStateUsed)
 	}
-	// Record connection count increment (new connection directly in used state)
+	// Record connection count: compensate newConn's +1 idle, then +1 used
 	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, -1, newcn, "idle", false)
 		cb(ctx, 1, newcn, "used", false)
 	}
 
