@@ -372,6 +372,8 @@ var (
 //  3. If the number of Addrs is two or more, or IsClusterMode option is specified,
 //     a ClusterClient is returned.
 //  4. Otherwise, a single-node Client is returned.
+//
+// Passing nil UniversalOptions will cause a panic.
 func NewUniversalClient(opts *UniversalOptions) UniversalClient {
 	if opts == nil {
 		panic("redis: NewUniversalClient nil options")

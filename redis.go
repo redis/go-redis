@@ -716,7 +716,9 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		if cn != nil {
 			lastConn = cn
 		}
-		if err == nil || !retry {
+		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
+		// which writes directly to an io.Writer and cannot undo partial writes)
+		if err == nil || !retry || cmd.NoRetry() {
 			// Record total operation duration
 			if opDurationCallback != nil {
 				operationDuration := time.Since(operationStart)
@@ -1041,7 +1043,10 @@ func (c *baseClient) generalProcessPipeline(
 			canRetry, err = p(ctx, cn, cmds)
 			return err
 		})
-		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) {
+		// Don't retry if any command in the pipeline explicitly disables retries
+		// (e.g., RawWriteToCmd which writes directly to an io.Writer and cannot
+		// undo partial writes on retry)
+		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
 			if !isRedisError(lastErr) {
 				setCmdsErr(cmds, lastErr)
@@ -1209,6 +1214,7 @@ type Client struct {
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
+// Passing nil Options will cause a panic.
 func NewClient(opt *Options) *Client {
 	if opt == nil {
 		panic("redis: NewClient nil options")
@@ -1308,7 +1314,8 @@ func (c *Client) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *Options that were used to create the client.
+// Any alteration of the returned *Options may result in undefined behaviour.
 func (c *Client) Options() *Options {
 	return c.opt
 }
