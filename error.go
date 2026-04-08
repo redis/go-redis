@@ -144,6 +144,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	if strings.HasPrefix(s, "READONLY ") {
 		return true
 	}
+	if strings.Contains(s, "-READONLY You can't write against a read only replica") {
+		return true
+	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {
 		return true
 	}
