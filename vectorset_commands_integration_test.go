@@ -377,7 +377,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(simScoresAttribs[0].Score, float64(1))
 					expectEqual(*simScoresAttribs[0].Attribs, vals[0].attr)
 
-					// test withattribs null attrы
+					// test withattribs null attrs
 					simAttribs, err = client.VSimWithArgsWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
 						Count: 1,
 					}).Result()
@@ -386,7 +386,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(simAttribs[0].Name, vals[3].name)
 					expectEqual(simAttribs[0].Attribs, (*string)(nil))
 
-					// test withscores && withattribs null attrы
+					// test withscores && withattribs null attrs
 					simScoresAttribs, err = client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
 						Count: 1,
 					}).Result()

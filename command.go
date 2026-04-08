@@ -7647,6 +7647,21 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
+func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
+	v, err := rd.ReadReply()
+	if err != nil {
+		if err == proto.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+	}
+	return &s, nil
+}
+
 type VectorAttribSliceCmd struct {
 	baseCmd
 
@@ -7681,21 +7696,6 @@ func (cmd *VectorAttribSliceCmd) String() string {
 }
 
 func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
-	readAttribOrNil := func() (*string, error) {
-		v, err := rd.ReadReply()
-		if err != nil {
-			if err == proto.Nil {
-				return nil, nil
-			}
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
-		}
-		return &s, nil
-	}
-
 	replyType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
@@ -7712,7 +7712,7 @@ func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return err
 			}
-			attrib, err := readAttribOrNil()
+			attrib, err := readVectorAttribStringOrNil(rd)
 			if err != nil {
 				return err
 			}
@@ -7734,7 +7734,7 @@ func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		attrib, err := readAttribOrNil()
+		attrib, err := readVectorAttribStringOrNil(rd)
 		if err != nil {
 			return err
 		}
@@ -7784,21 +7784,6 @@ func (cmd *VectorScoreAttribSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
-	readAttribOrNil := func() (*string, error) {
-		v, err := rd.ReadReply()
-		if err != nil {
-			if err == proto.Nil {
-				return nil, nil
-			}
-			return nil, err
-		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
-		}
-		return &s, nil
-	}
-
 	replyType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
@@ -7822,7 +7807,7 @@ func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
 			if err != nil {
 				return err
 			}
-			attrib, err := readAttribOrNil()
+			attrib, err := readVectorAttribStringOrNil(rd)
 			if err != nil {
 				return err
 			}
@@ -7848,7 +7833,7 @@ func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		attrib, err := readAttribOrNil()
+		attrib, err := readVectorAttribStringOrNil(rd)
 		if err != nil {
 			return err
 		}

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 func TestVectorFP32_Value(t *testing.T) {
@@ -375,6 +378,64 @@ func TestVSimWithArgsWithScoresWithAttribs_NilArgs(t *testing.T) {
 	if !foundAttribs {
 		t.Error("missing withattribs arg")
 	}
+}
+
+func TestVectorScoreAttribSliceCmd_readReply(t *testing.T) {
+	t.Run("resp3FlatArray", func(t *testing.T) {
+		// *6 -> two (name, score, attrib) triplets; second attrib is nil
+		reply := "*6\r\n" +
+			"$2\r\na1\r\n,1.5\r\n$4\r\nattr\r\n" +
+			"$2\r\na2\r\n,2.5\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "a1" || cmd.val[0].Score != 1.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "attr" {
+			t.Errorf("first row = %+v, want {a1 1.5 %q}", cmd.val[0], "attr")
+		}
+
+		if cmd.val[1].Name != "a2" || cmd.val[1].Score != 2.5 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {a2 2.5 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("resp3Map", func(t *testing.T) {
+		// %2 -> two map entries; value each is *2 [score, attrib]
+		reply := "%2\r\n" +
+			"$2\r\nb1\r\n*2\r\n,0.5\r\n$1\r\na\r\n" +
+			"$2\r\nb2\r\n*2\r\n,1\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "b1" || cmd.val[0].Score != 0.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "a" {
+			t.Errorf("first row = %+v, want {b1 0.5 %q}", cmd.val[0], "a")
+		}
+
+		if cmd.val[1].Name != "b2" || cmd.val[1].Score != 1 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {b2 1 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("flatArrayLenNotMultipleOf3", func(t *testing.T) {
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader("*1\r\n$1\r\nx\r\n"))
+		if err := cmd.readReply(rd); err == nil {
+			t.Fatal("expected error for array length not divisible by 3")
+		}
+	})
 }
 
 // Additional tests for missing coverage
