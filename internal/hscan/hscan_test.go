@@ -1,6 +1,7 @@
 package hscan
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -49,6 +50,16 @@ type TimeData struct {
 }
 
 type i []interface{}
+
+type testUUID [16]byte
+
+func (uuid *testUUID) UnmarshalBinary(data []byte) error {
+	if len(data) != 16 {
+		return fmt.Errorf("invalid UUID (got %d bytes)", len(data))
+	}
+	copy(uuid[:], data)
+	return nil
+}
 
 func TestGinkgoSuite(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -216,5 +227,22 @@ var _ = Describe("Scan", func() {
 		var tt TimeTime
 		Expect(Scan(&tt, i{"time"}, i{now.Format(time.RFC3339Nano)})).NotTo(HaveOccurred())
 		Expect(now.Unix()).To(Equal(tt.Time.Unix()))
+	})
+
+	It("should use BinaryUnmarshaler type to scan binary data from hash table", func() {
+		data := testUUID{
+			0x7d, 0x44, 0x48, 0x40,
+			0x9d, 0xc0,
+			0x11, 0xd1,
+			0xb2, 0x45,
+			0x5f, 0xfd, 0xce, 0x74, 0xfa, 0xd2,
+		}
+		type MyHash struct {
+			UUID testUUID `redis:"uuid"`
+		}
+		var d MyHash
+
+		Expect(Scan(&d, i{"uuid"}, i{string(data[:])})).NotTo(HaveOccurred())
+		Expect(d.UUID).To(Equal(data))
 	})
 })
