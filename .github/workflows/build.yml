@@ -23,7 +23,7 @@ jobs:
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
         go-version:
-          - "1.24.x"
+          - "1.25.x"
           - oldstable
           - stable
 
@@ -82,7 +82,7 @@ jobs:
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
           go-version:
-            - "1.24.x"
+            - "1.25.x"
             - oldstable
             - stable
 
