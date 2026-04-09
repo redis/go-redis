@@ -2,7 +2,9 @@ package redis
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -272,11 +274,17 @@ func (s *ShardedPubSub) onTopologyChange() {
 
 			// Subscribe on new shard.
 			ps := s.getOrCreateShard(newAddr)
-			_ = ps.SSubscribe(ctx, channels...)
+			if err := ps.SSubscribe(ctx, channels...); err != nil {
+				// SSubscribe failed — keep the old mapping so the channel
+				// isn't orphaned with an incorrect chanShard entry.
+				continue
+			}
 
-			// Update channel->shard mapping.
+			// Update channel->shard mapping only on successful subscribe.
 			for _, ch := range channels {
-				s.chanShard[ch] = newAddr
+				if _, exists := s.chanShard[ch]; exists {
+					s.chanShard[ch] = newAddr
+				}
 			}
 		}
 
@@ -299,6 +307,9 @@ func (s *ShardedPubSub) onTopologyChange() {
 
 // resubscribeShard closes a failed shard connection, re-resolves the channels
 // that were on it, and re-subscribes them on fresh connections.
+// The caller must hold s.mu. The lock is temporarily released during address
+// resolution to avoid deadlock (nodeAddrForChannel -> state.Get -> Reload ->
+// onReload -> onTopologyChange -> s.mu).
 func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string) error {
 	// Close the failed shard.
 	if ps, ok := s.shards[failedAddr]; ok {
@@ -314,21 +325,36 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		}
 	}
 
-	// Re-resolve and re-subscribe.
+	// Release lock before resolving addresses to avoid deadlock.
+	s.mu.Unlock()
+
 	groups := make(map[string][]string)
+	addrMap := make(map[string]string)
 	for _, ch := range channels {
 		newAddr, err := s.nodeAddrForChannel(ctx, ch)
 		if err != nil {
+			s.mu.Lock()
 			return err
 		}
 		groups[newAddr] = append(groups[newAddr], ch)
-		s.chanShard[ch] = newAddr
+		addrMap[ch] = newAddr
+	}
+
+	// Re-acquire lock for state mutations.
+	s.mu.Lock()
+
+	if s.closed {
+		return pool.ErrClosed
 	}
 
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
 			return err
+		}
+		// Only update mapping on successful subscribe.
+		for _, ch := range chs {
+			s.chanShard[ch] = addrMap[ch]
 		}
 	}
 
@@ -337,6 +363,10 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 
 // Close closes all underlying PubSub connections and the message channel.
 func (s *ShardedPubSub) Close() error {
+	// Deregister before acquiring the lock — deregister doesn't need it
+	// and doing it first avoids holding s.mu longer than necessary.
+	s.cluster.deregisterShardedPubSub(s)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -345,9 +375,6 @@ func (s *ShardedPubSub) Close() error {
 	}
 	s.closed = true
 	close(s.exit)
-
-	// Deregister from the cluster client.
-	s.cluster.deregisterShardedPubSub(s)
 
 	var firstErr error
 	for addr, ps := range s.shards {
@@ -368,4 +395,48 @@ func (s *ShardedPubSub) Close() error {
 	}
 
 	return firstErr
+}
+
+// Ping sends a PING to all underlying shard PubSub connections.
+// Returns the first error encountered, if any.
+func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return pool.ErrClosed
+	}
+
+	for addr, ps := range s.shards {
+		if err := ps.Ping(ctx, payload...); err != nil {
+			return fmt.Errorf("shard %s ping failed: %w", addr, err)
+		}
+	}
+	return nil
+}
+
+// ReceiveMessage waits for a message from any shard.
+// This is a blocking call that reads from the multiplexed message channel.
+// Channel() must be called before ReceiveMessage.
+func (s *ShardedPubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
+	if s.msgCh == nil {
+		return nil, fmt.Errorf("redis: Channel() must be called before ReceiveMessage")
+	}
+
+	select {
+	case msg, ok := <-s.msgCh:
+		if !ok {
+			return nil, pool.ErrClosed
+		}
+		return msg, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// ReceiveTimeout is like ReceiveMessage but with a timeout.
+func (s *ShardedPubSub) ReceiveTimeout(ctx context.Context, timeout time.Duration) (*Message, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return s.ReceiveMessage(ctx)
 }

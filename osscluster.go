@@ -1139,6 +1139,7 @@ type ClusterClient struct {
 
 	spsMu          sync.Mutex
 	shardedPubSubs []*ShardedPubSub
+	spsNotifying   uint32 // CAS guard for async topology notifications
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1213,16 +1214,27 @@ func (c *ClusterClient) deregisterShardedPubSub(sps *ShardedPubSub) {
 	}
 }
 
-// notifyShardedPubSubs notifies all registered ShardedPubSubs of a topology change.
+// notifyShardedPubSubs asynchronously notifies all registered ShardedPubSubs
+// of a topology change. Uses a compare-and-swap to avoid triggering multiple
+// concurrent migrations — if one is already in-flight, this is a no-op since
+// the running migration will pick up the latest state anyway.
 func (c *ClusterClient) notifyShardedPubSubs() {
-	c.spsMu.Lock()
-	subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
-	copy(subs, c.shardedPubSubs)
-	c.spsMu.Unlock()
-
-	for _, sps := range subs {
-		sps.onTopologyChange()
+	if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+		return
 	}
+
+	go func() {
+		defer atomic.StoreUint32(&c.spsNotifying, 0)
+
+		c.spsMu.Lock()
+		subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+		copy(subs, c.shardedPubSubs)
+		c.spsMu.Unlock()
+
+		for _, sps := range subs {
+			sps.onTopologyChange()
+		}
+	}()
 }
 
 // Options returns read-only *ClusterOptions that were used to create the client.
