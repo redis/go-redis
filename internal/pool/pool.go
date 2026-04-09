@@ -623,13 +623,24 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		}
 	}
 
-	// Notify metrics: new connection created and idle
-	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, cn, "", MetricStateIdle)
-	}
-	// Record connection count increment (new connection in idle state)
-	if cb := getMetricConnectionCountCallback(); cb != nil {
-		cb(ctx, 1, cn, "idle", false)
+	// Notify metrics: new connection created.
+	// Pooled connections start as idle (will transition to used in getConn).
+	// Non-pooled connections (e.g., from NewConn()) go directly to the caller as used,
+	// so record them as used to match the -1 used in removeConnInternal.
+	if pooled {
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, "", MetricStateIdle)
+		}
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, 1, cn, "idle", false)
+		}
+	} else {
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, "", MetricStateUsed)
+		}
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, 1, cn, "used", false)
+		}
 	}
 
 	return cn, nil
