@@ -1366,6 +1366,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	}
 
 	if shouldCloseConn {
+		// Record connection closed (monotonic counter — always emit, even after pool close).
+		if cb := getMetricConnectionClosedCallback(); cb != nil {
+			cb(ctx, cn, "conn_pool_close", nil)
+		}
 		_ = p.closeConn(cn)
 	}
 
@@ -1436,7 +1440,7 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
 	p.removeConnWithLock(cn)
 
-	// Skip metric emissions if pool is closed — Close() already emitted
+	// Skip UpDownCounter emissions if pool is closed — Close() already emitted
 	// all -1 deltas for every connection in the pool.
 	if !p.closed() {
 		// Record connection state change: connection is being removed from the specified state
@@ -1448,11 +1452,13 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 		if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
 			cb(ctx, -1, cn, fromState, false)
 		}
+	}
 
-		// Record connection closed metric with the specified reason
-		if cb := getMetricConnectionClosedCallback(); cb != nil {
-			cb(ctx, cn, reason, nil)
-		}
+	// Record connection closed metric with the specified reason.
+	// This is a monotonic Int64Counter (not an UpDownCounter), so it has no
+	// double-counting risk and Close() never emits closed-connection events.
+	if cb := getMetricConnectionClosedCallback(); cb != nil {
+		cb(ctx, cn, reason, nil)
 	}
 
 	return p.closeConn(cn)
@@ -1569,6 +1575,10 @@ func (p *ConnPool) Close() error {
 			} else {
 				cb(ctx, -1, cn, "used", false)
 			}
+		}
+		// Record connection closed (monotonic counter — always emit during shutdown).
+		if closedCb := getMetricConnectionClosedCallback(); closedCb != nil {
+			closedCb(ctx, cn, "pool_shutdown", nil)
 		}
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
 			firstErr = err
