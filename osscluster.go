@@ -1044,6 +1044,8 @@ type clusterStateHolder struct {
 	state          atomic.Value
 	reloading      uint32 // atomic
 	reloadPending  uint32 // atomic - set to 1 when reload is requested during active reload
+
+	onReload func() // called after a successful state reload
 }
 
 func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error), reloadInterval time.Duration) *clusterStateHolder {
@@ -1059,6 +1061,9 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 		return nil, err
 	}
 	c.state.Store(state)
+	if c.onReload != nil {
+		c.onReload()
+	}
 	return state, nil
 }
 
@@ -1131,6 +1136,10 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+
+	spsMu          sync.Mutex
+	shardedPubSubs []*ShardedPubSub
+	spsNotifying   uint32 // CAS guard for async topology notifications
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1150,6 +1159,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
+	c.state.onReload = c.notifyShardedPubSubs
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
@@ -1182,6 +1192,49 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	}
 
 	return c
+}
+
+// registerShardedPubSub adds a ShardedPubSub to the notification list.
+// It will be notified on topology changes so it can re-resolve channels.
+func (c *ClusterClient) registerShardedPubSub(sps *ShardedPubSub) {
+	c.spsMu.Lock()
+	defer c.spsMu.Unlock()
+	c.shardedPubSubs = append(c.shardedPubSubs, sps)
+}
+
+// deregisterShardedPubSub removes a ShardedPubSub from the notification list.
+func (c *ClusterClient) deregisterShardedPubSub(sps *ShardedPubSub) {
+	c.spsMu.Lock()
+	defer c.spsMu.Unlock()
+	for i, s := range c.shardedPubSubs {
+		if s == sps {
+			c.shardedPubSubs = append(c.shardedPubSubs[:i], c.shardedPubSubs[i+1:]...)
+			return
+		}
+	}
+}
+
+// notifyShardedPubSubs asynchronously notifies all registered ShardedPubSubs
+// of a topology change. Uses a compare-and-swap to avoid triggering multiple
+// concurrent migrations — if one is already in-flight, this is a no-op since
+// the running migration will pick up the latest state anyway.
+func (c *ClusterClient) notifyShardedPubSubs() {
+	if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+		return
+	}
+
+	go func() {
+		defer atomic.StoreUint32(&c.spsNotifying, 0)
+
+		c.spsMu.Lock()
+		subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+		copy(subs, c.shardedPubSubs)
+		c.spsMu.Unlock()
+
+		for _, sps := range subs {
+			sps.onTopologyChange()
+		}
+	}()
 }
 
 // Options returns read-only *ClusterOptions that were used to create the client.
@@ -2224,13 +2277,29 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 	return pubsub
 }
 
-// SSubscribe Subscribes the client to the specified shard channels.
+// SSubscribe subscribes the client to the specified shard channels.
+// Note: In a Redis cluster, channels that hash to different slots will be
+// served by different nodes. A single PubSub connection can only receive
+// messages from channels on one shard. If you need to subscribe to channels
+// across multiple shards, use SSubscribeSharded instead.
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
 		_ = pubsub.SSubscribe(ctx, channels...)
 	}
 	return pubsub
+}
+
+// SSubscribeSharded subscribes the client to the specified shard channels,
+// automatically managing connections to all relevant cluster nodes.
+// Unlike SSubscribe, this correctly handles channels that hash to different
+// slots by maintaining one connection per shard node.
+func (c *ClusterClient) SSubscribeSharded(ctx context.Context, channels ...string) *ShardedPubSub {
+	sps := newShardedPubSub(c)
+	if len(channels) > 0 {
+		_ = sps.SSubscribe(ctx, channels...)
+	}
+	return sps
 }
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
