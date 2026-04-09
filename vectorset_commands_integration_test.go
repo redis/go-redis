@@ -278,6 +278,15 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(len(res), 2)
 				}
 
+				// VIsMember
+				ok, err := client.VIsMember(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(ok)
+
+				ok, err = client.VIsMember(ctx, vecName, "k5").Result()
+				expectNil(err)
+				expectEqual(ok, false)
+
 				// test equality
 				sim, err := client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age == 25`,
@@ -338,6 +347,55 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectEqual(len(sim), 1)
 				expectEqual(sim[0], vals[0].name)
+
+				// test withscores
+				simScores, err := client.VSimWithArgsWithScores(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+					Filter: `.age < 30 or .age > 35`,
+				}).Result()
+				expectNil(err)
+				expectEqual(len(simScores), 1)
+				expectEqual(simScores[0].Name, vals[0].name)
+				expectEqual(simScores[0].Score, float64(1))
+
+				if RedisVersion >= 8.2 {
+					// test withattribs
+					simAttribs, err := client.VSimWithArgsWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[0].name)
+					expectEqual(*simAttribs[0].Attribs, vals[0].attr)
+
+					// test withscores && withattribs
+					simScoresAttribs, err := client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[0].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(*simScoresAttribs[0].Attribs, vals[0].attr)
+
+					// test withattribs null attrs
+					simAttribs, err = client.VSimWithArgsWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[3].name)
+					expectEqual(simAttribs[0].Attribs, (*string)(nil))
+
+					// test withscores && withattribs null attrs
+					simScoresAttribs, err = client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[3].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(simScoresAttribs[0].Attribs, (*string)(nil))
+				}
 			})
 		})
 	}

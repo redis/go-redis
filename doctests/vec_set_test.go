@@ -345,6 +345,44 @@ func ExampleClient_vectorset() {
 	}
 
 	fmt.Println(res30) // >>> [pt:C pt:B]
+
+	res31, err := rdb.VIsMember(ctx, "points", "pt:A").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res31) // >>> true
+
+	res32, err := rdb.VIsMember(ctx, "points", "pt:W").Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res32) // >>> false
+
+	res33, err := rdb.VSimWithArgsWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Count: 1, Truth: true},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res33[0].Name, *res33[0].Attribs) // >>> pt:A {"price":18.99,"size":"large"}
+
+	res34, err := rdb.VSimWithArgsWithScoresWithAttribs(ctx, "points",
+		&redis.VectorRef{Name: "pt:A"},
+		&redis.VSimArgs{Count: 1, Truth: true},
+	).Result()
+
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(res34[0].Name, res34[0].Score, *res34[0].Attribs) // >>> pt:A 1 {"price":18.99,"size":"large"}
 	// STEP_END
 
 	// Output:
@@ -378,6 +416,10 @@ func ExampleClient_vectorset() {
 	// true
 	// [pt:A pt:C pt:B]
 	// [pt:C pt:B]
+	// true
+	// false
+	// pt:A {"price":18.99,"size":"large"}
+	// pt:A 1 {"price":18.99,"size":"large"}
 }
 
 func ExampleClient_vectorset_quantization() {

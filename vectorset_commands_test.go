@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -269,7 +270,7 @@ func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	vec := &VectorValues{Val: []float64{1, 2}}
-	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
 	c.VSimWithArgsWithScores(context.Background(), "k", vec, args)
 	cmd := m.lastCmd.(*VectorScoreSliceCmd)
 	found := map[string]bool{}
@@ -278,11 +279,164 @@ func TestVSimWithArgsWithScores_AllOptions(t *testing.T) {
 			found[s] = true
 		}
 	}
-	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "withscores"} {
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores"} {
 		if !found[want] {
 			t.Errorf("missing arg: %s", want)
 		}
 	}
+}
+
+func TestVSimWithArgsWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+	if found["withscores"] {
+		t.Error("unexpected arg: withscores")
+	}
+}
+
+func TestVSimWithArgsWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorAttribSliceCmd)
+
+	found := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withattribs" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("missing withattribs arg")
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_AllOptions(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+	args := &VSimArgs{Count: 2, EF: 3, Filter: "f", FilterEF: 4, Truth: true, NoThread: true, Epsilon: 0.5}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, args)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	found := map[string]bool{}
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok {
+			found[s] = true
+		}
+	}
+
+	for _, want := range []string{"count", "ef", "filter", "filter-ef", "truth", "nothread", "epsilon", "withscores", "withattribs"} {
+		if !found[want] {
+			t.Errorf("missing arg: %s", want)
+		}
+	}
+}
+
+func TestVSimWithArgsWithScoresWithAttribs_NilArgs(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	vec := &VectorValues{Val: []float64{1, 2}}
+
+	c.VSimWithArgsWithScoresWithAttribs(context.Background(), "k", vec, nil)
+	cmd := m.lastCmd.(*VectorScoreAttribSliceCmd)
+
+	foundScores := false
+	foundAttribs := false
+	for _, a := range cmd.args {
+		if s, ok := a.(string); ok && s == "withscores" {
+			foundScores = true
+		}
+		if s, ok := a.(string); ok && s == "withattribs" {
+			foundAttribs = true
+		}
+	}
+	if !foundScores {
+		t.Error("missing withscores arg")
+	}
+	if !foundAttribs {
+		t.Error("missing withattribs arg")
+	}
+}
+
+func TestVectorScoreAttribSliceCmd_readReply(t *testing.T) {
+	t.Run("resp3FlatArray", func(t *testing.T) {
+		// *6 -> two (name, score, attrib) triplets; second attrib is nil
+		reply := "*6\r\n" +
+			"$2\r\na1\r\n,1.5\r\n$4\r\nattr\r\n" +
+			"$2\r\na2\r\n,2.5\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "a1" || cmd.val[0].Score != 1.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "attr" {
+			t.Errorf("first row = %+v, want {a1 1.5 %q}", cmd.val[0], "attr")
+		}
+
+		if cmd.val[1].Name != "a2" || cmd.val[1].Score != 2.5 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {a2 2.5 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("resp3Map", func(t *testing.T) {
+		// %2 -> two map entries; value each is *2 [score, attrib]
+		reply := "%2\r\n" +
+			"$2\r\nb1\r\n*2\r\n,0.5\r\n$1\r\na\r\n" +
+			"$2\r\nb2\r\n*2\r\n,1\r\n_\r\n"
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader(reply))
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(cmd.val) != 2 {
+			t.Fatalf("len(val) = %d, want 2", len(cmd.val))
+		}
+
+		if cmd.val[0].Name != "b1" || cmd.val[0].Score != 0.5 || cmd.val[0].Attribs == nil || *cmd.val[0].Attribs != "a" {
+			t.Errorf("first row = %+v, want {b1 0.5 %q}", cmd.val[0], "a")
+		}
+
+		if cmd.val[1].Name != "b2" || cmd.val[1].Score != 1 || cmd.val[1].Attribs != nil {
+			t.Errorf("second row = %+v, want {b2 1 nil}", cmd.val[1])
+		}
+	})
+
+	t.Run("flatArrayLenNotMultipleOf3", func(t *testing.T) {
+		cmd := NewVectorScoreAttribSliceCmd(context.Background())
+		rd := proto.NewReader(strings.NewReader("*1\r\n$1\r\nx\r\n"))
+		if err := cmd.readReply(rd); err == nil {
+			t.Fatal("expected error for array length not divisible by 3")
+		}
+	})
 }
 
 // Additional tests for missing coverage
@@ -521,6 +675,7 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 		{"FilterEF", &VSimArgs{FilterEF: 15}, "filter-ef"},
 		{"Truth", &VSimArgs{Truth: true}, "truth"},
 		{"NoThread", &VSimArgs{NoThread: true}, "nothread"},
+		{"Epsilon", &VSimArgs{Epsilon: 0.5}, "epsilon"},
 	}
 
 	for _, tt := range tests {
@@ -542,6 +697,26 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVRange(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	c.VRange(context.Background(), "k", "-", "+", int64(10))
+	cmd := m.lastCmd.(*StringSliceCmd)
+	if cmd.args[0] != "vrange" || cmd.args[1] != "k" || cmd.args[2] != "-" || cmd.args[3] != "+" || cmd.args[4] != int64(10) {
+		t.Errorf("unexpected args: %v", cmd.args)
+	}
+}
+
+func TestVIsMember(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	c.VIsMember(context.Background(), "k", "e")
+	cmd := m.lastCmd.(*BoolCmd)
+	if cmd.args[0] != "vismember" || cmd.args[1] != "k" || cmd.args[2] != "e" {
+		t.Errorf("unexpected args: %v", cmd.args)
+  }
 }
 
 // TestVectorScoreSliceCmdReadReply tests that VectorScoreSliceCmd.readReply handles
