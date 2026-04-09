@@ -369,6 +369,71 @@ func TestGenericRedisError(t *testing.T) {
 	}
 }
 
+// TestIsReadOnlyErrorWithLuaScriptErrors tests that READONLY errors from Lua scripts are detected.
+// When a Lua script executes a write command on a read-only replica, Redis wraps the error:
+// "ERR Error running script (call to f_<sha>): @user_script:<line>: -READONLY ..."
+func TestIsReadOnlyErrorWithLuaScriptErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		errorMsg string
+		expected bool
+	}{
+		{
+			name:     "standard READONLY error",
+			errorMsg: "READONLY You can't write against a read only replica",
+			expected: true,
+		},
+		{
+			name:     "Lua script READONLY error",
+			errorMsg: "ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica.",
+			expected: true,
+		},
+		{
+			name:     "Lua script READONLY error with different line number",
+			errorMsg: "ERR Error running script (call to f_def456): @user_script:42: -READONLY You can't write against a read only replica.",
+			expected: true,
+		},
+		{
+			name:     "unrelated error should not match",
+			errorMsg: "ERR unknown command",
+			expected: false,
+		},
+		{
+			name:     "error with key containing READONLY should not match",
+			errorMsg: "WRONGTYPE Operation against a key holding the wrong kind of value",
+			expected: false,
+		},
+		{
+			name:     "non-script error with -READONLY should not match",
+			errorMsg: "ERR something-READONLY-something",
+			expected: false,
+		},
+		{
+			name:     "script error without -READONLY should not match",
+			errorMsg: "ERR Error running script (call to f_abc123): @user_script:1: some other error",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := parseTypedRedisError(tt.errorMsg)
+
+			result := IsReadOnlyError(err)
+			if result != tt.expected {
+				t.Errorf("IsReadOnlyError(%q) = %v, want %v", tt.errorMsg, result, tt.expected)
+			}
+
+			// Also test with wrapped errors
+			wrappedErr := fmt.Errorf("hook wrapper: %w", err)
+			wrappedResult := IsReadOnlyError(wrappedErr)
+			if wrappedResult != tt.expected {
+				t.Errorf("IsReadOnlyError(wrapped %q) = %v, want %v", tt.errorMsg, wrappedResult, tt.expected)
+			}
+		})
+	}
+}
+
 // TestBackwardCompatibility tests that error messages remain unchanged
 func TestBackwardCompatibility(t *testing.T) {
 	// This test ensures that the error messages are exactly the same as before
