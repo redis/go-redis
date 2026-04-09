@@ -1319,37 +1319,45 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.idleConnsLen.Add(1)
 		}
 
-		if shouldCloseConn {
-			// Connection was removed (e.g., hook set state to StateClosed).
-			// Record removal from used state, NOT a transition to idle.
-			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-				cb(ctx, cn, MetricStateUsed, "")
-			}
-			if cb := getMetricConnectionCountCallback(); cb != nil {
-				cb(ctx, -1, cn, "used", false)
-			}
-		} else {
-			// Notify metrics: connection moved from used to idle
-			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-				cb(ctx, cn, MetricStateUsed, MetricStateIdle)
-			}
-			// Record connection count state transition: -1 used, +1 idle
-			if cb := getMetricConnectionCountCallback(); cb != nil {
-				cb(ctx, -1, cn, "used", false)
-				cb(ctx, 1, cn, "idle", false)
+		// Skip metric emissions if pool is closed — Close() already emitted
+		// all -1 deltas for every connection in the pool.
+		if !p.closed() {
+			if shouldCloseConn {
+				// Connection was removed (e.g., hook set state to StateClosed).
+				// Record removal from used state, NOT a transition to idle.
+				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+					cb(ctx, cn, MetricStateUsed, "")
+				}
+				if cb := getMetricConnectionCountCallback(); cb != nil {
+					cb(ctx, -1, cn, "used", false)
+				}
+			} else {
+				// Notify metrics: connection moved from used to idle
+				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+					cb(ctx, cn, MetricStateUsed, MetricStateIdle)
+				}
+				// Record connection count state transition: -1 used, +1 idle
+				if cb := getMetricConnectionCountCallback(); cb != nil {
+					cb(ctx, -1, cn, "used", false)
+					cb(ctx, 1, cn, "idle", false)
+				}
 			}
 		}
 	} else {
 		shouldCloseConn = true
 		p.removeConnWithLock(cn)
 
-		// Notify metrics: connection removed (used -> nothing)
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateUsed, "")
-		}
-		// Record connection count decrement (connection removed while in used state)
-		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, -1, cn, "used", false)
+		// Skip metric emissions if pool is closed — Close() already emitted
+		// all -1 deltas for every connection in the pool.
+		if !p.closed() {
+			// Notify metrics: connection removed (used -> nothing)
+			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+				cb(ctx, cn, MetricStateUsed, "")
+			}
+			// Record connection count decrement (connection removed while in used state)
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "used", false)
+			}
 		}
 	}
 
@@ -1391,13 +1399,17 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		p.freeTurn()
 	}
 
-	// Notify metrics: connection removed (assume from used state)
-	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, cn, MetricStateUsed, "")
-	}
-	// Record connection count decrement (connection removed, assume from used state)
-	if cb := getMetricConnectionCountCallback(); cb != nil {
-		cb(ctx, -1, cn, "used", false)
+	// Skip metric emissions if pool is closed — Close() already emitted
+	// all -1 deltas for every connection in the pool.
+	if !p.closed() {
+		// Notify metrics: connection removed (assume from used state)
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+			cb(ctx, cn, MetricStateUsed, "")
+		}
+		// Record connection count decrement (connection removed, assume from used state)
+		if cb := getMetricConnectionCountCallback(); cb != nil {
+			cb(ctx, -1, cn, "used", false)
+		}
 	}
 
 	// Record connection closed
@@ -1424,19 +1436,23 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
 	p.removeConnWithLock(cn)
 
-	// Record connection state change: connection is being removed from the specified state
-	if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
-		cb(ctx, cn, fromState, "")
-	}
+	// Skip metric emissions if pool is closed — Close() already emitted
+	// all -1 deltas for every connection in the pool.
+	if !p.closed() {
+		// Record connection state change: connection is being removed from the specified state
+		if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
+			cb(ctx, cn, fromState, "")
+		}
 
-	// Record connection count decrement (UpDownCounter) for the state the connection was in
-	if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
-		cb(ctx, -1, cn, fromState, false)
-	}
+		// Record connection count decrement (UpDownCounter) for the state the connection was in
+		if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
+			cb(ctx, -1, cn, fromState, false)
+		}
 
-	// Record connection closed metric with the specified reason
-	if cb := getMetricConnectionClosedCallback(); cb != nil {
-		cb(ctx, cn, reason, nil)
+		// Record connection closed metric with the specified reason
+		if cb := getMetricConnectionClosedCallback(); cb != nil {
+			cb(ctx, cn, reason, nil)
+		}
 	}
 
 	return p.closeConn(cn)
