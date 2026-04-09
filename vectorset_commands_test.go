@@ -3,8 +3,11 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 func TestVectorFP32_Value(t *testing.T) {
@@ -536,6 +539,69 @@ func TestVSimArgs_IndividualOptions(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("missing arg: %s", tt.want)
+			}
+		})
+	}
+}
+
+// TestVectorScoreSliceCmdReadReply tests that VectorScoreSliceCmd.readReply handles
+// both RESP2 (flat array) and RESP3 (map) protocol responses.
+func TestVectorScoreSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     []VectorScore
+		wantErr  bool
+	}{
+		{
+			// RESP3 map: %2\r\n +elem1\r\n ,0.9\r\n +elem2\r\n ,0.8\r\n
+			name:     "RESP3 map response",
+			respData: []byte("%2\r\n+elem1\r\n,0.9\r\n+elem2\r\n,0.8\r\n"),
+			want: []VectorScore{
+				{Name: "elem1", Score: 0.9},
+				{Name: "elem2", Score: 0.8},
+			},
+		},
+		{
+			// RESP2 flat array: *4\r\n $5\r\nelem1\r\n $3\r\n0.9\r\n $5\r\nelem2\r\n $3\r\n0.8\r\n
+			name: "RESP2 flat array response",
+			respData: []byte(fmt.Sprintf("*4\r\n$5\r\nelem1\r\n$%d\r\n%s\r\n$5\r\nelem2\r\n$%d\r\n%s\r\n",
+				len("0.9"), "0.9", len("0.8"), "0.8")),
+			want: []VectorScore{
+				{Name: "elem1", Score: 0.9},
+				{Name: "elem2", Score: 0.8},
+			},
+		},
+		{
+			// RESP3 empty map
+			name:     "RESP3 empty map",
+			respData: []byte("%0\r\n"),
+			want:     []VectorScore{},
+		},
+		{
+			// RESP2 empty array
+			name:     "RESP2 empty array",
+			respData: []byte("*0\r\n"),
+			want:     []VectorScore{},
+		},
+		{
+			// RESP2 odd-length array should return an error
+			name:     "RESP2 odd array returns error",
+			respData: []byte("*3\r\n$5\r\nelem1\r\n$3\r\n0.9\r\n$5\r\nelem2\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewVectorScoreSliceCmd(context.Background(), "vsim", "key", "withscores")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
 			}
 		})
 	}

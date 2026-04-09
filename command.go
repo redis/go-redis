@@ -7591,13 +7591,18 @@ type VectorScoreSliceCmd struct {
 
 var _ Cmder = (*VectorScoreSliceCmd)(nil)
 
-func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+func NewVectorScoreSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
 	return &VectorScoreSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
 	}
+}
+
+// NewVectorInfoSliceCmd is an alias for NewVectorScoreSliceCmd kept for backwards compatibility.
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return NewVectorScoreSliceCmd(ctx, args...)
 }
 
 func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
@@ -7617,9 +7622,27 @@ func (cmd *VectorScoreSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	typ, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	var n int
+	if typ == proto.RespMap {
+		n, err = rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+	} else {
+		// RESP2 returns a flat array [name, score, name, score, ...]
+		n, err = rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if n%2 != 0 {
+			return fmt.Errorf("redis: VectorScoreSliceCmd expects even number of elements, got %d", n)
+		}
+		n /= 2
 	}
 
 	cmd.val = make([]VectorScore, n)
