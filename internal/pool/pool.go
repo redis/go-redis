@@ -1308,14 +1308,25 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.idleConnsLen.Add(1)
 		}
 
-		// Notify metrics: connection moved from used to idle
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateUsed, MetricStateIdle)
-		}
-		// Record connection count state transition: -1 used, +1 idle
-		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, -1, cn, "used", false)
-			cb(ctx, 1, cn, "idle", false)
+		if shouldCloseConn {
+			// Connection was removed (e.g., hook set state to StateClosed).
+			// Record removal from used state, NOT a transition to idle.
+			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+				cb(ctx, cn, MetricStateUsed, "")
+			}
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "used", false)
+			}
+		} else {
+			// Notify metrics: connection moved from used to idle
+			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+				cb(ctx, cn, MetricStateUsed, MetricStateIdle)
+			}
+			// Record connection count state transition: -1 used, +1 idle
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "used", false)
+				cb(ctx, 1, cn, "idle", false)
+			}
 		}
 	} else {
 		shouldCloseConn = true
