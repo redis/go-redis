@@ -1267,6 +1267,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	}
 
 	var shouldCloseConn bool
+	var removedFromPool bool
 
 	if p.cfg.MaxIdleConns == 0 || p.idleConnsLen.Load() < p.cfg.MaxIdleConns {
 		// Hot path optimization: try fast IN_USE → IDLE transition
@@ -1291,7 +1292,7 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			case StateClosed:
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
 				shouldCloseConn = true
-				p.removeConnWithLock(cn)
+				removedFromPool = p.removeConnWithLock(cn)
 			default:
 				// Pool as-is
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, pooling as-is", cn.GetID(), currentState)
@@ -1319,24 +1320,24 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 			p.idleConnsLen.Add(1)
 		}
 
-		// Skip metric emissions if pool is closed — Close() already emitted
-		// all -1 deltas for every connection in the pool.
-		if !p.closed() {
-			if shouldCloseConn {
-				// Connection was removed (e.g., hook set state to StateClosed).
-				// Record removal from used state, NOT a transition to idle.
+		if shouldCloseConn {
+			// Connection was removed (e.g., hook set state to StateClosed).
+			// Only emit if we actually removed it from the map (not already taken by Close()).
+			if removedFromPool {
 				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 					cb(ctx, cn, MetricStateUsed, "")
 				}
 				if cb := getMetricConnectionCountCallback(); cb != nil {
 					cb(ctx, -1, cn, "used", false)
 				}
-			} else {
-				// Notify metrics: connection moved from used to idle
+			}
+		} else {
+			// Connection transitions from used to idle — it stays in p.conns, so
+			// !p.closed() is safe here: Close() will find and decrement it if it runs.
+			if !p.closed() {
 				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 					cb(ctx, cn, MetricStateUsed, MetricStateIdle)
 				}
-				// Record connection count state transition: -1 used, +1 idle
 				if cb := getMetricConnectionCountCallback(); cb != nil {
 					cb(ctx, -1, cn, "used", false)
 					cb(ctx, 1, cn, "idle", false)
@@ -1345,11 +1346,10 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	} else {
 		shouldCloseConn = true
-		p.removeConnWithLock(cn)
+		removedFromPool = p.removeConnWithLock(cn)
 
-		// Skip metric emissions if pool is closed — Close() already emitted
-		// all -1 deltas for every connection in the pool.
-		if !p.closed() {
+		// Only emit if we actually removed it from the map (not already taken by Close()).
+		if removedFromPool {
 			// Notify metrics: connection removed (used -> nothing)
 			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 				cb(ctx, cn, MetricStateUsed, "")
@@ -1397,15 +1397,15 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		hookManager.ProcessOnRemove(ctx, cn, reason)
 	}
 
-	p.removeConnWithLock(cn)
+	removed := p.removeConnWithLock(cn)
 
 	if freeTurn {
 		p.freeTurn()
 	}
 
-	// Skip metric emissions if pool is closed — Close() already emitted
-	// all -1 deltas for every connection in the pool.
-	if !p.closed() {
+	// Only emit metric decrements if we actually removed the connection from the map.
+	// If removed is false, Close() already removed it and emitted the -1 delta.
+	if removed {
 		// Notify metrics: connection removed (assume from used state)
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
 			cb(ctx, cn, MetricStateUsed, "")
@@ -1438,11 +1438,11 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
-	p.removeConnWithLock(cn)
+	removed := p.removeConnWithLock(cn)
 
-	// Skip UpDownCounter emissions if pool is closed — Close() already emitted
-	// all -1 deltas for every connection in the pool.
-	if !p.closed() {
+	// Only emit UpDownCounter decrements if we actually removed the connection.
+	// If removed is false, Close() already removed it and emitted the -1 delta.
+	if removed {
 		// Record connection state change: connection is being removed from the specified state
 		if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
 			cb(ctx, cn, fromState, "")
@@ -1464,14 +1464,24 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 	return p.closeConn(cn)
 }
 
-func (p *ConnPool) removeConnWithLock(cn *Conn) {
+// removeConnWithLock removes a connection from the pool under the connsMu lock.
+// Returns true if the connection was actually present in p.conns and was removed,
+// false if it was already gone (e.g., removed by Close()). Callers must use the
+// return value to decide whether to emit metric decrements — this eliminates the
+// shutdown race between Close() and concurrent removal paths.
+func (p *ConnPool) removeConnWithLock(cn *Conn) bool {
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
-	p.removeConn(cn)
+	return p.removeConn(cn)
 }
 
-func (p *ConnPool) removeConn(cn *Conn) {
+// removeConn removes a connection from the pool's internal data structures.
+// Returns true if the connection was present and removed, false otherwise.
+func (p *ConnPool) removeConn(cn *Conn) bool {
 	cid := cn.GetID()
+	if _, exists := p.conns[cid]; !exists {
+		return false
+	}
 	delete(p.conns, cid)
 	atomic.AddUint32(&p.stats.StaleConns, 1)
 
@@ -1487,6 +1497,7 @@ func (p *ConnPool) removeConn(cn *Conn) {
 			}
 		}
 	}
+	return true
 }
 
 func (p *ConnPool) closeConn(cn *Conn) error {
