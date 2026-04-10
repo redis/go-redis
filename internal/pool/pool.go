@@ -623,24 +623,14 @@ func (p *ConnPool) newConn(ctx context.Context, pooled bool) (*Conn, error) {
 		}
 	}
 
-	// Notify metrics: new connection created.
-	// Pooled connections start as idle (will transition to used in getConn).
-	// Non-pooled connections (e.g., from NewConn()) go directly to the caller as used,
-	// so record them as used to match the -1 used in removeConnInternal.
-	if pooled {
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, "", MetricStateIdle)
-		}
-		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, 1, cn, "idle", false)
-		}
-	} else {
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, "", MetricStateUsed)
-		}
-		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, 1, cn, "used", false)
-		}
+	// All new connections start as "used" metrically. For the miss path in getConn,
+	// this is the final state. For putIdleConn (undelivered conn), a used→idle
+	// transition is emitted when it's added to idleConns.
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+		cb(ctx, cn, "", MetricStateUsed)
+	}
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, 1, cn, "used", false)
 	}
 
 	return cn, nil
@@ -871,6 +861,17 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 
 		p.connsMu.Lock()
 		cn, err = p.popIdle()
+		if cn != nil {
+			// Emit idle→used transition inside the lock so Close() sees
+			// consistent state (conn removed from idleConns = "used").
+			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+				cb(ctx, cn, MetricStateIdle, MetricStateUsed)
+			}
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "idle", false)
+				cb(ctx, 1, cn, "used", false)
+			}
+		}
 		p.connsMu.Unlock()
 
 		if err != nil {
@@ -883,8 +884,8 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		if !p.isHealthyConn(cn, nowNs) {
-			// Connection was popped from idle pool, so fromState is MetricStateIdle
-			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateIdle)
+			// Connection was already transitioned to MetricStateUsed under the lock above.
+			_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateUsed)
 			continue
 		}
 
@@ -895,21 +896,13 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			if hookErr != nil || !acceptConn {
 				if hookErr != nil {
 					internal.Logger.Printf(ctx, "redis: connection pool: failed to process idle connection by hook: %v", hookErr)
-					// Connection was popped from idle pool, so fromState is MetricStateIdle
-					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateIdle)
+					// Connection was already transitioned to MetricStateUsed under the lock above.
+					_ = p.CloseConn(ctx, cn, CloseReasonHookError, MetricStateUsed)
 				} else {
 					internal.Logger.Printf(ctx, "redis: connection pool: conn[%d] rejected by hook, returning to pool", cn.GetID())
-					// Connection is still in idle state (hook rejected without error).
-					// Record idle→used transition so putConn's used→idle accounting is balanced.
-					if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-						cb(ctx, cn, MetricStateIdle, MetricStateUsed)
-					}
-					if cb := getMetricConnectionCountCallback(); cb != nil {
-						cb(ctx, -1, cn, "idle", false)
-						cb(ctx, 1, cn, "used", false)
-					}
+					// Connection is already in MetricStateUsed (transitioned under the lock above).
 					// Return connection to pool without freeing the turn that this Get() call holds.
-					// We use putConnWithoutTurn() to run all the Put hooks and logic without freeing a turn.
+					// putConnWithoutTurn will emit used→idle transition.
 					p.putConnWithoutTurn(ctx, cn)
 					cn = nil
 				}
@@ -918,16 +911,6 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		atomic.AddUint32(&p.stats.Hits, 1)
-
-		// Notify metrics: connection moved from idle to used
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-			cb(ctx, cn, MetricStateIdle, MetricStateUsed)
-		}
-		// Record connection count state transition: -1 idle, +1 used
-		if cb := getMetricConnectionCountCallback(); cb != nil {
-			cb(ctx, -1, cn, "idle", false)
-			cb(ctx, 1, cn, "used", false)
-		}
 
 		// Record wait time (use cached callback from above)
 		if waitTimeCallback != nil {
@@ -960,10 +943,9 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		// both errors and accept=false mean a hook rejected the connection
 		// this should not happen with a new connection, but we handle it gracefully
 		if err != nil || !acceptConn {
-			// Failed to process connection, discard it
 			internal.Logger.Printf(ctx, "redis: connection pool: failed to process new connection conn[%d] by hook: accept=%v, err=%v", newcn.GetID(), acceptConn, err)
-			// New connection was recorded as "" → MetricStateIdle in newConn, so fromState is MetricStateIdle
-			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateIdle)
+			// newConn emitted +1 used; CloseConn will emit -1 used if we own the removal.
+			_ = p.CloseConn(ctx, newcn, CloseReasonHookError, MetricStateUsed)
 			return nil, err
 		}
 
@@ -980,15 +962,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 	}
 
-	// Notify metrics: new connection is created and used
-	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-		cb(ctx, newcn, "", MetricStateUsed)
-	}
-	// Record connection count: compensate newConn's +1 idle, then +1 used
-	if cb := getMetricConnectionCountCallback(); cb != nil {
-		cb(ctx, -1, newcn, "idle", false)
-		cb(ctx, 1, newcn, "used", false)
-	}
+	// newConn already emitted +1 used, so no transition needed here.
 
 	// Record wait time (use cached callback from above)
 	if waitTimeCallback != nil {
@@ -1103,9 +1077,17 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) bool {
 		return true
 	}
 
-	// poolSize is increased in newConn
 	p.idleConns = append(p.idleConns, cn)
 	p.idleConnsLen.Add(1)
+
+	// Connection was created as "used" in newConn; transition to idle.
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+		cb(ctx, cn, MetricStateUsed, MetricStateIdle)
+	}
+	if cb := getMetricConnectionCountCallback(); cb != nil {
+		cb(ctx, -1, cn, "used", false)
+		cb(ctx, 1, cn, "idle", false)
+	}
 
 	return true
 }
@@ -1303,21 +1285,45 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// put them at the opposite end of the queue
 		// Optimization: if we just transitioned to IDLE, we know it's usable - skip the check
 		if !transitionedToIdle && !cn.IsUsable() {
-			if p.cfg.PoolFIFO {
-				p.connsMu.Lock()
-				p.idleConns = append(p.idleConns, cn)
+			p.connsMu.Lock()
+			// Check if Close() already removed this connection from p.conns.
+			// If so, skip the append and metrics — Close() already accounted for it.
+			if _, inPool := p.conns[cn.GetID()]; inPool {
+				if p.cfg.PoolFIFO {
+					p.idleConns = append(p.idleConns, cn)
+				} else {
+					p.idleConns = append([]*Conn{cn}, p.idleConns...)
+				}
+				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+					cb(ctx, cn, MetricStateUsed, MetricStateIdle)
+				}
+				if cb := getMetricConnectionCountCallback(); cb != nil {
+					cb(ctx, -1, cn, "used", false)
+					cb(ctx, 1, cn, "idle", false)
+				}
 				p.connsMu.Unlock()
+				p.idleConnsLen.Add(1)
 			} else {
-				p.connsMu.Lock()
-				p.idleConns = append([]*Conn{cn}, p.idleConns...)
+				shouldCloseConn = true
 				p.connsMu.Unlock()
 			}
-			p.idleConnsLen.Add(1)
 		} else if !shouldCloseConn {
 			p.connsMu.Lock()
-			p.idleConns = append(p.idleConns, cn)
-			p.connsMu.Unlock()
-			p.idleConnsLen.Add(1)
+			if _, inPool := p.conns[cn.GetID()]; inPool {
+				p.idleConns = append(p.idleConns, cn)
+				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+					cb(ctx, cn, MetricStateUsed, MetricStateIdle)
+				}
+				if cb := getMetricConnectionCountCallback(); cb != nil {
+					cb(ctx, -1, cn, "used", false)
+					cb(ctx, 1, cn, "idle", false)
+				}
+				p.connsMu.Unlock()
+				p.idleConnsLen.Add(1)
+			} else {
+				shouldCloseConn = true
+				p.connsMu.Unlock()
+			}
 		}
 
 		if shouldCloseConn {
@@ -1329,18 +1335,6 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				}
 				if cb := getMetricConnectionCountCallback(); cb != nil {
 					cb(ctx, -1, cn, "used", false)
-				}
-			}
-		} else {
-			// Connection transitions from used to idle — it stays in p.conns, so
-			// !p.closed() is safe here: Close() will find and decrement it if it runs.
-			if !p.closed() {
-				if cb := getMetricConnectionStateChangeCallback(); cb != nil {
-					cb(ctx, cn, MetricStateUsed, MetricStateIdle)
-				}
-				if cb := getMetricConnectionCountCallback(); cb != nil {
-					cb(ctx, -1, cn, "used", false)
-					cb(ctx, 1, cn, "idle", false)
 				}
 			}
 		}
@@ -1578,8 +1572,8 @@ func (p *ConnPool) Close() error {
 	var firstErr error
 	p.connsMu.Lock()
 
-	// Emit -1 for each connection being closed during pool shutdown.
-	// Determine which connections are idle vs in-use for correct state attribution.
+	// Emit -1 for each connection. Since all idle↔used transitions happen
+	// under connsMu, the idleConns slice is the source of truth for state.
 	cb := getMetricConnectionCountCallback()
 	idleSet := make(map[uint64]struct{}, len(p.idleConns))
 	for _, cn := range p.idleConns {
@@ -1594,7 +1588,6 @@ func (p *ConnPool) Close() error {
 				cb(ctx, -1, cn, "used", false)
 			}
 		}
-		// Record connection closed (monotonic counter — always emit during shutdown).
 		if closedCb := getMetricConnectionClosedCallback(); closedCb != nil {
 			closedCb(ctx, cn, "pool_shutdown", nil)
 		}
