@@ -1073,7 +1073,9 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) bool {
 	defer p.connsMu.Unlock()
 
 	if p.closed() {
-		_ = cn.Close()
+		// Don't close here — this connection is still in p.conns and Close()
+		// will handle closing it and emitting the correct metric decrements.
+		// We just skip adding it to idleConns.
 		return true
 	}
 
