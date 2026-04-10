@@ -1366,9 +1366,12 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	}
 
 	if shouldCloseConn {
-		// Record connection closed (monotonic counter — always emit, even after pool close).
-		if cb := getMetricConnectionClosedCallback(); cb != nil {
-			cb(ctx, cn, "conn_pool_close", nil)
+		// Only emit connection closed if we actually owned the removal.
+		// If removedFromPool is false, Close() already emitted connectionClosed for this conn.
+		if removedFromPool {
+			if cb := getMetricConnectionClosedCallback(); cb != nil {
+				cb(ctx, cn, "conn_pool_close", nil)
+			}
 		}
 		_ = p.closeConn(cn)
 	}
@@ -1416,13 +1419,16 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 		}
 	}
 
-	// Record connection closed
-	if cb := getMetricConnectionClosedCallback(); cb != nil {
-		reasonStr := "unknown"
-		if reason != nil {
-			reasonStr = reason.Error()
+	// Only emit connection closed if we actually owned the removal.
+	// If removed is false, Close() already emitted connectionClosed for this conn.
+	if removed {
+		if cb := getMetricConnectionClosedCallback(); cb != nil {
+			reasonStr := "unknown"
+			if reason != nil {
+				reasonStr = reason.Error()
+			}
+			cb(ctx, cn, reasonStr, reason)
 		}
-		cb(ctx, cn, reasonStr, reason)
 	}
 
 	_ = p.closeConn(cn)
@@ -1454,11 +1460,12 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 		}
 	}
 
-	// Record connection closed metric with the specified reason.
-	// This is a monotonic Int64Counter (not an UpDownCounter), so it has no
-	// double-counting risk and Close() never emits closed-connection events.
-	if cb := getMetricConnectionClosedCallback(); cb != nil {
-		cb(ctx, cn, reason, nil)
+	// Only emit connection closed if we actually owned the removal.
+	// If removed is false, Close() already emitted connectionClosed for this conn.
+	if removed {
+		if cb := getMetricConnectionClosedCallback(); cb != nil {
+			cb(ctx, cn, reason, nil)
+		}
 	}
 
 	return p.closeConn(cn)
