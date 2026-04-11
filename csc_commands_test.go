@@ -143,6 +143,36 @@ func TestExtractRedisKeys_SingleKey(t *testing.T) {
 	}
 }
 
+func TestExtractRedisKeys_SingleKeyWithExtraArgs(t *testing.T) {
+	// LRANGE has one key followed by start/stop — only the key should be extracted.
+	cmd := makeCmd("LRANGE", "mylist", "0", "10")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 1 || keys[0] != "mylist" {
+		t.Errorf("LRANGE: expected [mylist], got %v", keys)
+	}
+
+	// HGET has one key followed by a field name.
+	cmd = makeCmd("HGET", "myhash", "field1")
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 1 || keys[0] != "myhash" {
+		t.Errorf("HGET: expected [myhash], got %v", keys)
+	}
+
+	// ZCOUNT has one key followed by min/max.
+	cmd = makeCmd("ZCOUNT", "myset", "-inf", "+inf")
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 1 || keys[0] != "myset" {
+		t.Errorf("ZCOUNT: expected [myset], got %v", keys)
+	}
+
+	// GETRANGE has one key followed by start/end offsets.
+	cmd = makeCmd("GETRANGE", "mystr", "0", "5")
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 1 || keys[0] != "mystr" {
+		t.Errorf("GETRANGE: expected [mystr], got %v", keys)
+	}
+}
+
 func TestExtractRedisKeys_MultiKey(t *testing.T) {
 	cmd := makeCmd("MGET", "a", "b", "c")
 	keys := extractRedisKeys(cmd)
@@ -154,6 +184,57 @@ func TestExtractRedisKeys_MultiKey(t *testing.T) {
 		if k != want[i] {
 			t.Errorf("key[%d] = %q, want %q", i, k, want[i])
 		}
+	}
+}
+
+func TestExtractRedisKeys_MultiKeyExists(t *testing.T) {
+	cmd := makeCmd("EXISTS", "k1", "k2", "k3")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 3 {
+		t.Fatalf("EXISTS: expected 3 keys, got %d: %v", len(keys), keys)
+	}
+}
+
+func TestExtractRedisKeys_NumKeysPattern(t *testing.T) {
+	// ZDIFF numkeys key [key ...]
+	cmd := makeCmd("ZDIFF", 2, "zs1", "zs2")
+	cmd.(*Cmd).SetFirstKeyPos(2)
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 2 || keys[0] != "zs1" || keys[1] != "zs2" {
+		t.Errorf("ZDIFF: expected [zs1 zs2], got %v", keys)
+	}
+
+	// SINTERCARD numkeys key [key ...] LIMIT limit
+	cmd = makeCmd("SINTERCARD", 2, "s1", "s2", "LIMIT", 10)
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
+		t.Errorf("SINTERCARD: expected [s1 s2], got %v", keys)
+	}
+}
+
+func TestExtractRedisKeys_LCS(t *testing.T) {
+	cmd := makeCmd("LCS", "key1", "key2")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 2 || keys[0] != "key1" || keys[1] != "key2" {
+		t.Errorf("LCS: expected [key1 key2], got %v", keys)
+	}
+}
+
+func TestExtractRedisKeys_JSONMGet(t *testing.T) {
+	// JSON.MGET key [key ...] path
+	cmd := makeCmd("JSON.MGET", "j1", "j2", "$.name")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 2 || keys[0] != "j1" || keys[1] != "j2" {
+		t.Errorf("JSON.MGET: expected [j1 j2], got %v", keys)
+	}
+}
+
+func TestExtractRedisKeys_XREAD(t *testing.T) {
+	// XREAD COUNT 10 STREAMS stream1 stream2 0 0
+	cmd := makeCmd("XREAD", "COUNT", 10, "STREAMS", "s1", "s2", "0", "0")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
+		t.Errorf("XREAD: expected [s1 s2], got %v", keys)
 	}
 }
 

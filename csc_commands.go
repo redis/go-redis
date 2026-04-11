@@ -2,6 +2,7 @@ package redis
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -102,13 +103,16 @@ func buildCacheKey(cmd Cmder) string {
 		}
 		s := argToString(arg)
 		// Length-prefix each segment for collision safety.
-		fmt.Fprintf(&b, "%d:%s", len(s), s)
+		b.WriteString(strconv.Itoa(len(s)))
+		b.WriteByte(':')
+		b.WriteString(s)
 	}
 	return b.String()
 }
 
 // extractRedisKeys returns the Redis key arguments from cmd by using the
-// command's key-position metadata (firstKeyPos, lastKeyPos, keyStep).
+// command's key-position metadata and per-command knowledge of the argument
+// layout.
 //
 // This is used to populate the CacheEntry.RedisKeys slice so that the
 // localCache.byRedisKey index can map server-side invalidation messages
@@ -126,22 +130,83 @@ func extractRedisKeys(cmd Cmder) []string {
 		return nil
 	}
 
-	step := int(cmd.stepCount())
-	if step <= 0 {
-		step = 1
+	name := strings.ToUpper(cmd.Name())
+
+	switch name {
+	// All remaining args from firstKeyPos are keys.
+	case "MGET", "EXISTS", "SDIFF", "SINTER", "SUNION":
+		keys := make([]string, 0, len(args)-firstKey)
+		for i := firstKey; i < len(args); i++ {
+			keys = append(keys, argToString(args[i]))
+		}
+		return keys
+
+	// Numkeys pattern: numkeys at args[1], keys from args[2].
+	case "SINTERCARD", "ZDIFF", "ZINTER", "ZUNION":
+		if len(args) < 3 {
+			return nil
+		}
+		numKeys, err := strconv.Atoi(argToString(args[1]))
+		if err != nil || numKeys <= 0 {
+			return nil
+		}
+		keys := make([]string, 0, numKeys)
+		for i := 2; i < 2+numKeys && i < len(args); i++ {
+			keys = append(keys, argToString(args[i]))
+		}
+		return keys
+
+	// LCS: exactly two consecutive keys starting at firstKeyPos.
+	case "LCS":
+		keys := make([]string, 0, 2)
+		for i := firstKey; i < firstKey+2 && i < len(args); i++ {
+			keys = append(keys, argToString(args[i]))
+		}
+		return keys
+
+	// JSON.MGET: keys from firstKeyPos to second-to-last (last arg is the
+	// JSON path, not a key).
+	case "JSON.MGET":
+		lastKey := len(args) - 2
+		if lastKey < firstKey {
+			lastKey = firstKey
+		}
+		keys := make([]string, 0, lastKey-firstKey+1)
+		for i := firstKey; i <= lastKey; i++ {
+			keys = append(keys, argToString(args[i]))
+		}
+		return keys
+
+	// XREAD: keys appear after the STREAMS keyword; the second half of the
+	// remaining args are stream IDs, not keys.
+	case "XREAD":
+		streamsIdx := -1
+		for i, arg := range args {
+			if strings.ToUpper(argToString(arg)) == "STREAMS" {
+				streamsIdx = i
+				break
+			}
+		}
+		if streamsIdx < 0 || streamsIdx >= len(args)-1 {
+			return nil
+		}
+		remaining := len(args) - streamsIdx - 1
+		numStreams := remaining / 2
+		if numStreams <= 0 {
+			return nil
+		}
+		keys := make([]string, numStreams)
+		for i := 0; i < numStreams; i++ {
+			keys[i] = argToString(args[streamsIdx+1+i])
+		}
+		return keys
 	}
 
-	// All cacheable commands in the allow-list have keys spanning from
-	// firstKeyPos to the last argument (e.g. GET has one key, MGET has N).
-	// The Cmder interface does not expose lastKeyPos, so we conservatively
-	// treat every step-th argument from firstKey to the end as a key.
-	lastKey := len(args) - 1
-
-	keys := make([]string, 0, (lastKey-firstKey)/step+1)
-	for i := firstKey; i <= lastKey; i += step {
-		keys = append(keys, argToString(args[i]))
-	}
-	return keys
+	// Default: single key at firstKeyPos.
+	// This is correct for the majority of cacheable commands (GET, HGET,
+	// LRANGE, ZCARD, ZCOUNT, BITCOUNT, etc.) which have exactly one key
+	// followed by non-key arguments (field names, indices, scores, etc.).
+	return []string{argToString(args[firstKey])}
 }
 
 // argToString converts a command argument to its string representation.
