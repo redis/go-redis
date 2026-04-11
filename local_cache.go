@@ -142,6 +142,10 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 				case <-ctx.Done():
 					return nil, false
 				}
+			} else {
+				// Defensive: Reserve always creates a waitCh for IN_PROGRESS entries.
+				// If it is nil, treat as a cache miss to avoid busy-looping.
+				return nil, false
 			}
 			continue
 		}
@@ -454,7 +458,7 @@ func (c *localCache) evictIfNeededLocked() {
 }
 
 func cloneBytes(src []byte) []byte {
-	if len(src) == 0 {
+	if src == nil {
 		return nil
 	}
 	dst := make([]byte, len(src))
