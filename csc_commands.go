@@ -122,30 +122,20 @@ func extractRedisKeys(cmd Cmder) []string {
 	}
 
 	args := cmd.Args()
-	lastKey := int(cmd.firstKeyPos()) // per-command override
-	step := int(cmd.stepCount())
+	if firstKey >= len(args) {
+		return nil
+	}
 
-	// Defaults when the command struct does not carry explicit metadata.
+	step := int(cmd.stepCount())
 	if step <= 0 {
 		step = 1
 	}
-	if lastKey <= 0 {
-		// lastKeyPos == 0 means "same as firstKeyPos" (single-key command).
-		// lastKeyPos < 0  means "count back from the end" (like MGET).
-		// When the per-command metadata is absent we conservatively assume
-		// all remaining arguments after firstKeyPos are keys (step=1).
-		lastKey = len(args) - 1
-	}
-	// Negative lastKeyPos: relative to the end of the argument list.
-	if lastKey < 0 {
-		lastKey = len(args) + lastKey
-	}
-	if lastKey < firstKey || firstKey >= len(args) {
-		return nil
-	}
-	if lastKey >= len(args) {
-		lastKey = len(args) - 1
-	}
+
+	// All cacheable commands in the allow-list have keys spanning from
+	// firstKeyPos to the last argument (e.g. GET has one key, MGET has N).
+	// The Cmder interface does not expose lastKeyPos, so we conservatively
+	// treat every step-th argument from firstKey to the end as a key.
+	lastKey := len(args) - 1
 
 	keys := make([]string, 0, (lastKey-firstKey)/step+1)
 	for i := firstKey; i <= lastKey; i += step {
