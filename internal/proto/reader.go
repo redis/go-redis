@@ -17,44 +17,21 @@ const DefaultBufferSize = 32 * 1024
 
 // redis resp protocol data type.
 const (
-	RespStatus    = '+' // +<string>
-
-	RespError     = '-' // -<string>
-
-	RespString    = '$' // $<length>
-<bytes>
-
-	RespInt       = ':' // :<number>
-
-	RespNil       = '_' // _
-
-	RespFloat     = ',' // ,<floating-point-number>
- (golang float)
-	RespBool      = '#' // true: #t
- false: #f
-
-	RespBlobError = '!' // !<length>
-<bytes>
-
-	RespVerbatim  = '=' // =<length>
-FORMAT:<bytes>
-
-	RespBigInt    = '(' // (<big number>
-
-	RespArray     = '*' // *<len>
-... (same as resp2)
-	RespMap       = '%' // %<len>
-(key)
-(value)
-... (golang map)
-	RespSet       = '~' // ~<len>
-... (same as Array)
-	RespAttr      = '|' // |<len>
-(key)
-(value)
-... + command reply
-	RespPush      = '>' // ><len>
-... (same as Array)
+	RespStatus    = '+' // +<string>\r\n
+	RespError     = '-' // -<string>\r\n
+	RespString    = '$' // $<length>\r\n<bytes>\r\n
+	RespInt       = ':' // :<number>\r\n
+	RespNil       = '_' // _\r\n
+	RespFloat     = ',' // ,<floating-point-number>\r\n (golang float)
+	RespBool      = '#' // true: #t\r\n false: #f\r\n
+	RespBlobError = '!' // !<length>\r\n<bytes>\r\n
+	RespVerbatim  = '=' // =<length>\r\nFORMAT:<bytes>\r\n
+	RespBigInt    = '(' // (<big number>\r\n
+	RespArray     = '*' // *<len>\r\n... (same as resp2)
+	RespMap       = '%' // %<len>\r\n(key)\r\n(value)\r\n... (golang map)
+	RespSet       = '~' // ~<len>\r\n... (same as Array)
+	RespAttr      = '|' // |<len>\r\n(key)\r\n(value)\r\n... + command reply
+	RespPush      = '>' // ><len>\r\n... (same as Array)
 )
 
 // Not used temporarily.
@@ -156,12 +133,9 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 
 	// remove push notification type
 	buf = buf[1:]
-	// remove first line - e.g. >2
-
+	// remove first line - e.g. >2\r\n
 	for i := 0; i < len(buf)-1; i++ {
-		if buf[i] == '
-' && buf[i+1] == '
-' {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
 			buf = buf[i+2:]
 			break
 		} else {
@@ -173,9 +147,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 	if len(buf) < 2 {
 		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
 	}
-	// next line should be $<length><string>
- or +<length><string>
-
+	// next line should be $<length><string>\r\n or +<length><string>\r\n
 	// should have the type of the push notification name and it's length
 	if buf[0] != RespString && buf[0] != RespStatus {
 		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
@@ -189,9 +161,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 			return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
 		}
 		for i := 0; i < len(buf)-1; i++ {
-			if buf[i] == '
-' && buf[i+1] == '
-' {
+			if buf[i] == '\r' && buf[i+1] == '\n' {
 				buf = buf[i+2:]
 				break
 			} else {
@@ -207,9 +177,7 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 	}
 	// keep only the notification name
 	for i := 0; i < len(buf)-1; i++ {
-		if buf[i] == '
-' && buf[i+1] == '
-' {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
 			buf = buf[:i]
 			break
 		}
@@ -254,11 +222,9 @@ func (r *Reader) ReadLine() ([]byte, error) {
 
 // readLine returns an error if:
 //   - there is a pending read error;
-//   - or line does not end with 
-.
+//   - or line does not end with \r\n.
 func (r *Reader) readLine() ([]byte, error) {
-	b, err := r.rd.ReadSlice('
-')
+	b, err := r.rd.ReadSlice('\n')
 	if err != nil {
 		if err != bufio.ErrBufferFull {
 			return nil, err
@@ -267,8 +233,7 @@ func (r *Reader) readLine() ([]byte, error) {
 		full := make([]byte, len(b))
 		copy(full, b)
 
-		b, err = r.rd.ReadBytes('
-')
+		b, err = r.rd.ReadBytes('\n')
 		if err != nil {
 			return nil, err
 		}
@@ -276,9 +241,7 @@ func (r *Reader) readLine() ([]byte, error) {
 		full = append(full, b...) //nolint:makezero
 		b = full
 	}
-	if len(b) <= 2 || b[len(b)-1] != '
-' || b[len(b)-2] != '
-' {
+	if len(b) <= 2 || b[len(b)-1] != '\n' || b[len(b)-2] != '\r' {
 		return nil, fmt.Errorf("redis: invalid reply: %q", b)
 	}
 	return b[:len(b)-2], nil
