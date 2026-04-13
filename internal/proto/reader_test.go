@@ -1,6 +1,6 @@
 package proto_test
 
-import (
+import ( 
 	"bytes"
 	"fmt"
 	"io"
