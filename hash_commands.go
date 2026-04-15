@@ -70,9 +70,7 @@ func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 	return cmd
 }
 
-// HGetAll returns all fields and values of the hash stored at key.
-// In the returned value, every field name is followed by its value,
-// so the length of the reply is twice the size of the hash.
+// HGetAll returns a map of all fields and values stored at key.
 //
 // Returns an empty map when key does not exist.
 //
