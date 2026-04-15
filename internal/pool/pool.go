@@ -1400,10 +1400,15 @@ func (p *ConnPool) Close() error {
 	}
 
 	var firstErr error
+	nowNs := time.Now().UnixNano()
 	p.connsMu.Lock()
 	for _, cn := range p.conns {
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
-			firstErr = err
+			// Suppress close errors for stale connections, consistent
+			// with how Get() handles them (see CloseReasonStale path).
+			if p.isHealthyConn(cn, nowNs) {
+				firstErr = err
+			}
 		}
 	}
 	p.conns = nil

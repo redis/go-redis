@@ -121,3 +121,18 @@ func (d *dummyRawConn) Close() {
 	d.closed = true
 	d.mu.Unlock()
 }
+
+// failCloseConn wraps a dummyConn but returns a configured error on Close().
+// This is used to simulate TLS closeNotify errors or network timeouts during connection close.
+type failCloseConn struct {
+	*dummyConn
+	closeErr error
+}
+
+func (f *failCloseConn) Close() error {
+	return f.closeErr
+}
+
+func (f *failCloseConn) SyscallConn() (syscall.RawConn, error) {
+	return f.dummyConn.SyscallConn()
+}

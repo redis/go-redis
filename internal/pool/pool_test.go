@@ -1397,6 +1397,65 @@ var _ = Describe("queuedNewConn", func() {
 			"dialsQueue should be empty after all requests complete")
 	})
 
+	Describe("Close suppresses errors for stale connections", func() {
+		It("should not return close error when connection is stale due to ConnMaxIdleTime", func() {
+			closeErr := fmt.Errorf("tls: failed to send closeNotify alert (but connection was closed anyway): write tcp: connection timed out")
+
+			testPool := pool.NewConnPool(&pool.Options{
+				Dialer: func(ctx context.Context) (net.Conn, error) {
+					return &failCloseConn{
+						dummyConn: &dummyConn{rawConn: new(dummyRawConn)},
+						closeErr:  closeErr,
+					}, nil
+				},
+				PoolSize:           1,
+				MaxConcurrentDials: 1,
+				DialTimeout:        1 * time.Second,
+				PoolTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    50 * time.Millisecond,
+			})
+
+			// Get a connection, put it back, then wait for it to become stale
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			testPool.Put(ctx, cn)
+
+			// Wait for the connection to exceed ConnMaxIdleTime
+			time.Sleep(100 * time.Millisecond)
+
+			// Close the pool — stale connection close errors should be suppressed
+			err = testPool.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return close error when connection is still healthy", func() {
+			closeErr := fmt.Errorf("tls: failed to send closeNotify alert")
+
+			testPool := pool.NewConnPool(&pool.Options{
+				Dialer: func(ctx context.Context) (net.Conn, error) {
+					return &failCloseConn{
+						dummyConn: &dummyConn{rawConn: new(dummyRawConn)},
+						closeErr:  closeErr,
+					}, nil
+				},
+				PoolSize:           1,
+				MaxConcurrentDials: 1,
+				DialTimeout:        1 * time.Second,
+				PoolTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    10 * time.Minute, // Long idle time — connection stays healthy
+			})
+
+			// Get a connection and put it back
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			testPool.Put(ctx, cn)
+
+			// Close the pool — healthy connection close error should be returned
+			err = testPool.Close()
+			Expect(err).To(MatchError(closeErr))
+		})
+	})
+
 	Describe("calcConnExpiresAt", func() {
 		// Case 1: lifetime <= 0 returns noExpiration
 		It("returns noExpiration when ConnMaxLifetime is not positive", func() {
