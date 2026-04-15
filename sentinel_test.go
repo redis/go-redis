@@ -768,7 +768,7 @@ var _ = Describe("Sentinel Failover with Idle Conns", func() {
 
 			execResult, err := client.Do(ctx, "EXEC").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(execResult).To(Equal(int64(101)))
+			Expect(execResult).To(Equal([]interface{}{int64(101)}))
 			// Verify CloseReasonFailover was counted exactly once
 			Expect(failoverCloseCount).To(Equal(1), "Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount)
 		})
