@@ -1403,10 +1403,14 @@ func (p *ConnPool) Close() error {
 	nowNs := time.Now().UnixNano()
 	p.connsMu.Lock()
 	for _, cn := range p.conns {
+		// Check health before closing, since closeConn invalidates the
+		// underlying fd and would make connCheck (inside isHealthyConn)
+		// always fail with EBADF.
+		healthy := p.isHealthyConn(cn, nowNs)
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
 			// Suppress close errors for stale connections, consistent
 			// with how Get() handles them (see CloseReasonStale path).
-			if p.isHealthyConn(cn, nowNs) {
+			if healthy {
 				firstErr = err
 			}
 		}

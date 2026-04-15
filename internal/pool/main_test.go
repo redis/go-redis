@@ -130,6 +130,10 @@ type failCloseConn struct {
 }
 
 func (f *failCloseConn) Close() error {
+	// Close the underlying raw conn so that connCheck sees a closed fd,
+	// matching real-world behavior (e.g., TLS closeNotify failure after
+	// the OS-level socket is torn down).
+	f.dummyConn.rawConn.Close()
 	return f.closeErr
 }
 
