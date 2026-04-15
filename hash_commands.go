@@ -70,6 +70,15 @@ func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 	return cmd
 }
 
+// HGetAll returns all fields and values of the hash stored at key.
+// In the returned value, every field name is followed by its value,
+// so the length of the reply is twice the size of the hash.
+//
+// Returns an empty map when key does not exist.
+//
+// Time complexity: O(N) where N is the size of the hash.
+//
+// See https://redis.io/commands/hgetall/
 func (c cmdable) HGetAll(ctx context.Context, key string) *MapStringStringCmd {
 	cmd := NewMapStringStringCmd(ctx, "hgetall", key)
 	_ = c(ctx, cmd)
