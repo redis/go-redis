@@ -30,6 +30,9 @@ const (
 
 	// CloseReasonTest is used in tests when closing connections.
 	CloseReasonTest = "test"
+
+	// CloseReasonFailover indicates the connection was closed due to a failover event.
+	CloseReasonFailover = "failover"
 )
 
 // Metric state constants for connection state tracking.
@@ -1366,7 +1369,11 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		// If removedFromPool is false, Close() already emitted connectionClosed for this conn.
 		if removedFromPool {
 			if cb := getMetricConnectionClosedCallback(); cb != nil {
-				cb(ctx, cn, "conn_pool_close", nil)
+				reason := "conn_pool_close"
+				if cn.closeReason != "" {
+					reason = cn.closeReason
+				}
+				cb(ctx, cn, reason, nil)
 			}
 		}
 		_ = p.closeConn(cn)
@@ -1444,27 +1451,29 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.
 	// If removed is false, Close() already removed it and emitted the -1 delta.
-	if removed {
-		// Record connection state change: connection is being removed from the specified state
-		if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
-			cb(ctx, cn, fromState, "")
-		}
-
-		// Record connection count decrement (UpDownCounter) for the state the connection was in
-		if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
-			cb(ctx, -1, cn, fromState, false)
-		}
-	}
-
 	// Only emit connection closed if we actually owned the removal.
 	// If removed is false, Close() already emitted connectionClosed for this conn.
 	if removed {
-		if cb := getMetricConnectionClosedCallback(); cb != nil {
-			cb(ctx, cn, reason, nil)
-		}
+		p.recordConectionMetrics(ctx, cn, reason, fromState)
 	}
 
 	return p.closeConn(cn)
+}
+
+func (p *ConnPool) recordConectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string) {
+	// Record connection state change: connection is being removed from the specified state
+	if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
+		cb(ctx, cn, fromState, "")
+	}
+
+	// Record connection count decrement (UpDownCounter) for the state the connection was in
+	if cb := getMetricConnectionCountCallback(); cb != nil && fromState != "" {
+		cb(ctx, -1, cn, fromState, false)
+	}
+
+	if cb := getMetricConnectionClosedCallback(); cb != nil {
+		cb(ctx, cn, reason, nil)
+	}
 }
 
 // removeConnWithLock removes a connection from the pool under the connsMu lock.
@@ -1552,13 +1561,33 @@ func (p *ConnPool) closed() bool {
 }
 
 func (p *ConnPool) Filter(fn func(*Conn) bool) error {
+	ctx := context.Background()
+
 	p.connsMu.Lock()
 	defer p.connsMu.Unlock()
+
+	idleConnSet := make(map[*Conn]struct{}, len(p.idleConns))
+	for _, ic := range p.idleConns {
+		idleConnSet[ic] = struct{}{}
+	}
 
 	var firstErr error
 	for _, cn := range p.conns {
 		if fn(cn) {
-			if err := p.closeConn(cn); err != nil && firstErr == nil {
+			var err error
+			if _, isIdle := idleConnSet[cn]; isIdle {
+				// Idle connection - remove from pool and close.
+				p.removeConn(cn)
+				p.recordConectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle)
+				err = p.closeConn(cn)
+			} else {
+				// Used connection - set closeReason and close the connection.
+				// The connection remains in p.conns. When putConn() is called later,
+				// it will close the connection instead of pooling it.
+				cn.closeReason = CloseReasonFailover
+				err = cn.Close()
+			}
+			if err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}

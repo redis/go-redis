@@ -106,6 +106,11 @@ type Conn struct {
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
 
+	// When a goroutine closes a connection, it usually knows the reason, so closeReason is not needed.
+	// closeReason is only used when an in-use connection is closed by another goroutine,
+	// to inform the goroutine using the connection why the connection was closed.
+	closeReason string
+
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 
 	// Using atomic operations for lock-free access to avoid mutex contention
@@ -920,6 +925,9 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
+	if cn.stateMachine.GetState() == StateClosed {
+		return nil
+	}
 	// Transition to CLOSED state
 	cn.stateMachine.Transition(StateClosed)
 

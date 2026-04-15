@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 var _ = Describe("Sentinel PROTO 2", func() {
@@ -689,3 +691,98 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 		}
 	}
 }
+
+var _ = Describe("Sentinel Failover with Idle Conns", func() {
+	testFailoverWithMaxActiveConns := func(maxActiveConns int) {
+		var client *redis.Client
+		var sentinel *redis.SentinelClient
+		var failoverCloseCount int
+
+		BeforeEach(func() {
+			failoverCloseCount = 0
+
+			// Set up metric callback to count CloseReasonFailover
+			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+				ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
+					if reason == "failover" {
+						failoverCloseCount++
+					}
+				},
+			})
+
+			client = redis.NewFailoverClient(&redis.FailoverOptions{
+				MasterName:      sentinelName,
+				SentinelAddrs:   sentinelAddrs,
+				PoolSize:        1,
+				DisableIdentity: true,
+				MaxActiveConns:  maxActiveConns,
+				ReplicaOnly:     false,
+				MaxRetries:      -1,
+			})
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+			sentinel = redis.NewSentinelClient(&redis.Options{
+				Addr:       ":" + sentinelPort1,
+				MaxRetries: -1,
+			})
+
+			// Wait until slaves are picked up by sentinel.
+			Eventually(func() string {
+				return sentinel1.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+			Eventually(func() string {
+				return sentinel2.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+			Eventually(func() string {
+				return sentinel3.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+		})
+
+		AfterEach(func() {
+			_ = client.Close()
+			_ = sentinel.Close()
+			pool.SetAllMetricCallbacks(nil)
+		})
+
+		It(fmt.Sprintf("should handle failover with MaxActiveConns=%d", maxActiveConns), func() {
+			err := client.Set(ctx, "key", "100", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Sleep 1 second for replication
+			time.Sleep(1 * time.Second)
+
+			// Trigger failover
+			err = sentinel.Failover(ctx, sentinelName).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for failover to complete
+			time.Sleep(3 * time.Second)
+
+			multi, err := client.Do(ctx, "MULTI").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(multi).To(Equal("OK"))
+
+			incr, err := client.Do(ctx, "INCR", "key").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(incr).To(Equal("QUEUED"))
+
+			execResult, err := client.Do(ctx, "EXEC").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(execResult).To(Equal(int64(101)))
+			// Verify CloseReasonFailover was counted exactly once
+			Expect(failoverCloseCount).To(Equal(1), "Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount)
+		})
+	}
+
+	Context("with MaxActiveConns=0", func() {
+		testFailoverWithMaxActiveConns(0)
+	})
+
+	Context("with MaxActiveConns=1", func() {
+		testFailoverWithMaxActiveConns(1)
+	})
+
+	Context("with MaxActiveConns=2", func() {
+		testFailoverWithMaxActiveConns(2)
+	})
+})
