@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -692,7 +693,7 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 	}
 }
 
-var _ = Describe("Sentinel Failover with Idle Conns", func() {
+var _ = Describe("Sentinel Failover with Conns", Serial, func() {
 	testFailoverWithMaxActiveConns := func(maxActiveConns int) {
 		var client *redis.Client
 		var sentinel *redis.SentinelClient
@@ -704,7 +705,8 @@ var _ = Describe("Sentinel Failover with Idle Conns", func() {
 			// Set up metric callback to count CloseReasonFailover
 			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
 				ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
-					if reason == "failover" {
+					fmt.Println("call ConnectionClosed metric callback with reason:", reason)
+					if reason == pool.CloseReasonFailover {
 						failoverCloseCount++
 					}
 				},
@@ -745,32 +747,38 @@ var _ = Describe("Sentinel Failover with Idle Conns", func() {
 		})
 
 		It(fmt.Sprintf("should handle failover with MaxActiveConns=%d", maxActiveConns), func() {
-			err := client.Set(ctx, "key", "100", 0).Err()
+			err := client.Set(ctx, "failover", "100", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Sleep 1 second for replication
-			time.Sleep(1 * time.Second)
+			// Sleep 2 second for replication
+			time.Sleep(2 * time.Second)
 
 			// Trigger failover
 			err = sentinel.Failover(ctx, sentinelName).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Wait for failover to complete
-			time.Sleep(3 * time.Second)
+			for range 120 {
+				masterInfo, _ := sentinel.Master(ctx, sentinelName).Result()
+				if !strings.Contains(masterInfo["flags"], "failover") {
+					fmt.Println("Failover successful, new master:", masterInfo["ip"]+":"+masterInfo["port"])
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
 
 			multi, err := client.Do(ctx, "MULTI").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(multi).To(Equal("OK"))
 
-			incr, err := client.Do(ctx, "INCR", "key").Result()
+			incr, err := client.Do(ctx, "INCR", "failover").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(incr).To(Equal("QUEUED"))
 
 			execResult, err := client.Do(ctx, "EXEC").Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(execResult).To(Equal([]interface{}{int64(101)}))
-			// Verify CloseReasonFailover was counted exactly once
-			Expect(failoverCloseCount).To(Equal(1), "Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount)
+			Expect(execResult).To(Equal([]any{int64(101)}))
+			Expect(failoverCloseCount).To(Equal(1),
+				"Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount)
 		})
 	}
 
