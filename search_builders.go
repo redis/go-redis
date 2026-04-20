@@ -241,15 +241,35 @@ func (b *AggregateBuilder) LoadAll() *AggregateBuilder {
 	return b
 }
 
-// Load adds LOAD <n> <field> [AS alias]...
-// You can call it multiple times for multiple fields.
+// lastGroupByStep returns a pointer to the last GROUPBY step, or nil if none.
+func (b *AggregateBuilder) lastGroupByStep() *FTAggregateGroupBy {
+	for i := len(b.options.Steps) - 1; i >= 0; i-- {
+		if b.options.Steps[i].GroupBy != nil {
+			return b.options.Steps[i].GroupBy
+		}
+	}
+	return nil
+}
+
+// lastSortByStep returns a pointer to the last SORTBY step, or nil if none.
+func (b *AggregateBuilder) lastSortByStep() *FTAggregateSortByStep {
+	for i := len(b.options.Steps) - 1; i >= 0; i-- {
+		if b.options.Steps[i].SortBy != nil {
+			return b.options.Steps[i].SortBy
+		}
+	}
+	return nil
+}
+
+// Load adds a LOAD <field> [AS alias] step.
+// You can call it multiple times; each call becomes a separate LOAD clause
+// at its position in the pipeline.
 func (b *AggregateBuilder) Load(field string, alias ...string) *AggregateBuilder {
-	// each Load entry becomes one element in options.Load
-	l := FTAggregateLoad{Field: field}
+	l := &FTAggregateLoad{Field: field}
 	if len(alias) > 0 {
 		l.As = alias[0]
 	}
-	b.options.Load = append(b.options.Load, l)
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{Load: l})
 	return b
 }
 
@@ -259,62 +279,65 @@ func (b *AggregateBuilder) Timeout(ms int) *AggregateBuilder {
 	return b
 }
 
-// Apply adds APPLY <field> [AS alias].
+// Apply adds an APPLY <field> [AS alias] step.
 func (b *AggregateBuilder) Apply(field string, alias ...string) *AggregateBuilder {
-	a := FTAggregateApply{Field: field}
+	a := &FTAggregateApply{Field: field}
 	if len(alias) > 0 {
 		a.As = alias[0]
 	}
-	b.options.Apply = append(b.options.Apply, a)
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{Apply: a})
 	return b
 }
 
-// GroupBy starts a new GROUPBY <fields...> clause.
+// GroupBy adds a new GROUPBY <fields...> step.
 func (b *AggregateBuilder) GroupBy(fields ...interface{}) *AggregateBuilder {
-	b.options.GroupBy = append(b.options.GroupBy, FTAggregateGroupBy{
-		Fields: fields,
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		GroupBy: &FTAggregateGroupBy{Fields: fields},
 	})
 	return b
 }
 
-// Reduce adds a REDUCE <fn> [<#args> <args...>] clause to the *last* GROUPBY.
+// Reduce adds a REDUCE <fn> [<#args> <args...>] clause to the *last* GROUPBY step.
 func (b *AggregateBuilder) Reduce(fn SearchAggregator, args ...interface{}) *AggregateBuilder {
-	if len(b.options.GroupBy) == 0 {
-		// no GROUPBY yet — nothing to attach to
+	g := b.lastGroupByStep()
+	if g == nil {
 		return b
 	}
-	idx := len(b.options.GroupBy) - 1
-	b.options.GroupBy[idx].Reduce = append(b.options.GroupBy[idx].Reduce, FTAggregateReducer{
-		Reducer: fn,
-		Args:    args,
-	})
+	g.Reduce = append(g.Reduce, FTAggregateReducer{Reducer: fn, Args: args})
 	return b
 }
 
-// ReduceAs does the same but also sets an alias: REDUCE <fn> … AS <alias>
+// ReduceAs does the same but also sets an alias: REDUCE <fn> … AS <alias>.
 func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...interface{}) *AggregateBuilder {
-	if len(b.options.GroupBy) == 0 {
+	g := b.lastGroupByStep()
+	if g == nil {
 		return b
 	}
-	idx := len(b.options.GroupBy) - 1
-	b.options.GroupBy[idx].Reduce = append(b.options.GroupBy[idx].Reduce, FTAggregateReducer{
-		Reducer: fn,
-		Args:    args,
-		As:      alias,
-	})
+	g.Reduce = append(g.Reduce, FTAggregateReducer{Reducer: fn, Args: args, As: alias})
 	return b
 }
 
-// SortBy adds SORTBY <field> ASC|DESC.
+// SortBy adds SORTBY <field> ASC|DESC. Consecutive SortBy calls (with no
+// other step in between) are merged into a single SORTBY clause so fields
+// act as tiebreakers. A SortBy call after a non-SortBy step starts a new
+// SORTBY step.
 func (b *AggregateBuilder) SortBy(field string, asc bool) *AggregateBuilder {
 	sb := FTAggregateSortBy{FieldName: field, Asc: asc, Desc: !asc}
-	b.options.SortBy = append(b.options.SortBy, sb)
+	if n := len(b.options.Steps); n > 0 && b.options.Steps[n-1].SortBy != nil {
+		b.options.Steps[n-1].SortBy.Fields = append(b.options.Steps[n-1].SortBy.Fields, sb)
+		return b
+	}
+	b.options.Steps = append(b.options.Steps, FTAggregateStep{
+		SortBy: &FTAggregateSortByStep{Fields: []FTAggregateSortBy{sb}},
+	})
 	return b
 }
 
-// SortByMax sets MAX <n> (only if SortBy was called).
+// SortByMax sets MAX <n> on the most recent SORTBY step.
 func (b *AggregateBuilder) SortByMax(max int) *AggregateBuilder {
-	b.options.SortByMax = max
+	if s := b.lastSortByStep(); s != nil {
+		s.Max = max
+	}
 	return b
 }
 
