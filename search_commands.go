@@ -3,6 +3,8 @@ package redis
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -1728,26 +1730,19 @@ func (cmd *FTInfoCmd) Clone() Cmder {
 	}
 	// Clone slices and maps
 	if cmd.val.Attributes != nil {
-		val.Attributes = make([]FTAttribute, len(cmd.val.Attributes))
-		copy(val.Attributes, cmd.val.Attributes)
+		val.Attributes = slices.Clone(cmd.val.Attributes)
 	}
 	if cmd.val.DialectStats != nil {
-		val.DialectStats = make(map[string]int, len(cmd.val.DialectStats))
-		for k, v := range cmd.val.DialectStats {
-			val.DialectStats[k] = v
-		}
+		val.DialectStats = maps.Clone(cmd.val.DialectStats)
 	}
 	if cmd.val.FieldStatistics != nil {
-		val.FieldStatistics = make([]FieldStatistic, len(cmd.val.FieldStatistics))
-		copy(val.FieldStatistics, cmd.val.FieldStatistics)
+		val.FieldStatistics = slices.Clone(cmd.val.FieldStatistics)
 	}
 	if cmd.val.IndexOptions != nil {
-		val.IndexOptions = make([]string, len(cmd.val.IndexOptions))
-		copy(val.IndexOptions, cmd.val.IndexOptions)
+		val.IndexOptions = slices.Clone(cmd.val.IndexOptions)
 	}
 	if cmd.val.IndexDefinition.Prefixes != nil {
-		val.IndexDefinition.Prefixes = make([]string, len(cmd.val.IndexDefinition.Prefixes))
-		copy(val.IndexDefinition.Prefixes, cmd.val.IndexDefinition.Prefixes)
+		val.IndexDefinition.Prefixes = slices.Clone(cmd.val.IndexDefinition.Prefixes)
 	}
 	return &FTInfoCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -1918,8 +1913,7 @@ func (cmd *FTSpellCheckCmd) Clone() Cmder {
 				Term: result.Term,
 			}
 			if result.Suggestions != nil {
-				val[i].Suggestions = make([]SpellCheckSuggestion, len(result.Suggestions))
-				copy(val[i].Suggestions, result.Suggestions)
+				val[i].Suggestions = slices.Clone(result.Suggestions)
 			}
 		}
 	}
@@ -2115,34 +2109,25 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 		}
 		// Clone slices and maps
 		if cmd.options.Filters != nil {
-			options.Filters = make([]FTSearchFilter, len(cmd.options.Filters))
-			copy(options.Filters, cmd.options.Filters)
+			options.Filters = slices.Clone(cmd.options.Filters)
 		}
 		if cmd.options.GeoFilter != nil {
-			options.GeoFilter = make([]FTSearchGeoFilter, len(cmd.options.GeoFilter))
-			copy(options.GeoFilter, cmd.options.GeoFilter)
+			options.GeoFilter = slices.Clone(cmd.options.GeoFilter)
 		}
 		if cmd.options.InKeys != nil {
-			options.InKeys = make([]interface{}, len(cmd.options.InKeys))
-			copy(options.InKeys, cmd.options.InKeys)
+			options.InKeys = slices.Clone(cmd.options.InKeys)
 		}
 		if cmd.options.InFields != nil {
-			options.InFields = make([]interface{}, len(cmd.options.InFields))
-			copy(options.InFields, cmd.options.InFields)
+			options.InFields = slices.Clone(cmd.options.InFields)
 		}
 		if cmd.options.Return != nil {
-			options.Return = make([]FTSearchReturn, len(cmd.options.Return))
-			copy(options.Return, cmd.options.Return)
+			options.Return = slices.Clone(cmd.options.Return)
 		}
 		if cmd.options.SortBy != nil {
-			options.SortBy = make([]FTSearchSortBy, len(cmd.options.SortBy))
-			copy(options.SortBy, cmd.options.SortBy)
+			options.SortBy = slices.Clone(cmd.options.SortBy)
 		}
 		if cmd.options.Params != nil {
-			options.Params = make(map[string]interface{}, len(cmd.options.Params))
-			for k, v := range cmd.options.Params {
-				options.Params[k] = v
-			}
+			options.Params = maps.Clone(cmd.options.Params)
 		}
 	}
 	return &FTSearchCmd{
@@ -2368,8 +2353,7 @@ func (cmd *FTHybridCmd) Clone() Cmder {
 		}
 	}
 	if cmd.val.Warnings != nil {
-		val.Warnings = make([]string, len(cmd.val.Warnings))
-		copy(val.Warnings, cmd.val.Warnings)
+		val.Warnings = slices.Clone(cmd.val.Warnings)
 	}
 
 	var cursorVal *FTHybridCursorResult

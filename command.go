@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"regexp"
@@ -215,6 +216,11 @@ type Cmder interface {
 	SetErr(error)
 	Err() error
 
+	// NoRetry returns true if the command should not be retried on failure.
+	// Commands that write directly to an io.Writer should return true since
+	// partial writes cannot be undone on retry.
+	NoRetry() bool
+
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
 }
@@ -234,6 +240,18 @@ func cmdsFirstErr(cmds []Cmder) error {
 		}
 	}
 	return nil
+}
+
+// cmdsContainNoRetry returns true if any command in the slice has NoRetry() == true.
+// If a pipeline contains a non-retryable command (e.g., RawWriteToCmd), the entire
+// pipeline must not be retried to prevent data corruption from partial writes.
+func cmdsContainNoRetry(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if cmd.NoRetry() {
+			return true
+		}
+	}
+	return false
 }
 
 func writeCmds(wr *proto.Writer, cmds []Cmder) error {
@@ -396,6 +414,14 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	cmd.rawVal, err = rd.ReadReply()
 	return err
+}
+
+// NoRetry returns true if the command should not be retried on failure.
+// By default, commands can be retried. Commands that write directly to an
+// io.Writer (like RawWriteToCmd) should override this to return true since
+// partial writes cannot be undone on retry.
+func (cmd *baseCmd) NoRetry() bool {
+	return false
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -715,6 +741,122 @@ func (cmd *Cmd) Clone() Cmder {
 	return &Cmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawCmd returns raw RESP protocol bytes without parsing.
+type RawCmd struct {
+	baseCmd
+	val []byte
+}
+
+var _ Cmder = (*RawCmd)(nil)
+
+func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
+	return &RawCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+	}
+}
+
+func (cmd *RawCmd) SetVal(val []byte) {
+	cmd.val = val
+}
+
+func (cmd *RawCmd) Val() []byte {
+	return cmd.val
+}
+
+func (cmd *RawCmd) Result() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) Bytes() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *RawCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.val, err = rd.ReadRawReply()
+	return err
+}
+
+func (cmd *RawCmd) Clone() Cmder {
+	var val []byte
+	if cmd.val != nil {
+		val = make([]byte, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &RawCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawWriteToCmd streams raw RESP protocol bytes directly to an io.Writer without intermediate allocations.
+type RawWriteToCmd struct {
+	baseCmd
+	w       io.Writer
+	written int64
+}
+
+var _ Cmder = (*RawWriteToCmd)(nil)
+
+func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	return &RawWriteToCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+		w: w,
+	}
+}
+
+func (cmd *RawWriteToCmd) SetVal(written int64) {
+	cmd.written = written
+}
+
+func (cmd *RawWriteToCmd) Val() int64 {
+	return cmd.written
+}
+
+func (cmd *RawWriteToCmd) Result() (int64, error) {
+	return cmd.written, cmd.err
+}
+
+func (cmd *RawWriteToCmd) String() string {
+	return cmdString(cmd, cmd.written)
+}
+
+func (cmd *RawWriteToCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.written, err = rd.ReadRawReplyWriteTo(cmd.w)
+	return err
+}
+
+// NoRetry returns true because RawWriteToCmd writes directly to an io.Writer.
+// If a retry occurs, partial data from failed attempts would be appended to
+// the writer, causing data corruption. The caller must handle retries manually
+// if needed, using a fresh writer for each attempt.
+func (cmd *RawWriteToCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *RawWriteToCmd) Clone() Cmder {
+	return &RawWriteToCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		w:       cmd.w,
+		written: cmd.written,
 	}
 }
 
@@ -2076,10 +2218,7 @@ func (cmd *XMessageSliceCmd) Clone() Cmder {
 				ID: msg.ID,
 			}
 			if msg.Values != nil {
-				val[i].Values = make(map[string]interface{}, len(msg.Values))
-				for k, v := range msg.Values {
-					val[i].Values[k] = v
-				}
+				val[i].Values = maps.Clone(msg.Values)
 			}
 		}
 	}
@@ -7499,13 +7638,18 @@ type VectorScoreSliceCmd struct {
 
 var _ Cmder = (*VectorScoreSliceCmd)(nil)
 
-func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+func NewVectorScoreSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
 	return &VectorScoreSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
 	}
+}
+
+// NewVectorInfoSliceCmd is an alias for NewVectorScoreSliceCmd kept for backwards compatibility.
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return NewVectorScoreSliceCmd(ctx, args...)
 }
 
 func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
@@ -7525,9 +7669,27 @@ func (cmd *VectorScoreSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	typ, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	var n int
+	if typ == proto.RespMap {
+		n, err = rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+	} else {
+		// RESP2 returns a flat array [name, score, name, score, ...]
+		n, err = rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if n%2 != 0 {
+			return fmt.Errorf("redis: VectorScoreSliceCmd expects even number of elements, got %d", n)
+		}
+		n /= 2
 	}
 
 	cmd.val = make([]VectorScore, n)
@@ -7550,6 +7712,208 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
+	v, err := rd.ReadReply()
+	if err != nil {
+		if err == proto.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+	}
+	return &s, nil
+}
+
+type VectorAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorAttrib
+}
+
+var _ Cmder = (*VectorAttribSliceCmd)(nil)
+
+func NewVectorAttribSliceCmd(ctx context.Context, args ...any) *VectorAttribSliceCmd {
+	return &VectorAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%2 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 2", n)
+	}
+	cmd.val = make([]VectorAttrib, n/2)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	return &VectorAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+type VectorScoreAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorScoreAttrib
+}
+
+var _ Cmder = (*VectorScoreAttribSliceCmd)(nil)
+
+func NewVectorScoreAttribSliceCmd(ctx context.Context, args ...any) *VectorScoreAttribSliceCmd {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorScoreAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if err := rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+			score, err := rd.ReadFloat()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%3 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 3", n)
+	}
+	cmd.val = make([]VectorScoreAttrib, n/3)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
 	}

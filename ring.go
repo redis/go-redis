@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
-	"github.com/dgryski/go-rendezvous" //nolint
 	"github.com/redis/go-redis/v9/auth"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -36,16 +34,8 @@ type ConsistentHash interface {
 	Get(string) string
 }
 
-type rendezvousWrapper struct {
-	*rendezvous.Rendezvous
-}
-
-func (w rendezvousWrapper) Get(key string) string {
-	return w.Lookup(key)
-}
-
 func newRendezvous(shards []string) ConsistentHash {
-	return rendezvousWrapper{rendezvous.New(shards, xxhash.Sum64String)}
+	return hashtag.NewRendezvousHash(shards)
 }
 
 //------------------------------------------------------------------------------
@@ -119,6 +109,10 @@ type RingOptions struct {
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// See Options.DialerRetryBackoff for details.
+	DialerRetryBackoff func(attempt int) time.Duration
 
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
@@ -233,6 +227,7 @@ func (opt *RingOptions) clientOptions() *Options {
 		DialTimeout:           opt.DialTimeout,
 		DialerRetries:         opt.DialerRetries,
 		DialerRetryTimeout:    opt.DialerRetryTimeout,
+		DialerRetryBackoff:    opt.DialerRetryBackoff,
 		ReadTimeout:           opt.ReadTimeout,
 		WriteTimeout:          opt.WriteTimeout,
 		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
@@ -600,6 +595,8 @@ type Ring struct {
 	heartbeatCancelFn context.CancelFunc
 }
 
+// NewRing returns a Redis Ring client to the Redis Server specified by RingOptions.
+// Passing nil RingOptions will cause a panic.
 func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")
@@ -642,7 +639,8 @@ func (c *Ring) Process(ctx context.Context, cmd Cmder) error {
 	return err
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *RingOptions that were used to create the client.
+// Any alteration of the returned *RingOptions may result in undefined behaviour.
 func (c *Ring) Options() *RingOptions {
 	return c.opt
 }
@@ -797,7 +795,7 @@ func (c *Ring) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		lastErr = shard.Client.Process(ctx, cmd)
-		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if lastErr == nil || !shouldRetry(lastErr, cmd.readTimeout() == nil) || cmd.NoRetry() {
 			return lastErr
 		}
 	}

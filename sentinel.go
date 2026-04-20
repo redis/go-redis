@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +100,10 @@ type FailoverOptions struct {
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// See Options.DialerRetryBackoff for details.
+	DialerRetryBackoff func(attempt int) time.Duration
 
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
@@ -197,6 +202,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -251,6 +257,7 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -311,6 +318,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -494,6 +502,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 // NewFailoverClient returns a Redis client that uses Redis Sentinel
 // for automatic failover. It's safe for concurrent use by multiple
 // goroutines.
+// Passing nil FailoverOptions will cause a panic.
 func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	if failoverOpt == nil {
 		panic("redis: NewFailoverClient nil options")
@@ -603,6 +612,8 @@ type SentinelClient struct {
 	*baseClient
 }
 
+// NewSentinelClient returns a Redis Sentinel client.
+// Passing nil Options will cause a panic.
 func NewSentinelClient(opt *Options) *SentinelClient {
 	if opt == nil {
 		panic("redis: NewSentinelClient nil options")
@@ -1128,7 +1139,7 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		}
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
-			if !contains(c.sentinelAddrs, sentinelAddr) {
+			if !slices.Contains(c.sentinelAddrs, sentinelAddr) {
 				internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
 					sentinelAddr, c.opt.MasterName)
 				c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
@@ -1162,19 +1173,11 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 	}
 }
 
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
-}
-
 //------------------------------------------------------------------------------
 
 // NewFailoverClusterClient returns a client that supports routing read-only commands
 // to a replica node.
+// Passing nil FailoverOptions will cause a panic.
 func NewFailoverClusterClient(failoverOpt *FailoverOptions) *ClusterClient {
 	if failoverOpt == nil {
 		panic("redis: NewFailoverClusterClient nil options")

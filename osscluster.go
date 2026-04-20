@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -103,6 +105,10 @@ type ClusterOptions struct {
 	//
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
+
+	// DialerRetryBackoff controls the delay between dial retry attempts.
+	// See Options.DialerRetryBackoff for details.
+	DialerRetryBackoff func(attempt int) time.Duration
 
 	ReadTimeout           time.Duration
 	WriteTimeout          time.Duration
@@ -429,6 +435,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
 		DialerRetryTimeout: opt.DialerRetryTimeout,
+		DialerRetryBackoff: opt.DialerRetryBackoff,
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
@@ -786,20 +793,6 @@ type clusterSlot struct {
 	nodes []*clusterNode
 }
 
-type clusterSlotSlice []*clusterSlot
-
-func (p clusterSlotSlice) Len() int {
-	return len(p)
-}
-
-func (p clusterSlotSlice) Less(i, j int) bool {
-	return p[i].start < p[j].start
-}
-
-func (p clusterSlotSlice) Swap(i, j int) {
-	p[i], p[j] = p[j], p[i]
-}
-
 type clusterState struct {
 	nodes   *clusterNodes
 	Masters []*clusterNode
@@ -858,7 +851,9 @@ func newClusterState(
 		})
 	}
 
-	sort.Sort(clusterSlotSlice(c.slots))
+	slices.SortFunc(c.slots, func(a, b *clusterSlot) int {
+		return cmp.Compare(a.start, b.start)
+	})
 
 	time.AfterFunc(time.Minute, func() {
 		nodes.GC(c.generation)
@@ -1140,7 +1135,11 @@ type ClusterClient struct {
 
 // NewClusterClient returns a Redis Cluster client as described in
 // https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec.
+// Passing nil ClusterOptions will cause a panic.
 func NewClusterClient(opt *ClusterOptions) *ClusterClient {
+	if opt == nil {
+		panic("redis: NewClusterClient nil options")
+	}
 	opt.init()
 
 	c := &ClusterClient{
@@ -1185,7 +1184,8 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
-// Options returns read-only Options that were used to create the client.
+// Options returns read-only *ClusterOptions that were used to create the client.
+// Any alteration of the returned *ClusterOptions may result in undefined behaviour.
 func (c *ClusterClient) Options() *ClusterOptions {
 	return c.opt
 }
@@ -1295,7 +1295,7 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 			continue
 		}
 
-		if shouldRetry(lastErr, cmd.readTimeout() == nil) {
+		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
 			// First retry the same node.
 			if attempt == 0 {
 				continue
@@ -1711,7 +1711,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 		if isBadConn(err, false, node.Client.getAddr()) {
 			node.MarkAsFailing()
 		}
-		if shouldRetry(err, true) {
+		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
 		setCmdsErr(cmds, err)
@@ -1747,7 +1747,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 
 		if !isRedisError(err) {
-			if shouldRetry(err, true) {
+			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			}
 			setCmdsErr(cmds[i+1:], err)
@@ -1755,7 +1755,7 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 	}
 
-	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) {
+	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		return err
 	}
@@ -1958,7 +1958,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		return writeCmds(wr, cmds)
 	}); err != nil {
-		if shouldRetry(err, true) {
+		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		}
 		setCmdsErr(cmds, err)
