@@ -1357,8 +1357,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		if removedFromPool {
 			if cb := getMetricConnectionClosedCallback(); cb != nil {
 				reason := "conn_pool_close"
-				if cn.closeReason != "" {
-					reason = cn.closeReason
+				if r := cn.closeReason.Load(); r != "" {
+					reason = r
 				}
 				cb(ctx, cn, reason, nil)
 			}
@@ -1569,7 +1569,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 				// Used connection - set closeReason and close the connection.
 				// The connection remains in p.conns. When putConn() is called later,
 				// it will close the connection instead of pooling it.
-				cn.closeReason = CloseReasonFailover
+				cn.closeReason.Store(CloseReasonFailover)
 				err = cn.Close()
 			}
 			if err != nil && firstErr == nil {
