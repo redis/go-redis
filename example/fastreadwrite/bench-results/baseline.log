@@ -1,0 +1,31 @@
+# label: baseline
+# args: --read-buf-kb 32 --write-buf-kb 32 --sock-rcvbuf-kb 0 --sock-sndbuf-kb 0 --huge-pages=false --min-idle 0
+# date: 2026-04-20T14:02:56Z
+
+go: downloading github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f
+go: downloading github.com/cespare/xxhash/v2 v2.3.0
+go: downloading go.uber.org/atomic v1.11.0
+Redis go-redis Zero-Copy Benchmark
+Server: 127.0.0.1:6379, Workers: 8, Runs: 5
+Chunk size: 4096KB, Keys: 200
+Total data: 0.78 GB, Mode: both
+bufio: r=32KiB w=32KiB, SO_RCVBUF=0KiB SO_SNDBUF=0KiB, deadlines=true
+MinIdleConns=8, no-gc=false, huge-pages=false, GOMAXPROCS=14
+------------------------------------------------------------
+starting buffer initialization (this might take a while)
+buffer initialization complete
+starting throughput benchmarks
+
+=== Pipeline Mode (single connection, 5 runs) ===
+Batch SET:    min=2.11 median=4.14 mean=3.76 stddev=0.94 GB/s  (n=5)
+Batch GET:    min=1.46 median=4.06 mean=3.38 stddev=1.14 GB/s  (n=5)
+Batch EXISTS: min=779979.49 median=884626.95 mean=1003625.24 stddev=241676.29 ops/s (n=5)
+Resources: wall=2.49s cpu=user+sys=0.76s (30%), GC=0 pauses=0.00ms, alloc=0.7 MiB
+
+=== Multi-Goroutine Mode (8 workers, 5 runs) ===
+Batch SET:    min=6.19 median=8.00 mean=7.50 stddev=1.09 GB/s  (n=5)
+Batch GET:    min=3.63 median=4.26 mean=4.13 stddev=0.28 GB/s  (n=5)
+Batch EXISTS: min=159723.10 median=524532.38 mean=529741.35 stddev=288550.70 ops/s (n=5)
+Resources: wall=1.50s cpu=user+sys=0.98s (65%), GC=0 pauses=0.00ms, alloc=0.7 MiB
+------------------------------------------------------------
+All tests passed

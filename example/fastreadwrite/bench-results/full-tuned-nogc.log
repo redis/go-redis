@@ -1,0 +1,28 @@
+# label: full-tuned-nogc
+# args: --read-buf-kb 1024 --write-buf-kb 1024 --sock-rcvbuf-kb 4096 --sock-sndbuf-kb 4096 --huge-pages=true --no-gc
+# date: 2026-04-20T14:03:16Z
+
+Redis go-redis Zero-Copy Benchmark
+Server: 127.0.0.1:6379, Workers: 8, Runs: 5
+Chunk size: 4096KB, Keys: 200
+Total data: 0.78 GB, Mode: both
+bufio: r=1024KiB w=1024KiB, SO_RCVBUF=4096KiB SO_SNDBUF=4096KiB, deadlines=true
+MinIdleConns=8, no-gc=true, huge-pages=true, GOMAXPROCS=14
+------------------------------------------------------------
+starting buffer initialization (this might take a while)
+buffer initialization complete
+starting throughput benchmarks
+
+=== Pipeline Mode (single connection, 5 runs) ===
+Batch SET:    min=5.00 median=6.49 mean=6.05 stddev=0.70 GB/s  (n=5)
+Batch GET:    min=3.71 median=3.82 mean=3.82 stddev=0.09 GB/s  (n=5)
+Batch EXISTS: min=1061007.96 median=1422637.00 mean=1368076.17 stddev=183910.51 ops/s (n=5)
+Resources: wall=1.69s cpu=user+sys=0.68s (40%), GC=0 pauses=0.00ms, alloc=0.7 MiB
+
+=== Multi-Goroutine Mode (8 workers, 5 runs) ===
+Batch SET:    min=6.49 median=6.53 mean=6.54 stddev=0.06 GB/s  (n=5)
+Batch GET:    min=4.40 median=4.45 mean=4.44 stddev=0.03 GB/s  (n=5)
+Batch EXISTS: min=613655.05 median=677869.59 mean=690507.56 stddev=65727.10 ops/s (n=5)
+Resources: wall=1.49s cpu=user+sys=0.96s (64%), GC=0 pauses=0.00ms, alloc=2.7 MiB
+------------------------------------------------------------
+All tests passed
