@@ -279,8 +279,8 @@ func (r *Reader) ReadReply() (interface{}, error) {
 }
 
 func (r *Reader) readFloat(line []byte) (float64, error) {
-	v := string(line[1:])
-	switch string(line[1:]) {
+	v := util.BytesToString(line[1:])
+	switch v {
 	case "inf":
 		return math.Inf(1), nil
 	case "-inf":
@@ -292,7 +292,7 @@ func (r *Reader) readFloat(line []byte) (float64, error) {
 }
 
 func (r *Reader) readBool(line []byte) (bool, error) {
-	switch string(line[1:]) {
+	switch util.BytesToString(line[1:]) {
 	case "t":
 		return true, nil
 	case "f":
@@ -303,7 +303,7 @@ func (r *Reader) readBool(line []byte) (bool, error) {
 
 func (r *Reader) readBigInt(line []byte) (*big.Int, error) {
 	i := new(big.Int)
-	if i, ok := i.SetString(string(line[1:]), 10); ok {
+	if i, ok := i.SetString(util.BytesToString(line[1:]), 10); ok {
 		return i, nil
 	}
 	return nil, fmt.Errorf("redis: can't parse bigInt reply: %q", line)
@@ -453,7 +453,7 @@ func (r *Reader) ReadFloat() (float64, error) {
 	case RespFloat:
 		return r.readFloat(line)
 	case RespStatus:
-		return strconv.ParseFloat(string(line[1:]), 64)
+		return strconv.ParseFloat(util.BytesToString(line[1:]), 64)
 	case RespString:
 		s, err := r.readStringReply(line)
 		if err != nil {
