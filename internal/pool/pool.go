@@ -1345,6 +1345,19 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	} else {
 		shouldCloseConn = true
+		removedFromPool = p.removeConnWithLock(cn)
+
+		// Only emit if we actually removed it from the map (not already taken by Close()).
+		if removedFromPool {
+			// Notify metrics: connection removed (used -> nothing)
+			if cb := getMetricConnectionStateChangeCallback(); cb != nil {
+				cb(ctx, cn, MetricStateUsed, "")
+			}
+			// Record connection count decrement (connection removed while in used state)
+			if cb := getMetricConnectionCountCallback(); cb != nil {
+				cb(ctx, -1, cn, "used", false)
+			}
+		}
 	}
 
 	if freeTurn {
@@ -1365,6 +1378,8 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 		_ = p.closeConn(cn)
 	}
+
+	cn.SetLastPutAtNs(getCachedTimeNs())
 }
 
 func (p *ConnPool) Remove(ctx context.Context, cn *Conn, reason error) {
