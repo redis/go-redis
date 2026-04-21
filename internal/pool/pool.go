@@ -1454,13 +1454,13 @@ func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromS
 	// Only emit connection closed if we actually owned the removal.
 	// If removed is false, Close() already emitted connectionClosed for this conn.
 	if removed {
-		p.recordConectionMetrics(ctx, cn, reason, fromState)
+		p.recordConnectionMetrics(ctx, cn, reason, fromState)
 	}
 
 	return p.closeConn(cn)
 }
 
-func (p *ConnPool) recordConectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string) {
+func (p *ConnPool) recordConnectionMetrics(ctx context.Context, cn *Conn, reason string, fromState string) {
 	// Record connection state change: connection is being removed from the specified state
 	if cb := getMetricConnectionStateChangeCallback(); cb != nil && fromState != "" {
 		cb(ctx, cn, fromState, "")
@@ -1578,7 +1578,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 			if _, isIdle := idleConnSet[cn]; isIdle {
 				// Idle connection - remove from pool and close.
 				p.removeConn(cn)
-				p.recordConectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle)
+				p.recordConnectionMetrics(ctx, cn, CloseReasonFailover, MetricStateIdle)
 				err = p.closeConn(cn)
 			} else {
 				// Used connection - set closeReason and close the connection.
