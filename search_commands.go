@@ -724,13 +724,13 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 			queryArgs = append(queryArgs, "ADDSCORES")
 		}
 
-		if options.LoadAll && options.Load != nil {
+		if len(options.Steps) == 0 && options.LoadAll && options.Load != nil {
 			return nil, fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
 		}
 		if options.LoadAll {
 			queryArgs = append(queryArgs, "LOAD", "*")
 		}
-		if options.Load != nil {
+		if len(options.Steps) == 0 && options.Load != nil {
 			queryArgs = append(queryArgs, "LOAD", len(options.Load))
 			index, count := len(queryArgs)-1, 0
 			for _, load := range options.Load {
@@ -966,7 +966,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.AddScores {
 			args = append(args, "ADDSCORES")
 		}
-		if options.LoadAll && options.Load != nil {
+		if len(options.Steps) == 0 && options.LoadAll && options.Load != nil {
 			cmd := NewAggregateCmd(ctx, args...)
 			cmd.SetErr(fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive"))
 			return cmd
@@ -974,7 +974,7 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.LoadAll {
 			args = append(args, "LOAD", "*")
 		}
-		if options.Load != nil {
+		if len(options.Steps) == 0 && options.Load != nil {
 			args = append(args, "LOAD", len(options.Load))
 			index, count := len(args)-1, 0
 			for _, load := range options.Load {

@@ -1001,16 +1001,42 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 
 	It("should ignore deprecated fields when Steps is populated", Label("search", "ftaggregate"), func() {
 		options := &redis.FTAggregateOptions{
-			Apply:  []redis.FTAggregateApply{{Field: "@ignored", As: "x"}},
-			SortBy: []redis.FTAggregateSortBy{{FieldName: "@ignored"}},
+			Load:      []redis.FTAggregateLoad{{Field: "@ignored_load"}},
+			Apply:     []redis.FTAggregateApply{{Field: "@ignored_apply", As: "x"}},
+			SortBy:    []redis.FTAggregateSortBy{{FieldName: "@ignored_sort"}},
+			SortByMax: 999,
+			GroupBy:   []redis.FTAggregateGroupBy{{Fields: []interface{}{"@ignored_group"}}},
 			Steps: []redis.FTAggregateStep{
 				{Apply: &redis.FTAggregateApply{Field: "@used", As: "u"}},
 			},
 		}
 		args, err := redis.FTAggregateQuery("q", options)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(args).NotTo(ContainElement("@ignored"))
+		for _, unwanted := range []string{"@ignored_load", "@ignored_apply", "@ignored_sort", "@ignored_group"} {
+			Expect(args).NotTo(ContainElement(unwanted))
+		}
+		Expect(args).NotTo(ContainElement(999))
 		Expect(args).To(ContainElement("@used"))
+	})
+
+	It("should still allow LoadAll together with Steps (LOAD * once)", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LoadAll: true,
+			Load:    []redis.FTAggregateLoad{{Field: "@ignored_load"}},
+			Steps: []redis.FTAggregateStep{
+				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(args).NotTo(ContainElement("@ignored_load"))
+		loadCount := 0
+		for _, a := range args {
+			if a == "LOAD" {
+				loadCount++
+			}
+		}
+		Expect(loadCount).To(Equal(1))
 	})
 
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
