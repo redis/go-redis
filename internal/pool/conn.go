@@ -102,7 +102,6 @@ type Conn struct {
 
 	pooled    bool
 	pubsub    bool
-	closed    atomic.Bool
 	createdAt time.Time
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
@@ -882,12 +881,10 @@ func (cn *Conn) WithWriter(
 }
 
 func (cn *Conn) IsClosed() bool {
-	return cn.closed.Load() || cn.stateMachine.GetState() == StateClosed
+	return cn.stateMachine.GetState() == StateClosed
 }
 
 func (cn *Conn) Close() error {
-	cn.closed.Store(true)
-
 	// Transition to CLOSED state
 	cn.stateMachine.Transition(StateClosed)
 
