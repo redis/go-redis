@@ -787,6 +787,7 @@ func TestOnCloseHooks_Unregister(t *testing.T) {
 	}
 }
 
+
 // TestOnCloseHooks_AllRunOnError confirms every hook is invoked even if an
 // earlier one returns an error, and that the first error is returned.
 func TestOnCloseHooks_AllRunOnError(t *testing.T) {

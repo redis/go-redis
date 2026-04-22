@@ -259,7 +259,12 @@ func (h *onCloseHooks) register(id string, fn func() error) {
 	h.hooks[id] = fn
 }
 
-// unregister removes the callback associated with id, if any.
+// unregister removes the callback associated with id, if any. It is kept
+// for API symmetry with register so future callers (e.g. dynamic hook
+// owners that need to detach before client Close) do not have to
+// reinvent it.
+//
+//nolint:unused // kept for API symmetry with register; see comment above.
 func (h *onCloseHooks) unregister(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
