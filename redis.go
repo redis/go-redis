@@ -496,7 +496,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", initErr)
 		}
 
-		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
+		// Attaching the unsubscribe callback to the per-connection
+		// SetOnClose hook below is sufficient: it runs exactly when the
+		// connection that owns this subscription goes away. Wrapping
+		// c.onClose here as well rebuilds the shared baseClient.onClose
+		// chain on every initConn, which grows unbounded under token
+		// rotation storms and retains each dead *pool.Conn via the
+		// captured closure (#3772). baseClient.Close walks the chain
+		// only once at shutdown, so it never trimmed live entries.
 		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 
 		username, password = credentials.BasicAuth()
