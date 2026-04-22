@@ -1,6 +1,6 @@
 package proto_test
 
-import (
+import ( 
 	"bytes"
 	"fmt"
 	"io"
@@ -81,6 +81,22 @@ func TestReader_ReadLine(t *testing.T) {
 
 	if !bytes.Equal(read, original[:len(original)-2]) {
 		t.Errorf("Values must be equal: %d expected %d", len(read), len(original[:len(original)-2]))
+	}
+}
+
+func BenchmarkReader_ReadFloat(b *testing.B) {
+	buf := new(bytes.Buffer)
+	for i := 0; i < b.N; i++ {
+		fmt.Fprint(buf, ",123.456\r\n")
+	}
+	p := proto.NewReader(buf)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := p.ReadFloat()
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

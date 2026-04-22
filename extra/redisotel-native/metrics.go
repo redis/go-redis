@@ -7,7 +7,6 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,31 +37,19 @@ func addServerPortIfNonDefault(attrs []attribute.KeyValue, serverPort string) []
 	return attrs
 }
 
-// poolInfo stores information about a registered main connection pool
-type poolInfo struct {
-	name string
-	pool redis.Pooler
-}
-
-// pubsubPoolInfo stores information about a registered PubSub pool
-type pubsubPoolInfo struct {
-	name string
-	pool redis.PubSubPooler
-}
-
 // metricsRecorder implements the otel.Recorder interface
 type metricsRecorder struct {
 	operationDuration        metric.Float64Histogram
-	connectionCountGauge     metric.Int64ObservableGauge
+	connectionCount          metric.Int64UpDownCounter // OTel semconv: UpDownCounter for connection.count
 	connectionCreateTime     metric.Float64Histogram
 	connectionRelaxedTimeout metric.Int64UpDownCounter
 	connectionHandoff        metric.Int64Counter
 	clientErrors             metric.Int64Counter
 	maintenanceNotifications metric.Int64Counter
 
-	connectionWaitTime         metric.Float64Histogram
-	connectionClosed           metric.Int64Counter
-	connectionPendingReqsGauge metric.Int64ObservableGauge
+	connectionWaitTime    metric.Float64Histogram
+	connectionClosed      metric.Int64Counter
+	connectionPendingReqs metric.Int64UpDownCounter // OTel semconv: UpDownCounter for pending_requests
 
 	pubsubMessages metric.Int64Counter
 
@@ -70,11 +57,6 @@ type metricsRecorder struct {
 
 	// Configuration
 	cfg *config
-
-	// Pool registry for tracking multiple pools
-	poolsMu     sync.RWMutex
-	pools       []poolInfo
-	pubsubPools []pubsubPoolInfo
 }
 
 // RecordOperationDuration records db.client.operation.duration metric
@@ -849,62 +831,86 @@ func (r *metricsRecorder) RecordStreamLag(
 	r.streamLag.Record(ctx, lag.Seconds(), metric.WithAttributes(attrs...))
 }
 
-// RegisterPool implements the OTelPoolRegistrar interface.
-// The pools are used by async gauge callbacks to pull statistics.
-func (r *metricsRecorder) RegisterPool(poolName string, pool redis.Pooler) {
-	r.poolsMu.Lock()
-	defer r.poolsMu.Unlock()
+// RecordConnectionCount records a change in connection count (UpDownCounter).
+// Per OTel semantic conventions, db.client.connection.count is an UpDownCounter.
+// delta: +1 when connection added, -1 when connection removed
+// state: connection state (e.g., "idle", "used")
+// isPubSub: true if this is a PubSub connection
+func (r *metricsRecorder) RecordConnectionCount(
+	ctx context.Context,
+	delta int,
+	cn redis.ConnInfo,
+	state string,
+	isPubSub bool,
+) {
+	if r.connectionCount == nil {
+		return
+	}
 
-	// Add pool to registry
-	r.pools = append(r.pools, poolInfo{
-		name: poolName,
-		pool: pool,
-	})
-}
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		getLibraryVersionAttr(),
+		attribute.String(AttrDBClientConnectionState, state),
+		attribute.Bool(AttrRedisClientConnectionPubSub, isPubSub),
+	}
 
-// UnregisterPool implements the OTelPoolRegistrar interface.
-// This ensures async gauge callbacks don't try to access closed pools.
-func (r *metricsRecorder) UnregisterPool(pool redis.Pooler) {
-	r.poolsMu.Lock()
-	defer r.poolsMu.Unlock()
+	// Use pool name from connection (set when connection was created)
+	if cn != nil {
+		poolName := cn.PoolName()
+		if poolName != "" {
+			attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, poolName))
 
-	// Find and remove the pool from registry
-	for i, p := range r.pools {
-		if p.pool == pool {
-			// Remove by swapping with last element and truncating
-			r.pools[i] = r.pools[len(r.pools)-1]
-			r.pools = r.pools[:len(r.pools)-1]
-			return
+			// Extract server info from pool name
+			serverAddr, serverPort, _ := parsePoolName(poolName)
+			if serverAddr != "" {
+				attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
+			}
+			attrs = addServerPortIfNonDefault(attrs, serverPort)
 		}
 	}
+
+	// Record the counter (delta can be +1 or -1)
+	r.connectionCount.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
 }
 
-// RegisterPubSubPool implements the OTelPoolRegistrar interface.
-// The pools are used by async gauge callbacks to pull statistics.
-func (r *metricsRecorder) RegisterPubSubPool(poolName string, pool redis.PubSubPooler) {
-	r.poolsMu.Lock()
-	defer r.poolsMu.Unlock()
-
-	// Add PubSub pool to registry
-	r.pubsubPools = append(r.pubsubPools, pubsubPoolInfo{
-		name: poolName,
-		pool: pool,
-	})
-}
-
-// UnregisterPubSubPool implements the OTelPoolRegistrar interface.
-// This ensures async gauge callbacks don't try to access closed pools.
-func (r *metricsRecorder) UnregisterPubSubPool(pool redis.PubSubPooler) {
-	r.poolsMu.Lock()
-	defer r.poolsMu.Unlock()
-
-	// Find and remove the pool from registry
-	for i, p := range r.pubsubPools {
-		if p.pool == pool {
-			// Remove by swapping with last element and truncating
-			r.pubsubPools[i] = r.pubsubPools[len(r.pubsubPools)-1]
-			r.pubsubPools = r.pubsubPools[:len(r.pubsubPools)-1]
-			return
-		}
+// RecordPendingRequests records a change in pending requests (UpDownCounter).
+// Per OTel semantic conventions, db.client.connection.pending_requests is an UpDownCounter.
+// delta: +1 when request starts waiting, -1 when request stops waiting
+// poolName is passed explicitly because we may not have a connection yet when request starts
+func (r *metricsRecorder) RecordPendingRequests(
+	ctx context.Context,
+	delta int,
+	cn redis.ConnInfo,
+	poolName string,
+) {
+	if r.connectionPendingReqs == nil {
+		return
 	}
+
+	// Build attributes
+	attrs := []attribute.KeyValue{
+		attribute.String(AttrDBSystemName, DBSystemRedis),
+		getLibraryVersionAttr(),
+	}
+
+	// Use explicit pool name (preferred) or fall back to connection's pool name
+	effectivePoolName := poolName
+	if effectivePoolName == "" && cn != nil {
+		effectivePoolName = cn.PoolName()
+	}
+
+	if effectivePoolName != "" {
+		attrs = append(attrs, attribute.String(AttrDBClientConnectionPoolName, effectivePoolName))
+
+		// Extract server info from pool name
+		serverAddr, serverPort, _ := parsePoolName(effectivePoolName)
+		if serverAddr != "" {
+			attrs = append(attrs, attribute.String(AttrServerAddress, serverAddr))
+		}
+		attrs = addServerPortIfNonDefault(attrs, serverPort)
+	}
+
+	// Record the counter (delta can be +1 or -1)
+	r.connectionPendingReqs.Add(ctx, int64(delta), metric.WithAttributes(attrs...))
 }

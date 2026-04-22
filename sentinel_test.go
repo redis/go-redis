@@ -204,6 +204,7 @@ var _ = Describe("NewFailoverClusterClient PROTO 2", func() {
 
 	It("should sentinel cluster PROTO 2", func() {
 		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			defer GinkgoRecover()
 			val, err := client.Do(ctx, "HELLO").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainElements("proto", int64(2)))
@@ -306,6 +307,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			defer GinkgoRecover()
 			val, err := c.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=sentinel_cluster_hi"))
@@ -320,6 +322,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			defer GinkgoRecover()
 			clientInfo, err := c.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(clientInfo.DB).To(Equal(1))
@@ -329,6 +332,7 @@ var _ = Describe("NewFailoverClusterClient", func() {
 
 	It("should sentinel cluster PROTO 3", func() {
 		_ = client.ForEachShard(ctx, func(ctx context.Context, c *redis.Client) error {
+			defer GinkgoRecover()
 			val, err := client.Do(ctx, "HELLO").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(HaveKeyWithValue("proto", int64(3)))
