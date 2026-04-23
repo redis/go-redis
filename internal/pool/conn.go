@@ -926,7 +926,7 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
-	if cn.stateMachine.GetState() == StateClosed {
+	if cn.IsClosed() {
 		return nil
 	}
 	// Transition to CLOSED state
@@ -935,6 +935,7 @@ func (cn *Conn) Close() error {
 	if cn.onClose != nil {
 		// ignore error
 		_ = cn.onClose()
+		cn.onClose = nil
 	}
 
 	// Lock-free netConn access for better performance
