@@ -28,6 +28,7 @@ func (c *Client) newTx() *Tx {
 			connPool:      pool.NewStickyConnPool(c.connPool),
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
+			onClose:       &onCloseHooks{},
 		},
 	}
 	tx.init()
