@@ -215,6 +215,96 @@ func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) e
 
 //------------------------------------------------------------------------------
 
+// Stable identifiers for baseClient.onClose hooks. Each component that
+// registers a close callback owns a dedicated id here so the set of known
+// hooks is discoverable in one place and id collisions are caught at
+// compile time. New ids should be added as additional constants.
+const (
+	// onCloseHookIDSentinelFailover identifies the close callback installed
+	// by NewFailoverClient to tear down sentinel failover background work.
+	onCloseHookIDSentinelFailover = "sentinel-failover"
+)
+
+// onCloseHooks is a small registry of named close callbacks attached to a
+// baseClient. Each callback is identified by a stable string id; registering
+// the same id twice replaces the previous callback rather than chaining onto
+// it. This guarantees the registry stays bounded regardless of how often a
+// hook is (re)registered and avoids the unbounded closure chain that
+// motivated issue #3772.
+//
+// Hooks are invoked in registration order. All hooks run regardless of
+// individual errors; the first non-nil error is returned.
+//
+// A zero-value onCloseHooks is ready to use. It is safe for concurrent use.
+// Clones of a baseClient share the same *onCloseHooks so registrations and
+// close semantics are preserved across WithTimeout / WithContext / etc.
+type onCloseHooks struct {
+	mu    sync.Mutex
+	order []string
+	hooks map[string]func() error
+}
+
+// register adds or replaces the callback associated with id. Re-registering
+// an existing id overwrites the previous callback in place; new ids are
+// appended to the invocation order.
+func (h *onCloseHooks) register(id string, fn func() error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.hooks == nil {
+		h.hooks = make(map[string]func() error)
+	}
+	if _, exists := h.hooks[id]; !exists {
+		h.order = append(h.order, id)
+	}
+	h.hooks[id] = fn
+}
+
+// unregister removes the callback associated with id, if any. It is kept
+// for API symmetry with register so future callers (e.g. dynamic hook
+// owners that need to detach before client Close) do not have to
+// reinvent it.
+//
+//nolint:unused // kept for API symmetry with register; see comment above.
+func (h *onCloseHooks) unregister(id string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, exists := h.hooks[id]; !exists {
+		return
+	}
+	delete(h.hooks, id)
+	for i, x := range h.order {
+		if x == id {
+			h.order = append(h.order[:i], h.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// run invokes all registered callbacks in registration order and returns
+// the first non-nil error encountered. All callbacks are executed even if
+// an earlier one returns an error.
+func (h *onCloseHooks) run() error {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	fns := make([]func() error, 0, len(h.order))
+	for _, id := range h.order {
+		if fn := h.hooks[id]; fn != nil {
+			fns = append(fns, fn)
+		}
+	}
+	h.mu.Unlock()
+
+	var firstErr error
+	for _, fn := range fns {
+		if err := fn(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 type baseClient struct {
 	opt        *Options
 	optLock    sync.RWMutex
@@ -222,7 +312,13 @@ type baseClient struct {
 	pubSubPool *pool.PubSubPool
 	hooksMixin
 
-	onClose func() error // hook called when client is closed
+	// onClose holds named callbacks invoked when the client is closed.
+	// Registering a new callback never removes previously registered ones;
+	// only re-registering the same id replaces the existing callback. This
+	// lets composing components (e.g. sentinel failover) add close logic
+	// safely without fear of overwriting each other and without building
+	// unbounded closure chains on repeated registration.
+	onClose *onCloseHooks
 
 	// Push notification processing
 	pushProcessor push.NotificationProcessor
@@ -376,27 +472,6 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	}
 }
 
-func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
-	onClose := c.onClose
-	return func() error {
-		var firstErr error
-		err := newOnClose()
-		// Even if we have an error we would like to execute the onClose hook
-		// if it exists. We will return the first error that occurred.
-		// This is to keep error handling consistent with the rest of the code.
-		if err != nil {
-			firstErr = err
-		}
-		if onClose != nil {
-			err = onClose()
-			if err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		return firstErr
-	}
-}
-
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
@@ -496,7 +571,22 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			return fmt.Errorf("failed to subscribe to streaming credentials: %w", initErr)
 		}
 
-		c.onClose = c.wrappedOnClose(unsubscribeFromCredentialsProvider)
+		// Per-connection unsubscribe is attached to the connection itself so it
+		// runs when this specific connection is closed. Do not register it on
+		// c.onClose: initConn runs for every (re)initialized connection, and
+		// attaching per-connection state to the shared baseClient registry would
+		// either leak entries (one per connection id, never trimmed) or — with
+		// the pre-fix wrappedOnClose approach — build an unbounded closure chain
+		// retaining every prior connection's unsubscribe (see issue #3772).
+		//
+		// Note: pool.Conn.SetOnClose OVERWRITES any prior callback (see the
+		// doc on that method). That is safe here because the streaming
+		// credentials Manager deduplicates listeners by connection id, so a
+		// second initConn on the same cn re-Subscribes the SAME listener and
+		// the returned unsubscribe is equivalent to the one already installed.
+		// Any future code path that could hand out a distinct unsubscribe on
+		// re-initialization must first invoke the existing one to avoid
+		// orphaning the old subscription on the credentials provider.
 		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 
 		username, password = credentials.BasicAuth()
@@ -963,10 +1053,8 @@ func (c *baseClient) Close() error {
 		firstErr = err
 	}
 
-	if c.onClose != nil {
-		if err := c.onClose(); err != nil && firstErr == nil {
-			firstErr = err
-		}
+	if err := c.onClose.run(); err != nil && firstErr == nil {
+		firstErr = err
 	}
 
 	// Unregister pools from OTel before closing them
@@ -1227,7 +1315,8 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			opt: opt,
+			opt:     opt,
+			onClose: &onCloseHooks{},
 		},
 	}
 	c.init()
@@ -1510,6 +1599,7 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 		baseClient: baseClient{
 			opt:      opt,
 			connPool: connPool,
+			onClose:  &onCloseHooks{},
 		},
 	}
 
