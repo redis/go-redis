@@ -455,8 +455,9 @@ func DetectEndpointType(addr string, tlsEnabled bool) EndpointType {
 // isInternalHostname resolves the hostname (both IPv4 and IPv6) under the
 // given context and reports whether every resolved address is in a
 // private/internal range. If any address is public the hostname is treated
-// as external. An empty result set or resolution error returns (false, err);
-// callers are expected to fall back to an external classification.
+// as external. A resolution error returns (false, err). An empty result set
+// returns (false, nil); callers are expected to fall back to an external
+// classification when the hostname cannot be determined to be internal.
 func isInternalHostname(ctx context.Context, hostname string) (bool, error) {
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, hostname)
 	if err != nil {
