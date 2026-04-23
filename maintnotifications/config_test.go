@@ -474,3 +474,134 @@ func TestMaxWorkersLogic(t *testing.T) {
 		}
 	})
 }
+
+
+func TestIsPrivateIP(t *testing.T) {
+	cases := []struct {
+		ip      string
+		private bool
+	}{
+		{"10.0.0.1", true},          // RFC1918
+		{"172.16.5.4", true},        // RFC1918
+		{"192.168.1.1", true},       // RFC1918
+		{"127.0.0.1", true},         // loopback
+		{"169.254.1.1", true},       // IPv4 link-local
+		{"100.64.0.1", true},        // RFC6598 CGNAT
+		{"100.127.255.254", true},   // RFC6598 CGNAT upper
+		{"100.63.255.255", false},   // just outside CGNAT
+		{"100.128.0.0", false},      // just outside CGNAT
+		{"8.8.8.8", false},          // public
+		{"1.1.1.1", false},          // public
+		{"::1", true},               // IPv6 loopback
+		{"fe80::1", true},           // IPv6 link-local
+		{"fc00::1", true},           // IPv6 ULA (RFC4193)
+		{"fd12:3456:789a::1", true}, // IPv6 ULA
+		{"2001:4860:4860::8888", false}, // IPv6 public (Google DNS)
+	}
+	for _, tc := range cases {
+		t.Run(tc.ip, func(t *testing.T) {
+			ip := net.ParseIP(tc.ip)
+			if ip == nil {
+				t.Fatalf("failed to parse %q", tc.ip)
+			}
+			if got := isPrivateIP(ip); got != tc.private {
+				t.Errorf("isPrivateIP(%s) = %v, want %v", tc.ip, got, tc.private)
+			}
+		})
+	}
+
+	if isPrivateIP(nil) {
+		t.Errorf("isPrivateIP(nil) should be false")
+	}
+}
+
+func TestDetectEndpointType_IPAddresses(t *testing.T) {
+	cases := []struct {
+		addr string
+		tls  bool
+		want EndpointType
+	}{
+		{"10.0.0.1:6379", false, EndpointTypeInternalIP},
+		{"10.0.0.1:6379", true, EndpointTypeInternalFQDN},
+		{"8.8.8.8:6379", false, EndpointTypeExternalIP},
+		{"8.8.8.8:6379", true, EndpointTypeExternalFQDN},
+		{"127.0.0.1:6379", false, EndpointTypeInternalIP},
+		{"[::1]:6379", false, EndpointTypeInternalIP},
+		{"[fc00::1]:6379", true, EndpointTypeInternalFQDN},
+		{"[2001:4860:4860::8888]:6379", false, EndpointTypeExternalIP},
+		{"100.64.0.1:6379", false, EndpointTypeInternalIP}, // CGNAT
+	}
+	for _, tc := range cases {
+		t.Run(tc.addr, func(t *testing.T) {
+			got := DetectEndpointType(tc.addr, tc.tls)
+			if got != tc.want {
+				t.Errorf("DetectEndpointType(%q, tls=%v) = %q, want %q", tc.addr, tc.tls, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsInternalHostname_AllPrivate(t *testing.T) {
+	// localhost typically resolves to 127.0.0.1 and/or ::1; both are
+	// treated as internal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got, err := isInternalHostname(ctx, "localhost")
+	if err != nil {
+		t.Skipf("cannot resolve localhost in this environment: %v", err)
+	}
+	if !got {
+		t.Errorf("isInternalHostname(\"localhost\") = false, want true")
+	}
+}
+
+func TestIsInternalHostname_ResolveError(t *testing.T) {
+	// .invalid is reserved by RFC2606 and must not resolve. A resolution
+	// error should be surfaced and the hostname should not be classified
+	// as internal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	got, err := isInternalHostname(ctx, "redis-does-not-exist.invalid")
+	if err == nil {
+		t.Skip("resolver unexpectedly returned success for .invalid TLD; skipping")
+	}
+	if got {
+		t.Errorf("isInternalHostname on resolution error should return false, got true")
+	}
+}
+
+func TestIsInternalHostname_ContextCancelled(t *testing.T) {
+	// A cancelled context must not leave the lookup hanging; it should
+	// return an error promptly and classify as non-internal.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	got, err := isInternalHostname(ctx, "example.com")
+	if time.Since(start) > time.Second {
+		t.Errorf("isInternalHostname took too long with a cancelled context: %v", time.Since(start))
+	}
+	if err == nil {
+		t.Errorf("expected error from cancelled context, got nil")
+	}
+	if got {
+		t.Errorf("cancelled context should not classify as internal")
+	}
+}
+
+func TestDetectEndpointType_HostnameTimeoutBounded(t *testing.T) {
+	// 192.0.2.0/24 (TEST-NET-1) is reserved for documentation; the
+	// "address" below is a non-routable IPv4 literal embedded in a
+	// string that is not a valid hostname, but even if it were routed
+	// as a hostname, DetectEndpointType must return within a reasonable
+	// time bounded by endpointDetectResolveTimeout. Use a clearly
+	// invalid .invalid hostname instead to exercise the DNS path.
+	start := time.Now()
+	_ = DetectEndpointType("redis-detect-timeout-bound.invalid:6379", false)
+	if elapsed := time.Since(start); elapsed > endpointDetectResolveTimeout+time.Second {
+		t.Errorf("DetectEndpointType did not honour resolve timeout: elapsed=%v, limit=%v",
+			elapsed, endpointDetectResolveTimeout+time.Second)
+	}
+}
