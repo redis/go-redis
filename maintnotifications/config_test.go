@@ -541,6 +541,32 @@ func TestDetectEndpointType_IPAddresses(t *testing.T) {
 	}
 }
 
+func TestDetectEndpointType_HostnameTLSOffReturnsIP(t *testing.T) {
+	// With TLS disabled, DetectEndpointType must always return an IP
+	// endpoint type, classified as internal/external based on the
+	// addresses the hostname resolves to. localhost resolves to loopback
+	// addresses which are treated as internal.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := net.DefaultResolver.LookupIPAddr(ctx, "localhost"); err != nil {
+		t.Skipf("cannot resolve localhost in this environment: %v", err)
+	}
+
+	got := DetectEndpointType("localhost:6379", false)
+	if got != EndpointTypeInternalIP {
+		t.Errorf("DetectEndpointType(\"localhost:6379\", tls=false) = %q, want %q",
+			got, EndpointTypeInternalIP)
+	}
+
+	// With TLS enabled, the FQDN should still be preserved for SNI /
+	// certificate validation.
+	got = DetectEndpointType("localhost:6379", true)
+	if got != EndpointTypeInternalFQDN {
+		t.Errorf("DetectEndpointType(\"localhost:6379\", tls=true) = %q, want %q",
+			got, EndpointTypeInternalFQDN)
+	}
+}
+
 func TestIsInternalHostname_AllPrivate(t *testing.T) {
 	// localhost typically resolves to 127.0.0.1 and/or ::1; both are
 	// treated as internal.

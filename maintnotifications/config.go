@@ -392,9 +392,13 @@ func isPrivateIP(ip net.IP) bool {
 // DetectEndpointType automatically detects the appropriate endpoint type
 // based on the connection address and TLS configuration.
 //
-// For IP addresses:
+// TLS behaviour:
 //   - If TLS is enabled: requests FQDN for proper certificate validation
-//   - If TLS is disabled: requests IP for better performance
+//     (SNI / hostname verification).
+//   - If TLS is disabled: always requests IP for better performance, even
+//     when the configured address is a hostname. In that case the hostname
+//     is resolved to determine whether it belongs to an internal or
+//     external network range.
 //
 // Internal vs External detection:
 //   - For IPs: uses private IP range detection
@@ -437,15 +441,28 @@ func DetectEndpointType(addr string, tlsEnabled bool) EndpointType {
 		defer cancel()
 
 		isInternal, err := isInternalHostname(ctx, host)
-		// Will fallback to external FQDN if we can't determine if it's internal
+		// Will fallback to external classification if we can't determine
+		// whether the hostname is internal.
 		if err != nil && internal.LogLevel.WarnOrAbove() {
 			internal.Logger.Printf(ctx, "Failed to determine if hostname %q is internal: %v", host, err)
 		}
 
-		if isInternal {
-			endpointType = EndpointTypeInternalFQDN
+		if tlsEnabled {
+			// With TLS the server name must be preserved for certificate
+			// validation, so request an FQDN endpoint.
+			if isInternal {
+				endpointType = EndpointTypeInternalFQDN
+			} else {
+				endpointType = EndpointTypeExternalFQDN
+			}
 		} else {
-			endpointType = EndpointTypeExternalFQDN
+			// Without TLS we always prefer IP endpoints for performance,
+			// even if the configured address is a hostname.
+			if isInternal {
+				endpointType = EndpointTypeInternalIP
+			} else {
+				endpointType = EndpointTypeExternalIP
+			}
 		}
 	}
 
