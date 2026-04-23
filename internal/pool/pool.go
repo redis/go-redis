@@ -1572,6 +1572,7 @@ func (p *ConnPool) Close() error {
 	}
 
 	var firstErr error
+	nowNs := time.Now().UnixNano()
 	p.connsMu.Lock()
 
 	// Emit -1 for each connection. Since all idle↔used transitions happen
@@ -1583,6 +1584,10 @@ func (p *ConnPool) Close() error {
 	}
 	ctx := context.Background()
 	for _, cn := range p.conns {
+		// Check health before closing, since closeConn invalidates the
+		// underlying fd and would make connCheck (inside isHealthyConn)
+		// always fail with EBADF.
+		healthy := p.isHealthyConn(cn, nowNs)
 		if cb != nil {
 			if _, isIdle := idleSet[cn.GetID()]; isIdle {
 				cb(ctx, -1, cn, "idle", false)
@@ -1594,7 +1599,11 @@ func (p *ConnPool) Close() error {
 			closedCb(ctx, cn, "pool_shutdown", nil)
 		}
 		if err := p.closeConn(cn); err != nil && firstErr == nil {
-			firstErr = err
+			// Suppress close errors for stale connections, consistent
+			// with how Get() handles them (see CloseReasonStale path).
+			if healthy {
+				firstErr = err
+			}
 		}
 	}
 	p.conns = nil
