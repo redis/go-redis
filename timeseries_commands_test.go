@@ -756,6 +756,47 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(len(resultRange)).To(BeEquivalentTo(7))
 			})
 
+			It("should TSRangeWithArgs support multiple aggregators", Label("timeseries", "tsrange", "tsrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreate(ctx, "multi-range").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-range", 1000, 100},
+					{"multi-range", 1010, 110},
+					{"multi-range", 1020, 120},
+					{"multi-range", 1030, 130},
+					{"multi-range", 1040, 140},
+					{"multi-range", 1050, 150},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 1000, Values: []float64{100, 110}},
+					{Timestamp: 1020, Values: []float64{120, 130}},
+					{Timestamp: 1040, Values: []float64{140, 150}},
+				}))
+
+				cmd := client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregator:     redis.Avg,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: setting both Aggregator and Aggregators is not allowed; use Aggregators instead because Aggregator is deprecated"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Invalid, redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator at index 1: Invalid (0)"))
+			})
+
 			It("should TSRevRange, TSRevRangeWithArgs", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "NonRedisEnterprise"), func() {
 				for i := 0; i < 100; i++ {
 					_, err := client.TSAdd(ctx, "a", i, float64(i%7)).Result()
@@ -882,6 +923,34 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resultRange[0]).To(BeEquivalentTo(redis.TSTimestampValue{Timestamp: 70, Value: 5}))
 				Expect(len(resultRange)).To(BeEquivalentTo(7))
+			})
+
+			It("should TSRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreate(ctx, "multi-revrange").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-revrange", 1000, 100},
+					{"multi-revrange", 1010, 110},
+					{"multi-revrange", 1020, 120},
+					{"multi-revrange", 1030, 130},
+					{"multi-revrange", 1040, 140},
+					{"multi-revrange", 1050, 150},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSRevRangeWithArgs(ctx, "multi-revrange", 0, 2000, &redis.TSRevRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 1040, Values: []float64{140, 150}},
+					{Timestamp: 1020, Values: []float64{120, 130}},
+					{Timestamp: 1000, Values: []float64{100, 110}},
+				}))
 			})
 
 			It("should TSMRange and TSMRangeWithArgs", Label("timeseries", "tsmrange", "tsmrangeWithArgs"), func() {
@@ -1071,6 +1140,65 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					Expect(result["d"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 4.0}, []interface{}{int64(10), 8.0}}))
 				}
 			})
+			It("should TSMRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrange", "tsmrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreateWithArgs(ctx, "multi-mrange-a", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "a"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "multi-mrange-b", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "b"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-mrange-a", 1000, 10},
+					{"multi-mrange-a", 1010, 20},
+					{"multi-mrange-a", 1020, 30},
+					{"multi-mrange-a", 1030, 40},
+					{"multi-mrange-b", 1000, 15},
+					{"multi-mrange-b", 1010, 25},
+					{"multi-mrange-b", 1020, 35},
+					{"multi-mrange-b", 1030, 45},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSMRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRangeOptions{
+					WithLabels:     true,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(2))
+				if client.Options().Protocol == 2 {
+					Expect(result["multi-mrange-a"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), "10", "20"},
+						[]interface{}{int64(1020), "30", "40"},
+					}))
+					Expect(result["multi-mrange-b"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), "15", "25"},
+						[]interface{}{int64(1020), "35", "45"},
+					}))
+				} else {
+					Expect(result["multi-mrange-a"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), 10.0, 20.0},
+						[]interface{}{int64(1020), 30.0, 40.0},
+					}))
+					Expect(result["multi-mrange-b"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), 15.0, 25.0},
+						[]interface{}{int64(1020), 35.0, 45.0},
+					}))
+				}
+
+				cmd := client.TSMRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Avg, redis.Count},
+					BucketDuration: 20,
+					GroupByLabel:   "type",
+					Reducer:        "max",
+				})
+				Expect(cmd.Err()).To(MatchError("redis: GROUPBY is not allowed when multiple aggregators are specified"))
+			})
 			It("should TSMRevRange and TSMRevRangeWithArgs", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs"), func() {
 				createOpt := &redis.TSOptions{Labels: map[string]string{"Test": "This", "team": "ny"}}
 				resultCreate, err := client.TSCreateWithArgs(ctx, "a", createOpt).Result()
@@ -1197,6 +1325,66 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				} else {
 					Expect(result["a"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(1), 10.0}, []interface{}{int64(0), 1.0}}))
 				}
+			})
+
+			It("should TSMRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreateWithArgs(ctx, "multi-mrevrange-a", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "a"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "multi-mrevrange-b", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "b"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-mrevrange-a", 1000, 10},
+					{"multi-mrevrange-a", 1010, 20},
+					{"multi-mrevrange-a", 1020, 30},
+					{"multi-mrevrange-a", 1030, 40},
+					{"multi-mrevrange-b", 1000, 15},
+					{"multi-mrevrange-b", 1010, 25},
+					{"multi-mrevrange-b", 1020, 35},
+					{"multi-mrevrange-b", 1030, 45},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSMRevRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRevRangeOptions{
+					WithLabels:     true,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(2))
+				if client.Options().Protocol == 2 {
+					Expect(result["multi-mrevrange-a"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), "30", "40"},
+						[]interface{}{int64(1000), "10", "20"},
+					}))
+					Expect(result["multi-mrevrange-b"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), "35", "45"},
+						[]interface{}{int64(1000), "15", "25"},
+					}))
+				} else {
+					Expect(result["multi-mrevrange-a"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), 30.0, 40.0},
+						[]interface{}{int64(1000), 10.0, 20.0},
+					}))
+					Expect(result["multi-mrevrange-b"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), 35.0, 45.0},
+						[]interface{}{int64(1000), 15.0, 25.0},
+					}))
+				}
+
+				cmd := client.TSMRevRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRevRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Avg, redis.Count},
+					BucketDuration: 20,
+					GroupByLabel:   "type",
+					Reducer:        "max",
+				})
+				Expect(cmd.Err()).To(MatchError("redis: GROUPBY is not allowed when multiple aggregators are specified"))
 			})
 
 			It("should TSMRevRangeWithArgs Latest", Label("timeseries", "tsmrevrangeWithArgs", "tsmrevrangelatest", "NonRedisEnterprise"), func() {

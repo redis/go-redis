@@ -2,6 +2,9 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -139,39 +142,72 @@ func (a Aggregator) String() string {
 	}
 }
 
+var (
+	errTSMultiAggregationGroupBy = errors.New("redis: GROUPBY is not allowed when multiple aggregators are specified")
+	errTSAggregationConflict     = errors.New("redis: setting both Aggregator and Aggregators is not allowed; use Aggregators instead because Aggregator is deprecated")
+)
+
+func formatAggregationArgs(aggregator Aggregator, aggregators []Aggregator) (string, int, error) {
+	if aggregator != Invalid && len(aggregators) > 0 {
+		return "", 0, errTSAggregationConflict
+	}
+	if len(aggregators) == 0 {
+		if aggregator == Invalid {
+			return "", 0, nil
+		}
+		return aggregator.String(), 1, nil
+	}
+
+	parts := make([]string, len(aggregators))
+	for i, agg := range aggregators {
+		if agg == Invalid {
+			return "", 0, fmt.Errorf("redis: invalid timeseries aggregator at index %d: Invalid (%d)", i, agg)
+		}
+		parts[i] = agg.String()
+	}
+
+	return strings.Join(parts, ","), len(parts), nil
+}
+
 type TSRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []int
-	Count           int
-	Align           interface{}
+	Latest        bool
+	FilterByTS    []int
+	FilterByValue []int
+	Count         int
+	Align         interface{}
+	// Deprecated: use Aggregators instead.
 	Aggregator      Aggregator
+	Aggregators     []Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
 }
 
 type TSRevRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []int
-	Count           int
-	Align           interface{}
+	Latest        bool
+	FilterByTS    []int
+	FilterByValue []int
+	Count         int
+	Align         interface{}
+	// Deprecated: use Aggregators instead.
 	Aggregator      Aggregator
+	Aggregators     []Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
 }
 
 type TSMRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []int
-	WithLabels      bool
-	SelectedLabels  []interface{}
-	Count           int
-	Align           interface{}
+	Latest         bool
+	FilterByTS     []int
+	FilterByValue  []int
+	WithLabels     bool
+	SelectedLabels []interface{}
+	Count          int
+	Align          interface{}
+	// Deprecated: use Aggregators instead.
 	Aggregator      Aggregator
+	Aggregators     []Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
@@ -180,14 +216,16 @@ type TSMRangeOptions struct {
 }
 
 type TSMRevRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []int
-	WithLabels      bool
-	SelectedLabels  []interface{}
-	Count           int
-	Align           interface{}
+	Latest         bool
+	FilterByTS     []int
+	FilterByValue  []int
+	WithLabels     bool
+	SelectedLabels []interface{}
+	Count          int
+	Align          interface{}
+	// Deprecated: use Aggregators instead.
 	Aggregator      Aggregator
+	Aggregators     []Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
@@ -483,7 +521,16 @@ func (c cmdable) TSGet(ctx context.Context, key string) *TSTimestampValueCmd {
 type TSTimestampValue struct {
 	Timestamp int64
 	Value     float64
+	Values    []float64
 }
+
+func (tv TSTimestampValue) String() string {
+	if len(tv.Values) > 0 {
+		return fmt.Sprintf("{%d %v}", tv.Timestamp, tv.Values)
+	}
+	return fmt.Sprintf("{%d %v}", tv.Timestamp, tv.Value)
+}
+
 type TSTimestampValueCmd struct {
 	baseCmd
 	val TSTimestampValue
@@ -541,9 +588,14 @@ func (cmd *TSTimestampValueCmd) readReply(rd *proto.Reader) (err error) {
 }
 
 func (cmd *TSTimestampValueCmd) Clone() Cmder {
+	val := cmd.val
+	if cmd.val.Values != nil {
+		val.Values = make([]float64, len(cmd.val.Values))
+		copy(val.Values, cmd.val.Values)
+	}
 	return &TSTimestampValueCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		val:     cmd.val, // TSTimestampValue is a simple struct, can be copied directly
+		val:     val,
 	}
 }
 
@@ -636,8 +688,14 @@ func (c cmdable) TSRevRangeWithArgs(ctx context.Context, key string, fromTimesta
 		if options.Align != nil {
 			args = append(args, "ALIGN", options.Align)
 		}
-		if options.Aggregator != 0 {
-			args = append(args, "AGGREGATION", options.Aggregator.String())
+		aggregationArg, _, err := formatAggregationArgs(options.Aggregator, options.Aggregators)
+		if err != nil {
+			cmd := newTSTimestampValueSliceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+		if aggregationArg != "" {
+			args = append(args, "AGGREGATION", aggregationArg)
 		}
 		if options.BucketDuration != 0 {
 			args = append(args, options.BucketDuration)
@@ -692,8 +750,14 @@ func (c cmdable) TSRangeWithArgs(ctx context.Context, key string, fromTimestamp 
 		if options.Align != nil {
 			args = append(args, "ALIGN", options.Align)
 		}
-		if options.Aggregator != 0 {
-			args = append(args, "AGGREGATION", options.Aggregator.String())
+		aggregationArg, _, err := formatAggregationArgs(options.Aggregator, options.Aggregators)
+		if err != nil {
+			cmd := newTSTimestampValueSliceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+		if aggregationArg != "" {
+			args = append(args, "AGGREGATION", aggregationArg)
 		}
 		if options.BucketDuration != 0 {
 			args = append(args, options.BucketDuration)
@@ -748,19 +812,38 @@ func (cmd *TSTimestampValueSliceCmd) readReply(rd *proto.Reader) (err error) {
 	}
 	cmd.val = make([]TSTimestampValue, n)
 	for i := 0; i < n; i++ {
-		_, _ = rd.ReadArrayLen()
+		itemLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+
 		timestamp, err := rd.ReadInt()
 		if err != nil {
 			return err
 		}
-		value, err := rd.ReadString()
-		if err != nil {
-			return err
-		}
 		cmd.val[i].Timestamp = timestamp
-		cmd.val[i].Value, err = util.ParseStringToFloat(value)
-		if err != nil {
-			return err
+		if itemLen == 2 {
+			value, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.val[i].Value, err = util.ParseStringToFloat(value)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+
+		cmd.val[i].Values = make([]float64, itemLen-1)
+		for j := 0; j < itemLen-1; j++ {
+			value, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.val[i].Values[j], err = util.ParseStringToFloat(value)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -772,6 +855,12 @@ func (cmd *TSTimestampValueSliceCmd) Clone() Cmder {
 	if cmd.val != nil {
 		val = make([]TSTimestampValue, len(cmd.val))
 		copy(val, cmd.val)
+		for i := range cmd.val {
+			if cmd.val[i].Values != nil {
+				val[i].Values = make([]float64, len(cmd.val[i].Values))
+				copy(val[i].Values, cmd.val[i].Values)
+			}
+		}
 	}
 	return &TSTimestampValueSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -799,6 +888,7 @@ func (c cmdable) TSMRange(ctx context.Context, fromTimestamp int, toTimestamp in
 // For more information - https://redis.io/commands/ts.mrange/
 func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MRANGE", fromTimestamp, toTimestamp}
+	multiAggregationCount := 0
 	if options != nil {
 		if options.Latest {
 			args = append(args, "LATEST")
@@ -828,8 +918,15 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 		if options.Align != nil {
 			args = append(args, "ALIGN", options.Align)
 		}
-		if options.Aggregator != 0 {
-			args = append(args, "AGGREGATION", options.Aggregator.String())
+		aggregationArg, count, err := formatAggregationArgs(options.Aggregator, options.Aggregators)
+		if err != nil {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+		multiAggregationCount = count
+		if aggregationArg != "" {
+			args = append(args, "AGGREGATION", aggregationArg)
 		}
 		if options.BucketDuration != 0 {
 			args = append(args, options.BucketDuration)
@@ -846,6 +943,11 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 		args = append(args, f)
 	}
 	if options != nil {
+		if multiAggregationCount > 1 && (options.GroupByLabel != nil || options.Reducer != nil) {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(errTSMultiAggregationGroupBy)
+			return cmd
+		}
 		if options.GroupByLabel != nil {
 			args = append(args, "GROUPBY", options.GroupByLabel)
 		}
@@ -878,6 +980,7 @@ func (c cmdable) TSMRevRange(ctx context.Context, fromTimestamp int, toTimestamp
 // For more information - https://redis.io/commands/ts.mrevrange/
 func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MREVRANGE", fromTimestamp, toTimestamp}
+	multiAggregationCount := 0
 	if options != nil {
 		if options.Latest {
 			args = append(args, "LATEST")
@@ -907,8 +1010,15 @@ func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toT
 		if options.Align != nil {
 			args = append(args, "ALIGN", options.Align)
 		}
-		if options.Aggregator != 0 {
-			args = append(args, "AGGREGATION", options.Aggregator.String())
+		aggregationArg, count, err := formatAggregationArgs(options.Aggregator, options.Aggregators)
+		if err != nil {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+		multiAggregationCount = count
+		if aggregationArg != "" {
+			args = append(args, "AGGREGATION", aggregationArg)
 		}
 		if options.BucketDuration != 0 {
 			args = append(args, options.BucketDuration)
@@ -925,6 +1035,11 @@ func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toT
 		args = append(args, f)
 	}
 	if options != nil {
+		if multiAggregationCount > 1 && (options.GroupByLabel != nil || options.Reducer != nil) {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(errTSMultiAggregationGroupBy)
+			return cmd
+		}
 		if options.GroupByLabel != nil {
 			args = append(args, "GROUPBY", options.GroupByLabel)
 		}
