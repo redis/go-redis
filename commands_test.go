@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -7623,6 +7624,206 @@ var _ = Describe("Commands", func() {
 				n, err := client.XAck(ctx, "stream", "group", "1-0", "2-0", "4-0").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
+			})
+
+			It("should not XNack with no mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// Mode is required by Redis; omitting it should return an error.
+				_, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("mode must be SILENT, FAIL, or FATAL"))
+			})
+
+			It("should XNack with SILENT mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// All 3 messages are pending (delivered by BeforeEach), each with delivery_count=1.
+				// SILENT: consumer shutting down; delivery counter decremented by 1 (1 → 0).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "SILENT",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(2)))
+
+				// NACKed messages move to unassigned "nacked" state in the PEL.
+				// Total PEL count stays 3; only 3-0 remains assigned to consumer.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 1}))
+
+				// Verify the delivery counter was decremented from 1 to 0 for the NACKed messages.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" || e.ID == "2-0" {
+						Expect(e.RetryCount).To(Equal(int64(0)), "SILENT should decrement delivery counter to 0 for %s", e.ID)
+					}
+				}
+			})
+
+			It("should XNack with FAIL mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// FAIL: delivery counter stays the same (1 → 1).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// NACKed message moves to unassigned "nacked" state.
+				// Only 2 messages (2-0, 3-0) remain assigned to consumer.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
+
+				// Verify the delivery counter was left unchanged at 1.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						Expect(e.RetryCount).To(Equal(int64(1)), "FAIL should leave delivery counter unchanged")
+					}
+				}
+			})
+
+			It("should XNack with FATAL mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// FATAL: delivery counter set to MAXINT (for invalid/malicious messages).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FATAL",
+					IDs:    []string{"1-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// NACKed message moves to unassigned state; 2-0 and 3-0 remain assigned.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
+
+				// Verify the delivery counter was set to MAXINT (math.MaxInt64).
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						Expect(e.RetryCount).To(Equal(int64(math.MaxInt64)), "FATAL should set delivery counter to MAXINT")
+					}
+				}
+			})
+
+			It("should XNack nacked-count reflected in XINFO STREAM FULL", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// NACK two messages.
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(2)))
+
+				// Verify nacked-count in XINFO STREAM FULL.
+				info, err := client.XInfoStreamFull(ctx, "stream", 10).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(info.Groups).To(HaveLen(1))
+				Expect(info.Groups[0].NackedCount).To(Equal(uint64(2)))
+			})
+
+			It("should XNack with RetryCount", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				retryCount := uint64(5)
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream:     "stream",
+					Group:      "group",
+					Mode:       "FAIL",
+					IDs:        []string{"1-0"},
+					RetryCount: &retryCount,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// Verify the delivery counter was set to the explicit RetryCount value,
+				// overriding the mode's default adjustment.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				// Find 1-0 and verify its delivery counter.
+				var entry redis.XPendingExt
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						entry = e
+						break
+					}
+				}
+				Expect(entry.ID).To(Equal("1-0"))
+				Expect(entry.RetryCount).To(Equal(int64(retryCount)))
+			})
+
+			It("should XNack with Force", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// Force creates a new NACKed PEL entry for an ID that was never
+				// delivered to a consumer via XREADGROUP. Without Force this would
+				// be a no-op (the ID is not in any consumer's PEL).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0"},
+					Force:  true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// The entry is now in the group's PEL as an unassigned NACKed entry.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
 			})
 
 			It("should XReadGroup with CLAIM argument", func() {
