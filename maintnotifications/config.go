@@ -410,6 +410,16 @@ func DetectEndpointType(addr string, tlsEnabled bool) EndpointType {
 		host = addr // Assume no port
 	}
 
+	// An empty host (e.g., ":6379") conventionally means the loopback
+	// interface and is treated as internal. With TLS off we return an IP
+	// endpoint; with TLS on the caller still needs an FQDN for SNI.
+	if host == "" {
+		if tlsEnabled {
+			return EndpointTypeInternalFQDN
+		}
+		return EndpointTypeInternalIP
+	}
+
 	// Check if the host is an IP address or hostname
 	ip := net.ParseIP(host)
 	isIPAddress := ip != nil

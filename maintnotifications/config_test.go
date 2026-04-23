@@ -530,6 +530,11 @@ func TestDetectEndpointType_IPAddresses(t *testing.T) {
 		{"[fc00::1]:6379", true, EndpointTypeInternalFQDN},
 		{"[2001:4860:4860::8888]:6379", false, EndpointTypeExternalIP},
 		{"100.64.0.1:6379", false, EndpointTypeInternalIP}, // CGNAT
+		// Empty host (":6379" / "") is treated as loopback/internal.
+		{":6379", false, EndpointTypeInternalIP},
+		{":6379", true, EndpointTypeInternalFQDN},
+		{"", false, EndpointTypeInternalIP},
+		{"", true, EndpointTypeInternalFQDN},
 	}
 	for _, tc := range cases {
 		t.Run(tc.addr, func(t *testing.T) {
