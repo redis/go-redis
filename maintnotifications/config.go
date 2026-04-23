@@ -438,8 +438,8 @@ func DetectEndpointType(addr string, tlsEnabled bool) EndpointType {
 
 		isInternal, err := isInternalHostname(ctx, host)
 		// Will fallback to external FQDN if we can't determine if it's internal
-		if err != nil {
-			internal.Logger.Printf(context.Background(), "Failed to determine if hostname is internal: %v", err)
+		if err != nil && logs.WarnOrAbove(internal.Logger) {
+			internal.Logger.Printf(ctx, "Failed to determine if hostname %q is internal: %v", host, err)
 		}
 
 		if isInternal {
