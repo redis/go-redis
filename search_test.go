@@ -967,11 +967,22 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(args).To(Equal(expected))
 	})
 
-	It("should skip LOAD steps when LoadAll is true", Label("search", "ftaggregate"), func() {
+	It("should error when LoadAll is combined with a LOAD step", Label("search", "ftaggregate"), func() {
 		options := &redis.FTAggregateOptions{
 			LoadAll: true,
 			Steps: []redis.FTAggregateStep{
 				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+			},
+		}
+		_, err := redis.FTAggregateQuery("*", options)
+		Expect(err).To(MatchError(ContainSubstring("LOADALL and LOAD are mutually exclusive")))
+	})
+
+	It("should allow LoadAll together with Steps that don't use LOAD", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LoadAll: true,
+			Steps: []redis.FTAggregateStep{
 				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
 			},
 		}
@@ -999,44 +1010,47 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("should ignore deprecated fields when Steps is populated", Label("search", "ftaggregate"), func() {
+	It("should error when a step sets more than one field", Label("search", "ftaggregate"), func() {
 		options := &redis.FTAggregateOptions{
-			Load:      []redis.FTAggregateLoad{{Field: "@ignored_load"}},
-			Apply:     []redis.FTAggregateApply{{Field: "@ignored_apply", As: "x"}},
-			SortBy:    []redis.FTAggregateSortBy{{FieldName: "@ignored_sort"}},
-			SortByMax: 999,
-			GroupBy:   []redis.FTAggregateGroupBy{{Fields: []interface{}{"@ignored_group"}}},
+			Steps: []redis.FTAggregateStep{
+				{
+					Load:  &redis.FTAggregateLoad{Field: "@x"},
+					Apply: &redis.FTAggregateApply{Field: "@x * 2", As: "y"},
+				},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("each step must set exactly one")))
+	})
+
+	It("should error when a step sets no field", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{{}},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("each step must set exactly one")))
+	})
+
+	It("should error when Steps is combined with deprecated fields", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Load: []redis.FTAggregateLoad{{Field: "@ignored_load"}},
 			Steps: []redis.FTAggregateStep{
 				{Apply: &redis.FTAggregateApply{Field: "@used", As: "u"}},
 			},
 		}
-		args, err := redis.FTAggregateQuery("q", options)
-		Expect(err).NotTo(HaveOccurred())
-		for _, unwanted := range []string{"@ignored_load", "@ignored_apply", "@ignored_sort", "@ignored_group"} {
-			Expect(args).NotTo(ContainElement(unwanted))
-		}
-		Expect(args).NotTo(ContainElement(999))
-		Expect(args).To(ContainElement("@used"))
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("Steps cannot be combined with the deprecated")))
 	})
 
-	It("should still allow LoadAll together with Steps (LOAD * once)", Label("search", "ftaggregate"), func() {
+	It("should error when Steps is combined with deprecated SortByMax", Label("search", "ftaggregate"), func() {
 		options := &redis.FTAggregateOptions{
-			LoadAll: true,
-			Load:    []redis.FTAggregateLoad{{Field: "@ignored_load"}},
+			SortByMax: 999,
 			Steps: []redis.FTAggregateStep{
-				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+				{Apply: &redis.FTAggregateApply{Field: "@used", As: "u"}},
 			},
 		}
-		args, err := redis.FTAggregateQuery("*", options)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(args).NotTo(ContainElement("@ignored_load"))
-		loadCount := 0
-		for _, a := range args {
-			if a == "LOAD" {
-				loadCount++
-			}
-		}
-		Expect(loadCount).To(Equal(1))
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("Steps cannot be combined with the deprecated")))
 	})
 
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {

@@ -290,8 +290,8 @@ type FTAggregateOptions struct {
 
 	// Steps is the ordered sequence of aggregation pipeline operations.
 	// It can contain LOAD, APPLY, GROUPBY and SORTBY in any order, multiple times.
-	// When Steps is non-empty, the deprecated Load, Apply, GroupBy, SortBy and
-	// SortByMax fields are ignored.
+	// Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy
+	// and SortByMax fields: doing so returns an error.
 	Steps []FTAggregateStep
 
 	LimitOffset       int
@@ -648,10 +648,49 @@ func (c cmdable) FTAggregate(ctx context.Context, index string, query string) *M
 	return cmd
 }
 
+// validateFTAggregateOptions validates mutually exclusive combinations of
+// FTAggregateOptions fields before any command arguments are constructed.
+func validateFTAggregateOptions(options *FTAggregateOptions) error {
+	if len(options.Steps) > 0 {
+		if options.Load != nil || options.Apply != nil || options.GroupBy != nil ||
+			options.SortBy != nil || options.SortByMax != 0 {
+			return fmt.Errorf("FT.AGGREGATE: Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy and SortByMax fields")
+		}
+		if options.LoadAll {
+			for _, step := range options.Steps {
+				if step.Load != nil {
+					return fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+				}
+			}
+		}
+	}
+	if options.LoadAll && options.Load != nil {
+		return fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+	}
+	return nil
+}
+
 // appendFTAggregateStep appends the Redis command arguments for a single
-// aggregation pipeline step (LOAD/APPLY/GROUPBY/SORTBY). Only the first
-// non-nil field on the step is emitted.
+// aggregation pipeline step. Each step must set exactly one of Load, Apply,
+// GroupBy or SortBy.
 func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interface{}, error) {
+	set := 0
+	if step.Load != nil {
+		set++
+	}
+	if step.Apply != nil {
+		set++
+	}
+	if step.GroupBy != nil {
+		set++
+	}
+	if step.SortBy != nil {
+		set++
+	}
+	if set != 1 {
+		return args, fmt.Errorf("FT.AGGREGATE: each step must set exactly one of Load, Apply, GroupBy, SortBy (got %d)", set)
+	}
+
 	switch {
 	case step.Load != nil:
 		args = append(args, "LOAD")
@@ -712,6 +751,9 @@ func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interfac
 func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery, error) {
 	queryArgs := []interface{}{query}
 	if options != nil {
+		if err := validateFTAggregateOptions(options); err != nil {
+			return nil, err
+		}
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
@@ -724,9 +766,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 			queryArgs = append(queryArgs, "ADDSCORES")
 		}
 
-		if len(options.Steps) == 0 && options.LoadAll && options.Load != nil {
-			return nil, fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
-		}
 		if options.LoadAll {
 			queryArgs = append(queryArgs, "LOAD", "*")
 		}
@@ -750,9 +789,6 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 
 		if len(options.Steps) > 0 {
 			for _, step := range options.Steps {
-				if options.LoadAll && step.Load != nil {
-					continue
-				}
 				var err error
 				queryArgs, err = appendFTAggregateStep(queryArgs, step)
 				if err != nil {
@@ -957,6 +993,11 @@ func (cmd *AggregateCmd) Clone() Cmder {
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
 	args := []interface{}{"FT.AGGREGATE", index, query}
 	if options != nil {
+		if err := validateFTAggregateOptions(options); err != nil {
+			cmd := NewAggregateCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
@@ -965,11 +1006,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if options.AddScores {
 			args = append(args, "ADDSCORES")
-		}
-		if len(options.Steps) == 0 && options.LoadAll && options.Load != nil {
-			cmd := NewAggregateCmd(ctx, args...)
-			cmd.SetErr(fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive"))
-			return cmd
 		}
 		if options.LoadAll {
 			args = append(args, "LOAD", "*")
@@ -992,9 +1028,6 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		}
 		if len(options.Steps) > 0 {
 			for _, step := range options.Steps {
-				if options.LoadAll && step.Load != nil {
-					continue
-				}
 				var err error
 				args, err = appendFTAggregateStep(args, step)
 				if err != nil {

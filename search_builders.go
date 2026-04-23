@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"fmt"
 )
 
 // ----------------------
@@ -215,12 +216,21 @@ type AggregateBuilder struct {
 	index   string
 	query   string
 	options *FTAggregateOptions
+	err     error
 }
 
 // NewAggregateBuilder creates a new AggregateBuilder for FT.AGGREGATE commands.
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) NewAggregateBuilder(ctx context.Context, index, query string) *AggregateBuilder {
 	return &AggregateBuilder{c: c, ctx: ctx, index: index, query: query, options: &FTAggregateOptions{LimitOffset: -1}}
+}
+
+// setErr records the first error produced while building the pipeline.
+// Subsequent errors are ignored; the first error is returned from Run.
+func (b *AggregateBuilder) setErr(err error) {
+	if b.err == nil {
+		b.err = err
+	}
 }
 
 // Verbatim includes VERBATIM.
@@ -239,26 +249,6 @@ func (b *AggregateBuilder) Scorer(s string) *AggregateBuilder {
 func (b *AggregateBuilder) LoadAll() *AggregateBuilder {
 	b.options.LoadAll = true
 	return b
-}
-
-// lastGroupByStep returns a pointer to the last GROUPBY step, or nil if none.
-func (b *AggregateBuilder) lastGroupByStep() *FTAggregateGroupBy {
-	for i := len(b.options.Steps) - 1; i >= 0; i-- {
-		if b.options.Steps[i].GroupBy != nil {
-			return b.options.Steps[i].GroupBy
-		}
-	}
-	return nil
-}
-
-// lastSortByStep returns a pointer to the last SORTBY step, or nil if none.
-func (b *AggregateBuilder) lastSortByStep() *FTAggregateSortByStep {
-	for i := len(b.options.Steps) - 1; i >= 0; i-- {
-		if b.options.Steps[i].SortBy != nil {
-			return b.options.Steps[i].SortBy
-		}
-	}
-	return nil
 }
 
 // Load adds a LOAD <field> [AS alias] step.
@@ -297,22 +287,28 @@ func (b *AggregateBuilder) GroupBy(fields ...interface{}) *AggregateBuilder {
 	return b
 }
 
-// Reduce adds a REDUCE <fn> [<#args> <args...>] clause to the *last* GROUPBY step.
+// Reduce adds a REDUCE <fn> [<#args> <args...>] clause to the last step,
+// which must be a GROUPBY. If it is not, Run will return an error.
 func (b *AggregateBuilder) Reduce(fn SearchAggregator, args ...interface{}) *AggregateBuilder {
-	g := b.lastGroupByStep()
-	if g == nil {
+	n := len(b.options.Steps)
+	if n == 0 || b.options.Steps[n-1].GroupBy == nil {
+		b.setErr(fmt.Errorf("FT.AGGREGATE: Reduce must follow a GroupBy step"))
 		return b
 	}
+	g := b.options.Steps[n-1].GroupBy
 	g.Reduce = append(g.Reduce, FTAggregateReducer{Reducer: fn, Args: args})
 	return b
 }
 
 // ReduceAs does the same but also sets an alias: REDUCE <fn> … AS <alias>.
+// The last step must be a GROUPBY; otherwise Run will return an error.
 func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...interface{}) *AggregateBuilder {
-	g := b.lastGroupByStep()
-	if g == nil {
+	n := len(b.options.Steps)
+	if n == 0 || b.options.Steps[n-1].GroupBy == nil {
+		b.setErr(fmt.Errorf("FT.AGGREGATE: ReduceAs must follow a GroupBy step"))
 		return b
 	}
+	g := b.options.Steps[n-1].GroupBy
 	g.Reduce = append(g.Reduce, FTAggregateReducer{Reducer: fn, Args: args, As: alias})
 	return b
 }
@@ -321,6 +317,10 @@ func (b *AggregateBuilder) ReduceAs(fn SearchAggregator, alias string, args ...i
 // other step in between) are merged into a single SORTBY clause so fields
 // act as tiebreakers. A SortBy call after a non-SortBy step starts a new
 // SORTBY step.
+//
+// Note: this is a semantics change from earlier experimental versions of
+// the builder, where SortBy always accumulated into a single SORTBY clause
+// regardless of position in the pipeline.
 func (b *AggregateBuilder) SortBy(field string, asc bool) *AggregateBuilder {
 	sb := FTAggregateSortBy{FieldName: field, Asc: asc, Desc: !asc}
 	if n := len(b.options.Steps); n > 0 && b.options.Steps[n-1].SortBy != nil {
@@ -333,11 +333,15 @@ func (b *AggregateBuilder) SortBy(field string, asc bool) *AggregateBuilder {
 	return b
 }
 
-// SortByMax sets MAX <n> on the most recent SORTBY step.
+// SortByMax sets MAX <n> on the last SORTBY step. The last step must be a
+// SORTBY; otherwise Run will return an error.
 func (b *AggregateBuilder) SortByMax(max int) *AggregateBuilder {
-	if s := b.lastSortByStep(); s != nil {
-		s.Max = max
+	n := len(b.options.Steps)
+	if n == 0 || b.options.Steps[n-1].SortBy == nil {
+		b.setErr(fmt.Errorf("FT.AGGREGATE: SortByMax must follow a SortBy step"))
+		return b
 	}
+	b.options.Steps[n-1].SortBy.Max = max
 	return b
 }
 
@@ -375,8 +379,14 @@ func (b *AggregateBuilder) Dialect(version int) *AggregateBuilder {
 	return b
 }
 
-// Run executes FT.AGGREGATE and returns a typed result.
+// Run executes FT.AGGREGATE and returns a typed result. If the builder
+// recorded a validation error while constructing the pipeline (for example,
+// calling SortByMax when the last step is not a SortBy), that error is
+// returned without issuing the command.
 func (b *AggregateBuilder) Run() (*FTAggregateResult, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
 	cmd := b.c.FTAggregateWithArgs(b.ctx, b.index, b.query, b.options)
 	return cmd.Result()
 }
