@@ -604,8 +604,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// for redis-server versions that do not support the HELLO command,
 	// RESP2 will continue to be used.
+	// helloOK tracks whether HELLO succeeded. If it did not, the connection
+	// falls back to RESP2 regardless of c.opt.Protocol, and features that
+	// require RESP3 (e.g. maintenance notifications) must be skipped.
+	helloOK := false
 	if initErr = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); initErr == nil {
 		// Authentication successful with HELLO command
+		helloOK = true
 	} else if !isRedisError(initErr) {
 		// When the server responds with the RESP protocol and the result is not a normal
 		// execution result of the HELLO command, we consider it to be an indication that
@@ -654,10 +659,38 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	maintNotifEnabled := c.opt.MaintNotificationsConfig != nil && c.opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled
 	protocol := c.opt.Protocol
 	var endpointType maintnotifications.EndpointType
+	var maintNotifMode maintnotifications.Mode
 	if maintNotifEnabled {
 		endpointType = c.opt.MaintNotificationsConfig.EndpointType
+		maintNotifMode = c.opt.MaintNotificationsConfig.Mode
 	}
 	c.optLock.RUnlock()
+
+	// Maintenance notifications require RESP3 push frames. If HELLO failed
+	// and the connection fell back to RESP2, there is no point in sending
+	// CLIENT MAINT_NOTIFICATIONS: the server either rejects it (making the
+	// error misleading) or accepts it silently, leaving the client unable
+	// to receive any notifications. Decide based on the actual negotiated
+	// protocol rather than the requested one.
+	if maintNotifEnabled && protocol == 3 && !helloOK {
+		if maintNotifMode == maintnotifications.ModeEnabled {
+			// Explicitly requested - fail fast with a clear reason.
+			cn.GetStateMachine().Transition(pool.StateClosed)
+			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+				errorCallback(ctx, "HANDSHAKE_FAILED", cn, "HANDSHAKE_FAILED", true, 0)
+			}
+			return fmt.Errorf("failed to enable maintnotifications: server does not support RESP3 (HELLO command failed)")
+		}
+		// auto/other modes: silently disable maintnotifications for this client.
+		c.optLock.Lock()
+		c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+		c.optLock.Unlock()
+		if err := c.disableMaintNotificationsUpgrades(); err != nil {
+			internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", err)
+		}
+		maintNotifEnabled = false
+	}
+
 	var maintNotifHandshakeErr error
 	if maintNotifEnabled && protocol == 3 {
 		maintNotifHandshakeErr = conn.ClientMaintNotifications(
