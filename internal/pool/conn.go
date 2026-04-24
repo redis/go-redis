@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/proto"
+	uberatomic "go.uber.org/atomic"
 )
 
 var noDeadline = time.Time{}
@@ -105,6 +106,11 @@ type Conn struct {
 	createdAt time.Time
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
+
+	// When a goroutine closes a connection, it usually knows the reason, so closeReason is not needed.
+	// closeReason is only used when an in-use connection is closed by another goroutine,
+	// to inform the goroutine using the connection why the connection was closed.
+	closeReason uberatomic.String
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 
@@ -920,12 +926,16 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
+	if cn.IsClosed() {
+		return nil
+	}
 	// Transition to CLOSED state
 	cn.stateMachine.Transition(StateClosed)
 
 	if cn.onClose != nil {
 		// ignore error
 		_ = cn.onClose()
+		cn.onClose = nil
 	}
 
 	// Lock-free netConn access for better performance

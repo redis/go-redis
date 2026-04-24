@@ -4,14 +4,19 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"go.uber.org/atomic"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 var _ = Describe("Sentinel PROTO 2", func() {
@@ -689,3 +694,162 @@ func compareSlices(t *testing.T, a, b []string, name string) {
 		}
 	}
 }
+
+func waitForSentinelClusterStable() {
+	sentinel1 := redis.NewSentinelClient(&redis.Options{
+		Addr: ":" + sentinelPort1,
+	})
+	defer sentinel1.Close()
+
+	sentinel2 := redis.NewSentinelClient(&redis.Options{
+		Addr: ":" + sentinelPort2,
+	})
+	defer sentinel2.Close()
+
+	sentinel3 := redis.NewSentinelClient(&redis.Options{
+		Addr: ":" + sentinelPort3,
+	})
+	defer sentinel3.Close()
+
+	Eventually(func() bool {
+		masterInfo1, err1 := sentinel1.Master(ctx, sentinelName).Result()
+		masterInfo2, err2 := sentinel2.Master(ctx, sentinelName).Result()
+		masterInfo3, err3 := sentinel3.Master(ctx, sentinelName).Result()
+
+		if err1 != nil || err2 != nil || err3 != nil {
+			return false
+		}
+		// Check master ip and port are consistent across all sentinels
+		if masterInfo1["ip"] != masterInfo2["ip"] ||
+			masterInfo1["port"] != masterInfo2["port"] ||
+			masterInfo2["ip"] != masterInfo3["ip"] ||
+			masterInfo2["port"] != masterInfo3["port"] {
+			return false
+		}
+
+		// Also check replicas are consistent and we have at least 2 slaves
+		// (important for ReadOnly tests - if no slaves found, RandomReplicaAddr falls back to master)
+		replicas1, err1 := sentinel1.Replicas(ctx, sentinelName).Result()
+		replicas2, err2 := sentinel2.Replicas(ctx, sentinelName).Result()
+		replicas3, err3 := sentinel3.Replicas(ctx, sentinelName).Result()
+
+		if err1 != nil || err2 != nil || err3 != nil {
+			return false
+		}
+		if len(replicas1) < 2 || len(replicas2) < 2 || len(replicas3) < 2 {
+			return false
+		}
+		return len(replicas1) == len(replicas2) && len(replicas2) == len(replicas3)
+	}, "30s", "1s").Should(BeTrue())
+
+	time.Sleep(10 * time.Second)
+}
+
+var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
+	testFailoverWithMaxActiveConns := func(maxActiveConns int) {
+		var client *redis.Client
+		var sentinel *redis.SentinelClient
+		var failoverCloseCount atomic.Int32
+
+		BeforeEach(func() {
+			failoverCloseCount.Store(0)
+
+			// Set up metric callback to count CloseReasonFailover
+			pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+				ConnectionClosed: func(ctx context.Context, cn *pool.Conn, reason string, err error) {
+					fmt.Println("call ConnectionClosed metric callback with reason:", reason)
+					if reason == pool.CloseReasonFailover {
+						failoverCloseCount.Add(1)
+					}
+				},
+			})
+
+			client = redis.NewFailoverClient(&redis.FailoverOptions{
+				MasterName:      sentinelName,
+				SentinelAddrs:   sentinelAddrs,
+				PoolSize:        1,
+				DisableIdentity: true,
+				MaxActiveConns:  maxActiveConns,
+				ReplicaOnly:     false,
+				MaxRetries:      -1,
+			})
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+			sentinel = redis.NewSentinelClient(&redis.Options{
+				Addr:       ":" + sentinelPort1,
+				MaxRetries: -1,
+			})
+
+			// Wait until slaves are picked up by sentinel.
+			Eventually(func() string {
+				return sentinel1.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+			Eventually(func() string {
+				return sentinel2.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+			Eventually(func() string {
+				return sentinel3.Info(ctx).Val()
+			}, "20s", "100ms").Should(ContainSubstring("slaves=2"))
+		})
+
+		AfterEach(func() {
+			_ = client.Close()
+			_ = sentinel.Close()
+			pool.SetAllMetricCallbacks(nil)
+		})
+
+		It(fmt.Sprintf("should handle failover with MaxActiveConns=%d", maxActiveConns), func() {
+			err := client.Set(ctx, "failover", "100", 0).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Sleep 2 second for replication
+			time.Sleep(2 * time.Second)
+
+			// Trigger failover
+			err = sentinel.Failover(ctx, sentinelName).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			for range 120 {
+				masterInfo, _ := sentinel.Master(ctx, sentinelName).Result()
+				if !strings.Contains(masterInfo["flags"], "failover") {
+					fmt.Println("Failover successful, new master:", masterInfo["ip"]+":"+masterInfo["port"])
+					break
+				}
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			Expect(failoverCloseCount.Load()).To(Equal(int32(1)),
+				"Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount.Load())
+
+			multi, err := client.Do(ctx, "MULTI").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(multi).To(Equal("OK"))
+
+			incr, err := client.Do(ctx, "INCR", "failover").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(incr).To(Equal("QUEUED"))
+
+			execResult, err := client.Do(ctx, "EXEC").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(execResult).To(Equal([]any{int64(101)}))
+		})
+	}
+
+	Context("with MaxActiveConns=0", func() {
+		testFailoverWithMaxActiveConns(0)
+	})
+
+	Context("with MaxActiveConns=1", func() {
+		testFailoverWithMaxActiveConns(1)
+	})
+
+	Context("with MaxActiveConns=2", func() {
+		testFailoverWithMaxActiveConns(2)
+	})
+
+	AfterAll(func() {
+		fmt.Println("Waiting for sentinel cluster to stabilize after all failover tests...")
+		waitForSentinelClusterStable()
+		fmt.Println("Sentinel cluster is now stable")
+	})
+})
