@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -233,6 +234,9 @@ type baseClient struct {
 
 	// streamingCredentialsManager is used to manage streaming credentials
 	streamingCredentialsManager *streaming.Manager
+
+	// csc is the shared client-side cache; nil when CSC is disabled.
+	csc Cache
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -248,6 +252,7 @@ func (c *baseClient) clone() *baseClient {
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
+		csc:                         c.csc,
 	}
 	return clone
 }
@@ -539,6 +544,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	trackingEnabled := c.csc != nil && c.opt.Protocol == 3
 	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -550,6 +556,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		if c.opt.ClientName != "" {
 			pipe.ClientSetName(ctx, c.opt.ClientName)
+		}
+
+		if trackingEnabled {
+			// Must run before any cacheable command is issued on this conn.
+			pipe.ClientTrackingOn(ctx, nil)
 		}
 
 		return nil
@@ -697,6 +708,16 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	if c.csc != nil && isCacheable(cmd) {
+		return c.processCached(ctx, cmd)
+	}
+	return c.processWithRetry(ctx, cmd, nil)
+}
+
+// processWithRetry runs cmd through the normal retry loop. When
+// rawReplyCapture is non-nil, the raw RESP bytes of a successful reply are
+// written into *rawReplyCapture so the CSC path can store them.
+func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCapture *[]byte) error {
 	// Start measuring total operation duration (includes all retries)
 	// Only call time.Now() if operation duration callback is set to avoid overhead
 	var operationStart time.Time
@@ -712,7 +733,7 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		totalAttempts++
 		attempt := attempt
 
-		retry, cn, err := c._process(ctx, cmd, attempt)
+		retry, cn, err := c._process(ctx, cmd, attempt, rawReplyCapture)
 		if cn != nil {
 			lastConn = cn
 		}
@@ -825,7 +846,7 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
 	}
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, rawReplyCapture *[]byte) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 			return false, nil, err
@@ -856,6 +877,24 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			}
 			if useRawReply {
 				readReplyFunc = cmd.readRawReply
+			}
+		}
+		// When the caller requested raw-reply capture (client-side cache),
+		// read the reply as raw RESP bytes and re-parse them through the
+		// command's normal reply handler. This reuses proto.Reader rather
+		// than duplicating parsing logic in a bespoke cache serializer.
+		if rawReplyCapture != nil {
+			origRead := readReplyFunc
+			readReplyFunc = func(rd *proto.Reader) error {
+				raw, err := rd.ReadRawReply()
+				if err != nil {
+					return err
+				}
+				if err := origRead(proto.NewReader(bytes.NewReader(raw))); err != nil {
+					return err
+				}
+				*rawReplyCapture = raw
+				return nil
 			}
 		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
@@ -1259,6 +1298,18 @@ func NewClient(opt *Options) *Client {
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 	}
 
+	// Initialize client-side caching for RESP3 clients. Invalidations are
+	// delivered as push notifications, so RESP2 clients cannot use CSC.
+	if opt.Protocol == 3 {
+		var cache Cache
+		if explicit := opt.ClientSideCache; explicit != nil {
+			cache = explicit
+		} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
+			cache = NewLocalCache(*cfg)
+		}
+		c.baseClient.attachCSC(context.Background(), cache)
+	}
+
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
 		err := c.enableMaintNotificationsUpgrades()
@@ -1305,7 +1356,11 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
+	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
+	// Derived single-connection clients share the parent's client-side cache
+	// so that invalidations observed on any connection evict the same entries.
+	conn.baseClient.attachCSC(context.Background(), c.csc)
+	return conn
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
@@ -1607,20 +1662,27 @@ func (c *baseClient) processPushNotifications(ctx context.Context, cn *pool.Conn
 		}
 	}
 
-	// Check if there is any data to read before processing
-	// This is an optimization on UNIX systems where MaybeHasData is a syscall
-	// On Windows, MaybeHasData always returns true, so this check is a no-op
+	return c.peekAndProcessPushNotifications(ctx, cn)
+}
+
+// peekAndProcessPushNotifications peeks the socket and processes any pending
+// push notifications on cn unconditionally, bypassing the recent-health-check
+// shortcut in processPushNotifications. Required on paths that do not follow
+// up with a reply read on the same connection (e.g. the CSC cache-hit drain),
+// where the shortcut would otherwise suppress invalidations buffered since the
+// last health check.
+func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *pool.Conn) error {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+
 	if !cn.MaybeHasData() {
 		return nil
 	}
 
-	// Use WithReader to access the reader and process push notifications
-	// This is critical for maintnotifications to work properly
-	// NOTE: almost no timeouts are set for this read, so it should not block
-	// longer than necessary, 10us should be plenty of time to read if there are any push notifications
-	// on the socket.
+	// Short read timeout: 10us is enough to consume any already-buffered push
+	// notifications without blocking the caller.
 	return cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
-		// Create handler context with client, connection pool, and connection information
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
