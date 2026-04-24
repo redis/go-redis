@@ -95,14 +95,14 @@ func TestWithoutCaller(t *testing.T) {
 	}
 }
 
-func TestWithCommandFilter(t *testing.T) {
+func TestWithCommandFilterCtx(t *testing.T) {
 
 	t.Run("filter out ping command", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(func(cmd redis.Cmder) bool {
+			WithCommandFilterCtx(func(_ context.Context, cmd redis.Cmder) bool {
 				return cmd.Name() == "ping"
 			}),
 		)
@@ -129,7 +129,7 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(func(cmd redis.Cmder) bool {
+			WithCommandFilterCtx(func(_ context.Context, cmd redis.Cmder) bool {
 				return false // never filter
 			}),
 		)
@@ -156,7 +156,9 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(DefaultCommandFilter),
+			WithCommandFilterCtx(func(_ context.Context, cmd redis.Cmder) bool {
+				return DefaultCommandFilter(cmd)
+			}),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "auth", "test-password")
@@ -181,7 +183,9 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(DefaultCommandFilter),
+			WithCommandFilterCtx(func(_ context.Context, cmd redis.Cmder) bool {
+				return DefaultCommandFilter(cmd)
+			}),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3, "AUTH", "test-user", "test-password")
@@ -206,7 +210,9 @@ func TestWithCommandFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandFilter(DefaultCommandFilter),
+			WithCommandFilterCtx(func(_ context.Context, cmd redis.Cmder) bool {
+				return DefaultCommandFilter(cmd)
+			}),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		cmd := redis.NewCmd(ctx, "hello", 3)
@@ -227,13 +233,13 @@ func TestWithCommandFilter(t *testing.T) {
 	})
 }
 
-func TestWithCommandsFilter(t *testing.T) {
+func TestWithCommandsFilterCtx(t *testing.T) {
 	t.Run("filter out ping and info commands", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandsFilter(func(cmds []redis.Cmder) bool {
+			WithCommandsFilterCtx(func(_ context.Context, cmds []redis.Cmder) bool {
 				for _, cmd := range cmds {
 					if cmd.Name() == "ping" || cmd.Name() == "info" {
 						return true
@@ -268,7 +274,7 @@ func TestWithCommandsFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithCommandsFilter(func(cmds []redis.Cmder) bool {
+			WithCommandsFilterCtx(func(_ context.Context, cmds []redis.Cmder) bool {
 				return false // never filter
 			}),
 		)
@@ -294,13 +300,15 @@ func TestWithCommandsFilter(t *testing.T) {
 	})
 }
 
-func TestWithDialFilter(t *testing.T) {
+func TestWithDialFilterCtx(t *testing.T) {
 	t.Run("filter out dial", func(t *testing.T) {
 		provider := sdktrace.NewTracerProvider()
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithDialFilter(true),
+			WithDialFilterCtx(func(_ context.Context, network, addr string) bool {
+				return true
+			}),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		defer span.End()
@@ -323,7 +331,9 @@ func TestWithDialFilter(t *testing.T) {
 		hook := newTracingHook(
 			"",
 			WithTracerProvider(provider),
-			WithDialFilter(false),
+			WithDialFilterCtx(func(_ context.Context, network, addr string) bool {
+				return false // never filter
+			}),
 		)
 		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
 		defer span.End()
