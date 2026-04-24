@@ -193,10 +193,16 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 }
 
 type XReadArgs struct {
-	Streams []string // list of streams and ids, e.g. stream1 stream2 id1 id2
+	Streams []string // list of streams, or streams and ids e.g. stream1 stream2 id1 id2
 	Count   int64
 	Block   time.Duration
-	ID      string
+	// ID is a single ID applied to every stream in Streams.
+	// When reading from multiple streams that require different IDs,
+	// use IDs instead so each stream can be resumed from its own last ID.
+	ID string
+	// IDs is the per-stream list of IDs (one per entry in Streams).
+	// When non-empty, IDs takes precedence over ID.
+	IDs []string
 }
 
 func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
@@ -219,7 +225,12 @@ func (c cmdable) XRead(ctx context.Context, a *XReadArgs) *XStreamSliceCmd {
 	for _, s := range a.Streams {
 		args = append(args, s)
 	}
-	if a.ID != "" {
+	switch {
+	case len(a.IDs) > 0:
+		for _, id := range a.IDs {
+			args = append(args, id)
+		}
+	case a.ID != "":
 		for range a.Streams {
 			args = append(args, a.ID)
 		}
