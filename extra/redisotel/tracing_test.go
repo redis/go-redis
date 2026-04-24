@@ -231,6 +231,36 @@ func TestWithCommandFilterCtx(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("filter out command with custom context value", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandFilterCtx(func(ctx context.Context, cmd redis.Cmder) bool {
+				ctxValue := ctx.Value("filter")
+				t.Log("filter context value:", ctxValue)
+				return ctxValue == "true"
+			}),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+		ctx = context.WithValue(ctx, "filter", "true")
+		cmd := redis.NewCmd(ctx, "ping")
+		defer span.End()
+
+		processHook := hook.ProcessHook(func(ctx context.Context, cmd redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "redis-test" || innerSpan.Name() == "ping" {
+				t.Fatalf("ping command should not be traced")
+			}
+
+			return nil
+		})
+		err := processHook(ctx, cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestWithCommandsFilterCtx(t *testing.T) {
@@ -298,6 +328,40 @@ func TestWithCommandsFilterCtx(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("filter out commands with custom context value", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithCommandsFilterCtx(func(ctx context.Context, cmds []redis.Cmder) bool {
+				ctxValue := ctx.Value("filter")
+				t.Log("filter context value:", ctxValue)
+				return ctxValue == "true"
+			}),
+		)
+		ctx, span := provider.Tracer("redis-test").Start(context.TODO(), "redis-test")
+
+		ctx = context.WithValue(ctx, "filter", "true")
+
+		cmds := []redis.Cmder{
+			redis.NewCmd(ctx, "ping"),
+			redis.NewCmd(ctx, "info"),
+		}
+		defer span.End()
+
+		processPipelineHook := hook.ProcessPipelineHook(func(ctx context.Context, cmds []redis.Cmder) error {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() != "redis-test" || innerSpan.Name() == "redis.pipeline ping\ninfo" {
+				t.Fatalf("ping and info commands should not be traced")
+			}
+			return nil
+		})
+		err := processPipelineHook(ctx, cmds)
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestWithDialFilterCtx(t *testing.T) {
@@ -344,6 +408,34 @@ func TestWithDialFilterCtx(t *testing.T) {
 			}
 			return nil, nil
 		})
+		_, err := dialHook(ctx, "tcp", "localhost:6379")
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("filter out dial with custom context value", func(t *testing.T) {
+		provider := sdktrace.NewTracerProvider()
+		hook := newTracingHook(
+			"",
+			WithTracerProvider(provider),
+			WithDialFilterCtx(func(ctx context.Context, _, _ string) bool {
+				ctxValue := ctx.Value("filter")
+				return ctxValue == "true"
+			}),
+		)
+		ctx := context.TODO()
+		ctx = context.WithValue(ctx, "filter", "true")
+		ctx, span := provider.Tracer("redis-test").Start(ctx, "redis-test")
+		defer span.End()
+		dialHook := hook.DialHook(func(ctx context.Context, network, addr string) (conn net.Conn, err error) {
+			innerSpan := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+			if innerSpan.Name() == "redis.dial" {
+				t.Fatalf("dial should not be traced")
+			}
+			return nil, nil
+		})
+
 		_, err := dialHook(ctx, "tcp", "localhost:6379")
 		if err != nil {
 			t.Fatal(err)
