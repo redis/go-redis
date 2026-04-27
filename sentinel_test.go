@@ -862,6 +862,14 @@ var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
 func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
 	ctx := context.Background()
 
+	// Skip if sentinel infrastructure is not available.
+	sentinel0 := redis.NewSentinelClient(&redis.Options{Addr: sentinelAddrs[0], DialTimeout: 2 * time.Second})
+	if err := sentinel0.Ping(ctx).Err(); err != nil {
+		sentinel0.Close()
+		t.Skipf("sentinel not available at %s: %v", sentinelAddrs[0], err)
+	}
+	sentinel0.Close()
+
 	// Register a temporary master-only name in the test sentinels.
 	// This master has no replicas, which is the scenario that triggers the bug.
 	masterOnlyName := "master-only-test"
