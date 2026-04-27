@@ -126,16 +126,6 @@ func NewTestSentinelFailover(opt *FailoverOptions, sentinelAddrs []string) *sent
 	}
 }
 
-// SetSentinelForTest sets the sentinel client on a sentinelFailover
-// and subscribes to failover channels (mirrors setSentinel but is
-// exported for tests).
-func (c *sentinelFailover) SetSentinelForTest(ctx context.Context, sentinel *SentinelClient) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.sentinel = sentinel
-	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+replica-reconf-done")
-}
-
 // ReplicaAddrs is exported for testing.
 func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
 	return c.replicaAddrs(ctx, false)
