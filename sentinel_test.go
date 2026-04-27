@@ -862,13 +862,34 @@ var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
 func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
 	ctx := context.Background()
 
-	// Use a master name that has no replicas configured.
-	// We reuse the existing sentinel infrastructure but create a dedicated
-	// sentinelFailover so we can inspect internal state.
-	masterName := sentinelName
+	// Register a temporary master-only name in the test sentinels.
+	// This master has no replicas, which is the scenario that triggers the bug.
+	masterOnlyName := "master-only-test"
+	masterIP := "127.0.0.1"
+	masterPort := sentinelMasterPort
+	quorum := "2"
+
+	// Monitor the master-only name on all sentinels.
+	for _, addr := range sentinelAddrs {
+		sentinel := redis.NewSentinelClient(&redis.Options{Addr: addr})
+		err := sentinel.Monitor(ctx, masterOnlyName, masterIP, masterPort, quorum).Err()
+		if err != nil && !strings.Contains(err.Error(), "Duplicated") {
+			t.Fatalf("SENTINEL MONITOR on %s failed: %v", addr, err)
+		}
+		sentinel.Close()
+	}
+
+	// Clean up: remove the monitored master after the test.
+	defer func() {
+		for _, addr := range sentinelAddrs {
+			sentinel := redis.NewSentinelClient(&redis.Options{Addr: addr})
+			_ = sentinel.Remove(ctx, masterOnlyName).Err()
+			sentinel.Close()
+		}
+	}()
 
 	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
-		MasterName:    masterName,
+		MasterName:    masterOnlyName,
 		SentinelAddrs: sentinelAddrs,
 		DialTimeout:   5 * time.Second,
 		ReadTimeout:   5 * time.Second,
@@ -889,16 +910,16 @@ func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
 		t.Fatal("expected sentinel to be set after MasterAddr, got nil")
 	}
 
-	// Now call ReplicaAddrs. Even if there are zero replicas, the
-	// sentinel connection must remain alive.
+	// Call ReplicaAddrs. With zero replicas, getReplicaAddrs returns an
+	// empty list without error. Before the fix, this called closeSentinel()
+	// which destroyed the sentinel connection and caused a rediscovery loop.
 	replicas, err := failover.ReplicaAddrs(ctx)
 	if err != nil {
 		t.Fatalf("ReplicaAddrs failed: %v", err)
 	}
-
-	// replicas may or may not be empty depending on the test environment;
-	// the important invariant is that sentinel is still alive.
-	_ = replicas
+	if len(replicas) != 0 {
+		t.Fatalf("expected zero replicas for master-only setup, got %v", replicas)
+	}
 
 	if !failover.HasSentinel() {
 		t.Fatal("sentinel was closed after ReplicaAddrs returned zero replicas; " +
