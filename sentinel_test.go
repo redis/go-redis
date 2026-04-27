@@ -870,11 +870,13 @@ func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
 	}
 	sentinel0.Close()
 
-	// Register a temporary master-only name in the test sentinels.
-	// This master has no replicas, which is the scenario that triggers the bug.
+	// Register a temporary master-only name pointing at the standalone Redis
+	// instance (redisPort). Unlike sentinelMasterPort which already has two
+	// replicas configured, the standalone instance has none, so Sentinel will
+	// never discover replicas via INFO REPLICATION.
 	masterOnlyName := "master-only-test"
 	masterIP := "127.0.0.1"
-	masterPort := sentinelMasterPort
+	masterPort := redisPort
 	quorum := "2"
 
 	// Monitor the master-only name on all sentinels.
