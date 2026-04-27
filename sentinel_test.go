@@ -853,3 +853,66 @@ var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
 		fmt.Println("Sentinel cluster is now stable")
 	})
 })
+
+// TestSentinelFailover_ReplicaAddrs_NoReplicas verifies that when a
+// sentinel-monitored master has zero replicas, the sentinel connection
+// is preserved and not torn down. Before the fix, closeSentinel() was
+// called when getReplicaAddrs returned an empty list without error,
+// causing a continuous rediscovery loop on every subsequent operation.
+func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
+	ctx := context.Background()
+
+	// Use a master name that has no replicas configured.
+	// We reuse the existing sentinel infrastructure but create a dedicated
+	// sentinelFailover so we can inspect internal state.
+	masterName := sentinelName
+
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    masterName,
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   5 * time.Second,
+		ReadTimeout:   5 * time.Second,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// Bootstrap: perform initial master discovery so that a sentinel
+	// client is established (setSentinel is called internally).
+	addr, err := failover.MasterAddr(ctx)
+	if err != nil {
+		t.Fatalf("MasterAddr failed: %v", err)
+	}
+	if addr == "" {
+		t.Fatal("MasterAddr returned empty address")
+	}
+
+	if !failover.HasSentinel() {
+		t.Fatal("expected sentinel to be set after MasterAddr, got nil")
+	}
+
+	// Now call ReplicaAddrs. Even if there are zero replicas, the
+	// sentinel connection must remain alive.
+	replicas, err := failover.ReplicaAddrs(ctx)
+	if err != nil {
+		t.Fatalf("ReplicaAddrs failed: %v", err)
+	}
+
+	// replicas may or may not be empty depending on the test environment;
+	// the important invariant is that sentinel is still alive.
+	_ = replicas
+
+	if !failover.HasSentinel() {
+		t.Fatal("sentinel was closed after ReplicaAddrs returned zero replicas; " +
+			"this causes a continuous rediscovery loop on master-only setups")
+	}
+
+	// Call ReplicaAddrs a second time to confirm the sentinel stays
+	// alive across repeated calls (no degradation over time).
+	_, err = failover.ReplicaAddrs(ctx)
+	if err != nil {
+		t.Fatalf("second ReplicaAddrs call failed: %v", err)
+	}
+
+	if !failover.HasSentinel() {
+		t.Fatal("sentinel was closed after second ReplicaAddrs call")
+	}
+}

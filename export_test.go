@@ -106,3 +106,37 @@ func (c *ModuleLoadexConfig) ToArgs() []interface{} {
 func ShouldRetry(err error, retryTimeout bool) bool {
 	return shouldRetry(err, retryTimeout)
 }
+
+// SentinelFailoverHasSentinel returns true if the sentinelFailover
+// still holds a live sentinel connection. Used in tests to verify
+// that replicaAddrs does not tear down the sentinel for master-only
+// (zero-replica) setups.
+func (c *sentinelFailover) HasSentinel() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sentinel != nil
+}
+
+// NewTestSentinelFailover creates a sentinelFailover with minimal
+// options for unit testing. The caller must set c.sentinel manually.
+func NewTestSentinelFailover(opt *FailoverOptions, sentinelAddrs []string) *sentinelFailover {
+	return &sentinelFailover{
+		opt:           opt,
+		sentinelAddrs: sentinelAddrs,
+	}
+}
+
+// SetSentinelForTest sets the sentinel client on a sentinelFailover
+// and subscribes to failover channels (mirrors setSentinel but is
+// exported for tests).
+func (c *sentinelFailover) SetSentinelForTest(ctx context.Context, sentinel *SentinelClient) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sentinel = sentinel
+	c.pubsub = sentinel.Subscribe(ctx, "+switch-master", "+replica-reconf-done")
+}
+
+// ReplicaAddrs is exported for testing.
+func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
+	return c.replicaAddrs(ctx, false)
+}
