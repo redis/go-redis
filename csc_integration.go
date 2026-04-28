@@ -158,8 +158,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 
 	if _, ok := c.csc.Get(ctx, key); ok {
 		// Drain pending invalidations and re-check so the hit path cannot
-		// serve a value the server has already marked stale. Misses skip this
-		// because processWithRetry drains pushes on its own connection.
+		// serve a value the server has already marked stale.
 		c.drainPendingInvalidations(ctx)
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := applyCachedReply(cmd, data); err == nil {

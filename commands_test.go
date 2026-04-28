@@ -408,7 +408,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
 			Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
-			Expect(info.Flags & redis.ClientTrackingNoLoop).NotTo(BeZero())
+			// Redis does not expose the NOLOOP flag in CLIENT INFO; it is only
+			// observable via CLIENT TRACKINGINFO.
 
 			Expect(conn.ClientTrackingOff(ctx).Err()).NotTo(HaveOccurred())
 		})
