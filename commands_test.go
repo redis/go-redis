@@ -7592,6 +7592,31 @@ var _ = Describe("Commands", func() {
 				Expect(ids).To(Equal([]string{"3-0"}))
 			})
 
+			It("should XAutoClaim return deletedIDs", func() {
+				xca := &redis.XAutoClaimArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Consumer: "consumer",
+					Start:    "-",
+					Count:    3,
+				}
+				err := client.XDel(ctx, "stream", "2-0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				msgs, start, ids, err := client.XAutoClaim(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(start).To(Equal("0-0"))
+				Expect(msgs).To(Equal([]redis.XMessage{{
+					ID:     "1-0",
+					Values: map[string]interface{}{"uno": "un"},
+				}, {
+					ID:     "3-0",
+					Values: map[string]interface{}{"tres": "troix"},
+				}}))
+				Expect(ids).To(Equal([]string{"2-0"}))
+
+			})
+
 			It("should XClaim", func() {
 				msgs, err := client.XClaim(ctx, &redis.XClaimArgs{
 					Stream:   "stream",
