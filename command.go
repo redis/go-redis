@@ -8104,14 +8104,14 @@ func (cmd *GCRACmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	// Read MaxRequests (int64)
-	cmd.val.MaxRequests, err = rd.ReadInt()
+	// Read MaxTokens (int64)
+	cmd.val.MaxTokens, err = rd.ReadInt()
 	if err != nil {
 		return err
 	}
 
-	// Read AvailableRequests (int64)
-	cmd.val.AvailableRequests, err = rd.ReadInt()
+	// Read AvailableTokens (int64)
+	cmd.val.AvailableTokens, err = rd.ReadInt()
 	if err != nil {
 		return err
 	}

@@ -26,18 +26,18 @@ var _ = Describe("GCRA rate limiting", func() {
 
 	Describe("GCRA", func() {
 		It("should allow requests within rate limit", func() {
-			// Allow 10 requests per second with a burst of 5
+			// Allow 10 tokens per second with a burst of 5
 			result, err := client.GCRA(ctx, "user:123", 5, 10, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).NotTo(BeNil())
-			Expect(result.Limited).To(Equal(int64(0)))     // Not limited
-			Expect(result.MaxRequests).To(Equal(int64(6))) // MaxBurst + 1
-			Expect(result.AvailableRequests).To(BeNumerically(">=", 0))
+			Expect(result.Limited).To(Equal(int64(0)))   // Not limited
+			Expect(result.MaxTokens).To(Equal(int64(6))) // MaxBurst + 1
+			Expect(result.AvailableTokens).To(BeNumerically(">=", 0))
 			Expect(result.RetryAfter).To(Equal(int64(-1))) // Not limited, so -1
 		})
 
 		It("should rate limit when exceeding burst", func() {
-			// Allow 1 request per second with no burst
+			// Allow 1 token per second with no burst
 			key := "user:456"
 
 			// First request should succeed
@@ -53,7 +53,7 @@ var _ = Describe("GCRA rate limiting", func() {
 		})
 
 		It("should handle burst correctly", func() {
-			// Allow 10 requests per second with a burst of 5
+			// Allow 10 tokens per second with a burst of 5
 			key := "user:789"
 
 			// Should be able to make 6 requests (burst + 1) immediately
@@ -70,22 +70,22 @@ var _ = Describe("GCRA rate limiting", func() {
 			Expect(result.RetryAfter).To(BeNumerically(">", 0))
 		})
 
-		It("should return correct max requests", func() {
+		It("should return correct max tokens", func() {
 			result, err := client.GCRA(ctx, "user:max", 10, 5, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.MaxRequests).To(Equal(int64(11))) // MaxBurst + 1
+			Expect(result.MaxTokens).To(Equal(int64(11))) // MaxBurst + 1
 		})
 
 		It("should handle different periods", func() {
-			// 60 requests per minute
+			// 60 tokens per minute
 			result, err := client.GCRA(ctx, "user:minute", 10, 60, time.Minute).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Limited).To(Equal(int64(0)))
-			Expect(result.MaxRequests).To(Equal(int64(11)))
+			Expect(result.MaxTokens).To(Equal(int64(11)))
 		})
 
 		It("should handle fractional periods", func() {
-			// 10 requests per 500ms
+			// 10 tokens per 500ms
 			result, err := client.GCRA(ctx, "user:fractional", 5, 10, 500*time.Millisecond).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Limited).To(Equal(int64(0)))
@@ -113,25 +113,25 @@ var _ = Describe("GCRA rate limiting", func() {
 	})
 
 	Describe("GCRAWithArgs", func() {
-		It("should work with default num requests", func() {
+		It("should work with default tokens", func() {
 			args := &redis.GCRAArgs{
-				MaxBurst:          5,
-				RequestsPerPeriod: 10,
-				Period:            time.Second,
-				NumRequests:       1,
+				MaxBurst:        5,
+				TokensPerPeriod: 10,
+				Period:          time.Second,
+				Tokens:          1,
 			}
 			result, err := client.GCRAWithArgs(ctx, "user:args1", args).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Limited).To(Equal(int64(0)))
 		})
 
-		It("should handle custom num requests", func() {
+		It("should handle custom tokens", func() {
 			key := "user:weighted"
 			args := &redis.GCRAArgs{
-				MaxBurst:          10,
-				RequestsPerPeriod: 10,
-				Period:            time.Second,
-				NumRequests:       5, // Each request costs 5 tokens
+				MaxBurst:        10,
+				TokensPerPeriod: 10,
+				Period:          time.Second,
+				Tokens:          5, // Each request costs 5 tokens
 			}
 
 			// First request costs 5 tokens
@@ -150,13 +150,13 @@ var _ = Describe("GCRA rate limiting", func() {
 			Expect(result.Limited).To(Equal(int64(1)))
 		})
 
-		It("should handle large num requests", func() {
+		It("should handle large tokens", func() {
 			key := "user:heavy"
 			args := &redis.GCRAArgs{
-				MaxBurst:          10,
-				RequestsPerPeriod: 10,
-				Period:            time.Second,
-				NumRequests:       10, // Request costs all available tokens (MaxBurst + 1 = 11)
+				MaxBurst:        10,
+				TokensPerPeriod: 10,
+				Period:          time.Second,
+				Tokens:          10, // Request costs all available tokens (MaxBurst + 1 = 11)
 			}
 
 			// First heavy request should succeed but consume most tokens
@@ -173,10 +173,10 @@ var _ = Describe("GCRA rate limiting", func() {
 		It("should work with different period units", func() {
 			// Test with milliseconds
 			args := &redis.GCRAArgs{
-				MaxBurst:          2,
-				RequestsPerPeriod: 100,
-				Period:            100 * time.Millisecond,
-				NumRequests:       1,
+				MaxBurst:        2,
+				TokensPerPeriod: 100,
+				Period:          100 * time.Millisecond,
+				Tokens:          1,
 			}
 			result, err := client.GCRAWithArgs(ctx, "user:millis", args).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -184,10 +184,10 @@ var _ = Describe("GCRA rate limiting", func() {
 
 			// Test with minutes
 			args = &redis.GCRAArgs{
-				MaxBurst:          10,
-				RequestsPerPeriod: 60,
-				Period:            time.Minute,
-				NumRequests:       1,
+				MaxBurst:        10,
+				TokensPerPeriod: 60,
+				Period:          time.Minute,
+				Tokens:          1,
 			}
 			result, err = client.GCRAWithArgs(ctx, "user:minutes", args).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -202,24 +202,24 @@ var _ = Describe("GCRA rate limiting", func() {
 
 			// Check all fields are present
 			Expect(result.Limited).To(BeNumerically(">=", 0))
-			Expect(result.MaxRequests).To(Equal(int64(6)))
-			Expect(result.AvailableRequests).To(BeNumerically(">=", 0))
+			Expect(result.MaxTokens).To(Equal(int64(6)))
+			Expect(result.AvailableTokens).To(BeNumerically(">=", 0))
 			Expect(result.RetryAfter).To(BeNumerically(">=", -1))
 			Expect(result.FullBurstAfter).To(BeNumerically(">=", 0))
 		})
 
-		It("should show decreasing available requests", func() {
+		It("should show decreasing available tokens", func() {
 			key := "user:decreasing"
 
 			result1, err := client.GCRA(ctx, key, 5, 10, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
-			available1 := result1.AvailableRequests
+			available1 := result1.AvailableTokens
 
 			result2, err := client.GCRA(ctx, key, 5, 10, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
-			available2 := result2.AvailableRequests
+			available2 := result2.AvailableTokens
 
-			// Available requests should decrease
+			// Available tokens should decrease
 			Expect(available2).To(BeNumerically("<", available1))
 		})
 	})
@@ -228,13 +228,13 @@ var _ = Describe("GCRA rate limiting", func() {
 		It("should handle zero burst", func() {
 			result, err := client.GCRA(ctx, "user:noburst", 0, 10, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.MaxRequests).To(Equal(int64(1))) // 0 + 1
+			Expect(result.MaxTokens).To(Equal(int64(1))) // 0 + 1
 		})
 
 		It("should handle high rate limits", func() {
 			result, err := client.GCRA(ctx, "user:high", 1000, 10000, time.Second).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.MaxRequests).To(Equal(int64(1001)))
+			Expect(result.MaxTokens).To(Equal(int64(1001)))
 		})
 	})
 })
