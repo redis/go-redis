@@ -1,4 +1,4 @@
-package redis
+package cache
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestLocalCache_SetGet(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache := New(Config{MaxEntries: 16})
 
 	if ok := cache.Set("get:foo", []string{"foo"}, []byte("bar")); !ok {
 		t.Fatal("Set should cache entry")
@@ -25,7 +25,7 @@ func TestLocalCache_SetGet(t *testing.T) {
 }
 
 func TestLocalCache_DeleteByCacheKey(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache := New(Config{MaxEntries: 16})
 	cache.Set("get:a", []string{"a"}, []byte("1"))
 	cache.Set("get:b", []string{"b"}, []byte("2"))
 
@@ -44,7 +44,7 @@ func TestLocalCache_DeleteByCacheKey(t *testing.T) {
 }
 
 func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache := New(Config{MaxEntries: 16})
 	cache.Set("mget:a:b", []string{"a", "b"}, []byte("ab"))
 	cache.Set("mget:b:c", []string{"b", "c"}, []byte("bc"))
 	cache.Set("get:d", []string{"d"}, []byte("d"))
@@ -65,7 +65,7 @@ func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
 }
 
 func TestLocalCache_Flush(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache := New(Config{MaxEntries: 16})
 	cache.Set("get:a", []string{"a"}, []byte("1"))
 	cache.Set("get:b", []string{"b"}, []byte("2"))
 	token, shouldFetch := cache.Reserve("get:c", []string{"c"})
@@ -83,7 +83,7 @@ func TestLocalCache_Flush(t *testing.T) {
 }
 
 func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 2})
+	cache := New(Config{MaxEntries: 2})
 
 	if !cache.Set("k1", []string{"k1"}, []byte("v1")) {
 		t.Fatal("failed to set k1")
@@ -112,7 +112,7 @@ func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 }
 
 func TestLocalCache_Evicts_ByMaxMemory(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{
+	cache := New(Config{
 		MaxMemoryBytes: 5,
 		Sizer: func(_ string, _ []string, value []byte) int64 {
 			return int64(len(value))
@@ -142,7 +142,7 @@ func TestLocalCache_Evicts_ByMaxMemory(t *testing.T) {
 }
 
 func TestLocalCache_ReserveFulfill_WaitsOnInProgress(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	cache := New(Config{MaxEntries: 8})
 	token, shouldFetch := cache.Reserve("get:wait", []string{"wait"})
 	if !shouldFetch || token == 0 {
 		t.Fatal("Reserve should return token and shouldFetch=true for new entry")
@@ -180,7 +180,7 @@ func TestLocalCache_ReserveFulfill_WaitsOnInProgress(t *testing.T) {
 }
 
 func TestLocalCache_FulfillFailsAfterDelete(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	cache := New(Config{MaxEntries: 8})
 	token, shouldFetch := cache.Reserve("get:foo", []string{"foo"})
 	if !shouldFetch || token == 0 {
 		t.Fatal("Reserve should create placeholder")
@@ -199,7 +199,7 @@ func TestLocalCache_FulfillFailsAfterDelete(t *testing.T) {
 }
 
 func TestLocalCache_ConcurrentAccess(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{
+	cache := New(Config{
 		MaxEntries: 64,
 		Sizer: func(cacheKey string, redisKeys []string, value []byte) int64 {
 			size := int64(len(cacheKey) + len(value))
@@ -263,7 +263,7 @@ func TestLocalCache_ConcurrentAccess(t *testing.T) {
 }
 
 func TestLocalCache_Get_ReturnsOnContextCancel(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	cache := New(Config{MaxEntries: 8})
 	token, shouldFetch := cache.Reserve("get:abandoned", []string{"abandoned"})
 	if !shouldFetch || token == 0 {
 		t.Fatal("Reserve should create in-progress entry")
@@ -300,7 +300,7 @@ func TestLocalCache_Get_ReturnsOnContextCancel(t *testing.T) {
 
 func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 	// Use a very short stale timeout so the test triggers takeover quickly.
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8, StaleTimeout: 10 * time.Millisecond})
+	cache := New(Config{MaxEntries: 8, StaleTimeout: 10 * time.Millisecond})
 
 	token1, shouldFetch1 := cache.Reserve("get:x", []string{"x"})
 	if !shouldFetch1 || token1 == 0 {
@@ -348,7 +348,7 @@ func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 }
 
 func TestLocalCache_Get_NilContext(t *testing.T) {
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	cache := New(Config{MaxEntries: 8})
 	cache.Set("get:nilctx", []string{"nilctx"}, []byte("value"))
 
 	// nil context must not panic on cache hit.
@@ -366,7 +366,7 @@ func TestLocalCache_Get_NilContext(t *testing.T) {
 
 func TestLocalCache_ConcurrentReserveFulfill_NoHijack(t *testing.T) {
 	// Default stale timeout (5s) ensures no takeover during this fast test.
-	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	cache := New(Config{MaxEntries: 8})
 
 	const goroutines = 10
 	const cacheKey = "get:race"

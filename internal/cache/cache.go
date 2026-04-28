@@ -1,29 +1,32 @@
-package redis
+// Package cache provides the local in-memory cache used by client-side caching.
+// Implementation details are intentionally kept here so the public API in the
+// redis package can expose only the Cache interface and configuration types.
+package cache
 
 import (
 	"container/list"
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// CacheEntryState tracks the lifecycle of a local cache entry.
-type CacheEntryState uint8
+// entryState tracks the lifecycle of a local cache entry.
+type entryState uint8
 
 const (
-	// CacheEntryInProgress marks a placeholder entry while a value is being fetched.
-	CacheEntryInProgress CacheEntryState = iota
-	// CacheEntryValid marks an entry that contains a value that can be returned.
-	CacheEntryValid
+	// inProgress marks a placeholder entry while a value is being fetched.
+	inProgress entryState = iota
+	// valid marks an entry that contains a value that can be returned.
+	valid
 )
 
-// CacheEntry represents a cached command reply and its Redis-key associations.
-type CacheEntry struct {
-	CacheKey  string
-	RedisKeys []string
-	Value     []byte
-	State     CacheEntryState
-
+// entry represents a cached command reply and its Redis-key associations.
+type entry struct {
+	cacheKey   string
+	redisKeys  []string
+	value      []byte
+	state      entryState
 	token      uint64
 	sizeBytes  int64
 	reservedAt time.Time
@@ -32,17 +35,17 @@ type CacheEntry struct {
 	lruElem    *list.Element
 }
 
-// CacheSizer calculates estimated memory usage in bytes for a cache entry.
-type CacheSizer func(cacheKey string, redisKeys []string, value []byte) int64
+// Sizer calculates estimated memory usage in bytes for a cache entry.
+type Sizer func(cacheKey string, redisKeys []string, value []byte) int64
 
-// CacheConfig configures a local cache instance.
-type CacheConfig struct {
+// Config configures a local cache instance.
+type Config struct {
 	// MaxEntries limits the number of entries. Zero or negative means unlimited.
 	MaxEntries int
 	// MaxMemoryBytes limits estimated memory usage in bytes. Zero or negative means unlimited.
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
-	Sizer CacheSizer
+	Sizer Sizer
 	// StaleTimeout is the duration after which an IN_PROGRESS placeholder is
 	// considered stale and eligible for takeover by a new Reserve call.
 	// If zero, defaults to defaultStaleTimeout (5s).
@@ -66,11 +69,11 @@ type Cache interface {
 
 const defaultStaleTimeout = 5 * time.Second
 
-// NewLocalCache creates a thread-safe local cache with strict LRU eviction.
-func NewLocalCache(cfg CacheConfig) Cache {
+// New creates a thread-safe local cache with strict LRU eviction.
+func New(cfg Config) Cache {
 	sizer := cfg.Sizer
 	if sizer == nil {
-		sizer = defaultCacheSizer
+		sizer = defaultSizer
 	}
 
 	staleTimeout := cfg.StaleTimeout
@@ -79,7 +82,7 @@ func NewLocalCache(cfg CacheConfig) Cache {
 	}
 
 	return &localCache{
-		entries:        make(map[string]*CacheEntry),
+		entries:        make(map[string]*entry),
 		byRedisKey:     make(map[string]map[string]struct{}),
 		lru:            list.New(),
 		maxEntries:     cfg.MaxEntries,
@@ -94,25 +97,26 @@ type localCache struct {
 	// Reads are lock-free from each other, while writes keep map/list updates atomic.
 	mu sync.RWMutex
 
-	entries    map[string]*CacheEntry
+	entries    map[string]*entry
 	byRedisKey map[string]map[string]struct{}
 	lru        *list.List
 
-	usedBytes int64
+	// usedBytes is updated under mu but exposed atomically so MemoryUsage
+	// reads do not need to take the lock. The value is approximate when
+	// observed concurrently with a writer.
+	usedBytes atomic.Int64
 
 	maxEntries     int
 	maxMemoryBytes int64
-	sizer          CacheSizer
+	sizer          Sizer
 	staleTimeout   time.Duration
 	nextToken      uint64
 }
 
-const defaultCacheEntryOverhead int64 = 96
-
-func defaultCacheSizer(cacheKey string, redisKeys []string, value []byte) int64 {
-	size := defaultCacheEntryOverhead + int64(len(cacheKey)+len(value))
+func defaultSizer(cacheKey string, redisKeys []string, value []byte) int64 {
+	size := int64(len(cacheKey) + len(value))
 	for _, key := range redisKeys {
-		size += int64(len(key)) + 16
+		size += int64(len(key))
 	}
 	if size < 0 {
 		return 0
@@ -126,14 +130,14 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 	}
 	for {
 		c.mu.RLock()
-		entry, ok := c.entries[cacheKey]
+		e, ok := c.entries[cacheKey]
 		if !ok {
 			c.mu.RUnlock()
 			return nil, false
 		}
 
-		if entry.State == CacheEntryInProgress {
-			waitCh := entry.waitCh
+		if e.state == inProgress {
+			waitCh := e.waitCh
 			c.mu.RUnlock()
 			// Wait for the in-flight fetch to either publish (Fulfill) or abort (Cancel/Delete/Flush).
 			if waitCh != nil {
@@ -150,17 +154,17 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 			continue
 		}
 
-		if entry.State != CacheEntryValid {
+		if e.state != valid {
 			c.mu.RUnlock()
 			return nil, false
 		}
 
-		value := cloneBytes(entry.Value)
+		value := cloneBytes(e.value)
 		c.mu.RUnlock()
 
 		c.mu.Lock()
 		// Touch under write lock keeps LRU metadata consistent with concurrent deletes/updates.
-		if current, exists := c.entries[cacheKey]; exists && current == entry && current.State == CacheEntryValid {
+		if current, exists := c.entries[cacheKey]; exists && current == e && current.state == valid {
 			c.touchEntryLocked(current)
 		}
 		c.mu.Unlock()
@@ -182,18 +186,18 @@ func (c *localCache) Set(cacheKey string, redisKeys []string, value []byte) bool
 		return false
 	}
 
-	entry := &CacheEntry{
-		CacheKey:   cacheKey,
-		RedisKeys:  keysCopy,
-		Value:      valueCopy,
-		State:      CacheEntryValid,
+	e := &entry{
+		cacheKey:   cacheKey,
+		redisKeys:  keysCopy,
+		value:      valueCopy,
+		state:      valid,
 		sizeBytes:  entrySize,
 		waitClosed: true,
 	}
 
-	c.setEntryLocked(entry)
+	c.setEntryLocked(e)
 	c.evictIfNeededLocked()
-	return c.entries[cacheKey] == entry
+	return c.entries[cacheKey] == e
 }
 
 func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64, shouldFetch bool) {
@@ -202,13 +206,13 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if entry, ok := c.entries[cacheKey]; ok {
-		switch entry.State {
-		case CacheEntryValid:
-			c.touchEntryLocked(entry)
+	if e, ok := c.entries[cacheKey]; ok {
+		switch e.state {
+		case valid:
+			c.touchEntryLocked(e)
 			return 0, false
-		case CacheEntryInProgress:
-			if time.Since(entry.reservedAt) < c.staleTimeout {
+		case inProgress:
+			if time.Since(e.reservedAt) < c.staleTimeout {
 				// Active fetch in progress — join the wait, don't take over.
 				return 0, false
 			}
@@ -224,23 +228,23 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 	c.nextToken++
 	token = c.nextToken
 
-	entry := &CacheEntry{
-		CacheKey:   cacheKey,
-		RedisKeys:  keysCopy,
-		State:      CacheEntryInProgress,
+	e := &entry{
+		cacheKey:   cacheKey,
+		redisKeys:  keysCopy,
+		state:      inProgress,
 		token:      token,
 		reservedAt: time.Now(),
 		waitCh:     make(chan struct{}),
 	}
-	entry.sizeBytes = c.computeSizeLocked(cacheKey, keysCopy, nil)
+	e.sizeBytes = c.computeSizeLocked(cacheKey, keysCopy, nil)
 
-	if c.maxMemoryBytes > 0 && entry.sizeBytes > c.maxMemoryBytes {
+	if c.maxMemoryBytes > 0 && e.sizeBytes > c.maxMemoryBytes {
 		return 0, true
 	}
 
-	c.setEntryLocked(entry)
+	c.setEntryLocked(e)
 	c.evictIfNeededLocked()
-	if c.entries[cacheKey] != entry {
+	if c.entries[cacheKey] != e {
 		return 0, true
 	}
 	return token, true
@@ -252,36 +256,36 @@ func (c *localCache) Fulfill(cacheKey string, token uint64, value []byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry, ok := c.entries[cacheKey]
-	if !ok || entry.State != CacheEntryInProgress || entry.token != token {
+	e, ok := c.entries[cacheKey]
+	if !ok || e.state != inProgress || e.token != token {
 		return false
 	}
 
-	valueSize := c.computeSizeLocked(cacheKey, entry.RedisKeys, valueCopy)
+	valueSize := c.computeSizeLocked(cacheKey, e.redisKeys, valueCopy)
 	if c.maxMemoryBytes > 0 && valueSize > c.maxMemoryBytes {
 		c.removeEntryLocked(cacheKey)
 		return false
 	}
 
-	c.usedBytes += valueSize - entry.sizeBytes
-	entry.Value = valueCopy
-	entry.sizeBytes = valueSize
-	entry.State = CacheEntryValid
-	entry.token = 0
-	c.closeWaitersLocked(entry)
-	c.touchEntryLocked(entry)
+	c.usedBytes.Add(valueSize - e.sizeBytes)
+	e.value = valueCopy
+	e.sizeBytes = valueSize
+	e.state = valid
+	e.token = 0
+	c.closeWaitersLocked(e)
+	c.touchEntryLocked(e)
 
 	c.evictIfNeededLocked()
 	current, stillExists := c.entries[cacheKey]
-	return stillExists && current == entry && entry.State == CacheEntryValid
+	return stillExists && current == e && e.state == valid
 }
 
 func (c *localCache) Cancel(cacheKey string, token uint64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry, ok := c.entries[cacheKey]
-	if !ok || entry.State != CacheEntryInProgress || entry.token != token {
+	e, ok := c.entries[cacheKey]
+	if !ok || e.state != inProgress || e.token != token {
 		return false
 	}
 
@@ -331,13 +335,13 @@ func (c *localCache) Flush() int {
 	defer c.mu.Unlock()
 
 	removed := len(c.entries)
-	for _, entry := range c.entries {
-		c.closeWaitersLocked(entry)
+	for _, e := range c.entries {
+		c.closeWaitersLocked(e)
 	}
-	c.entries = make(map[string]*CacheEntry)
+	c.entries = make(map[string]*entry)
 	c.byRedisKey = make(map[string]map[string]struct{})
 	c.lru.Init()
-	c.usedBytes = 0
+	c.usedBytes.Store(0)
 	return removed
 }
 
@@ -348,9 +352,7 @@ func (c *localCache) Len() int {
 }
 
 func (c *localCache) MemoryUsage() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.usedBytes
+	return c.usedBytes.Load()
 }
 
 func (c *localCache) computeSizeLocked(cacheKey string, redisKeys []string, value []byte) int64 {
@@ -361,39 +363,38 @@ func (c *localCache) computeSizeLocked(cacheKey string, redisKeys []string, valu
 	return size
 }
 
-func (c *localCache) setEntryLocked(entry *CacheEntry) {
-	if old, exists := c.entries[entry.CacheKey]; exists {
-		c.removeEntryLocked(old.CacheKey)
+func (c *localCache) setEntryLocked(e *entry) {
+	if old, exists := c.entries[e.cacheKey]; exists {
+		c.removeEntryLocked(old.cacheKey)
 	}
 
-	c.entries[entry.CacheKey] = entry
-	c.usedBytes += entry.sizeBytes
+	c.entries[e.cacheKey] = e
+	c.usedBytes.Add(e.sizeBytes)
 
-	for _, redisKey := range entry.RedisKeys {
+	for _, redisKey := range e.redisKeys {
 		cacheKeys := c.byRedisKey[redisKey]
 		if cacheKeys == nil {
 			cacheKeys = make(map[string]struct{})
 			c.byRedisKey[redisKey] = cacheKeys
 		}
-		cacheKeys[entry.CacheKey] = struct{}{}
+		cacheKeys[e.cacheKey] = struct{}{}
 	}
 
-	entry.lruElem = c.lru.PushFront(entry)
+	e.lruElem = c.lru.PushFront(e)
 }
 
 func (c *localCache) removeEntryLocked(cacheKey string) bool {
-	entry, exists := c.entries[cacheKey]
+	e, exists := c.entries[cacheKey]
 	if !exists {
 		return false
 	}
 
 	delete(c.entries, cacheKey)
-	c.usedBytes -= entry.sizeBytes
-	if c.usedBytes < 0 {
-		c.usedBytes = 0
+	if c.usedBytes.Add(-e.sizeBytes) < 0 {
+		c.usedBytes.Store(0)
 	}
 
-	for _, redisKey := range entry.RedisKeys {
+	for _, redisKey := range e.redisKeys {
 		cacheKeys := c.byRedisKey[redisKey]
 		if cacheKeys == nil {
 			continue
@@ -404,36 +405,36 @@ func (c *localCache) removeEntryLocked(cacheKey string) bool {
 		}
 	}
 
-	if entry.lruElem != nil {
-		c.lru.Remove(entry.lruElem)
-		entry.lruElem = nil
+	if e.lruElem != nil {
+		c.lru.Remove(e.lruElem)
+		e.lruElem = nil
 	}
 
-	c.closeWaitersLocked(entry)
+	c.closeWaitersLocked(e)
 	return true
 }
 
-func (c *localCache) closeWaitersLocked(entry *CacheEntry) {
-	if entry.waitCh != nil && !entry.waitClosed {
-		close(entry.waitCh)
-		entry.waitClosed = true
+func (c *localCache) closeWaitersLocked(e *entry) {
+	if e.waitCh != nil && !e.waitClosed {
+		close(e.waitCh)
+		e.waitClosed = true
 	}
 }
 
-func (c *localCache) touchEntryLocked(entry *CacheEntry) {
+func (c *localCache) touchEntryLocked(e *entry) {
 	// O(1) recency update using list element pointer stored on the entry.
-	if entry.lruElem == nil {
-		entry.lruElem = c.lru.PushFront(entry)
+	if e.lruElem == nil {
+		e.lruElem = c.lru.PushFront(e)
 		return
 	}
-	c.lru.MoveToFront(entry.lruElem)
+	c.lru.MoveToFront(e.lruElem)
 }
 
 func (c *localCache) overCapacityLocked() bool {
 	if c.maxEntries > 0 && len(c.entries) > c.maxEntries {
 		return true
 	}
-	if c.maxMemoryBytes > 0 && c.usedBytes > c.maxMemoryBytes {
+	if c.maxMemoryBytes > 0 && c.usedBytes.Load() > c.maxMemoryBytes {
 		return true
 	}
 	return false
@@ -447,13 +448,13 @@ func (c *localCache) evictIfNeededLocked() {
 			return
 		}
 
-		victim, ok := victimElem.Value.(*CacheEntry)
+		victim, ok := victimElem.Value.(*entry)
 		if !ok || victim == nil {
 			c.lru.Remove(victimElem)
 			continue
 		}
 
-		c.removeEntryLocked(victim.CacheKey)
+		c.removeEntryLocked(victim.cacheKey)
 	}
 }
 
