@@ -262,6 +262,55 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(cmd.Val()).To(Equal("OK"))
 			})
 
+			It("should JSONSetWithArgs with FPHA", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+
+				fpArray := `[1.1, 2.2, 3.3, 4.4]`
+				for _, fpha := range []redis.FPHAType{
+					redis.FPHATypeBF16,
+					redis.FPHATypeFP16,
+					redis.FPHATypeFP32,
+					redis.FPHATypeFP64,
+				} {
+					key := "fpha_" + string(fpha)
+					cmd := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{FPHA: fpha})
+					Expect(cmd.Err()).NotTo(HaveOccurred())
+					Expect(cmd.Val()).To(Equal("OK"))
+
+					res, err := client.JSONGet(ctx, key, "$").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(res).NotTo(BeEmpty())
+				}
+			})
+
+			It("should JSONSetWithArgs with FPHA and NX/XX", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+
+				key := "fpha_nx"
+				fpArray := `[1.5, 2.5, 3.5]`
+
+				// NX + FPHA succeeds when key does not exist
+				res, err := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
+
+				// NX + FPHA returns empty result when key exists
+				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal(""))
+
+				// XX + FPHA succeeds when key exists
+				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "XX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
+			})
+
 			It("should JSONGet", Label("json.get", "json", "NonRedisEnterprise"), func() {
 				res, err := client.JSONSet(ctx, "get3", "$", `{"a": 1, "b": 2}`).Result()
 				Expect(err).NotTo(HaveOccurred())
