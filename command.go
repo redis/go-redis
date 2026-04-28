@@ -159,8 +159,9 @@ const (
 
 type (
 	CmdTypeXAutoClaimValue struct {
-		messages []XMessage
-		start    string
+		messages   []XMessage
+		start      string
+		deletedIDs []string
 	}
 
 	CmdTypeXAutoClaimJustIDValue struct {
@@ -2610,8 +2611,9 @@ func (cmd *XPendingExtCmd) Clone() Cmder {
 type XAutoClaimCmd struct {
 	baseCmd
 
-	start string
-	val   []XMessage
+	start      string
+	val        []XMessage
+	deletedIDs []string
 }
 
 var _ Cmder = (*XAutoClaimCmd)(nil)
@@ -2626,17 +2628,18 @@ func NewXAutoClaimCmd(ctx context.Context, args ...interface{}) *XAutoClaimCmd {
 	}
 }
 
-func (cmd *XAutoClaimCmd) SetVal(val []XMessage, start string) {
+func (cmd *XAutoClaimCmd) SetVal(val []XMessage, start string, deletedIDs []string) {
 	cmd.val = val
 	cmd.start = start
+	cmd.deletedIDs = deletedIDs
 }
 
-func (cmd *XAutoClaimCmd) Val() (messages []XMessage, start string) {
-	return cmd.val, cmd.start
+func (cmd *XAutoClaimCmd) Val() (messages []XMessage, start string, deletedIDs []string) {
+	return cmd.val, cmd.start, cmd.deletedIDs
 }
 
-func (cmd *XAutoClaimCmd) Result() (messages []XMessage, start string, err error) {
-	return cmd.val, cmd.start, cmd.err
+func (cmd *XAutoClaimCmd) Result() (messages []XMessage, start string, deletedIDs []string, err error) {
+	return cmd.val, cmd.start, cmd.deletedIDs, cmd.err
 }
 
 func (cmd *XAutoClaimCmd) String() string {
@@ -2667,8 +2670,19 @@ func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 
-	if n >= 3 {
-		if err := rd.DiscardNext(); err != nil {
+	if n < 3 {
+		return nil
+	}
+
+	nn, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.deletedIDs = make([]string, nn)
+	for i := 0; i < nn; i++ {
+		cmd.deletedIDs[i], err = rd.ReadString()
+		if err != nil {
 			return err
 		}
 	}
@@ -8020,11 +8034,11 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}
 		case CmdTypeXAutoClaim:
 			if xAutoClaimCmd, ok := cmd.(interface {
-				Val() ([]XMessage, string)
+				Val() ([]XMessage, string, []string)
 				Err() error
 			}); ok {
-				messages, start := xAutoClaimCmd.Val()
-				return CmdTypeXAutoClaimValue{messages: messages, start: start}, xAutoClaimCmd.Err()
+				messages, start, deletedIDs := xAutoClaimCmd.Val()
+				return CmdTypeXAutoClaimValue{messages: messages, start: start, deletedIDs: deletedIDs}, xAutoClaimCmd.Err()
 			}
 		case CmdTypeXAutoClaimJustID:
 			if xAutoClaimJustIDCmd, ok := cmd.(interface {

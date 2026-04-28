@@ -665,7 +665,7 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	case CmdTypeXAutoClaim:
 		if c, ok := cmd.(*XAutoClaimCmd); ok {
 			if v, ok := value.(CmdTypeXAutoClaimValue); ok {
-				c.SetVal(v.messages, v.start)
+				c.SetVal(v.messages, v.start, v.deletedIDs)
 			}
 		}
 	case CmdTypeXAutoClaimJustID:

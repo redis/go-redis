@@ -856,7 +856,7 @@ func ExampleClient_raceitaly() {
 	// STEP_END
 
 	// STEP_START xautoclaim
-	res30, res30a, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+	res30, res30a, res30b, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   "race:italy",
 		Group:    "italy_riders",
 		Consumer: "Alice",
@@ -870,10 +870,11 @@ func ExampleClient_raceitaly() {
 
 	fmt.Println(res30)  // >>> [{1692632647899-0 map[rider:Royce] 0 0}]
 	fmt.Println(res30a) // >>> 1692632662819-0
+	fmt.Println(res30b) // >>> []
 	// STEP_END
 
 	// STEP_START xautoclaim_cursor
-	res31, res31a, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+	res31, res31a, res31b, err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
 		Stream:   "race:italy",
 		Group:    "italy_riders",
 		Consumer: "Lora",
@@ -887,6 +888,7 @@ func ExampleClient_raceitaly() {
 
 	fmt.Println(res31)  // >>> []
 	fmt.Println(res31a) // >>> 0-0
+	fmt.Println(res31b) // >>> []
 	// STEP_END
 
 	// STEP_START xinfo
