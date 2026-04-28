@@ -2706,10 +2706,16 @@ func (cmd *XAutoClaimCmd) Clone() Cmder {
 			}
 		}
 	}
+	var deletedIDs []string
+	if cmd.deletedIDs != nil {
+		deletedIDs = make([]string, len(cmd.deletedIDs))
+		copy(deletedIDs, cmd.deletedIDs)
+	}
 	return &XAutoClaimCmd{
-		baseCmd: cmd.cloneBaseCmd(),
-		start:   cmd.start,
-		val:     val,
+		baseCmd:    cmd.cloneBaseCmd(),
+		start:      cmd.start,
+		val:        val,
+		deletedIDs: deletedIDs,
 	}
 }
 
