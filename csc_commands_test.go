@@ -83,19 +83,19 @@ func TestIsCacheable_EmptyArgs(t *testing.T) {
 
 func TestBuildCacheKey_SimpleGet(t *testing.T) {
 	cmd := makeCmd("GET", "foo")
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key")
 	}
 	// Same command must produce identical keys.
-	if key2 := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
+	if key2, _ := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
 		t.Errorf("identical commands produced different keys: %q vs %q", key, key2)
 	}
 }
 
 func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("GET", "foo"))
-	k2 := buildCacheKey(makeCmd("GET", "bar"))
+	k1, _ := buildCacheKey(makeCmd("GET", "foo"))
+	k2, _ := buildCacheKey(makeCmd("GET", "bar"))
 	if k1 == k2 {
 		t.Error("different keys must produce different cache keys")
 	}
@@ -103,8 +103,8 @@ func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
 
 func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 	// "a|b" as one arg vs "a" and "b" as two args must differ.
-	k1 := buildCacheKey(makeCmd("GET", "a|b"))
-	k2 := buildCacheKey(makeCmd("GET", "a", "b"))
+	k1, _ := buildCacheKey(makeCmd("GET", "a|b"))
+	k2, _ := buildCacheKey(makeCmd("GET", "a", "b"))
 	if k1 == k2 {
 		t.Error("length-prefixing should prevent separator collision")
 	}
@@ -112,15 +112,15 @@ func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 
 func TestBuildCacheKey_BinaryData(t *testing.T) {
 	cmd := makeCmd("GET", []byte{0x00, 0x01, 0xff})
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key for binary argument")
 	}
 }
 
 func TestBuildCacheKey_MultiKey(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("MGET", "a", "b"))
-	k2 := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
+	k1, _ := buildCacheKey(makeCmd("MGET", "a", "b"))
+	k2, _ := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
 	if k1 == k2 {
 		t.Error("different arg counts must produce different cache keys")
 	}
@@ -128,8 +128,8 @@ func TestBuildCacheKey_MultiKey(t *testing.T) {
 
 func TestBuildCacheKey_EmptyArgs(t *testing.T) {
 	cmd := makeCmd()
-	if key := buildCacheKey(cmd); key != "" {
-		t.Errorf("expected empty cache key for no-args command, got %q", key)
+	if key, ok := buildCacheKey(cmd); ok || key != "" {
+		t.Errorf("expected empty cache key for no-args command, got %q (ok=%v)", key, ok)
 	}
 }
 

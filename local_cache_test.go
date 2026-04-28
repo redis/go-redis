@@ -73,12 +73,47 @@ func TestLocalCache_Flush(t *testing.T) {
 		t.Fatal("Reserve should create in-progress entry")
 	}
 
+	// Flush preserves IN_PROGRESS placeholders: their pending reply, read
+	// from the same TCP stream as the invalidation, is post-invalidation.
 	removed := cache.Flush()
-	if removed != 3 {
-		t.Fatalf("Flush removed mismatch: got %d want %d", removed, 3)
+	if removed != 2 {
+		t.Fatalf("Flush removed mismatch: got %d want %d", removed, 2)
 	}
-	if cache.Len() != 0 {
-		t.Fatalf("Len after Flush mismatch: got %d want %d", cache.Len(), 0)
+	if cache.Len() != 1 {
+		t.Fatalf("Len after Flush mismatch: got %d want %d", cache.Len(), 1)
+	}
+
+	if !cache.Fulfill("get:c", token, []byte("3")) {
+		t.Fatal("Fulfill should succeed on preserved placeholder")
+	}
+	val, ok := cache.Get(context.Background(), "get:c")
+	if !ok || string(val) != "3" {
+		t.Fatalf("Get after Fulfill mismatch: got %q ok=%v", string(val), ok)
+	}
+}
+
+func TestLocalCache_DeleteByRedisKey_PreservesInProgress(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache.Set("get:a", []string{"shared"}, []byte("1"))
+	token, shouldFetch := cache.Reserve("get:b", []string{"shared"})
+	if !shouldFetch || token == 0 {
+		t.Fatal("Reserve should create in-progress entry")
+	}
+
+	removed := cache.DeleteByRedisKey("shared")
+	if removed != 1 {
+		t.Fatalf("DeleteByRedisKey removed mismatch: got %d want %d", removed, 1)
+	}
+	if _, ok := cache.Get(context.Background(), "get:a"); ok {
+		t.Fatal("valid entry should be removed")
+	}
+
+	if !cache.Fulfill("get:b", token, []byte("2")) {
+		t.Fatal("Fulfill should succeed on preserved placeholder")
+	}
+	val, ok := cache.Get(context.Background(), "get:b")
+	if !ok || string(val) != "2" {
+		t.Fatalf("Get after Fulfill mismatch: got %q ok=%v", string(val), ok)
 	}
 }
 

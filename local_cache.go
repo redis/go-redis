@@ -298,8 +298,19 @@ func (c *localCache) DeleteByRedisKey(redisKey string) int {
 		return 0
 	}
 
-	removed := 0
+	// IN_PROGRESS placeholders are preserved: their pending reply, read from
+	// the same TCP stream as this invalidation, will reflect post-invalidation
+	// server state, so the fetch remains valid.
+	toRemove := make([]string, 0, len(cacheKeys))
 	for cacheKey := range cacheKeys {
+		if entry, exists := c.entries[cacheKey]; exists && entry.State == CacheEntryInProgress {
+			continue
+		}
+		toRemove = append(toRemove, cacheKey)
+	}
+
+	removed := 0
+	for _, cacheKey := range toRemove {
 		if c.removeEntryLocked(cacheKey) {
 			removed++
 		}
@@ -330,14 +341,17 @@ func (c *localCache) Flush() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	removed := len(c.entries)
-	for _, entry := range c.entries {
-		c.closeWaitersLocked(entry)
+	// IN_PROGRESS placeholders survive Flush for the same reason as in
+	// DeleteByRedisKey: the in-flight reply is post-invalidation.
+	removed := 0
+	for cacheKey, entry := range c.entries {
+		if entry.State == CacheEntryInProgress {
+			continue
+		}
+		if c.removeEntryLocked(cacheKey) {
+			removed++
+		}
 	}
-	c.entries = make(map[string]*CacheEntry)
-	c.byRedisKey = make(map[string]map[string]struct{})
-	c.lru.Init()
-	c.usedBytes = 0
 	return removed
 }
 

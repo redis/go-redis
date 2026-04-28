@@ -312,6 +312,18 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// ClientSideCacheConfig enables client-side caching when non-nil.
+	// Requires Protocol: 3 (RESP3) so that invalidation messages are delivered
+	// as out-of-band push notifications. If ClientSideCache is also set, it
+	// takes precedence over this config.
+	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCache is an explicit Cache implementation used for client-side
+	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// advanced users that want to share a cache across clients or supply a
+	// custom implementation.
+	ClientSideCache Cache
 }
 
 func (opt *Options) init() {

@@ -371,6 +371,68 @@ var _ = Describe("Commands", func() {
 
 		})
 
+		It("should ClientTracking ON/OFF", func() {
+			conn := client.Conn()
+			defer conn.Close()
+
+			status, err := conn.ClientTrackingOn(ctx, nil).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			info, err := conn.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+
+			status, err = conn.ClientTrackingOff(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			info, err = conn.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Flags & redis.ClientTracking).To(BeZero())
+		})
+
+		It("should ClientTracking with BCAST and NOLOOP", func() {
+			conn := client.Conn()
+			defer conn.Close()
+
+			status, err := conn.ClientTracking(ctx, true, &redis.ClientTrackingOptions{
+				Bcast:    true,
+				Prefixes: []string{"cache:"},
+				NoLoop:   true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal("OK"))
+
+			info, err := conn.ClientInfo(ctx).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+			Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
+			// Redis does not expose the NOLOOP flag in CLIENT INFO; it is only
+			// observable via CLIENT TRACKINGINFO.
+
+			Expect(conn.ClientTrackingOff(ctx).Err()).NotTo(HaveOccurred())
+		})
+
+		It("should reject invalid ClientTracking option combinations", func() {
+			err := client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+				OptIn:  true,
+				OptOut: true,
+			}).Err()
+			Expect(err).To(MatchError(ContainSubstring("OPTIN and OPTOUT")))
+
+			err = client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+				Bcast: true,
+				OptIn: true,
+			}).Err()
+			Expect(err).To(MatchError(ContainSubstring("BCAST cannot be combined")))
+
+			err = client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+				Prefixes: []string{"k:"},
+			}).Err()
+			Expect(err).To(MatchError(ContainSubstring("PREFIX requires BCAST")))
+		})
+
 		It("should ConfigGet", func() {
 			val, err := client.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())
