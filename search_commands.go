@@ -3,6 +3,8 @@ package redis
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -256,22 +258,42 @@ type FTAggregateWithCursor struct {
 	MaxIdle int
 }
 
+// FTAggregateSortByStep represents a SORTBY operation with optional MAX.
+// Used inside FTAggregateStep to place SORTBY at an arbitrary position in
+// the aggregation pipeline.
+type FTAggregateSortByStep struct {
+	Fields []FTAggregateSortBy
+	Max    int // 0 means no MAX
+}
+
+// FTAggregateStep represents a single operation in the aggregation pipeline.
+// LOAD, APPLY, SORTBY and GROUPBY can all appear multiple times in any order.
+// Exactly one of the fields should be set per step.
+type FTAggregateStep struct {
+	Load    *FTAggregateLoad
+	Apply   *FTAggregateApply
+	GroupBy *FTAggregateGroupBy
+	SortBy  *FTAggregateSortByStep
+}
+
 type FTAggregateOptions struct {
-	Verbatim  bool
-	LoadAll   bool
-	Load      []FTAggregateLoad
-	Timeout   int
-	GroupBy   []FTAggregateGroupBy
-	SortBy    []FTAggregateSortBy
-	SortByMax int
+	Verbatim bool
+	LoadAll  bool
+	Timeout  int
 	// Scorer is used to set scoring function, if not set passed, a default will be used.
 	// The default scorer depends on the Redis version:
 	// - `BM25` for Redis >= 8
 	// - `TFIDF` for Redis < 8
 	Scorer string
 	// AddScores is available in Redis CE 8
-	AddScores         bool
-	Apply             []FTAggregateApply
+	AddScores bool
+
+	// Steps is the ordered sequence of aggregation pipeline operations.
+	// It can contain LOAD, APPLY, GROUPBY and SORTBY in any order, multiple times.
+	// Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy
+	// and SortByMax fields: doing so returns an error.
+	Steps []FTAggregateStep
+
 	LimitOffset       int
 	Limit             int
 	Filter            string
@@ -280,6 +302,17 @@ type FTAggregateOptions struct {
 	Params            map[string]interface{}
 	// Dialect 1,3 and 4 are deprecated since redis 8.0
 	DialectVersion int
+
+	// Deprecated: Use Steps instead.
+	Load []FTAggregateLoad
+	// Deprecated: Use Steps instead.
+	GroupBy []FTAggregateGroupBy
+	// Deprecated: Use Steps instead.
+	SortBy []FTAggregateSortBy
+	// Deprecated: Use Steps instead.
+	SortByMax int
+	// Deprecated: Use Steps instead.
+	Apply []FTAggregateApply
 }
 
 type FTSearchFilter struct {
@@ -615,9 +648,112 @@ func (c cmdable) FTAggregate(ctx context.Context, index string, query string) *M
 	return cmd
 }
 
+// validateFTAggregateOptions validates mutually exclusive combinations of
+// FTAggregateOptions fields before any command arguments are constructed.
+func validateFTAggregateOptions(options *FTAggregateOptions) error {
+	if len(options.Steps) > 0 {
+		if options.Load != nil || options.Apply != nil || options.GroupBy != nil ||
+			options.SortBy != nil || options.SortByMax != 0 {
+			return fmt.Errorf("FT.AGGREGATE: Steps cannot be combined with the deprecated Load, Apply, GroupBy, SortBy and SortByMax fields")
+		}
+		if options.LoadAll {
+			for _, step := range options.Steps {
+				if step.Load != nil {
+					return fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+				}
+			}
+		}
+	}
+	if options.LoadAll && options.Load != nil {
+		return fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
+	}
+	return nil
+}
+
+// appendFTAggregateStep appends the Redis command arguments for a single
+// aggregation pipeline step. Each step must set exactly one of Load, Apply,
+// GroupBy or SortBy.
+func appendFTAggregateStep(args []interface{}, step FTAggregateStep) ([]interface{}, error) {
+	set := 0
+	if step.Load != nil {
+		set++
+	}
+	if step.Apply != nil {
+		set++
+	}
+	if step.GroupBy != nil {
+		set++
+	}
+	if step.SortBy != nil {
+		set++
+	}
+	if set != 1 {
+		return args, fmt.Errorf("FT.AGGREGATE: each step must set exactly one of Load, Apply, GroupBy, SortBy (got %d)", set)
+	}
+
+	switch {
+	case step.Load != nil:
+		args = append(args, "LOAD")
+		countIdx := len(args)
+		args = append(args, 0)
+		count := 0
+		args = append(args, step.Load.Field)
+		count++
+		if step.Load.As != "" {
+			args = append(args, "AS", step.Load.As)
+			count += 2
+		}
+		args[countIdx] = count
+	case step.Apply != nil:
+		args = append(args, "APPLY", step.Apply.Field)
+		if step.Apply.As != "" {
+			args = append(args, "AS", step.Apply.As)
+		}
+	case step.GroupBy != nil:
+		args = append(args, "GROUPBY", len(step.GroupBy.Fields))
+		args = append(args, step.GroupBy.Fields...)
+		for _, reducer := range step.GroupBy.Reduce {
+			args = append(args, "REDUCE", reducer.Reducer.String())
+			if reducer.Args != nil {
+				args = append(args, len(reducer.Args))
+				args = append(args, reducer.Args...)
+			} else {
+				args = append(args, 0)
+			}
+			if reducer.As != "" {
+				args = append(args, "AS", reducer.As)
+			}
+		}
+	case step.SortBy != nil:
+		args = append(args, "SORTBY")
+		sortByOptions := []interface{}{}
+		for _, sortBy := range step.SortBy.Fields {
+			if sortBy.Asc && sortBy.Desc {
+				return args, fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive")
+			}
+			sortByOptions = append(sortByOptions, sortBy.FieldName)
+			if sortBy.Asc {
+				sortByOptions = append(sortByOptions, "ASC")
+			}
+			if sortBy.Desc {
+				sortByOptions = append(sortByOptions, "DESC")
+			}
+		}
+		args = append(args, len(sortByOptions))
+		args = append(args, sortByOptions...)
+		if step.SortBy.Max > 0 {
+			args = append(args, "MAX", step.SortBy.Max)
+		}
+	}
+	return args, nil
+}
+
 func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery, error) {
 	queryArgs := []interface{}{query}
 	if options != nil {
+		if err := validateFTAggregateOptions(options); err != nil {
+			return nil, err
+		}
 		if options.Verbatim {
 			queryArgs = append(queryArgs, "VERBATIM")
 		}
@@ -630,13 +766,10 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 			queryArgs = append(queryArgs, "ADDSCORES")
 		}
 
-		if options.LoadAll && options.Load != nil {
-			return nil, fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive")
-		}
 		if options.LoadAll {
 			queryArgs = append(queryArgs, "LOAD", "*")
 		}
-		if options.Load != nil {
+		if len(options.Steps) == 0 && options.Load != nil {
 			queryArgs = append(queryArgs, "LOAD", len(options.Load))
 			index, count := len(queryArgs)-1, 0
 			for _, load := range options.Load {
@@ -654,53 +787,63 @@ func FTAggregateQuery(query string, options *FTAggregateOptions) (AggregateQuery
 			queryArgs = append(queryArgs, "TIMEOUT", options.Timeout)
 		}
 
-		for _, apply := range options.Apply {
-			queryArgs = append(queryArgs, "APPLY", apply.Field)
-			if apply.As != "" {
-				queryArgs = append(queryArgs, "AS", apply.As)
+		if len(options.Steps) > 0 {
+			for _, step := range options.Steps {
+				var err error
+				queryArgs, err = appendFTAggregateStep(queryArgs, step)
+				if err != nil {
+					return nil, err
+				}
 			}
-		}
+		} else {
+			for _, apply := range options.Apply {
+				queryArgs = append(queryArgs, "APPLY", apply.Field)
+				if apply.As != "" {
+					queryArgs = append(queryArgs, "AS", apply.As)
+				}
+			}
 
-		if options.GroupBy != nil {
-			for _, groupBy := range options.GroupBy {
-				queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
-				queryArgs = append(queryArgs, groupBy.Fields...)
+			if options.GroupBy != nil {
+				for _, groupBy := range options.GroupBy {
+					queryArgs = append(queryArgs, "GROUPBY", len(groupBy.Fields))
+					queryArgs = append(queryArgs, groupBy.Fields...)
 
-				for _, reducer := range groupBy.Reduce {
-					queryArgs = append(queryArgs, "REDUCE")
-					queryArgs = append(queryArgs, reducer.Reducer.String())
-					if reducer.Args != nil {
-						queryArgs = append(queryArgs, len(reducer.Args))
-						queryArgs = append(queryArgs, reducer.Args...)
-					} else {
-						queryArgs = append(queryArgs, 0)
-					}
-					if reducer.As != "" {
-						queryArgs = append(queryArgs, "AS", reducer.As)
+					for _, reducer := range groupBy.Reduce {
+						queryArgs = append(queryArgs, "REDUCE")
+						queryArgs = append(queryArgs, reducer.Reducer.String())
+						if reducer.Args != nil {
+							queryArgs = append(queryArgs, len(reducer.Args))
+							queryArgs = append(queryArgs, reducer.Args...)
+						} else {
+							queryArgs = append(queryArgs, 0)
+						}
+						if reducer.As != "" {
+							queryArgs = append(queryArgs, "AS", reducer.As)
+						}
 					}
 				}
 			}
-		}
-		if options.SortBy != nil {
-			queryArgs = append(queryArgs, "SORTBY")
-			sortByOptions := []interface{}{}
-			for _, sortBy := range options.SortBy {
-				sortByOptions = append(sortByOptions, sortBy.FieldName)
-				if sortBy.Asc && sortBy.Desc {
-					return nil, fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive")
+			if options.SortBy != nil {
+				queryArgs = append(queryArgs, "SORTBY")
+				sortByOptions := []interface{}{}
+				for _, sortBy := range options.SortBy {
+					sortByOptions = append(sortByOptions, sortBy.FieldName)
+					if sortBy.Asc && sortBy.Desc {
+						return nil, fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive")
+					}
+					if sortBy.Asc {
+						sortByOptions = append(sortByOptions, "ASC")
+					}
+					if sortBy.Desc {
+						sortByOptions = append(sortByOptions, "DESC")
+					}
 				}
-				if sortBy.Asc {
-					sortByOptions = append(sortByOptions, "ASC")
-				}
-				if sortBy.Desc {
-					sortByOptions = append(sortByOptions, "DESC")
-				}
+				queryArgs = append(queryArgs, len(sortByOptions))
+				queryArgs = append(queryArgs, sortByOptions...)
 			}
-			queryArgs = append(queryArgs, len(sortByOptions))
-			queryArgs = append(queryArgs, sortByOptions...)
-		}
-		if options.SortByMax > 0 {
-			queryArgs = append(queryArgs, "MAX", options.SortByMax)
+			if options.SortByMax > 0 {
+				queryArgs = append(queryArgs, "MAX", options.SortByMax)
+			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
 			queryArgs = append(queryArgs, "LIMIT", options.LimitOffset, options.Limit)
@@ -850,6 +993,11 @@ func (cmd *AggregateCmd) Clone() Cmder {
 func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd {
 	args := []interface{}{"FT.AGGREGATE", index, query}
 	if options != nil {
+		if err := validateFTAggregateOptions(options); err != nil {
+			cmd := NewAggregateCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
 		if options.Verbatim {
 			args = append(args, "VERBATIM")
 		}
@@ -859,15 +1007,10 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.AddScores {
 			args = append(args, "ADDSCORES")
 		}
-		if options.LoadAll && options.Load != nil {
-			cmd := NewAggregateCmd(ctx, args...)
-			cmd.SetErr(fmt.Errorf("FT.AGGREGATE: LOADALL and LOAD are mutually exclusive"))
-			return cmd
-		}
 		if options.LoadAll {
 			args = append(args, "LOAD", "*")
 		}
-		if options.Load != nil {
+		if len(options.Steps) == 0 && options.Load != nil {
 			args = append(args, "LOAD", len(options.Load))
 			index, count := len(args)-1, 0
 			for _, load := range options.Load {
@@ -883,54 +1026,66 @@ func (c cmdable) FTAggregateWithArgs(ctx context.Context, index string, query st
 		if options.Timeout > 0 {
 			args = append(args, "TIMEOUT", options.Timeout)
 		}
-		for _, apply := range options.Apply {
-			args = append(args, "APPLY", apply.Field)
-			if apply.As != "" {
-				args = append(args, "AS", apply.As)
-			}
-		}
-		if options.GroupBy != nil {
-			for _, groupBy := range options.GroupBy {
-				args = append(args, "GROUPBY", len(groupBy.Fields))
-				args = append(args, groupBy.Fields...)
-
-				for _, reducer := range groupBy.Reduce {
-					args = append(args, "REDUCE")
-					args = append(args, reducer.Reducer.String())
-					if reducer.Args != nil {
-						args = append(args, len(reducer.Args))
-						args = append(args, reducer.Args...)
-					} else {
-						args = append(args, 0)
-					}
-					if reducer.As != "" {
-						args = append(args, "AS", reducer.As)
-					}
-				}
-			}
-		}
-		if options.SortBy != nil {
-			args = append(args, "SORTBY")
-			sortByOptions := []interface{}{}
-			for _, sortBy := range options.SortBy {
-				sortByOptions = append(sortByOptions, sortBy.FieldName)
-				if sortBy.Asc && sortBy.Desc {
+		if len(options.Steps) > 0 {
+			for _, step := range options.Steps {
+				var err error
+				args, err = appendFTAggregateStep(args, step)
+				if err != nil {
 					cmd := NewAggregateCmd(ctx, args...)
-					cmd.SetErr(fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive"))
+					cmd.SetErr(err)
 					return cmd
 				}
-				if sortBy.Asc {
-					sortByOptions = append(sortByOptions, "ASC")
-				}
-				if sortBy.Desc {
-					sortByOptions = append(sortByOptions, "DESC")
+			}
+		} else {
+			for _, apply := range options.Apply {
+				args = append(args, "APPLY", apply.Field)
+				if apply.As != "" {
+					args = append(args, "AS", apply.As)
 				}
 			}
-			args = append(args, len(sortByOptions))
-			args = append(args, sortByOptions...)
-		}
-		if options.SortByMax > 0 {
-			args = append(args, "MAX", options.SortByMax)
+			if options.GroupBy != nil {
+				for _, groupBy := range options.GroupBy {
+					args = append(args, "GROUPBY", len(groupBy.Fields))
+					args = append(args, groupBy.Fields...)
+
+					for _, reducer := range groupBy.Reduce {
+						args = append(args, "REDUCE")
+						args = append(args, reducer.Reducer.String())
+						if reducer.Args != nil {
+							args = append(args, len(reducer.Args))
+							args = append(args, reducer.Args...)
+						} else {
+							args = append(args, 0)
+						}
+						if reducer.As != "" {
+							args = append(args, "AS", reducer.As)
+						}
+					}
+				}
+			}
+			if options.SortBy != nil {
+				args = append(args, "SORTBY")
+				sortByOptions := []interface{}{}
+				for _, sortBy := range options.SortBy {
+					sortByOptions = append(sortByOptions, sortBy.FieldName)
+					if sortBy.Asc && sortBy.Desc {
+						cmd := NewAggregateCmd(ctx, args...)
+						cmd.SetErr(fmt.Errorf("FT.AGGREGATE: ASC and DESC are mutually exclusive"))
+						return cmd
+					}
+					if sortBy.Asc {
+						sortByOptions = append(sortByOptions, "ASC")
+					}
+					if sortBy.Desc {
+						sortByOptions = append(sortByOptions, "DESC")
+					}
+				}
+				args = append(args, len(sortByOptions))
+				args = append(args, sortByOptions...)
+			}
+			if options.SortByMax > 0 {
+				args = append(args, "MAX", options.SortByMax)
+			}
 		}
 		if options.LimitOffset >= 0 && options.Limit > 0 {
 			args = append(args, "LIMIT", options.LimitOffset, options.Limit)
@@ -1728,26 +1883,19 @@ func (cmd *FTInfoCmd) Clone() Cmder {
 	}
 	// Clone slices and maps
 	if cmd.val.Attributes != nil {
-		val.Attributes = make([]FTAttribute, len(cmd.val.Attributes))
-		copy(val.Attributes, cmd.val.Attributes)
+		val.Attributes = slices.Clone(cmd.val.Attributes)
 	}
 	if cmd.val.DialectStats != nil {
-		val.DialectStats = make(map[string]int, len(cmd.val.DialectStats))
-		for k, v := range cmd.val.DialectStats {
-			val.DialectStats[k] = v
-		}
+		val.DialectStats = maps.Clone(cmd.val.DialectStats)
 	}
 	if cmd.val.FieldStatistics != nil {
-		val.FieldStatistics = make([]FieldStatistic, len(cmd.val.FieldStatistics))
-		copy(val.FieldStatistics, cmd.val.FieldStatistics)
+		val.FieldStatistics = slices.Clone(cmd.val.FieldStatistics)
 	}
 	if cmd.val.IndexOptions != nil {
-		val.IndexOptions = make([]string, len(cmd.val.IndexOptions))
-		copy(val.IndexOptions, cmd.val.IndexOptions)
+		val.IndexOptions = slices.Clone(cmd.val.IndexOptions)
 	}
 	if cmd.val.IndexDefinition.Prefixes != nil {
-		val.IndexDefinition.Prefixes = make([]string, len(cmd.val.IndexDefinition.Prefixes))
-		copy(val.IndexDefinition.Prefixes, cmd.val.IndexDefinition.Prefixes)
+		val.IndexDefinition.Prefixes = slices.Clone(cmd.val.IndexDefinition.Prefixes)
 	}
 	return &FTInfoCmd{
 		baseCmd: cmd.cloneBaseCmd(),
@@ -1918,8 +2066,7 @@ func (cmd *FTSpellCheckCmd) Clone() Cmder {
 				Term: result.Term,
 			}
 			if result.Suggestions != nil {
-				val[i].Suggestions = make([]SpellCheckSuggestion, len(result.Suggestions))
-				copy(val[i].Suggestions, result.Suggestions)
+				val[i].Suggestions = slices.Clone(result.Suggestions)
 			}
 		}
 	}
@@ -2115,34 +2262,25 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 		}
 		// Clone slices and maps
 		if cmd.options.Filters != nil {
-			options.Filters = make([]FTSearchFilter, len(cmd.options.Filters))
-			copy(options.Filters, cmd.options.Filters)
+			options.Filters = slices.Clone(cmd.options.Filters)
 		}
 		if cmd.options.GeoFilter != nil {
-			options.GeoFilter = make([]FTSearchGeoFilter, len(cmd.options.GeoFilter))
-			copy(options.GeoFilter, cmd.options.GeoFilter)
+			options.GeoFilter = slices.Clone(cmd.options.GeoFilter)
 		}
 		if cmd.options.InKeys != nil {
-			options.InKeys = make([]interface{}, len(cmd.options.InKeys))
-			copy(options.InKeys, cmd.options.InKeys)
+			options.InKeys = slices.Clone(cmd.options.InKeys)
 		}
 		if cmd.options.InFields != nil {
-			options.InFields = make([]interface{}, len(cmd.options.InFields))
-			copy(options.InFields, cmd.options.InFields)
+			options.InFields = slices.Clone(cmd.options.InFields)
 		}
 		if cmd.options.Return != nil {
-			options.Return = make([]FTSearchReturn, len(cmd.options.Return))
-			copy(options.Return, cmd.options.Return)
+			options.Return = slices.Clone(cmd.options.Return)
 		}
 		if cmd.options.SortBy != nil {
-			options.SortBy = make([]FTSearchSortBy, len(cmd.options.SortBy))
-			copy(options.SortBy, cmd.options.SortBy)
+			options.SortBy = slices.Clone(cmd.options.SortBy)
 		}
 		if cmd.options.Params != nil {
-			options.Params = make(map[string]interface{}, len(cmd.options.Params))
-			for k, v := range cmd.options.Params {
-				options.Params[k] = v
-			}
+			options.Params = maps.Clone(cmd.options.Params)
 		}
 	}
 	return &FTSearchCmd{
@@ -2368,8 +2506,7 @@ func (cmd *FTHybridCmd) Clone() Cmder {
 		}
 	}
 	if cmd.val.Warnings != nil {
-		val.Warnings = make([]string, len(cmd.val.Warnings))
-		copy(val.Warnings, cmd.val.Warnings)
+		val.Warnings = slices.Clone(cmd.val.Warnings)
 	}
 
 	var cursorVal *FTHybridCursorResult

@@ -26,7 +26,10 @@ type VectorSetCmdable interface {
 	VSimWithScores(ctx context.Context, key string, val Vector) *VectorScoreSliceCmd
 	VSimWithArgs(ctx context.Context, key string, val Vector, args *VSimArgs) *StringSliceCmd
 	VSimWithArgsWithScores(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorScoreSliceCmd
+	VSimWithArgsWithAttribs(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorAttribSliceCmd
+	VSimWithArgsWithScoresWithAttribs(ctx context.Context, key string, val Vector, args *VSimArgs) *VectorScoreAttribSliceCmd
 	VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd
+	VIsMember(ctx context.Context, key, element string) *BoolCmd
 }
 
 type Vector interface {
@@ -77,6 +80,17 @@ var _ Vector = (*VectorRef)(nil)
 type VectorScore struct {
 	Name  string
 	Score float64
+}
+
+type VectorAttrib struct {
+	Name    string
+	Attribs *string
+}
+
+type VectorScoreAttrib struct {
+	Name    string
+	Score   float64
+	Attribs *string
 }
 
 // `VADD key (FP32 | VALUES num) vector element`
@@ -311,7 +325,7 @@ func (v VSimArgs) appendArgs(args []any) []any {
 		args = append(args, "nothread")
 	}
 	if v.Epsilon > 0 {
-		args = append(args, "Epsilon", v.Epsilon)
+		args = append(args, "epsilon", v.Epsilon)
 	}
 	return args
 }
@@ -347,12 +361,55 @@ func (c cmdable) VSimWithArgsWithScores(ctx context.Context, key string, val Vec
 	return cmd
 }
 
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHATTRIBS] [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// WITHATTRIBS is only available in Redis v8.2.0+
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithArgsWithAttribs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorAttribSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	args = append(args, "withattribs")
+	args = simArgs.appendArgs(args)
+	cmd := NewVectorAttribSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VSIM key (ELE | FP32 | VALUES num) (vector | element) [WITHSCORES] [WITHATTRIBS] [COUNT num] [EPSILON delta]
+// [EF search-exploration-factor] [FILTER expression] [FILTER-EF max-filtering-effort] [TRUTH] [NOTHREAD]`
+// WITHATTRIBS is only available in Redis v8.2.0+
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VSimWithArgsWithScoresWithAttribs(ctx context.Context, key string, val Vector, simArgs *VSimArgs) *VectorScoreAttribSliceCmd {
+	if simArgs == nil {
+		simArgs = &VSimArgs{}
+	}
+	args := []any{"vsim", key}
+	args = append(args, val.Value()...)
+	args = append(args, "withscores", "withattribs")
+	args = simArgs.appendArgs(args)
+	cmd := NewVectorScoreAttribSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // `VRANGE key start end count`
 // a negative count means to return all the elements in the vector set.
 // note: the API is experimental and may be subject to change.
 func (c cmdable) VRange(ctx context.Context, key, start, end string, count int64) *StringSliceCmd {
 	args := []any{"vrange", key, start, end, count}
 	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// `VISMEMBER key element`
+// Check if an element exists in a vector set.
+// note: the API is experimental and may be subject to change.
+func (c cmdable) VIsMember(ctx context.Context, key, element string) *BoolCmd {
+	cmd := NewBoolCmd(ctx, "vismember", key, element)
 	_ = c(ctx, cmd)
 	return cmd
 }

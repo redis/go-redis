@@ -24,7 +24,7 @@ jobs:
           - "8.2.x" # Redis CE 8.2
           - "8.0.x" # Redis CE 8.0
         go-version:
-          - "1.24.x"
+          - "1.25.x"
           - oldstable
           - stable
 
@@ -47,7 +47,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.8.x"]="unstable-23321515778-debian"
+            ["8.8.x"]="8.8-m02"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
@@ -85,7 +85,7 @@ jobs:
             - "8.2.x" # Redis CE 8.2
             - "8.0.x" # Redis CE 8.0
           go-version:
-            - "1.24.x"
+            - "1.25.x"
             - oldstable
             - stable
 
@@ -100,7 +100,7 @@ jobs:
           redis-version: ${{ matrix.redis-version }}
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v6
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}

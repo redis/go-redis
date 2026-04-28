@@ -105,6 +105,12 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// Check for timeout errors (works with wrapped errors)
 	if isTimeout, hasTimeoutFlag := isTimeoutError(err); isTimeout {
 		if hasTimeoutFlag {
+			// A dial error means the TCP connection was never established and the
+			// command was never sent to the server, so retry is always safe
+			var opErr *net.OpError
+			if errors.As(err, &opErr) && opErr.Op == "dial" {
+				return true
+			}
 			return retryTimeout
 		}
 		return true
@@ -142,6 +148,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 	if strings.HasPrefix(s, "READONLY ") {
+		return true
+	}
+	if strings.Contains(s, "-READONLY You can't write against a read only replica") {
 		return true
 	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {

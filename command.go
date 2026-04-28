@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"regexp"
@@ -154,7 +155,6 @@ const (
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
 	CmdTypeHotKeys
-	CmdTypeGCRA
 )
 
 type (
@@ -216,6 +216,11 @@ type Cmder interface {
 	SetErr(error)
 	Err() error
 
+	// NoRetry returns true if the command should not be retried on failure.
+	// Commands that write directly to an io.Writer should return true since
+	// partial writes cannot be undone on retry.
+	NoRetry() bool
+
 	// GetCmdType returns the command type for fast value extraction
 	GetCmdType() CmdType
 }
@@ -235,6 +240,18 @@ func cmdsFirstErr(cmds []Cmder) error {
 		}
 	}
 	return nil
+}
+
+// cmdsContainNoRetry returns true if any command in the slice has NoRetry() == true.
+// If a pipeline contains a non-retryable command (e.g., RawWriteToCmd), the entire
+// pipeline must not be retried to prevent data corruption from partial writes.
+func cmdsContainNoRetry(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if cmd.NoRetry() {
+			return true
+		}
+	}
+	return false
 }
 
 func writeCmds(wr *proto.Writer, cmds []Cmder) error {
@@ -397,6 +414,14 @@ func (cmd *baseCmd) setReadTimeout(d time.Duration) {
 func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 	cmd.rawVal, err = rd.ReadReply()
 	return err
+}
+
+// NoRetry returns true if the command should not be retried on failure.
+// By default, commands can be retried. Commands that write directly to an
+// io.Writer (like RawWriteToCmd) should override this to return true since
+// partial writes cannot be undone on retry.
+func (cmd *baseCmd) NoRetry() bool {
+	return false
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -716,6 +741,122 @@ func (cmd *Cmd) Clone() Cmder {
 	return &Cmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawCmd returns raw RESP protocol bytes without parsing.
+type RawCmd struct {
+	baseCmd
+	val []byte
+}
+
+var _ Cmder = (*RawCmd)(nil)
+
+func NewRawCmd(ctx context.Context, args ...interface{}) *RawCmd {
+	return &RawCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+	}
+}
+
+func (cmd *RawCmd) SetVal(val []byte) {
+	cmd.val = val
+}
+
+func (cmd *RawCmd) Val() []byte {
+	return cmd.val
+}
+
+func (cmd *RawCmd) Result() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) Bytes() ([]byte, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *RawCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *RawCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.val, err = rd.ReadRawReply()
+	return err
+}
+
+func (cmd *RawCmd) Clone() Cmder {
+	var val []byte
+	if cmd.val != nil {
+		val = make([]byte, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &RawCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// RawWriteToCmd streams raw RESP protocol bytes directly to an io.Writer without intermediate allocations.
+type RawWriteToCmd struct {
+	baseCmd
+	w       io.Writer
+	written int64
+}
+
+var _ Cmder = (*RawWriteToCmd)(nil)
+
+func NewRawWriteToCmd(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	return &RawWriteToCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeGeneric,
+		},
+		w: w,
+	}
+}
+
+func (cmd *RawWriteToCmd) SetVal(written int64) {
+	cmd.written = written
+}
+
+func (cmd *RawWriteToCmd) Val() int64 {
+	return cmd.written
+}
+
+func (cmd *RawWriteToCmd) Result() (int64, error) {
+	return cmd.written, cmd.err
+}
+
+func (cmd *RawWriteToCmd) String() string {
+	return cmdString(cmd, cmd.written)
+}
+
+func (cmd *RawWriteToCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.written, err = rd.ReadRawReplyWriteTo(cmd.w)
+	return err
+}
+
+// NoRetry returns true because RawWriteToCmd writes directly to an io.Writer.
+// If a retry occurs, partial data from failed attempts would be appended to
+// the writer, causing data corruption. The caller must handle retries manually
+// if needed, using a fresh writer for each attempt.
+func (cmd *RawWriteToCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *RawWriteToCmd) Clone() Cmder {
+	return &RawWriteToCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		w:       cmd.w,
+		written: cmd.written,
 	}
 }
 
@@ -2077,10 +2218,7 @@ func (cmd *XMessageSliceCmd) Clone() Cmder {
 				ID: msg.ID,
 			}
 			if msg.Values != nil {
-				val[i].Values = make(map[string]interface{}, len(msg.Values))
-				for k, v := range msg.Values {
-					val[i].Values[k] = v
-				}
+				val[i].Values = maps.Clone(msg.Values)
 			}
 		}
 	}
@@ -2729,7 +2867,10 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 				inactive, err = rd.ReadInt()
 				cmd.val[i].Inactive = time.Duration(inactive) * time.Millisecond
 			default:
-				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 			if err != nil {
 				return err
@@ -2858,7 +2999,10 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 					group.Lag = -1
 				}
 			default:
-				return fmt.Errorf("redis: unexpected key %q in XINFO GROUPS reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -3027,7 +3171,10 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM reply", key)
+			// skip unknown fields
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3103,6 +3250,7 @@ type XInfoStreamGroup struct {
 	EntriesRead     int64
 	Lag             int64
 	PelCount        int64
+	NackedCount     uint64 // redis version 8.8, number of NACK'd messages in the group
 	Pending         []XInfoStreamGroupPending
 	Consumers       []XInfoStreamConsumer
 }
@@ -3247,7 +3395,10 @@ func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
+			// skip unknown fields
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3301,6 +3452,11 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				if err != nil {
 					return nil, err
 				}
+			case "nacked-count":
+				group.NackedCount, err = rd.ReadUint()
+				if err != nil {
+					return nil, err
+				}
 			case "pending":
 				group.Pending, err = readXInfoStreamGroupPending(rd)
 				if err != nil {
@@ -3312,7 +3468,10 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 					return nil, err
 				}
 			default:
-				return nil, fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -3437,8 +3596,10 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 					c.Pending = append(c.Pending, p)
 				}
 			default:
-				return nil, fmt.Errorf("redis: unexpected content %s "+
-					"in XINFO STREAM FULL reply", cKey)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return nil, err
+				}
 			}
 			if err != nil {
 				return nil, err
@@ -6835,9 +6996,9 @@ type ClientInfo struct {
 	Resp               int           // redis version 7.0, client RESP protocol version
 	LibName            string        // redis version 7.2, client library name
 	LibVer             string        // redis version 7.2, client library version
-	ReadEvents         int64         // redis version 8.8, number of read events
-	AvgPipelineLenSum  int64         // redis version 8.8, sum of pipeline lengths
-	AvgPipelineLenCnt  int64         // redis version 8.8, count of pipeline length samples
+	ReadEvents         uint64        // redis version 8.8, number of read events processed
+	AvgPipelineLenSum  uint64        // redis version 8.8, sum of pipeline lengths
+	AvgPipelineLenCnt  uint64        // redis version 8.8, count of pipeline operations
 }
 
 type ClientInfoCmd struct {
@@ -7019,13 +7180,13 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 		case "io-thread":
 			info.IoThread, err = strconv.Atoi(val)
 		case "read-events":
-			info.ReadEvents, err = strconv.ParseInt(val, 10, 64)
+			info.ReadEvents, err = strconv.ParseUint(val, 10, 64)
 		case "avg-pipeline-len-sum":
-			info.AvgPipelineLenSum, err = strconv.ParseInt(val, 10, 64)
+			info.AvgPipelineLenSum, err = strconv.ParseUint(val, 10, 64)
 		case "avg-pipeline-len-cnt":
-			info.AvgPipelineLenCnt, err = strconv.ParseInt(val, 10, 64)
+			info.AvgPipelineLenCnt, err = strconv.ParseUint(val, 10, 64)
 		default:
-			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
+			// skip unknown fields
 		}
 
 		if err != nil {
@@ -7064,9 +7225,6 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			OutputListLength:   cmd.val.OutputListLength,
 			OutputMemory:       cmd.val.OutputMemory,
 			TotalMemory:        cmd.val.TotalMemory,
-			TotalNetIn:         cmd.val.TotalNetIn,
-			TotalNetOut:        cmd.val.TotalNetOut,
-			TotalCmds:          cmd.val.TotalCmds,
 			IoThread:           cmd.val.IoThread,
 			Events:             cmd.val.Events,
 			LastCmd:            cmd.val.LastCmd,
@@ -7184,7 +7342,10 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 			case "timestamp-last-updated":
 				entry.TimestampLastUpdated, err = rd.ReadInt()
 			default:
-				return fmt.Errorf("redis: unexpected key %q in ACL LOG reply", key)
+				// skip unknown fields
+				if err := rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 
 			if err != nil {
@@ -7248,6 +7409,9 @@ func (cmd *ACLLogCmd) Clone() Cmder {
 						Resp:               entry.ClientInfo.Resp,
 						LibName:            entry.ClientInfo.LibName,
 						LibVer:             entry.ClientInfo.LibVer,
+						ReadEvents:         entry.ClientInfo.ReadEvents,
+						AvgPipelineLenSum:  entry.ClientInfo.AvgPipelineLenSum,
+						AvgPipelineLenCnt:  entry.ClientInfo.AvgPipelineLenCnt,
 					}
 				}
 			}
@@ -7468,13 +7632,18 @@ type VectorScoreSliceCmd struct {
 
 var _ Cmder = (*VectorScoreSliceCmd)(nil)
 
-func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+func NewVectorScoreSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
 	return &VectorScoreSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
 	}
+}
+
+// NewVectorInfoSliceCmd is an alias for NewVectorScoreSliceCmd kept for backwards compatibility.
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return NewVectorScoreSliceCmd(ctx, args...)
 }
 
 func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
@@ -7494,9 +7663,27 @@ func (cmd *VectorScoreSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	typ, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	var n int
+	if typ == proto.RespMap {
+		n, err = rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+	} else {
+		// RESP2 returns a flat array [name, score, name, score, ...]
+		n, err = rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if n%2 != 0 {
+			return fmt.Errorf("redis: VectorScoreSliceCmd expects even number of elements, got %d", n)
+		}
+		n /= 2
 	}
 
 	cmd.val = make([]VectorScore, n)
@@ -7519,6 +7706,208 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
+	v, err := rd.ReadReply()
+	if err != nil {
+		if err == proto.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+	}
+	return &s, nil
+}
+
+type VectorAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorAttrib
+}
+
+var _ Cmder = (*VectorAttribSliceCmd)(nil)
+
+func NewVectorAttribSliceCmd(ctx context.Context, args ...any) *VectorAttribSliceCmd {
+	return &VectorAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%2 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 2", n)
+	}
+	cmd.val = make([]VectorAttrib, n/2)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	return &VectorAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+type VectorScoreAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorScoreAttrib
+}
+
+var _ Cmder = (*VectorScoreAttribSliceCmd)(nil)
+
+func NewVectorScoreAttribSliceCmd(ctx context.Context, args ...any) *VectorScoreAttribSliceCmd {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorScoreAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if err := rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+			score, err := rd.ReadFloat()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%3 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 3", n)
+	}
+	cmd.val = make([]VectorScoreAttrib, n/3)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
 	}
@@ -7743,13 +8132,6 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return hotKeysCmd.Val(), hotKeysCmd.Err()
-			}
-		case CmdTypeGCRA:
-			if gcraCmd, ok := cmd.(interface {
-				Val() *GCRAResult
-				Err() error
-			}); ok {
-				return gcraCmd.Val(), gcraCmd.Err()
 			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
@@ -8048,99 +8430,4 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 
 	// If we can't get the command type, return nil
 	return nil, nil
-}
-
-//------------------------------------------------------------------------------
-
-// GCRACmd represents the result of a GCRA rate limiting command.
-type GCRACmd struct {
-	baseCmd
-
-	val *GCRAResult
-}
-
-var _ Cmder = (*GCRACmd)(nil)
-
-func NewGCRACmd(ctx context.Context, args ...interface{}) *GCRACmd {
-	return &GCRACmd{
-		baseCmd: baseCmd{
-			ctx:     ctx,
-			args:    args,
-			cmdType: CmdTypeGCRA,
-		},
-	}
-}
-
-func (cmd *GCRACmd) SetVal(val *GCRAResult) {
-	cmd.val = val
-}
-
-func (cmd *GCRACmd) Val() *GCRAResult {
-	return cmd.val
-}
-
-func (cmd *GCRACmd) Result() (*GCRAResult, error) {
-	return cmd.val, cmd.err
-}
-
-func (cmd *GCRACmd) String() string {
-	return cmdString(cmd, cmd.val)
-}
-
-func (cmd *GCRACmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadArrayLen()
-	if err != nil {
-		return err
-	}
-	if n != 5 {
-		return fmt.Errorf("redis: GCRA reply expected 5 elements, got %d", n)
-	}
-
-	cmd.val = &GCRAResult{}
-
-	// Read Limited (int64)
-	cmd.val.Limited, err = rd.ReadInt()
-	if err != nil {
-		return err
-	}
-
-	// Read MaxTokens (int64)
-	cmd.val.MaxTokens, err = rd.ReadInt()
-	if err != nil {
-		return err
-	}
-
-	// Read AvailableTokens (int64)
-	cmd.val.AvailableTokens, err = rd.ReadInt()
-	if err != nil {
-		return err
-	}
-
-	// Read RetryAfter (int64)
-	retryAfter, err := rd.ReadInt()
-	if err != nil {
-		return err
-	}
-	cmd.val.RetryAfter = retryAfter
-
-	// Read FullBurstAfter (int64)
-	fullBurstAfter, err := rd.ReadInt()
-	if err != nil {
-		return err
-	}
-	cmd.val.FullBurstAfter = fullBurstAfter
-
-	return nil
-}
-
-func (cmd *GCRACmd) Clone() Cmder {
-	var val *GCRAResult
-	if cmd.val != nil {
-		v := *cmd.val
-		val = &v
-	}
-	return &GCRACmd{
-		baseCmd: cmd.cloneBaseCmd(),
-		val:     val,
-	}
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-var _ = Describe("UniversalClient", func() {
+var _ = Describe("UniversalClient", Serial, func() {
 	var client redis.UniversalClient
 
 	AfterEach(func() {

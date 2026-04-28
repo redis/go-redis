@@ -636,14 +636,6 @@ func (s *ProxyFaultInjectorServer) injectNotification(notification string) error
 	return nil
 }
 
-// Helper function for min
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (s *ProxyFaultInjectorServer) executeFailover(action *actionState) {
 	fmt.Printf("[ProxyFI] Executing failover\n")
 
