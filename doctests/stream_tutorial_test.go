@@ -1013,7 +1013,9 @@ func ExampleClient_raceitaly() {
 	// [{1692632647899-0 map[rider:Royce] 0 0}]
 	// 1692632662819-0
 	// []
+	// []
 	// 0-0
+	// []
 	// 5
 	// {1692632639151-0 map[rider:Castilla] 0 0}
 	// [{italy_riders 3 2 1692632662819-0 3 2}]
