@@ -160,14 +160,21 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 		}
 
 		value := cloneBytes(e.value)
+		// Skip the write-lock upgrade when the entry is already the most
+		// recently used: hot keys stay at the front of the LRU list, so
+		// repeated reads of them never need to serialize on mu.Lock().
+		alreadyFront := e.lruElem != nil && c.lru.Front() == e.lruElem
 		c.mu.RUnlock()
 
-		c.mu.Lock()
-		// Touch under write lock keeps LRU metadata consistent with concurrent deletes/updates.
-		if current, exists := c.entries[cacheKey]; exists && current == e && current.state == valid {
-			c.touchEntryLocked(current)
+		if !alreadyFront {
+			c.mu.Lock()
+			// Re-check under write lock: the entry may have been deleted or
+			// replaced between the RUnlock and Lock above.
+			if current, exists := c.entries[cacheKey]; exists && current == e && current.state == valid {
+				c.touchEntryLocked(current)
+			}
+			c.mu.Unlock()
 		}
-		c.mu.Unlock()
 
 		return value, true
 	}
