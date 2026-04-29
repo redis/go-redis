@@ -296,12 +296,12 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(res).To(Equal("OK"))
 
-				// NX + FPHA returns empty result when key exists
-				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+				// NX + FPHA returns redis.Nil when key already exists
+				cmd := client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
 					Mode: "NX", FPHA: redis.FPHATypeFP32,
-				}).Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(res).To(Equal(""))
+				})
+				Expect(cmd.Err()).To(Equal(redis.Nil))
+				Expect(cmd.Val()).To(Equal(""))
 
 				// XX + FPHA succeeds when key exists
 				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
