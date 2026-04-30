@@ -1008,8 +1008,16 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
 			return addrs, nil
+		} else if !useDisconnected {
+			// No error and no replicas — valid steady state for master-only setups.
+			// Preserve the sentinel connection for master discovery and failover
+			// pub/sub monitoring. Only return early when useDisconnected is false;
+			// when true, fall through to the discovery loop which passes
+			// useDisconnected to parseReplicaAddrs (getReplicaAddrs hardcodes false).
+			return []string{}, nil
 		} else {
-			// No error and no replicas.
+			// useDisconnected=true: close sentinel so the discovery loop can call
+			// setSentinel if it finds disconnected replicas.
 			_ = c.closeSentinel()
 		}
 	}

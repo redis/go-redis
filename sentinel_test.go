@@ -853,3 +853,97 @@ var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
 		fmt.Println("Sentinel cluster is now stable")
 	})
 })
+
+// TestSentinelFailover_ReplicaAddrs_NoReplicas verifies that when a
+// sentinel-monitored master has zero replicas, the sentinel connection
+// is preserved and not torn down. Before the fix, closeSentinel() was
+// called when getReplicaAddrs returned an empty list without error,
+// causing a continuous rediscovery loop on every subsequent operation.
+func TestSentinelFailover_ReplicaAddrs_NoReplicas(t *testing.T) {
+	ctx := context.Background()
+
+	// Skip if sentinel infrastructure is not available.
+	sentinel0 := redis.NewSentinelClient(&redis.Options{Addr: sentinelAddrs[0], DialTimeout: 2 * time.Second})
+	if err := sentinel0.Ping(ctx).Err(); err != nil {
+		sentinel0.Close()
+		t.Skipf("sentinel not available at %s: %v", sentinelAddrs[0], err)
+	}
+	sentinel0.Close()
+
+	// Register a temporary master-only name pointing at the standalone Redis
+	// instance (redisPort). Unlike sentinelMasterPort which already has two
+	// replicas configured, the standalone instance has none, so Sentinel will
+	// never discover replicas via INFO REPLICATION.
+	masterOnlyName := "master-only-test"
+	masterIP := "127.0.0.1"
+	masterPort := redisPort
+	quorum := "2"
+
+	// Monitor the master-only name on all sentinels.
+	for _, addr := range sentinelAddrs {
+		sentinel := redis.NewSentinelClient(&redis.Options{Addr: addr})
+		err := sentinel.Monitor(ctx, masterOnlyName, masterIP, masterPort, quorum).Err()
+		if err != nil && !strings.Contains(err.Error(), "Duplicated") {
+			t.Fatalf("SENTINEL MONITOR on %s failed: %v", addr, err)
+		}
+		sentinel.Close()
+	}
+
+	// Clean up: remove the monitored master after the test.
+	defer func() {
+		for _, addr := range sentinelAddrs {
+			sentinel := redis.NewSentinelClient(&redis.Options{Addr: addr})
+			_ = sentinel.Remove(ctx, masterOnlyName).Err()
+			sentinel.Close()
+		}
+	}()
+
+	failover := redis.NewTestSentinelFailover(&redis.FailoverOptions{
+		MasterName:    masterOnlyName,
+		SentinelAddrs: sentinelAddrs,
+		DialTimeout:   5 * time.Second,
+		ReadTimeout:   5 * time.Second,
+	}, sentinelAddrs)
+	defer failover.Close()
+
+	// Bootstrap: perform initial master discovery so that a sentinel
+	// client is established (setSentinel is called internally).
+	addr, err := failover.MasterAddr(ctx)
+	if err != nil {
+		t.Fatalf("MasterAddr failed: %v", err)
+	}
+	if addr == "" {
+		t.Fatal("MasterAddr returned empty address")
+	}
+
+	if !failover.HasSentinel() {
+		t.Fatal("expected sentinel to be set after MasterAddr, got nil")
+	}
+
+	// Call ReplicaAddrs. With zero replicas, getReplicaAddrs returns an
+	// empty list without error. Before the fix, this called closeSentinel()
+	// which destroyed the sentinel connection and caused a rediscovery loop.
+	replicas, err := failover.ReplicaAddrs(ctx)
+	if err != nil {
+		t.Fatalf("ReplicaAddrs failed: %v", err)
+	}
+	if len(replicas) != 0 {
+		t.Fatalf("expected zero replicas for master-only setup, got %v", replicas)
+	}
+
+	if !failover.HasSentinel() {
+		t.Fatal("sentinel was closed after ReplicaAddrs returned zero replicas; " +
+			"this causes a continuous rediscovery loop on master-only setups")
+	}
+
+	// Call ReplicaAddrs a second time to confirm the sentinel stays
+	// alive across repeated calls (no degradation over time).
+	_, err = failover.ReplicaAddrs(ctx)
+	if err != nil {
+		t.Fatalf("second ReplicaAddrs call failed: %v", err)
+	}
+
+	if !failover.HasSentinel() {
+		t.Fatal("sentinel was closed after second ReplicaAddrs call")
+	}
+}
