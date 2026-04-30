@@ -47,7 +47,7 @@ runs:
         elif [[ -n "$REDIS_VERSION" ]]; then
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.8.x"]="8.8-m02"
+            ["8.8.x"]="8.8-m03"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
