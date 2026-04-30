@@ -7601,7 +7601,7 @@ var _ = Describe("Commands", func() {
 				err := client.XDel(ctx, "stream", "2-0").Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				msgs, start, ids, err := client.XAutoClaimWithDelete(ctx, xca).Result()
+				msgs, start, ids, err := client.XAutoClaimWithDeleted(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
