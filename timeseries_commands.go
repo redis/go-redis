@@ -155,7 +155,11 @@ func formatAggregationArgs(aggregator Aggregator, aggregators []Aggregator) (str
 		if aggregator == Invalid {
 			return "", 0, nil
 		}
-		return aggregator.String(), 1, nil
+		aggregationArg, err := formatAggregatorArg(aggregator)
+		if err != nil {
+			return "", 0, err
+		}
+		return aggregationArg, 1, nil
 	}
 
 	parts := make([]string, len(aggregators))
@@ -163,10 +167,22 @@ func formatAggregationArgs(aggregator Aggregator, aggregators []Aggregator) (str
 		if agg == Invalid {
 			return "", 0, fmt.Errorf("redis: invalid timeseries aggregator at index %d: Invalid (%d)", i, agg)
 		}
-		parts[i] = agg.String()
+		aggregationArg, err := formatAggregatorArg(agg)
+		if err != nil {
+			return "", 0, fmt.Errorf("redis: invalid timeseries aggregator at index %d: %d", i, agg)
+		}
+		parts[i] = aggregationArg
 	}
 
 	return strings.Join(parts, ","), len(parts), nil
+}
+
+func formatAggregatorArg(aggregator Aggregator) (string, error) {
+	aggregationArg := aggregator.String()
+	if aggregationArg == "" {
+		return "", fmt.Errorf("redis: invalid timeseries aggregator: %d", aggregator)
+	}
+	return aggregationArg, nil
 }
 
 type TSRangeOptions struct {

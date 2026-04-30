@@ -795,6 +795,18 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					BucketDuration: 20,
 				})
 				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator at index 1: Invalid (0)"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregator:     redis.Aggregator(999),
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator: 999"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Aggregator(999), redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator at index 1: 999"))
 			})
 
 			It("should TSRevRange, TSRevRangeWithArgs", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "NonRedisEnterprise"), func() {
