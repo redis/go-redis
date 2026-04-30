@@ -241,6 +241,8 @@ func createCommandByType(ctx context.Context, cmdType CmdType, args ...interface
 		return NewXPendingExtCmd(ctx, args...)
 	case CmdTypeXAutoClaim:
 		return NewXAutoClaimCmd(ctx, args...)
+	case CmdTypeXAutoClaimWithDeleted:
+		return NewXAutoClaimWithDeletedCmd(ctx, args...)
 	case CmdTypeXAutoClaimJustID:
 		return NewXAutoClaimJustIDCmd(ctx, args...)
 	case CmdTypeXInfoStreamFull:
@@ -665,6 +667,12 @@ func (c *ClusterClient) setCommandValue(cmd Cmder, value interface{}) error {
 	case CmdTypeXAutoClaim:
 		if c, ok := cmd.(*XAutoClaimCmd); ok {
 			if v, ok := value.(CmdTypeXAutoClaimValue); ok {
+				c.SetVal(v.messages, v.start)
+			}
+		}
+	case CmdTypeXAutoClaimWithDeleted:
+		if c, ok := cmd.(*XAutoClaimWithDeletedCmd); ok {
+			if v, ok := value.(CmdTypeXAutoClaimWithDeletedValue); ok {
 				c.SetVal(v.messages, v.start, v.deletedIDs)
 			}
 		}

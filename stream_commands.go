@@ -406,6 +406,13 @@ func (c cmdable) XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimC
 	return cmd
 }
 
+func (c cmdable) XAutoClaimWithDelete(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimWithDeletedCmd {
+	args := xAutoClaimArgs(ctx, a)
+	cmd := NewXAutoClaimWithDeletedCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd {
 	args := xAutoClaimArgs(ctx, a)
 	args = append(args, "justid")

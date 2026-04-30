@@ -7564,7 +7564,7 @@ var _ = Describe("Commands", func() {
 					Start:    "-",
 					Count:    2,
 				}
-				msgs, start, ids, err := client.XAutoClaim(ctx, xca).Result()
+				msgs, start, err := client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("3-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
@@ -7574,19 +7574,17 @@ var _ = Describe("Commands", func() {
 					ID:     "2-0",
 					Values: map[string]interface{}{"dos": "deux"},
 				}}))
-				Expect(ids).To(Equal([]string{}))
 
 				xca.Start = start
-				msgs, start, ids, err = client.XAutoClaim(ctx, xca).Result()
+				msgs, start, err = client.XAutoClaim(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
 					ID:     "3-0",
 					Values: map[string]interface{}{"tres": "troix"},
 				}}))
-				Expect(ids).To(Equal([]string{}))
 
-				ids, start, err = client.XAutoClaimJustID(ctx, xca).Result()
+				ids, start, err := client.XAutoClaimJustID(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(ids).To(Equal([]string{"3-0"}))
@@ -7603,7 +7601,7 @@ var _ = Describe("Commands", func() {
 				err := client.XDel(ctx, "stream", "2-0").Err()
 				Expect(err).NotTo(HaveOccurred())
 
-				msgs, start, ids, err := client.XAutoClaim(ctx, xca).Result()
+				msgs, start, ids, err := client.XAutoClaimWithDelete(ctx, xca).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(msgs).To(Equal([]redis.XMessage{{
