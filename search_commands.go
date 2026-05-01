@@ -3006,6 +3006,23 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 	return c.FTHybridWithArgs(ctx, index, options)
 }
 
+func hybridVectorBlob(v Vector) ([]byte, error) {
+	if v == nil {
+		return nil, fmt.Errorf("FT.HYBRID: vector data is required")
+	}
+
+	vectorFP32, ok := v.(*VectorFP32)
+	if !ok {
+		return nil, fmt.Errorf("FT.HYBRID: unsupported vector type %T; use VectorFP32 with encoded vector blob", v)
+	}
+
+	if len(vectorFP32.Val) == 0 {
+		return nil, fmt.Errorf("FT.HYBRID: vector blob is required")
+	}
+
+	return vectorFP32.Val, nil
+}
+
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
@@ -3032,16 +3049,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
 
-			// For FT.HYBRID, we need to send just the raw vector bytes, not the Value() format
-			// Value() returns [format, data] but FT.HYBRID expects just the blob
-			vectorValue := vectorExpr.VectorData.Value()
-			var vectorBlob interface{}
-			if len(vectorValue) >= 2 {
-				// vectorValue is [format, data, ...] - we only want the data part
-				vectorBlob = vectorValue[1]
-			} else {
-				// Fallback for unexpected format
-				vectorBlob = vectorValue
+			vectorBlob, err := hybridVectorBlob(vectorExpr.VectorData)
+			if err != nil {
+				cmd := newFTHybridCmd(ctx, options, args...)
+				cmd.SetErr(err)
+				return cmd
 			}
 
 			// If VectorParamName is provided, use PARAMS mechanism (required for Redis 8.6+)
