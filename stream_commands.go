@@ -34,6 +34,7 @@ type StreamCmdable interface {
 	XClaim(ctx context.Context, a *XClaimArgs) *XMessageSliceCmd
 	XClaimJustID(ctx context.Context, a *XClaimArgs) *StringSliceCmd
 	XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd
+	XAutoClaimWithDeleted(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimWithDeletedCmd
 	XAutoClaimJustID(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimJustIDCmd
 	XTrimMaxLen(ctx context.Context, key string, maxLen int64) *IntCmd
 	XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd
@@ -402,6 +403,13 @@ type XAutoClaimArgs struct {
 func (c cmdable) XAutoClaim(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimCmd {
 	args := xAutoClaimArgs(ctx, a)
 	cmd := NewXAutoClaimCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) XAutoClaimWithDeleted(ctx context.Context, a *XAutoClaimArgs) *XAutoClaimWithDeletedCmd {
+	args := xAutoClaimArgs(ctx, a)
+	cmd := NewXAutoClaimWithDeletedCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
