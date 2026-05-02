@@ -7410,6 +7410,81 @@ var _ = Describe("Commands", func() {
 			}))
 		})
 
+		It("should XRead with per-stream IDs", func() {
+			id, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream: "stream2",
+				ID:     "1-0",
+				Values: map[string]interface{}{"alpha": "a"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("1-0"))
+
+			id, err = client.XAdd(ctx, &redis.XAddArgs{
+				Stream: "stream2",
+				ID:     "2-0",
+				Values: map[string]interface{}{"beta": "b"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("2-0"))
+			defer client.Del(ctx, "stream2")
+
+			// Use per-stream IDs: resume "stream" from 2-0 (expect only 3-0),
+			// and "stream2" from 0 (expect 1-0 and 2-0).
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"2-0", "0"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream2",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+						{ID: "2-0", Values: map[string]interface{}{"beta": "b"}},
+					},
+				},
+			}))
+		})
+
+		It("should XRead IDs take precedence over ID", func() {
+			id, err := client.XAdd(ctx, &redis.XAddArgs{
+				Stream: "stream3",
+				ID:     "1-0",
+				Values: map[string]interface{}{"alpha": "a"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(id).To(Equal("1-0"))
+			defer client.Del(ctx, "stream3")
+
+			// ID is set but should be ignored because IDs is non-empty.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream3"},
+				ID:     "$",
+				IDs:    []string{"2-0", "0"},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]redis.XStream{
+				{
+					Stream: "stream",
+					Messages: []redis.XMessage{
+						{ID: "3-0", Values: map[string]interface{}{"tres": "troix"}},
+					},
+				},
+				{
+					Stream: "stream3",
+					Messages: []redis.XMessage{
+						{ID: "1-0", Values: map[string]interface{}{"alpha": "a"}},
+					},
+				},
+			}))
+		})
+
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			start := time.Now()
