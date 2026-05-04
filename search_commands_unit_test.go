@@ -2,20 +2,59 @@ package redis
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+type legacyHybridVector struct {
+	value []any
+}
+
+func (v legacyHybridVector) Value() []any {
+	return v.value
+}
 
 func TestHybridVectorBlob(t *testing.T) {
 	tests := []struct {
 		name    string
 		vector  Vector
-		want    []byte
+		want    interface{}
 		wantErr string
 	}{
 		{
 			name:   "fp32",
 			vector: &VectorFP32{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "float16",
+			vector: &VectorFloat16{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "bfloat16",
+			vector: &VectorBFloat16{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "float64",
+			vector: &VectorFloat64{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "int8",
+			vector: &VectorInt8{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "uint8",
+			vector: &VectorUint8{Val: []byte{1, 2, 3, 4}},
+			want:   []byte{1, 2, 3, 4},
+		},
+		{
+			name:   "custom legacy vector",
+			vector: legacyHybridVector{value: []any{"CUSTOM", []byte{1, 2, 3, 4}}},
 			want:   []byte{1, 2, 3, 4},
 		},
 		{
@@ -38,6 +77,11 @@ func TestHybridVectorBlob(t *testing.T) {
 			vector:  &VectorRef{Name: "vec1"},
 			wantErr: "unsupported vector type *redis.VectorRef",
 		},
+		{
+			name:    "invalid custom legacy vector",
+			vector:  legacyHybridVector{value: []any{"CUSTOM"}},
+			wantErr: "vector Value must contain a blob at index 1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -55,7 +99,7 @@ func TestHybridVectorBlob(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if string(got) != string(tt.want) {
+			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, want %v", got, tt.want)
 			}
 		})
@@ -105,33 +149,50 @@ func TestFTHybridWithArgsRejectsUnsupportedVectors(t *testing.T) {
 }
 
 func TestFTHybridWithArgsAcceptsVectorFP32(t *testing.T) {
-	m := &mockCmdable{}
-	c := m.asCmdable()
-	cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
-		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
-		VectorExpressions: []FTHybridVectorExpression{{
-			VectorField: "embedding",
-			VectorData:  &VectorFP32{Val: []byte{1, 2, 3, 4}},
-		}},
-	})
-	if cmd.Err() != nil {
-		t.Fatalf("unexpected error: %v", cmd.Err())
+	tests := []struct {
+		name   string
+		vector Vector
+	}{
+		{name: "fp32", vector: &VectorFP32{Val: []byte{1, 2, 3, 4}}},
+		{name: "float16", vector: &VectorFloat16{Val: []byte{1, 2, 3, 4}}},
+		{name: "bfloat16", vector: &VectorBFloat16{Val: []byte{1, 2, 3, 4}}},
+		{name: "float64", vector: &VectorFloat64{Val: []byte{1, 2, 3, 4}}},
+		{name: "int8", vector: &VectorInt8{Val: []byte{1, 2, 3, 4}}},
+		{name: "uint8", vector: &VectorUint8{Val: []byte{1, 2, 3, 4}}},
+		{name: "custom legacy vector", vector: legacyHybridVector{value: []any{"CUSTOM", []byte{1, 2, 3, 4}}}},
 	}
-	if m.lastCmd == nil {
-		t.Fatalf("expected command to be executed")
-	}
-	gotCmd, ok := m.lastCmd.(*FTHybridCmd)
-	if !ok {
-		t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
-	}
-	foundBlob := false
-	for _, arg := range gotCmd.args {
-		if blob, ok := arg.([]byte); ok && string(blob) == string([]byte{1, 2, 3, 4}) {
-			foundBlob = true
-			break
-		}
-	}
-	if !foundBlob {
-		t.Fatalf("expected raw vector blob in args, got %v", gotCmd.args)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockCmdable{}
+			c := m.asCmdable()
+			cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+				SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+				VectorExpressions: []FTHybridVectorExpression{{
+					VectorField: "embedding",
+					VectorData:  tt.vector,
+				}},
+			})
+			if cmd.Err() != nil {
+				t.Fatalf("unexpected error: %v", cmd.Err())
+			}
+			if m.lastCmd == nil {
+				t.Fatalf("expected command to be executed")
+			}
+			gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+			if !ok {
+				t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+			}
+			foundBlob := false
+			for _, arg := range gotCmd.args {
+				if blob, ok := arg.([]byte); ok && string(blob) == string([]byte{1, 2, 3, 4}) {
+					foundBlob = true
+					break
+				}
+			}
+			if !foundBlob {
+				t.Fatalf("expected raw vector blob in args, got %v", gotCmd.args)
+			}
+		})
 	}
 }

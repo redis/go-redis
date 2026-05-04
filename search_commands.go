@@ -2853,21 +2853,40 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 	return c.FTHybridWithArgs(ctx, index, options)
 }
 
-func hybridVectorBlob(v Vector) ([]byte, error) {
+func hybridVectorBlob(v Vector) (interface{}, error) {
 	if v == nil {
 		return nil, fmt.Errorf("FT.HYBRID: vector data is required")
 	}
 
-	vectorFP32, ok := v.(*VectorFP32)
-	if !ok {
-		return nil, fmt.Errorf("FT.HYBRID: unsupported vector type %T; use VectorFP32 with encoded vector blob", v)
+	switch vector := v.(type) {
+	case *VectorFP32:
+		return hybridVectorBytes(vector.Val)
+	case *VectorFloat16:
+		return hybridVectorBytes(vector.Val)
+	case *VectorBFloat16:
+		return hybridVectorBytes(vector.Val)
+	case *VectorFloat64:
+		return hybridVectorBytes(vector.Val)
+	case *VectorInt8:
+		return hybridVectorBytes(vector.Val)
+	case *VectorUint8:
+		return hybridVectorBytes(vector.Val)
+	case *VectorValues, *VectorRef:
+		return nil, fmt.Errorf("FT.HYBRID: unsupported vector type %T", v)
+	default:
+		values := v.Value()
+		if len(values) < 2 {
+			return nil, fmt.Errorf("FT.HYBRID: vector Value must contain a blob at index 1")
+		}
+		return values[1], nil
 	}
+}
 
-	if len(vectorFP32.Val) == 0 {
+func hybridVectorBytes(blob []byte) ([]byte, error) {
+	if len(blob) == 0 {
 		return nil, fmt.Errorf("FT.HYBRID: vector blob is required")
 	}
-
-	return vectorFP32.Val, nil
+	return blob, nil
 }
 
 // FTHybridWithArgs - Executes a hybrid search with advanced options
