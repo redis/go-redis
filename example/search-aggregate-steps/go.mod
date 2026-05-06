@@ -1,4 +1,4 @@
-module github.com/redis/go-redis/example/hll
+module github.com/redis/go-redis/example/search-aggregate-steps
 
 go 1.24
 
