@@ -781,7 +781,7 @@ type ZWithKey struct {
 type ZStore struct {
 	Keys    []string
 	Weights []float64
-	// Can be SUM, MIN or MAX.
+	// Can be SUM, MIN, MAX or COUNT.
 	Aggregate string
 }
 
