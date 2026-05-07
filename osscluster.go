@@ -1915,7 +1915,7 @@ func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) 
 
 	prefferedRandomSlot := -1
 	for _, cmd := range cmds {
-		if cmdFirstKeyPos(cmd) == 0 {
+		if cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name())) == 0 {
 			continue
 		}
 
@@ -2305,13 +2305,22 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	return info
 }
 
+// cmdInfoPeek returns the cached CommandInfo for the named command without
+// triggering a round-trip to Redis. It returns nil when the cache is cold.
+func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
+	if cmds := c.cmdsInfoCache.Peek(); cmds != nil {
+		return cmds[name]
+	}
+	return nil
+}
+
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
 
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd), prefferedSlot)
+	return cmdSlot(cmd, cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name())), prefferedSlot)
 }
 
 func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {

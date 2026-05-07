@@ -110,7 +110,7 @@ func (c *ClusterClient) executeOnAllShards(ctx context.Context, cmd Cmder, polic
 // executeMultiShard handles commands that operate on multiple keys across shards
 func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy *routing.CommandPolicy) error {
 	args := cmd.Args()
-	firstKeyPos := int(cmdFirstKeyPos(cmd))
+	firstKeyPos := cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name()))
 	stepCount := int(cmd.stepCount())
 	if stepCount == 0 {
 		stepCount = 1 // Default to 1 if not set
@@ -179,7 +179,7 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 // createSlotSpecificCommand creates a new command for a specific slot's keys
 func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalCmd Cmder, keys []string) Cmder {
 	originalArgs := originalCmd.Args()
-	firstKeyPos := int(cmdFirstKeyPos(originalCmd))
+	firstKeyPos := cmdFirstKeyPosWithInfo(originalCmd, c.cmdInfoPeek(originalCmd.Name()))
 
 	// Build new args with only the specified keys
 	newArgs := make([]interface{}, 0, firstKeyPos+len(keys))
@@ -467,7 +467,7 @@ func (c *ClusterClient) createAggregator(policy *routing.CommandPolicy, cmd Cmde
 	}
 
 	if !isKeyed {
-		firstKeyPos := cmdFirstKeyPos(cmd)
+		firstKeyPos := cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name()))
 		isKeyed = firstKeyPos > 0
 	}
 
@@ -500,7 +500,7 @@ func (c *ClusterClient) pickArbitraryNode(ctx context.Context) *clusterNode {
 
 // hasKeys checks if a command operates on keys
 func (c *ClusterClient) hasKeys(cmd Cmder) bool {
-	firstKeyPos := cmdFirstKeyPos(cmd)
+	firstKeyPos := cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name()))
 	return firstKeyPos > 0
 }
 

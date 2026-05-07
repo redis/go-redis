@@ -274,20 +274,15 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-// cmdFirstKeyPos returns the position of the first key in the command's arguments.
-// If the command does not have a key, it returns 0.
-// TODO: Use the data in CommandInfo to determine the first key position.
-func cmdFirstKeyPos(cmd Cmder) int {
+// cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
+// Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
+// back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
+func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
 
 	name := cmd.Name()
-
-	// first check if the command is keyless
-	if _, ok := keylessCommands[name]; ok {
-		return 0
-	}
 
 	switch name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
@@ -296,13 +291,24 @@ func cmdFirstKeyPos(cmd Cmder) int {
 		}
 
 		return 0
-	case "publish":
-		return 1
 	case "memory":
 		// https://github.com/redis/redis/issues/7493
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
+		// CommandInfo (if available) gives the correct answer
+		// otherwise the hardcoded fallback applies.
+	}
+
+	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
+	if info != nil {
+		return int(info.FirstKeyPos)
+	}
+
+	// keeps the fast-path working before the cache is
+	// warm (cold start, standalone client, etc.) without any round-trip.
+	if _, ok := keylessCommands[name]; ok {
+		return 0
 	}
 	return 1
 }
@@ -4934,6 +4940,14 @@ func (c *cmdsInfoCache) Refresh() {
 	defer c.refreshLock.Unlock()
 
 	c.once = internal.Once{}
+}
+
+// Peek returns the cached CommandInfo map without triggering a Redis round-trip.
+// Returns nil when the cache is cold; callers should fall back to other heuristics.
+func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
+	c.refreshLock.Lock()
+	defer c.refreshLock.Unlock()
+	return c.cmds
 }
 
 // ------------------------------------------------------------------------------
