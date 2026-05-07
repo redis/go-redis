@@ -126,7 +126,7 @@ func (c cmdable) GCRAWithArgs(ctx context.Context, key string, args *GCRAArgs) *
 	cmdArgs = append(cmdArgs, periodSeconds)
 
 	// Add TOKENS if specified and not default
-	if args.Tokens > 1 {
+	if args.Tokens != 1 {
 		cmdArgs = append(cmdArgs, "TOKENS", args.Tokens)
 	}
 

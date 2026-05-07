@@ -236,5 +236,19 @@ var _ = Describe("GCRA rate limiting", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.MaxTokens).To(Equal(int64(1001)))
 		})
+
+		It("should reject zero tokens", func() {
+			// TOKENS 0 is not supported by Redis 8.8+ GCRA command
+			// The client should send it and let Redis return an error
+			args := &redis.GCRAArgs{
+				MaxBurst:        5,
+				TokensPerPeriod: 10,
+				Period:          time.Second,
+				Tokens:          0, // Not supported - should get error from Redis
+			}
+			_, err := client.GCRAWithArgs(ctx, "user:zero", args).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("out of range"))
+		})
 	})
 })
