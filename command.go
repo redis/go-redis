@@ -300,16 +300,16 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		// otherwise the hardcoded fallback applies.
 	}
 
+	// if the command is keyless O(1) in-memory, no round-trip needed.
+	if _, ok := keylessCommands[name]; ok {
+		return 0
+	}
+
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
 	if info != nil {
 		return int(info.FirstKeyPos)
 	}
 
-	// keeps the fast-path working before the cache is
-	// warm (cold start, standalone client, etc.) without any round-trip.
-	if _, ok := keylessCommands[name]; ok {
-		return 0
-	}
 	return 1
 }
 
@@ -4902,7 +4902,7 @@ type cmdsInfoCache struct {
 	fn func(ctx context.Context) (map[string]*CommandInfo, error)
 
 	once        internal.Once
-	refreshLock sync.Mutex
+	refreshLock sync.RWMutex
 	cmds        map[string]*CommandInfo
 }
 
@@ -4948,8 +4948,8 @@ func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
 	if c == nil {
 		return nil
 	}
-	c.refreshLock.Lock()
-	defer c.refreshLock.Unlock()
+	c.refreshLock.RLock()
+	defer c.refreshLock.RUnlock()
 	return c.cmds
 }
 
