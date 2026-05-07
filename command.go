@@ -4945,6 +4945,9 @@ func (c *cmdsInfoCache) Refresh() {
 // Peek returns the cached CommandInfo map without triggering a Redis round-trip.
 // Returns nil when the cache is cold; callers should fall back to other heuristics.
 func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
+	if c == nil {
+		return nil
+	}
 	c.refreshLock.Lock()
 	defer c.refreshLock.Unlock()
 	return c.cmds
