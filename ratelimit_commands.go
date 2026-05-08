@@ -27,7 +27,11 @@ type GCRAArgs struct {
 
 	// Tokens is the cost (or weight) of this rate-limiting request.
 	// A higher cost drains the allowance faster.
-	// Default: 1
+	// Min: 1 (Redis requirement)
+	// Default: 1 (if 0 or 1, the TOKENS subcommand is not sent and server uses default of 1)
+	//
+	// Note: Setting Tokens to 0 or 1 is treated the same - both use the server default.
+	// This allows the zero value (0) to work correctly without causing errors.
 	Tokens int64
 }
 
@@ -100,6 +104,13 @@ func (c cmdable) GCRA(ctx context.Context, key string, maxBurst int64, tokensPer
 //
 // Returns a GCRACmd containing the rate limiting result.
 //
+// Note about Tokens parameter:
+//   - If Tokens is 0 (zero value) or 1, the TOKENS subcommand is not sent to Redis
+//   - Redis will use its default value of 1 in this case
+//   - This allows structs with unset Tokens field to work correctly
+//   - Only values > 1 will send the TOKENS subcommand to Redis
+//   - Redis requires TOKENS >= 1, so 0 is not a valid value to send
+//
 // Example:
 //
 //	// Allow 10 tokens per second with a burst of 5, consuming 2 tokens per request
@@ -126,7 +137,8 @@ func (c cmdable) GCRAWithArgs(ctx context.Context, key string, args *GCRAArgs) *
 	cmdArgs = append(cmdArgs, periodSeconds)
 
 	// Add TOKENS if specified and not default
-	if args.Tokens != 1 {
+	// Only send TOKENS if > 1. If Tokens is 0 (unset) or 1 (default), let server use default of 1.
+	if args.Tokens > 1 {
 		cmdArgs = append(cmdArgs, "TOKENS", args.Tokens)
 	}
 

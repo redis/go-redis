@@ -16,13 +16,13 @@ func TestGCRAWithArgs_TokensParameter(t *testing.T) {
 		expectTokens   bool
 	}{
 		{
-			name:         "Tokens = 0 should send TOKENS subcommand",
+			name:         "Tokens = 0 should NOT send TOKENS subcommand (use server default)",
 			tokens:       0,
-			expectedArgs: []interface{}{"gcra", "testkey", int64(5), int64(10), 1.0, "TOKENS", int64(0)},
-			expectTokens: true,
+			expectedArgs: []interface{}{"gcra", "testkey", int64(5), int64(10), 1.0},
+			expectTokens: false,
 		},
 		{
-			name:         "Tokens = 1 should NOT send TOKENS subcommand (default)",
+			name:         "Tokens = 1 should NOT send TOKENS subcommand (server default)",
 			tokens:       1,
 			expectedArgs: []interface{}{"gcra", "testkey", int64(5), int64(10), 1.0},
 			expectTokens: false,
@@ -98,7 +98,8 @@ func buildGCRAArgs(key string, args *GCRAArgs) []interface{} {
 	cmdArgs = append(cmdArgs, periodSeconds)
 
 	// Add TOKENS if specified and not default
-	if args.Tokens != 1 {
+	// Only send TOKENS if > 1. If Tokens is 0 (unset) or 1 (default), let server use default of 1.
+	if args.Tokens > 1 {
 		cmdArgs = append(cmdArgs, "TOKENS", args.Tokens)
 	}
 
