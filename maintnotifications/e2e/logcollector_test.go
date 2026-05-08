@@ -98,6 +98,11 @@ type MatchFunc struct {
 	matchesMu sync.Mutex    // protects matches slice
 	found     chan struct{} // channel to notify when match is found, will be closed
 	done      func()
+	// inflight tracks spawned Printf goroutines that captured this matchFunc
+	// in their snapshot. WaitForLogMatchFunc waits on this before returning so
+	// that variables captured by F can safely be mutated by the caller after
+	// the match has been reported.
+	inflight sync.WaitGroup
 }
 
 func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...interface{}) {
@@ -108,14 +113,25 @@ func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...inter
 	// Use matchFuncsMutex to safely read matchFuncs
 	tlc.matchFuncsMutex.Lock()
 	hasMatchFuncs := len(tlc.matchFuncs) > 0
-	// Create a copy of matchFuncs to avoid holding the lock while processing
+	// Create a copy of matchFuncs to avoid holding the lock while processing.
+	// Register each match function as in-flight while still holding
+	// matchFuncsMutex: this is serialized with done()'s removal from the list,
+	// so no new Add can happen after a matchFunc has been removed.
 	matchFuncsCopy := make([]*MatchFunc, len(tlc.matchFuncs))
 	copy(matchFuncsCopy, tlc.matchFuncs)
+	for _, matchFunc := range matchFuncsCopy {
+		matchFunc.inflight.Add(1)
+	}
 	tlc.matchFuncsMutex.Unlock()
 
 	if hasMatchFuncs {
-		go func(lstr string) {
-			for _, matchFunc := range matchFuncsCopy {
+		go func(lstr string, matchFuncs []*MatchFunc) {
+			defer func() {
+				for _, matchFunc := range matchFuncs {
+					matchFunc.inflight.Done()
+				}
+			}()
+			for _, matchFunc := range matchFuncs {
 				if matchFunc.F(lstr) {
 					matchFunc.matchesMu.Lock()
 					matchFunc.matches = append(matchFunc.matches, lstr)
@@ -124,7 +140,7 @@ func (tlc *TestLogCollector) Printf(_ context.Context, format string, v ...inter
 					return
 				}
 			}
-		}(lstr)
+		}(lstr, matchFuncsCopy)
 	}
 	if tlc.doPrint {
 		fmt.Println(lstr)
@@ -220,7 +236,14 @@ func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout t
 	select {
 	case <-matchFunc.found:
 		if DebugE2E() {
-			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: match found! Acquiring matchesMu...\n")
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: match found! Waiting for in-flight callbacks...\n")
+		}
+		// Wait for any Printf-spawned goroutines that captured this matchFunc
+		// in their snapshot to finish. Without this, the callers F closure may
+		// still be running and reading variables the caller is about to mutate.
+		matchFunc.inflight.Wait()
+		if DebugE2E() {
+			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: in-flight drained, acquiring matchesMu...\n")
 		}
 		matchFunc.matchesMu.Lock()
 		if DebugE2E() {
@@ -241,8 +264,10 @@ func (tlc *TestLogCollector) WaitForLogMatchFunc(mf func(string) bool, timeout t
 		if DebugE2E() {
 			fmt.Printf("[LOG-COLLECTOR] WaitForLogMatchFunc: TIMEOUT after %v\n", timeout)
 		}
-		// Clean up the matchFunc from the list on timeout
+		// Clean up the matchFunc from the list on timeout, then wait for any
+		// in-flight Printf goroutines that still hold a reference to it.
 		matchFunc.done()
+		matchFunc.inflight.Wait()
 		return "", false
 	}
 }
