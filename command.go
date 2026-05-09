@@ -284,6 +284,11 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 
 	name := cmd.Name()
 
+	// first check if the command is keyless
+	if _, ok := keylessCommands[name]; ok {
+		return 0
+	}
+
 	switch name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
@@ -298,11 +303,6 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		}
 		// CommandInfo (if available) gives the correct answer
 		// otherwise the hardcoded fallback applies.
-	}
-
-	// if the command is keyless O(1) in-memory, no round-trip needed.
-	if _, ok := keylessCommands[name]; ok {
-		return 0
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
