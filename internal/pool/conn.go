@@ -82,8 +82,10 @@ type Conn struct {
 	bw *bufio.Writer
 	wr *proto.Writer
 
-	// Lightweight mutex to protect reader operations during handoff
-	// Only used for the brief period during SetNetConn and HasBufferedData/PeekReplyTypeSafe
+	// Lightweight mutex to protect reader operations during handoff and health checks
+	// Used during:
+	// - SetNetConn (write lock for resetting reader state)
+	// - HasBufferedData/PeekReplyTypeSafe (read lock for safe concurrent peek operations)
 	readerMu sync.RWMutex
 
 	// State machine for connection state management

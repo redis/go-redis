@@ -3006,6 +3006,42 @@ func (c cmdable) FTHybrid(ctx context.Context, index string, searchExpr string, 
 	return c.FTHybridWithArgs(ctx, index, options)
 }
 
+func hybridVectorBlob(v Vector) (interface{}, error) {
+	if v == nil {
+		return nil, fmt.Errorf("FT.HYBRID: vector data is required")
+	}
+
+	switch vector := v.(type) {
+	case *VectorFP32:
+		return hybridVectorBytes(vector.Val)
+	case *VectorFloat16:
+		return hybridVectorBytes(vector.Val)
+	case *VectorBFloat16:
+		return hybridVectorBytes(vector.Val)
+	case *VectorFloat64:
+		return hybridVectorBytes(vector.Val)
+	case *VectorInt8:
+		return hybridVectorBytes(vector.Val)
+	case *VectorUint8:
+		return hybridVectorBytes(vector.Val)
+	case *VectorValues, *VectorRef:
+		return nil, fmt.Errorf("FT.HYBRID: unsupported vector type %T", v)
+	default:
+		values := v.Value()
+		if len(values) < 2 {
+			return nil, fmt.Errorf("FT.HYBRID: vector Value must contain a blob at index 1")
+		}
+		return values[1], nil
+	}
+}
+
+func hybridVectorBytes(blob []byte) ([]byte, error) {
+	if len(blob) == 0 {
+		return nil, fmt.Errorf("FT.HYBRID: vector blob is required")
+	}
+	return blob, nil
+}
+
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
@@ -3032,16 +3068,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
 
-			// For FT.HYBRID, we need to send just the raw vector bytes, not the Value() format
-			// Value() returns [format, data] but FT.HYBRID expects just the blob
-			vectorValue := vectorExpr.VectorData.Value()
-			var vectorBlob interface{}
-			if len(vectorValue) >= 2 {
-				// vectorValue is [format, data, ...] - we only want the data part
-				vectorBlob = vectorValue[1]
-			} else {
-				// Fallback for unexpected format
-				vectorBlob = vectorValue
+			vectorBlob, err := hybridVectorBlob(vectorExpr.VectorData)
+			if err != nil {
+				cmd := newFTHybridCmd(ctx, options, args...)
+				cmd.SetErr(err)
+				return cmd
 			}
 
 			// If VectorParamName is provided, use PARAMS mechanism (required for Redis 8.6+)
