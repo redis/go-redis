@@ -20,6 +20,51 @@ func TestVectorFP32_Value(t *testing.T) {
 	}
 }
 
+func TestVectorFloat16_Value(t *testing.T) {
+	v := &VectorFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorBFloat16_Value(t *testing.T) {
+	v := &VectorBFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"BFLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorBFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorFloat64_Value(t *testing.T) {
+	v := &VectorFloat64{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT64", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat64.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorInt8_Value(t *testing.T) {
+	v := &VectorInt8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"INT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorInt8.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorUint8_Value(t *testing.T) {
+	v := &VectorUint8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"UINT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorUint8.Value() = %v, want %v", got, want)
+	}
+}
+
 func TestVectorValues_Value(t *testing.T) {
 	v := &VectorValues{Val: []float64{1.1, 2.2}}
 	got := v.Value()
