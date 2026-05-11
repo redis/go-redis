@@ -110,6 +110,59 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 		if info2.GCStats != info3.GCStats {
 			t.Errorf("GCStats mismatch: RESP2=%+v, RESP3=%+v", info2.GCStats, info3.GCStats)
 		}
+
+		// The four *_avg fields are emitted by RediSearch via REPLY_KVNUM
+		// (RedisModule_ReplyWithDouble): bulk strings in RESP2, native doubles
+		// in RESP3. The FTInfoResult fields are typed as string, so the RESP3
+		// path must stringify the double; if it does not the field is "" and
+		// the data is silently lost. Assert both that the RESP3 value is
+		// non-empty and that it matches the RESP2 value.
+		avgFields := []struct {
+			name        string
+			resp2Val    string
+			resp3Val    string
+		}{
+			{"BytesPerRecordAvg", info2.BytesPerRecordAvg, info3.BytesPerRecordAvg},
+			{"RecordsPerDocAvg", info2.RecordsPerDocAvg, info3.RecordsPerDocAvg},
+			{"OffsetsPerTermAvg", info2.OffsetsPerTermAvg, info3.OffsetsPerTermAvg},
+			{"OffsetBitsPerRecordAvg", info2.OffsetBitsPerRecordAvg, info3.OffsetBitsPerRecordAvg},
+		}
+		for _, f := range avgFields {
+			if f.resp3Val == "" {
+				t.Errorf("%s is empty under RESP3 (RESP2=%q) - silent data loss", f.name, f.resp2Val)
+			}
+			if f.resp2Val != f.resp3Val {
+				t.Errorf("%s mismatch: RESP2=%q, RESP3=%q", f.name, f.resp2Val, f.resp3Val)
+			}
+		}
+
+		// total_indexing_time is also emitted via REPLY_KVNUM (double) but the
+		// FTInfoResult field is typed as int. Without explicit float-to-int
+		// handling in the RESP3 parser, this field is silently 0.
+		if info2.TotalIndexingTime != info3.TotalIndexingTime {
+			t.Errorf("TotalIndexingTime mismatch: RESP2=%d, RESP3=%d",
+				info2.TotalIndexingTime, info3.TotalIndexingTime)
+		}
+
+		// All gc_stats numeric fields are emitted via REPLY_KVNUM in RediSearch
+		// (see src/fork_gc/fork_gc.c statsCb) but typed as int in GCStats.
+		// Compare each individually so a regression surfaces with a precise message.
+		gcFields := []struct {
+			name             string
+			resp2, resp3 int
+		}{
+			{"BytesCollected", info2.GCStats.BytesCollected, info3.GCStats.BytesCollected},
+			{"TotalMsRun", info2.GCStats.TotalMsRun, info3.GCStats.TotalMsRun},
+			{"TotalCycles", info2.GCStats.TotalCycles, info3.GCStats.TotalCycles},
+			{"LastRunTimeMs", info2.GCStats.LastRunTimeMs, info3.GCStats.LastRunTimeMs},
+			{"GCNumericTreesMissed", info2.GCStats.GCNumericTreesMissed, info3.GCStats.GCNumericTreesMissed},
+			{"GCBlocksDenied", info2.GCStats.GCBlocksDenied, info3.GCStats.GCBlocksDenied},
+		}
+		for _, f := range gcFields {
+			if f.resp2 != f.resp3 {
+				t.Errorf("GCStats.%s mismatch: RESP2=%d, RESP3=%d", f.name, f.resp2, f.resp3)
+			}
+		}
 	})
 
 	t.Run("FTSearch", func(t *testing.T) {

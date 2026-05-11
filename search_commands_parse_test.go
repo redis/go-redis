@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"math"
 	"testing"
 )
 
@@ -1266,11 +1267,21 @@ func TestFTInfoRESP3Parsing(t *testing.T) {
 		"offsets_per_term_avg":        float64(2),
 		"offset_bits_per_record_avg":  float64(8),
 		"hash_indexing_failures":      int64(0),
-		"total_indexing_time":         int64(100),
+		"total_indexing_time":         float64(123),
 		"indexing":                    int64(0),
 		"percent_indexed":             float64(1),
 		"number_of_uses":              int64(10),
 		"cleaning":                    int64(0),
+		// RESP3 emits gc_stats as a map of doubles (REPLY_KVNUM in RediSearch).
+		"gc_stats": map[interface{}]interface{}{
+			"bytes_collected":         float64(1024),
+			"total_ms_run":            float64(50),
+			"total_cycles":            float64(3),
+			"average_cycle_time_ms":   float64(16.5),
+			"last_run_time_ms":        float64(20),
+			"gc_numeric_trees_missed": float64(0),
+			"gc_blocks_denied":        float64(2),
+		},
 	}
 
 	// Convert to map[string]interface{} as parseFTInfo expects
@@ -1300,6 +1311,76 @@ func TestFTInfoRESP3Parsing(t *testing.T) {
 
 	if result.Attributes[0].Attribute != "txt" {
 		t.Errorf("expected attribute 'txt', got %q", result.Attributes[0].Attribute)
+	}
+
+	// RediSearch emits the *_avg fields via REPLY_KVNUM (doubles in RESP3).
+	// The Go struct types them as string, so they must be stringified during parse.
+	if result.RecordsPerDocAvg != "10" {
+		t.Errorf("RecordsPerDocAvg = %q, want %q", result.RecordsPerDocAvg, "10")
+	}
+	if result.BytesPerRecordAvg != "50" {
+		t.Errorf("BytesPerRecordAvg = %q, want %q", result.BytesPerRecordAvg, "50")
+	}
+	if result.OffsetsPerTermAvg != "2" {
+		t.Errorf("OffsetsPerTermAvg = %q, want %q", result.OffsetsPerTermAvg, "2")
+	}
+	if result.OffsetBitsPerRecordAvg != "8" {
+		t.Errorf("OffsetBitsPerRecordAvg = %q, want %q", result.OffsetBitsPerRecordAvg, "8")
+	}
+
+	// total_indexing_time is also a REPLY_KVNUM (double) but typed as int.
+	if result.TotalIndexingTime != 123 {
+		t.Errorf("TotalIndexingTime = %d, want 123", result.TotalIndexingTime)
+	}
+
+	// gc_stats numeric fields are typed as int but emitted as doubles in RESP3.
+	if result.GCStats.BytesCollected != 1024 {
+		t.Errorf("GCStats.BytesCollected = %d, want 1024", result.GCStats.BytesCollected)
+	}
+	if result.GCStats.TotalMsRun != 50 {
+		t.Errorf("GCStats.TotalMsRun = %d, want 50", result.GCStats.TotalMsRun)
+	}
+	if result.GCStats.TotalCycles != 3 {
+		t.Errorf("GCStats.TotalCycles = %d, want 3", result.GCStats.TotalCycles)
+	}
+	if result.GCStats.LastRunTimeMs != 20 {
+		t.Errorf("GCStats.LastRunTimeMs = %d, want 20", result.GCStats.LastRunTimeMs)
+	}
+	if result.GCStats.GCBlocksDenied != 2 {
+		t.Errorf("GCStats.GCBlocksDenied = %d, want 2", result.GCStats.GCBlocksDenied)
+	}
+	if result.GCStats.AverageCycleTimeMs != "16.5" {
+		t.Errorf("GCStats.AverageCycleTimeMs = %q, want %q", result.GCStats.AverageCycleTimeMs, "16.5")
+	}
+}
+
+// TestFTInfoRESP3NaN verifies that RediSearch's NaN doubles (emitted for empty
+// indexes) survive parsing as the lowercase "nan" sentinel, matching RESP2.
+func TestFTInfoRESP3NaN(t *testing.T) {
+	data := map[string]interface{}{
+		"index_name":                 "empty_idx",
+		"records_per_doc_avg":        math.NaN(),
+		"bytes_per_record_avg":       math.NaN(),
+		"offsets_per_term_avg":       math.NaN(),
+		"offset_bits_per_record_avg": math.NaN(),
+	}
+
+	result, err := parseFTInfo(data)
+	if err != nil {
+		t.Fatalf("parseFTInfo returned error: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, got string
+	}{
+		{"RecordsPerDocAvg", result.RecordsPerDocAvg},
+		{"BytesPerRecordAvg", result.BytesPerRecordAvg},
+		{"OffsetsPerTermAvg", result.OffsetsPerTermAvg},
+		{"OffsetBitsPerRecordAvg", result.OffsetBitsPerRecordAvg},
+	} {
+		if tc.got != "nan" {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, "nan")
+		}
 	}
 }
 

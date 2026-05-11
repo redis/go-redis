@@ -1783,13 +1783,13 @@ func parseGCStatsRESP3(m map[interface{}]interface{}) GCStats {
 	}
 
 	return GCStats{
-		BytesCollected:       internal.ToInteger(getMapStringKey(m, "bytes_collected")),
-		TotalMsRun:           internal.ToInteger(getMapStringKey(m, "total_ms_run")),
-		TotalCycles:          internal.ToInteger(getMapStringKey(m, "total_cycles")),
+		BytesCollected:       ftInfoNumInt(getMapStringKey(m, "bytes_collected")),
+		TotalMsRun:           ftInfoNumInt(getMapStringKey(m, "total_ms_run")),
+		TotalCycles:          ftInfoNumInt(getMapStringKey(m, "total_cycles")),
 		AverageCycleTimeMs:   avgCycleTime,
-		LastRunTimeMs:        internal.ToInteger(getMapStringKey(m, "last_run_time_ms")),
-		GCNumericTreesMissed: internal.ToInteger(getMapStringKey(m, "gc_numeric_trees_missed")),
-		GCBlocksDenied:       internal.ToInteger(getMapStringKey(m, "gc_blocks_denied")),
+		LastRunTimeMs:        ftInfoNumInt(getMapStringKey(m, "last_run_time_ms")),
+		GCNumericTreesMissed: ftInfoNumInt(getMapStringKey(m, "gc_numeric_trees_missed")),
+		GCBlocksDenied:       ftInfoNumInt(getMapStringKey(m, "gc_blocks_denied")),
 	}
 }
 
@@ -1814,6 +1814,44 @@ func parseDialectStatsRESP3(m map[interface{}]interface{}) map[string]int {
 		}
 	}
 	return result
+}
+
+// ftInfoNumString stringifies a value that RediSearch emits via REPLY_KVNUM
+// (RedisModule_ReplyWithDouble): a bulk string in RESP2 but a native double
+// in RESP3. Used for FTInfoResult fields whose public type is string.
+// Special float values (NaN, +Inf, -Inf) are normalized to lowercase to match
+// the RESP2 wire format.
+func ftInfoNumString(val interface{}) string {
+	switch v := val.(type) {
+	case string:
+		return v
+	case float64:
+		return internal.FormatFloat(v)
+	case float32:
+		return internal.FormatFloat(float64(v))
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int:
+		return strconv.Itoa(v)
+	default:
+		return ""
+	}
+}
+
+// ftInfoNumInt converts a value that RediSearch emits via REPLY_KVNUM to int.
+// In RESP2 the value is a bulk string; in RESP3 it is a native double, even
+// for logically-integer fields (counters, byte sizes). This helper exists so
+// the internal.ToInteger helper can remain strict about float-to-int coercion
+// while still letting the RediSearch parsers read those values correctly.
+func ftInfoNumInt(val interface{}) int {
+	switch v := val.(type) {
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	default:
+		return internal.ToInteger(v)
+	}
 }
 
 func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
@@ -1929,7 +1967,7 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 		}
 	}
 
-	ftInfo.BytesPerRecordAvg = internal.ToString(data["bytes_per_record_avg"])
+	ftInfo.BytesPerRecordAvg = ftInfoNumString(data["bytes_per_record_avg"])
 	ftInfo.Cleaning = internal.ToInteger(data["cleaning"])
 
 	// Parse cursor_stats - handle both RESP2 (array) and RESP3 (map) formats
@@ -2055,16 +2093,16 @@ func parseFTInfo(data map[string]interface{}) (FTInfoResult, error) {
 	ftInfo.NumRecords = internal.ToInteger(data["num_records"])
 	ftInfo.NumTerms = internal.ToInteger(data["num_terms"])
 	ftInfo.NumberOfUses = internal.ToInteger(data["number_of_uses"])
-	ftInfo.OffsetBitsPerRecordAvg = internal.ToString(data["offset_bits_per_record_avg"])
+	ftInfo.OffsetBitsPerRecordAvg = ftInfoNumString(data["offset_bits_per_record_avg"])
 	ftInfo.OffsetVectorsSzMB = internal.ToFloat(data["offset_vectors_sz_mb"])
-	ftInfo.OffsetsPerTermAvg = internal.ToString(data["offsets_per_term_avg"])
+	ftInfo.OffsetsPerTermAvg = ftInfoNumString(data["offsets_per_term_avg"])
 	ftInfo.PercentIndexed = internal.ToFloat(data["percent_indexed"])
-	ftInfo.RecordsPerDocAvg = internal.ToString(data["records_per_doc_avg"])
+	ftInfo.RecordsPerDocAvg = ftInfoNumString(data["records_per_doc_avg"])
 	ftInfo.SortableValuesSizeMB = internal.ToFloat(data["sortable_values_size_mb"])
 	ftInfo.TagOverheadSzMB = internal.ToFloat(data["tag_overhead_sz_mb"])
 	ftInfo.TextOverheadSzMB = internal.ToFloat(data["text_overhead_sz_mb"])
 	ftInfo.TotalIndexMemorySzMB = internal.ToFloat(data["total_index_memory_sz_mb"])
-	ftInfo.TotalIndexingTime = internal.ToInteger(data["total_indexing_time"])
+	ftInfo.TotalIndexingTime = ftInfoNumInt(data["total_indexing_time"])
 	ftInfo.TotalInvertedIndexBlocks = internal.ToInteger(data["total_inverted_index_blocks"])
 	ftInfo.VectorIndexSzMB = internal.ToFloat(data["vector_index_sz_mb"])
 
