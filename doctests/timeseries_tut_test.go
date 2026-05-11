@@ -5,23 +5,15 @@ package example_commands_test
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 
 	"github.com/redis/go-redis/v9"
 )
 
 // HIDE_END
-
-// mapKeys returns a slice of all keys from the map (Go 1.21 compatible)
-// TODO: Once minimum Go version is upgraded to 1.23+, replace with slices.Collect(maps.Keys(m))
-func mapKeys[K comparable, V any](m map[K]V) []K {
-	keys := make([]K, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}
 
 func ExampleClient_timeseries_create() {
 	ctx := context.Background()
@@ -425,7 +417,7 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res28Keys := mapKeys(res28)
+	res28Keys := slices.Collect(maps.Keys(res28))
 	sort.Strings(res28Keys)
 
 	for _, k := range res28Keys {
@@ -465,7 +457,7 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res29Keys := mapKeys(res29)
+	res29Keys := slices.Collect(maps.Keys(res29))
 	sort.Strings(res29Keys)
 
 	for _, k := range res29Keys {
@@ -513,7 +505,7 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res30Keys := mapKeys(res30)
+	res30Keys := slices.Collect(maps.Keys(res30))
 	sort.Strings(res30Keys)
 
 	for _, k := range res30Keys {
@@ -558,7 +550,7 @@ func ExampleClient_timeseries_query_multi() {
 		panic(err)
 	}
 
-	res31Keys := mapKeys(res31)
+	res31Keys := slices.Collect(maps.Keys(res31))
 	sort.Strings(res31Keys)
 
 	for _, k := range res31Keys {
@@ -865,7 +857,7 @@ func ExampleClient_timeseries_aggmulti() {
 		panic(err)
 	}
 
-	res44Keys := mapKeys(res44)
+	res44Keys := slices.Collect(maps.Keys(res44))
 	sort.Strings(res44Keys)
 
 	for _, k := range res44Keys {
@@ -913,7 +905,7 @@ func ExampleClient_timeseries_aggmulti() {
 		panic(err)
 	}
 
-	res45Keys := mapKeys(res45)
+	res45Keys := slices.Collect(maps.Keys(res45))
 	sort.Strings(res45Keys)
 
 	for _, k := range res45Keys {

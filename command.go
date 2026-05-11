@@ -109,6 +109,7 @@ const (
 	CmdTypeXPending
 	CmdTypeXPendingExt
 	CmdTypeXAutoClaim
+	CmdTypeXAutoClaimWithDeleted
 	CmdTypeXAutoClaimJustID
 	CmdTypeXInfoConsumers
 	CmdTypeXInfoGroups
@@ -161,6 +162,12 @@ type (
 	CmdTypeXAutoClaimValue struct {
 		messages []XMessage
 		start    string
+	}
+
+	CmdTypeXAutoClaimWithDeletedValue struct {
+		messages   []XMessage
+		start      string
+		deletedIDs []string
 	}
 
 	CmdTypeXAutoClaimJustIDValue struct {
@@ -2668,9 +2675,7 @@ func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
 	}
 
 	if n >= 3 {
-		if err := rd.DiscardNext(); err != nil {
-			return err
-		}
+		return rd.DiscardNext()
 	}
 
 	return nil
@@ -2696,6 +2701,119 @@ func (cmd *XAutoClaimCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		start:   cmd.start,
 		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+type XAutoClaimWithDeletedCmd struct {
+	baseCmd
+
+	start      string
+	val        []XMessage
+	deletedIDs []string
+}
+
+var _ Cmder = (*XAutoClaimWithDeletedCmd)(nil)
+
+func NewXAutoClaimWithDeletedCmd(ctx context.Context, args ...interface{}) *XAutoClaimWithDeletedCmd {
+	return &XAutoClaimWithDeletedCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeXAutoClaimWithDeleted,
+		},
+	}
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) SetVal(val []XMessage, start string, deletedIDs []string) {
+	cmd.val = val
+	cmd.start = start
+	cmd.deletedIDs = deletedIDs
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Val() (messages []XMessage, start string, deletedIDs []string) {
+	return cmd.val, cmd.start, cmd.deletedIDs
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Result() (messages []XMessage, start string, deletedIDs []string, err error) {
+	return cmd.val, cmd.start, cmd.deletedIDs, cmd.err
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	switch n {
+	case 2, // Redis 6
+		3: // Redis 7:
+		// ok
+	default:
+		return fmt.Errorf("redis: got %d elements in XAutoClaim reply, wanted 2/3", n)
+	}
+
+	cmd.start, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	cmd.val, err = readXMessageSlice(rd)
+	if err != nil {
+		return err
+	}
+
+	if n < 3 {
+		return nil
+	}
+
+	nn, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.deletedIDs = make([]string, nn)
+	for i := 0; i < nn; i++ {
+		cmd.deletedIDs[i], err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Clone() Cmder {
+	var val []XMessage
+	if cmd.val != nil {
+		val = make([]XMessage, len(cmd.val))
+		for i, msg := range cmd.val {
+			val[i] = XMessage{
+				ID: msg.ID,
+			}
+			if msg.Values != nil {
+				val[i].Values = make(map[string]interface{}, len(msg.Values))
+				for k, v := range msg.Values {
+					val[i].Values[k] = v
+				}
+			}
+		}
+	}
+	var deletedIDs []string
+	if cmd.deletedIDs != nil {
+		deletedIDs = make([]string, len(cmd.deletedIDs))
+		copy(deletedIDs, cmd.deletedIDs)
+	}
+	return &XAutoClaimWithDeletedCmd{
+		baseCmd:    cmd.cloneBaseCmd(),
+		start:      cmd.start,
+		val:        val,
+		deletedIDs: deletedIDs,
 	}
 }
 
@@ -2867,7 +2985,10 @@ func (cmd *XInfoConsumersCmd) readReply(rd *proto.Reader) error {
 				inactive, err = rd.ReadInt()
 				cmd.val[i].Inactive = time.Duration(inactive) * time.Millisecond
 			default:
-				return fmt.Errorf("redis: unexpected content %s in XINFO CONSUMERS reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 			if err != nil {
 				return err
@@ -2996,7 +3117,10 @@ func (cmd *XInfoGroupsCmd) readReply(rd *proto.Reader) error {
 					group.Lag = -1
 				}
 			default:
-				return fmt.Errorf("redis: unexpected key %q in XINFO GROUPS reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -3165,7 +3289,10 @@ func (cmd *XInfoStreamCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM reply", key)
+			// skip unknown fields
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3241,6 +3368,7 @@ type XInfoStreamGroup struct {
 	EntriesRead     int64
 	Lag             int64
 	PelCount        int64
+	NackedCount     uint64 // redis version 8.8, number of NACK'd messages in the group
 	Pending         []XInfoStreamGroupPending
 	Consumers       []XInfoStreamConsumer
 }
@@ -3385,7 +3513,10 @@ func (cmd *XInfoStreamFullCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
+			// skip unknown fields
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3439,6 +3570,11 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 				if err != nil {
 					return nil, err
 				}
+			case "nacked-count":
+				group.NackedCount, err = rd.ReadUint()
+				if err != nil {
+					return nil, err
+				}
 			case "pending":
 				group.Pending, err = readXInfoStreamGroupPending(rd)
 				if err != nil {
@@ -3450,7 +3586,10 @@ func readStreamGroups(rd *proto.Reader) ([]XInfoStreamGroup, error) {
 					return nil, err
 				}
 			default:
-				return nil, fmt.Errorf("redis: unexpected key %q in XINFO STREAM FULL reply", key)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return nil, err
+				}
 			}
 		}
 
@@ -3575,8 +3714,10 @@ func readXInfoStreamConsumers(rd *proto.Reader) ([]XInfoStreamConsumer, error) {
 					c.Pending = append(c.Pending, p)
 				}
 			default:
-				return nil, fmt.Errorf("redis: unexpected content %s "+
-					"in XINFO STREAM FULL reply", cKey)
+				// skip unknown fields
+				if err = rd.DiscardNext(); err != nil {
+					return nil, err
+				}
 			}
 			if err != nil {
 				return nil, err
@@ -6973,6 +7114,9 @@ type ClientInfo struct {
 	Resp               int           // redis version 7.0, client RESP protocol version
 	LibName            string        // redis version 7.2, client library name
 	LibVer             string        // redis version 7.2, client library version
+	ReadEvents         uint64        // redis version 8.8, number of read events processed
+	AvgPipelineLenSum  uint64        // redis version 8.8, sum of pipeline lengths
+	AvgPipelineLenCnt  uint64        // redis version 8.8, count of pipeline operations
 }
 
 type ClientInfoCmd struct {
@@ -7153,8 +7297,14 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 			info.LibVer = val
 		case "io-thread":
 			info.IoThread, err = strconv.Atoi(val)
+		case "read-events":
+			info.ReadEvents, err = strconv.ParseUint(val, 10, 64)
+		case "avg-pipeline-len-sum":
+			info.AvgPipelineLenSum, err = strconv.ParseUint(val, 10, 64)
+		case "avg-pipeline-len-cnt":
+			info.AvgPipelineLenCnt, err = strconv.ParseUint(val, 10, 64)
 		default:
-			return nil, fmt.Errorf("redis: unexpected client info key(%s)", key)
+			// skip unknown fields
 		}
 
 		if err != nil {
@@ -7201,6 +7351,9 @@ func (cmd *ClientInfoCmd) Clone() Cmder {
 			Resp:               cmd.val.Resp,
 			LibName:            cmd.val.LibName,
 			LibVer:             cmd.val.LibVer,
+			ReadEvents:         cmd.val.ReadEvents,
+			AvgPipelineLenSum:  cmd.val.AvgPipelineLenSum,
+			AvgPipelineLenCnt:  cmd.val.AvgPipelineLenCnt,
 		}
 	}
 	return &ClientInfoCmd{
@@ -7307,7 +7460,10 @@ func (cmd *ACLLogCmd) readReply(rd *proto.Reader) error {
 			case "timestamp-last-updated":
 				entry.TimestampLastUpdated, err = rd.ReadInt()
 			default:
-				return fmt.Errorf("redis: unexpected key %q in ACL LOG reply", key)
+				// skip unknown fields
+				if err := rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 
 			if err != nil {
@@ -7371,6 +7527,9 @@ func (cmd *ACLLogCmd) Clone() Cmder {
 						Resp:               entry.ClientInfo.Resp,
 						LibName:            entry.ClientInfo.LibName,
 						LibVer:             entry.ClientInfo.LibVer,
+						ReadEvents:         entry.ClientInfo.ReadEvents,
+						AvgPipelineLenSum:  entry.ClientInfo.AvgPipelineLenSum,
+						AvgPipelineLenCnt:  entry.ClientInfo.AvgPipelineLenCnt,
 					}
 				}
 			}
@@ -7591,13 +7750,18 @@ type VectorScoreSliceCmd struct {
 
 var _ Cmder = (*VectorScoreSliceCmd)(nil)
 
-func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+func NewVectorScoreSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
 	return &VectorScoreSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
 			args: args,
 		},
 	}
+}
+
+// NewVectorInfoSliceCmd is an alias for NewVectorScoreSliceCmd kept for backwards compatibility.
+func NewVectorInfoSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceCmd {
+	return NewVectorScoreSliceCmd(ctx, args...)
 }
 
 func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
@@ -7617,9 +7781,27 @@ func (cmd *VectorScoreSliceCmd) String() string {
 }
 
 func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
-	n, err := rd.ReadMapLen()
+	typ, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	var n int
+	if typ == proto.RespMap {
+		n, err = rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+	} else {
+		// RESP2 returns a flat array [name, score, name, score, ...]
+		n, err = rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if n%2 != 0 {
+			return fmt.Errorf("redis: VectorScoreSliceCmd expects even number of elements, got %d", n)
+		}
+		n /= 2
 	}
 
 	cmd.val = make([]VectorScore, n)
@@ -7642,6 +7824,208 @@ func (cmd *VectorScoreSliceCmd) readReply(rd *proto.Reader) error {
 
 func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	return &VectorScoreSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
+	v, err := rd.ReadReply()
+	if err != nil {
+		if err == proto.Nil {
+			return nil, nil
+		}
+		return nil, err
+	}
+	s, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("redis: can't parse reply=%T reading string", v)
+	}
+	return &s, nil
+}
+
+type VectorAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorAttrib
+}
+
+var _ Cmder = (*VectorAttribSliceCmd)(nil)
+
+func NewVectorAttribSliceCmd(ctx context.Context, args ...any) *VectorAttribSliceCmd {
+	return &VectorAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%2 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 2", n)
+	}
+	cmd.val = make([]VectorAttrib, n/2)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorAttrib{Name: name, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorAttribSliceCmd) Clone() Cmder {
+	return &VectorAttribSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+type VectorScoreAttribSliceCmd struct {
+	baseCmd
+
+	val []VectorScoreAttrib
+}
+
+var _ Cmder = (*VectorScoreAttribSliceCmd)(nil)
+
+func NewVectorScoreAttribSliceCmd(ctx context.Context, args ...any) *VectorScoreAttribSliceCmd {
+	return &VectorScoreAttribSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	return cmd.val
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreAttribSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreAttribSliceCmd) readReply(rd *proto.Reader) error {
+	replyType, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+
+	if replyType == proto.RespMap {
+		n, err := rd.ReadMapLen()
+		if err != nil {
+			return err
+		}
+		cmd.val = make([]VectorScoreAttrib, n)
+		for i := 0; i < n; i++ {
+			name, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if err := rd.ReadFixedArrayLen(2); err != nil {
+				return err
+			}
+			score, err := rd.ReadFloat()
+			if err != nil {
+				return err
+			}
+			attrib, err := readVectorAttribStringOrNil(rd)
+			if err != nil {
+				return err
+			}
+			cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+		}
+		return nil
+	}
+
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n%3 != 0 {
+		return fmt.Errorf("redis: got %d elements in the VSIM array, wanted a multiple of 3", n)
+	}
+	cmd.val = make([]VectorScoreAttrib, n/3)
+	for i := range cmd.val {
+		name, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		score, err := rd.ReadFloat()
+		if err != nil {
+			return err
+		}
+		attrib, err := readVectorAttribStringOrNil(rd)
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = VectorScoreAttrib{Name: name, Score: score, Attribs: attrib}
+	}
+	return nil
+}
+
+func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
+	return &VectorScoreAttribSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
 	}
@@ -7759,6 +8143,14 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				messages, start := xAutoClaimCmd.Val()
 				return CmdTypeXAutoClaimValue{messages: messages, start: start}, xAutoClaimCmd.Err()
+			}
+		case CmdTypeXAutoClaimWithDeleted:
+			if xAutoClaimWithDeletedCmd, ok := cmd.(interface {
+				Val() ([]XMessage, string, []string)
+				Err() error
+			}); ok {
+				messages, start, deletedIDs := xAutoClaimWithDeletedCmd.Val()
+				return CmdTypeXAutoClaimWithDeletedValue{messages: messages, start: start, deletedIDs: deletedIDs}, xAutoClaimWithDeletedCmd.Err()
 			}
 		case CmdTypeXAutoClaimJustID:
 			if xAutoClaimJustIDCmd, ok := cmd.(interface {

@@ -902,6 +902,157 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		Expect(found).To(BeTrue())
 	})
 
+	It("should emit Steps in order with SORTBY MAX and GROUPBY", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Scorer:    "BM25STD.TANH",
+			AddScores: true,
+			Steps: []redis.FTAggregateStep{
+				{SortBy: &redis.FTAggregateSortByStep{
+					Fields: []redis.FTAggregateSortBy{{FieldName: "@__score", Desc: true}},
+					Max:    50000,
+				}},
+				{GroupBy: &redis.FTAggregateGroupBy{
+					Fields: []interface{}{"@parent_id", "@profile_id"},
+					Reduce: []redis.FTAggregateReducer{
+						{Reducer: redis.SearchSum, Args: []interface{}{"the_score"}, As: "the_score"},
+					},
+				}},
+				{SortBy: &redis.FTAggregateSortByStep{
+					Fields: []redis.FTAggregateSortBy{{FieldName: "@the_score", Desc: true}},
+				}},
+			},
+			LimitOffset: 0,
+			Limit:       400,
+		}
+		args, err := redis.FTAggregateQuery("q", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"q",
+			"SCORER", "BM25STD.TANH",
+			"ADDSCORES",
+			"SORTBY", 2, "@__score", "DESC", "MAX", 50000,
+			"GROUPBY", 2, "@parent_id", "@profile_id",
+			"REDUCE", "SUM", 1, "the_score", "AS", "the_score",
+			"SORTBY", 2, "@the_score", "DESC",
+			"LIMIT", 0, 400,
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should emit Steps with LOAD and APPLY interleaved", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@price", As: "p"}},
+				{Load: &redis.FTAggregateLoad{Field: "@quantity"}},
+				{Apply: &redis.FTAggregateApply{Field: "@p * @quantity", As: "total"}},
+				{SortBy: &redis.FTAggregateSortByStep{
+					Fields: []redis.FTAggregateSortBy{{FieldName: "@total", Desc: true}},
+					Max:    10000,
+				}},
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"LOAD", 3, "@price", "AS", "p",
+			"LOAD", 1, "@quantity",
+			"APPLY", "@p * @quantity", "AS", "total",
+			"SORTBY", 2, "@total", "DESC", "MAX", 10000,
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should error when LoadAll is combined with a LOAD step", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LoadAll: true,
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "@price"}},
+				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+			},
+		}
+		_, err := redis.FTAggregateQuery("*", options)
+		Expect(err).To(MatchError(ContainSubstring("LOADALL and LOAD are mutually exclusive")))
+	})
+
+	It("should allow LoadAll together with Steps that don't use LOAD", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			LoadAll: true,
+			Steps: []redis.FTAggregateStep{
+				{Apply: &redis.FTAggregateApply{Field: "@price * 2", As: "double"}},
+			},
+		}
+		args, err := redis.FTAggregateQuery("*", options)
+		Expect(err).NotTo(HaveOccurred())
+
+		expected := redis.AggregateQuery{
+			"*",
+			"LOAD", "*",
+			"APPLY", "@price * 2", "AS", "double",
+			"DIALECT", 2,
+		}
+		Expect(args).To(Equal(expected))
+	})
+
+	It("should error when SORTBY step has both ASC and DESC", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{SortBy: &redis.FTAggregateSortByStep{
+					Fields: []redis.FTAggregateSortBy{{FieldName: "@x", Asc: true, Desc: true}},
+				}},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("should error when a step sets more than one field", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{
+				{
+					Load:  &redis.FTAggregateLoad{Field: "@x"},
+					Apply: &redis.FTAggregateApply{Field: "@x * 2", As: "y"},
+				},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("each step must set exactly one")))
+	})
+
+	It("should error when a step sets no field", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Steps: []redis.FTAggregateStep{{}},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("each step must set exactly one")))
+	})
+
+	It("should error when Steps is combined with deprecated fields", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			Load: []redis.FTAggregateLoad{{Field: "@ignored_load"}},
+			Steps: []redis.FTAggregateStep{
+				{Apply: &redis.FTAggregateApply{Field: "@used", As: "u"}},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("Steps cannot be combined with the deprecated")))
+	})
+
+	It("should error when Steps is combined with deprecated SortByMax", Label("search", "ftaggregate"), func() {
+		options := &redis.FTAggregateOptions{
+			SortByMax: 999,
+			Steps: []redis.FTAggregateStep{
+				{Apply: &redis.FTAggregateApply{Field: "@used", As: "u"}},
+			},
+		}
+		_, err := redis.FTAggregateQuery("q", options)
+		Expect(err).To(MatchError(ContainSubstring("Steps cannot be combined with the deprecated")))
+	})
+
 	It("should FTSearch SkipInitialScan", Label("search", "ftsearch"), func() {
 		client.HSet(ctx, "doc1", "foo", "bar")
 

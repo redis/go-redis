@@ -257,6 +257,12 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 			retryTimeout: false,
 		},
 		{
+			name:         "Lua script READONLY error should retry",
+			errorMsg:     "ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica.",
+			shouldRetry:  true,
+			retryTimeout: false,
+		},
+		{
 			name:         "CLUSTERDOWN error should retry",
 			errorMsg:     "CLUSTERDOWN The cluster is down",
 			shouldRetry:  true,
@@ -302,6 +308,51 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLuaScriptReadOnlyError tests that READONLY errors from Lua scripts
+// are correctly detected by IsReadOnlyError and ShouldRetry.
+func TestLuaScriptReadOnlyError(t *testing.T) {
+	luaReadOnlyMsg := "ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica."
+
+	t.Run("IsReadOnlyError detects Lua script READONLY", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		if !redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should detect Lua script READONLY error: %v", err)
+		}
+	})
+
+	t.Run("ShouldRetry retries Lua script READONLY", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		if !redis.ShouldRetry(err, false) {
+			t.Errorf("ShouldRetry should retry Lua script READONLY error: %v", err)
+		}
+	})
+
+	t.Run("wrapped Lua script READONLY detected", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		wrappedErr := fmt.Errorf("hook wrapper: %w", err)
+		if !redis.IsReadOnlyError(wrappedErr) {
+			t.Errorf("IsReadOnlyError should detect wrapped Lua script READONLY error: %v", wrappedErr)
+		}
+		if !redis.ShouldRetry(wrappedErr, false) {
+			t.Errorf("ShouldRetry should retry wrapped Lua script READONLY error: %v", wrappedErr)
+		}
+	})
+
+	t.Run("false positive: non-script error with -READONLY not matched", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-ERR something-READONLY-key"))
+		if redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should NOT match non-script error containing -READONLY: %v", err)
+		}
+	})
+
+	t.Run("false positive: script error without -READONLY not matched", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-ERR Error running script (call to f_abc): @user_script:1: some other error"))
+		if redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should NOT match script error without -READONLY: %v", err)
+		}
+	})
 }
 
 // TestSetErrWithWrappedError tests that when a hook wraps an error and sets it

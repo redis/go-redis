@@ -6760,6 +6760,111 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+		It("should support COUNT aggregate for ZUnion and ZInter", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.8, "COUNT aggregate requires Redis 8.8+")
+
+			err := client.ZAddArgs(ctx, "zset1", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 100, Member: "foo"},
+					{Score: 100, Member: "bar"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAddArgs(ctx, "zset2", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 200, Member: "foo"},
+					{Score: 200, Member: "bar"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAddArgs(ctx, "zset3", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 300, Member: "foo"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			keys := []string{"zset1", "zset2", "zset3"}
+
+			union, err := client.ZUnion(ctx, redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(union).To(Equal([]string{"bar", "foo"}))
+
+			unionScores, err := client.ZUnionWithScores(ctx, redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(unionScores).To(Equal([]redis.Z{
+				{Score: 2, Member: "bar"},
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err := client.ZUnionStore(ctx, "out", &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			storedUnion, err := client.ZRangeWithScores(ctx, "out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storedUnion).To(Equal([]redis.Z{
+				{Score: 2, Member: "bar"},
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err = client.ZUnionStore(ctx, "weighted_out", &redis.ZStore{
+				Keys:      keys,
+				Weights:   []float64{10, 5, 3},
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			weightedUnion, err := client.ZRangeWithScores(ctx, "weighted_out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(weightedUnion).To(Equal([]redis.Z{
+				{Score: 15, Member: "bar"},
+				{Score: 18, Member: "foo"},
+			}))
+
+			inter, err := client.ZInter(ctx, &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inter).To(Equal([]string{"foo"}))
+
+			interScores, err := client.ZInterWithScores(ctx, &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(interScores).To(Equal([]redis.Z{
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err = client.ZInterStore(ctx, "inter_out", &redis.ZStore{
+				Keys:      keys,
+				Weights:   []float64{10, 5, 3},
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			storedInter, err := client.ZRangeWithScores(ctx, "inter_out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storedInter).To(Equal([]redis.Z{
+				{Score: 18, Member: "foo"},
+			}))
+		})
+
 		It("should ZRandMember", func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -7588,6 +7693,31 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(ids).To(Equal([]string{"3-0"}))
+			})
+
+			It("should XAutoClaim return deletedIDs", func() {
+				xca := &redis.XAutoClaimArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Consumer: "consumer",
+					Start:    "-",
+					Count:    3,
+				}
+				err := client.XDel(ctx, "stream", "2-0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				msgs, start, ids, err := client.XAutoClaimWithDeleted(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(start).To(Equal("0-0"))
+				Expect(msgs).To(Equal([]redis.XMessage{{
+					ID:     "1-0",
+					Values: map[string]interface{}{"uno": "un"},
+				}, {
+					ID:     "3-0",
+					Values: map[string]interface{}{"tres": "troix"},
+				}}))
+				Expect(ids).To(Equal([]string{"2-0"}))
+
 			})
 
 			It("should XClaim", func() {

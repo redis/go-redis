@@ -6,7 +6,9 @@ help() {
     cat <<- EOF
 Usage: TAG=tag $0
 
-Updates version in go.mod files and pushes a new brash to GitHub.
+Updates redis/go-redis dependency versions in all sub-module go.mod files
+and bumps version.go to the new tag. Runs in the current branch and does
+NOT commit, push, or switch branches — review the diff and commit yourself.
 
 VARIABLES:
   TAG        git tag, for example, v1.0.0
@@ -32,14 +34,14 @@ if [[ ${TAG_FOUND} = ${TAG} ]] ; then
     exit 1
 fi
 
-if ! git diff --quiet
-then
-    printf "working tree is not clean\n\n"
-    git status
-    exit 1
-fi
-
-git checkout master
+# Portable in-place sed: works on both GNU sed and BSD/macOS sed by
+# always writing a .bak backup and removing it afterwards.
+sed_inplace() {
+    local script=$1
+    local file=$2
+    sed -i.bak "$script" "$file"
+    rm -f "${file}.bak"
+}
 
 PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
   | sed 's/^\.\///' \
@@ -47,21 +49,14 @@ PACKAGE_DIRS=$(find . -mindepth 2 -type f -name 'go.mod' -exec dirname {} \; \
 
 for dir in $PACKAGE_DIRS
 do
-    printf "${dir}: go get -u && go mod tidy\n"
-    #(cd ./${dir} && go get -u && go mod tidy -compat=1.21)
+    printf "updating %s/go.mod\n" "${dir}"
+    sed_inplace \
+        "s|\(github.com/redis/go-redis[^ ]*\) v[^ ]*|\1 ${TAG}|" \
+        "${dir}/go.mod"
+    (cd "./${dir}" && go mod tidy -compat=1.24)
 done
 
-for dir in $PACKAGE_DIRS
-do
-    sed --in-place \
-        "s/redis\/go-redis\([^ ]*\) v.*/redis\/go-redis\1 ${TAG}/" "${dir}/go.mod"
-    #(cd ./${dir} && go get -u && go mod tidy -compat=1.21)
-    (cd ./${dir} && go mod tidy -compat=1.21)
-done
+printf "updating version.go\n"
+sed_inplace "s/\(return \)\"[^\"]*\"/\1\"${TAG#v}\"/" ./version.go
 
-sed --in-place "s/\(return \)\"[^\"]*\"/\1\"${TAG#v}\"/" ./version.go
-
-git checkout -b release/${TAG} master
-git add -u
-git commit -m "chore: release $TAG (release.sh)"
-git push origin release/${TAG}
+printf "\nDone. Review changes with 'git diff' and commit when ready.\n"
