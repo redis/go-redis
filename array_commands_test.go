@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -1789,6 +1790,188 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			result, err = client.ARLastItems(ctx, "myarray", 100, false).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(HaveLen(8))
+		})
+	})
+
+
+	Describe("Large uint64 index values", func() {
+		const int64MaxPlus1 = uint64(math.MaxInt64) + 1
+		const uint64Max = uint64(math.MaxUint64)
+
+		It("should ARSet and ARGet with index exceeding int64 max", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			n, err := client.ARSet(ctx, "myarray", int64MaxPlus1, "value").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			val, err := client.ARGet(ctx, "myarray", int64MaxPlus1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("value"))
+
+			length, err := client.ARLen(ctx, "myarray").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(length).To(Equal(uint64(int64MaxPlus1 + 1)))
+		})
+
+		It("should ARSet contiguous write across int64 boundary", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			base := int64MaxPlus1 - 1
+			n, err := client.ARSet(ctx, "myarray", base, "a", "b", "c").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(3)))
+
+			val, err := client.ARGet(ctx, "myarray", base).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("a"))
+
+			val, err = client.ARGet(ctx, "myarray", base+1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("b"))
+
+			val, err = client.ARGet(ctx, "myarray", base+2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("c"))
+		})
+
+		It("should ARGetRange with large uint64 values", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			base := int64MaxPlus1
+			Expect(client.ARSet(ctx, "myarray", base, "x").Err()).NotTo(HaveOccurred())
+			Expect(client.ARSet(ctx, "myarray", base+1, "y").Err()).NotTo(HaveOccurred())
+			Expect(client.ARSet(ctx, "myarray", base+2, "z").Err()).NotTo(HaveOccurred())
+
+			result, err := client.ARGetRange(ctx, "myarray", base, base+2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal([]any{"x", "y", "z"}))
+		})
+
+		It("should ARMSet and ARMGet with large uint64 indexes", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			n, err := client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: int64MaxPlus1, Value: "a"},
+				redis.AREntry{Index: int64MaxPlus1 + 1, Value: "b"},
+			).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			result, err := client.ARMGet(ctx, "myarray", int64MaxPlus1, int64MaxPlus1+1, 0).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(3))
+			Expect(result[0]).To(Equal("a"))
+			Expect(result[1]).To(Equal("b"))
+			Expect(result[2]).To(BeNil())
+		})
+
+		It("should ARDel with large uint64 index", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			Expect(client.ARSet(ctx, "myarray", int64MaxPlus1, "val").Err()).NotTo(HaveOccurred())
+
+			n, err := client.ARDel(ctx, "myarray", int64MaxPlus1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			_, err = client.ARGet(ctx, "myarray", int64MaxPlus1).Result()
+			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should ARDelRange with large uint64 values", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			base := int64MaxPlus1
+			Expect(client.ARSet(ctx, "myarray", base, "a").Err()).NotTo(HaveOccurred())
+			Expect(client.ARSet(ctx, "myarray", base+1, "b").Err()).NotTo(HaveOccurred())
+			Expect(client.ARSet(ctx, "myarray", base+2, "c").Err()).NotTo(HaveOccurred())
+
+			n, err := client.ARDelRange(ctx, "myarray", redis.ARRange{Start: base, End: base + 1}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(uint64(2)))
+
+			count, err := client.ARCount(ctx, "myarray").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(count).To(Equal(uint64(1)))
+
+			val, err := client.ARGet(ctx, "myarray", base+2).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("c"))
+		})
+
+		It("should ARScan with large uint64 values", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			base := int64MaxPlus1
+			Expect(client.ARSet(ctx, "myarray", base, "a").Err()).NotTo(HaveOccurred())
+			Expect(client.ARSet(ctx, "myarray", base+5, "b").Err()).NotTo(HaveOccurred())
+
+			result, err := client.ARScan(ctx, "myarray", base, base+10, nil).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(HaveLen(2))
+			Expect(result[0]).To(Equal(redis.AREntry{Index: base, Value: "a"}))
+			Expect(result[1]).To(Equal(redis.AREntry{Index: base + 5, Value: "b"}))
+		})
+
+		It("should ARSeek and ARNext with large uint64 index", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			_, err := client.ARInsert(ctx, "myarray", "a").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.ARSeek(ctx, "myarray", int64MaxPlus1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			idx, err := client.ARInsert(ctx, "myarray", "b").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(idx).To(Equal(int64MaxPlus1))
+
+			next, err := client.ARNext(ctx, "myarray").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next).To(Equal(int64MaxPlus1 + 1))
+
+			val, err := client.ARGet(ctx, "myarray", int64MaxPlus1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal("b"))
+		})
+
+		It("should ARSeek to uint64 max then ARNext return error", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			_, err := client.ARInsert(ctx, "myarray", "a").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := client.ARSeek(ctx, "myarray", uint64Max).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			_, err = client.ARNext(ctx, "myarray").Result()
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should AROp with large uint64 range values", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+
+			base := int64MaxPlus1
+			Expect(client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: base, Value: "10"},
+				redis.AREntry{Index: base + 1, Value: "20"},
+				redis.AREntry{Index: base + 2, Value: "30"},
+			).Err()).NotTo(HaveOccurred())
+
+			cmd := client.AROp(ctx, "myarray", base, base+2, redis.ArrayOpSum)
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			val, err := cmd.Float64()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(float64(60)))
+
+			cmd = client.AROp(ctx, "myarray", base, base+2, redis.ArrayOpUsed)
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			intVal, err := cmd.Int64()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(intVal).To(Equal(int64(3)))
 		})
 	})
 
