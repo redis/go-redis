@@ -319,9 +319,12 @@ var _ = Describe("ClusterClient", func() {
 			err := client.Set(ctx, "A", "VALUE", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			v, err := client.Get(ctx, "A").Result()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(v).To(Equal("VALUE"))
+			// With RouteByLatency / RouteRandomly the GET may be served by a
+			// replica that has not yet replicated the SET. Poll until the
+			// value propagates instead of failing on the first attempt.
+			Eventually(func() string {
+				return client.Get(ctx, "A").Val()
+			}, 30*time.Second).Should(Equal("VALUE"))
 		})
 
 		It("should distribute keys", func() {
@@ -808,17 +811,23 @@ var _ = Describe("ClusterClient", func() {
 			err = client.Do(ctx, []byte("GET"), []byte("A")).Err()
 			Expect(err).To(Equal(redis.Nil))
 
-			Eventually(func() error {
-				return client.SwapNodes(ctx, "A")
-			}, 30*time.Second).ShouldNot(HaveOccurred())
-
-			err = client.Do(ctx, "GET", "A").Err()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("MOVED"))
-
-			err = client.Do(ctx, []byte("GET"), []byte("A")).Err()
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("MOVED"))
+			// Re-swap and re-issue both GETs inside a single Eventually so a
+			// background topology reload that reverts the swap before our
+			// assertions just causes another iteration instead of a flake.
+			Eventually(func() string {
+				if err := client.SwapNodes(ctx, "A"); err != nil {
+					return err.Error()
+				}
+				strErr := client.Do(ctx, "GET", "A").Err()
+				bytesErr := client.Do(ctx, []byte("GET"), []byte("A")).Err()
+				if strErr == nil || bytesErr == nil {
+					return ""
+				}
+				if !strings.Contains(strErr.Error(), "MOVED") {
+					return strErr.Error()
+				}
+				return bytesErr.Error()
+			}, 30*time.Second).Should(ContainSubstring("MOVED"))
 
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
@@ -3268,8 +3277,12 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 	})
 
 	It("should handle node failing timeout correctly", func() {
+		// Use a larger window than the original 2s. Failing() compares
+		// truncated unix seconds (failing < timeout), so a 1s sleep against
+		// a 2s timeout has < 1s of margin and flips false on slow CI runners
+		// where time.Sleep overshoots.
 		opt := redisClusterOptions()
-		opt.FailingTimeoutSeconds = 2 // Short timeout for testing
+		opt.FailingTimeoutSeconds = 5
 		client = cluster.newClusterClient(ctx, opt)
 
 		// Get a node and mark it as failing
@@ -3286,12 +3299,13 @@ var _ = Describe("ClusterClient FailingTimeoutSeconds", func() {
 		node.MarkAsFailing()
 		Expect(node.Failing()).To(BeTrue())
 
-		// Should still be failing after 1 second (less than timeout)
-		time.Sleep(1 * time.Second)
+		// Should still be failing well before the timeout expires.
+		time.Sleep(2 * time.Second)
 		Expect(node.Failing()).To(BeTrue())
 
-		// Should not be failing after timeout expires
-		time.Sleep(2 * time.Second) // Total 3 seconds > 2 second timeout
+		// Should not be failing after timeout expires (total 7s > 5s timeout,
+		// with > 1s margin on each side).
+		time.Sleep(5 * time.Second)
 		Expect(node.Failing()).To(BeFalse())
 	})
 
