@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -361,6 +362,13 @@ func (c cmdable) XAck(ctx context.Context, stream, group string, ids ...string) 
 	return cmd
 }
 
+// XNACK modes. See [XNackArgs.Mode].
+const (
+	XNackModeSilent = "SILENT"
+	XNackModeFail   = "FAIL"
+	XNackModeFatal  = "FATAL"
+)
+
 // XNackArgs represents the arguments for the XNACK command (Redis >= 8.8).
 //
 // XNACK negatively acknowledges one or more messages in a consumer group's
@@ -371,14 +379,14 @@ type XNackArgs struct {
 	Group  string
 
 	// Mode controls how the delivery counter is adjusted for each NACKed entry.
-	// Must be one of:
-	//   - "SILENT": the consumer is shutting down or experiencing internal errors
+	// Must be one of [XNackModeSilent], [XNackModeFail], or [XNackModeFatal]:
+	//   - SILENT: the consumer is shutting down or experiencing internal errors
 	//     unrelated to the message. The delivery counter is decremented by 1,
 	//     undoing the increment that happened when the message was delivered.
-	//   - "FAIL": the consumer could not process the message (e.g. insufficient
+	//   - FAIL: the consumer could not process the message (e.g. insufficient
 	//     memory), but another consumer might succeed. The delivery counter is
 	//     left unchanged.
-	//   - "FATAL": the message is invalid or suspected malicious. The delivery
+	//   - FATAL: the message is invalid or suspected malicious. The delivery
 	//     counter is set to MAXINT, which will immediately move the message to
 	//     the Dead Letter Queue (DLQ) if one is configured for the group.
 	Mode string
@@ -403,7 +411,7 @@ type XNackArgs struct {
 // XNack executes the XNACK command. See [XNackArgs] for the full argument documentation.
 // Requires Redis >= 8.8.
 func (c cmdable) XNack(ctx context.Context, a *XNackArgs) *IntCmd {
-	args := make([]interface{}, 0, 6+len(a.IDs))
+	args := make([]interface{}, 0, 9+len(a.IDs))
 	args = append(args, "xnack", a.Stream, a.Group, a.Mode, "ids", len(a.IDs))
 	for _, id := range a.IDs {
 		args = append(args, id)
@@ -415,6 +423,12 @@ func (c cmdable) XNack(ctx context.Context, a *XNackArgs) *IntCmd {
 		args = append(args, "force")
 	}
 	cmd := NewIntCmd(ctx, args...)
+	switch a.Mode {
+	case XNackModeSilent, XNackModeFail, XNackModeFatal:
+	default:
+		cmd.SetErr(errors.New("redis: XNACK mode must be SILENT, FAIL, or FATAL"))
+		return cmd
+	}
 	_ = c(ctx, cmd)
 	return cmd
 }
