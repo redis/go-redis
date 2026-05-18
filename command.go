@@ -156,6 +156,8 @@ const (
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
 	CmdTypeHotKeys
+	CmdTypeIncrEXInt
+	CmdTypeIncrEXFloat
 )
 
 type (
@@ -4937,8 +4939,10 @@ func (c *cmdsInfoCache) Refresh() {
 }
 
 // ------------------------------------------------------------------------------
-const requestPolicy = "request_policy"
-const responsePolicy = "response_policy"
+const (
+	requestPolicy  = "request_policy"
+	responsePolicy = "response_policy"
+)
 
 func parseCommandPolicies(commandInfoTips map[string]string, firstKeyPos int8) *routing.CommandPolicy {
 	req := routing.ReqDefault
@@ -8259,6 +8263,20 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return hotKeysCmd.Val(), hotKeysCmd.Err()
 			}
+		case CmdTypeIncrEXInt:
+			if incrEXCmd, ok := cmd.(interface {
+				Val() IncrEXIntResult
+				Err() error
+			}); ok {
+				return incrEXCmd.Val(), incrEXCmd.Err()
+			}
+		case CmdTypeIncrEXFloat:
+			if incrEXCmd, ok := cmd.(interface {
+				Val() IncrEXFloatResult
+				Err() error
+			}); ok {
+				return incrEXCmd.Val(), incrEXCmd.Err()
+			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
 				Val() (string, []string)
@@ -8556,4 +8574,117 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 
 	// If we can't get the command type, return nil
 	return nil, nil
+}
+
+//------------------------------------------------------------------------------
+
+// IncrEXIntResult is the reply of an INCREX command issued via IncrEXInt.
+// Value is the new value of the key; AppliedIncrement is the increment that
+// the server actually applied (0 when OVERFLOW=REJECT blocked the op, clamped
+// when OVERFLOW=SAT).
+type IncrEXIntResult struct {
+	Value            int64
+	AppliedIncrement int64
+}
+
+type IncrEXIntCmd struct {
+	baseCmd
+
+	val IncrEXIntResult
+}
+
+var _ Cmder = (*IncrEXIntCmd)(nil)
+
+func NewIncrEXIntCmd(ctx context.Context, args ...interface{}) *IncrEXIntCmd {
+	return &IncrEXIntCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeIncrEXInt,
+		},
+	}
+}
+
+func (cmd *IncrEXIntCmd) SetVal(val IncrEXIntResult) { cmd.val = val }
+func (cmd *IncrEXIntCmd) Val() IncrEXIntResult       { return cmd.val }
+func (cmd *IncrEXIntCmd) Result() (IncrEXIntResult, error) {
+	return cmd.val, cmd.err
+}
+func (cmd *IncrEXIntCmd) String() string { return cmdString(cmd, cmd.val) }
+
+func (cmd *IncrEXIntCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+	value, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	applied, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	cmd.val = IncrEXIntResult{Value: value, AppliedIncrement: applied}
+	return nil
+}
+
+func (cmd *IncrEXIntCmd) Clone() Cmder {
+	return &IncrEXIntCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+// IncrEXFloatResult is the reply of an INCREX command issued via IncrEXFloat.
+type IncrEXFloatResult struct {
+	Value            float64
+	AppliedIncrement float64
+}
+
+type IncrEXFloatCmd struct {
+	baseCmd
+
+	val IncrEXFloatResult
+}
+
+var _ Cmder = (*IncrEXFloatCmd)(nil)
+
+func NewIncrEXFloatCmd(ctx context.Context, args ...interface{}) *IncrEXFloatCmd {
+	return &IncrEXFloatCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeIncrEXFloat,
+		},
+	}
+}
+
+func (cmd *IncrEXFloatCmd) SetVal(val IncrEXFloatResult) { cmd.val = val }
+func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult       { return cmd.val }
+func (cmd *IncrEXFloatCmd) Result() (IncrEXFloatResult, error) {
+	return cmd.val, cmd.err
+}
+func (cmd *IncrEXFloatCmd) String() string { return cmdString(cmd, cmd.val) }
+
+func (cmd *IncrEXFloatCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+	value, err := rd.ReadFloat()
+	if err != nil {
+		return err
+	}
+	applied, err := rd.ReadFloat()
+	if err != nil {
+		return err
+	}
+	cmd.val = IncrEXFloatResult{Value: value, AppliedIncrement: applied}
+	return nil
+}
+
+func (cmd *IncrEXFloatCmd) Clone() Cmder {
+	return &IncrEXFloatCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
 }
