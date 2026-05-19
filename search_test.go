@@ -15,18 +15,23 @@ import (
 	"github.com/redis/go-redis/v9/helper"
 )
 
+// WaitForIndexing polls FT.INFO until the index has finished both its
+// initial indexing pass and any background cleaning. Cleaning can briefly
+// report 1 right after index creation (e.g. for HNSW vector indexes) while
+// background setup is in progress, so callers that immediately assert on
+// FT.INFO fields would otherwise be flaky.
 func WaitForIndexing(c *redis.Client, index string) {
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		res, err := c.FTInfo(context.Background(), index).Result()
 		Expect(err).NotTo(HaveOccurred())
-		if c.Options().Protocol == 2 {
-			if res.Indexing == 0 {
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
-		} else {
+		if res.Indexing == 0 && res.Cleaning == 0 {
 			return
 		}
+		if time.Now().After(deadline) {
+			Fail(fmt.Sprintf("WaitForIndexing(%q) timed out: indexing=%d cleaning=%d", index, res.Indexing, res.Cleaning))
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -3469,9 +3474,11 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should parse FTInfo response with vector fields", Label("search", "ftinfo", "NonRedisEnterprise"), func() {
-		// Create an index with multiple field types including vector
+		// Scope to a prefix so that hashes left over from previous specs in
+		// this Describe (e.g. doc_resp3_*) cannot be matched by this index
+		// and skew NumTerms / NumRecords.
 		val, err := client.FTCreate(ctx, "idx_vector",
-			&redis.FTCreateOptions{},
+			&redis.FTCreateOptions{Prefix: []interface{}{"idx_vector:"}},
 			&redis.FieldSchema{
 				FieldName: "prompt",
 				FieldType: redis.SearchFieldTypeText,

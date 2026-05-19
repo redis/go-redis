@@ -1454,6 +1454,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Hits += s.Hits
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
@@ -1465,6 +1467,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Hits += s.Hits
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
