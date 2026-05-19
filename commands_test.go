@@ -2187,6 +2187,21 @@ var _ = Describe("Commands", func() {
 			Expect(ttl2).To(BeNumerically("<=", ttl1))
 		})
 
+		It("should IncrEXInt SAT clamps to LBOUND with negative increment", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "credits", "50", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "credits", redis.IncrEXIntArgs{
+				By: -1, HasBy: true,
+				LBound: 0, HasLBound: true,
+				Overflow: redis.IncrEXOverflowSat,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(49)))
+			Expect(res.AppliedIncrement).To(Equal(int64(-1)))
+		})
+
 		It("should IncrEXInt PERSIST removes TTL", func() {
 			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
 
