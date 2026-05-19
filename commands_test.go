@@ -6760,6 +6760,111 @@ var _ = Describe("Commands", func() {
 			}}))
 		})
 
+		It("should support COUNT aggregate for ZUnion and ZInter", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion(8.8, "COUNT aggregate requires Redis 8.8+")
+
+			err := client.ZAddArgs(ctx, "zset1", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 100, Member: "foo"},
+					{Score: 100, Member: "bar"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAddArgs(ctx, "zset2", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 200, Member: "foo"},
+					{Score: 200, Member: "bar"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			err = client.ZAddArgs(ctx, "zset3", redis.ZAddArgs{
+				Members: []redis.Z{
+					{Score: 300, Member: "foo"},
+				},
+			}).Err()
+			Expect(err).NotTo(HaveOccurred())
+
+			keys := []string{"zset1", "zset2", "zset3"}
+
+			union, err := client.ZUnion(ctx, redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(union).To(Equal([]string{"bar", "foo"}))
+
+			unionScores, err := client.ZUnionWithScores(ctx, redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(unionScores).To(Equal([]redis.Z{
+				{Score: 2, Member: "bar"},
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err := client.ZUnionStore(ctx, "out", &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			storedUnion, err := client.ZRangeWithScores(ctx, "out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storedUnion).To(Equal([]redis.Z{
+				{Score: 2, Member: "bar"},
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err = client.ZUnionStore(ctx, "weighted_out", &redis.ZStore{
+				Keys:      keys,
+				Weights:   []float64{10, 5, 3},
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(2)))
+
+			weightedUnion, err := client.ZRangeWithScores(ctx, "weighted_out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(weightedUnion).To(Equal([]redis.Z{
+				{Score: 15, Member: "bar"},
+				{Score: 18, Member: "foo"},
+			}))
+
+			inter, err := client.ZInter(ctx, &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(inter).To(Equal([]string{"foo"}))
+
+			interScores, err := client.ZInterWithScores(ctx, &redis.ZStore{
+				Keys:      keys,
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(interScores).To(Equal([]redis.Z{
+				{Score: 3, Member: "foo"},
+			}))
+
+			n, err = client.ZInterStore(ctx, "inter_out", &redis.ZStore{
+				Keys:      keys,
+				Weights:   []float64{10, 5, 3},
+				Aggregate: "COUNT",
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)))
+
+			storedInter, err := client.ZRangeWithScores(ctx, "inter_out", 0, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(storedInter).To(Equal([]redis.Z{
+				{Score: 18, Member: "foo"},
+			}))
+		})
+
 		It("should ZRandMember", func() {
 			err := client.ZAdd(ctx, "zset", redis.Z{Score: 1, Member: "one"}).Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -7488,8 +7593,14 @@ var _ = Describe("Commands", func() {
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			start := time.Now()
+			// Wait for the goroutine to finish before the spec returns so it
+			// can't outlive AfterEach's client.Close() and trip "use of closed
+			// network connection" during the next spec's BeforeEach.
+			done := make(chan struct{})
+			defer func() { Eventually(done, 5*time.Second).Should(BeClosed()) }()
 			go func() {
 				defer GinkgoRecover()
+				defer close(done)
 
 				time.Sleep(100 * time.Millisecond)
 				id, err := client.XAdd(ctx, &redis.XAddArgs{
@@ -7663,6 +7774,31 @@ var _ = Describe("Commands", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(start).To(Equal("0-0"))
 				Expect(ids).To(Equal([]string{"3-0"}))
+			})
+
+			It("should XAutoClaim return deletedIDs", func() {
+				xca := &redis.XAutoClaimArgs{
+					Stream:   "stream",
+					Group:    "group",
+					Consumer: "consumer",
+					Start:    "-",
+					Count:    3,
+				}
+				err := client.XDel(ctx, "stream", "2-0").Err()
+				Expect(err).NotTo(HaveOccurred())
+
+				msgs, start, ids, err := client.XAutoClaimWithDeleted(ctx, xca).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(start).To(Equal("0-0"))
+				Expect(msgs).To(Equal([]redis.XMessage{{
+					ID:     "1-0",
+					Values: map[string]interface{}{"uno": "un"},
+				}, {
+					ID:     "3-0",
+					Values: map[string]interface{}{"tres": "troix"},
+				}}))
+				Expect(ids).To(Equal([]string{"2-0"}))
+
 			})
 
 			It("should XClaim", func() {
@@ -9228,37 +9364,46 @@ var _ = Describe("Commands", func() {
 		It("reset all latencies", func() {
 			const key = "latency-monitor-threshold"
 
-			result, err := client.Latency(ctx).Result()
 			// reset all latencies
-			err = client.LatencyReset(ctx).Err()
+			err := client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
+			// Use a higher threshold (100ms) to avoid capturing normal operations
+			// that could cause flakiness due to timing variations on busy CI runners.
+			client.ConfigSet(ctx, key, "100")
 			defer client.ConfigSet(ctx, key, old[key])
 
 			// get latency after reset
-			result, err = client.Latency(ctx).Result()
+			result, err := client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
-			// create a new latency
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			// create a new latency event by sleeping past the threshold
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// get latency after create a new latency
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(1))
+			Expect(len(result)).Should(BeNumerically(">=", 1))
+			triggered := result[0].Name
 
 			// reset all latencies again
 			err = client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// get latency after reset again
+			// get latency after reset again. Don't assert total length is 0:
+			// other operations on the connection may briefly land in the
+			// latency log on a slow CI runner. Instead verify the specific
+			// event we triggered is gone.
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(0))
+			for _, event := range result {
+				if event.Name == triggered {
+					Fail("Event " + triggered + " should have been reset")
+				}
+			}
 		})
 
 		It("reset latencies by add event name args", func() {

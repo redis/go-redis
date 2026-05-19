@@ -1616,9 +1616,19 @@ func (p *ConnPool) Close() error {
 		// Check health before closing, since closeConn invalidates the
 		// underlying fd and would make connCheck (inside isHealthyConn)
 		// always fail with EBADF.
-		healthy := p.isHealthyConn(cn, nowNs)
+		// Only check health for idle connections to avoid data races when
+		// peeking at the socket/reader while another goroutine is reading from it.
+		// Non-idle connections are either in use or in transitional states and
+		// shouldn't be health-checked during shutdown.
+		_, isIdle := idleSet[cn.GetID()]
+		var healthy bool
+		if isIdle {
+			healthy = p.isHealthyConn(cn, nowNs)
+		} else {
+			healthy = true
+		}
 		if cb != nil {
-			if _, isIdle := idleSet[cn.GetID()]; isIdle {
+			if isIdle {
 				cb(ctx, -1, cn, "idle", false)
 			} else {
 				cb(ctx, -1, cn, "used", false)

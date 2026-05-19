@@ -109,6 +109,7 @@ const (
 	CmdTypeXPending
 	CmdTypeXPendingExt
 	CmdTypeXAutoClaim
+	CmdTypeXAutoClaimWithDeleted
 	CmdTypeXAutoClaimJustID
 	CmdTypeXInfoConsumers
 	CmdTypeXInfoGroups
@@ -161,6 +162,12 @@ type (
 	CmdTypeXAutoClaimValue struct {
 		messages []XMessage
 		start    string
+	}
+
+	CmdTypeXAutoClaimWithDeletedValue struct {
+		messages   []XMessage
+		start      string
+		deletedIDs []string
 	}
 
 	CmdTypeXAutoClaimJustIDValue struct {
@@ -2668,9 +2675,7 @@ func (cmd *XAutoClaimCmd) readReply(rd *proto.Reader) error {
 	}
 
 	if n >= 3 {
-		if err := rd.DiscardNext(); err != nil {
-			return err
-		}
+		return rd.DiscardNext()
 	}
 
 	return nil
@@ -2696,6 +2701,119 @@ func (cmd *XAutoClaimCmd) Clone() Cmder {
 		baseCmd: cmd.cloneBaseCmd(),
 		start:   cmd.start,
 		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+type XAutoClaimWithDeletedCmd struct {
+	baseCmd
+
+	start      string
+	val        []XMessage
+	deletedIDs []string
+}
+
+var _ Cmder = (*XAutoClaimWithDeletedCmd)(nil)
+
+func NewXAutoClaimWithDeletedCmd(ctx context.Context, args ...interface{}) *XAutoClaimWithDeletedCmd {
+	return &XAutoClaimWithDeletedCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeXAutoClaimWithDeleted,
+		},
+	}
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) SetVal(val []XMessage, start string, deletedIDs []string) {
+	cmd.val = val
+	cmd.start = start
+	cmd.deletedIDs = deletedIDs
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Val() (messages []XMessage, start string, deletedIDs []string) {
+	return cmd.val, cmd.start, cmd.deletedIDs
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Result() (messages []XMessage, start string, deletedIDs []string, err error) {
+	return cmd.val, cmd.start, cmd.deletedIDs, cmd.err
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	switch n {
+	case 2, // Redis 6
+		3: // Redis 7:
+		// ok
+	default:
+		return fmt.Errorf("redis: got %d elements in XAutoClaim reply, wanted 2/3", n)
+	}
+
+	cmd.start, err = rd.ReadString()
+	if err != nil {
+		return err
+	}
+
+	cmd.val, err = readXMessageSlice(rd)
+	if err != nil {
+		return err
+	}
+
+	if n < 3 {
+		return nil
+	}
+
+	nn, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.deletedIDs = make([]string, nn)
+	for i := 0; i < nn; i++ {
+		cmd.deletedIDs[i], err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (cmd *XAutoClaimWithDeletedCmd) Clone() Cmder {
+	var val []XMessage
+	if cmd.val != nil {
+		val = make([]XMessage, len(cmd.val))
+		for i, msg := range cmd.val {
+			val[i] = XMessage{
+				ID: msg.ID,
+			}
+			if msg.Values != nil {
+				val[i].Values = make(map[string]interface{}, len(msg.Values))
+				for k, v := range msg.Values {
+					val[i].Values[k] = v
+				}
+			}
+		}
+	}
+	var deletedIDs []string
+	if cmd.deletedIDs != nil {
+		deletedIDs = make([]string, len(cmd.deletedIDs))
+		copy(deletedIDs, cmd.deletedIDs)
+	}
+	return &XAutoClaimWithDeletedCmd{
+		baseCmd:    cmd.cloneBaseCmd(),
+		start:      cmd.start,
+		val:        val,
+		deletedIDs: deletedIDs,
 	}
 }
 
@@ -8025,6 +8143,14 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				messages, start := xAutoClaimCmd.Val()
 				return CmdTypeXAutoClaimValue{messages: messages, start: start}, xAutoClaimCmd.Err()
+			}
+		case CmdTypeXAutoClaimWithDeleted:
+			if xAutoClaimWithDeletedCmd, ok := cmd.(interface {
+				Val() ([]XMessage, string, []string)
+				Err() error
+			}); ok {
+				messages, start, deletedIDs := xAutoClaimWithDeletedCmd.Val()
+				return CmdTypeXAutoClaimWithDeletedValue{messages: messages, start: start, deletedIDs: deletedIDs}, xAutoClaimWithDeletedCmd.Err()
 			}
 		case CmdTypeXAutoClaimJustID:
 			if xAutoClaimJustIDCmd, ok := cmd.(interface {
