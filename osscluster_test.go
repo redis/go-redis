@@ -733,6 +733,57 @@ var _ = Describe("ClusterClient", func() {
 			Expect(stats).To(BeAssignableToTypeOf(&redis.PoolStats{}))
 		})
 
+		It("should sum pool wait statistics across all nodes", func() {
+			// Set a unity pool size to force a wait on any concurrently dispatched requests.
+			opt := redisClusterOptions()
+			opt.PoolSize = 1
+			opt.MinIdleConns = 0
+			opt.PoolTimeout = 5 * time.Second
+			client := cluster.newClusterClient(ctx, opt)
+
+			state, err := client.LoadState(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state.Masters).NotTo(BeEmpty())
+
+			// Deliberately contend connection acquisition on all per-node connection pools.
+			for _, master := range state.Masters {
+				nodePool := master.Client.Pool()
+				cn, err := nodePool.Get(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				time.AfterFunc(100*time.Millisecond, func() {
+					nodePool.Put(ctx, cn)
+				})
+
+				// Get will block until a connection is available; this synchronizes on the Put
+				// of the connection obtained from the initial acquisition
+				cn2, err := nodePool.Get(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				nodePool.Put(ctx, cn2)
+			}
+
+			var expectedWaits uint32
+			var expectedWaitDuration int64
+
+			for _, master := range state.Masters {
+				s := master.Client.Pool().Stats()
+				expectedWaits += s.WaitCount
+				expectedWaitDuration += s.WaitDurationNs
+			}
+
+			for _, slave := range state.Slaves {
+				s := slave.Client.Pool().Stats()
+				expectedWaits += s.WaitCount
+				expectedWaitDuration += s.WaitDurationNs
+			}
+
+			Expect(expectedWaits).To(BeNumerically(">=", uint32(len(state.Masters))))
+			Expect(expectedWaitDuration).To(BeNumerically(">", int64(0)))
+
+			stats := client.PoolStats()
+			Expect(stats.WaitCount).To(Equal(expectedWaits))
+			Expect(stats.WaitDurationNs).To(Equal(expectedWaitDuration))
+		})
+
 		It("should return an error when there are no attempts left", func() {
 			opt := redisClusterOptions()
 			opt.MaxRedirects = -1
