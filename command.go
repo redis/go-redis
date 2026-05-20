@@ -7985,8 +7985,8 @@ func (cmd *VectorScoreSliceSliceCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 
-			if n%2 != 0 {
-				return fmt.Errorf("redis: got %d elements in the VLINKS array, wanted a multiple of 2", n)
+			if innerLen%2 != 0 {
+				return fmt.Errorf("redis: got %d elements in the VLINKS array, wanted a multiple of 2", innerLen)
 			}
 
 			cmd.val[i] = make([]VectorScore, innerLen/2)
