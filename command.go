@@ -1665,8 +1665,8 @@ var _ Cmder = (*StringSliceSliceCmd)(nil)
 func NewStringSliceSliceCmd(ctx context.Context, args ...interface{}) *StringSliceSliceCmd {
 	return &StringSliceSliceCmd{
 		baseCmd: baseCmd{
-			ctx:     ctx,
-			args:    args,
+			ctx:  ctx,
+			args: args,
 		},
 	}
 }
@@ -7983,6 +7983,10 @@ func (cmd *VectorScoreSliceSliceCmd) readReply(rd *proto.Reader) error {
 			innerLen, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
+			}
+
+			if n%2 != 0 {
+				return fmt.Errorf("redis: got %d elements in the VLINKS array, wanted a multiple of 2", n)
 			}
 
 			cmd.val[i] = make([]VectorScore, innerLen/2)
