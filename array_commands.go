@@ -22,7 +22,14 @@ type ArrayCmdable interface {
 	ARInfo(ctx context.Context, key string) *MapStringInterfaceCmd
 	ARInfoFull(ctx context.Context, key string) *MapStringInterfaceCmd
 	ARScan(ctx context.Context, key string, start, end uint64, args *ARScanArgs) *AREntrySliceCmd
-	AROp(ctx context.Context, key string, start, end uint64, op AROp, matchValues ...string) *Cmd
+	AROpSum(ctx context.Context, key string, start, end uint64) *StringCmd
+	AROpMin(ctx context.Context, key string, start, end uint64) *StringCmd
+	AROpMax(ctx context.Context, key string, start, end uint64) *StringCmd
+	AROpAnd(ctx context.Context, key string, start, end uint64) *IntCmd
+	AROpOr(ctx context.Context, key string, start, end uint64) *IntCmd
+	AROpXor(ctx context.Context, key string, start, end uint64) *IntCmd
+	AROpMatch(ctx context.Context, key string, start, end uint64, value string) *IntCmd
+	AROpUsed(ctx context.Context, key string, start, end uint64) *IntCmd
 	ARGrep(ctx context.Context, key string, start, end string, args *ARGrepArgs) *UintSliceCmd
 	ARGrepWithValues(ctx context.Context, key string, start, end string, args *ARGrepArgs) *AREntrySliceCmd
 	ARRing(ctx context.Context, key string, size uint64, values ...string) *UintCmd
@@ -40,20 +47,6 @@ type ARRange struct {
 	Start uint64
 	End   uint64
 }
-
-// AROp represents an aggregate operation for AROP.
-type AROp string
-
-const (
-	ArrayOpSum   AROp = "SUM"
-	ArrayOpMin   AROp = "MIN"
-	ArrayOpMax   AROp = "MAX"
-	ArrayOpAnd   AROp = "AND"
-	ArrayOpOr    AROp = "OR"
-	ArrayOpXor   AROp = "XOR"
-	ArrayOpUsed  AROp = "USED"
-	ArrayOpMatch AROp = "MATCH"
-)
 
 // ARScanArgs contains optional arguments for ARSCAN.
 type ARScanArgs struct {
@@ -235,58 +228,114 @@ func (c cmdable) ARInfoFull(ctx context.Context, key string) *MapStringInterface
 }
 
 // ARScan iterates existing elements in a range, returning index-value pairs.
-func (c cmdable) ARScan(ctx context.Context, key string, start, end uint64, args *ARScanArgs) *AREntrySliceCmd {
-	a := []any{"arscan", key, start, end}
-	if args != nil && args.Limit > 0 {
-		a = append(a, "limit", args.Limit)
+func (c cmdable) ARScan(ctx context.Context, key string, start, end uint64, scanArgs *ARScanArgs) *AREntrySliceCmd {
+	args := make([]any, 4, 6)
+	args[0], args[1], args[2], args[3] = "arscan", key, start, end
+	if scanArgs != nil && scanArgs.Limit > 0 {
+		args = append(args, "limit", scanArgs.Limit)
 	}
-	cmd := NewAREntrySliceCmd(ctx, a...)
+	cmd := NewAREntrySliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// AROp performs aggregate operations on array elements in a range.
-// Returns a *Cmd since the result type varies by operation:
-// - SUM/MIN/MAX: string result
-// - AND/OR/XOR: integer result
-// - MATCH/USED: integer result
-// - No elements: nil
-//
-// For MATCH, pass the match value as matchValues[0]:
-//
-//	client.AROp(ctx, "key", 0, 100, ArrayOpMatch, "hello")
-func (c cmdable) AROp(ctx context.Context, key string, start, end uint64, op AROp, matchValues ...string) *Cmd {
-	args := []any{"arop", key, start, end, string(op)}
-	if op == ArrayOpMatch && len(matchValues) > 0 {
-		args = append(args, matchValues[0])
-	}
-	cmd := NewCmd(ctx, args...)
+// AROpSum returns the sum of numeric elements in a range.
+func (c cmdable) AROpSum(ctx context.Context, key string, start, end uint64) *StringCmd {
+	cmd := NewStringCmd(ctx, "arop", key, start, end, "SUM")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpMin returns the minimum numeric element in a range.
+func (c cmdable) AROpMin(ctx context.Context, key string, start, end uint64) *StringCmd {
+	cmd := NewStringCmd(ctx, "arop", key, start, end, "MIN")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpMax returns the maximum numeric element in a range.
+func (c cmdable) AROpMax(ctx context.Context, key string, start, end uint64) *StringCmd {
+	cmd := NewStringCmd(ctx, "arop", key, start, end, "MAX")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpAnd returns the bitwise AND of integer elements in a range.
+func (c cmdable) AROpAnd(ctx context.Context, key string, start, end uint64) *IntCmd {
+	cmd := NewIntCmd(ctx, "arop", key, start, end, "AND")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpOr returns the bitwise OR of integer elements in a range.
+func (c cmdable) AROpOr(ctx context.Context, key string, start, end uint64) *IntCmd {
+	cmd := NewIntCmd(ctx, "arop", key, start, end, "OR")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpXor returns the bitwise XOR of integer elements in a range.
+func (c cmdable) AROpXor(ctx context.Context, key string, start, end uint64) *IntCmd {
+	cmd := NewIntCmd(ctx, "arop", key, start, end, "XOR")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpMatch returns the count of elements matching a target string in a range.
+func (c cmdable) AROpMatch(ctx context.Context, key string, start, end uint64, value string) *IntCmd {
+	cmd := NewIntCmd(ctx, "arop", key, start, end, "MATCH", value)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// AROpUsed returns the count of non-empty slots in a range.
+func (c cmdable) AROpUsed(ctx context.Context, key string, start, end uint64) *IntCmd {
+	cmd := NewIntCmd(ctx, "arop", key, start, end, "USED")
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 // ARGrep searches array elements in a range using textual predicates.
 // Returns matching indexes only. Use ARGrepWithValues to also get the values.
-func (c cmdable) ARGrep(ctx context.Context, key string, start, end string, args *ARGrepArgs) *UintSliceCmd {
-	a := []any{"argrep", key, start, end}
-	a = appendGrepArgs(a, args)
-	cmd := NewUintSliceCmd(ctx, a...)
+func (c cmdable) ARGrep(ctx context.Context, key string, start, end string, grepArgs *ARGrepArgs) *UintSliceCmd {
+	args := make([]any, 4, 4+grepArgs.Len())
+	args[0], args[1], args[2], args[3] = "argrep", key, start, end
+	args = grepArgs.Append(args)
+	cmd := NewUintSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 // ARGrepWithValues searches array elements in a range using textual predicates.
 // Returns matching indexes and their values as index-value pairs.
-func (c cmdable) ARGrepWithValues(ctx context.Context, key string, start, end string, args *ARGrepArgs) *AREntrySliceCmd {
-	a := []any{"argrep", key, start, end}
-	a = appendGrepArgs(a, args)
-	a = append(a, "withvalues")
-	cmd := NewAREntrySliceCmd(ctx, a...)
+func (c cmdable) ARGrepWithValues(ctx context.Context, key string, start, end string, grepArgs *ARGrepArgs) *AREntrySliceCmd {
+	args := make([]any, 4, 5+grepArgs.Len())
+	args[0], args[1], args[2], args[3] = "argrep", key, start, end
+	args = grepArgs.Append(args)
+	args = append(args, "withvalues")
+	cmd := NewAREntrySliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func appendGrepArgs(a []any, args *ARGrepArgs) []any {
+func (args *ARGrepArgs) Len() int {
+	if args == nil {
+		return 0
+	}
+	n := 2 * len(args.Predicates)
+	if args.CombineAnd {
+		n++
+	}
+	if args.Limit > 0 {
+		n += 2
+	}
+	if args.NoCase {
+		n++
+	}
+	return n
+}
+
+func (args *ARGrepArgs) Append(a []any) []any {
 	if args == nil {
 		return a
 	}
@@ -323,7 +372,8 @@ func (c cmdable) ARRing(ctx context.Context, key string, size uint64, values ...
 // ARLastItems returns the most recently inserted elements.
 // When rev is true, returns items in reverse order.
 func (c cmdable) ARLastItems(ctx context.Context, key string, count uint64, rev bool) *SliceCmd {
-	args := []any{"arlastitems", key, count}
+	args := make([]any, 3, 4)
+	args[0], args[1], args[2] = "arlastitems", key, count
 	if rev {
 		args = append(args, "rev")
 	}

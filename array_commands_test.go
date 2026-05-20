@@ -26,7 +26,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 	})
 
-
 	Describe("ARSet and ARGet", func() {
 		It("should ARSet and ARGet basics", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -126,7 +125,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("ARLen and ARCount", func() {
 		It("should ARLen and ARCount basics", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -164,7 +162,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(count).To(Equal(uint64(3)))
 		})
 	})
-
 
 	Describe("ARDel", func() {
 		It("should ARDel basics", func() {
@@ -218,7 +215,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(exists).To(Equal(int64(0)))
 		})
 	})
-
 
 	Describe("ARDelRange", func() {
 		It("should ARDelRange basics", func() {
@@ -289,7 +285,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("ARMSet and ARMGet", func() {
 		It("should ARMSet basics", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -350,7 +345,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(result[3]).To(BeNil())
 		})
 	})
-
 
 	Describe("ARGetRange and contiguous ARSet", func() {
 		It("should ARGetRange basics", func() {
@@ -415,7 +409,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(val).To(Equal("c"))
 		})
 	})
-
 
 	Describe("ARScan", func() {
 		It("should ARScan return only existing elements with indices", func() {
@@ -494,7 +487,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("ARInsert", func() {
 		It("should ARInsert basics", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -544,7 +536,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(val).To(Equal("z"))
 		})
 	})
-
 
 	Describe("ARGrep", func() {
 		It("should ARGREP MATCH return matching indexes", func() {
@@ -663,8 +654,24 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(BeEmpty())
 		})
-	})
 
+		It("should ARGREP not panic with nil args", func() {
+			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
+			Expect(client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: 0, Value: "alpha"},
+				redis.AREntry{Index: 1, Value: "beta"},
+			).Err()).NotTo(HaveOccurred())
+
+			// nil args should not panic, just send bare ARGREP without predicates
+			Expect(func() {
+				_ = client.ARGrep(ctx, "myarray", "-", "+", nil)
+			}).NotTo(Panic())
+
+			Expect(func() {
+				_ = client.ARGrepWithValues(ctx, "myarray", "-", "+", nil)
+			}).NotTo(Panic())
+		})
+	})
 
 	Describe("ARRing", func() {
 		It("should ARRING create ring buffer", func() {
@@ -725,7 +732,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(val).To(Equal("val99"))
 		})
 	})
-
 
 	Describe("ARNext and ARSeek", func() {
 		It("should ARNext track insert position", func() {
@@ -818,7 +824,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(next).To(Equal(uint64(51)))
 		})
 	})
-
 
 	Describe("ARLastItems", func() {
 		It("should ARLASTITEMS basics", func() {
@@ -922,9 +927,8 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("AROp", func() {
-		It("should AROP SUM", func() {
+		It("should AROpSum", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "10"},
@@ -932,15 +936,12 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: 2, Value: "30"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpSum)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-
-			val, err := cmd.Float64()
+			val, err := client.AROpSum(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(60)))
 		})
 
-		It("should AROP MIN", func() {
+		It("should AROpMin", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "30"},
@@ -948,15 +949,12 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: 2, Value: "20"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpMin)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-
-			val, err := cmd.Float64()
+			val, err := client.AROpMin(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(10)))
 		})
 
-		It("should AROP MAX", func() {
+		It("should AROpMax", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "30"},
@@ -964,15 +962,12 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: 2, Value: "20"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpMax)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-
-			val, err := cmd.Float64()
+			val, err := client.AROpMax(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(30)))
 		})
 
-		It("should AROP MATCH", func() {
+		It("should AROpMatch", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "hello"},
@@ -981,26 +976,20 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: 3, Value: "foo"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, "hello")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Int64()
+			val, err := client.AROpMatch(ctx, "myarray", 0, 3, "hello").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(2)))
 
-			cmd = client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, "world")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpMatch(ctx, "myarray", 0, 3, "world").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(1)))
 
-			cmd = client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, "bar")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpMatch(ctx, "myarray", 0, 3, "bar").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 		})
 
-		It("should AROP USED", func() {
+		It("should AROpUsed", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "a"},
@@ -1008,14 +997,12 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: 5, Value: "c"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 10, redis.ArrayOpUsed)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Int64()
+			val, err := client.AROpUsed(ctx, "myarray", 0, 10).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(3)))
 		})
 
-		It("should AROP AND/OR/XOR", func() {
+		It("should AROpAnd/AROpOr/AROpXor", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "255"},
@@ -1024,28 +1011,22 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			).Err()).NotTo(HaveOccurred())
 
 			// AND: 255 & 15 & 240 = 0
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpAnd)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Int64()
+			val, err := client.AROpAnd(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 
 			// OR: 255 | 15 | 240 = 255
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpOr)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpOr(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(255)))
 
 			// XOR: 255 ^ 15 ^ 240 = 0
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpXor)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpXor(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 		})
 
-		It("should AROP AND/OR/XOR truncate floats toward zero", func() {
+		It("should AROpAnd/AROpOr/AROpXor truncate floats toward zero", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			Expect(client.ARMSet(ctx, "myarray",
 				redis.AREntry{Index: 0, Value: "7.9"},
@@ -1054,28 +1035,60 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			).Err()).NotTo(HaveOccurred())
 
 			// Truncated: 7, 3, 1 → AND = 1
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpAnd)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Int64()
+			val, err := client.AROpAnd(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(1)))
 
 			// OR = 7
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpOr)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpOr(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(7)))
 
 			// XOR: 7 ^ 3 ^ 1 = 5
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpXor)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpXor(ctx, "myarray", 0, 2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(5)))
 		})
 
-		It("should AROP MATCH with large strings", func() {
+		It("should AROpAnd/AROpOr/AROpXor return negative results", func() {
+			// AND: -1 & -5 = -5 (all bits of -5 are subset of -1)
+			cmd := client.Del(ctx, "myarray")
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			cmd2 := client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: 0, Value: "-1"},
+				redis.AREntry{Index: 1, Value: "-5"},
+			)
+			Expect(cmd2.Err()).NotTo(HaveOccurred())
+			val, err := client.AROpAnd(ctx, "myarray", 0, 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(-5)))
+
+			// OR: -4 | 3 = -1
+			cmd = client.Del(ctx, "myarray")
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			cmd2 = client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: 0, Value: "-4"},
+				redis.AREntry{Index: 1, Value: "3"},
+			)
+			Expect(cmd2.Err()).NotTo(HaveOccurred())
+			val, err = client.AROpOr(ctx, "myarray", 0, 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(-1)))
+
+			// XOR: 0 ^ -1 = -1
+			cmd = client.Del(ctx, "myarray")
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			cmd2 = client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: 0, Value: "0"},
+				redis.AREntry{Index: 1, Value: "-1"},
+			)
+			Expect(cmd2.Err()).NotTo(HaveOccurred())
+			val, err = client.AROpXor(ctx, "myarray", 0, 1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(val).To(Equal(int64(-1)))
+		})
+
+		It("should AROpMatch with large strings", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
 			largestr := strings.Repeat("x", 300)
 			largestr2 := strings.Repeat("y", 300)
@@ -1085,32 +1098,23 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(client.ARSet(ctx, "myarray", 2, largestr).Err()).NotTo(HaveOccurred())
 			Expect(client.ARSet(ctx, "myarray", 3, largestr2).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, largestr)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Int64()
+			val, err := client.AROpMatch(ctx, "myarray", 0, 3, largestr).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(2)))
 
-			cmd = client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, largestr2)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpMatch(ctx, "myarray", 0, 3, largestr2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(1)))
 
-			cmd = client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, "small")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpMatch(ctx, "myarray", 0, 3, "small").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(1)))
 
-			cmd = client.AROp(ctx, "myarray", 0, 3, redis.ArrayOpMatch, "notfound")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Int64()
+			val, err = client.AROpMatch(ctx, "myarray", 0, 3, "notfound").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 		})
 	})
-
 
 	Describe("ARInfo", func() {
 		It("should ARInfo basics", func() {
@@ -1128,6 +1132,43 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
+	Describe("ARInfoFull", func() {
+		It("should ARInfoFull return all basic fields plus slice statistics", func() {
+			cmd := client.Del(ctx, "myarray")
+			Expect(cmd.Err()).NotTo(HaveOccurred())
+			cmd2 := client.ARMSet(ctx, "myarray",
+				redis.AREntry{Index: 0, Value: "a"},
+				redis.AREntry{Index: 1, Value: "b"},
+				redis.AREntry{Index: 100, Value: "c"},
+			)
+			Expect(cmd2.Err()).NotTo(HaveOccurred())
+
+			info, err := client.ARInfoFull(ctx, "myarray").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Same basic fields as ARInfo
+			Expect(info["count"]).To(Equal(int64(3)))
+			Expect(info["len"]).To(Equal(int64(101)))
+			Expect(info).To(HaveKey("next-insert-index"))
+			Expect(info).To(HaveKey("slices"))
+			Expect(info).To(HaveKey("directory-size"))
+			Expect(info).To(HaveKey("super-dir-entries"))
+			Expect(info).To(HaveKey("slice-size"))
+
+			// Full-only fields: per-encoding slice statistics
+			Expect(info).To(HaveKey("dense-slices"))
+			Expect(info).To(HaveKey("sparse-slices"))
+			Expect(info).To(HaveKey("avg-dense-size"))
+			Expect(info).To(HaveKey("avg-dense-fill"))
+			Expect(info).To(HaveKey("avg-sparse-size"))
+
+			// Sum of dense and sparse slices should equal total slices
+			denseSlices := info["dense-slices"].(int64)
+			sparseSlices := info["sparse-slices"].(int64)
+			totalSlices := info["slices"].(int64)
+			Expect(denseSlices + sparseSlices).To(Equal(totalSlices))
+		})
+	})
 
 	Describe("Type checks", func() {
 		It("should array commands return WRONGTYPE on wrong type", func() {
@@ -1170,7 +1211,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("TYPE and OBJECT ENCODING", func() {
 		It("should TYPE return array", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -1190,7 +1230,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(encoding).To(Equal("sliced-array"))
 		})
 	})
-
 
 	Describe("Sparse arrays", func() {
 		It("should sparse array with large gaps work", func() {
@@ -1221,7 +1260,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(length).To(Equal(uint64(1000001)))
 		})
 	})
-
 
 	Describe("Directory resizing", func() {
 		It("should handle many slices", func() {
@@ -1269,7 +1307,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(count).To(Equal(uint64(3)))
 		})
 	})
-
 
 	Describe("Dense window growth", func() {
 		It("should handle right expansion", func() {
@@ -1342,7 +1379,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("Sparse to dense promotion", func() {
 		It("should promote sparse to dense when exceeding kmax threshold", func() {
 			Expect(client.Del(ctx, "myarray").Err()).NotTo(HaveOccurred())
@@ -1395,7 +1431,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			}
 		})
 	})
-
 
 	Describe("Dense to sparse demotion", func() {
 		It("should demote dense to sparse when deleting below kmin", func() {
@@ -1460,7 +1495,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			}
 		})
 	})
-
 
 	Describe("ARDelRange detailed", func() {
 		It("should ARDELRANGE trigger dense to sparse demotion", func() {
@@ -1614,7 +1648,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(result[0].Value).To(Equal("slice1_4096"))
 		})
 	})
-
 
 	Describe("Circular buffer", func() {
 		It("should ARRING wraparound with ARLASTITEMS", func() {
@@ -1793,7 +1826,6 @@ var _ = Describe("Array Commands", Label("array"), func() {
 		})
 	})
 
-
 	Describe("Large uint64 index values", func() {
 		const int64MaxPlus1 = uint64(math.MaxInt64) + 1
 		const uint64Max = uint64(math.MaxUint64)
@@ -1961,20 +1993,15 @@ var _ = Describe("Array Commands", Label("array"), func() {
 				redis.AREntry{Index: base + 2, Value: "30"},
 			).Err()).NotTo(HaveOccurred())
 
-			cmd := client.AROp(ctx, "myarray", base, base+2, redis.ArrayOpSum)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Float64()
+			val, err := client.AROpSum(ctx, "myarray", base, base+2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(60)))
 
-			cmd = client.AROp(ctx, "myarray", base, base+2, redis.ArrayOpUsed)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			intVal, err := cmd.Int64()
+			intVal, err := client.AROpUsed(ctx, "myarray", base, base+2).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(intVal).To(Equal(int64(3)))
 		})
 	})
-
 
 	Describe("Regression tests", func() {
 		It("should AROP work on whole-number floats", func() {
@@ -1985,30 +2012,22 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(client.ARSet(ctx, "myarray", 2, "30.0").Err()).NotTo(HaveOccurred())
 
 			// SUM
-			cmd := client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpSum)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Float64()
+			val, err := client.AROpSum(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(60)))
 
 			// MIN
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpMin)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Float64()
+			val, err = client.AROpMin(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(10)))
 
 			// MAX
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpMax)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err = cmd.Float64()
+			val, err = client.AROpMax(ctx, "myarray", 0, 2).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(30)))
 
 			// MATCH
-			cmd = client.AROp(ctx, "myarray", 0, 2, redis.ArrayOpMatch, "10.0")
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			intVal, err := cmd.Int64()
+			intVal, err := client.AROpMatch(ctx, "myarray", 0, 2, "10.0").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(intVal).To(Equal(int64(1)))
 		})
@@ -2033,16 +2052,12 @@ var _ = Describe("Array Commands", Label("array"), func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// AROP SUM should work across slices
-			cmd := client.AROp(ctx, "myarray", 0, 5000, redis.ArrayOpSum)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			val, err := cmd.Float64()
+			val, err := client.AROpSum(ctx, "myarray", 0, 5000).Float64()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(float64(41015)))
 
 			// AROP USED
-			cmd = client.AROp(ctx, "myarray", 0, 5000, redis.ArrayOpUsed)
-			Expect(cmd.Err()).NotTo(HaveOccurred())
-			intVal, err := cmd.Int64()
+			intVal, err := client.AROpUsed(ctx, "myarray", 0, 5000).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(intVal).To(Equal(int64(15)))
 		})
