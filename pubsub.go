@@ -679,7 +679,7 @@ func newChannel(pubSub *PubSub, opts ...ChannelOption) *channel {
 }
 
 func (c *channel) initHealthCheck() {
-	ctx := context.TODO()
+	ctx, _ := context.WithTimeout(context.Background(), 5*time.Second)
 	c.ping = make(chan struct{}, 1)
 
 	go func() {
@@ -695,8 +695,9 @@ func (c *channel) initHealthCheck() {
 				}
 			case <-timer.C:
 				if pingErr := c.pubSub.Ping(ctx); pingErr != nil {
+					reconnectCtx, _ := context.WithTimeout(context.Background(), 10*time.Second)
 					c.pubSub.mu.Lock()
-					c.pubSub.reconnect(ctx, pingErr)
+					c.pubSub.reconnect(reconnectCtx, pingErr)
 					c.pubSub.mu.Unlock()
 				}
 			case <-c.pubSub.exit:
