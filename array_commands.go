@@ -4,6 +4,8 @@ import (
 	"context"
 )
 
+// note: the APIs is experimental and may be subject to change.
+//
 // ArrayCmdable defines the interface for Redis Array data structure commands
 // available in Redis 8.8.0+.
 type ArrayCmdable interface {
