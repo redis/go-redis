@@ -1667,7 +1667,6 @@ func NewStringSliceSliceCmd(ctx context.Context, args ...interface{}) *StringSli
 		baseCmd: baseCmd{
 			ctx:     ctx,
 			args:    args,
-			cmdType: CmdTypeStringSlice,
 		},
 	}
 }
