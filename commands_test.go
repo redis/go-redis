@@ -2116,28 +2116,30 @@ var _ = Describe("Commands", func() {
 				By:        0.7,
 				UBound:    2,
 				HasUBound: true,
-				Overflow:  redis.IncrEXOverflowSat,
+				Saturate:  true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.Value).To(BeNumerically("~", 2.0, 1e-9))
 			Expect(res.AppliedIncrement).To(BeNumerically("~", 0.2, 1e-9))
 		})
 
-		It("should IncrEXInt FAIL overflow keeps value", func() {
+		It("should IncrEXInt out-of-bounds default rejects", func() {
 			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
 
-			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
 				By: 5, HasBy: true,
 				UBound: 12, HasUBound: true,
 			}).Result()
-			Expect(err).To(HaveOccurred())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
 
 			Expect(client.Get(ctx, "key").Val()).To(Equal("10"))
 		})
 
-		It("should IncrEXInt REJECT overflow", func() {
+		It("should IncrEXInt out-of-bounds with LBOUND default rejects", func() {
 			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "5", 0).Err()).NotTo(HaveOccurred())
@@ -2145,7 +2147,6 @@ var _ = Describe("Commands", func() {
 			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
 				By: 1, HasBy: true,
 				LBound: 10, HasLBound: true,
-				Overflow: redis.IncrEXOverflowReject,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.Value).To(Equal(int64(5)))
@@ -2187,7 +2188,7 @@ var _ = Describe("Commands", func() {
 			Expect(ttl2).To(BeNumerically("<=", ttl1))
 		})
 
-		It("should IncrEXInt SAT clamps to LBOUND with negative increment", func() {
+		It("should IncrEXInt SATURATE clamps to LBOUND with negative increment", func() {
 			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "credits", "50", 0).Err()).NotTo(HaveOccurred())
@@ -2195,7 +2196,7 @@ var _ = Describe("Commands", func() {
 			res, err := client.IncrEXInt(ctx, "credits", redis.IncrEXIntArgs{
 				By: -1, HasBy: true,
 				LBound: 0, HasLBound: true,
-				Overflow: redis.IncrEXOverflowSat,
+				Saturate: true,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.Value).To(Equal(int64(49)))

@@ -200,24 +200,6 @@ func (c cmdable) IncrByFloat(ctx context.Context, key string, value float64) *Fl
 	return cmd
 }
 
-// IncrEXOverflow controls what INCREX does when the resulting value would
-// fall outside the configured LBOUND/UBOUND.
-type IncrEXOverflow string
-
-const (
-	// IncrEXOverflowFail returns a server error and leaves the value unchanged
-	// when the increment would exceed a configured bound. This is the
-	// default if OVERFLOW is omitted.
-	IncrEXOverflowFail IncrEXOverflow = "FAIL"
-	// IncrEXOverflowReject ignores the operation when the increment would
-	// exceed a configured bound. The returned applied increment is 0 and
-	// no expiration is applied.
-	IncrEXOverflowReject IncrEXOverflow = "REJECT"
-	// IncrEXOverflowSat clamps the result to the configured bound when the
-	// increment would exceed it.
-	IncrEXOverflowSat IncrEXOverflow = "SAT"
-)
-
 // IncrEXIntArgs are the arguments to IncrEXInt (the BYINT variant of INCREX).
 //
 // If By is zero and HasBy is false, the server increments by 1.
@@ -230,7 +212,11 @@ type IncrEXIntArgs struct {
 	LBound, UBound       int64
 	HasLBound, HasUBound bool
 
-	Overflow IncrEXOverflow
+	// Saturate clamps the result to LBOUND/UBOUND (or LLONG_MAX/MIN when no
+	// explicit bound is given) when the increment would exceed it. Without
+	// this flag, out-of-bounds operations are rejected: the key and TTL are
+	// left unchanged and the reply is [current_value, 0].
+	Saturate bool
 
 	// Expiration sets the TTL semantics: EX, PX, EXAT, PXAT, or PERSIST.
 	Expiration *ExpirationOption
@@ -248,20 +234,26 @@ type IncrEXFloatArgs struct {
 	LBound, UBound       float64
 	HasLBound, HasUBound bool
 
-	Overflow IncrEXOverflow
+	// Saturate clamps the result to LBOUND/UBOUND (or ±LDBL_MAX when no
+	// explicit bound is given) when the increment would exceed it. Without
+	// this flag, out-of-bounds operations are rejected: the key and TTL are
+	// left unchanged and the reply is [current_value, 0].
+	Saturate bool
 
 	Expiration *ExpirationOption
 
 	ENX bool
 }
 
-// IncrEXInt Redis `INCREX key [BYINT amount] [LBOUND value] [UBOUND value]
-// [OVERFLOW FAIL|REJECT|SAT] [EX seconds | PX ms | EXAT ts | PXAT ts |
-// PERSIST] [ENX]` command.
+// IncrEXInt Redis `INCREX key [BYINT amount] [SATURATE] [LBOUND value]
+// [UBOUND value] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
+// command.
 //
 // Atomically increments the integer value stored at key, optionally
 // constraining the result to a range and applying expiration semantics.
-// Returns the new value and the increment that was actually applied.
+// Returns the new value and the increment that was actually applied. When
+// the increment would exceed LBOUND/UBOUND and SATURATE is not set, the key
+// and TTL are left unchanged and the reply is [current_value, 0].
 //
 // Available since Redis 8.8.
 // For more information, see https://redis.io/commands/increx
@@ -271,45 +263,48 @@ func (c cmdable) IncrEXInt(ctx context.Context, key string, a IncrEXIntArgs) *In
 	if a.HasBy {
 		args = append(args, "byint", a.By)
 	}
+	if a.Saturate {
+		args = append(args, "saturate")
+	}
 	if a.HasLBound {
 		args = append(args, "lbound", a.LBound)
 	}
 	if a.HasUBound {
 		args = append(args, "ubound", a.UBound)
 	}
-	args = appendIncrEXTail(args, a.Overflow, a.Expiration, a.ENX)
+	args = appendIncrEXTail(args, a.Expiration, a.ENX)
 
 	cmd := NewIncrEXIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-// IncrEXFloat Redis `INCREX key BYFLOAT amount [LBOUND value] [UBOUND value]
-// [OVERFLOW FAIL|REJECT|SAT] [EX seconds | PX ms | EXAT ts | PXAT ts |
-// PERSIST] [ENX]` command.
+// IncrEXFloat Redis `INCREX key BYFLOAT amount [SATURATE] [LBOUND value]
+// [UBOUND value] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
+// command.
 //
 // Available since Redis 8.8.
 // For more information, see https://redis.io/commands/increx
 func (c cmdable) IncrEXFloat(ctx context.Context, key string, a IncrEXFloatArgs) *IncrEXFloatCmd {
 	args := make([]interface{}, 0, 14)
 	args = append(args, "increx", key, "byfloat", a.By)
+	if a.Saturate {
+		args = append(args, "saturate")
+	}
 	if a.HasLBound {
 		args = append(args, "lbound", a.LBound)
 	}
 	if a.HasUBound {
 		args = append(args, "ubound", a.UBound)
 	}
-	args = appendIncrEXTail(args, a.Overflow, a.Expiration, a.ENX)
+	args = appendIncrEXTail(args, a.Expiration, a.ENX)
 
 	cmd := NewIncrEXFloatCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
-func appendIncrEXTail(args []interface{}, overflow IncrEXOverflow, exp *ExpirationOption, enx bool) []interface{} {
-	if overflow != "" {
-		args = append(args, "overflow", string(overflow))
-	}
+func appendIncrEXTail(args []interface{}, exp *ExpirationOption, enx bool) []interface{} {
 	if exp != nil {
 		switch exp.Mode {
 		case EX, PX, EXAT, PXAT:

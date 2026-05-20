@@ -8580,8 +8580,8 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 
 // IncrEXIntResult is the reply of an INCREX command issued via IncrEXInt.
 // Value is the new value of the key; AppliedIncrement is the increment that
-// the server actually applied (0 when OVERFLOW=REJECT blocked the op, clamped
-// when OVERFLOW=SAT).
+// the server actually applied (0 when an out-of-bounds operation was
+// rejected, clamped when SATURATE was set).
 type IncrEXIntResult struct {
 	Value            int64
 	AppliedIncrement int64

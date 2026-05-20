@@ -83,22 +83,22 @@ func TestIncrEXInt_Args(t *testing.T) {
 			want: []interface{}{"increx", "key", "persist"},
 		},
 		{
-			name: "reject_overflow",
+			name: "saturate_with_lbound",
 			args: IncrEXIntArgs{
 				By: 1, HasBy: true,
 				LBound: 10, HasLBound: true,
-				Overflow: IncrEXOverflowReject,
+				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byint", int64(1), "lbound", int64(10), "overflow", "REJECT"},
+			want: []interface{}{"increx", "key", "byint", int64(1), "saturate", "lbound", int64(10)},
 		},
 		{
-			name: "fail_overflow",
+			name: "saturate_with_ubound",
 			args: IncrEXIntArgs{
 				By: 5, HasBy: true,
 				UBound: 12, HasUBound: true,
-				Overflow: IncrEXOverflowFail,
+				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byint", int64(5), "ubound", int64(12), "overflow", "FAIL"},
+			want: []interface{}{"increx", "key", "byint", int64(5), "saturate", "ubound", int64(12)},
 		},
 	}
 
@@ -134,13 +134,13 @@ func TestIncrEXFloat_Args(t *testing.T) {
 			want: []interface{}{"increx", "key", "byfloat", 0.25},
 		},
 		{
-			name: "bounds_and_overflow_sat",
+			name: "bounds_and_saturate",
 			args: IncrEXFloatArgs{
 				By:     0.7,
 				UBound: 2, HasUBound: true,
-				Overflow: IncrEXOverflowSat,
+				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byfloat", 0.7, "ubound", float64(2), "overflow", "SAT"},
+			want: []interface{}{"increx", "key", "byfloat", 0.7, "saturate", "ubound", float64(2)},
 		},
 		{
 			name: "lbound_ubound",
