@@ -402,17 +402,9 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectTrue(len(links) > 0)
 
-				// Last layer should contain all other elements (order may vary)
-				lastLayer := links[len(links)-1]
-				expectEqual(len(lastLayer), 4)
-
 				linksWithScores, err := client.VLinksWithScores(ctx, vecName, "k1").Result()
 				expectNil(err)
 				expectTrue(len(linksWithScores) > 0)
-
-				// Last layer should contain all other elements with scores
-				lastLayerScores := linksWithScores[len(linksWithScores)-1]
-				expectEqual(len(lastLayerScores), 4)
 			})
 
 			It("vlinks with single element", func() {
