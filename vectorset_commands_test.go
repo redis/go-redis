@@ -171,7 +171,7 @@ func TestVLinks(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinks(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*StringSliceCmd)
+	cmd := m.lastCmd.(*StringSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -181,7 +181,7 @@ func TestVLinksWithScores(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinksWithScores(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	cmd := m.lastCmd.(*VectorScoreSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" || cmd.args[3] != "withscores" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}

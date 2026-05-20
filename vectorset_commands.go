@@ -15,8 +15,8 @@ type VectorSetCmdable interface {
 	VEmb(ctx context.Context, key, element string, raw bool) *SliceCmd
 	VGetAttr(ctx context.Context, key, element string) *StringCmd
 	VInfo(ctx context.Context, key string) *MapStringInterfaceCmd
-	VLinks(ctx context.Context, key, element string) *StringSliceCmd
-	VLinksWithScores(ctx context.Context, key, element string) *VectorScoreSliceCmd
+	VLinks(ctx context.Context, key, element string) *StringSliceSliceCmd
+	VLinksWithScores(ctx context.Context, key, element string) *VectorScoreSliceSliceCmd
 	VRandMember(ctx context.Context, key string) *StringCmd
 	VRandMemberCount(ctx context.Context, key string, count int) *StringSliceCmd
 	VRem(ctx context.Context, key, element string) *BoolCmd
@@ -272,16 +272,16 @@ func (c cmdable) VInfo(ctx context.Context, key string) *MapStringInterfaceCmd {
 
 // `VLINKS key element`
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VLinks(ctx context.Context, key, element string) *StringSliceCmd {
-	cmd := NewStringSliceCmd(ctx, "vlinks", key, element)
+func (c cmdable) VLinks(ctx context.Context, key, element string) *StringSliceSliceCmd {
+	cmd := NewStringSliceSliceCmd(ctx, "vlinks", key, element)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
 // `VLINKS key element WITHSCORES`
 // note: the API is experimental and may be subject to change.
-func (c cmdable) VLinksWithScores(ctx context.Context, key, element string) *VectorScoreSliceCmd {
-	cmd := NewVectorInfoSliceCmd(ctx, "vlinks", key, element, "withscores")
+func (c cmdable) VLinksWithScores(ctx context.Context, key, element string) *VectorScoreSliceSliceCmd {
+	cmd := NewVectorScoreSliceSliceCmd(ctx, "vlinks", key, element, "withscores")
 	_ = c(ctx, cmd)
 	return cmd
 }
