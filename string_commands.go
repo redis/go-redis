@@ -227,9 +227,14 @@ type IncrEXIntArgs struct {
 }
 
 // IncrEXFloatArgs are the arguments to IncrEXFloat (the BYFLOAT variant of
-// INCREX). BYFLOAT is implied — the By field is always sent, even when zero.
+// INCREX).
+//
+// If By is zero and HasBy is false, BYFLOAT is omitted and the server
+// increments by 1. HasLBound/HasUBound gate the optional LBOUND/UBOUND
+// clauses so that 0 is a valid bound.
 type IncrEXFloatArgs struct {
-	By float64
+	By    float64
+	HasBy bool
 
 	LBound, UBound       float64
 	HasLBound, HasUBound bool
@@ -245,8 +250,8 @@ type IncrEXFloatArgs struct {
 	ENX bool
 }
 
-// IncrEXInt Redis `INCREX key [BYINT amount] [SATURATE] [LBOUND value]
-// [UBOUND value] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
+// IncrEXInt Redis `INCREX key [BYINT amount] [LBOUND value] [UBOUND value]
+// [SATURATE] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
 // command.
 //
 // Atomically increments the integer value stored at key, optionally
@@ -263,14 +268,14 @@ func (c cmdable) IncrEXInt(ctx context.Context, key string, a IncrEXIntArgs) *In
 	if a.HasBy {
 		args = append(args, "byint", a.By)
 	}
-	if a.Saturate {
-		args = append(args, "saturate")
-	}
 	if a.HasLBound {
 		args = append(args, "lbound", a.LBound)
 	}
 	if a.HasUBound {
 		args = append(args, "ubound", a.UBound)
+	}
+	if a.Saturate {
+		args = append(args, "saturate")
 	}
 	args = appendIncrEXTail(args, a.Expiration, a.ENX)
 
@@ -279,23 +284,26 @@ func (c cmdable) IncrEXInt(ctx context.Context, key string, a IncrEXIntArgs) *In
 	return cmd
 }
 
-// IncrEXFloat Redis `INCREX key BYFLOAT amount [SATURATE] [LBOUND value]
-// [UBOUND value] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
+// IncrEXFloat Redis `INCREX key [BYFLOAT amount] [LBOUND value] [UBOUND value]
+// [SATURATE] [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST] [ENX]`
 // command.
 //
 // Available since Redis 8.8.
 // For more information, see https://redis.io/commands/increx
 func (c cmdable) IncrEXFloat(ctx context.Context, key string, a IncrEXFloatArgs) *IncrEXFloatCmd {
 	args := make([]interface{}, 0, 14)
-	args = append(args, "increx", key, "byfloat", a.By)
-	if a.Saturate {
-		args = append(args, "saturate")
+	args = append(args, "increx", key)
+	if a.HasBy {
+		args = append(args, "byfloat", a.By)
 	}
 	if a.HasLBound {
 		args = append(args, "lbound", a.LBound)
 	}
 	if a.HasUBound {
 		args = append(args, "ubound", a.UBound)
+	}
+	if a.Saturate {
+		args = append(args, "saturate")
 	}
 	args = appendIncrEXTail(args, a.Expiration, a.ENX)
 

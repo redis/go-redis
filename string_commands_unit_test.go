@@ -89,7 +89,7 @@ func TestIncrEXInt_Args(t *testing.T) {
 				LBound: 10, HasLBound: true,
 				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byint", int64(1), "saturate", "lbound", int64(10)},
+			want: []interface{}{"increx", "key", "byint", int64(1), "lbound", int64(10), "saturate"},
 		},
 		{
 			name: "saturate_with_ubound",
@@ -98,7 +98,7 @@ func TestIncrEXInt_Args(t *testing.T) {
 				UBound: 12, HasUBound: true,
 				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byint", int64(5), "saturate", "ubound", int64(12)},
+			want: []interface{}{"increx", "key", "byint", int64(5), "ubound", int64(12), "saturate"},
 		},
 	}
 
@@ -124,28 +124,33 @@ func TestIncrEXFloat_Args(t *testing.T) {
 		want []interface{}
 	}{
 		{
-			name: "default_zero_by",
+			name: "default",
 			args: IncrEXFloatArgs{},
-			want: []interface{}{"increx", "key", "byfloat", float64(0)},
+			want: []interface{}{"increx", "key"},
 		},
 		{
 			name: "byfloat",
-			args: IncrEXFloatArgs{By: 0.25},
+			args: IncrEXFloatArgs{By: 0.25, HasBy: true},
 			want: []interface{}{"increx", "key", "byfloat", 0.25},
+		},
+		{
+			name: "byfloat_zero_explicit",
+			args: IncrEXFloatArgs{By: 0, HasBy: true},
+			want: []interface{}{"increx", "key", "byfloat", float64(0)},
 		},
 		{
 			name: "bounds_and_saturate",
 			args: IncrEXFloatArgs{
-				By:     0.7,
+				By: 0.7, HasBy: true,
 				UBound: 2, HasUBound: true,
 				Saturate: true,
 			},
-			want: []interface{}{"increx", "key", "byfloat", 0.7, "saturate", "ubound", float64(2)},
+			want: []interface{}{"increx", "key", "byfloat", 0.7, "ubound", float64(2), "saturate"},
 		},
 		{
 			name: "lbound_ubound",
 			args: IncrEXFloatArgs{
-				By:     0.5,
+				By: 0.5, HasBy: true,
 				LBound: -1.5, HasLBound: true,
 				UBound: 1.5, HasUBound: true,
 			},
@@ -154,7 +159,7 @@ func TestIncrEXFloat_Args(t *testing.T) {
 		{
 			name: "ex_and_enx",
 			args: IncrEXFloatArgs{
-				By:         1.5,
+				By: 1.5, HasBy: true,
 				Expiration: &ExpirationOption{Mode: EX, Value: 30},
 				ENX:        true,
 			},

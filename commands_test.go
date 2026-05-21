@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -2097,6 +2098,7 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
 				By:        0.25,
+				HasBy:     true,
 				LBound:    0,
 				HasLBound: true,
 				UBound:    2,
@@ -2114,6 +2116,7 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
 				By:        0.7,
+				HasBy:     true,
 				UBound:    2,
 				HasUBound: true,
 				Saturate:  true,
@@ -2215,6 +2218,58 @@ var _ = Describe("Commands", func() {
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
+		})
+
+		It("should IncrEXInt SATURATE without bounds clamps to LLONG_MAX", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			// Start near LLONG_MAX; with no UBOUND the server should clamp to LLONG_MAX.
+			Expect(client.Set(ctx, "key", "9223372036854775800", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1000, HasBy: true,
+				Saturate: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(math.MaxInt64)))
+			Expect(res.AppliedIncrement).To(Equal(int64(math.MaxInt64 - 9223372036854775800)))
+		})
+
+		It("should IncrEXInt default reject leaves TTL untouched", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 60*time.Second).Err()).NotTo(HaveOccurred())
+			ttlBefore := client.TTL(ctx, "key").Val()
+			Expect(ttlBefore).To(BeNumerically(">", 0))
+
+			// Out-of-bounds increment with an EX clause — server should reject
+			// and NOT apply the new TTL.
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 5, HasBy: true,
+				UBound: 12, HasUBound: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 6000},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			ttlAfter := client.TTL(ctx, "key").Val()
+			// Original TTL was ~60s; rejected EX 6000s must not have been applied.
+			Expect(ttlAfter).To(BeNumerically("<=", ttlBefore))
+			Expect(ttlAfter).To(BeNumerically(">", 0))
+			Expect(ttlAfter).To(BeNumerically("<=", 60*time.Second))
+		})
+
+		It("should IncrEXInt on non-numeric key returns error", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "not-a-number", 0).Err()).NotTo(HaveOccurred())
+
+			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(client.Get(ctx, "key").Val()).To(Equal("not-a-number"))
 		})
 
 		It("should MSetMGet", func() {
