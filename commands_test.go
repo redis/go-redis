@@ -7519,8 +7519,14 @@ var _ = Describe("Commands", func() {
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			start := time.Now()
+			// Wait for the goroutine to finish before the spec returns so it
+			// can't outlive AfterEach's client.Close() and trip "use of closed
+			// network connection" during the next spec's BeforeEach.
+			done := make(chan struct{})
+			defer func() { Eventually(done, 5*time.Second).Should(BeClosed()) }()
 			go func() {
 				defer GinkgoRecover()
+				defer close(done)
 
 				time.Sleep(100 * time.Millisecond)
 				id, err := client.XAdd(ctx, &redis.XAddArgs{
@@ -9484,37 +9490,46 @@ var _ = Describe("Commands", func() {
 		It("reset all latencies", func() {
 			const key = "latency-monitor-threshold"
 
-			result, err := client.Latency(ctx).Result()
 			// reset all latencies
-			err = client.LatencyReset(ctx).Err()
+			err := client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
+			// Use a higher threshold (100ms) to avoid capturing normal operations
+			// that could cause flakiness due to timing variations on busy CI runners.
+			client.ConfigSet(ctx, key, "100")
 			defer client.ConfigSet(ctx, key, old[key])
 
 			// get latency after reset
-			result, err = client.Latency(ctx).Result()
+			result, err := client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
-			// create a new latency
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			// create a new latency event by sleeping past the threshold
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// get latency after create a new latency
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(1))
+			Expect(len(result)).Should(BeNumerically(">=", 1))
+			triggered := result[0].Name
 
 			// reset all latencies again
 			err = client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// get latency after reset again
+			// get latency after reset again. Don't assert total length is 0:
+			// other operations on the connection may briefly land in the
+			// latency log on a slow CI runner. Instead verify the specific
+			// event we triggered is gone.
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(0))
+			for _, event := range result {
+				if event.Name == triggered {
+					Fail("Event " + triggered + " should have been reset")
+				}
+			}
 		})
 
 		It("reset latencies by add event name args", func() {

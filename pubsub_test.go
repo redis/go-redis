@@ -636,6 +636,13 @@ var _ = Describe("PubSub", func() {
 		err = pubsub.ClientSetName(ctx, "my-subscriber")
 		Expect(err).NotTo(HaveOccurred())
 
+		// PubSub.ClientSetName only writes the command; the +OK reply is
+		// drained here. This also synchronizes us with the server so that
+		// the subsequent CLIENT LIST on a different connection observes
+		// the rename (CLIENT LIST may otherwise race the SETNAME packet).
+		_, err = pubsub.Receive(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
 		// Verify the name is set via CLIENT LIST
 		clientList, err := client.ClientList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -646,19 +653,24 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe(ctx, "mychannel")
 		defer pubsub.Close()
 
+		// Wait for the SUBSCRIBE confirmation before calling Channel(), so the
+		// server is guaranteed to have registered the subscription before we
+		// Publish. Once Channel() starts its pump goroutine, all subsequent
+		// reads happen there and Subscription frames are filtered out.
+		_, err := pubsub.ReceiveTimeout(ctx, 5*time.Second)
+		Expect(err).NotTo(HaveOccurred())
+
 		ch := pubsub.Channel(
 			redis.WithChannelSize(10),
 			redis.WithChannelHealthCheckInterval(time.Second),
 		)
 
 		text := "test channel message"
-		err := client.Publish(ctx, "mychannel", text).Err()
+		err = client.Publish(ctx, "mychannel", text).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		time.Sleep(10 * time.Millisecond)
-
 		var msg *redis.Message
-		Eventually(ch).Should(Receive(&msg))
+		Eventually(ch, 5*time.Second).Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(text))
 	})
