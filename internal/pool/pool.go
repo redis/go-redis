@@ -1447,6 +1447,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
+	}
+
 	removed := p.removeConnWithLock(cn)
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.

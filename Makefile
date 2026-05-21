@@ -2,7 +2,7 @@ GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 REDIS_VERSION ?= 8.8
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
-CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.8-rc1
+CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:custom-26172898734-debian
 
 docker.start:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
