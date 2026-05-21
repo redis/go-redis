@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -423,12 +422,6 @@ func (c cmdable) XNack(ctx context.Context, a *XNackArgs) *IntCmd {
 		args = append(args, "force")
 	}
 	cmd := NewIntCmd(ctx, args...)
-	switch a.Mode {
-	case XNackModeSilent, XNackModeFail, XNackModeFatal:
-	default:
-		cmd.SetErr(errors.New("redis: XNACK mode must be SILENT, FAIL, or FATAL"))
-		return cmd
-	}
 	_ = c(ctx, cmd)
 	return cmd
 }

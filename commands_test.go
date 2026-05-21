@@ -7765,14 +7765,13 @@ var _ = Describe("Commands", func() {
 			It("should not XNack with no mode", func() {
 				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
 
-				// Mode is required by Redis; omitting it should return an error.
+				// Mode is required by Redis; omitting it should return a server-side error.
 				_, err := client.XNack(ctx, &redis.XNackArgs{
 					Stream: "stream",
 					Group:  "group",
 					IDs:    []string{"1-0", "2-0"},
 				}).Result()
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("mode must be SILENT, FAIL, or FATAL"))
 			})
 
 			It("should XNack with SILENT mode", func() {
