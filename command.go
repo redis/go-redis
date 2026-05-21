@@ -1057,7 +1057,7 @@ type UintCmd struct {
 
 var _ Cmder = (*UintCmd)(nil)
 
-func NewUintCmd(ctx context.Context, args ...interface{}) *UintCmd {
+func NewUintCmd(ctx context.Context, args ...any) *UintCmd {
 	return &UintCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
@@ -1234,7 +1234,7 @@ type UintSliceCmd struct {
 
 var _ Cmder = (*UintSliceCmd)(nil)
 
-func NewUintSliceCmd(ctx context.Context, args ...interface{}) *UintSliceCmd {
+func NewUintSliceCmd(ctx context.Context, args ...any) *UintSliceCmd {
 	return &UintSliceCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
@@ -1266,7 +1266,7 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 		return err
 	}
 	cmd.val = make([]uint64, n)
-	for i := 0; i < len(cmd.val); i++ {
+	for i := range cmd.val {
 		if cmd.val[i], err = rd.ReadUint(); err != nil {
 			return err
 		}

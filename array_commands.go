@@ -8,6 +8,8 @@ import (
 //
 // ArrayCmdable defines the interface for Redis Array data structure commands
 // available in Redis 8.8.0+.
+//
+// Redis array supports index range [0, math.MaxUint64-1), so index parameters use uint64.
 type ArrayCmdable interface {
 	ARSet(ctx context.Context, key string, index uint64, values ...string) *IntCmd
 	ARGet(ctx context.Context, key string, index uint64) *StringCmd
