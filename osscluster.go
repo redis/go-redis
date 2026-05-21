@@ -164,6 +164,10 @@ type ClusterOptions struct {
 	IdentitySuffix string // Add suffix to client name. Default is empty.
 
 	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
+	//
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
 	UnstableResp3 bool
 
 	// PushNotificationProcessor is the processor for handling push notifications.
@@ -1450,6 +1454,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Hits += s.Hits
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
@@ -1461,6 +1467,8 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Hits += s.Hits
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns

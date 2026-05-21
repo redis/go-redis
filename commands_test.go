@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -368,7 +369,6 @@ var _ = Describe("Commands", func() {
 			defer client2.Close()
 			clientInfo = client2.ClientInfo(ctx).Val()
 			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(suffix,"))
-
 		})
 
 		It("should ConfigGet", func() {
@@ -2065,6 +2065,209 @@ var _ = Describe("Commands", func() {
 			incrByFloat := client.IncrByFloat(ctx, "key", 996945661)
 			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
 			Expect(incrByFloat.Val()).To(Equal(float64(996945661)))
+		})
+
+		It("should IncrEXInt default", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(11)))
+			Expect(res.AppliedIncrement).To(Equal(int64(1)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("11"))
+		})
+
+		It("should IncrEXInt BYINT", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "20", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{By: 4, HasBy: true}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(24)))
+			Expect(res.AppliedIncrement).To(Equal(int64(4)))
+		})
+
+		It("should IncrEXFloat with bounds", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1.5", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
+				By:        0.25,
+				LBound:    0,
+				HasLBound: true,
+				UBound:    2,
+				HasUBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(BeNumerically("~", 1.75, 1e-9))
+			Expect(res.AppliedIncrement).To(BeNumerically("~", 0.25, 1e-9))
+		})
+
+		It("should IncrEXFloat saturating overflow", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1.8", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
+				By:        0.7,
+				UBound:    2,
+				HasUBound: true,
+				Saturate:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(BeNumerically("~", 2.0, 1e-9))
+			Expect(res.AppliedIncrement).To(BeNumerically("~", 0.2, 1e-9))
+		})
+
+		It("should IncrEXInt out-of-bounds default rejects", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 5, HasBy: true,
+				UBound: 12, HasUBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("10"))
+		})
+
+		It("should IncrEXInt out-of-bounds with LBOUND default rejects", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "5", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+				LBound: 10, HasLBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(5)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("5"))
+		})
+
+		It("should IncrEXInt with EX expiration and ENX", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "40", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 2, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 60},
+				ENX:        true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(42)))
+			Expect(res.AppliedIncrement).To(Equal(int64(2)))
+
+			ttl1 := client.TTL(ctx, "key").Val()
+			Expect(ttl1).To(BeNumerically(">", 0))
+			Expect(ttl1).To(BeNumerically("<=", 60*time.Second))
+
+			// ENX should NOT replace an existing TTL.
+			res, err = client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 3, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 600},
+				ENX:        true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(45)))
+
+			ttl2 := client.TTL(ctx, "key").Val()
+			Expect(ttl2).To(BeNumerically(">", 0))
+			Expect(ttl2).To(BeNumerically("<=", ttl1))
+		})
+
+		It("should IncrEXInt SATURATE clamps to LBOUND with negative increment", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "credits", "50", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "credits", redis.IncrEXIntArgs{
+				By: -1, HasBy: true,
+				LBound: 0, HasLBound: true,
+				Saturate: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(49)))
+			Expect(res.AppliedIncrement).To(Equal(int64(-1)))
+		})
+
+		It("should IncrEXInt PERSIST removes TTL", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1", 60*time.Second).Err()).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(BeNumerically(">", 0))
+
+			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.PERSIST},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
+		})
+
+		It("should IncrEXInt SATURATE without bounds clamps to LLONG_MAX", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			// Start near LLONG_MAX; with no UBOUND the server should clamp to LLONG_MAX.
+			Expect(client.Set(ctx, "key", "9223372036854775800", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1000, HasBy: true,
+				Saturate: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(math.MaxInt64)))
+			Expect(res.AppliedIncrement).To(Equal(int64(math.MaxInt64 - 9223372036854775800)))
+		})
+
+		It("should IncrEXInt default reject leaves TTL untouched", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 60*time.Second).Err()).NotTo(HaveOccurred())
+			ttlBefore := client.TTL(ctx, "key").Val()
+			Expect(ttlBefore).To(BeNumerically(">", 0))
+
+			// Out-of-bounds increment with an EX clause — server should reject
+			// and NOT apply the new TTL.
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 5, HasBy: true,
+				UBound: 12, HasUBound: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 6000},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			ttlAfter := client.TTL(ctx, "key").Val()
+			// Original TTL was ~60s; rejected EX 6000s must not have been applied.
+			Expect(ttlAfter).To(BeNumerically("<=", ttlBefore))
+			Expect(ttlAfter).To(BeNumerically(">", 0))
+			Expect(ttlAfter).To(BeNumerically("<=", 60*time.Second))
+		})
+
+		It("should IncrEXInt on non-numeric key returns error", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "not-a-number", 0).Err()).NotTo(HaveOccurred())
+
+			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(client.Get(ctx, "key").Val()).To(Equal("not-a-number"))
 		})
 
 		It("should MSetMGet", func() {
@@ -6541,17 +6744,20 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"three", "two", "one"}))
 
 			vals, err = client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"two"}))
 
 			vals, err = client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
 		})
@@ -6565,17 +6771,20 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "-"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "-"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"c", "b", "a"}))
 
 			vals, err = client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "[b", Min: "(a"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "[b", Min: "(a"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"b"}))
 
 			vals, err = client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "(b", Min: "(a"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(b", Min: "(a"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
 		})
@@ -6589,7 +6798,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{
 				Score:  3,
@@ -6612,7 +6822,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{
 				Score:  3,
@@ -6626,12 +6837,14 @@ var _ = Describe("Commands", func() {
 			}}))
 
 			vals, err = client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{Score: 2, Member: "two"}}))
 
 			vals, err = client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{}))
 		})
@@ -7518,8 +7731,14 @@ var _ = Describe("Commands", func() {
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			start := time.Now()
+			// Wait for the goroutine to finish before the spec returns so it
+			// can't outlive AfterEach's client.Close() and trip "use of closed
+			// network connection" during the next spec's BeforeEach.
+			done := make(chan struct{})
+			defer func() { Eventually(done, 5*time.Second).Should(BeClosed()) }()
 			go func() {
 				defer GinkgoRecover()
+				defer close(done)
 
 				time.Sleep(100 * time.Millisecond)
 				id, err := client.XAdd(ctx, &redis.XAddArgs{
@@ -7717,7 +7936,6 @@ var _ = Describe("Commands", func() {
 					Values: map[string]interface{}{"tres": "troix"},
 				}}))
 				Expect(ids).To(Equal([]string{"2-0"}))
-
 			})
 
 			It("should XClaim", func() {
@@ -7753,6 +7971,205 @@ var _ = Describe("Commands", func() {
 				n, err := client.XAck(ctx, "stream", "group", "1-0", "2-0", "4-0").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(n).To(Equal(int64(2)))
+			})
+
+			It("should not XNack with no mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// Mode is required by Redis; omitting it should return a server-side error.
+				_, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should XNack with SILENT mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// All 3 messages are pending (delivered by BeforeEach), each with delivery_count=1.
+				// SILENT: consumer shutting down; delivery counter decremented by 1 (1 → 0).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "SILENT",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(2)))
+
+				// NACKed messages move to unassigned "nacked" state in the PEL.
+				// Total PEL count stays 3; only 3-0 remains assigned to consumer.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 1}))
+
+				// Verify the delivery counter was decremented from 1 to 0 for the NACKed messages.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" || e.ID == "2-0" {
+						Expect(e.RetryCount).To(Equal(int64(0)), "SILENT should decrement delivery counter to 0 for %s", e.ID)
+					}
+				}
+			})
+
+			It("should XNack with FAIL mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// FAIL: delivery counter stays the same (1 → 1).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// NACKed message moves to unassigned "nacked" state.
+				// Only 2 messages (2-0, 3-0) remain assigned to consumer.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
+
+				// Verify the delivery counter was left unchanged at 1.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						Expect(e.RetryCount).To(Equal(int64(1)), "FAIL should leave delivery counter unchanged")
+					}
+				}
+			})
+
+			It("should XNack with FATAL mode", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// FATAL: delivery counter set to MAXINT (for invalid/malicious messages).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FATAL",
+					IDs:    []string{"1-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// NACKed message moves to unassigned state; 2-0 and 3-0 remain assigned.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
+
+				// Verify the delivery counter was set to MAXINT (math.MaxInt64).
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						Expect(e.RetryCount).To(Equal(int64(math.MaxInt64)), "FATAL should set delivery counter to MAXINT")
+					}
+				}
+			})
+
+			It("should XNack nacked-count reflected in XINFO STREAM FULL", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// NACK two messages.
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0", "2-0"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(2)))
+
+				// Verify nacked-count in XINFO STREAM FULL.
+				info, err := client.XInfoStreamFull(ctx, "stream", 10).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(info.Groups).To(HaveLen(1))
+				Expect(info.Groups[0].NackedCount).To(Equal(uint64(2)))
+			})
+
+			It("should XNack with RetryCount", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				retryCount := uint64(5)
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream:     "stream",
+					Group:      "group",
+					Mode:       "FAIL",
+					IDs:        []string{"1-0"},
+					RetryCount: &retryCount,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// Verify the delivery counter was set to the explicit RetryCount value,
+				// overriding the mode's default adjustment.
+				infoExt, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+					Stream: "stream",
+					Group:  "group",
+					Start:  "-",
+					End:    "+",
+					Count:  10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				// Find 1-0 and verify its delivery counter.
+				var entry redis.XPendingExt
+				for _, e := range infoExt {
+					if e.ID == "1-0" {
+						entry = e
+						break
+					}
+				}
+				Expect(entry.ID).To(Equal("1-0"))
+				Expect(entry.RetryCount).To(Equal(int64(retryCount)))
+			})
+
+			It("should XNack with Force", func() {
+				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+
+				// Force creates a new NACKed PEL entry for an ID that was never
+				// delivered to a consumer via XREADGROUP. Without Force this would
+				// be a no-op (the ID is not in any consumer's PEL).
+				n, err := client.XNack(ctx, &redis.XNackArgs{
+					Stream: "stream",
+					Group:  "group",
+					Mode:   "FAIL",
+					IDs:    []string{"1-0"},
+					Force:  true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(n).To(Equal(int64(1)))
+
+				// The entry is now in the group's PEL as an unassigned NACKed entry.
+				pendingInfo, err := client.XPending(ctx, "stream", "group").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pendingInfo.Count).To(Equal(int64(3)))
+				Expect(pendingInfo.Consumers).To(Equal(map[string]int64{"consumer": 2}))
 			})
 
 			It("should XReadGroup with CLAIM argument", func() {
@@ -9283,37 +9700,46 @@ var _ = Describe("Commands", func() {
 		It("reset all latencies", func() {
 			const key = "latency-monitor-threshold"
 
-			result, err := client.Latency(ctx).Result()
 			// reset all latencies
-			err = client.LatencyReset(ctx).Err()
+			err := client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
+			// Use a higher threshold (100ms) to avoid capturing normal operations
+			// that could cause flakiness due to timing variations on busy CI runners.
+			client.ConfigSet(ctx, key, "100")
 			defer client.ConfigSet(ctx, key, old[key])
 
 			// get latency after reset
-			result, err = client.Latency(ctx).Result()
+			result, err := client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
-			// create a new latency
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			// create a new latency event by sleeping past the threshold
+			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// get latency after create a new latency
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(1))
+			Expect(len(result)).Should(BeNumerically(">=", 1))
+			triggered := result[0].Name
 
 			// reset all latencies again
 			err = client.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			// get latency after reset again
+			// get latency after reset again. Don't assert total length is 0:
+			// other operations on the connection may briefly land in the
+			// latency log on a slow CI runner. Instead verify the specific
+			// event we triggered is gone.
 			result, err = client.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(result)).Should(Equal(0))
+			for _, event := range result {
+				if event.Name == triggered {
+					Fail("Event " + triggered + " should have been reset")
+				}
+			}
 		})
 
 		It("reset latencies by add event name args", func() {

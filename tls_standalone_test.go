@@ -74,4 +74,3 @@ func TestTLSRedissURL(t *testing.T) {
 
 	t.Log("✅ TLS rediss:// URL test passed")
 }
-
