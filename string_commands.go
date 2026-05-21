@@ -227,14 +227,13 @@ type IncrEXIntArgs struct {
 }
 
 // IncrEXFloatArgs are the arguments to IncrEXFloat (the BYFLOAT variant of
-// INCREX).
-//
-// If By is zero and HasBy is false, BYFLOAT is omitted and the server
-// increments by 1. HasLBound/HasUBound gate the optional LBOUND/UBOUND
-// clauses so that 0 is a valid bound.
+// INCREX). BYFLOAT is always sent — even when By is zero — to keep the
+// operation in float mode on the server side; omitting BYFLOAT would cause
+// the server to treat the call as an integer increment by 1.
+// HasLBound/HasUBound gate the optional LBOUND/UBOUND clauses so that 0 is
+// a valid bound.
 type IncrEXFloatArgs struct {
-	By    float64
-	HasBy bool
+	By float64
 
 	LBound, UBound       float64
 	HasLBound, HasUBound bool
@@ -292,10 +291,7 @@ func (c cmdable) IncrEXInt(ctx context.Context, key string, a IncrEXIntArgs) *In
 // For more information, see https://redis.io/commands/increx
 func (c cmdable) IncrEXFloat(ctx context.Context, key string, a IncrEXFloatArgs) *IncrEXFloatCmd {
 	args := make([]interface{}, 0, 14)
-	args = append(args, "increx", key)
-	if a.HasBy {
-		args = append(args, "byfloat", a.By)
-	}
+	args = append(args, "increx", key, "byfloat", a.By)
 	if a.HasLBound {
 		args = append(args, "lbound", a.LBound)
 	}

@@ -124,24 +124,19 @@ func TestIncrEXFloat_Args(t *testing.T) {
 		want []interface{}
 	}{
 		{
-			name: "default",
+			name: "default_zero_by",
 			args: IncrEXFloatArgs{},
-			want: []interface{}{"increx", "key"},
+			want: []interface{}{"increx", "key", "byfloat", float64(0)},
 		},
 		{
 			name: "byfloat",
-			args: IncrEXFloatArgs{By: 0.25, HasBy: true},
+			args: IncrEXFloatArgs{By: 0.25},
 			want: []interface{}{"increx", "key", "byfloat", 0.25},
-		},
-		{
-			name: "byfloat_zero_explicit",
-			args: IncrEXFloatArgs{By: 0, HasBy: true},
-			want: []interface{}{"increx", "key", "byfloat", float64(0)},
 		},
 		{
 			name: "bounds_and_saturate",
 			args: IncrEXFloatArgs{
-				By: 0.7, HasBy: true,
+				By:     0.7,
 				UBound: 2, HasUBound: true,
 				Saturate: true,
 			},
@@ -150,7 +145,7 @@ func TestIncrEXFloat_Args(t *testing.T) {
 		{
 			name: "lbound_ubound",
 			args: IncrEXFloatArgs{
-				By: 0.5, HasBy: true,
+				By:     0.5,
 				LBound: -1.5, HasLBound: true,
 				UBound: 1.5, HasUBound: true,
 			},
@@ -159,7 +154,7 @@ func TestIncrEXFloat_Args(t *testing.T) {
 		{
 			name: "ex_and_enx",
 			args: IncrEXFloatArgs{
-				By: 1.5, HasBy: true,
+				By:         1.5,
 				Expiration: &ExpirationOption{Mode: EX, Value: 30},
 				ENX:        true,
 			},

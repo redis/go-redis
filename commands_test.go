@@ -2098,7 +2098,6 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
 				By:        0.25,
-				HasBy:     true,
 				LBound:    0,
 				HasLBound: true,
 				UBound:    2,
@@ -2116,7 +2115,6 @@ var _ = Describe("Commands", func() {
 
 			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
 				By:        0.7,
-				HasBy:     true,
 				UBound:    2,
 				HasUBound: true,
 				Saturate:  true,
