@@ -75,3 +75,6 @@ StreamingCredentialsProvider
 oauth
 entraid
 MiB
+KiB
+oldstable
+backoff

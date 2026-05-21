@@ -1,0 +1,460 @@
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	logs2 "github.com/redis/go-redis/v9/internal/maintnotifications/logs"
+	"github.com/redis/go-redis/v9/logging"
+	"github.com/redis/go-redis/v9/maintnotifications"
+)
+
+// TestTimeoutConfigurationsPushNotifications tests push notifications with different timeout configurations
+// This test now works with BOTH the real fault injector and the proxy mock
+func TestTimeoutConfigurationsPushNotifications(t *testing.T) {
+	if os.Getenv("E2E_SCENARIO_TESTS") != "true" {
+		t.Skip("Scenario tests require E2E_SCENARIO_TESTS=true")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	var dump = true
+
+	var errorsDetected = false
+	var p = func(format string, args ...interface{}) {
+		printLog("TIMEOUT-CONFIGS", false, format, args...)
+	}
+
+	var e = func(format string, args ...interface{}) {
+		errorsDetected = true
+		printLog("TIMEOUT-CONFIGS", true, format, args...)
+	}
+
+	// Test different timeout configurations
+	timeoutConfigs := []struct {
+		name                       string
+		handoffTimeout             time.Duration
+		relaxedTimeout             time.Duration
+		postHandoffRelaxedDuration time.Duration
+		description                string
+		expectedBehavior           string
+	}{
+		{
+			name:                       "Conservative",
+			handoffTimeout:             60 * time.Second,
+			relaxedTimeout:             30 * time.Second,
+			postHandoffRelaxedDuration: 2 * time.Minute,
+			description:                "Conservative timeouts for stable environments",
+			expectedBehavior:           "Longer timeouts, fewer timeout errors",
+		},
+		{
+			name:                       "Aggressive",
+			handoffTimeout:             5 * time.Second,
+			relaxedTimeout:             3 * time.Second,
+			postHandoffRelaxedDuration: 1 * time.Second,
+			description:                "Aggressive timeouts for fast failover",
+			expectedBehavior:           "Shorter timeouts, faster recovery",
+		},
+		{
+			name:                       "HighLatency",
+			handoffTimeout:             90 * time.Second,
+			relaxedTimeout:             30 * time.Second,
+			postHandoffRelaxedDuration: 10 * time.Minute,
+			description:                "High latency environment timeouts",
+			expectedBehavior:           "Very long timeouts for high latency networks",
+		},
+	}
+
+	logCollector.ClearLogs()
+	defer func() {
+		logCollector.Clear()
+	}()
+
+	// Test each timeout configuration with its own fresh database
+	for _, timeoutTest := range timeoutConfigs {
+		t.Run(timeoutTest.name, func(t *testing.T) {
+			// Setup: Create fresh database and client factory for THIS timeout config test
+			bdbID, factory, testMode, cleanup := SetupTestDatabaseAndFactory(t, ctx, "standalone")
+			defer cleanup()
+			t.Logf("[TIMEOUT-CONFIGS-%s] Created test database with bdb_id: %d (mode: %s)", timeoutTest.name, bdbID, testMode.Mode)
+
+			// Get endpoint config from factory (now connected to new database)
+			endpointConfig := factory.GetConfig()
+
+			// Create notification injector (works with both proxy mock and real FI)
+			injector, err := NewNotificationInjector()
+			if err != nil {
+				t.Fatalf("[ERROR] Failed to create notification injector: %v", err)
+			}
+			defer injector.Stop()
+
+			// For real fault injector, we also need the FaultInjectorClient for actions
+			var faultInjector *FaultInjectorClient
+			if !testMode.IsProxyMock() {
+				faultInjector, err = CreateTestFaultInjector()
+				if err != nil {
+					t.Fatalf("[ERROR] Failed to create fault injector: %v", err)
+				}
+			}
+
+			defer func() {
+				if dump {
+					p("Pool stats:")
+					factory.PrintPoolStats(t)
+				}
+			}()
+
+			errorsDetected = false
+			var ef = func(format string, args ...interface{}) {
+				printLog("TIMEOUT-CONFIGS", true, format, args...)
+				t.FailNow()
+			}
+
+			p("Testing timeout configuration: %s - %s", timeoutTest.name, timeoutTest.description)
+			p("Expected behavior: %s", timeoutTest.expectedBehavior)
+			p("Handoff timeout: %v, Relaxed timeout: %v, Post-handoff duration: %v",
+				timeoutTest.handoffTimeout, timeoutTest.relaxedTimeout, timeoutTest.postHandoffRelaxedDuration)
+
+			minIdleConns := 4
+			poolSize := 10
+			maxConnections := 15
+
+			// Create Redis client with specific timeout configuration
+			client, err := factory.Create(fmt.Sprintf("timeout-test-%s", timeoutTest.name), &CreateClientOptions{
+				Protocol:       3, // RESP3 required for push notifications
+				PoolSize:       poolSize,
+				MinIdleConns:   minIdleConns,
+				MaxActiveConns: maxConnections,
+				MaintNotificationsConfig: &maintnotifications.Config{
+					Mode:                       maintnotifications.ModeEnabled,
+					HandoffTimeout:             timeoutTest.handoffTimeout,
+					RelaxedTimeout:             timeoutTest.relaxedTimeout,
+					PostHandoffRelaxedDuration: timeoutTest.postHandoffRelaxedDuration,
+					MaxWorkers:                 20,
+					EndpointType:               maintnotifications.EndpointTypeExternalIP,
+				},
+				ClientName: fmt.Sprintf("timeout-test-%s", timeoutTest.name),
+			})
+			if err != nil {
+				ef("Failed to create client for %s: %v", timeoutTest.name, err)
+			}
+
+			// Create timeout tracker
+			tracker := NewTrackingNotificationsHook()
+			logger := maintnotifications.NewLoggingHook(int(logging.LogLevelDebug))
+			setupNotificationHooks(client, tracker, logger)
+			defer func() {
+				tracker.Clear()
+			}()
+
+			// Verify initial connectivity
+			err = client.Ping(ctx).Err()
+			if err != nil {
+				ef("Failed to ping Redis with %s timeout config: %v", timeoutTest.name, err)
+			}
+
+			p("Client connected successfully with %s timeout configuration", timeoutTest.name)
+
+			commandsRunner, _ := NewCommandRunner(client)
+			defer func() {
+				if dump {
+					stats := commandsRunner.GetStats()
+					p("%s timeout config stats: Operations: %d, Errors: %d, Timeout Errors: %d",
+						timeoutTest.name, stats.Operations, stats.Errors, stats.TimeoutErrors)
+				}
+				commandsRunner.Stop()
+			}()
+
+			// Start command traffic
+			go func() {
+				commandsRunner.FireCommandsUntilStop(ctx)
+			}()
+
+			// Record start time for timeout analysis
+			testStartTime := time.Now()
+
+			// Test failover with this timeout configuration
+			p("Testing failover with %s timeout configuration...", timeoutTest.name)
+			var failoverResp *ActionResponse
+			if testMode.IsProxyMock() {
+				// Proxy mock: Directly inject FAILING_OVER notification
+				p("Injecting FAILING_OVER notification (proxy mock mode)...")
+				if err := injector.InjectFAILING_OVER(ctx, 1000); err != nil {
+					ef("Failed to inject FAILING_OVER: %v", err)
+				}
+				time.Sleep(testMode.NotificationDelay)
+			} else {
+				// Real FI: Trigger failover action
+				failoverResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+					Type: "failover",
+					Parameters: map[string]interface{}{
+						"bdb_id": endpointConfig.BdbID,
+					},
+				})
+				if err != nil {
+					ef("Failed to trigger failover action for %s: %v", timeoutTest.name, err)
+				}
+			}
+
+			// Wait for FAILING_OVER notification
+			match, found := logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "FAILING_OVER")
+			}, 3*time.Minute)
+			if !found {
+				ef("FAILING_OVER notification was not received for %s timeout config", timeoutTest.name)
+			}
+			failingOverData := logs2.ExtractDataFromLogMessage(match)
+			p("FAILING_OVER notification received for %s. %v", timeoutTest.name, failingOverData)
+
+			// Inject FAILED_OVER in proxy mock mode
+			if testMode.IsProxyMock() {
+				p("Injecting FAILED_OVER notification (proxy mock mode)...")
+				if err := injector.InjectFAILED_OVER(ctx, 1001); err != nil {
+					ef("Failed to inject FAILED_OVER: %v", err)
+				}
+				time.Sleep(testMode.NotificationDelay)
+			}
+
+			// Wait for FAILED_OVER notification
+			seqIDToObserve := int64(failingOverData["seqID"].(float64))
+			connIDToObserve := uint64(failingOverData["connID"].(float64))
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return notificationType(s, "FAILED_OVER") && connID(s, connIDToObserve) && seqID(s, seqIDToObserve+1)
+			}, 3*time.Minute)
+			if !found {
+				ef("FAILED_OVER notification was not received for %s timeout config", timeoutTest.name)
+			}
+			failedOverData := logs2.ExtractDataFromLogMessage(match)
+			p("FAILED_OVER notification received for %s. %v", timeoutTest.name, failedOverData)
+
+			// Wait for failover to complete (real FI only)
+			if !testMode.IsProxyMock() {
+				status, err := faultInjector.WaitForAction(ctx, failoverResp.ActionID,
+					WithMaxWaitTime(180*time.Second),
+					WithPollInterval(2*time.Second),
+				)
+				if err != nil {
+					ef("[FI] Failover action failed for %s: %v", timeoutTest.name, err)
+				}
+				p("[FI] Failover action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
+			}
+
+			// Continue traffic to observe timeout behavior
+			// In proxy mock mode, use shorter sleep since notifications are immediate
+			// but still need enough time to observe timeout behavior
+			trafficObservationDuration := timeoutTest.relaxedTimeout * 2
+			if testMode.IsProxyMock() {
+				// Use 11 seconds for proxy mock - enough to observe timeout behavior
+				trafficObservationDuration = 11 * time.Second
+			}
+			p("Continuing traffic for %v to observe timeout behavior...", trafficObservationDuration)
+			time.Sleep(trafficObservationDuration)
+
+			// Test migration to trigger more timeout scenarios
+			p("Testing migration with %s timeout configuration...", timeoutTest.name)
+			var migrateResp *ActionResponse
+			if testMode.IsProxyMock() {
+				// Proxy mock: Directly inject MIGRATING notification
+				p("Injecting MIGRATING notification (proxy mock mode)...")
+				if err := injector.InjectMIGRATING(ctx, 2000, 5000); err != nil {
+					ef("Failed to inject MIGRATING: %v", err)
+				}
+				time.Sleep(testMode.NotificationDelay)
+			} else {
+				// Real FI: Trigger migrate action
+				migrateResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+					Type: "migrate",
+					Parameters: map[string]interface{}{
+						"bdb_id": endpointConfig.BdbID,
+					},
+				})
+				if err != nil {
+					ef("Failed to trigger migrate action for %s: %v", timeoutTest.name, err)
+				}
+
+				// Wait for migration to complete
+				status, err := faultInjector.WaitForAction(ctx, migrateResp.ActionID,
+					WithMaxWaitTime(240*time.Second),
+					WithPollInterval(2*time.Second),
+				)
+				if err != nil {
+					ef("[FI] Migrate action failed for %s: %v", timeoutTest.name, err)
+				}
+
+				p("[FI] Migrate action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
+			}
+
+			// Wait for MIGRATING notification
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && strings.Contains(s, "MIGRATING")
+			}, 60*time.Second)
+			if !found {
+				ef("MIGRATING notification was not received for %s timeout config", timeoutTest.name)
+			}
+			migrateData := logs2.ExtractDataFromLogMessage(match)
+			p("MIGRATING notification received for %s: %v", timeoutTest.name, migrateData)
+
+			// Inject MIGRATED in proxy mock mode
+			if testMode.IsProxyMock() {
+				p("Injecting MIGRATED notification (proxy mock mode)...")
+				if err := injector.InjectMIGRATED(ctx, 2001, 5000); err != nil {
+					ef("Failed to inject MIGRATED: %v", err)
+				}
+				time.Sleep(testMode.NotificationDelay)
+			}
+
+			// do a bind action (or inject MOVING in proxy mock mode)
+			var bindResp *ActionResponse
+			if testMode.IsProxyMock() {
+				// Proxy mock: Directly inject MOVING notification
+				// CommandRunner is still running so connections can receive the notification
+				p("Injecting MOVING notification (proxy mock mode)...")
+				if err := injector.InjectMOVING(ctx, 3000, 30, ""); err != nil {
+					ef("Failed to inject MOVING: %v", err)
+				}
+				time.Sleep(testMode.NotificationDelay)
+			} else {
+				// Real FI: Trigger bind action
+				bindResp, err = faultInjector.TriggerAction(ctx, ActionRequest{
+					Type: "bind",
+					Parameters: map[string]interface{}{
+						"bdb_id": endpointConfig.BdbID,
+					},
+				})
+				if err != nil {
+					ef("Failed to trigger bind action for %s: %v", timeoutTest.name, err)
+				}
+				status, err := faultInjector.WaitForAction(ctx, bindResp.ActionID,
+					WithMaxWaitTime(240*time.Second),
+					WithPollInterval(2*time.Second),
+				)
+				if err != nil {
+					ef("[FI] Bind action failed for %s: %v", timeoutTest.name, err)
+				}
+				p("[FI] Bind action completed for %s: %s %s", timeoutTest.name, status.Status, actionOutputIfFailed(status))
+			}
+
+			// waiting for moving notification
+			match, found = logCollector.MatchOrWaitForLogMatchFunc(func(s string) bool {
+				return strings.Contains(s, logs2.ProcessingNotificationMessage) && notificationType(s, "MOVING")
+			}, 3*time.Minute)
+			if !found {
+				ef("MOVING notification was not received for %s timeout config", timeoutTest.name)
+			}
+
+			movingData := logs2.ExtractDataFromLogMessage(match)
+			p("MOVING notification received for %s. %v", timeoutTest.name, movingData)
+
+			// Continue traffic for post-handoff timeout observation
+			// In proxy mock mode, use shorter sleep since notifications are immediate
+			// but still need enough time to observe post-handoff timeout behavior
+			postHandoffDuration := 1 * time.Minute
+			if testMode.IsProxyMock() {
+				// In proxy mock mode, stop the CommandRunner after MOVING is received
+				// but before handoffs execute to avoid data race.
+				// The handoff worker reinitializes connections, which races with CommandRunner
+				// using the same connections.
+				// Handoffs are scheduled at timeS/2 = 15 seconds.
+				p("Stopping command runner before handoffs execute (proxy mock mode)...")
+				commandsRunner.Stop()
+
+				// Wait for handoffs to complete
+				p("Waiting for handoffs to complete...")
+				time.Sleep(18 * time.Second) // Wait for handoffs (scheduled at 15s)
+
+				// Restart command runner to observe post-handoff behavior
+				p("Restarting command runner to observe post-handoff behavior...")
+				commandsRunner, _ = NewCommandRunner(client)
+				go commandsRunner.FireCommandsUntilStop(ctx)
+
+				// Use shorter observation time since we already waited for handoffs
+				postHandoffDuration = 5 * time.Second
+			}
+			p("Continuing traffic for %v to observe post-handoff timeout behavior...", postHandoffDuration)
+			time.Sleep(postHandoffDuration)
+
+			commandsRunner.Stop()
+			testDuration := time.Since(testStartTime)
+
+			// Analyze timeout behavior
+			trackerAnalysis := tracker.GetAnalysis()
+			logAnalysis := logCollector.GetAnalysis()
+			if trackerAnalysis.NotificationProcessingErrors > 0 {
+				e("Notification processing errors with %s timeout config: %d", timeoutTest.name, trackerAnalysis.NotificationProcessingErrors)
+			}
+
+			// Validate timeout-specific behavior
+			switch timeoutTest.name {
+			case "Conservative":
+				// In proxy mock mode, the timing is more predictable and we may not see
+				// the same ratio of relaxed to unrelaxed timeouts as with real FI
+				if !testMode.IsProxyMock() && trackerAnalysis.UnrelaxedTimeoutCount > trackerAnalysis.RelaxedTimeoutCount {
+					e("Conservative config should have more relaxed than unrelaxed timeouts, got relaxed=%d, unrelaxed=%d",
+						trackerAnalysis.RelaxedTimeoutCount, trackerAnalysis.UnrelaxedTimeoutCount)
+				}
+			case "Aggressive":
+				// Aggressive timeouts should complete faster
+				// Proxy mock is much faster than real FI, so adjust expectations
+				maxDuration := 5 * time.Minute
+				if testMode.IsProxyMock() {
+					maxDuration = 2 * time.Minute
+				}
+				if testDuration > maxDuration {
+					e("Aggressive config took too long: %v (max: %v)", testDuration, maxDuration)
+				}
+				if !testMode.IsProxyMock() && logAnalysis.TotalHandoffRetries > logAnalysis.TotalHandoffCount {
+					e("Expect handoff retries since aggressive timeouts are shorter, got %d retries for %d handoffs",
+						logAnalysis.TotalHandoffRetries, logAnalysis.TotalHandoffCount)
+				}
+			case "HighLatency":
+				// High latency config should have very few unrelaxed after moving
+				if logAnalysis.UnrelaxedAfterMoving > 2 {
+					e("High latency config should have minimal unrelaxed timeouts after moving, got %d", logAnalysis.UnrelaxedAfterMoving)
+				}
+			}
+
+			// Validate we received expected notifications
+			if trackerAnalysis.FailingOverCount == 0 {
+				e("Expected FAILING_OVER notifications with %s timeout config, got none", timeoutTest.name)
+			}
+			if trackerAnalysis.FailedOverCount == 0 {
+				e("Expected FAILED_OVER notifications with %s timeout config, got none", timeoutTest.name)
+			}
+			if trackerAnalysis.MigratingCount == 0 {
+				e("Expected MIGRATING notifications with %s timeout config, got none", timeoutTest.name)
+			}
+
+			// Validate timeout counts are reasonable
+			if trackerAnalysis.RelaxedTimeoutCount == 0 {
+				e("Expected relaxed timeouts with %s config, got none", timeoutTest.name)
+			}
+
+			if logAnalysis.SucceededHandoffCount == 0 {
+				e("Expected successful handoffs with %s config, got none", timeoutTest.name)
+			}
+
+			if errorsDetected {
+				logCollector.DumpLogs()
+				trackerAnalysis.Print(t)
+				logCollector.Clear()
+				tracker.Clear()
+				ef("[FAIL] Errors detected with %s timeout config", timeoutTest.name)
+			}
+			p("Timeout configuration %s test completed successfully in %v", timeoutTest.name, testDuration)
+			p("Command runner stats:")
+			p("Operations: %d, Errors: %d, Timeout Errors: %d",
+				commandsRunner.GetStats().Operations, commandsRunner.GetStats().Errors, commandsRunner.GetStats().TimeoutErrors)
+			p("Relaxed timeouts: %d, Unrelaxed timeouts: %d", trackerAnalysis.RelaxedTimeoutCount, trackerAnalysis.UnrelaxedTimeoutCount)
+		})
+
+		// Clear logs between timeout configuration tests
+		logCollector.ClearLogs()
+	}
+
+	p("All timeout configurations tested successfully")
+}

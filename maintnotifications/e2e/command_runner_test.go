@@ -1,0 +1,150 @@
+package e2e
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+type CommandRunnerStats struct {
+	Operations    int64
+	Errors        int64
+	TimeoutErrors int64
+	ErrorsList    []error
+}
+
+// CommandRunner provides utilities for running commands during tests
+type CommandRunner struct {
+	executing      atomic.Bool
+	client         redis.UniversalClient
+	stopCh         chan struct{}
+	operationCount atomic.Int64
+	errorCount     atomic.Int64
+	timeoutErrors  atomic.Int64
+	errors         []error
+	errorsMutex    sync.Mutex
+}
+
+// NewCommandRunner creates a new command runner
+func NewCommandRunner(client redis.UniversalClient) (*CommandRunner, func()) {
+	// Use buffered channel so Stop() can always send without blocking
+	stopCh := make(chan struct{}, 1)
+	return &CommandRunner{
+			client: client,
+			stopCh: stopCh,
+			errors: make([]error, 0),
+		}, func() {
+			select {
+			case stopCh <- struct{}{}:
+			default:
+				// Already stopped
+			}
+		}
+}
+
+func (cr *CommandRunner) Stop() {
+	// Non-blocking send to buffered channel
+	select {
+	case cr.stopCh <- struct{}{}:
+	default:
+		// Already has a stop signal pending
+	}
+}
+
+func (cr *CommandRunner) Close() {
+	close(cr.stopCh)
+}
+
+// FireCommandsUntilStop runs commands continuously until stop signal
+func (cr *CommandRunner) FireCommandsUntilStop(ctx context.Context) {
+	if !cr.executing.CompareAndSwap(false, true) {
+		return
+	}
+	defer cr.executing.Store(false)
+	fmt.Printf("[CR] Starting command runner...\n")
+	defer fmt.Printf("[CR] Command runner stopped\n")
+	// High frequency for timeout testing
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	counter := 0
+	for {
+		select {
+		case <-cr.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			poolSize := cr.client.PoolStats().IdleConns
+			if poolSize == 0 {
+				poolSize = 1
+			}
+			// simulate at least 20 connections
+			if poolSize < 20 {
+				poolSize = 20
+			}
+			wg := sync.WaitGroup{}
+			// run 2x pool size operations
+			for i := 0; i < int(poolSize)*2; i++ {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					key := fmt.Sprintf("timeout-test-key-%d-%d", counter, i)
+					value := fmt.Sprintf("timeout-test-value-%d-%d", counter, i)
+
+					// Use the parent context directly - let the client's configured timeouts
+					// (including relaxed timeouts during failover) handle timing
+					err := cr.client.Set(ctx, key, value, time.Minute).Err()
+
+					cr.operationCount.Add(1)
+					if err != nil {
+						if err == redis.ErrClosed || strings.Contains(err.Error(), "client is closed") {
+							select {
+							case <-cr.stopCh:
+								return
+							default:
+							}
+							return
+						}
+
+						cr.errorCount.Add(1)
+
+						// Check if it's a timeout error
+						if isTimeoutError(err) {
+							cr.timeoutErrors.Add(1)
+						}
+
+						cr.errorsMutex.Lock()
+						cr.errors = append(cr.errors, err)
+						cr.errorsMutex.Unlock()
+					}
+				}(i)
+			}
+			wg.Wait()
+			counter++
+		}
+	}
+}
+
+// GetStats returns operation statistics
+func (cr *CommandRunner) GetStats() CommandRunnerStats {
+	cr.errorsMutex.Lock()
+	defer cr.errorsMutex.Unlock()
+
+	errorList := make([]error, len(cr.errors))
+	copy(errorList, cr.errors)
+
+	stats := CommandRunnerStats{
+		Operations:    cr.operationCount.Load(),
+		Errors:        cr.errorCount.Load(),
+		TimeoutErrors: cr.timeoutErrors.Load(),
+		ErrorsList:    errorList,
+	}
+
+	return stats
+}

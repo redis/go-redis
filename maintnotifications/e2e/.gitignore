@@ -1,0 +1,30 @@
+# E2E test artifacts
+*.log
+*.out
+test-results/
+coverage/
+profiles/
+
+# Test data
+test-data/
+temp/
+*.tmp
+
+# CI artifacts
+artifacts/
+reports/
+
+# Redis data files (if running local Redis for testing)
+dump.rdb
+appendonly.aof
+redis.conf.local
+
+# Performance test results
+*.prof
+*.trace
+benchmarks/
+
+# Docker compose files for local testing
+docker-compose.override.yml
+.env.local
+infra/

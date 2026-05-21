@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -313,7 +314,9 @@ func (c cmdable) ZPopMax(ctx context.Context, key string, count ...int64) *ZSlic
 	case 1:
 		args = append(args, count[0])
 	default:
-		panic("too many arguments")
+		cmd := NewZSliceCmd(ctx)
+		cmd.SetErr(errors.New("too many arguments"))
+		return cmd
 	}
 
 	cmd := NewZSliceCmd(ctx, args...)
@@ -333,7 +336,9 @@ func (c cmdable) ZPopMin(ctx context.Context, key string, count ...int64) *ZSlic
 	case 1:
 		args = append(args, count[0])
 	default:
-		panic("too many arguments")
+		cmd := NewZSliceCmd(ctx)
+		cmd.SetErr(errors.New("too many arguments"))
+		return cmd
 	}
 
 	cmd := NewZSliceCmd(ctx, args...)
@@ -368,6 +373,17 @@ type ZRangeArgs struct {
 	//	 	}
 	// 	 	cmd: "ZRange example-key (3 8 ByScore"  (3 < score <= 8).
 	//
+	// When the Rev option is also provided, <Start> should be the higher score value and
+	// <Stop> should be the lower score value (i.e. reversed order):
+	//		ZRangeArgs{
+	//			Key: 				"example-key",
+	//	 		Start: 				8,
+	//	 		Stop: 				"(3",
+	//			ByScore:			true,
+	//			Rev:				true,
+	//	 	}
+	// 	 	cmd: "ZRange example-key 8 (3 ByScore Rev"  (8 >= score > 3, in reverse order).
+	//
 	// For the ByLex option, it is similar to the deprecated(6.2.0+) ZRangeByLex command.
 	// You can set the <Start> and <Stop> options as follows:
 	//		ZRangeArgs{
@@ -377,6 +393,17 @@ type ZRangeArgs struct {
 	//			ByLex:				true,
 	//	 	}
 	//		cmd: "ZRange example-key [abc (def ByLex"
+	//
+	// When the Rev option is also provided, <Start> should be the lexicographically higher
+	// value and <Stop> should be the lower value:
+	//		ZRangeArgs{
+	//			Key: 				"example-key",
+	//	 		Start: 				"(def",
+	//	 		Stop: 				"[abc",
+	//			ByLex:				true,
+	//			Rev:				true,
+	//	 	}
+	//		cmd: "ZRange example-key (def [abc ByLex Rev"
 	//
 	// For normal cases (ByScore==false && ByLex==false), <Start> and <Stop> should be set to the index range (int).
 	// You can read the documentation for more information: https://redis.io/commands/zrange
@@ -395,12 +422,7 @@ type ZRangeArgs struct {
 }
 
 func (z ZRangeArgs) appendArgs(args []interface{}) []interface{} {
-	// For Rev+ByScore/ByLex, we need to adjust the position of <Start> and <Stop>.
-	if z.Rev && (z.ByScore || z.ByLex) {
-		args = append(args, z.Key, z.Stop, z.Start)
-	} else {
-		args = append(args, z.Key, z.Start, z.Stop)
-	}
+	args = append(args, z.Key, z.Start, z.Stop)
 
 	if z.ByScore {
 		args = append(args, "byscore")
@@ -474,10 +496,16 @@ func (c cmdable) zRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeBy, 
 	return cmd
 }
 
+// ZRangeByScore returns members in a sorted set within a range of scores.
+//
+// Deprecated: Use ZRangeArgs with ByScore option instead as of Redis 6.2.0.
 func (c cmdable) ZRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy(ctx, "zrangebyscore", key, opt, false)
 }
 
+// ZRangeByLex returns members in a sorted set within a lexicographical range.
+//
+// Deprecated: Use ZRangeArgs with ByLex option instead as of Redis 6.2.0.
 func (c cmdable) ZRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRangeBy(ctx, "zrangebylex", key, opt, false)
 }
@@ -554,6 +582,9 @@ func (c cmdable) ZRemRangeByLex(ctx context.Context, key, min, max string) *IntC
 	return cmd
 }
 
+// ZRevRange returns members in a sorted set within a range of indexes in reverse order.
+//
+// Deprecated: Use ZRangeArgs with Rev option instead as of Redis 6.2.0.
 func (c cmdable) ZRevRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
 	cmd := NewStringSliceCmd(ctx, "zrevrange", key, start, stop)
 	_ = c(ctx, cmd)
@@ -583,10 +614,16 @@ func (c cmdable) zRevRangeBy(ctx context.Context, zcmd, key string, opt *ZRangeB
 	return cmd
 }
 
+// ZRevRangeByScore returns members in a sorted set within a range of scores in reverse order.
+//
+// Deprecated: Use ZRangeArgs with Rev and ByScore options instead as of Redis 6.2.0.
 func (c cmdable) ZRevRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy(ctx, "zrevrangebyscore", key, opt)
 }
 
+// ZRevRangeByLex returns members in a sorted set within a lexicographical range in reverse order.
+//
+// Deprecated: Use ZRangeArgs with Rev and ByLex options instead as of Redis 6.2.0.
 func (c cmdable) ZRevRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd {
 	return c.zRevRangeBy(ctx, "zrevrangebylex", key, opt)
 }
@@ -744,7 +781,7 @@ type ZWithKey struct {
 type ZStore struct {
 	Keys    []string
 	Weights []float64
-	// Can be SUM, MIN or MAX.
+	// Can be SUM, MIN, MAX or COUNT.
 	Aggregate string
 }
 

@@ -1,9 +1,13 @@
 package redis_test
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +17,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 const (
@@ -46,7 +51,7 @@ var (
 )
 
 var (
-	sentinelAddrs = []string{":" + sentinelPort1, ":" + sentinelPort2, ":" + sentinelPort3}
+	sentinelAddrs = []string{"127.0.0.1:" + sentinelPort1, "127.0.0.1:" + sentinelPort2, "127.0.0.1:" + sentinelPort3}
 
 	ringShard1, ringShard2, ringShard3             *redis.Client
 	sentinelMaster, sentinelSlave1, sentinelSlave2 *redis.Client
@@ -55,6 +60,12 @@ var (
 
 var cluster = &clusterScenario{
 	ports:   []string{"16600", "16601", "16602", "16603", "16604", "16605"},
+	nodeIDs: make([]string, 6),
+	clients: make(map[string]*redis.Client, 6),
+}
+
+var tlsCluster = &clusterScenario{
+	ports:   []string{"5430", "5431", "5432", "5433", "5434", "5435"},
 	nodeIDs: make([]string, 6),
 	clients: make(map[string]*redis.Client, 6),
 }
@@ -68,7 +79,7 @@ var RCEDocker = false
 // Notes version of redis we are executing tests against.
 // This can be used before we change the bsm fork of ginkgo for one,
 // which have support for label sets, so we can filter tests per redis version.
-var RedisVersion float64 = 7.2
+var RedisVersion float64 = 8.4
 
 func SkipBeforeRedisVersion(version float64, msg string) {
 	if RedisVersion < version {
@@ -95,13 +106,14 @@ var _ = BeforeSuite(func() {
 	RedisVersion, _ = strconv.ParseFloat(strings.Trim(os.Getenv("REDIS_VERSION"), "\""), 64)
 
 	if RedisVersion == 0 {
-		RedisVersion = 7.2
+		RedisVersion = 8.4
 	}
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
 	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
+	logging.Disable()
 
 	if RedisVersion < 7.0 || RedisVersion > 9 {
 		panic("incorrect or not supported redis version")
@@ -134,23 +146,27 @@ var _ = BeforeSuite(func() {
 		sentinelSlave1, err = connectTo(sentinelSlave1Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = sentinelSlave1.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
+		err = sentinelSlave1.ReplicaOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		sentinelSlave2, err = connectTo(sentinelSlave2Port)
 		Expect(err).NotTo(HaveOccurred())
 
-		err = sentinelSlave2.SlaveOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
+		err = sentinelSlave2.ReplicaOf(ctx, "127.0.0.1", sentinelMasterPort).Err()
 		Expect(err).NotTo(HaveOccurred())
 
 		// populate cluster node information
 		Expect(configureClusterTopology(ctx, cluster)).NotTo(HaveOccurred())
+
+		// Initialize TLS cluster if available
+		_ = initializeTLSCluster(ctx)
 	}
 })
 
 var _ = AfterSuite(func() {
 	if !RECluster {
 		Expect(cluster.Close()).NotTo(HaveOccurred())
+		cleanupTLSCluster()
 	}
 })
 
@@ -294,7 +310,7 @@ func eventually(fn func() error, timeout time.Duration) error {
 
 func connectTo(port string) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
-		Addr:       ":" + port,
+		Addr:       "127.0.0.1:" + port,
 		MaxRetries: -1,
 	})
 
@@ -398,4 +414,79 @@ func (h *hook) ProcessPipelineHook(hook redis.ProcessPipelineHook) redis.Process
 		return h.processPipelineHook(hook)
 	}
 	return hook
+}
+
+// loadClusterTLSConfig loads TLS certificates for cluster tests
+func loadClusterTLSConfig(certDir string) (*tls.Config, error) {
+	// Check if cert directory exists
+	if _, err := os.Stat(certDir); os.IsNotExist(err) {
+		return nil, fmt.Errorf("certificate directory does not exist: %s", certDir)
+	}
+
+	// Load CA cert
+	caCert, err := os.ReadFile(filepath.Join(certDir, "ca.crt"))
+	if err != nil {
+		return nil, err
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	// Load client cert and key
+	cert, err := tls.LoadX509KeyPair(
+		filepath.Join(certDir, "client.crt"),
+		filepath.Join(certDir, "client.key"),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &tls.Config{
+		RootCAs:            caCertPool,
+		Certificates:       []tls.Certificate{cert},
+		ServerName:         "localhost",
+		InsecureSkipVerify: true,
+	}, nil
+}
+
+// initializeTLSCluster initializes the TLS cluster for testing
+func initializeTLSCluster(ctx context.Context) error {
+	// Load TLS config
+	certDir := "dockers/osscluster-tls/tls"
+	_, err := loadClusterTLSConfig(certDir)
+	if err != nil {
+		return fmt.Errorf("failed to load TLS config: %w", err)
+	}
+
+	// The TLS cluster is auto-created by the container (REDIS_CLUSTER=yes)
+	// Just verify it's ready by checking cluster info
+	client := redis.NewClient(&redis.Options{
+		Addr: net.JoinHostPort("127.0.0.1", tlsCluster.ports[0]),
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	})
+	defer client.Close()
+
+	// Wait for cluster to be ready
+	err = eventually(func() error {
+		info, err := client.ClusterInfo(ctx).Result()
+		if err != nil {
+			return fmt.Errorf("failed to get cluster info: %w", err)
+		}
+		if !strings.Contains(info, "cluster_state:ok") {
+			return fmt.Errorf("cluster not ready: %s", info)
+		}
+		return nil
+	}, 30*time.Second)
+	if err != nil {
+		return fmt.Errorf("TLS cluster not ready: %w", err)
+	}
+
+	return nil
+}
+
+// cleanupTLSCluster cleans up TLS cluster resources
+func cleanupTLSCluster() {
+	// TLS cluster is auto-managed by the container, no cleanup needed
 }

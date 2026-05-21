@@ -79,7 +79,7 @@ func ExampleClient_hset() {
 
 	keys := make([]string, 0, len(res6))
 
-	for key, _ := range res6 {
+	for key := range res6 {
 		keys = append(keys, key)
 	}
 
@@ -186,7 +186,7 @@ func ExampleClient_hgetall() {
 
 	keys := make([]string, 0, len(hGetAllResult2))
 
-	for key, _ := range hGetAllResult2 {
+	for key := range hGetAllResult2 {
 		keys = append(keys, key)
 	}
 

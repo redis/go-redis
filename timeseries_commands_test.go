@@ -3,6 +3,8 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -754,6 +756,59 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(len(resultRange)).To(BeEquivalentTo(7))
 			})
 
+			It("should TSRangeWithArgs support multiple aggregators", Label("timeseries", "tsrange", "tsrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreate(ctx, "multi-range").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-range", 1000, 100},
+					{"multi-range", 1010, 110},
+					{"multi-range", 1020, 120},
+					{"multi-range", 1030, 130},
+					{"multi-range", 1040, 140},
+					{"multi-range", 1050, 150},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 1000, Values: []float64{100, 110}},
+					{Timestamp: 1020, Values: []float64{120, 130}},
+					{Timestamp: 1040, Values: []float64{140, 150}},
+				}))
+
+				cmd := client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregator:     redis.Avg,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: setting both Aggregator and Aggregators is not allowed; use Aggregators instead because Aggregator is deprecated"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Invalid, redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator at index 1: Invalid (0)"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregator:     redis.Aggregator(999),
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator: 999"))
+
+				cmd = client.TSRangeWithArgs(ctx, "multi-range", 0, 2000, &redis.TSRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Aggregator(999), redis.Max},
+					BucketDuration: 20,
+				})
+				Expect(cmd.Err()).To(MatchError("redis: invalid timeseries aggregator at index 1: 999"))
+			})
+
 			It("should TSRevRange, TSRevRangeWithArgs", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "NonRedisEnterprise"), func() {
 				for i := 0; i < 100; i++ {
 					_, err := client.TSAdd(ctx, "a", i, float64(i%7)).Result()
@@ -880,6 +935,34 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resultRange[0]).To(BeEquivalentTo(redis.TSTimestampValue{Timestamp: 70, Value: 5}))
 				Expect(len(resultRange)).To(BeEquivalentTo(7))
+			})
+
+			It("should TSRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreate(ctx, "multi-revrange").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-revrange", 1000, 100},
+					{"multi-revrange", 1010, 110},
+					{"multi-revrange", 1020, 120},
+					{"multi-revrange", 1030, 130},
+					{"multi-revrange", 1040, 140},
+					{"multi-revrange", 1050, 150},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSRevRangeWithArgs(ctx, "multi-revrange", 0, 2000, &redis.TSRevRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 1040, Values: []float64{140, 150}},
+					{Timestamp: 1020, Values: []float64{120, 130}},
+					{Timestamp: 1000, Values: []float64{100, 110}},
+				}))
 			})
 
 			It("should TSMRange and TSMRangeWithArgs", Label("timeseries", "tsmrange", "tsmrangeWithArgs"), func() {
@@ -1069,6 +1152,65 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					Expect(result["d"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(0), 4.0}, []interface{}{int64(10), 8.0}}))
 				}
 			})
+			It("should TSMRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrange", "tsmrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreateWithArgs(ctx, "multi-mrange-a", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "a"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "multi-mrange-b", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "b"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-mrange-a", 1000, 10},
+					{"multi-mrange-a", 1010, 20},
+					{"multi-mrange-a", 1020, 30},
+					{"multi-mrange-a", 1030, 40},
+					{"multi-mrange-b", 1000, 15},
+					{"multi-mrange-b", 1010, 25},
+					{"multi-mrange-b", 1020, 35},
+					{"multi-mrange-b", 1030, 45},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSMRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRangeOptions{
+					WithLabels:     true,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(2))
+				if client.Options().Protocol == 2 {
+					Expect(result["multi-mrange-a"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), "10", "20"},
+						[]interface{}{int64(1020), "30", "40"},
+					}))
+					Expect(result["multi-mrange-b"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), "15", "25"},
+						[]interface{}{int64(1020), "35", "45"},
+					}))
+				} else {
+					Expect(result["multi-mrange-a"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), 10.0, 20.0},
+						[]interface{}{int64(1020), 30.0, 40.0},
+					}))
+					Expect(result["multi-mrange-b"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1000), 15.0, 25.0},
+						[]interface{}{int64(1020), 35.0, 45.0},
+					}))
+				}
+
+				cmd := client.TSMRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Avg, redis.Count},
+					BucketDuration: 20,
+					GroupByLabel:   "type",
+					Reducer:        "max",
+				})
+				Expect(cmd.Err()).To(MatchError("redis: GROUPBY is not allowed when multiple aggregators are specified"))
+			})
 			It("should TSMRevRange and TSMRevRangeWithArgs", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs"), func() {
 				createOpt := &redis.TSOptions{Labels: map[string]string{"Test": "This", "team": "ny"}}
 				resultCreate, err := client.TSCreateWithArgs(ctx, "a", createOpt).Result()
@@ -1197,6 +1339,66 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				}
 			})
 
+			It("should TSMRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+
+				_, err := client.TSCreateWithArgs(ctx, "multi-mrevrange-a", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "a"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "multi-mrevrange-b", &redis.TSOptions{
+					Labels: map[string]string{"type": "sensor", "name": "b"},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSMAdd(ctx, [][]interface{}{
+					{"multi-mrevrange-a", 1000, 10},
+					{"multi-mrevrange-a", 1010, 20},
+					{"multi-mrevrange-a", 1020, 30},
+					{"multi-mrevrange-a", 1030, 40},
+					{"multi-mrevrange-b", 1000, 15},
+					{"multi-mrevrange-b", 1010, 25},
+					{"multi-mrevrange-b", 1020, 35},
+					{"multi-mrevrange-b", 1030, 45},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				result, err := client.TSMRevRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRevRangeOptions{
+					WithLabels:     true,
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 20,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(2))
+				if client.Options().Protocol == 2 {
+					Expect(result["multi-mrevrange-a"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), "30", "40"},
+						[]interface{}{int64(1000), "10", "20"},
+					}))
+					Expect(result["multi-mrevrange-b"][1]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), "35", "45"},
+						[]interface{}{int64(1000), "15", "25"},
+					}))
+				} else {
+					Expect(result["multi-mrevrange-a"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), 30.0, 40.0},
+						[]interface{}{int64(1000), 10.0, 20.0},
+					}))
+					Expect(result["multi-mrevrange-b"][2]).To(Equal([]interface{}{
+						[]interface{}{int64(1020), 35.0, 45.0},
+						[]interface{}{int64(1000), 15.0, 25.0},
+					}))
+				}
+
+				cmd := client.TSMRevRangeWithArgs(ctx, 0, 2000, []string{"type=sensor"}, &redis.TSMRevRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Avg, redis.Count},
+					BucketDuration: 20,
+					GroupByLabel:   "type",
+					Reducer:        "max",
+				})
+				Expect(cmd.Err()).To(MatchError("redis: GROUPBY is not allowed when multiple aggregators are specified"))
+			})
+
 			It("should TSMRevRangeWithArgs Latest", Label("timeseries", "tsmrevrangeWithArgs", "tsmrevrangelatest", "NonRedisEnterprise"), func() {
 				resultCreate, err := client.TSCreate(ctx, "a").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -1248,6 +1450,371 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					Expect(result["b"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), 8.0}, []interface{}{int64(0), 4.0}}))
 					Expect(result["d"][2]).To(BeEquivalentTo([]interface{}{[]interface{}{int64(10), 8.0}, []interface{}{int64(0), 4.0}}))
 				}
+			})
+
+			// NaN Value Support Tests
+			It("should support NaN values in TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Test basic NaN insertion with TSAdd
+				result, err := client.TSAdd(ctx, "nan-test-1", 1000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEquivalentTo(1000))
+
+				// Test NaN insertion with TSAddWithArgs
+				opt := &redis.TSOptions{Labels: map[string]string{"sensor": "broken"}}
+				result, err = client.TSAddWithArgs(ctx, "nan-test-2", 2000, math.NaN(), opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEquivalentTo(2000))
+
+				// Verify NaN value can be retrieved
+				getResult, err := client.TSGet(ctx, "nan-test-1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(getResult.Timestamp).To(BeEquivalentTo(1000))
+				Expect(math.IsNaN(getResult.Value)).To(BeTrue())
+			})
+
+			It("should support NaN values in TSMAdd", Label("timeseries", "tsmadd", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Create time series
+				_, err := client.TSCreate(ctx, "nan-madd-1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreate(ctx, "nan-madd-2").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add multiple values including NaN
+				ktvSlices := [][]interface{}{
+					{"nan-madd-1", 1000, 10.5},
+					{"nan-madd-1", 2000, math.NaN()},
+					{"nan-madd-2", 1000, math.NaN()},
+					{"nan-madd-2", 2000, 20.3},
+				}
+				result, err := client.TSMAdd(ctx, ktvSlices).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(4))
+
+				// Verify NaN values in range query
+				rangeResult, err := client.TSRange(ctx, "nan-madd-1", 0, 3000).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(rangeResult)).To(BeEquivalentTo(2))
+				Expect(rangeResult[0].Value).To(BeEquivalentTo(10.5))
+				Expect(math.IsNaN(rangeResult[1].Value)).To(BeTrue())
+			})
+
+			It("should retrieve NaN values with TSGet and TSMGet", Label("timeseries", "tsget", "tsmget", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Add NaN values to multiple time series
+				opt := &redis.TSOptions{Labels: map[string]string{"type": "sensor"}}
+				_, err := client.TSAddWithArgs(ctx, "sensor-1", 1000, math.NaN(), opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAddWithArgs(ctx, "sensor-2", 1000, 42.5, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test TSGet with NaN
+				getResult, err := client.TSGet(ctx, "sensor-1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(math.IsNaN(getResult.Value)).To(BeTrue())
+
+				// Test TSMGet with NaN values
+				mgetResult, err := client.TSMGet(ctx, []string{"type=sensor"}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(mgetResult)).To(BeEquivalentTo(2))
+
+				// One should be NaN, one should be 42.5
+				foundNaN := false
+				foundValue := false
+				for _, v := range mgetResult {
+					tsVal := v[1].([]interface{})
+					if len(tsVal) == 2 {
+						val := tsVal[1]
+						if strVal, ok := val.(string); ok {
+							// RESP2 returns NaN as string
+							if strVal == "nan" || strVal == "NaN" || strVal == "-nan" {
+								foundNaN = true
+							} else if parsedVal, err := strconv.ParseFloat(strVal, 64); err == nil && parsedVal == 42.5 {
+								foundValue = true
+							}
+						} else if floatVal, ok := val.(float64); ok {
+							// RESP3 returns NaN as float64
+							if math.IsNaN(floatVal) {
+								foundNaN = true
+							} else if floatVal == 42.5 {
+								foundValue = true
+							}
+						}
+					}
+				}
+				Expect(foundNaN && foundValue).To(BeTrue())
+			})
+
+			It("should support NaN values in TSRange and TSRevRange", Label("timeseries", "tsrange", "tsrevrange", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Create time series with mixed NaN and regular values
+				_, err := client.TSCreate(ctx, "mixed-values").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add mixed values
+				_, err = client.TSAdd(ctx, "mixed-values", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mixed-values", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mixed-values", 3000, 20.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mixed-values", 4000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mixed-values", 5000, 30.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test TSRange
+				rangeResult, err := client.TSRange(ctx, "mixed-values", 0, 6000).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(rangeResult)).To(BeEquivalentTo(5))
+				Expect(rangeResult[0].Value).To(BeEquivalentTo(10.0))
+				Expect(math.IsNaN(rangeResult[1].Value)).To(BeTrue())
+				Expect(rangeResult[2].Value).To(BeEquivalentTo(20.0))
+				Expect(math.IsNaN(rangeResult[3].Value)).To(BeTrue())
+				Expect(rangeResult[4].Value).To(BeEquivalentTo(30.0))
+
+				// Test TSRevRange
+				revRangeResult, err := client.TSRevRange(ctx, "mixed-values", 0, 6000).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(revRangeResult)).To(BeEquivalentTo(5))
+				Expect(revRangeResult[0].Value).To(BeEquivalentTo(30.0))
+				Expect(math.IsNaN(revRangeResult[1].Value)).To(BeTrue())
+				Expect(revRangeResult[2].Value).To(BeEquivalentTo(20.0))
+				Expect(math.IsNaN(revRangeResult[3].Value)).To(BeTrue())
+				Expect(revRangeResult[4].Value).To(BeEquivalentTo(10.0))
+			})
+
+			It("should support CountNaN and CountAll aggregators", Label("timeseries", "aggregator", "nan", "countnan", "countall", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
+
+				// Create time series with mixed NaN and regular values
+				_, err := client.TSCreate(ctx, "agg-test").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add values: 3 regular values and 2 NaN values
+				_, err = client.TSAdd(ctx, "agg-test", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-test", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-test", 3000, 20.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-test", 4000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-test", 5000, 30.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test CountNaN aggregator
+				opt := &redis.TSRangeOptions{
+					Aggregator:     redis.CountNaN,
+					BucketDuration: 10000,
+				}
+				result, err := client.TSRangeWithArgs(ctx, "agg-test", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(2.0)) // 2 NaN values
+
+				// Test CountAll aggregator
+				opt = &redis.TSRangeOptions{
+					Aggregator:     redis.CountAll,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSRangeWithArgs(ctx, "agg-test", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(5.0)) // 5 total values
+			})
+
+			It("should ignore NaN values in existing aggregators", Label("timeseries", "aggregator", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Create time series with mixed NaN and regular values
+				_, err := client.TSCreate(ctx, "agg-ignore-nan").Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add values: 10, NaN, 20, NaN, 30
+				_, err = client.TSAdd(ctx, "agg-ignore-nan", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-ignore-nan", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-ignore-nan", 3000, 20.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-ignore-nan", 4000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "agg-ignore-nan", 5000, 30.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test AVG aggregator (should ignore NaN: (10+20+30)/3 = 20)
+				opt := &redis.TSRangeOptions{
+					Aggregator:     redis.Avg,
+					BucketDuration: 10000,
+				}
+				result, err := client.TSRangeWithArgs(ctx, "agg-ignore-nan", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(20.0))
+
+				// Test SUM aggregator (should ignore NaN: 10+20+30 = 60)
+				opt = &redis.TSRangeOptions{
+					Aggregator:     redis.Sum,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSRangeWithArgs(ctx, "agg-ignore-nan", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(60.0))
+
+				// Test MIN aggregator (should ignore NaN: min = 10)
+				opt = &redis.TSRangeOptions{
+					Aggregator:     redis.Min,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSRangeWithArgs(ctx, "agg-ignore-nan", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(10.0))
+
+				// Test MAX aggregator (should ignore NaN: max = 30)
+				opt = &redis.TSRangeOptions{
+					Aggregator:     redis.Max,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSRangeWithArgs(ctx, "agg-ignore-nan", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(30.0))
+
+				// Test COUNT aggregator (should ignore NaN: count = 3)
+				opt = &redis.TSRangeOptions{
+					Aggregator:     redis.Count,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSRangeWithArgs(ctx, "agg-ignore-nan", 0, 10000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(1))
+				Expect(result[0].Value).To(BeEquivalentTo(3.0))
+			})
+
+			It("should support NaN values in TSMRange and TSMRevRange", Label("timeseries", "tsmrange", "tsmrevrange", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Create multiple time series with NaN values
+				opt := &redis.TSOptions{Labels: map[string]string{"location": "sensor-room"}}
+				_, err := client.TSCreateWithArgs(ctx, "mrange-1", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "mrange-2", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add mixed values to both series
+				_, err = client.TSAdd(ctx, "mrange-1", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mrange-1", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mrange-2", 1000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "mrange-2", 2000, 20.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test TSMRange
+				mrangeResult, err := client.TSMRange(ctx, 0, 3000, []string{"location=sensor-room"}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(mrangeResult)).To(BeEquivalentTo(2))
+
+				// Test TSMRevRange
+				mrevrangeResult, err := client.TSMRevRange(ctx, 0, 3000, []string{"location=sensor-room"}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(mrevrangeResult)).To(BeEquivalentTo(2))
+			})
+
+			It("should support NaN with CountNaN and CountAll in TSMRange", Label("timeseries", "tsmrange", "aggregator", "nan", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
+
+				// Create multiple time series with NaN values
+				opt := &redis.TSOptions{Labels: map[string]string{"device": "temp-sensor"}}
+				_, err := client.TSCreateWithArgs(ctx, "multi-agg-1", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSCreateWithArgs(ctx, "multi-agg-2", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Add values with NaN
+				_, err = client.TSAdd(ctx, "multi-agg-1", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "multi-agg-1", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "multi-agg-1", 3000, 20.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSAdd(ctx, "multi-agg-2", 1000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "multi-agg-2", 2000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.TSAdd(ctx, "multi-agg-2", 3000, 30.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Test CountNaN with TSMRange
+				mrangeOpt := &redis.TSMRangeOptions{
+					Aggregator:     redis.CountNaN,
+					BucketDuration: 10000,
+				}
+				result, err := client.TSMRangeWithArgs(ctx, 0, 10000, []string{"device=temp-sensor"}, mrangeOpt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(2))
+
+				// Test CountAll with TSMRange
+				mrangeOpt = &redis.TSMRangeOptions{
+					Aggregator:     redis.CountAll,
+					BucketDuration: 10000,
+				}
+				result, err = client.TSMRangeWithArgs(ctx, 0, 10000, []string{"device=temp-sensor"}, mrangeOpt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeEquivalentTo(2))
+			})
+
+			It("should handle duplicate policy with NaN values", Label("timeseries", "nan", "duplicatepolicy", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+
+				// Test BLOCK duplicate policy with NaN (should work - just blocks duplicates)
+				opt := &redis.TSOptions{DuplicatePolicy: "BLOCK"}
+				_, err := client.TSCreateWithArgs(ctx, "dup-block", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSAdd(ctx, "dup-block", 1000, math.NaN()).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				getResult, err := client.TSGet(ctx, "dup-block").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(math.IsNaN(getResult.Value)).To(BeTrue())
+
+				// Trying to add another value at the same timestamp should be blocked
+				_, err = client.TSAdd(ctx, "dup-block", 1000, 20.0).Result()
+				Expect(err).To(HaveOccurred())
+
+				// Test that MIN/MAX/SUM policies error when mixing NaN and non-NaN
+				opt = &redis.TSOptions{DuplicatePolicy: "MIN"}
+				_, err = client.TSCreateWithArgs(ctx, "dup-min", opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = client.TSAdd(ctx, "dup-min", 1000, 10.0).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Adding NaN to existing non-NaN value should error for MIN policy
+				_, err = client.TSAdd(ctx, "dup-min", 1000, math.NaN()).Result()
+				Expect(err).To(HaveOccurred())
+			})
+
+			It("should verify Aggregator.String() returns correct values for CountNaN and CountAll", Label("timeseries", "aggregator", "unit"), func() {
+				// Unit test for aggregator string representation
+				Expect(redis.CountNaN.String()).To(Equal("COUNTNAN"))
+				Expect(redis.CountAll.String()).To(Equal("COUNTALL"))
+
+				// Verify other aggregators still work
+				Expect(redis.Avg.String()).To(Equal("AVG"))
+				Expect(redis.Sum.String()).To(Equal("SUM"))
+				Expect(redis.Count.String()).To(Equal("COUNT"))
 			})
 		})
 	}

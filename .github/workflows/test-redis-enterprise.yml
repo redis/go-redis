@@ -10,26 +10,27 @@ permissions:
 
 jobs:
   build:
+    if: false  # Temporarily disabled, should be enabled when we have a current and stable RE build
     name: build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        go-version: [1.24.x]
+        go-version: [1.25.x]
         re-build: ["7.4.2-54"]
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Clone Redis EE docker repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: RedisLabs/redis-ee-docker
           path: redis-ee
 
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -50,8 +51,11 @@ jobs:
           REDIS_VERSION: "7.4"
         run: |
           go test \
+          -skip="^TestTLS" \
           --ginkgo.skip-file="ring_test.go" \
           --ginkgo.skip-file="sentinel_test.go" \
           --ginkgo.skip-file="osscluster_test.go" \
           --ginkgo.skip-file="pubsub_test.go" \
+          --ginkgo.skip-file="tls_test.go" \
+          --ginkgo.skip-file="tls_cluster_test.go" \
           --ginkgo.label-filter='!NonRedisEnterprise'

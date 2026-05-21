@@ -2,15 +2,18 @@ package pool_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
-
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/logging"
 )
 
 var _ = Describe("ConnPool", func() {
@@ -19,11 +22,12 @@ var _ = Describe("ConnPool", func() {
 
 	BeforeEach(func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        10,
-			PoolTimeout:     time.Hour,
-			DialTimeout:     1 * time.Second,
-			ConnMaxIdleTime: time.Millisecond,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        time.Hour,
+			DialTimeout:        1 * time.Second,
+			ConnMaxIdleTime:    time.Millisecond,
 		})
 	})
 
@@ -45,17 +49,18 @@ var _ = Describe("ConnPool", func() {
 				<-closedChan
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:        10,
-			PoolTimeout:     time.Hour,
-			DialTimeout:     1 * time.Second,
-			ConnMaxIdleTime: time.Millisecond,
-			MinIdleConns:    minIdleConns,
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        time.Hour,
+			DialTimeout:        1 * time.Second,
+			ConnMaxIdleTime:    time.Millisecond,
+			MinIdleConns:       int32(minIdleConns),
 		})
 		wg.Wait()
 		Expect(connPool.Close()).NotTo(HaveOccurred())
 		close(closedChan)
 
-		// We wait for 1 second and believe that checkMinIdleConns has been executed.
+		// We wait for 1 second and believe that checkIdleConns has been executed.
 		time.Sleep(time.Second)
 
 		Expect(connPool.Stats()).To(Equal(&pool.Stats{
@@ -105,7 +110,7 @@ var _ = Describe("ConnPool", func() {
 			// ok
 		}
 
-		connPool.Remove(ctx, cn, nil)
+		connPool.Remove(ctx, cn, errors.New("test"))
 
 		// Check that Get is unblocked.
 		select {
@@ -129,12 +134,13 @@ var _ = Describe("MinIdleConns", func() {
 
 	newConnPool := func() *pool.ConnPool {
 		connPool := pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        poolSize,
-			MinIdleConns:    minIdleConns,
-			PoolTimeout:     100 * time.Millisecond,
-			DialTimeout:     1 * time.Second,
-			ConnMaxIdleTime: -1,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(poolSize),
+			MaxConcurrentDials: poolSize,
+			MinIdleConns:       int32(minIdleConns),
+			PoolTimeout:        100 * time.Millisecond,
+			DialTimeout:        1 * time.Second,
+			ConnMaxIdleTime:    -1,
 		})
 		Eventually(func() int {
 			return connPool.Len()
@@ -168,7 +174,7 @@ var _ = Describe("MinIdleConns", func() {
 
 			Context("after Remove", func() {
 				BeforeEach(func() {
-					connPool.Remove(ctx, cn, nil)
+					connPool.Remove(ctx, cn, errors.New("test"))
 				})
 
 				It("has idle connections", func() {
@@ -245,7 +251,7 @@ var _ = Describe("MinIdleConns", func() {
 				BeforeEach(func() {
 					perform(len(cns), func(i int) {
 						mu.RLock()
-						connPool.Remove(ctx, cns[i], nil)
+						connPool.Remove(ctx, cns[i], errors.New("test"))
 						mu.RUnlock()
 					})
 
@@ -308,11 +314,12 @@ var _ = Describe("race", func() {
 
 	It("does not happen on Get, Put, and Remove", func() {
 		connPool = pool.NewConnPool(&pool.Options{
-			Dialer:          dummyDialer,
-			PoolSize:        10,
-			PoolTimeout:     time.Minute,
-			DialTimeout:     1 * time.Second,
-			ConnMaxIdleTime: time.Millisecond,
+			Dialer:             dummyDialer,
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        time.Minute,
+			DialTimeout:        1 * time.Second,
+			ConnMaxIdleTime:    time.Millisecond,
 		})
 
 		perform(C, func(id int) {
@@ -328,7 +335,7 @@ var _ = Describe("race", func() {
 				cn, err := connPool.Get(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				if err == nil {
-					connPool.Remove(ctx, cn, nil)
+					connPool.Remove(ctx, cn, errors.New("test"))
 				}
 			}
 		})
@@ -339,15 +346,16 @@ var _ = Describe("race", func() {
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:     1000,
-			MinIdleConns: 50,
-			PoolTimeout:  3 * time.Second,
-			DialTimeout:  1 * time.Second,
+			PoolSize:           int32(1000),
+			MaxConcurrentDials: 1000,
+			MinIdleConns:       int32(50),
+			PoolTimeout:        3 * time.Second,
+			DialTimeout:        1 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
 
 		var wg sync.WaitGroup
-		for i := 0; i < opt.PoolSize; i++ {
+		for i := int32(0); i < opt.PoolSize; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -361,13 +369,33 @@ var _ = Describe("race", func() {
 		Expect(stats.TotalConns).To(Equal(uint32(opt.PoolSize)))
 	})
 
+	It("recover addIdleConn panic", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				panic("test panic")
+			},
+			PoolSize:           int32(100),
+			MaxConcurrentDials: 100,
+			MinIdleConns:       int32(30),
+		}
+		p := pool.NewConnPool(opt)
+
+		p.CheckMinIdleConns()
+
+		Eventually(func() bool {
+			state := p.Stats()
+			return state.TotalConns == 0 && state.IdleConns == 0 && p.QueueLen() == 0
+		}, "3s", "50ms").Should(BeTrue())
+	})
+
 	It("wait", func() {
 		opt := &pool.Options{
 			Dialer: func(ctx context.Context) (net.Conn, error) {
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:    1,
-			PoolTimeout: 3 * time.Second,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        3 * time.Second,
 		}
 		p := pool.NewConnPool(opt)
 
@@ -397,8 +425,9 @@ var _ = Describe("race", func() {
 
 				return &net.TCPConn{}, nil
 			},
-			PoolSize:    1,
-			PoolTimeout: testPoolTimeout,
+			PoolSize:           int32(1),
+			MaxConcurrentDials: 1,
+			PoolTimeout:        testPoolTimeout,
 		}
 		p := pool.NewConnPool(opt)
 
@@ -417,3 +446,1069 @@ var _ = Describe("race", func() {
 		Expect(stats.Timeouts).To(Equal(uint32(1)))
 	})
 })
+
+// TestDialerRetryConfiguration tests the new DialerRetries and DialerRetryTimeout options
+func TestDialerRetryConfiguration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("CustomDialerRetries", func(t *testing.T) {
+		var attempts int64
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			atomic.AddInt64(&attempts, 1)
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:             failingDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 1,
+			PoolTimeout:        time.Second,
+			DialTimeout:        time.Second,
+			DialerRetries:      3,                     // Custom retry count
+			DialerRetryTimeout: 10 * time.Millisecond, // Fast retries for testing
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted at least 3 times (DialerRetries = 3)
+		// There might be additional attempts due to pool logic
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts < 3 {
+			t.Errorf("Expected at least 3 dial attempts, got %d", finalAttempts)
+		}
+		if finalAttempts > 6 {
+			t.Errorf("Expected around 3 dial attempts, got %d (too many)", finalAttempts)
+		}
+	})
+
+	t.Run("DefaultDialerRetries", func(t *testing.T) {
+		var attempts int64
+		failingDialer := func(ctx context.Context) (net.Conn, error) {
+			atomic.AddInt64(&attempts, 1)
+			return nil, errors.New("dial failed")
+		}
+
+		connPool := pool.NewConnPool(&pool.Options{
+			Dialer:             failingDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 1,
+			PoolTimeout:        time.Second,
+			DialTimeout:        time.Second,
+			// DialerRetries and DialerRetryTimeout not set - should use defaults
+		})
+		defer connPool.Close()
+
+		_, err := connPool.Get(ctx)
+		if err == nil {
+			t.Error("Expected error from failing dialer")
+		}
+
+		// Should have attempted 5 times (default DialerRetries = 5)
+		// Note: There may be one additional attempt from tryDial() goroutine
+		// which is launched when dialErrorsNum reaches PoolSize
+		finalAttempts := atomic.LoadInt64(&attempts)
+		if finalAttempts < 5 {
+			t.Errorf("Expected at least 5 dial attempts (default), got %d", finalAttempts)
+		}
+		if finalAttempts > 6 {
+			t.Errorf("Expected around 5 dial attempts, got %d (too many)", finalAttempts)
+		}
+	})
+}
+
+var _ = Describe("queuedNewConn", func() {
+	ctx := context.Background()
+
+	It("should successfully create connection when pool is exhausted", func() {
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 2,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        2 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Fill the pool
+		conn1, err := testPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(conn1).NotTo(BeNil())
+
+		// Get second connection in another goroutine
+		done := make(chan struct{})
+		var conn2 *pool.Conn
+		var err2 error
+
+		go func() {
+			defer GinkgoRecover()
+			conn2, err2 = testPool.Get(ctx)
+			close(done)
+		}()
+
+		// Wait a bit to let the second Get start waiting
+		time.Sleep(100 * time.Millisecond)
+
+		// Release first connection to let second Get acquire Turn
+		testPool.Put(ctx, conn1)
+
+		// Wait for second Get to complete
+		<-done
+		Expect(err2).NotTo(HaveOccurred())
+		Expect(conn2).NotTo(BeNil())
+
+		// Clean up second connection
+		testPool.Put(ctx, conn2)
+	})
+
+	It("should handle context cancellation before acquiring dialsInProgress", func() {
+		slowDialer := func(ctx context.Context) (net.Conn, error) {
+			// Simulate slow dialing to let first connection creation occupy dialsInProgress
+			time.Sleep(200 * time.Millisecond)
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowDialer,
+			PoolSize:           2,
+			MaxConcurrentDials: 1, // Limit to 1 so second request cannot get dialsInProgress permission
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Start first connection creation, this will occupy dialsInProgress
+		done1 := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			conn1, err := testPool.Get(ctx)
+			if err == nil {
+				defer testPool.Put(ctx, conn1)
+			}
+			close(done1)
+		}()
+
+		// Wait a bit to ensure first request starts and occupies dialsInProgress
+		time.Sleep(50 * time.Millisecond)
+
+		// Create a context that will be cancelled quickly
+		cancelCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+
+		// Second request should timeout while waiting for dialsInProgress
+		_, err := testPool.Get(cancelCtx)
+		Expect(err).To(Equal(context.DeadlineExceeded))
+
+		// Wait for first request to complete
+		<-done1
+
+		// Verify all turns are released after requests complete
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "All turns should be released after requests complete")
+	})
+
+	It("should handle context cancellation while waiting for connection result", func() {
+		// This test focuses on proper error handling when context is cancelled
+		// during queuedNewConn execution (not testing connection reuse)
+
+		slowDialer := func(ctx context.Context) (net.Conn, error) {
+			// Simulate slow dialing
+			time.Sleep(500 * time.Millisecond)
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 2,
+			DialTimeout:        2 * time.Second,
+			PoolTimeout:        2 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Get first connection to fill the pool
+		conn1, err := testPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Create a context that will be cancelled during connection creation
+		cancelCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+
+		// This request should timeout while waiting for connection creation result
+		// Testing the error handling path in queuedNewConn select statement
+		done := make(chan struct{})
+		var err2 error
+		go func() {
+			defer GinkgoRecover()
+			_, err2 = testPool.Get(cancelCtx)
+			close(done)
+		}()
+
+		<-done
+		Expect(err2).To(Equal(context.DeadlineExceeded))
+
+		// Verify turn state - background goroutine may still hold turn
+		// Note: Background connection creation will complete and release turn
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(1), "Only conn1's turn should be held")
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"dialsQueue should be empty - cancelled request should be cleaned up")
+
+		// Clean up - release the first connection
+		testPool.Put(ctx, conn1)
+
+		// Verify all turns are released after cleanup
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "All turns should be released after cleanup")
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+	})
+
+	It("should handle dial failures gracefully", func() {
+		alwaysFailDialer := func(ctx context.Context) (net.Conn, error) {
+			return nil, fmt.Errorf("dial failed")
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             alwaysFailDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 1,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// This call should fail, testing error handling branch in goroutine
+		_, err := testPool.Get(ctx)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("dial failed"))
+
+		// Verify turn is released after dial failure
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0), "Turn should be released after dial failure")
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"dialsQueue should be empty after dial failure")
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(0)),
+			"No connections should exist after dial failure")
+		Expect(stats.IdleConns).To(Equal(uint32(0)))
+	})
+
+	It("should handle connection creation success with normal delivery", func() {
+		// This test verifies normal case where connection creation and delivery both succeed
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 2,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        2 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Get first connection
+		conn1, err := testPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Get second connection in another goroutine
+		done := make(chan struct{})
+		var conn2 *pool.Conn
+		var err2 error
+
+		go func() {
+			defer GinkgoRecover()
+			conn2, err2 = testPool.Get(ctx)
+			close(done)
+		}()
+
+		// Wait a bit to let second Get start waiting
+		time.Sleep(100 * time.Millisecond)
+
+		// Release first connection
+		testPool.Put(ctx, conn1)
+
+		// Wait for second Get to complete
+		<-done
+		Expect(err2).NotTo(HaveOccurred())
+		Expect(conn2).NotTo(BeNil())
+
+		// Clean up second connection
+		testPool.Put(ctx, conn2)
+	})
+
+	It("should handle MaxConcurrentDials limit", func() {
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             dummyDialer,
+			PoolSize:           3,
+			MaxConcurrentDials: 1, // Only allow 1 concurrent dial
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Get all connections to fill the pool
+		var conns []*pool.Conn
+		for i := 0; i < 3; i++ {
+			conn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			conns = append(conns, conn)
+		}
+
+		// Now pool is full, next request needs to create new connection
+		// But due to MaxConcurrentDials=1, only one concurrent dial is allowed
+		done := make(chan struct{})
+		var err4 error
+		var conn4 *pool.Conn
+		go func() {
+			defer GinkgoRecover()
+			conn4, err4 = testPool.Get(ctx)
+			close(done)
+		}()
+
+		// Release one connection to let the request complete
+		time.Sleep(100 * time.Millisecond)
+		testPool.Put(ctx, conns[0])
+
+		<-done
+		Expect(err4).NotTo(HaveOccurred())
+
+		if conn4 != nil {
+			testPool.Put(ctx, conn4)
+		}
+
+		// Clean up remaining connections
+		for i := 1; i < len(conns); i++ {
+			testPool.Put(ctx, conns[i])
+		}
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"dialsQueue should be empty after all operations complete")
+
+		// Verify queue is empty
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(3)),
+			"All connections should be idle")
+	})
+
+	It("should reuse connections created in background after request timeout", func() {
+		// This test focuses on connection reuse mechanism:
+		// When a request times out but background connection creation succeeds,
+		// the created connection should be added to pool for future reuse
+
+		slowDialer := func(ctx context.Context) (net.Conn, error) {
+			// Simulate delay for connection creation
+			time.Sleep(100 * time.Millisecond)
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 1,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        150 * time.Millisecond, // Short timeout for waiting Turn
+		})
+		defer testPool.Close()
+
+		// Fill the pool with one connection
+		conn1, err := testPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		// Don't put it back yet, so pool is full
+
+		// Start a goroutine that will create a new connection but take time
+		done1 := make(chan struct{})
+		go func() {
+			defer GinkgoRecover()
+			defer close(done1)
+			// This will trigger queuedNewConn since pool is full
+			conn, err := testPool.Get(ctx)
+			if err == nil {
+				// Put connection back to pool after creation
+				time.Sleep(50 * time.Millisecond)
+				testPool.Put(ctx, conn)
+			}
+		}()
+
+		// Wait a bit to let the goroutine start and begin connection creation
+		time.Sleep(50 * time.Millisecond)
+
+		// Now make a request that should timeout waiting for Turn
+		start := time.Now()
+		_, err = testPool.Get(ctx)
+		duration := time.Since(start)
+
+		Expect(err).To(Equal(pool.ErrPoolTimeout))
+		// Should timeout around PoolTimeout
+		Expect(duration).To(BeNumerically("~", 150*time.Millisecond, 50*time.Millisecond))
+
+		// Release the first connection to allow the background creation to complete
+		testPool.Put(ctx, conn1)
+
+		// Wait for background connection creation to complete
+		<-done1
+		time.Sleep(100 * time.Millisecond)
+
+		// CORE TEST: Verify connection reuse mechanism
+		// The connection created in background should now be available in pool
+		start = time.Now()
+		conn3, err := testPool.Get(ctx)
+		duration = time.Since(start)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(conn3).NotTo(BeNil())
+		// Should be fast since connection is from pool (not newly created)
+		Expect(duration).To(BeNumerically("<", 50*time.Millisecond))
+
+		testPool.Put(ctx, conn3)
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+
+		// Verify queue is empty
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(1)),
+			"Should have 1 total connection")
+		Expect(stats.IdleConns).To(Equal(uint32(1)),
+			"Connection should be idle")
+	})
+
+	It("recover queuedNewConn panic", func() {
+		opt := &pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				panic("test panic in queuedNewConn")
+			},
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			DialTimeout:        1 * time.Second,
+			PoolTimeout:        1 * time.Second,
+		}
+		testPool := pool.NewConnPool(opt)
+		defer testPool.Close()
+
+		// Trigger queuedNewConn - calling Get() on empty pool will trigger it
+		// Since dialer will panic, it should be handled by recover
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		// Try to get connections multiple times, each will trigger panic but should be properly recovered
+		for i := 0; i < 3; i++ {
+			conn, err := testPool.Get(ctx)
+			// Connection should be nil, error should exist (panic converted to error)
+			Expect(conn).To(BeNil())
+			Expect(err).To(HaveOccurred())
+		}
+
+		// Verify state after panic recovery:
+		// - turn should be properly released (QueueLen() == 0)
+		// - connection counts should be correct (TotalConns == 0, IdleConns == 0)
+		// - dialsQueue should be empty
+		Eventually(func() bool {
+			stats := testPool.Stats()
+			queueLen := testPool.QueueLen()
+			dialsQueueLen := testPool.DialsQueueLen()
+			return stats.TotalConns == 0 && stats.IdleConns == 0 && queueLen == 0 && dialsQueueLen == 0
+		}, "3s", "50ms").Should(BeTrue(),
+			"After panic recovery, all resources should be cleaned up")
+	})
+
+	It("should handle connection creation success but delivery failure (putIdleConn path)", func() {
+		// This test covers the most important untested branch in queuedNewConn:
+		// cnErr == nil && !delivered -> putIdleConn()
+
+		// Use slow dialer to ensure request times out before connection is ready
+		slowDialer := func(ctx context.Context) (net.Conn, error) {
+			// Delay long enough for client request to timeout first
+			time.Sleep(300 * time.Millisecond)
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowDialer,
+			PoolSize:           1,
+			MaxConcurrentDials: 2,
+			DialTimeout:        500 * time.Millisecond, // Long enough for dialer to complete
+			PoolTimeout:        100 * time.Millisecond, // Client requests will timeout quickly
+		})
+		defer testPool.Close()
+
+		// Record initial idle connection count
+		initialIdleConns := testPool.Stats().IdleConns
+
+		// Make a request that will timeout
+		// This request will start queuedNewConn, create connection, but fail to deliver due to timeout
+		shortCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		defer cancel()
+
+		conn, err := testPool.Get(shortCtx)
+
+		// Request should fail due to timeout
+		Expect(err).To(HaveOccurred())
+		Expect(conn).To(BeNil())
+
+		// However, background queuedNewConn should continue and complete connection creation
+		// Since it cannot deliver (request timed out), it should call putIdleConn to add connection to idle pool
+		Eventually(func() bool {
+			stats := testPool.Stats()
+			return stats.IdleConns > initialIdleConns
+		}, "1s", "50ms").Should(BeTrue())
+
+		// Verify the connection can indeed be used by subsequent requests
+		conn2, err2 := testPool.Get(context.Background())
+		Expect(err2).NotTo(HaveOccurred())
+		Expect(conn2).NotTo(BeNil())
+		Expect(conn2.IsUsable()).To(BeTrue())
+
+		// Cleanup
+		testPool.Put(context.Background(), conn2)
+
+		// Verify turn is released after putIdleConn path completes
+		// This is critical: ensures freeTurn() was called in the putIdleConn branch
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"Turn should be released after putIdleConn path completes")
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"dialsQueue should be empty - timed out request should be dequeued")
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.IdleConns).To(Equal(uint32(1)),
+			"Connection should be in idle pool for reuse")
+		Expect(stats.TotalConns).To(Equal(uint32(1)))
+	})
+
+	It("should not leak turn when delivering connection via putIdleConn", func() {
+		// This test verifies that freeTurn() is called when putIdleConn successfully
+		// delivers a connection to another waiting request
+		//
+		// Scenario:
+		// 1. Request A: timeout 150ms, connection creation takes 200ms
+		// 2. Request B: timeout 500ms, connection creation takes 400ms
+		// 3. Both requests enter dialsQueue and start async connection creation
+		// 4. Request A times out at 150ms
+		// 5. Request A's connection completes at 200ms
+		// 6. putIdleConn delivers Request A's connection to Request B
+		// 7. queuedNewConn must call freeTurn()
+		// 8. Check: QueueLen should be 1 (only B holding turn), not 2 (A's turn leaked)
+
+		callCount := int32(0)
+
+		controlledDialer := func(ctx context.Context) (net.Conn, error) {
+			count := atomic.AddInt32(&callCount, 1)
+			if count == 1 {
+				// Request A's connection: takes 200ms
+				time.Sleep(200 * time.Millisecond)
+			} else {
+				// Request B's connection: takes 400ms (longer, so A's connection is used)
+				time.Sleep(400 * time.Millisecond)
+			}
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             controlledDialer,
+			PoolSize:           2, // Allows both requests to get turns
+			MaxConcurrentDials: 2, // Allows both connections to be created simultaneously
+			DialTimeout:        500 * time.Millisecond,
+			PoolTimeout:        1 * time.Second,
+		})
+		defer testPool.Close()
+
+		// Verify initial state
+		Expect(testPool.QueueLen()).To(Equal(0))
+
+		// Request A: Short timeout (150ms), connection takes 200ms
+		reqADone := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+			shortCtx, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+			defer cancel()
+			_, err := testPool.Get(shortCtx)
+			reqADone <- err
+		}()
+
+		// Wait for Request A to acquire turn and enter dialsQueue
+		time.Sleep(50 * time.Millisecond)
+		Expect(testPool.QueueLen()).To(Equal(1), "Request A should occupy turn")
+
+		// Request B: Long timeout (500ms), will receive Request A's connection
+		reqBDone := make(chan struct{})
+		var reqBConn *pool.Conn
+		var reqBErr error
+		go func() {
+			defer GinkgoRecover()
+			longCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+			defer cancel()
+			reqBConn, reqBErr = testPool.Get(longCtx)
+			close(reqBDone)
+		}()
+
+		// Wait for Request B to acquire turn and enter dialsQueue
+		time.Sleep(50 * time.Millisecond)
+		Expect(testPool.QueueLen()).To(Equal(2), "Both requests should occupy turns")
+
+		// Request A times out at 150ms
+		reqAErr := <-reqADone
+		Expect(reqAErr).To(HaveOccurred(), "Request A should timeout")
+
+		// Request A's connection completes at 200ms
+		// putIdleConn delivers it to Request B via tryDeliver
+		// queuedNewConn MUST call freeTurn() to release Request A's turn
+		<-reqBDone
+		Expect(reqBErr).NotTo(HaveOccurred(), "Request B should receive Request A's connection")
+		Expect(reqBConn).NotTo(BeNil())
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "500ms", "50ms").Should(BeNumerically("<=", 1),
+			"Request A's wantConn should be dequeued after delivery to Request B")
+
+		// FIRST CRITICAL CHECK: Turn state after connection delivery
+		// After Request B receives connection from putIdleConn:
+		// - Request A's turn is held by Request B (connection delivered)
+		// - Request B's turn is still held by Request B's dial to complete the connection
+		// Expected QueueLen: 2 (Request B holding turn for connection usage)
+		time.Sleep(100 * time.Millisecond) // ~300ms total
+		Expect(testPool.QueueLen()).To(Equal(2))
+
+		// SECOND CRITICAL CHECK: Turn release after dial completion
+		// Wait for Request B's dial result to complete
+		time.Sleep(300 * time.Millisecond) // ~600ms total
+		Expect(testPool.QueueLen()).To(Equal(1))
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "1s", "50ms").Should(Equal(0),
+			"All wantConn should be dequeued after connections are delivered")
+
+		// Cleanup and verify turn is released
+		testPool.Put(ctx, reqBConn)
+		Eventually(func() int { return testPool.QueueLen() }, "600ms").Should(Equal(0))
+	})
+	// Test for race condition where nil context can be passed to newConn
+	// This reproduces the issue reported in GitHub where queuedNewConn panics
+	// with "cannot create context from nil parent"
+	It("should handle nil context race condition in queuedNewConn", func() {
+		// Create a pool with very short timeouts to trigger the race condition
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer: func(ctx context.Context) (net.Conn, error) {
+				// Add a small delay to increase chance of race condition
+				time.Sleep(50 * time.Millisecond)
+				return dummyDialer(ctx)
+			},
+			PoolSize:           int32(10),
+			MaxConcurrentDials: 10,
+			PoolTimeout:        10 * time.Millisecond, // Very short timeout
+			DialTimeout:        100 * time.Millisecond,
+			ConnMaxIdleTime:    time.Millisecond,
+		})
+		defer testPool.Close()
+
+		// Try to trigger the race condition by making many concurrent requests
+		// with short timeouts
+		const numGoroutines = 50
+		var wg sync.WaitGroup
+		errors := make(chan error, numGoroutines)
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+
+				// Use a very short context timeout to trigger the race
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+				defer cancel()
+
+				_, err := testPool.Get(ctx)
+				if err != nil {
+					// We expect timeout errors, but not panics
+					errors <- err
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errors)
+
+		// Check that we got timeout errors (expected) but no panics
+		// The test passes if it doesn't panic
+		timeoutCount := 0
+		for err := range errors {
+			if err == context.DeadlineExceeded || err == pool.ErrPoolTimeout {
+				timeoutCount++
+			}
+		}
+
+		// We should have at least some timeouts due to the short timeout
+		Expect(timeoutCount).To(BeNumerically(">", 0))
+
+		// Verify all asynchronous operations are completed
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify no resources are leaked
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "2s", "50ms").Should(Equal(0),
+			"All turns should be released after race condition test")
+
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "2s", "50ms").Should(Equal(0),
+			"dialsQueue should be empty - no zombie wantConn")
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.TotalConns).To(BeNumerically(">=", 0))
+		Eventually(func() uint32 {
+			return testPool.Stats().IdleConns + testPool.Stats().StaleConns
+		}, "2s", "50ms").Should(Equal(stats.TotalConns),
+			"All connections should be accounted for")
+	})
+
+	It("should cleanup dialsQueue under high concurrency with continuous dial failures", func() {
+		alwaysFailDialer := func(ctx context.Context) (net.Conn, error) {
+			return nil, fmt.Errorf("network unreachable")
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             alwaysFailDialer,
+			PoolSize:           100,
+			MaxConcurrentDials: 100,
+			DialTimeout:        50 * time.Millisecond,
+			PoolTimeout:        30 * time.Millisecond,
+		})
+		defer testPool.Close()
+
+		// Make many concurrent requests
+		const totalRequests = 1000
+		var wg sync.WaitGroup
+
+		for i := 0; i < totalRequests; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = testPool.Get(context.Background())
+			}()
+		}
+
+		wg.Wait()
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "2s", "100ms").Should(Equal(0),
+			"dialsQueue should be empty after all failed requests complete")
+
+		// Verify turn is released
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+
+		// Verify connection counts are correct
+		stats := testPool.Stats()
+		Expect(stats.TotalConns).To(Equal(uint32(0)),
+			"No connections should exist after all failures")
+	})
+
+	It("should cleanup zombie wantConn when request times out and dial fails", func() {
+		// Delayed failed dialer
+		slowFailDialer := func(ctx context.Context) (net.Conn, error) {
+			time.Sleep(100 * time.Millisecond) // Exceed request timeout
+			return nil, fmt.Errorf("dial failed")
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             slowFailDialer,
+			PoolSize:           10,
+			MaxConcurrentDials: 10,
+			DialTimeout:        200 * time.Millisecond,
+			PoolTimeout:        50 * time.Millisecond, // Request timeout quickly
+		})
+		defer testPool.Close()
+
+		// Make many requests with quick timeout
+		const numRequests = 100
+		var wg sync.WaitGroup
+
+		for i := 0; i < numRequests; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				shortCtx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+				defer cancel()
+				_, _ = testPool.Get(shortCtx)
+			}()
+		}
+
+		wg.Wait()
+
+		// Wait for asynchronous connection creation to complete
+		time.Sleep(200 * time.Millisecond)
+
+		// Verify dialsQueue is empty
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "2s", "100ms").Should(Equal(0),
+			"dialsQueue should be empty even when requests timeout and dials fail")
+
+		// Verify turn is released
+		Eventually(func() int {
+			return testPool.QueueLen()
+		}, "1s", "50ms").Should(Equal(0))
+	})
+
+	It("should handle intermittent dial failures without queue accumulation", func() {
+		callCount := int64(0)
+
+		intermittentDialer := func(ctx context.Context) (net.Conn, error) {
+			count := atomic.AddInt64(&callCount, 1)
+			if count%2 == 0 {
+				return nil, fmt.Errorf("network timeout")
+			}
+			return newDummyConn(), nil
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             intermittentDialer,
+			PoolSize:           50,
+			MaxConcurrentDials: 50,
+			DialTimeout:        100 * time.Millisecond,
+			PoolTimeout:        50 * time.Millisecond,
+		})
+		defer testPool.Close()
+
+		// Send requests continuously for 5 seconds
+		const duration = 5 * time.Second
+		start := time.Now()
+		var wg sync.WaitGroup
+
+		for time.Since(start) < duration {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = testPool.Get(context.Background())
+			}()
+			time.Sleep(10 * time.Millisecond) // Control request rate
+		}
+
+		wg.Wait()
+
+		// Verify dialsQueue does not accumulate indefinitely
+		maxExpectedQueueLen := int(testPool.Size()) * 2
+		queueLen := testPool.DialsQueueLen()
+		Expect(queueLen).To(BeNumerically("<=", maxExpectedQueueLen),
+			fmt.Sprintf("dialsQueue length (%d) should not exceed reasonable limit (%d)",
+				queueLen, maxExpectedQueueLen))
+
+		// Wait for final cleanup
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "2s", "100ms").Should(Equal(0),
+			"dialsQueue should eventually be cleaned up")
+	})
+
+	It("should enforce dialsQueue upper bound", func() {
+		alwaysFailDialer := func(ctx context.Context) (net.Conn, error) {
+			return nil, fmt.Errorf("dial failed")
+		}
+
+		testPool := pool.NewConnPool(&pool.Options{
+			Dialer:             alwaysFailDialer,
+			PoolSize:           100,
+			MaxConcurrentDials: 100,
+			DialTimeout:        50 * time.Millisecond,
+			PoolTimeout:        30 * time.Millisecond,
+		})
+		defer testPool.Close()
+
+		const numRequests = 1000
+		maxExpectedQueueLen := int(testPool.Size()) * 2 // Reasonable upper bound
+
+		var wg sync.WaitGroup
+		maxObservedQueueLen := int32(0)
+
+		// Send many failed requests concurrently
+		for i := 0; i < numRequests; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, _ = testPool.Get(context.Background())
+			}()
+
+			// Check queue length periodically
+			if i%50 == 0 {
+				queueLen := testPool.DialsQueueLen()
+				if queueLen > int(atomic.LoadInt32(&maxObservedQueueLen)) {
+					atomic.StoreInt32(&maxObservedQueueLen, int32(queueLen))
+				}
+				Expect(queueLen).To(BeNumerically("<=", maxExpectedQueueLen),
+					fmt.Sprintf("Queue length (%d) should not exceed limit (%d)",
+						queueLen, maxExpectedQueueLen))
+			}
+		}
+
+		wg.Wait()
+
+		// Verify final cleanup
+		Eventually(func() int {
+			return testPool.DialsQueueLen()
+		}, "2s", "100ms").Should(Equal(0),
+			"dialsQueue should be empty after all requests complete")
+	})
+
+	Describe("Close suppresses errors for stale connections", func() {
+		It("should not return close error when connection is stale due to ConnMaxIdleTime", func() {
+			closeErr := fmt.Errorf("tls: failed to send closeNotify alert (but connection was closed anyway): write tcp: connection timed out")
+
+			testPool := pool.NewConnPool(&pool.Options{
+				Dialer: func(ctx context.Context) (net.Conn, error) {
+					return &failCloseConn{
+						dummyConn: &dummyConn{rawConn: new(dummyRawConn)},
+						closeErr:  closeErr,
+					}, nil
+				},
+				PoolSize:           1,
+				MaxConcurrentDials: 1,
+				DialTimeout:        1 * time.Second,
+				PoolTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    50 * time.Millisecond,
+			})
+
+			// Get a connection, put it back, then wait for it to become stale
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			testPool.Put(ctx, cn)
+
+			// Wait for the connection to exceed ConnMaxIdleTime
+			time.Sleep(100 * time.Millisecond)
+
+			// Close the pool — stale connection close errors should be suppressed
+			err = testPool.Close()
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return close error when connection is still healthy", func() {
+			closeErr := fmt.Errorf("tls: failed to send closeNotify alert")
+
+			testPool := pool.NewConnPool(&pool.Options{
+				Dialer: func(ctx context.Context) (net.Conn, error) {
+					return &failCloseConn{
+						dummyConn: &dummyConn{rawConn: new(dummyRawConn)},
+						closeErr:  closeErr,
+					}, nil
+				},
+				PoolSize:           1,
+				MaxConcurrentDials: 1,
+				DialTimeout:        1 * time.Second,
+				PoolTimeout:        1 * time.Second,
+				ConnMaxIdleTime:    10 * time.Minute, // Long idle time — connection stays healthy
+			})
+
+			// Get a connection and put it back
+			cn, err := testPool.Get(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			testPool.Put(ctx, cn)
+
+			// Close the pool — healthy connection close error should be returned
+			err = testPool.Close()
+			Expect(err).To(MatchError(closeErr))
+		})
+	})
+
+	Describe("calcConnExpiresAt", func() {
+		// Case 1: lifetime <= 0 returns noExpiration
+		It("returns noExpiration when ConnMaxLifetime is not positive", func() {
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       0,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+			Expect(p.CalcConnExpiresAt()).To(Equal(pool.NoExpiration))
+		})
+
+		// Case 2: lifetime > 0, jitter <= 0 returns exact lifetime
+		It("returns exact lifetime when jitter is zero", func() {
+			lifetime := 1 * time.Hour
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: 0,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+			after := time.Now()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime)))
+			Expect(expiresAt).To(BeTemporally("<=", after.Add(lifetime)))
+		})
+
+		// Case 3: lifetime > 0, jitter > 0 returns value in jitter range
+		It("returns value in jitter range when jitter is positive", func() {
+			lifetime := 1 * time.Hour
+			jitter := 6 * time.Minute
+			p := pool.NewConnPool(&pool.Options{
+				Dialer:                dummyDialer,
+				PoolSize:              1,
+				ConnMaxLifetime:       lifetime,
+				ConnMaxLifetimeJitter: jitter,
+			})
+			defer p.Close()
+
+			before := time.Now()
+			expiresAt := p.CalcConnExpiresAt()
+
+			Expect(expiresAt).To(BeTemporally(">=", before.Add(lifetime-jitter)))
+			Expect(expiresAt).To(BeTemporally("<=", before.Add(lifetime+jitter)))
+		})
+	})
+})
+
+func init() {
+	logging.Disable()
+}

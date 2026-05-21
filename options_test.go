@@ -5,8 +5,11 @@ package redis
 import (
 	"crypto/tls"
 	"errors"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 func TestParseURL(t *testing.T) {
@@ -67,6 +70,23 @@ func TestParseURL(t *testing.T) {
 		}, {
 			url: "redis://localhost:123/?db=2&protocol=2", // RESP Protocol
 			o:   &Options{Addr: "localhost:123", DB: 2, Protocol: 2},
+		}, {
+			url: "redis://localhost:123/?max_concurrent_dials=5", // MaxConcurrentDials parameter
+			o:   &Options{Addr: "localhost:123", MaxConcurrentDials: 5},
+		}, {
+			url: "redis://localhost:123/?max_concurrent_dials=0", // MaxConcurrentDials zero value
+			o:   &Options{Addr: "localhost:123", MaxConcurrentDials: 0},
+		}, {
+			url: "redis://localhost:123/?conn_max_lifetime=1h&conn_max_lifetime_jitter=6m",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: time.Hour, ConnMaxLifetimeJitter: 6 * time.Minute},
+		}, {
+			// jitter > lifetime should be capped
+			url: "redis://localhost:123/?conn_max_lifetime=30m&conn_max_lifetime_jitter=1h",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetime: 30 * time.Minute, ConnMaxLifetimeJitter: 30 * time.Minute},
+		}, {
+			// jitter without lifetime should be capped to 0
+			url: "redis://localhost:123/?conn_max_lifetime_jitter=6m",
+			o:   &Options{Addr: "localhost:123", ConnMaxLifetimeJitter: 0},
 		}, {
 			url: "unix:///tmp/redis.sock",
 			o:   &Options{Addr: "/tmp/redis.sock"},
@@ -197,6 +217,12 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 	if actual.ConnMaxLifetime != expected.ConnMaxLifetime {
 		t.Errorf("ConnMaxLifetime: got %v, expected %v", actual.ConnMaxLifetime, expected.ConnMaxLifetime)
 	}
+	if actual.ConnMaxLifetimeJitter != expected.ConnMaxLifetimeJitter {
+		t.Errorf("ConnMaxLifetimeJitter: got %v, expected %v", actual.ConnMaxLifetimeJitter, expected.ConnMaxLifetimeJitter)
+	}
+	if actual.MaxConcurrentDials != expected.MaxConcurrentDials {
+		t.Errorf("MaxConcurrentDials: got %v, expected %v", actual.MaxConcurrentDials, expected.MaxConcurrentDials)
+	}
 }
 
 // Test ReadTimeout option initialization, including special values -1 and 0.
@@ -244,4 +270,170 @@ func TestProtocolOptions(t *testing.T) {
 			t.Errorf("got %d instead of %d as protocol option", o.Protocol, want)
 		}
 	}
+}
+
+func TestMaxConcurrentDialsOptions(t *testing.T) {
+	// Test cases for MaxConcurrentDials initialization logic
+	testCases := []struct {
+		name                    string
+		poolSize                int
+		maxConcurrentDials      int
+		expectedConcurrentDials int
+	}{
+		// Edge cases and invalid values - negative/zero values set to PoolSize
+		{
+			name:                    "negative value gets set to pool size",
+			poolSize:                10,
+			maxConcurrentDials:      -1,
+			expectedConcurrentDials: 10, // negative values are set to PoolSize
+		},
+		// Zero value tests - MaxConcurrentDials should be set to PoolSize
+		{
+			name:                    "zero value with positive pool size",
+			poolSize:                1,
+			maxConcurrentDials:      0,
+			expectedConcurrentDials: 1, // MaxConcurrentDials = PoolSize when 0
+		},
+		// Explicit positive value tests
+		{
+			name:                    "explicit value within limit",
+			poolSize:                10,
+			maxConcurrentDials:      3,
+			expectedConcurrentDials: 3, // should remain unchanged when < PoolSize
+		},
+		// Capping tests - values exceeding PoolSize should be capped
+		{
+			name:                    "value exceeding pool size",
+			poolSize:                5,
+			maxConcurrentDials:      10,
+			expectedConcurrentDials: 5, // should be capped at PoolSize
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &Options{
+				PoolSize:           tc.poolSize,
+				MaxConcurrentDials: tc.maxConcurrentDials,
+			}
+			opts.init()
+
+			if opts.MaxConcurrentDials != tc.expectedConcurrentDials {
+				t.Errorf("MaxConcurrentDials: got %v, expected %v (PoolSize=%v)",
+					opts.MaxConcurrentDials, tc.expectedConcurrentDials, opts.PoolSize)
+			}
+
+			// Ensure MaxConcurrentDials never exceeds PoolSize (for all inputs)
+			if opts.MaxConcurrentDials > opts.PoolSize {
+				t.Errorf("MaxConcurrentDials (%v) should not exceed PoolSize (%v)",
+					opts.MaxConcurrentDials, opts.PoolSize)
+			}
+
+			// Ensure MaxConcurrentDials is always positive (for all inputs)
+			if opts.MaxConcurrentDials <= 0 {
+				t.Errorf("MaxConcurrentDials should be positive, got %v", opts.MaxConcurrentDials)
+			}
+		})
+	}
+}
+
+func TestClusterOptionsDialerRetries(t *testing.T) {
+	clusterOpt := &ClusterOptions{
+		DialerRetries:      10,
+		DialerRetryTimeout: 200 * time.Millisecond,
+	}
+
+	opt := clusterOpt.clientOptions()
+
+	if opt.DialerRetries != 10 {
+		t.Errorf("expected DialerRetries=10, got %d", opt.DialerRetries)
+	}
+	if opt.DialerRetryTimeout != 200*time.Millisecond {
+		t.Errorf("expected DialerRetryTimeout=200ms, got %v", opt.DialerRetryTimeout)
+	}
+}
+
+func TestRingOptionsDialerRetries(t *testing.T) {
+	ringOpt := &RingOptions{
+		DialerRetries:      10,
+		DialerRetryTimeout: 200 * time.Millisecond,
+	}
+
+	opt := ringOpt.clientOptions()
+
+	if opt.DialerRetries != 10 {
+		t.Errorf("expected DialerRetries=10, got %d", opt.DialerRetries)
+	}
+	if opt.DialerRetryTimeout != 200*time.Millisecond {
+		t.Errorf("expected DialerRetryTimeout=200ms, got %v", opt.DialerRetryTimeout)
+	}
+}
+
+func TestFailoverOptionsDialerRetries(t *testing.T) {
+	failoverOpt := &FailoverOptions{
+		DialerRetries:      10,
+		DialerRetryTimeout: 200 * time.Millisecond,
+	}
+
+	opt := failoverOpt.clientOptions()
+
+	if opt.DialerRetries != 10 {
+		t.Errorf("expected DialerRetries=10, got %d", opt.DialerRetries)
+	}
+	if opt.DialerRetryTimeout != 200*time.Millisecond {
+		t.Errorf("expected DialerRetryTimeout=200ms, got %v", opt.DialerRetryTimeout)
+	}
+
+	// Also verify sentinelOptions passes them through
+	sentinelOpt := failoverOpt.sentinelOptions("localhost:26379")
+	if sentinelOpt.DialerRetries != 10 {
+		t.Errorf("expected sentinel DialerRetries=10, got %d", sentinelOpt.DialerRetries)
+	}
+	if sentinelOpt.DialerRetryTimeout != 200*time.Millisecond {
+		t.Errorf("expected sentinel DialerRetryTimeout=200ms, got %v", sentinelOpt.DialerRetryTimeout)
+	}
+}
+
+// TestOptionsCloneMaintNotificationsRace verifies that cloning options via
+// baseClient is safe when initConn concurrently writes MaintNotificationsConfig.Mode.
+// Run with -race to detect the data race.
+func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
+	opt := &Options{
+		Addr: "localhost:6379",
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeAuto,
+		},
+	}
+
+	bc := baseClient{opt: opt}
+
+	var wg sync.WaitGroup
+	const iterations = 1000
+
+	// Writer: simulates initConn toggling MaintNotificationsConfig.Mode under optLock
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			bc.optLock.Lock()
+			bc.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeDisabled
+			bc.optLock.Unlock()
+
+			bc.optLock.Lock()
+			bc.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeAuto
+			bc.optLock.Unlock()
+		}
+	}()
+
+	// Reader: simulates newTx / withTimeout calling cloneOpt() (acquires RLock)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			cloned := bc.cloneOpt()
+			_ = cloned
+		}
+	}()
+
+	wg.Wait()
 }

@@ -36,6 +36,63 @@ var _ = Describe("pipelining", func() {
 		Expect(get.Val()).To(Equal(""))
 	})
 
+	It("exports queued commands", func() {
+		p := client.Pipeline()
+		cmds := p.Cmds()
+		Expect(cmds).To(BeEmpty())
+
+		p.Set(ctx, "foo", "bar", 0)
+		p.Get(ctx, "foo")
+		cmds = p.Cmds()
+		Expect(cmds).To(HaveLen(p.Len()))
+		Expect(cmds[0].Name()).To(Equal("set"))
+		Expect(cmds[1].Name()).To(Equal("get"))
+
+		cmds, err := p.Exec(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cmds).To(HaveLen(2))
+		Expect(cmds[0].Name()).To(Equal("set"))
+		Expect(cmds[0].(*redis.StatusCmd).Val()).To(Equal("OK"))
+		Expect(cmds[1].Name()).To(Equal("get"))
+		Expect(cmds[1].(*redis.StringCmd).Val()).To(Equal("bar"))
+
+		cmds = p.Cmds()
+		Expect(cmds).To(BeEmpty())
+	})
+
+	It("pipeline: basic exec", func() {
+		p := client.Pipeline()
+		p.Get(ctx, "key")
+		p.Set(ctx, "key", "value", 0)
+		p.Get(ctx, "key")
+		cmds, err := p.Exec(ctx)
+		Expect(err).To(Equal(redis.Nil))
+		Expect(cmds).To(HaveLen(3))
+		Expect(cmds[0].Err()).To(Equal(redis.Nil))
+		Expect(cmds[1].(*redis.StatusCmd).Val()).To(Equal("OK"))
+		Expect(cmds[1].Err()).NotTo(HaveOccurred())
+		Expect(cmds[2].(*redis.StringCmd).Val()).To(Equal("value"))
+		Expect(cmds[2].Err()).NotTo(HaveOccurred())
+	})
+
+	It("pipeline: exec pipeline when get conn failed", func() {
+		p := client.Pipeline()
+		p.Get(ctx, "key")
+		p.Set(ctx, "key", "value", 0)
+		p.Get(ctx, "key")
+
+		client.Close()
+
+		cmds, err := p.Exec(ctx)
+		Expect(err).To(Equal(redis.ErrClosed))
+		Expect(cmds).To(HaveLen(3))
+		for _, cmd := range cmds {
+			Expect(cmd.Err()).To(Equal(redis.ErrClosed))
+		}
+
+		client = redis.NewClient(redisOptions())
+	})
+
 	assertPipeline := func() {
 		It("returns no errors when there are no commands", func() {
 			_, err := pipe.Exec(ctx)
@@ -89,6 +146,25 @@ var _ = Describe("pipelining", func() {
 		It("should Exec, not Do", func() {
 			err := pipe.Do(ctx).Err()
 			Expect(err).To(Equal(errors.New("redis: please enter the command to be executed")))
+		})
+
+		It("should process", func() {
+			err := pipe.Process(ctx, redis.NewCmd(ctx, "asking"))
+			Expect(err).To(BeNil())
+			Expect(pipe.Cmds()).To(HaveLen(1))
+		})
+
+		It("should batchProcess", func() {
+			err := pipe.BatchProcess(ctx, redis.NewCmd(ctx, "asking"))
+			Expect(err).To(BeNil())
+			Expect(pipe.Cmds()).To(HaveLen(1))
+
+			pipe.Discard()
+			Expect(pipe.Cmds()).To(HaveLen(0))
+
+			err = pipe.BatchProcess(ctx, redis.NewCmd(ctx, "asking"), redis.NewCmd(ctx, "set", "key", "value"))
+			Expect(err).To(BeNil())
+			Expect(pipe.Cmds()).To(HaveLen(2))
 		})
 	}
 

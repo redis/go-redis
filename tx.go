@@ -11,7 +11,7 @@ import (
 const TxFailedErr = proto.RedisError("redis: transaction failed")
 
 // Tx implements Redis transactions as described in
-// http://redis.io/topics/transactions. It's NOT safe for concurrent use
+// https://redis.io/docs/latest/develop/using-commands/transactions. It's NOT safe for concurrent use
 // by multiple goroutines, because Exec resets list of watched keys.
 //
 // If you don't need WATCH, use Pipeline instead.
@@ -24,9 +24,11 @@ type Tx struct {
 func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
-			opt:        c.opt,
-			connPool:   pool.NewStickyConnPool(c.connPool),
-			hooksMixin: c.hooksMixin.clone(),
+			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
+			connPool:      pool.NewStickyConnPool(c.connPool),
+			hooksMixin:    c.hooksMixin.clone(),
+			pushProcessor: c.pushProcessor, // Copy push processor from parent client
+			onClose:       &onCloseHooks{},
 		},
 	}
 	tx.init()

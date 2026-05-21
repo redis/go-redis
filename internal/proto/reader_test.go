@@ -1,7 +1,8 @@
 package proto_test
 
-import (
+import ( 
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 
@@ -83,10 +84,26 @@ func TestReader_ReadLine(t *testing.T) {
 	}
 }
 
+func BenchmarkReader_ReadFloat(b *testing.B) {
+	buf := new(bytes.Buffer)
+	for i := 0; i < b.N; i++ {
+		fmt.Fprint(buf, ",123.456\r\n")
+	}
+	p := proto.NewReader(buf)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := p.ReadFloat()
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func benchmarkParseReply(b *testing.B, reply string, wanterr bool) {
 	buf := new(bytes.Buffer)
 	for i := 0; i < b.N; i++ {
-		buf.WriteString(reply)
+		fmt.Fprint(buf, reply)
 	}
 	p := proto.NewReader(buf)
 	b.ResetTimer()

@@ -23,9 +23,15 @@ receivers:
   redis:
     endpoint: 'redis-server:6379'
     collection_interval: 10s
-  jaeger:
-    protocols:
-      grpc:
+  postgresql:
+    endpoint: postgres:5432
+    transport: tcp
+    username: uptrace
+    password: uptrace
+    databases:
+      - uptrace
+    tls:
+      insecure: true
 
 processors:
   resourcedetection:
@@ -37,10 +43,10 @@ processors:
 
 exporters:
   otlp/uptrace:
-    endpoint: http://uptrace:14317
+    endpoint: http://uptrace:4317
     tls:
       insecure: true
-    headers: { 'uptrace-dsn': 'http://project2_secret_token@localhost:14317/2' }
+    headers: { 'uptrace-dsn': 'http://project1_secret@localhost:14318/2?grpc=14317' }
   debug:
 
 service:
@@ -49,7 +55,7 @@ service:
   #     level: DEBUG
   pipelines:
     traces:
-      receivers: [otlp, jaeger]
+      receivers: [otlp]
       processors: [batch]
       exporters: [otlp/uptrace]
     metrics:
@@ -57,7 +63,7 @@ service:
       processors: [cumulativetodelta, batch]
       exporters: [otlp/uptrace]
     metrics/hostmetrics:
-      receivers: [hostmetrics, redis]
+      receivers: [hostmetrics, redis, postgresql]
       processors: [cumulativetodelta, batch, resourcedetection]
       exporters: [otlp/uptrace]
     logs:

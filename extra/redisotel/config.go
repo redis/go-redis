@@ -1,6 +1,9 @@
 package redisotel
 
 import (
+	"strings"
+
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -19,8 +22,11 @@ type config struct {
 	tp     trace.TracerProvider
 	tracer trace.Tracer
 
-	dbStmtEnabled bool
-	callerEnabled bool
+	dbStmtEnabled         bool
+	callerEnabled         bool
+	filterDial            bool
+	filterProcessPipeline func(cmds []redis.Cmder) bool
+	filterProcess         func(cmd redis.Cmder) bool
 
 	// Metrics options.
 
@@ -61,6 +67,15 @@ func newConfig(opts ...baseOption) *config {
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
 		callerEnabled: true,
+		filterProcess: DefaultCommandFilter,
+		filterProcessPipeline: func(cmds []redis.Cmder) bool {
+			for _, cmd := range cmds {
+				if DefaultCommandFilter(cmd) {
+					return true
+				}
+			}
+			return false
+		},
 	}
 
 	for _, opt := range opts {
@@ -82,6 +97,12 @@ func WithDBSystem(dbSystem string) Option {
 func WithAttributes(attrs ...attribute.KeyValue) Option {
 	return option(func(conf *config) {
 		conf.attrs = append(conf.attrs, attrs...)
+	})
+}
+
+func WithPoolName(poolName string) Option {
+	return option(func(conf *config) {
+		conf.poolName = poolName
 	})
 }
 
@@ -122,6 +143,60 @@ func WithCallerEnabled(on bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.callerEnabled = on
 	})
+}
+
+// WithCommandFilter allows filtering of commands when tracing to omit commands that may have sensitive details like
+// passwords.
+func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterProcess = filter
+	})
+}
+
+// WithCommandsFilter allows filtering of pipeline commands
+// when tracing to omit commands that may have sensitive details like
+// passwords in a pipeline.
+func WithCommandsFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterProcessPipeline = filter
+	})
+}
+
+// WithDialFilter enables or disables filtering of dial commands.
+func WithDialFilter(on bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterDial = on
+	})
+}
+
+// DefaultCommandFilter filters out AUTH commands from tracing.
+func DefaultCommandFilter(cmd redis.Cmder) bool {
+	if strings.ToLower(cmd.Name()) == "auth" {
+		return true
+	}
+
+	if strings.ToLower(cmd.Name()) == "hello" {
+		if len(cmd.Args()) < 3 {
+			return false
+		}
+
+		arg, exists := cmd.Args()[2].(string)
+		if !exists {
+			return false
+		}
+
+		if strings.ToLower(arg) == "auth" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// BasicCommandFilter filters out AUTH commands from tracing.
+// Deprecated: use DefaultCommandFilter instead.
+func BasicCommandFilter(cmd redis.Cmder) bool {
+	return DefaultCommandFilter(cmd)
 }
 
 //------------------------------------------------------------------------------

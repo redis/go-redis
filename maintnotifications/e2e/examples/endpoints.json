@@ -1,0 +1,110 @@
+{
+  "standalone0": {
+    "password": "foobared",
+    "tls": false,
+    "endpoints": [
+      "redis://localhost:6379"
+    ]
+  },
+  "standalone0-tls": {
+    "username": "default",
+    "password": "foobared",
+    "tls": true,
+    "certificatesLocation": "redis1-2-5-8-sentinel/work/tls",
+    "endpoints": [
+      "rediss://localhost:6390"
+    ]
+  },
+  "standalone0-acl": {
+    "username": "acljedis",
+    "password": "fizzbuzz",
+    "tls": false,
+    "endpoints": [
+      "redis://localhost:6379"
+    ]
+  },
+  "standalone0-acl-tls": {
+    "username": "acljedis",
+    "password": "fizzbuzz",
+    "tls": true,
+    "certificatesLocation": "redis1-2-5-8-sentinel/work/tls",
+    "endpoints": [
+      "rediss://localhost:6390"
+    ]
+  },
+  "cluster0": {
+    "username": "default",
+    "password": "foobared",
+    "tls": false,
+    "endpoints": [
+      "redis://localhost:7001",
+      "redis://localhost:7002",
+      "redis://localhost:7003",
+      "redis://localhost:7004",
+      "redis://localhost:7005",
+      "redis://localhost:7006"
+    ]
+  },
+  "cluster0-tls": {
+    "username": "default",
+    "password": "foobared",
+    "tls": true,
+    "certificatesLocation": "redis1-2-5-8-sentinel/work/tls",
+    "endpoints": [
+      "rediss://localhost:7011",
+      "rediss://localhost:7012",
+      "rediss://localhost:7013",
+      "rediss://localhost:7014",
+      "rediss://localhost:7015",
+      "rediss://localhost:7016"
+    ]
+  },
+  "sentinel0": {
+    "username": "default",
+    "password": "foobared",
+    "tls": false,
+    "endpoints": [
+      "redis://localhost:26379",
+      "redis://localhost:26380",
+      "redis://localhost:26381"
+    ]
+  },
+  "modules-docker": {
+    "tls": false,
+    "endpoints": [
+      "redis://localhost:6479"
+    ]
+  },
+  "enterprise-cluster": {
+    "bdb_id": 1,
+    "username": "default",
+    "password": "enterprise-password",
+    "tls": true,
+    "raw_endpoints": [
+      {
+        "addr": ["10.0.0.1"],
+        "addr_type": "ipv4",
+        "dns_name": "redis-enterprise-cluster.example.com",
+        "oss_cluster_api_preferred_endpoint_type": "internal",
+        "oss_cluster_api_preferred_ip_type": "ipv4",
+        "port": 12000,
+        "proxy_policy": "single",
+        "uid": "endpoint-1"
+      },
+      {
+        "addr": ["10.0.0.2"],
+        "addr_type": "ipv4", 
+        "dns_name": "redis-enterprise-cluster-2.example.com",
+        "oss_cluster_api_preferred_endpoint_type": "internal",
+        "oss_cluster_api_preferred_ip_type": "ipv4",
+        "port": 12000,
+        "proxy_policy": "single",
+        "uid": "endpoint-2"
+      }
+    ],
+    "endpoints": [
+      "rediss://redis-enterprise-cluster.example.com:12000",
+      "rediss://redis-enterprise-cluster-2.example.com:12000"
+    ]
+  }
+}

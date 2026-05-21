@@ -12,8 +12,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/util"
 )
 
-// DefaultBufferSize is the default size for read/write buffers (0.5MiB)
-const DefaultBufferSize = 512 * 1024
+// DefaultBufferSize is the default size for read/write buffers (32 KiB).
+const DefaultBufferSize = 32 * 1024
 
 // redis resp protocol data type.
 const (
@@ -50,7 +50,8 @@ func (e RedisError) Error() string { return string(e) }
 func (RedisError) RedisError() {}
 
 func ParseErrorReply(line []byte) error {
-	return RedisError(line[1:])
+	msg := string(line[1:])
+	return parseTypedRedisError(msg)
 }
 
 //------------------------------------------------------------------------------
@@ -99,6 +100,92 @@ func (r *Reader) PeekReplyType() (byte, error) {
 	return b[0], nil
 }
 
+func (r *Reader) PeekPushNotificationName() (string, error) {
+	// "prime" the buffer by peeking at the next byte
+	c, err := r.Peek(1)
+	if err != nil {
+		return "", err
+	}
+	if c[0] != RespPush {
+		return "", fmt.Errorf("redis: can't peek push notification name, next reply is not a push notification")
+	}
+
+	// peek 36 bytes at most, should be enough to read the push notification name
+	toPeek := 36
+	buffered := r.Buffered()
+	if buffered == 0 {
+		return "", fmt.Errorf("redis: can't peek push notification name, no data available")
+	}
+	if buffered < toPeek {
+		toPeek = buffered
+	}
+	buf, err := r.rd.Peek(toPeek)
+	if err != nil {
+		return "", err
+	}
+	if buf[0] != RespPush {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+
+	if len(buf) < 3 {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+
+	// remove push notification type
+	buf = buf[1:]
+	// remove first line - e.g. >2\r\n
+	for i := 0; i < len(buf)-1; i++ {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
+			buf = buf[i+2:]
+			break
+		} else {
+			if buf[i] < '0' || buf[i] > '9' {
+				return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+			}
+		}
+	}
+	if len(buf) < 2 {
+		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	}
+	// next line should be $<length><string>\r\n or +<length><string>\r\n
+	// should have the type of the push notification name and it's length
+	if buf[0] != RespString && buf[0] != RespStatus {
+		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+	}
+	typeOfName := buf[0]
+	// remove the type of the push notification name
+	buf = buf[1:]
+	if typeOfName == RespString {
+		// remove the length of the string
+		if len(buf) < 2 {
+			return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+		}
+		for i := 0; i < len(buf)-1; i++ {
+			if buf[i] == '\r' && buf[i+1] == '\n' {
+				buf = buf[i+2:]
+				break
+			} else {
+				if buf[i] < '0' || buf[i] > '9' {
+					return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+				}
+			}
+		}
+	}
+
+	if len(buf) < 2 {
+		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
+	}
+	// keep only the notification name
+	for i := 0; i < len(buf)-1; i++ {
+		if buf[i] == '\r' && buf[i+1] == '\n' {
+			buf = buf[:i]
+			break
+		}
+	}
+
+	return util.BytesToString(buf), nil
+}
+
 // ReadLine Return a valid reply, it will check the protocol or redis error,
 // and discard the attribute type.
 func (r *Reader) ReadLine() ([]byte, error) {
@@ -115,7 +202,7 @@ func (r *Reader) ReadLine() ([]byte, error) {
 		var blobErr string
 		blobErr, err = r.readStringReply(line)
 		if err == nil {
-			err = RedisError(blobErr)
+			err = parseTypedRedisError(blobErr)
 		}
 		return nil, err
 	case RespAttr:
@@ -192,8 +279,8 @@ func (r *Reader) ReadReply() (interface{}, error) {
 }
 
 func (r *Reader) readFloat(line []byte) (float64, error) {
-	v := string(line[1:])
-	switch string(line[1:]) {
+	v := util.BytesToString(line[1:])
+	switch v {
 	case "inf":
 		return math.Inf(1), nil
 	case "-inf":
@@ -205,7 +292,7 @@ func (r *Reader) readFloat(line []byte) (float64, error) {
 }
 
 func (r *Reader) readBool(line []byte) (bool, error) {
-	switch string(line[1:]) {
+	switch util.BytesToString(line[1:]) {
 	case "t":
 		return true, nil
 	case "f":
@@ -216,7 +303,7 @@ func (r *Reader) readBool(line []byte) (bool, error) {
 
 func (r *Reader) readBigInt(line []byte) (*big.Int, error) {
 	i := new(big.Int)
-	if i, ok := i.SetString(string(line[1:]), 10); ok {
+	if i, ok := i.SetString(util.BytesToString(line[1:]), 10); ok {
 		return i, nil
 	}
 	return nil, fmt.Errorf("redis: can't parse bigInt reply: %q", line)
@@ -366,7 +453,7 @@ func (r *Reader) ReadFloat() (float64, error) {
 	case RespFloat:
 		return r.readFloat(line)
 	case RespStatus:
-		return strconv.ParseFloat(string(line[1:]), 64)
+		return strconv.ParseFloat(util.BytesToString(line[1:]), 64)
 	case RespString:
 		s, err := r.readStringReply(line)
 		if err != nil {
@@ -558,4 +645,194 @@ func IsNilReply(line []byte) bool {
 	return len(line) == 3 &&
 		(line[0] == RespString || line[0] == RespArray) &&
 		line[1] == '-' && line[2] == '1'
+}
+
+// ReadRawReply reads the next RESP reply and returns it as raw bytes without parsing.
+func (r *Reader) ReadRawReply() ([]byte, error) {
+	return r.readRawReplyBuf(nil)
+}
+
+func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
+	line, err := r.readLine()
+	if err != nil {
+		return buf, err
+	}
+
+	buf = append(buf, line...)
+	buf = append(buf, '\r', '\n')
+
+	switch line[0] {
+	case RespStatus, RespError, RespInt, RespNil, RespFloat, RespBool, RespBigInt:
+		return buf, nil
+
+	case RespString, RespVerbatim, RespBlobError:
+		n, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
+			return buf, err
+		}
+		curLen := len(buf)
+		buf = append(buf, make([]byte, n+2)...)
+		_, err = io.ReadFull(r.rd, buf[curLen:])
+		return buf, err
+
+	case RespArray, RespSet, RespPush:
+		n, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
+			return buf, err
+		}
+		for i := 0; i < n; i++ {
+			buf, err = r.readRawReplyBuf(buf)
+			if err != nil {
+				return buf, err
+			}
+		}
+		return buf, nil
+
+	case RespMap:
+		n, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
+			return buf, err
+		}
+		for i := 0; i < n*2; i++ {
+			buf, err = r.readRawReplyBuf(buf)
+			if err != nil {
+				return buf, err
+			}
+		}
+		return buf, nil
+
+	case RespAttr:
+		// Per RESP3 spec, an attribute is always followed by the actual command reply.
+		// We need to read the attribute's key-value pairs AND the following reply.
+		n, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return buf, nil
+			}
+			return buf, err
+		}
+		// Read the attribute key-value pairs
+		for i := 0; i < n*2; i++ {
+			buf, err = r.readRawReplyBuf(buf)
+			if err != nil {
+				return buf, err
+			}
+		}
+		// Read the command reply that follows the attribute
+		return r.readRawReplyBuf(buf)
+	}
+
+	return buf, fmt.Errorf("redis: can't read raw reply: %.100q", line)
+}
+
+var crlf = []byte{'\r', '\n'}
+
+// ReadRawReplyWriteTo streams the next RESP reply directly to w without intermediate allocations.
+// Returns the number of bytes written and any error encountered.
+func (r *Reader) ReadRawReplyWriteTo(w io.Writer) (int64, error) {
+	return r.readRawReplyWriteTo(w)
+}
+
+func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
+	line, err := r.readLine()
+	if err != nil {
+		return 0, err
+	}
+
+	var written int64
+	n, err := w.Write(line)
+	written += int64(n)
+	if err != nil {
+		return written, err
+	}
+	n, err = w.Write(crlf)
+	written += int64(n)
+	if err != nil {
+		return written, err
+	}
+
+	switch line[0] {
+	case RespStatus, RespError, RespInt, RespNil, RespFloat, RespBool, RespBigInt:
+		return written, nil
+
+	case RespString, RespVerbatim, RespBlobError:
+		dataLen, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
+			return written, err
+		}
+		copied, err := io.CopyN(w, r.rd, int64(dataLen)+2)
+		written += copied
+		return written, err
+
+	case RespArray, RespSet, RespPush:
+		count, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
+			return written, err
+		}
+		for i := 0; i < count; i++ {
+			n, err := r.readRawReplyWriteTo(w)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+		return written, nil
+
+	case RespMap:
+		count, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
+			return written, err
+		}
+		for i := 0; i < count*2; i++ {
+			n, err := r.readRawReplyWriteTo(w)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+		return written, nil
+
+	case RespAttr:
+		// Per RESP3 spec, an attribute is always followed by the actual command reply.
+		// We need to read the attribute's key-value pairs AND the following reply.
+		count, err := replyLen(line)
+		if err != nil {
+			if err == Nil {
+				return written, nil
+			}
+			return written, err
+		}
+		// Read the attribute key-value pairs
+		for i := 0; i < count*2; i++ {
+			n, err := r.readRawReplyWriteTo(w)
+			written += n
+			if err != nil {
+				return written, err
+			}
+		}
+		// Read the command reply that follows the attribute
+		n, err := r.readRawReplyWriteTo(w)
+		written += n
+		return written, err
+	}
+
+	return written, fmt.Errorf("redis: can't read raw reply: %.100q", line)
 }

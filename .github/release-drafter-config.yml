@@ -36,6 +36,8 @@ categories:
 change-template: '- $TITLE (#$NUMBER)'
 exclude-labels:
   - 'skip-changelog'
+exclude-contributors:
+  - 'dependabot'
 template: |
   # Changes
 
