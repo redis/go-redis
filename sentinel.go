@@ -160,6 +160,9 @@ type FailoverOptions struct {
 	// Only applies to failover cluster clients. Default is 15 seconds.
 	FailingTimeoutSeconds int
 
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
 	UnstableResp3 bool
 
 	// PushNotificationProcessor is the processor for handling push notifications.
