@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"time"
@@ -368,7 +369,6 @@ var _ = Describe("Commands", func() {
 			defer client2.Close()
 			clientInfo = client2.ClientInfo(ctx).Val()
 			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(suffix,"))
-
 		})
 
 		It("should ConfigGet", func() {
@@ -2065,6 +2065,209 @@ var _ = Describe("Commands", func() {
 			incrByFloat := client.IncrByFloat(ctx, "key", 996945661)
 			Expect(incrByFloat.Err()).NotTo(HaveOccurred())
 			Expect(incrByFloat.Val()).To(Equal(float64(996945661)))
+		})
+
+		It("should IncrEXInt default", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(11)))
+			Expect(res.AppliedIncrement).To(Equal(int64(1)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("11"))
+		})
+
+		It("should IncrEXInt BYINT", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "20", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{By: 4, HasBy: true}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(24)))
+			Expect(res.AppliedIncrement).To(Equal(int64(4)))
+		})
+
+		It("should IncrEXFloat with bounds", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1.5", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
+				By:        0.25,
+				LBound:    0,
+				HasLBound: true,
+				UBound:    2,
+				HasUBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(BeNumerically("~", 1.75, 1e-9))
+			Expect(res.AppliedIncrement).To(BeNumerically("~", 0.25, 1e-9))
+		})
+
+		It("should IncrEXFloat saturating overflow", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1.8", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXFloat(ctx, "key", redis.IncrEXFloatArgs{
+				By:        0.7,
+				UBound:    2,
+				HasUBound: true,
+				Saturate:  true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(BeNumerically("~", 2.0, 1e-9))
+			Expect(res.AppliedIncrement).To(BeNumerically("~", 0.2, 1e-9))
+		})
+
+		It("should IncrEXInt out-of-bounds default rejects", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 5, HasBy: true,
+				UBound: 12, HasUBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("10"))
+		})
+
+		It("should IncrEXInt out-of-bounds with LBOUND default rejects", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "5", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+				LBound: 10, HasLBound: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(5)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			Expect(client.Get(ctx, "key").Val()).To(Equal("5"))
+		})
+
+		It("should IncrEXInt with EX expiration and ENX", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "40", 0).Err()).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 2, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 60},
+				ENX:        true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(42)))
+			Expect(res.AppliedIncrement).To(Equal(int64(2)))
+
+			ttl1 := client.TTL(ctx, "key").Val()
+			Expect(ttl1).To(BeNumerically(">", 0))
+			Expect(ttl1).To(BeNumerically("<=", 60*time.Second))
+
+			// ENX should NOT replace an existing TTL.
+			res, err = client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 3, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 600},
+				ENX:        true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(45)))
+
+			ttl2 := client.TTL(ctx, "key").Val()
+			Expect(ttl2).To(BeNumerically(">", 0))
+			Expect(ttl2).To(BeNumerically("<=", ttl1))
+		})
+
+		It("should IncrEXInt SATURATE clamps to LBOUND with negative increment", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "credits", "50", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "credits", redis.IncrEXIntArgs{
+				By: -1, HasBy: true,
+				LBound: 0, HasLBound: true,
+				Saturate: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(49)))
+			Expect(res.AppliedIncrement).To(Equal(int64(-1)))
+		})
+
+		It("should IncrEXInt PERSIST removes TTL", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "1", 60*time.Second).Err()).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(BeNumerically(">", 0))
+
+			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.PERSIST},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
+		})
+
+		It("should IncrEXInt SATURATE without bounds clamps to LLONG_MAX", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			// Start near LLONG_MAX; with no UBOUND the server should clamp to LLONG_MAX.
+			Expect(client.Set(ctx, "key", "9223372036854775800", 0).Err()).NotTo(HaveOccurred())
+
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1000, HasBy: true,
+				Saturate: true,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(math.MaxInt64)))
+			Expect(res.AppliedIncrement).To(Equal(int64(math.MaxInt64 - 9223372036854775800)))
+		})
+
+		It("should IncrEXInt default reject leaves TTL untouched", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "10", 60*time.Second).Err()).NotTo(HaveOccurred())
+			ttlBefore := client.TTL(ctx, "key").Val()
+			Expect(ttlBefore).To(BeNumerically(">", 0))
+
+			// Out-of-bounds increment with an EX clause — server should reject
+			// and NOT apply the new TTL.
+			res, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 5, HasBy: true,
+				UBound: 12, HasUBound: true,
+				Expiration: &redis.ExpirationOption{Mode: redis.EX, Value: 6000},
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res.Value).To(Equal(int64(10)))
+			Expect(res.AppliedIncrement).To(Equal(int64(0)))
+
+			ttlAfter := client.TTL(ctx, "key").Val()
+			// Original TTL was ~60s; rejected EX 6000s must not have been applied.
+			Expect(ttlAfter).To(BeNumerically("<=", ttlBefore))
+			Expect(ttlAfter).To(BeNumerically(">", 0))
+			Expect(ttlAfter).To(BeNumerically("<=", 60*time.Second))
+		})
+
+		It("should IncrEXInt on non-numeric key returns error", func() {
+			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+
+			Expect(client.Set(ctx, "key", "not-a-number", 0).Err()).NotTo(HaveOccurred())
+
+			_, err := client.IncrEXInt(ctx, "key", redis.IncrEXIntArgs{
+				By: 1, HasBy: true,
+			}).Result()
+			Expect(err).To(HaveOccurred())
+			Expect(client.Get(ctx, "key").Val()).To(Equal("not-a-number"))
 		})
 
 		It("should MSetMGet", func() {
@@ -6541,17 +6744,20 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"three", "two", "one"}))
 
 			vals, err = client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"two"}))
 
 			vals, err = client.ZRevRangeByScore(
-				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
 		})
@@ -6565,17 +6771,20 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "-"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "-"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"c", "b", "a"}))
 
 			vals, err = client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "[b", Min: "(a"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "[b", Min: "(a"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{"b"}))
 
 			vals, err = client.ZRevRangeByLex(
-				ctx, "zset", &redis.ZRangeBy{Max: "(b", Min: "(a"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(b", Min: "(a"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]string{}))
 		})
@@ -6589,7 +6798,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{
 				Score:  3,
@@ -6612,7 +6822,8 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			vals, err := client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "-inf"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{
 				Score:  3,
@@ -6626,12 +6837,14 @@ var _ = Describe("Commands", func() {
 			}}))
 
 			vals, err = client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{{Score: 2, Member: "two"}}))
 
 			vals, err = client.ZRevRangeByScoreWithScores(
-				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"}).Result()
+				ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(1"},
+			).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(vals).To(Equal([]redis.Z{}))
 		})
@@ -7723,7 +7936,6 @@ var _ = Describe("Commands", func() {
 					Values: map[string]interface{}{"tres": "troix"},
 				}}))
 				Expect(ids).To(Equal([]string{"2-0"}))
-
 			})
 
 			It("should XClaim", func() {
