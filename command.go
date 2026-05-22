@@ -1662,7 +1662,7 @@ type StringSliceSliceCmd struct {
 
 var _ Cmder = (*StringSliceSliceCmd)(nil)
 
-func NewStringSliceSliceCmd(ctx context.Context, args ...interface{}) *StringSliceSliceCmd {
+func NewStringSliceSliceCmd(ctx context.Context, args ...any) *StringSliceSliceCmd {
 	return &StringSliceSliceCmd{
 		baseCmd: baseCmd{
 			ctx:  ctx,
