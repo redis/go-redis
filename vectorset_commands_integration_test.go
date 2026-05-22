@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -25,7 +24,6 @@ func expectEqual[T any, U any](a T, b U) {
 }
 
 func generateRandomVector(dim int) redis.VectorValues {
-	rand.Seed(time.Now().UnixNano())
 	v := make([]float64, dim)
 	for i := range v {
 		v[i] = float64(rand.Intn(1000)) + rand.Float64()

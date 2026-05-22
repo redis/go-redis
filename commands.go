@@ -228,6 +228,7 @@ type Cmdable interface {
 	ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd
 
 	ACLCmdable
+	ArrayCmdable
 	BitMapCmdable
 	ClusterCmdable
 	GenericCmdable
