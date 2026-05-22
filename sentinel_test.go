@@ -818,8 +818,10 @@ var _ = Describe("Sentinel Failover with Conns", Serial, Ordered, func() {
 				time.Sleep(500 * time.Millisecond)
 			}
 
-			Expect(failoverCloseCount.Load()).To(Equal(int32(1)),
-				"Expected exactly 1 CloseReasonFailover metric, got %d", failoverCloseCount.Load())
+			Eventually(func() int32 {
+				return failoverCloseCount.Load()
+			}, "5s", "100ms").Should(Equal(int32(1)),
+				"Expected exactly 1 CloseReasonFailover metric")
 
 			multi, err := client.Do(ctx, "MULTI").Result()
 			Expect(err).NotTo(HaveOccurred())
