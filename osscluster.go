@@ -2110,6 +2110,7 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			}
 		}
 
+		// Track callback errors separately to avoid retrying user failures through cluster retry classification.
 		var fnErr error
 		err = node.Client.Watch(ctx, func(tx *Tx) error {
 			fnErr = fn(tx)
