@@ -388,7 +388,6 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
-	queue           chan struct{}
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
 	// Fast semaphore for connection limiting with eventual fairness
@@ -420,7 +419,6 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg:             opt,
 		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
-		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
