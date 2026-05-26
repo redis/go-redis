@@ -1917,13 +1917,23 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsSlots := map[int][]Cmder{}
 
+	// Peek once outside the loop, one RLock for the whole batch instead of
+	// two per command (one for the keyless check, one inside cmdSlot).
+	cachedInfo := c.cmdsInfoCache.Peek()
+
 	prefferedRandomSlot := -1
 	for _, cmd := range cmds {
-		if cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name())) == 0 {
+		var info *CommandInfo
+		if cachedInfo != nil {
+			info = cachedInfo[cmd.Name()]
+		}
+
+		pos := cmdFirstKeyPosWithInfo(cmd, info)
+		if pos == 0 {
 			continue
 		}
 
-		slot := c.cmdSlot(cmd, prefferedRandomSlot)
+		slot := c.cmdSlotWithPos(cmd, pos, prefferedRandomSlot)
 		if prefferedRandomSlot == -1 {
 			prefferedRandomSlot = slot
 		}
@@ -2319,12 +2329,19 @@ func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
+	info := c.cmdInfoPeek(cmd.Name())
+	return c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+}
+
+// cmdSlotWithPos computes the cluster slot for cmd given a pre-resolved first key
+// position. Separating pos resolution from slot computation lets callers that
+// already know pos avoid a redundant Peek() call.
+func (c *ClusterClient) cmdSlotWithPos(cmd Cmder, pos int, prefferedSlot int) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
-
-	return cmdSlot(cmd, cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name())), prefferedSlot)
+	return cmdSlot(cmd, pos, prefferedSlot)
 }
 
 func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {

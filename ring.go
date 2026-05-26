@@ -771,17 +771,11 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 	return nil, firstErr
 }
 
-// cmdInfoPeek returns the cached CommandInfo for the named command without
-// triggering a round-trip to Redis. It returns nil when the cache is cold.
-func (c *Ring) cmdInfoPeek(name string) *CommandInfo {
-	if cmds := c.cmdsInfoCache.Peek(); cmds != nil {
-		return cmds[name]
-	}
-	return nil
-}
-
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	pos := cmdFirstKeyPosWithInfo(cmd, c.cmdInfoPeek(cmd.Name()))
+	// TODO: populate cmdsInfoCache lazily (via cmdsInfoCache.Get) so that
+	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
+	// mirroring how ClusterClient.cmdInfo works. For now pass nil
+	pos := cmdFirstKeyPosWithInfo(cmd, nil)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -847,14 +841,9 @@ func (c *Ring) generalProcessPipeline(
 	}
 
 	cmdsMap := make(map[string][]Cmder)
-	cachedInfo := c.cmdsInfoCache.Peek()
 
 	for _, cmd := range cmds {
-		var info *CommandInfo
-		if cachedInfo != nil {
-			info = cachedInfo[cmd.Name()]
-		}
-		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, info))
+		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}

@@ -141,11 +141,11 @@ func (c *ClusterClient) executeMultiShard(ctx context.Context, cmd Cmder, policy
 		keyOrder = append(keyOrder, key)
 	}
 
-	return c.executeMultiSlot(ctx, cmd, slotMap, keyOrder, policy)
+	return c.executeMultiSlot(ctx, cmd, slotMap, keyOrder, policy, firstKeyPos)
 }
 
 // executeMultiSlot executes commands across multiple slots concurrently
-func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap map[int][]string, keyOrder []string, policy *routing.CommandPolicy) error {
+func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap map[int][]string, keyOrder []string, policy *routing.CommandPolicy, firstKeyPos int) error {
 	results := make(chan slotResult, len(slotMap))
 	var wg sync.WaitGroup
 
@@ -162,7 +162,7 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 			}
 
 			// Create a command for this specific slot's keys
-			subCmd := c.createSlotSpecificCommand(ctx, cmd, keys)
+			subCmd := c.createSlotSpecificCommand(ctx, cmd, keys, firstKeyPos)
 			err = node.Client.Process(ctx, subCmd)
 			results <- slotResult{subCmd, keys, err}
 		}(slot, keys)
@@ -176,10 +176,12 @@ func (c *ClusterClient) executeMultiSlot(ctx context.Context, cmd Cmder, slotMap
 	return c.aggregateMultiSlotResults(ctx, cmd, results, keyOrder, policy)
 }
 
-// createSlotSpecificCommand creates a new command for a specific slot's keys
-func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalCmd Cmder, keys []string) Cmder {
+// createSlotSpecificCommand creates a new command for a specific slot's keys.
+// firstKeyPos is passed in from the caller (computed once in executeMultiShard)
+// so this function never independently re-peeks the cache — avoids the
+// cold --> warm inconsistency the reviewer flagged.
+func (c *ClusterClient) createSlotSpecificCommand(ctx context.Context, originalCmd Cmder, keys []string, firstKeyPos int) Cmder {
 	originalArgs := originalCmd.Args()
-	firstKeyPos := cmdFirstKeyPosWithInfo(originalCmd, c.cmdInfoPeek(originalCmd.Name()))
 
 	// Build new args with only the specified keys
 	newArgs := make([]interface{}, 0, firstKeyPos+len(keys))
