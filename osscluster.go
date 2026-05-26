@@ -2110,9 +2110,17 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			}
 		}
 
-		err = node.Client.Watch(ctx, fn, keys...)
+		// Track callback errors separately to avoid retrying user failures through cluster retry classification.
+		var fnErr error
+		err = node.Client.Watch(ctx, func(tx *Tx) error {
+			fnErr = fn(tx)
+			return fnErr
+		}, keys...)
 		if err == nil {
 			break
+		}
+		if fnErr != nil {
+			return fnErr
 		}
 
 		moved, ask, addr := isMovedError(err)

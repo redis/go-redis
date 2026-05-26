@@ -394,6 +394,43 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(simScoresAttribs[0].Score, float64(1))
 					expectEqual(simScoresAttribs[0].Attribs, (*string)(nil))
 				}
+
+				// test vlinks and vlinks with scores
+				links, err := client.VLinks(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(len(links) > 0)
+
+				// Last layer should contain all other elements (order may vary)
+				lastLayer := links[len(links)-1]
+				expectEqual(len(lastLayer), 4)
+
+				linksWithScores, err := client.VLinksWithScores(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(len(linksWithScores) > 0)
+
+				// Last layer should contain all other elements with scores
+				lastLayerScores := linksWithScores[len(linksWithScores)-1]
+				expectEqual(len(lastLayerScores), 4)
+			})
+
+			It("vlinks with single element", func() {
+				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				vecName := "vlinks_single"
+
+				// Add only one vector
+				ok, err := client.VAdd(ctx, vecName, "only", &redis.VectorValues{
+					Val: []float64{1, 1},
+				}).Result()
+				expectNil(err)
+				expectTrue(ok)
+
+				links, err := client.VLinks(ctx, vecName, "only").Result()
+				expectNil(err)
+				expectTrue(len(links) > 0)
+
+				linksWithScores, err := client.VLinksWithScores(ctx, vecName, "only").Result()
+				expectNil(err)
+				expectTrue(len(linksWithScores) > 0)
 			})
 		})
 	}
