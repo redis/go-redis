@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 // Connection close reason constants for metrics.
@@ -388,7 +388,6 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
-	queue           chan struct{}
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
 	// Fast semaphore for connection limiting with eventual fairness
@@ -420,7 +419,6 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg:             opt,
 		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
-		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
@@ -1447,6 +1445,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
+	}
+
 	removed := p.removeConnWithLock(cn)
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.

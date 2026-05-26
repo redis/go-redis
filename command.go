@@ -156,6 +156,11 @@ const (
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
 	CmdTypeHotKeys
+	CmdTypeIncrEXInt
+	CmdTypeIncrEXFloat
+	CmdTypeUint
+	CmdTypeUintSlice
+	CmdTypeAREntrySlice
 )
 
 type (
@@ -1044,6 +1049,52 @@ func (cmd *IntCmd) Clone() Cmder {
 	}
 }
 
+type UintCmd struct {
+	baseCmd
+
+	val uint64
+}
+
+var _ Cmder = (*UintCmd)(nil)
+
+func NewUintCmd(ctx context.Context, args ...any) *UintCmd {
+	return &UintCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeUint,
+		},
+	}
+}
+
+func (cmd *UintCmd) SetVal(val uint64) {
+	cmd.val = val
+}
+
+func (cmd *UintCmd) Val() uint64 {
+	return cmd.val
+}
+
+func (cmd *UintCmd) Result() (uint64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *UintCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *UintCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.val, err = rd.ReadUint()
+	return err
+}
+
+func (cmd *UintCmd) Clone() Cmder {
+	return &UintCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 //------------------------------------------------------------------------------
 
 // DigestCmd is a command that returns a uint64 xxh3 hash digest.
@@ -1170,6 +1221,66 @@ func (cmd *IntSliceCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &IntSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+type UintSliceCmd struct {
+	baseCmd
+
+	val []uint64
+}
+
+var _ Cmder = (*UintSliceCmd)(nil)
+
+func NewUintSliceCmd(ctx context.Context, args ...any) *UintSliceCmd {
+	return &UintSliceCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeUintSlice,
+		},
+	}
+}
+
+func (cmd *UintSliceCmd) SetVal(val []uint64) {
+	cmd.val = val
+}
+
+func (cmd *UintSliceCmd) Val() []uint64 {
+	return cmd.val
+}
+
+func (cmd *UintSliceCmd) Result() ([]uint64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *UintSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]uint64, n)
+	for i := range cmd.val {
+		if cmd.val[i], err = rd.ReadUint(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cmd *UintSliceCmd) Clone() Cmder {
+	var val []uint64
+	if cmd.val != nil {
+		val = make([]uint64, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &UintSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
@@ -1645,6 +1756,87 @@ func (cmd *StringSliceCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &StringSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// StringSliceSliceCmd returns a slice of string slices ([][]string).
+// This is used for commands like VLINKS that return an array of arrays.
+type StringSliceSliceCmd struct {
+	baseCmd
+
+	val [][]string
+}
+
+var _ Cmder = (*StringSliceSliceCmd)(nil)
+
+func NewStringSliceSliceCmd(ctx context.Context, args ...any) *StringSliceSliceCmd {
+	return &StringSliceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *StringSliceSliceCmd) SetVal(val [][]string) {
+	cmd.val = val
+}
+
+func (cmd *StringSliceSliceCmd) Val() [][]string {
+	return cmd.val
+}
+
+func (cmd *StringSliceSliceCmd) Result() ([][]string, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StringSliceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StringSliceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([][]string, n)
+	for i := range n {
+		// Read inner array
+		innerN, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = make([]string, innerN)
+		for j := range innerN {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.val[i][j] = ""
+			case err != nil:
+				return err
+			default:
+				cmd.val[i][j] = s
+			}
+		}
+	}
+	return nil
+}
+
+func (cmd *StringSliceSliceCmd) Clone() Cmder {
+	var val [][]string
+	if cmd.val != nil {
+		val = make([][]string, len(cmd.val))
+		for i, slice := range cmd.val {
+			if slice != nil {
+				val[i] = make([]string, len(slice))
+				copy(val[i], slice)
+			}
+		}
+	}
+	return &StringSliceSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
@@ -4937,8 +5129,10 @@ func (c *cmdsInfoCache) Refresh() {
 }
 
 // ------------------------------------------------------------------------------
-const requestPolicy = "request_policy"
-const responsePolicy = "response_policy"
+const (
+	requestPolicy  = "request_policy"
+	responsePolicy = "response_policy"
+)
 
 func parseCommandPolicies(commandInfoTips map[string]string, firstKeyPos int8) *routing.CommandPolicy {
 	req := routing.ReqDefault
@@ -7829,6 +8023,120 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
+// VectorScoreSliceSliceCmd is used for VLINKS WITHSCORES which returns an array of arrays.
+// In RESP3, each inner array contains maps of element -> score.
+type VectorScoreSliceSliceCmd struct {
+	baseCmd
+
+	val [][]VectorScore
+}
+
+var _ Cmder = (*VectorScoreSliceSliceCmd)(nil)
+
+func NewVectorScoreSliceSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceSliceCmd {
+	return &VectorScoreSliceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreSliceSliceCmd) SetVal(val [][]VectorScore) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Val() [][]VectorScore {
+	return cmd.val
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Result() ([][]VectorScore, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreSliceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreSliceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([][]VectorScore, n)
+	for i := range n {
+		// Each level can be either a map (RESP3) or an array (RESP2)
+		levelTyp, err := rd.PeekReplyType()
+		if err != nil {
+			return err
+		}
+
+		if levelTyp == proto.RespMap {
+			// RESP3 format: each level is a map {element: score, element: score, ...}
+			mapLen, err := rd.ReadMapLen()
+			if err != nil {
+				return err
+			}
+
+			cmd.val[i] = make([]VectorScore, mapLen)
+			for j := range mapLen {
+				name, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				score, err := rd.ReadFloat()
+				if err != nil {
+					return err
+				}
+				cmd.val[i][j] = VectorScore{Name: name, Score: score}
+			}
+		} else {
+			// RESP2 format: each level is an array of [element, score, element, score, ...] pairs
+			innerLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+
+			if innerLen%2 != 0 {
+				return fmt.Errorf("redis: got %d elements in the VLINKS array, wanted a multiple of 2", innerLen)
+			}
+
+			cmd.val[i] = make([]VectorScore, innerLen/2)
+			for j := 0; j < innerLen; j += 2 {
+				name, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				score, err := rd.ReadFloat()
+				if err != nil {
+					return err
+				}
+				cmd.val[i][j/2] = VectorScore{Name: name, Score: score}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Clone() Cmder {
+	var val [][]VectorScore
+	if cmd.val != nil {
+		val = make([][]VectorScore, len(cmd.val))
+		for i, slice := range cmd.val {
+			if slice != nil {
+				val[i] = make([]VectorScore, len(slice))
+				copy(val[i], slice)
+			}
+		}
+	}
+	return &VectorScoreSliceSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
 func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
 	v, err := rd.ReadReply()
 	if err != nil {
@@ -8066,6 +8374,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return intCmd.Val(), intCmd.Err()
 			}
+		case CmdTypeUint:
+			if uintCmd, ok := cmd.(interface {
+				Val() uint64
+				Err() error
+			}); ok {
+				return uintCmd.Val(), uintCmd.Err()
+			}
 		case CmdTypeBool:
 			if boolCmd, ok := cmd.(interface {
 				Val() bool
@@ -8258,6 +8573,20 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return hotKeysCmd.Val(), hotKeysCmd.Err()
+			}
+		case CmdTypeIncrEXInt:
+			if incrEXCmd, ok := cmd.(interface {
+				Val() IncrEXIntResult
+				Err() error
+			}); ok {
+				return incrEXCmd.Val(), incrEXCmd.Err()
+			}
+		case CmdTypeIncrEXFloat:
+			if incrEXCmd, ok := cmd.(interface {
+				Val() IncrEXFloatResult
+				Err() error
+			}); ok {
+				return incrEXCmd.Val(), incrEXCmd.Err()
 			}
 		case CmdTypeKeyValues:
 			if keyValuesCmd, ok := cmd.(interface {
@@ -8478,6 +8807,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return intSliceCmd.Val(), intSliceCmd.Err()
 			}
+		case CmdTypeUintSlice:
+			if uintSliceCmd, ok := cmd.(interface {
+				Val() []uint64
+				Err() error
+			}); ok {
+				return uintSliceCmd.Val(), uintSliceCmd.Err()
+			}
 		case CmdTypeBoolSlice:
 			if boolSliceCmd, ok := cmd.(interface {
 				Val() []bool
@@ -8505,6 +8841,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return keyValueSliceCmd.Val(), keyValueSliceCmd.Err()
+			}
+		case CmdTypeAREntrySlice:
+			if arEntrySliceCmd, ok := cmd.(interface {
+				Val() []AREntry
+				Err() error
+			}); ok {
+				return arEntrySliceCmd.Val(), arEntrySliceCmd.Err()
 			}
 		case CmdTypeMapStringString:
 			if mapCmd, ok := cmd.(interface {
@@ -8556,4 +8899,194 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 
 	// If we can't get the command type, return nil
 	return nil, nil
+}
+
+//------------------------------------------------------------------------------
+
+// IncrEXIntResult is the reply of an INCREX command issued via IncrEXInt.
+// Value is the new value of the key; AppliedIncrement is the increment that
+// the server actually applied (0 when an out-of-bounds operation was
+// rejected, clamped when SATURATE was set).
+type IncrEXIntResult struct {
+	Value            int64
+	AppliedIncrement int64
+}
+
+type IncrEXIntCmd struct {
+	baseCmd
+
+	val IncrEXIntResult
+}
+
+var _ Cmder = (*IncrEXIntCmd)(nil)
+
+func NewIncrEXIntCmd(ctx context.Context, args ...interface{}) *IncrEXIntCmd {
+	return &IncrEXIntCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeIncrEXInt,
+		},
+	}
+}
+
+func (cmd *IncrEXIntCmd) SetVal(val IncrEXIntResult) { cmd.val = val }
+func (cmd *IncrEXIntCmd) Val() IncrEXIntResult       { return cmd.val }
+func (cmd *IncrEXIntCmd) Result() (IncrEXIntResult, error) {
+	return cmd.val, cmd.err
+}
+func (cmd *IncrEXIntCmd) String() string { return cmdString(cmd, cmd.val) }
+
+func (cmd *IncrEXIntCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+	value, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	applied, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	cmd.val = IncrEXIntResult{Value: value, AppliedIncrement: applied}
+	return nil
+}
+
+func (cmd *IncrEXIntCmd) Clone() Cmder {
+	return &IncrEXIntCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+// IncrEXFloatResult is the reply of an INCREX command issued via IncrEXFloat.
+type IncrEXFloatResult struct {
+	Value            float64
+	AppliedIncrement float64
+}
+
+type IncrEXFloatCmd struct {
+	baseCmd
+
+	val IncrEXFloatResult
+}
+
+var _ Cmder = (*IncrEXFloatCmd)(nil)
+
+func NewIncrEXFloatCmd(ctx context.Context, args ...interface{}) *IncrEXFloatCmd {
+	return &IncrEXFloatCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeIncrEXFloat,
+		},
+	}
+}
+
+func (cmd *IncrEXFloatCmd) SetVal(val IncrEXFloatResult) { cmd.val = val }
+func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult       { return cmd.val }
+func (cmd *IncrEXFloatCmd) Result() (IncrEXFloatResult, error) {
+	return cmd.val, cmd.err
+}
+func (cmd *IncrEXFloatCmd) String() string { return cmdString(cmd, cmd.val) }
+
+func (cmd *IncrEXFloatCmd) readReply(rd *proto.Reader) error {
+	if err := rd.ReadFixedArrayLen(2); err != nil {
+		return err
+	}
+	value, err := rd.ReadFloat()
+	if err != nil {
+		return err
+	}
+	applied, err := rd.ReadFloat()
+	if err != nil {
+		return err
+	}
+	cmd.val = IncrEXFloatResult{Value: value, AppliedIncrement: applied}
+	return nil
+}
+
+func (cmd *IncrEXFloatCmd) Clone() Cmder {
+	return &IncrEXFloatCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// AREntrySliceCmd is a command that returns index-value pairs from ARSCAN or ARGREP.
+type AREntrySliceCmd struct {
+	baseCmd
+	val []AREntry
+}
+
+var _ Cmder = (*AREntrySliceCmd)(nil)
+
+func NewAREntrySliceCmd(ctx context.Context, args ...any) *AREntrySliceCmd {
+	return &AREntrySliceCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeAREntrySlice,
+		},
+	}
+}
+
+func (cmd *AREntrySliceCmd) SetVal(val []AREntry) {
+	cmd.val = val
+}
+
+func (cmd *AREntrySliceCmd) Val() []AREntry {
+	return cmd.val
+}
+
+func (cmd *AREntrySliceCmd) Result() ([]AREntry, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *AREntrySliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *AREntrySliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		cmd.val = make([]AREntry, 0)
+		return nil
+	}
+
+	cmd.val = make([]AREntry, n)
+	for i := range n {
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+
+		cmd.val[i].Index, err = rd.ReadUint()
+		if err != nil {
+			return err
+		}
+
+		cmd.val[i].Value, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cmd *AREntrySliceCmd) Clone() Cmder {
+	var val []AREntry
+	if cmd.val != nil {
+		val = make([]AREntry, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &AREntrySliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
 }

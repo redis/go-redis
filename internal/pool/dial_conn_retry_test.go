@@ -36,7 +36,10 @@ func TestDialConn_HangingDial_RetriesWithPerAttemptTimeout(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		PoolSize:           1,
+		// PoolSize is set high so the pool's tryDial probe (triggered when
+		// dialErrorsNum == PoolSize) does not fire during this test and race
+		// the assertion on `calls`.
+		PoolSize:           100,
 		MaxConcurrentDials: 1,
 		DialTimeout:        dialTimeout,
 		DialerRetries:      retries,
@@ -92,7 +95,7 @@ func TestDialConn_DoesNotExtendEarlierParentDeadline(t *testing.T) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
-		PoolSize:           1,
+		PoolSize:           100,
 		MaxConcurrentDials: 1,
 		DialTimeout:        500 * time.Millisecond,
 		DialerRetries:      1,
@@ -123,7 +126,7 @@ func TestDialConn_ContextCancelStopsFurtherRetries(t *testing.T) {
 			}
 			return nil, errors.New("unexpected extra attempt")
 		},
-		PoolSize:           1,
+		PoolSize:           100,
 		MaxConcurrentDials: 1,
 		DialTimeout:        5 * time.Second,
 		DialerRetries:      5,
@@ -159,7 +162,7 @@ func TestDialConn_DialTimeoutDisabled_DoesNotSetDeadline(t *testing.T) {
 			}
 			return nil, errors.New("dial failed")
 		},
-		PoolSize:           1,
+		PoolSize:           100,
 		MaxConcurrentDials: 1,
 		DialTimeout:        0,
 		DialerRetries:      1,
@@ -184,7 +187,7 @@ func TestDialConn_NoBackoffAfterLastAttempt(t *testing.T) {
 			calls.Add(1)
 			return nil, errors.New("dial failed")
 		},
-		PoolSize:           1,
+		PoolSize:           100,
 		MaxConcurrentDials: 1,
 		DialTimeout:        5 * time.Second,
 		DialerRetries:      1,
