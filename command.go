@@ -4946,6 +4946,7 @@ func (c *cmdsInfoCache) Refresh() {
 // Returns nil when the cache is cold; callers should fall back to other heuristics.
 // Note: during the very first Get() (initial population) this call will block on
 // the writer lock. After that, concurrent Peek() calls do not block each other.
+// The returned map and its entries MUST NOT be mutated by the caller.
 func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
 	if c == nil {
 		return nil
