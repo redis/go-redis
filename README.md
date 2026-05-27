@@ -18,14 +18,20 @@
 
 In `go-redis` we are aiming to support the last three releases of Redis. Currently, this means we do support:
 - [Redis 8.0](https://raw.githubusercontent.com/redis/redis/8.0/00-RELEASENOTES) - using Redis CE 8.0
-- [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2 
+- [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2
 - [Redis 8.4](https://raw.githubusercontent.com/redis/redis/8.4/00-RELEASENOTES) - using Redis CE 8.4
+- [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
 
-Although the `go.mod` states it requires at minimum `go 1.24`, our CI is configured to run the tests against all three
+Although the `go.mod` states it requires at minimum `go 1.24`, our CI is configured to run the tests against all supported
 versions of Redis and multiple versions of Go ([1.24](https://go.dev/doc/devel/release#go1.24.0), oldstable, and stable). We observe that some modules related test may not pass with
 Redis Stack 7.2 and some commands are changed with Redis CE 8.0.
 Although it is not officially supported, `go-redis/v9`  should be able to work with any Redis 7.0+.
 Please do refer to the documentation and the tests if you experience any issues.
+
+### Array data type (Redis 8.8+)
+
+Starting with Redis 8.8, go-redis supports the new array data type via the `AR*` command family
+(`ARAPPEND`, `ARGET`, `ARSET`, `ARLEN`, `ARRANGE`, etc.). See `array_commands.go` for the full surface.
 
 ## How do I Redis?
 
