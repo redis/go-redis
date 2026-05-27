@@ -163,8 +163,6 @@ type ClusterOptions struct {
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
 
-	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
-	//
 	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.
