@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"sync"
@@ -12,12 +13,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -772,7 +771,10 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 }
 
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	pos := cmdFirstKeyPos(cmd)
+	// TODO: populate cmdsInfoCache lazily (via cmdsInfoCache.Get) so that
+	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
+	// mirroring how ClusterClient.cmdInfo works. For now pass nil
+	pos := cmdFirstKeyPosWithInfo(cmd, nil)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -840,7 +842,7 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		hash := cmd.stringArg(cmdFirstKeyPos(cmd))
+		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}

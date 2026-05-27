@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -260,6 +261,55 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 				cmd := client.JSONSet(ctx, "set1", "$", `{"a": 1, "b": 2, "hello": "world"}`)
 				Expect(cmd.Err()).NotTo(HaveOccurred())
 				Expect(cmd.Val()).To(Equal("OK"))
+			})
+
+			It("should JSONSetWithArgs with FPHA", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+
+				fpArray := `[1.1, 2.2, 3.3, 4.4]`
+				for _, fpha := range []redis.FPHAType{
+					redis.FPHATypeBF16,
+					redis.FPHATypeFP16,
+					redis.FPHATypeFP32,
+					redis.FPHATypeFP64,
+				} {
+					key := "fpha_" + string(fpha)
+					cmd := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{FPHA: fpha})
+					Expect(cmd.Err()).NotTo(HaveOccurred())
+					Expect(cmd.Val()).To(Equal("OK"))
+
+					res, err := client.JSONGet(ctx, key, "$").Result()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(res).NotTo(BeEmpty())
+				}
+			})
+
+			It("should JSONSetWithArgs with FPHA and NX/XX", Label("json.set", "json"), func() {
+				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+
+				key := "fpha_nx"
+				fpArray := `[1.5, 2.5, 3.5]`
+
+				// NX + FPHA succeeds when key does not exist
+				res, err := client.JSONSetWithArgs(ctx, key, "$", fpArray, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
+
+				// NX + FPHA returns redis.Nil when key already exists
+				cmd := client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "NX", FPHA: redis.FPHATypeFP32,
+				})
+				Expect(cmd.Err()).To(Equal(redis.Nil))
+				Expect(cmd.Val()).To(Equal(""))
+
+				// XX + FPHA succeeds when key exists
+				res, err = client.JSONSetWithArgs(ctx, key, "$", `[4.5, 5.5]`, &redis.JSONSetArgsOptions{
+					Mode: "XX", FPHA: redis.FPHATypeFP32,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal("OK"))
 			})
 
 			It("should JSONGet", Label("json.get", "json", "NonRedisEnterprise"), func() {
@@ -797,12 +847,12 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					getCmdRaw := client.JSONGet(ctx, "person:1", ".")
 					rawJSON, err := getCmdRaw.Result()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (raw) failed")
-					GinkgoWriter.Printf("Raw JSON: %s\n", rawJSON)
+					fmt.Printf("Raw JSON: %s\n", rawJSON)
 
 					getCmdExpanded := client.JSONGet(ctx, "person:1", ".")
 					expandedJSON, err := getCmdExpanded.Expanded()
 					Expect(err).NotTo(HaveOccurred(), "JSON.GET (expanded) failed")
-					GinkgoWriter.Printf("Expanded JSON: %+v\n", expandedJSON)
+					fmt.Printf("Expanded JSON: %+v\n", expandedJSON)
 
 					Expect(rawJSON).To(MatchJSON(jsonMustMarshal(expandedJSON)))
 
@@ -848,7 +898,7 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 					searchCmd := client.FTSearchWithArgs(ctx, "person_idx", "@contact_value:(alice\\@example\\.com alice_wonder)", &redis.FTSearchOptions{Return: []redis.FTSearchReturn{{FieldName: "$.person.name"}, {FieldName: "$.person.age"}, {FieldName: "$.person.address.city"}}})
 					searchResult, err := searchCmd.Result()
 					Expect(err).NotTo(HaveOccurred(), "FT.SEARCH failed")
-					GinkgoWriter.Printf("Advanced Search result: %+v\n", searchResult)
+					fmt.Printf("Advanced Search result: %+v\n", searchResult)
 
 					incrCmd := client.JSONNumIncrBy(ctx, "person:1", "$.person.age", 5)
 					incrResult, err := incrCmd.Result()

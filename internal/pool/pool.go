@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -10,7 +11,6 @@ import (
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 // Connection close reason constants for metrics.
@@ -388,7 +388,6 @@ type ConnPool struct {
 	dialErrorsNum uint32 // atomic
 	lastDialError atomic.Value
 
-	queue           chan struct{}
 	dialsInProgress chan struct{}
 	dialsQueue      *wantConnQueue
 	// Fast semaphore for connection limiting with eventual fairness
@@ -420,7 +419,6 @@ func NewConnPool(opt *Options) *ConnPool {
 	p := &ConnPool{
 		cfg:             opt,
 		semaphore:       internal.NewFastSemaphore(opt.PoolSize),
-		queue:           make(chan struct{}, opt.PoolSize),
 		conns:           make(map[uint64]*Conn),
 		dialsInProgress: make(chan struct{}, opt.MaxConcurrentDials),
 		dialsQueue:      newWantConnQueue(),
@@ -1447,6 +1445,10 @@ func (p *ConnPool) removeConnInternal(ctx context.Context, cn *Conn, reason erro
 //   - reason: why the connection is being closed (use CloseReason* constants)
 //   - fromState: the metric state the connection was in (use MetricState* constants)
 func (p *ConnPool) CloseConn(ctx context.Context, cn *Conn, reason string, fromState string) error {
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
+	}
+
 	removed := p.removeConnWithLock(cn)
 
 	// Only emit UpDownCounter decrements if we actually removed the connection.
@@ -1616,9 +1618,19 @@ func (p *ConnPool) Close() error {
 		// Check health before closing, since closeConn invalidates the
 		// underlying fd and would make connCheck (inside isHealthyConn)
 		// always fail with EBADF.
-		healthy := p.isHealthyConn(cn, nowNs)
+		// Only check health for idle connections to avoid data races when
+		// peeking at the socket/reader while another goroutine is reading from it.
+		// Non-idle connections are either in use or in transitional states and
+		// shouldn't be health-checked during shutdown.
+		_, isIdle := idleSet[cn.GetID()]
+		var healthy bool
+		if isIdle {
+			healthy = p.isHealthyConn(cn, nowNs)
+		} else {
+			healthy = true
+		}
 		if cb != nil {
-			if _, isIdle := idleSet[cn.GetID()]; isIdle {
+			if isIdle {
 				cb(ctx, -1, cn, "idle", false)
 			} else {
 				cb(ctx, -1, cn, "used", false)

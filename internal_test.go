@@ -2,7 +2,9 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -345,6 +347,119 @@ func TestNodeAddress(t *testing.T) {
 	})
 }
 
+// TestNewClusterState_PortZero verifies that nodes reported by CLUSTER SLOTS
+// with a port of 0 — the topology produced by TLS-only Redis clusters started
+// with `--port 0 --tls-port 6379` — get their dial address normalized so they
+// do not surface to the dial path as ":0".
+//
+// Regression test for https://github.com/redis/go-redis/issues/3726
+// PubSub in v9.18.0 fails in TLS-only clusters because newClusterState stores
+// the verbatim ":0" port into clusterNode.Client.opt.Addr and the PubSub path
+// dials that address directly with no MOVED/seed fallback, producing
+// `dial tcp <ip>:0: connection refused`.
+//
+// The fix is expected to use the origin endpoint's port as a fallback whenever
+// CLUSTER SLOTS reports port 0 — the origin is by definition reachable, since
+// that is the address we used to obtain the slot map in the first place.
+func TestNewClusterState_PortZero(t *testing.T) {
+	t.Run("non-loopback origin replaces :0 port with origin port", func(t *testing.T) {
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		// Simulates a TLS-only cluster: CLUSTER SLOTS reports port 0 because
+		// the server is configured with `--port 0 --tls-port 6379`.
+		slots := []ClusterSlot{{
+			Start: 0,
+			End:   5460,
+			Nodes: []ClusterNode{{Addr: "172.30.0.10:0"}},
+		}, {
+			Start: 5461,
+			End:   10922,
+			Nodes: []ClusterNode{{Addr: "172.30.0.11:0"}},
+		}}
+
+		// Origin is the TLS configuration endpoint that returned this slot map.
+		state, err := newClusterState(nodes, slots, "172.30.0.10:6379")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		for i, want := range []string{"172.30.0.10:6379", "172.30.0.11:6379"} {
+			got := state.slots[i].nodes[0].Client.Options().Addr
+			if _, port, _ := net.SplitHostPort(got); port == "0" {
+				t.Fatalf("slot %d Addr = %q: port 0 reached the dial path "+
+					"(see #3726: PubSub dials this verbatim and fails with "+
+					"`connection refused`)", i, got)
+			}
+			if got != want {
+				t.Errorf("slot %d Addr = %q, want %q (origin port should be "+
+					"used as fallback for :0 nodes)", i, got, want)
+			}
+
+			// NodeAddress documents the raw server-reported endpoint
+			// (see options.go: "the exact endpoint string returned by
+			// CLUSTER SLOTS before any resolution or transformation").
+			// The port-0 fix is a transformation, so NodeAddress keeps
+			// the original ":0" value used by maintenance-notification
+			// matching. If the design changes this, update this assertion.
+			wantNodeAddr := []string{"172.30.0.10:0", "172.30.0.11:0"}[i]
+			if got := state.slots[i].nodes[0].Client.NodeAddress(); got != wantNodeAddr {
+				t.Errorf("slot %d NodeAddress = %q, want %q (raw server value)",
+					i, got, wantNodeAddr)
+			}
+		}
+	})
+
+	t.Run("non-zero ports are unchanged", func(t *testing.T) {
+		// Guards against the fix over-rewriting ports for normal clusters.
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		slots := []ClusterSlot{{
+			Nodes: []ClusterNode{{Addr: "172.30.0.10:6380"}},
+		}}
+
+		state, err := newClusterState(nodes, slots, "172.30.0.10:6379")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		if got := state.slots[0].nodes[0].Client.Options().Addr; got != "172.30.0.10:6380" {
+			t.Errorf("Addr = %q, want %q (non-zero ports must be preserved)",
+				got, "172.30.0.10:6380")
+		}
+	})
+
+	t.Run("loopback :0 follows loopback substitution and uses origin port", func(t *testing.T) {
+		// Combines the two transformations newClusterState already does
+		// (loopback substitution + the new port-0 fallback) and asserts
+		// the order is sane: replace the loopback host with the origin
+		// host, then replace the :0 port with the origin port.
+		opt := &ClusterOptions{}
+		opt.init()
+		nodes := newClusterNodes(opt)
+		defer nodes.Close()
+
+		slots := []ClusterSlot{{
+			Nodes: []ClusterNode{{Addr: "127.0.0.1:0"}},
+		}}
+
+		state, err := newClusterState(nodes, slots, "172.30.0.10:6379")
+		if err != nil {
+			t.Fatalf("newClusterState failed: %v", err)
+		}
+
+		if got := state.slots[0].nodes[0].Client.Options().Addr; got != "172.30.0.10:6379" {
+			t.Errorf("Addr = %q, want %q (loopback host + :0 port should both "+
+				"be replaced from the origin)", got, "172.30.0.10:6379")
+		}
+	})
+}
+
 type fixedHash string
 
 func (h fixedHash) Get(string) string {
@@ -657,7 +772,8 @@ var _ = Describe("ClusterClient", func() {
 })
 
 var _ = Describe("isLoopback", func() {
-	DescribeTable("should correctly identify loopback addresses",
+	DescribeTable(
+		"should correctly identify loopback addresses",
 		func(host string, expected bool) {
 			result := isLoopback(host)
 			Expect(result).To(Equal(expected))
@@ -690,7 +806,6 @@ var _ = Describe("isLoopback", func() {
 		Entry("partial docker internal", "docker.internal", false),
 	)
 })
-
 
 // TestOnCloseHooks_RunInRegistrationOrder verifies that hooks registered under
 // distinct ids are all invoked on run() in the order they were registered.
@@ -787,7 +902,6 @@ func TestOnCloseHooks_Unregister(t *testing.T) {
 	}
 }
 
-
 // TestOnCloseHooks_AllRunOnError confirms every hook is invoked even if an
 // earlier one returns an error, and that the first error is returned.
 func TestOnCloseHooks_AllRunOnError(t *testing.T) {
@@ -848,7 +962,6 @@ func TestOnCloseHooks_ConcurrentRegisterSameID(t *testing.T) {
 	}
 }
 
-
 // entraidLikeProvider mimics the exact semantics of
 // github.com/redis/go-redis-entraid's StreamingCredentialsProvider relevant
 // to issue #3772: it deduplicates subscriptions by listener pointer
@@ -858,10 +971,10 @@ func TestOnCloseHooks_ConcurrentRegisterSameID(t *testing.T) {
 // equivalent: the first one called removes the entry, any subsequent call
 // is a safe no-op.
 type entraidLikeProvider struct {
-	mu          sync.Mutex
-	listeners   []auth.CredentialsListener
-	subscribeN  int32
-	unsubCalls  int32
+	mu         sync.Mutex
+	listeners  []auth.CredentialsListener
+	subscribeN int32
+	unsubCalls int32
 }
 
 func (p *entraidLikeProvider) Subscribe(listener auth.CredentialsListener) (auth.Credentials, auth.UnsubscribeFunc, error) {
@@ -967,3 +1080,106 @@ func TestInitConn_EntraidLike_NoLeakAcrossReinits(t *testing.T) {
 		t.Fatalf("listener count after orphaned unsubs = %d, want 0", got)
 	}
 }
+
+// TestPubSubConn_PassesPersistedChannelsToNewConn is a regression test for
+// https://github.com/redis/go-redis/issues/3806.
+//
+// ClusterClient.pubSub() installs a newConn closure that picks the target
+// node by hash slot of channels[0]. Before the fix, PubSub.conn() only
+// passed c.channels (regular SUBSCRIBE) into that closure — sharded
+// SSubscribe channels stored in c.schannels were silently dropped.
+//
+// For an SSubscribe-only PubSub (the common ClusterClient.SSubscribe case)
+// the channel list was empty on reconnect, so the closure fell through to
+// nodes.Random(). The reconnected SSUBSCRIBE went to the wrong shard, the
+// MOVED reply was never read, and the PubSub looked healthy while receiving
+// no messages.
+//
+// This test exercises PubSub.conn() with a stub newConn that records the
+// channel list it receives. The cluster routing layer is not under test
+// here — the regression is whether the channel list reaches the closure.
+func TestPubSubConn_PassesPersistedChannelsToNewConn(t *testing.T) {
+	const (
+		regularCh = "regular-ch"
+		shardCh   = "{shardA}-ch1"
+		freshCh   = "fresh-ch"
+	)
+
+	tests := []struct {
+		name        string
+		channels    map[string]struct{}
+		schannels   map[string]struct{}
+		newChannels []string
+		wantIn      []string // strings that MUST be present in the captured slice
+	}{
+		{
+			name:     "subscribe-only reconnect: existing channels forwarded",
+			channels: map[string]struct{}{regularCh: {}},
+			wantIn:   []string{regularCh},
+		},
+		{
+			// The bug from #3806: SSubscribe-only reconnect dropped
+			// c.schannels and reached newConn with an empty list.
+			name:      "ssubscribe-only reconnect: schannels forwarded (#3806)",
+			schannels: map[string]struct{}{shardCh: {}},
+			wantIn:    []string{shardCh},
+		},
+		{
+			name:        "initial ssubscribe: newChannels forwarded",
+			newChannels: []string{shardCh},
+			wantIn:      []string{shardCh},
+		},
+		{
+			name:      "mixed subscribe + ssubscribe: both kinds forwarded",
+			channels:  map[string]struct{}{regularCh: {}},
+			schannels: map[string]struct{}{shardCh: {}},
+			wantIn:    []string{regularCh, shardCh},
+		},
+		{
+			name:        "newChannels appended after persisted ones",
+			schannels:   map[string]struct{}{shardCh: {}},
+			newChannels: []string{freshCh},
+			wantIn:      []string{shardCh, freshCh},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []string
+			stubErr := errors.New("stub: newConn does not create a real conn")
+
+			ps := &PubSub{
+				opt:       &Options{Addr: "stub:6379"},
+				channels:  tt.channels,
+				schannels: tt.schannels,
+				newConn: func(_ context.Context, _ string, channels []string) (*pool.Conn, error) {
+					captured = append([]string(nil), channels...)
+					return nil, stubErr
+				},
+				closeConn: func(*pool.Conn) error { return nil },
+			}
+
+			ps.mu.Lock()
+			_, err := ps.conn(context.Background(), tt.newChannels)
+			ps.mu.Unlock()
+			if !errors.Is(err, stubErr) {
+				t.Fatalf("conn err = %v, want stub", err)
+			}
+
+			for _, want := range tt.wantIn {
+				found := false
+				for _, got := range captured {
+					if got == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("missing %q in channels passed to newConn (got %v); see #3806",
+						want, captured)
+				}
+			}
+		})
+	}
+}
+

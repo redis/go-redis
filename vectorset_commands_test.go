@@ -20,6 +20,51 @@ func TestVectorFP32_Value(t *testing.T) {
 	}
 }
 
+func TestVectorFloat16_Value(t *testing.T) {
+	v := &VectorFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorBFloat16_Value(t *testing.T) {
+	v := &VectorBFloat16{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"BFLOAT16", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorBFloat16.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorFloat64_Value(t *testing.T) {
+	v := &VectorFloat64{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"FLOAT64", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorFloat64.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorInt8_Value(t *testing.T) {
+	v := &VectorInt8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"INT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorInt8.Value() = %v, want %v", got, want)
+	}
+}
+
+func TestVectorUint8_Value(t *testing.T) {
+	v := &VectorUint8{Val: []byte{1, 2, 3, 4}}
+	got := v.Value()
+	want := []any{"UINT8", []byte{1, 2, 3, 4}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("VectorUint8.Value() = %v, want %v", got, want)
+	}
+}
+
 func TestVectorValues_Value(t *testing.T) {
 	v := &VectorValues{Val: []float64{1.1, 2.2}}
 	got := v.Value()
@@ -126,7 +171,7 @@ func TestVLinks(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinks(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*StringSliceCmd)
+	cmd := m.lastCmd.(*StringSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -136,7 +181,7 @@ func TestVLinksWithScores(t *testing.T) {
 	m := &mockCmdable{}
 	c := m.asCmdable()
 	c.VLinksWithScores(context.Background(), "k", "e")
-	cmd := m.lastCmd.(*VectorScoreSliceCmd)
+	cmd := m.lastCmd.(*VectorScoreSliceSliceCmd)
 	if cmd.args[0] != "vlinks" || cmd.args[1] != "k" || cmd.args[2] != "e" || cmd.args[3] != "withscores" {
 		t.Errorf("unexpected args: %v", cmd.args)
 	}
@@ -771,6 +816,125 @@ func TestVectorScoreSliceCmdReadReply(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rd := proto.NewReader(newMockConn(tt.respData))
 			cmd := NewVectorScoreSliceCmd(context.Background(), "vsim", "key", "withscores")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
+			}
+		})
+	}
+}
+
+// TestStringSliceSliceCmdReadReply covers the readReply parser used by VLINKS,
+// which returns an array of arrays of element names (one inner array per HNSW layer).
+func TestStringSliceSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     [][]string
+		wantErr  bool
+	}{
+		{
+			name:     "two layers with elements",
+			respData: []byte("*2\r\n*2\r\n$2\r\ne1\r\n$2\r\ne2\r\n*1\r\n$2\r\ne3\r\n"),
+			want:     [][]string{{"e1", "e2"}, {"e3"}},
+		},
+		{
+			name:     "empty outer array",
+			respData: []byte("*0\r\n"),
+			want:     [][]string{},
+		},
+		{
+			name:     "outer array with empty inner",
+			respData: []byte("*1\r\n*0\r\n"),
+			want:     [][]string{{}},
+		},
+		{
+			name:     "nil element becomes empty string",
+			respData: []byte("*1\r\n*2\r\n$2\r\ne1\r\n$-1\r\n"),
+			want:     [][]string{{"e1", ""}},
+		},
+		{
+			name:     "malformed outer length",
+			respData: []byte("+notarray\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewStringSliceSliceCmd(context.Background(), "vlinks", "key", "e")
+			err := cmd.readReply(rd)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && !reflect.DeepEqual(cmd.Val(), tt.want) {
+				t.Errorf("Val() = %v, want %v", cmd.Val(), tt.want)
+			}
+		})
+	}
+}
+
+// TestVectorScoreSliceSliceCmdReadReply covers the readReply parser used by
+// VLINKS WITHSCORES, which returns an array of layers; each layer is a map
+// (RESP3) or flat element/score array (RESP2).
+func TestVectorScoreSliceSliceCmdReadReply(t *testing.T) {
+	tests := []struct {
+		name     string
+		respData []byte
+		want     [][]VectorScore
+		wantErr  bool
+	}{
+		{
+			name:     "RESP3 two layers, maps",
+			respData: []byte("*2\r\n%2\r\n+a1\r\n,0.9\r\n+a2\r\n,0.8\r\n%1\r\n+b1\r\n,0.5\r\n"),
+			want: [][]VectorScore{
+				{{Name: "a1", Score: 0.9}, {Name: "a2", Score: 0.8}},
+				{{Name: "b1", Score: 0.5}},
+			},
+		},
+		{
+			name:     "RESP2 two layers, flat arrays",
+			respData: []byte("*2\r\n*4\r\n$2\r\na1\r\n$3\r\n0.9\r\n$2\r\na2\r\n$3\r\n0.8\r\n*2\r\n$2\r\nb1\r\n$3\r\n0.5\r\n"),
+			want: [][]VectorScore{
+				{{Name: "a1", Score: 0.9}, {Name: "a2", Score: 0.8}},
+				{{Name: "b1", Score: 0.5}},
+			},
+		},
+		{
+			name:     "RESP3 empty layer (empty map)",
+			respData: []byte("*1\r\n%0\r\n"),
+			want:     [][]VectorScore{{}},
+		},
+		{
+			name:     "RESP2 empty layer (empty array)",
+			respData: []byte("*1\r\n*0\r\n"),
+			want:     [][]VectorScore{{}},
+		},
+		{
+			name:     "empty outer",
+			respData: []byte("*0\r\n"),
+			want:     [][]VectorScore{},
+		},
+		{
+			name:     "RESP2 odd inner array returns error",
+			respData: []byte("*1\r\n*3\r\n$2\r\na1\r\n$3\r\n0.9\r\n$2\r\na2\r\n"),
+			wantErr:  true,
+		},
+		{
+			name:     "malformed outer length",
+			respData: []byte("+notarray\r\n"),
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rd := proto.NewReader(newMockConn(tt.respData))
+			cmd := NewVectorScoreSliceSliceCmd(context.Background(), "vlinks", "key", "e", "withscores")
 			err := cmd.readReply(rd)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("readReply() error = %v, wantErr %v", err, tt.wantErr)

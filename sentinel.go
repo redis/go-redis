@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/url"
 	"slices"
@@ -16,7 +17,6 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -160,6 +160,9 @@ type FailoverOptions struct {
 	// Only applies to failover cluster clients. Default is 15 seconds.
 	FailingTimeoutSeconds int
 
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
 	UnstableResp3 bool
 
 	// PushNotificationProcessor is the processor for handling push notifications.
@@ -951,6 +954,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				errCh <- err
 				return
 			}
+
 			once.Do(func() {
 				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
 				// Push working sentinel to the top
@@ -959,6 +963,10 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
 				cancel()
 			})
+
+			if sentinelCli != c.sentinel {
+				_ = sentinelCli.Close()
+			}
 		}(i, sentinelAddr)
 	}
 
@@ -1050,9 +1058,9 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	}
 
 	if sentinelReachable {
-		return []string{}, nil
+		return nil, nil
 	}
-	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
+	return nil, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) (string, error) {
