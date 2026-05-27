@@ -21,7 +21,9 @@ func loadTLSConfig(certDir string) (*tls.Config, error) {
 	}
 
 	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, os.ErrInvalid
+	}
 
 	// Load client cert and key
 	cert, err := tls.LoadX509KeyPair(
