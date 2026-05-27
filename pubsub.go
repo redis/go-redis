@@ -87,7 +87,16 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 		c.opt.Addr = internal.RedisNull
 	}
 
+	// Include c.schannels so reconnect-time routing of an SSubscribe-only
+	// PubSub picks the slot owner (channels[0] in ClusterClient.pubSub()'s
+	// newConn closure) instead of a random node.
+	// See https://github.com/redis/go-redis/issues/3806.
+	// c.patterns is intentionally NOT included: patterns are not slot-
+	// addressable, and adding them would force PSubscribe-only PubSubs to
+	// pin to a single node based on pattern-string hash, regressing the
+	// existing random-node behaviour.
 	channels := slices.Collect(maps.Keys(c.channels))
+	channels = append(channels, slices.Collect(maps.Keys(c.schannels))...)
 	channels = append(channels, newChannels...)
 
 	cn, err := c.newConn(ctx, c.opt.Addr, channels)
