@@ -88,6 +88,10 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	}
 
 	channels := slices.Collect(maps.Keys(c.channels))
+	// Include sharded subscriptions so cluster newConn can resolve the
+	// correct slot owner; ClusterClient.pubSub falls back to a random node
+	// when channels is empty, which silently drops SSUBSCRIBE on reconnect.
+	channels = append(channels, slices.Collect(maps.Keys(c.schannels))...)
 	channels = append(channels, newChannels...)
 
 	cn, err := c.newConn(ctx, c.opt.Addr, channels)

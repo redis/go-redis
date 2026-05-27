@@ -672,6 +672,67 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
+		It("should re-subscribe sharded PubSub to the slot owner after reconnect", func() {
+			const channel = "shard-reconnect-chan"
+
+			pubsub := client.SSubscribe(ctx, channel)
+			defer pubsub.Close()
+
+			expectDelivery := func() error {
+				n, err := client.SPublish(ctx, channel, "hello").Result()
+				if err != nil {
+					return err
+				}
+				if n == 0 {
+					// Nobody is subscribed on the slot owner — the
+					// PubSub reconnected to the wrong node.
+					return fmt.Errorf("SPUBLISH reached 0 subscribers")
+				}
+				msg, err := pubsub.ReceiveTimeout(ctx, time.Second)
+				if err != nil {
+					return err
+				}
+				if _, ok := msg.(*redis.Message); !ok {
+					return fmt.Errorf("got %T, wanted *redis.Message", msg)
+				}
+				return nil
+			}
+
+			// Sanity-check the initial subscription before disrupting it.
+			Eventually(expectDelivery, 30*time.Second).ShouldNot(HaveOccurred())
+
+			// Repeatedly tear down the server side of the PubSub connection
+			// and verify the client re-subscribes to the correct shard.
+			// Each cycle has a 5/6 chance of exposing a wrong-node
+			// reconnect on a 3+3 node test cluster, so 8 iterations make a
+			// false pass vanishingly unlikely.
+			for i := 0; i < 8; i++ {
+				// Kill the PubSub connection on every node so we don't have
+				// to hunt for the slot owner. CLIENT KILL TYPE pubsub only
+				// touches connections in subscribe mode, so the regular
+				// cluster connections used by `client` are unaffected.
+				for _, master := range cluster.masters() {
+					_, _ = master.ClientKillByFilter(ctx, "TYPE", "pubsub").Result()
+				}
+				for _, slave := range cluster.slaves() {
+					_, _ = slave.ClientKillByFilter(ctx, "TYPE", "pubsub").Result()
+				}
+
+				// Drive the PubSub to notice the dead socket and reconnect.
+				Eventually(func() error {
+					return pubsub.Ping(ctx)
+				}, 10*time.Second).ShouldNot(HaveOccurred())
+
+				// Without the fix the new conn went to nodes.Random(); the
+				// SSUBSCRIBE in resubscribe() landed on the wrong shard
+				// (and the resulting -MOVED reply is never read, so the
+				// failure is silent). SPUBLISH on the slot owner therefore
+				// reaches no subscribers.
+				Eventually(expectDelivery, 5*time.Second).ShouldNot(HaveOccurred(),
+					"sharded PubSub did not survive reconnect cycle %d", i)
+			}
+		})
+
 		It("should support PubSub.Ping without channels", func() {
 			pubsub := client.Subscribe(ctx)
 			defer pubsub.Close()
