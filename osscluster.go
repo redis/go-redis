@@ -534,7 +534,7 @@ func (n *clusterNode) updateLatency() {
 	if successes == 0 {
 		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
 		// least priority.
-		latency = float64((maximumNodeLatency) / time.Microsecond)
+		latency = float64(maximumNodeLatency / time.Microsecond)
 	} else {
 		latency = float64(dur) / float64(successes)
 	}
@@ -820,7 +820,7 @@ func newClusterState(
 		createdAt:  time.Now(),
 	}
 
-	originHost, _, _ := net.SplitHostPort(origin)
+	originHost, originPort, _ := net.SplitHostPort(origin)
 	isLoopbackOrigin := isLoopback(originHost)
 
 	for _, slot := range slots {
@@ -832,6 +832,11 @@ func newClusterState(
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
+			// TLS-only clusters (`--port 0 --tls-port 6379`) report port 0
+			// in CLUSTER SLOTS. Fall back to the origin port — by definition
+			// reachable, since it is the port that returned this slot map.
+			// See https://github.com/redis/go-redis/issues/3726.
+			addr = replaceZeroPort(addr, originPort)
 
 			node, err := c.nodes.GetOrCreateWithNodeAddress(addr, nodeAddress)
 			if err != nil {
@@ -883,6 +888,21 @@ func replaceLoopbackHost(nodeAddr, originHost string) string {
 
 	// Use origin host which is not loopback and node port.
 	return net.JoinHostPort(originHost, nodePort)
+}
+
+// replaceZeroPort substitutes originPort for a node port of "0", which is
+// what CLUSTER SLOTS reports for TLS-only clusters started with
+// `--port 0 --tls-port <port>`. Non-zero ports and addresses without a
+// recoverable origin port are returned unchanged.
+func replaceZeroPort(nodeAddr, originPort string) string {
+	if originPort == "" || originPort == "0" {
+		return nodeAddr
+	}
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil || nodePort != "0" {
+		return nodeAddr
+	}
+	return net.JoinHostPort(nodeHost, originPort)
 }
 
 // isLoopback returns true if the host is a loopback address.
@@ -948,7 +968,7 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var allNodesFailing = true
+	allNodesFailing := true
 	var (
 		closestNonFailingNode *clusterNode
 		closestNode           *clusterNode
