@@ -71,22 +71,42 @@ var _ = Describe("UniversalClient", Serial, func() {
 	})
 
 	It("should connect to failover servers on slaves when readonly Options is ok", Label("NonRedisEnterprise"), func() {
-		client = redis.NewUniversalClient(&redis.UniversalOptions{
-			MasterName: sentinelName,
-			Addrs:      sentinelAddrs,
-			ReadOnly:   true,
-		})
-		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+		// FailoverClient(ReadOnly:true) routes via sentinelFailover.RandomReplicaAddr,
+		// which silently falls back to the master when Sentinel reports
+		// zero usable replicas. Post-failover, replicas often linger
+		// with the "disconnected" flag for several seconds, and the
+		// "should facilitate failover" specs in sentinel_test.go run
+		// outside any Ordered block — random spec ordering can put this
+		// test right after any of them and observe the fallback.
+		//
+		// Retry (recreate the client each round so RandomReplicaAddr
+		// is re-evaluated) until it actually picks a replica. Bounded
+		// at 30s so a genuinely broken setup still fails the test.
+		Eventually(func() string {
+			if client != nil {
+				_ = client.Close()
+			}
+			client = redis.NewUniversalClient(&redis.UniversalOptions{
+				MasterName: sentinelName,
+				Addrs:      sentinelAddrs,
+				ReadOnly:   true,
+			})
+			if err := client.Ping(ctx).Err(); err != nil {
+				return ""
+			}
+			role, err := client.Do(ctx, "ROLE").Result()
+			if err != nil {
+				return ""
+			}
+			roleSlice, ok := role.([]interface{})
+			if !ok || len(roleSlice) == 0 {
+				return ""
+			}
+			firstRole, _ := roleSlice[0].(string)
+			return firstRole
+		}, "30s", "500ms").Should(Equal("slave"))
 
-		roleCmd := client.Do(ctx, "ROLE")
-		role, err := roleCmd.Result()
-		Expect(err).NotTo(HaveOccurred())
-
-		roleSlice, ok := role.([]interface{})
-		Expect(ok).To(BeTrue())
-		Expect(roleSlice[0]).To(Equal("slave"))
-
-		err = client.Set(ctx, "somekey", "somevalue", 0).Err()
+		err := client.Set(ctx, "somekey", "somevalue", 0).Err()
 		Expect(err).To(HaveOccurred())
 	})
 
