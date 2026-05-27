@@ -1,6 +1,8 @@
 package redis_test
 
 import (
+	"fmt"
+
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 
@@ -71,18 +73,35 @@ var _ = Describe("UniversalClient", Serial, func() {
 	})
 
 	It("should connect to failover servers on slaves when readonly Options is ok", Label("NonRedisEnterprise"), func() {
-		// FailoverClient(ReadOnly:true) routes via sentinelFailover.RandomReplicaAddr,
-		// which silently falls back to the master when Sentinel reports
-		// zero usable replicas. Post-failover, replicas often linger
-		// with the "disconnected" flag for several seconds, and the
-		// "should facilitate failover" specs in sentinel_test.go run
-		// outside any Ordered block — random spec ordering can put this
-		// test right after any of them and observe the fallback.
+		// Two failure modes combine to make this spec flaky under random
+		// spec ordering when any prior spec triggered a failover:
 		//
-		// Retry (recreate the client each round so RandomReplicaAddr
-		// is re-evaluated) until it actually picks a replica. Bounded
-		// at 30s so a genuinely broken setup still fails the test.
-		Eventually(func() string {
+		//  1. FailoverClient(ReadOnly:true) routes via RandomReplicaAddr,
+		//     which silently falls back to the master when Sentinel
+		//     reports zero usable replicas (post-failover replicas often
+		//     linger as "disconnected" for several seconds). Observed
+		//     symptom: ROLE returns "master".
+		//
+		//  2. The SET assertion is similarly bypassed by go-redis's
+		//     retry-on-READONLY logic: SET against a replica returns
+		//     READONLY, shouldRetry returns true, the conn is recycled,
+		//     and the next dial goes through masterReplicaDialer again
+		//     — which can fall back to master via the same path as (1).
+		//     The SET then succeeds against the master. Observed symptom:
+		//     ROLE returns "slave" but SET unexpectedly succeeds.
+		//
+		// Defenses:
+		//
+		//  - Disable client retries (MaxRetries: -1) so a READONLY reply
+		//    surfaces as the first/only SET error instead of triggering
+		//    a fresh dial that may land on the master.
+		//
+		//  - Run the full assertion (connect → ROLE → SET) atomically
+		//    inside a bounded Eventually. If any step lands on the
+		//    master (because RandomReplicaAddr fell back), close and
+		//    retry with a fresh client so RandomReplicaAddr is
+		//    re-evaluated against current Sentinel state.
+		Eventually(func() error {
 			if client != nil {
 				_ = client.Close()
 			}
@@ -90,24 +109,28 @@ var _ = Describe("UniversalClient", Serial, func() {
 				MasterName: sentinelName,
 				Addrs:      sentinelAddrs,
 				ReadOnly:   true,
+				MaxRetries: -1,
 			})
 			if err := client.Ping(ctx).Err(); err != nil {
-				return ""
+				return fmt.Errorf("ping: %w", err)
 			}
 			role, err := client.Do(ctx, "ROLE").Result()
 			if err != nil {
-				return ""
+				return fmt.Errorf("ROLE: %w", err)
 			}
 			roleSlice, ok := role.([]interface{})
 			if !ok || len(roleSlice) == 0 {
-				return ""
+				return fmt.Errorf("ROLE returned unexpected shape: %v", role)
 			}
 			firstRole, _ := roleSlice[0].(string)
-			return firstRole
-		}, "30s", "500ms").Should(Equal("slave"))
-
-		err := client.Set(ctx, "somekey", "somevalue", 0).Err()
-		Expect(err).To(HaveOccurred())
+			if firstRole != "slave" {
+				return fmt.Errorf("ROLE = %q, want %q (RandomReplicaAddr fell back to master)", firstRole, "slave")
+			}
+			if setErr := client.Set(ctx, "somekey", "somevalue", 0).Err(); setErr == nil {
+				return fmt.Errorf("SET on replica unexpectedly succeeded (likely landed on master)")
+			}
+			return nil
+		}, "30s", "500ms").Should(Succeed())
 	})
 
 	It("should connect to clusters if IsClusterMode is set even if only a single address is provided", Label("NonRedisEnterprise"), func() {
