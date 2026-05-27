@@ -954,6 +954,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				errCh <- err
 				return
 			}
+
 			once.Do(func() {
 				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
 				// Push working sentinel to the top
@@ -962,6 +963,10 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
 				cancel()
 			})
+
+			if sentinelCli != c.sentinel {
+				_ = sentinelCli.Close()
+			}
 		}(i, sentinelAddr)
 	}
 
@@ -1045,9 +1050,9 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	}
 
 	if sentinelReachable {
-		return []string{}, nil
+		return nil, nil
 	}
-	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
+	return nil, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) (string, error) {
