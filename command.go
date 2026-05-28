@@ -880,6 +880,83 @@ func (cmd *RawWriteToCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// ZeroCopyStringCmd reads a bulk string response directly into a user-provided
+// buffer, avoiding intermediate allocations. The RESP header is parsed through
+// the buffered reader, then bulk data is read straight into the caller's buffer
+// via proto.Reader.ReadStringInto — for values larger than the bufio buffer,
+// this is effectively zero-copy from the socket to the user buffer.
+//
+// The buffer must be sized to fit the value; if it is too small, an error is
+// returned and no data is consumed beyond the header line.
+type ZeroCopyStringCmd struct {
+	baseCmd
+	buf []byte // user-provided buffer to read into
+	n   int    // number of bytes read into buf
+}
+
+var _ Cmder = (*ZeroCopyStringCmd)(nil)
+
+func NewZeroCopyStringCmd(ctx context.Context, buf []byte, args ...interface{}) *ZeroCopyStringCmd {
+	return &ZeroCopyStringCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeString,
+		},
+		buf: buf,
+	}
+}
+
+func (cmd *ZeroCopyStringCmd) SetVal(n int) {
+	cmd.n = n
+}
+
+func (cmd *ZeroCopyStringCmd) Val() int {
+	return cmd.n
+}
+
+// Result returns the number of bytes read and any error.
+func (cmd *ZeroCopyStringCmd) Result() (int, error) {
+	return cmd.n, cmd.err
+}
+
+// Bytes returns the slice of the user-provided buffer containing the read data.
+func (cmd *ZeroCopyStringCmd) Bytes() []byte {
+	return cmd.buf[:cmd.n]
+}
+
+func (cmd *ZeroCopyStringCmd) String() string {
+	return cmdString(cmd, cmd.n)
+}
+
+func (cmd *ZeroCopyStringCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadStringInto(cmd.buf)
+	if err != nil {
+		return err
+	}
+	cmd.n = n
+	return nil
+}
+
+// NoRetry returns true because the response is written directly into the
+// caller's buffer. A retry could leave partial data from a failed attempt in
+// the buffer, so the caller must handle retries explicitly if needed.
+func (cmd *ZeroCopyStringCmd) NoRetry() bool {
+	return true
+}
+
+func (cmd *ZeroCopyStringCmd) Clone() Cmder {
+	newBuf := make([]byte, len(cmd.buf))
+	copy(newBuf, cmd.buf[:cmd.n])
+	return &ZeroCopyStringCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		buf:     newBuf,
+		n:       cmd.n,
+	}
+}
+
+//------------------------------------------------------------------------------
+
 type SliceCmd struct {
 	baseCmd
 

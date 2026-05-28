@@ -100,6 +100,64 @@ func BenchmarkReader_ReadFloat(b *testing.B) {
 	}
 }
 
+// benchmarkReadStringInto and benchmarkReadString compare the allocation
+// behaviour of reading a bulk string into a pre-allocated buffer versus the
+// standard ReadString call that returns a fresh string each time.
+func benchmarkReadStringInto(b *testing.B, payloadSize int) {
+	payload := bytes.Repeat([]byte{'a'}, payloadSize)
+	header := []byte(fmt.Sprintf("$%d\r\n", payloadSize))
+	frame := make([]byte, 0, len(header)+payloadSize+2)
+	frame = append(frame, header...)
+	frame = append(frame, payload...)
+	frame = append(frame, '\r', '\n')
+
+	src := bytes.Repeat(frame, b.N)
+	p := proto.NewReader(bytes.NewReader(src))
+	buf := make([]byte, payloadSize)
+
+	b.SetBytes(int64(payloadSize))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := p.ReadStringInto(buf); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchmarkReadString(b *testing.B, payloadSize int) {
+	payload := bytes.Repeat([]byte{'a'}, payloadSize)
+	header := []byte(fmt.Sprintf("$%d\r\n", payloadSize))
+	frame := make([]byte, 0, len(header)+payloadSize+2)
+	frame = append(frame, header...)
+	frame = append(frame, payload...)
+	frame = append(frame, '\r', '\n')
+
+	src := bytes.Repeat(frame, b.N)
+	p := proto.NewReader(bytes.NewReader(src))
+
+	b.SetBytes(int64(payloadSize))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := p.ReadString(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkReader_ReadStringInto_64B(b *testing.B)   { benchmarkReadStringInto(b, 64) }
+func BenchmarkReader_ReadStringInto_4KiB(b *testing.B)  { benchmarkReadStringInto(b, 4*1024) }
+func BenchmarkReader_ReadStringInto_64KiB(b *testing.B) { benchmarkReadStringInto(b, 64*1024) }
+func BenchmarkReader_ReadStringInto_1MiB(b *testing.B)  { benchmarkReadStringInto(b, 1024*1024) }
+
+func BenchmarkReader_ReadString_64B(b *testing.B)   { benchmarkReadString(b, 64) }
+func BenchmarkReader_ReadString_4KiB(b *testing.B)  { benchmarkReadString(b, 4*1024) }
+func BenchmarkReader_ReadString_64KiB(b *testing.B) { benchmarkReadString(b, 64*1024) }
+func BenchmarkReader_ReadString_1MiB(b *testing.B)  { benchmarkReadString(b, 1024*1024) }
+
 func benchmarkParseReply(b *testing.B, reply string, wanterr bool) {
 	buf := new(bytes.Buffer)
 	for i := 0; i < b.N; i++ {
@@ -113,5 +171,128 @@ func benchmarkParseReply(b *testing.B, reply string, wanterr bool) {
 		if !wanterr && err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestReader_ReadStringInto_BulkString(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+	buf := make([]byte, 16)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("n = %d, want 5", n)
+	}
+	if string(buf[:n]) != "hello" {
+		t.Fatalf("got %q, want %q", buf[:n], "hello")
+	}
+}
+
+func TestReader_ReadStringInto_Status(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("+OK\r\n")))
+	buf := make([]byte, 16)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(buf[:n]) != "OK" {
+		t.Fatalf("got %q, want %q", buf[:n], "OK")
+	}
+}
+
+func TestReader_ReadStringInto_Int(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte(":42\r\n")))
+	buf := make([]byte, 16)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(buf[:n]) != "42" {
+		t.Fatalf("got %q, want %q", buf[:n], "42")
+	}
+}
+
+func TestReader_ReadStringInto_Float(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte(",3.14\r\n")))
+	buf := make([]byte, 16)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(buf[:n]) != "3.14" {
+		t.Fatalf("got %q, want %q", buf[:n], "3.14")
+	}
+}
+
+func TestReader_ReadStringInto_Verbatim(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("=9\r\ntxt:hello\r\n")))
+	buf := make([]byte, 16)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(buf[:n]) != "hello" {
+		t.Fatalf("got %q, want %q", buf[:n], "hello")
+	}
+}
+
+func TestReader_ReadStringInto_Nil(t *testing.T) {
+	// RESP3 nil
+	r := proto.NewReader(bytes.NewReader([]byte("_\r\n")))
+	buf := make([]byte, 16)
+	if _, err := r.ReadStringInto(buf); err != proto.Nil {
+		t.Fatalf("got err=%v, want proto.Nil", err)
+	}
+	// RESP2 nil bulk
+	r = proto.NewReader(bytes.NewReader([]byte("$-1\r\n")))
+	if _, err := r.ReadStringInto(buf); err != proto.Nil {
+		t.Fatalf("got err=%v, want proto.Nil for $-1", err)
+	}
+}
+
+func TestReader_ReadStringInto_Error(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("-ERR something bad\r\n")))
+	buf := make([]byte, 16)
+	_, err := r.ReadStringInto(buf)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err == proto.Nil {
+		t.Fatalf("got proto.Nil, want ERR")
+	}
+}
+
+func TestReader_ReadStringInto_BufferTooSmall(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+	buf := make([]byte, 3)
+	_, err := r.ReadStringInto(buf)
+	if err == nil {
+		t.Fatal("expected buffer-too-small error, got nil")
+	}
+}
+
+func TestReader_ReadStringInto_Large(t *testing.T) {
+	// Payload deliberately larger than the default bufio buffer (32 KiB)
+	// so we exercise the path where bufio.Reader drains its internal
+	// buffer first and then reads remaining bytes directly into buf.
+	const size = proto.DefaultBufferSize * 4
+	payload := bytes.Repeat([]byte{'a'}, size)
+	src := make([]byte, 0, size+32)
+	src = append(src, []byte(fmt.Sprintf("$%d\r\n", size))...)
+	src = append(src, payload...)
+	src = append(src, '\r', '\n')
+
+	r := proto.NewReader(bytes.NewReader(src))
+	buf := make([]byte, size)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if n != size {
+		t.Fatalf("n = %d, want %d", n, size)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatal("payload mismatch")
 	}
 }

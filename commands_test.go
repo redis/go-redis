@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -1792,6 +1793,56 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("0"))
+		})
+
+		It("should GetToBuffer", func() {
+			// Missing key returns redis.Nil.
+			buf := make([]byte, 64)
+			miss := client.GetToBuffer(ctx, "missing", buf)
+			Expect(miss.Err()).To(Equal(redis.Nil))
+			Expect(miss.Val()).To(Equal(0))
+
+			Expect(client.Set(ctx, "key", "hello", 0).Err()).NotTo(HaveOccurred())
+
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(5))
+			Expect(get.Bytes()).To(Equal([]byte("hello")))
+		})
+
+		It("should GetToBuffer with buffer too small", func() {
+			Expect(client.Set(ctx, "key", "hello world", 0).Err()).NotTo(HaveOccurred())
+
+			small := make([]byte, 4)
+			get := client.GetToBuffer(ctx, "key", small)
+			Expect(get.Err()).To(HaveOccurred())
+			Expect(get.Err().Error()).To(ContainSubstring("buffer too small"))
+		})
+
+		It("should SetFromBuffer and GetToBuffer round-trip", func() {
+			payload := bytes.Repeat([]byte{'x'}, 1024)
+			set := client.SetFromBuffer(ctx, "key", payload)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
+		})
+
+		It("should SetFromBuffer and GetToBuffer with payload > read buffer", func() {
+			// Default read buffer is 32 KiB; pick something larger so the
+			// payload spills past the bufio buffer on the read path.
+			payload := bytes.Repeat([]byte{'z'}, 128*1024)
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
 		})
 
 		It("should GetEX", func() {

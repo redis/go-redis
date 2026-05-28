@@ -464,6 +464,77 @@ func (r *Reader) ReadFloat() (float64, error) {
 	return 0, fmt.Errorf("redis: can't parse float reply: %.100q", line)
 }
 
+// ReadStringInto reads a string reply directly into the provided buffer,
+// avoiding intermediate allocations. It returns the number of bytes written
+// to buf. The caller must ensure buf is large enough to hold the response.
+//
+// The RESP header is parsed through the buffered reader (so push
+// notifications, errors, nil, etc. are processed normally), then bulk string
+// data is read directly into buf via the bufio.Reader. For values larger
+// than the bufio buffer, bufio.Reader drains any buffered data first and
+// then reads remaining bytes directly from the underlying socket — achieving
+// near zero-copy for the payload.
+//
+// If the value does not fit in buf, ErrBufferTooSmall is returned and no
+// bytes are consumed from the reader beyond the header line.
+func (r *Reader) ReadStringInto(buf []byte) (int, error) {
+	line, err := r.ReadLine()
+	if err != nil {
+		return 0, err
+	}
+
+	switch line[0] {
+	case RespStatus:
+		// Simple string — data is in the line itself.
+		s := line[1:]
+		if len(s) > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", len(s), len(buf))
+		}
+		return copy(buf, s), nil
+
+	case RespString, RespVerbatim:
+		n, err := replyLen(line)
+		if err != nil {
+			return 0, err
+		}
+		if line[0] == RespVerbatim {
+			// Verbatim strings are prefixed with a 4-byte format tag "txt:".
+			if n < 4 {
+				return 0, fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
+			}
+		}
+		if n > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", n, len(buf))
+		}
+		// Read data directly into the user's buffer through the bufio.Reader.
+		// bufio.Reader.Read first drains its internal buffer, then for
+		// remaining data larger than its buffer size reads directly from the
+		// underlying reader (socket) — effectively zero-copy.
+		if _, err := io.ReadFull(r.rd, buf[:n]); err != nil {
+			return 0, err
+		}
+		// Discard trailing \r\n.
+		if _, err := r.rd.Discard(2); err != nil {
+			return 0, err
+		}
+		if line[0] == RespVerbatim {
+			// Strip the "txt:" prefix from the returned bytes.
+			copy(buf, buf[4:n])
+			return n - 4, nil
+		}
+		return n, nil
+
+	case RespInt, RespFloat:
+		s := line[1:]
+		if len(s) > len(buf) {
+			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", len(s), len(buf))
+		}
+		return copy(buf, s), nil
+	}
+
+	return 0, fmt.Errorf("redis: can't parse reply=%.100q reading string into buffer", line)
+}
+
 func (r *Reader) ReadString() (string, error) {
 	line, err := r.ReadLine()
 	if err != nil {
