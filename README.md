@@ -30,8 +30,11 @@ Please do refer to the documentation and the tests if you experience any issues.
 
 ### Array data type (Redis 8.8+)
 
-Starting with Redis 8.8, go-redis supports the new array data type via the `AR*` command family
-(`ARAPPEND`, `ARGET`, `ARSET`, `ARLEN`, `ARRANGE`, etc.). See `array_commands.go` for the full surface.
+Starting with Redis 8.8, go-redis exposes the new array data type via the `AR*` command family
+(`ARSET`, `ARGET`, `ARGETRANGE`, `ARMSET`, `ARMGET`, `ARINSERT`, `ARDEL`, `ARDELRANGE`,
+`ARLEN`, `ARCOUNT`, `ARNEXT`, `ARSEEK`, `ARSCAN`, `ARGREP`, `ARRING`, `ARLASTITEMS`,
+`ARINFO`/`ARINFOFULL`, and the `AROP*` reducers). See `array_commands.go` for the full
+surface. The API is experimental and may change in a future release.
 
 ## How do I Redis?
 
@@ -54,6 +57,7 @@ Starting with Redis 8.8, go-redis supports the new array data type via the `AR*`
 - [Chat](https://discord.gg/W4txy5AeKM)
 - [Reference](https://pkg.go.dev/github.com/redis/go-redis/v9)
 - [Examples](https://pkg.go.dev/github.com/redis/go-redis/v9#pkg-examples)
+- [Release notes](./RELEASE-NOTES.md) ([GitHub Releases](https://github.com/redis/go-redis/releases))
 
 ## old documentation
 
@@ -361,18 +365,17 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
-#### Unstable RESP3 Structures for RediSearch Commands
-When integrating Redis with application functionalities using RESP3, it's important to note that some response structures aren't final yet. This is especially true for more complex structures like search and query results. We recommend using RESP2 when using the search and query capabilities, but we plan to stabilize the RESP3-based API-s in the coming versions. You can find more guidance in the upcoming release notes.
+#### RESP3 for RediSearch Commands (`UnstableResp3` is deprecated)
+As of v9.20, `FT.SEARCH`, `FT.AGGREGATE`, `FT.INFO`, `FT.SPELLCHECK`, and `FT.SYNDUMP`
+parse RESP3 (map) responses into the same typed result objects as RESP2. **No flag
+is required — `Val()` / `Result()` work uniformly on both protocols.**
 
-To enable unstable RESP3, set the option in your client configuration:
+The legacy `UnstableResp3` option is now a **no-op** and is retained on every
+options struct only for backwards compatibility. It will be removed in a future
+release; new code should not set it.
 
-```go
-redis.NewClient(&redis.Options{
-			UnstableResp3: true,
-		})
-```
-**Note:** When UnstableResp3 mode is enabled, it's necessary to use RawResult() and RawVal() to retrieve a raw data.
-          Since, raw response is the only option for unstable search commands Val() and Result() calls wouldn't have any affect on them:
+`RawResult()` / `RawVal()` continue to work for callers that prefer the raw RESP
+payload directly:
 
 ```go
 res1, err := client.FTSearchWithArgs(ctx, "txt", "foo bar", &redis.FTSearchOptions{}).RawResult()
