@@ -7783,8 +7783,8 @@ var _ = Describe("Commands", func() {
 			// ID is set but should be ignored because IDs is non-empty.
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream", "stream3"},
-				ID:     "$",
-				IDs:    []string{"2-0", "0"},
+				ID:      "$",
+				IDs:     []string{"2-0", "0"},
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]redis.XStream{
@@ -7801,6 +7801,17 @@ var _ = Describe("Commands", func() {
 					},
 				},
 			}))
+		})
+
+		It("should XRead fail client-side when IDs length mismatches Streams length", func() {
+			// IDs is non-empty but does not match Streams length; XRead must
+			// short-circuit with a client-side error instead of dispatching
+			// a malformed command to the server.
+			cmd := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "stream2"},
+				IDs:     []string{"0"},
+			})
+			Expect(cmd.Err()).To(MatchError(ContainSubstring("IDs length must match Streams length")))
 		})
 
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
