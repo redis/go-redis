@@ -1869,6 +1869,32 @@ var _ = Describe("Commands", func() {
 				"round-tripped 10 MiB payload does not match")
 		})
 
+		It("should reject cloned GetToBuffer with a clear error", func() {
+			// A cloned ZeroCopyStringCmd has no usable destination
+			// buffer — see the godoc on Clone. Processing the clone
+			// must fail with an explicit error rather than silently
+			// writing the reply somewhere the caller can't see, and
+			// the underlying connection must remain usable for the
+			// follow-up GetToBuffer below.
+			Expect(client.Set(ctx, "key", "value", 0).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, 16)
+			orig := client.GetToBuffer(ctx, "key", buf)
+			Expect(orig.Err()).NotTo(HaveOccurred())
+			Expect(string(orig.Bytes())).To(Equal("value"))
+
+			clone := orig.Clone()
+			Expect(client.Process(ctx, clone)).To(MatchError(ContainSubstring("cannot be cloned")))
+
+			// Follow-up call on the same client must work: the clone's
+			// readReply drained the network reply so the connection
+			// stays aligned.
+			buf2 := make([]byte, 16)
+			again := client.GetToBuffer(ctx, "key", buf2)
+			Expect(again.Err()).NotTo(HaveOccurred())
+			Expect(string(again.Bytes())).To(Equal("value"))
+		})
+
 		It("should GetEX", func() {
 			set := client.Set(ctx, "key", "value", 100*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())

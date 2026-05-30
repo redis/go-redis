@@ -886,12 +886,14 @@ func (cmd *RawWriteToCmd) Clone() Cmder {
 // via proto.Reader.ReadStringInto — for values larger than the bufio buffer,
 // this is effectively zero-copy from the socket to the user buffer.
 //
-// The buffer must be sized to fit the value; if it is too small, an error is
-// returned and no data is consumed beyond the header line.
+// The buffer must be sized to fit the value; if it is too small an error is
+// returned and the payload plus trailing CRLF are drained from the reader so
+// the connection stays aligned for subsequent commands.
 type ZeroCopyStringCmd struct {
 	baseCmd
-	buf []byte // user-provided buffer to read into
-	n   int    // number of bytes read into buf
+	buf    []byte // user-provided buffer to read into
+	n      int    // number of bytes read into buf
+	cloned bool   // set by Clone(); causes readReply to drain + error
 }
 
 var _ Cmder = (*ZeroCopyStringCmd)(nil)
@@ -930,6 +932,20 @@ func (cmd *ZeroCopyStringCmd) String() string {
 }
 
 func (cmd *ZeroCopyStringCmd) readReply(rd *proto.Reader) error {
+	// Reset the byte count before reading so a previous successful run
+	// can't leak its data through Bytes() if this call errors out before
+	// updating cmd.n.
+	cmd.n = 0
+	if cmd.cloned {
+		// A cloned ZeroCopyStringCmd has no usable destination buffer
+		// (see Clone for the rationale). Drain the network reply so the
+		// connection stays aligned for the next command, then surface a
+		// clear error rather than silently producing a wrong result.
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+		return fmt.Errorf("redis: ZeroCopyStringCmd cannot be cloned (cmd writes into caller-owned memory)")
+	}
 	n, err := rd.ReadStringInto(cmd.buf)
 	if err != nil {
 		return err
@@ -945,28 +961,29 @@ func (cmd *ZeroCopyStringCmd) NoRetry() bool {
 	return true
 }
 
-// Clone returns a deep copy of cmd whose buf is a freshly allocated slice
-// the same length as the original. The clone does NOT share memory with
-// the caller's buffer — a subsequent ReadStringInto on the clone writes
-// into the clone's own buf, not the buffer the caller handed to
-// GetToBuffer. Whoever invoked the clone is responsible for reading the
-// result through cmd.Bytes() on the clone, not on the original.
+// Clone returns a clone that is intentionally non-functional. Cloning a
+// ZeroCopyStringCmd has no well-defined semantics: the cmd writes into
+// caller-owned memory (the buf passed to GetToBuffer), and a clone can
+// neither safely share that buf (concurrent writes from sibling clones
+// would race, last-writer wins) nor allocate its own buf (the result
+// would be invisible to whoever asked for the original cmd's reply).
 //
-// In practice this method is unreachable through normal client flows:
+// The Cmder interface requires Clone, so we return a clone marked so
+// that its readReply drains the network reply (keeping the connection
+// aligned) and fails the cmd with a clear error. Whoever processes the
+// clone gets an explicit error instead of silently-wrong bytes.
+//
+// In practice this path is unreachable through normal client flows:
 // Clone is only called from cluster fan-out routing
 // (osscluster_router.go) for multi-shard commands like DBSIZE / KEYS /
 // FLUSHDB, and ZeroCopyStringCmd is only produced by GetToBuffer which
 // issues GET — a single-key command routed to one shard, never fanned
 // out. Combined with NoRetry() returning true, the retry path also will
-// not clone this cmd. The implementation exists to satisfy the Cmder
-// interface and to keep the cmd usable if a future caller does fan out.
+// not clone this cmd.
 func (cmd *ZeroCopyStringCmd) Clone() Cmder {
-	newBuf := make([]byte, len(cmd.buf))
-	copy(newBuf, cmd.buf[:cmd.n])
 	return &ZeroCopyStringCmd{
 		baseCmd: cmd.cloneBaseCmd(),
-		buf:     newBuf,
-		n:       cmd.n,
+		cloned:  true,
 	}
 }
 
