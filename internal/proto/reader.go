@@ -493,11 +493,17 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		return copy(buf, s), nil
 
 	case RespString, RespVerbatim:
+		// Capture the response type byte before any further reads on r.rd.
+		// `line` may be a slice into the bufio.Reader's internal buffer
+		// (the ReadSlice fast path); the subsequent io.ReadFull / Discard
+		// can refill that buffer and overwrite line[0], so we must not
+		// re-read it afterwards.
+		isVerbatim := line[0] == RespVerbatim
 		n, err := replyLen(line)
 		if err != nil {
 			return 0, err
 		}
-		if line[0] == RespVerbatim {
+		if isVerbatim {
 			// Verbatim strings are prefixed with a 4-byte format tag "txt:".
 			if n < 4 {
 				return 0, fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
@@ -517,7 +523,7 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		if _, err := r.rd.Discard(2); err != nil {
 			return 0, err
 		}
-		if line[0] == RespVerbatim {
+		if isVerbatim {
 			// Strip the "txt:" prefix from the returned bytes.
 			copy(buf, buf[4:n])
 			return n - 4, nil

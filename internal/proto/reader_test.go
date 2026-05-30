@@ -237,6 +237,45 @@ func TestReader_ReadStringInto_Verbatim(t *testing.T) {
 	}
 }
 
+// TestReader_ReadStringInto_BulkStringStartingWithEqRefill is a regression
+// test for a stale-line[0] bug: ReadLine() returns a slice into bufio's
+// internal buffer, and a subsequent io.ReadFull / Discard can refill that
+// buffer. If the byte at line[0]'s former position gets overwritten with
+// '=' (RespVerbatim) by the refill, a post-read `line[0] == RespVerbatim`
+// check would silently strip 4 bytes from a regular bulk string.
+//
+// To trigger the refill deterministically we use a payload sized exactly
+// to bufio's internal buffer: after ReadLine consumes the header, the
+// initial bufio buffer holds (bufsize - headerLen) bytes of payload, so
+// io.ReadFull must request a second Read to get the remaining headerLen
+// payload bytes. That second Read causes bufio.fill(), which places the
+// next batch of source bytes — payload tail + trailing \r\n — at
+// position 0 of bufio.buf, overwriting line[0]. Because the payload is
+// all '=', the new byte at position 0 is '=', exactly the value of
+// RespVerbatim. With the bug, the post-read isVerbatim branch is taken
+// and n-4 bytes are returned with shifted data.
+func TestReader_ReadStringInto_BulkStringStartingWithEqRefill(t *testing.T) {
+	const size = proto.DefaultBufferSize // exactly bufio buffer size
+	payload := bytes.Repeat([]byte{'='}, size)
+	src := make([]byte, 0, size+16)
+	src = append(src, []byte(fmt.Sprintf("$%d\r\n", size))...)
+	src = append(src, payload...)
+	src = append(src, '\r', '\n')
+
+	r := proto.NewReader(bytes.NewReader(src))
+	buf := make([]byte, size)
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if n != size {
+		t.Fatalf("n = %d, want %d (4 bytes would be stripped on regression)", n, size)
+	}
+	if !bytes.Equal(buf[:n], payload) {
+		t.Fatal("payload mismatch — possible verbatim-misdetection regression")
+	}
+}
+
 func TestReader_ReadStringInto_Nil(t *testing.T) {
 	// RESP3 nil
 	r := proto.NewReader(bytes.NewReader([]byte("_\r\n")))
