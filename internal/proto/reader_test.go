@@ -245,35 +245,30 @@ func TestReader_ReadStringInto_Float(t *testing.T) {
 	}
 }
 
-func TestReader_ReadStringInto_Verbatim(t *testing.T) {
+func TestReader_ReadStringInto_VerbatimNotSupported(t *testing.T) {
+	// Verbatim strings are not handled by ReadStringInto — see the godoc
+	// on ReadStringInto for the rationale (avoiding a stale-line[0] hazard
+	// after bufio refill). A verbatim reply must surface as an error rather
+	// than being silently parsed.
 	r := proto.NewReader(bytes.NewReader([]byte("=9\r\ntxt:hello\r\n")))
 	buf := make([]byte, 16)
-	n, err := r.ReadStringInto(buf)
-	if err != nil {
-		t.Fatalf("ReadStringInto: %v", err)
-	}
-	if string(buf[:n]) != "hello" {
-		t.Fatalf("got %q, want %q", buf[:n], "hello")
+	if _, err := r.ReadStringInto(buf); err == nil {
+		t.Fatal("expected error for verbatim reply, got nil")
 	}
 }
 
-// TestReader_ReadStringInto_BulkStringStartingWithEqRefill is a regression
-// test for a stale-line[0] bug: ReadLine() returns a slice into bufio's
-// internal buffer, and a subsequent io.ReadFull / Discard can refill that
-// buffer. If the byte at line[0]'s former position gets overwritten with
-// '=' (RespVerbatim) by the refill, a post-read `line[0] == RespVerbatim`
-// check would silently strip 4 bytes from a regular bulk string.
+// TestReader_ReadStringInto_BulkStringStartingWithEqRefill exercises a
+// large bulk-string payload of '=' bytes sized to exactly bufio's internal
+// buffer, which forces bufio.fill() to run during the final io.ReadFull
+// step and place '=' bytes at position 0 of bufio.buf — the same slot
+// that line[0] points at.
 //
-// To trigger the refill deterministically we use a payload sized exactly
-// to bufio's internal buffer: after ReadLine consumes the header, the
-// initial bufio buffer holds (bufsize - headerLen) bytes of payload, so
-// io.ReadFull must request a second Read to get the remaining headerLen
-// payload bytes. That second Read causes bufio.fill(), which places the
-// next batch of source bytes — payload tail + trailing \r\n — at
-// position 0 of bufio.buf, overwriting line[0]. Because the payload is
-// all '=', the new byte at position 0 is '=', exactly the value of
-// RespVerbatim. With the bug, the post-read isVerbatim branch is taken
-// and n-4 bytes are returned with shifted data.
+// Historically a `if line[0] == RespVerbatim` check ran AFTER the refill,
+// causing the regular bulk string to be misclassified as verbatim and
+// 4 bytes silently stripped from the caller's payload. The hazard class
+// has since been removed structurally — ReadStringInto no longer handles
+// RespVerbatim at all — so this test now also acts as a guard against
+// re-introducing verbatim support without re-introducing the bug.
 func TestReader_ReadStringInto_BulkStringStartingWithEqRefill(t *testing.T) {
 	const size = proto.DefaultBufferSize // exactly bufio buffer size
 	payload := bytes.Repeat([]byte{'='}, size)
@@ -323,11 +318,32 @@ func TestReader_ReadStringInto_Error(t *testing.T) {
 }
 
 func TestReader_ReadStringInto_BufferTooSmall(t *testing.T) {
-	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
-	buf := make([]byte, 3)
-	_, err := r.ReadStringInto(buf)
+	// Feed two consecutive bulk-string replies. The first read uses a
+	// too-small buf and must error; the second must succeed cleanly. This
+	// guards the drain-on-error behaviour — without it, the unread payload
+	// of the first reply would leak into the stream and the second read
+	// would parse garbage.
+	src := []byte("$5\r\nhello\r\n$5\r\nworld\r\n")
+	r := proto.NewReader(bytes.NewReader(src))
+
+	smallBuf := make([]byte, 3)
+	n, err := r.ReadStringInto(smallBuf)
 	if err == nil {
 		t.Fatal("expected buffer-too-small error, got nil")
+	}
+	if n != 0 {
+		t.Fatalf("got n=%d on error, want 0", n)
+	}
+
+	// After the drain, the reader is aligned at the start of the second
+	// reply. A normal read must parse it as "world".
+	bigBuf := make([]byte, 16)
+	n, err = r.ReadStringInto(bigBuf)
+	if err != nil {
+		t.Fatalf("follow-up ReadStringInto: %v (connection left misaligned by the buffer-too-small drain)", err)
+	}
+	if n != 5 || string(bigBuf[:n]) != "world" {
+		t.Fatalf("follow-up: got n=%d %q, want 5 \"world\"", n, bigBuf[:n])
 	}
 }
 

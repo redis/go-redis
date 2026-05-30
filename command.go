@@ -945,6 +945,21 @@ func (cmd *ZeroCopyStringCmd) NoRetry() bool {
 	return true
 }
 
+// Clone returns a deep copy of cmd whose buf is a freshly allocated slice
+// the same length as the original. The clone does NOT share memory with
+// the caller's buffer — a subsequent ReadStringInto on the clone writes
+// into the clone's own buf, not the buffer the caller handed to
+// GetToBuffer. Whoever invoked the clone is responsible for reading the
+// result through cmd.Bytes() on the clone, not on the original.
+//
+// In practice this method is unreachable through normal client flows:
+// Clone is only called from cluster fan-out routing
+// (osscluster_router.go) for multi-shard commands like DBSIZE / KEYS /
+// FLUSHDB, and ZeroCopyStringCmd is only produced by GetToBuffer which
+// issues GET — a single-key command routed to one shard, never fanned
+// out. Combined with NoRetry() returning true, the retry path also will
+// not clone this cmd. The implementation exists to satisfy the Cmder
+// interface and to keep the cmd usable if a future caller does fan out.
 func (cmd *ZeroCopyStringCmd) Clone() Cmder {
 	newBuf := make([]byte, len(cmd.buf))
 	copy(newBuf, cmd.buf[:cmd.n])

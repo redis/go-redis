@@ -464,19 +464,30 @@ func (r *Reader) ReadFloat() (float64, error) {
 	return 0, fmt.Errorf("redis: can't parse float reply: %.100q", line)
 }
 
-// ReadStringInto reads a string reply directly into the provided buffer,
-// avoiding intermediate allocations. It returns the number of bytes written
-// to buf. The caller must ensure buf is large enough to hold the response.
+// ReadStringInto reads a string-typed reply directly into buf, avoiding the
+// per-call allocation that ReadString incurs. It returns the number of bytes
+// written to buf.
 //
-// The RESP header is parsed through the buffered reader (so push
-// notifications, errors, nil, etc. are processed normally), then bulk string
-// data is read directly into buf via the bufio.Reader. For values larger
-// than the bufio buffer, bufio.Reader drains any buffered data first and
-// then reads remaining bytes directly from the underlying socket — achieving
-// near zero-copy for the payload.
+// Supported reply types:
+//   - $<n>\r\n<payload>\r\n  bulk string (the GET path; payload is read
+//     straight into buf via bufio.Reader — for payloads larger than the
+//     bufio buffer this is effectively zero-copy from the socket)
+//   - +<status>\r\n          simple string, copied from the header line
+//   - :<int>\r\n             integer, copied as its ASCII representation
+//   - ,<float>\r\n           float, copied as its ASCII representation
 //
-// If the value does not fit in buf, ErrBufferTooSmall is returned and no
-// bytes are consumed from the reader beyond the header line.
+// Errors, nil, push notifications, and RESP3 attributes are intercepted
+// by ReadLine and surfaced through err. RESP3 verbatim strings
+// (=<n>\r\n<txt:payload>\r\n) are intentionally not handled — they are
+// never returned by GET-family commands, and including them re-introduces
+// a hazard class where the response-type byte read from a stale `line[0]`
+// after a bufio refill can be misinterpreted as the verbatim format tag.
+//
+// If the bulk payload does not fit in buf, an error is returned and the
+// payload plus the trailing CRLF are drained from the reader so the
+// connection stays aligned for the next reply. For simple-string / integer
+// / float responses the payload lives in the (already-consumed) header
+// line, so no drain is needed.
 func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 	line, err := r.ReadLine()
 	if err != nil {
@@ -492,24 +503,19 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		}
 		return copy(buf, s), nil
 
-	case RespString, RespVerbatim:
-		// Capture the response type byte before any further reads on r.rd.
-		// `line` may be a slice into the bufio.Reader's internal buffer
-		// (the ReadSlice fast path); the subsequent io.ReadFull / Discard
-		// can refill that buffer and overwrite line[0], so we must not
-		// re-read it afterwards.
-		isVerbatim := line[0] == RespVerbatim
+	case RespString:
 		n, err := replyLen(line)
 		if err != nil {
 			return 0, err
 		}
-		if isVerbatim {
-			// Verbatim strings are prefixed with a 4-byte format tag "txt:".
-			if n < 4 {
-				return 0, fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
-			}
-		}
 		if n > len(buf) {
+			// Drain the payload + trailing \r\n so the next read on this
+			// connection sees the start of the next reply rather than the
+			// tail of this one. Otherwise the unread bytes corrupt the
+			// stream and the bad connection gets handed back to the pool.
+			if _, derr := r.rd.Discard(n + 2); derr != nil {
+				return 0, derr
+			}
 			return 0, fmt.Errorf("redis: buffer too small: need %d bytes, have %d", n, len(buf))
 		}
 		// Read data directly into the user's buffer through the bufio.Reader.
@@ -522,11 +528,6 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		// Discard trailing \r\n.
 		if _, err := r.rd.Discard(2); err != nil {
 			return 0, err
-		}
-		if isVerbatim {
-			// Strip the "txt:" prefix from the returned bytes.
-			copy(buf, buf[4:n])
-			return n - 4, nil
 		}
 		return n, nil
 
