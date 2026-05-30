@@ -348,25 +348,26 @@ func benchmarkRedisGetRawSocket(b *testing.B, size int) {
 	})
 }
 
+// CI-friendly benchmark wrappers. Sizes are capped at 64 KiB so the matrix
+// (5 Redis versions × 3 Go versions, full docker-compose stack on a 7 GiB
+// runner) stays well under the test-binary timeout and runner memory.
+// Larger payload behaviour is covered by integration tests
+// ("should SetFromBuffer and GetToBuffer with 10 MiB payload") and the
+// detailed report in docs/zero-copy-buffer-benchmarks.md. To reproduce
+// the 1 MiB / larger numbers locally, invoke the benchmark* helpers
+// directly with the size you want.
 func BenchmarkRedisGetRawSocket_4KiB(b *testing.B)   { benchmarkRedisGetRawSocket(b, 4*1024) }
 func BenchmarkRedisGetRawSocket_64KiB(b *testing.B)  { benchmarkRedisGetRawSocket(b, 64*1024) }
-func BenchmarkRedisGetRawSocket_1MiB(b *testing.B)   { benchmarkRedisGetRawSocket(b, 1024*1024) }
-
 func BenchmarkRedisGet_4KiB(b *testing.B)            { benchmarkRedisGet(b, 4*1024) }
 func BenchmarkRedisGet_64KiB(b *testing.B)           { benchmarkRedisGet(b, 64*1024) }
-func BenchmarkRedisGet_1MiB(b *testing.B)            { benchmarkRedisGet(b, 1024*1024) }
 func BenchmarkRedisGetToBuffer_4KiB(b *testing.B)    { benchmarkRedisGetToBuffer(b, 4*1024) }
 func BenchmarkRedisGetToBuffer_64KiB(b *testing.B)   { benchmarkRedisGetToBuffer(b, 64*1024) }
-func BenchmarkRedisGetToBuffer_1MiB(b *testing.B)    { benchmarkRedisGetToBuffer(b, 1024*1024) }
 func BenchmarkRedisSet_4KiB(b *testing.B)            { benchmarkRedisSet(b, 4*1024) }
 func BenchmarkRedisSet_64KiB(b *testing.B)           { benchmarkRedisSet(b, 64*1024) }
-func BenchmarkRedisSet_1MiB(b *testing.B)            { benchmarkRedisSet(b, 1024*1024) }
 func BenchmarkRedisSetFromBuffer_4KiB(b *testing.B)  { benchmarkRedisSetFromBuffer(b, 4*1024) }
 func BenchmarkRedisSetFromBuffer_64KiB(b *testing.B) { benchmarkRedisSetFromBuffer(b, 64*1024) }
-func BenchmarkRedisSetFromBuffer_1MiB(b *testing.B)  { benchmarkRedisSetFromBuffer(b, 1024*1024) }
 func BenchmarkRedisSetGetBuffer_4KiB(b *testing.B)   { benchmarkRedisSetGetBuffer(b, 4*1024) }
 func BenchmarkRedisSetGetBuffer_64KiB(b *testing.B)  { benchmarkRedisSetGetBuffer(b, 64*1024) }
-func BenchmarkRedisSetGetBuffer_1MiB(b *testing.B)   { benchmarkRedisSetGetBuffer(b, 1024*1024) }
 
 func BenchmarkRedisMGet(b *testing.B) {
 	ctx := context.Background()

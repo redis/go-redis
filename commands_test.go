@@ -1845,6 +1845,30 @@ var _ = Describe("Commands", func() {
 			Expect(get.Bytes()).To(Equal(payload))
 		})
 
+		It("should SetFromBuffer and GetToBuffer with 10 MiB payload", func() {
+			// Large-payload regression coverage: exercises many bufio
+			// refills on the read path and several direct socket writes
+			// on the write path. Uses crypto/rand so any byte-shift bug
+			// (e.g. the verbatim-misdetection issue addressed by
+			// commit fix(proto): avoid stale line[0] after bufio refill)
+			// surfaces as a mismatch rather than coincidentally aligning.
+			const size = 10 * 1024 * 1024
+			payload := make([]byte, size)
+			_, err := rand.Read(payload)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, size)
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(size))
+			// Use bytes.Equal rather than gomega's Equal to keep the
+			// diff out of the failure message if a single byte is off.
+			Expect(bytes.Equal(get.Bytes(), payload)).To(BeTrue(),
+				"round-tripped 10 MiB payload does not match")
+		})
+
 		It("should GetEX", func() {
 			set := client.Set(ctx, "key", "value", 100*time.Second)
 			Expect(set.Err()).NotTo(HaveOccurred())
