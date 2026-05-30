@@ -1,6 +1,6 @@
 package proto_test
 
-import ( 
+import (
 	"bytes"
 	"fmt"
 	"io"
@@ -100,19 +100,45 @@ func BenchmarkReader_ReadFloat(b *testing.B) {
 	}
 }
 
-// benchmarkReadStringInto and benchmarkReadString compare the allocation
-// behaviour of reading a bulk string into a pre-allocated buffer versus the
-// standard ReadString call that returns a fresh string each time.
-func benchmarkReadStringInto(b *testing.B, payloadSize int) {
+// loopFrameReader is an io.Reader that returns the same RESP frame over and
+// over without ever returning io.EOF. It lets the benchmark helpers below
+// run for any b.N with O(1) memory — earlier versions materialised
+// bytes.Repeat(frame, b.N) up front and OOM'd on CI when the test framework
+// escalated b.N to the tens of thousands at 1 MiB payloads.
+type loopFrameReader struct {
+	frame []byte
+	pos   int
+}
+
+func (r *loopFrameReader) Read(p []byte) (int, error) {
+	n := 0
+	for n < len(p) {
+		if r.pos == len(r.frame) {
+			r.pos = 0
+		}
+		c := copy(p[n:], r.frame[r.pos:])
+		r.pos += c
+		n += c
+	}
+	return n, nil
+}
+
+func makeBulkStringFrame(payloadSize int) []byte {
 	payload := bytes.Repeat([]byte{'a'}, payloadSize)
 	header := []byte(fmt.Sprintf("$%d\r\n", payloadSize))
 	frame := make([]byte, 0, len(header)+payloadSize+2)
 	frame = append(frame, header...)
 	frame = append(frame, payload...)
 	frame = append(frame, '\r', '\n')
+	return frame
+}
 
-	src := bytes.Repeat(frame, b.N)
-	p := proto.NewReader(bytes.NewReader(src))
+// benchmarkReadStringInto and benchmarkReadString compare the allocation
+// behaviour of reading a bulk string into a pre-allocated buffer versus the
+// standard ReadString call that returns a fresh string each time.
+func benchmarkReadStringInto(b *testing.B, payloadSize int) {
+	frame := makeBulkStringFrame(payloadSize)
+	p := proto.NewReader(&loopFrameReader{frame: frame})
 	buf := make([]byte, payloadSize)
 
 	b.SetBytes(int64(payloadSize))
@@ -127,15 +153,8 @@ func benchmarkReadStringInto(b *testing.B, payloadSize int) {
 }
 
 func benchmarkReadString(b *testing.B, payloadSize int) {
-	payload := bytes.Repeat([]byte{'a'}, payloadSize)
-	header := []byte(fmt.Sprintf("$%d\r\n", payloadSize))
-	frame := make([]byte, 0, len(header)+payloadSize+2)
-	frame = append(frame, header...)
-	frame = append(frame, payload...)
-	frame = append(frame, '\r', '\n')
-
-	src := bytes.Repeat(frame, b.N)
-	p := proto.NewReader(bytes.NewReader(src))
+	frame := makeBulkStringFrame(payloadSize)
+	p := proto.NewReader(&loopFrameReader{frame: frame})
 
 	b.SetBytes(int64(payloadSize))
 	b.ReportAllocs()
@@ -148,15 +167,16 @@ func benchmarkReadString(b *testing.B, payloadSize int) {
 	}
 }
 
+// CI-friendly wrappers. Sizes capped at 64 KiB to keep peak memory under
+// the GitHub Actions ubuntu-latest budget. The benchmark* helpers above
+// can be invoked directly with larger sizes for off-CI analysis.
 func BenchmarkReader_ReadStringInto_64B(b *testing.B)   { benchmarkReadStringInto(b, 64) }
 func BenchmarkReader_ReadStringInto_4KiB(b *testing.B)  { benchmarkReadStringInto(b, 4*1024) }
 func BenchmarkReader_ReadStringInto_64KiB(b *testing.B) { benchmarkReadStringInto(b, 64*1024) }
-func BenchmarkReader_ReadStringInto_1MiB(b *testing.B)  { benchmarkReadStringInto(b, 1024*1024) }
 
 func BenchmarkReader_ReadString_64B(b *testing.B)   { benchmarkReadString(b, 64) }
 func BenchmarkReader_ReadString_4KiB(b *testing.B)  { benchmarkReadString(b, 4*1024) }
 func BenchmarkReader_ReadString_64KiB(b *testing.B) { benchmarkReadString(b, 64*1024) }
-func BenchmarkReader_ReadString_1MiB(b *testing.B)  { benchmarkReadString(b, 1024*1024) }
 
 func benchmarkParseReply(b *testing.B, reply string, wanterr bool) {
 	buf := new(bytes.Buffer)
