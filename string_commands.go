@@ -581,6 +581,15 @@ func (c cmdable) SetEx(ctx context.Context, key string, value interface{}, expir
 // to the socket — effectively zero-copy on the send path.
 //
 // Expiration is not supported; use Expire separately if a TTL is required.
+//
+// Note: SetFromBuffer is exposed for API symmetry with GetToBuffer and is
+// functionally equivalent to Set(ctx, key, buf, 0) — both dispatch to the
+// same []byte case in the RESP writer and produce identical bytes on the
+// wire. The zero-copy property on the send path comes from
+// bufio.Writer.Write bypassing its internal buffer for large payloads,
+// which Set([]byte) gets automatically. Prefer SetFromBuffer in code that
+// also uses GetToBuffer so the buffer-based pattern reads coherently;
+// otherwise Set(ctx, key, buf, 0) is equally efficient.
 func (c cmdable) SetFromBuffer(ctx context.Context, key string, buf []byte) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "set", key, buf)
 	_ = c(ctx, cmd)
