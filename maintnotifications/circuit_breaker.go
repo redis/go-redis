@@ -7,52 +7,27 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/circuitbreaker"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 )
 
 // CircuitBreakerState represents the state of a circuit breaker
-type CircuitBreakerState int32
+type CircuitBreakerState = circuitbreaker.State
 
 const (
 	// CircuitBreakerClosed - normal operation, requests allowed
-	CircuitBreakerClosed CircuitBreakerState = iota
+	CircuitBreakerClosed = circuitbreaker.StateClosed
 	// CircuitBreakerOpen - failing fast, requests rejected
-	CircuitBreakerOpen
+	CircuitBreakerOpen = circuitbreaker.StateOpen
 	// CircuitBreakerHalfOpen - testing if service recovered
-	CircuitBreakerHalfOpen
+	CircuitBreakerHalfOpen = circuitbreaker.StateHalfOpen
 )
 
-func (s CircuitBreakerState) String() string {
-	switch s {
-	case CircuitBreakerClosed:
-		return "closed"
-	case CircuitBreakerOpen:
-		return "open"
-	case CircuitBreakerHalfOpen:
-		return "half-open"
-	default:
-		return "unknown"
-	}
-}
-
-// CircuitBreaker implements the circuit breaker pattern for endpoint-specific failure handling
+// CircuitBreaker wraps the internal circuit breaker with endpoint-specific logging.
 type CircuitBreaker struct {
-	// Configuration
-	failureThreshold int           // Number of failures before opening
-	resetTimeout     time.Duration // How long to stay open before testing
-	maxRequests      int           // Max requests allowed in half-open state
-
-	// State tracking (atomic for lock-free access)
-	state           atomic.Int32 // CircuitBreakerState
-	failures        atomic.Int64 // Current failure count
-	successes       atomic.Int64 // Success count in half-open state
-	requests        atomic.Int64 // Request count in half-open state
-	lastFailureTime atomic.Int64 // Unix timestamp of last failure
+	*circuitbreaker.CircuitBreaker
+	endpoint        string
 	lastSuccessTime atomic.Int64 // Unix timestamp of last success
-
-	// Endpoint identification
-	endpoint string
-	config   *Config
 }
 
 // newCircuitBreaker creates a new circuit breaker for an endpoint
@@ -68,136 +43,88 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 		maxRequests = config.CircuitBreakerMaxRequests
 	}
 
-	return &CircuitBreaker{
-		failureThreshold: failureThreshold,
-		resetTimeout:     resetTimeout,
-		maxRequests:      maxRequests,
-		endpoint:         endpoint,
-		config:           config,
-		state:            atomic.Int32{}, // Defaults to CircuitBreakerClosed (0)
+	cb := &CircuitBreaker{
+		CircuitBreaker: circuitbreaker.New(circuitbreaker.Config{
+			FailureThreshold:    failureThreshold,
+			SuccessThreshold:    maxRequests, // Use maxRequests as success threshold
+			MaxHalfOpenRequests: maxRequests,
+			OpenTimeout:         resetTimeout,
+		}),
+		endpoint: endpoint,
 	}
+
+	// Register logging callback for state changes
+	cb.CircuitBreaker.OnStateChange(func(oldState, newState circuitbreaker.State) {
+		switch {
+		case oldState == circuitbreaker.StateClosed && newState == circuitbreaker.StateOpen:
+			if internal.LogLevel.WarnOrAbove() {
+				stats := cb.CircuitBreaker.Stats()
+				internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(endpoint, int64(stats.Failures)))
+			}
+		case oldState == circuitbreaker.StateOpen && newState == circuitbreaker.StateHalfOpen:
+			if internal.LogLevel.InfoOrAbove() {
+				internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(endpoint))
+			}
+		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateClosed:
+			if internal.LogLevel.InfoOrAbove() {
+				stats := cb.CircuitBreaker.Stats()
+				internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(endpoint, int64(stats.Successes)))
+			}
+		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateOpen:
+			if internal.LogLevel.WarnOrAbove() {
+				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(endpoint))
+			}
+		}
+	})
+
+	return cb
 }
 
 // IsOpen returns true if the circuit breaker is open (rejecting requests)
 func (cb *CircuitBreaker) IsOpen() bool {
-	state := CircuitBreakerState(cb.state.Load())
-	return state == CircuitBreakerOpen
-}
-
-// shouldAttemptReset checks if enough time has passed to attempt reset
-func (cb *CircuitBreaker) shouldAttemptReset() bool {
-	lastFailure := time.Unix(cb.lastFailureTime.Load(), 0)
-	return time.Since(lastFailure) >= cb.resetTimeout
+	return cb.CircuitBreaker.State() == circuitbreaker.StateOpen
 }
 
 // Execute runs the given function with circuit breaker protection
 func (cb *CircuitBreaker) Execute(fn func() error) error {
-	// Single atomic state load for consistency
-	state := CircuitBreakerState(cb.state.Load())
-
-	switch state {
-	case CircuitBreakerOpen:
-		if cb.shouldAttemptReset() {
-			// Attempt transition to half-open
-			if cb.state.CompareAndSwap(int32(CircuitBreakerOpen), int32(CircuitBreakerHalfOpen)) {
-				cb.requests.Store(0)
-				cb.successes.Store(0)
-				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerTransitioningToHalfOpen(cb.endpoint))
-				}
-				// Fall through to half-open logic
-			} else {
-				return ErrCircuitBreakerOpen
-			}
-		} else {
-			return ErrCircuitBreakerOpen
-		}
-		fallthrough
-	case CircuitBreakerHalfOpen:
-		requests := cb.requests.Add(1)
-		if requests > int64(cb.maxRequests) {
-			cb.requests.Add(-1) // Revert the increment
-			return ErrCircuitBreakerOpen
-		}
+	err := cb.CircuitBreaker.Execute(fn)
+	if err == nil {
+		cb.lastSuccessTime.Store(time.Now().Unix())
+		return nil
 	}
-
-	// Execute the function with consistent state
-	err := fn()
-
-	if err != nil {
-		cb.recordFailure()
-		return err
+	// Convert internal circuit open error to our package's error
+	if err == circuitbreaker.ErrCircuitOpen {
+		return ErrCircuitBreakerOpen
 	}
-
-	cb.recordSuccess()
-	return nil
+	return err
 }
 
-// recordFailure records a failure and potentially opens the circuit
+// recordFailure records a failure (for external use when not using Execute)
 func (cb *CircuitBreaker) recordFailure() {
-	cb.lastFailureTime.Store(time.Now().Unix())
-	failures := cb.failures.Add(1)
-
-	state := CircuitBreakerState(cb.state.Load())
-
-	switch state {
-	case CircuitBreakerClosed:
-		if failures >= int64(cb.failureThreshold) {
-			if cb.state.CompareAndSwap(int32(CircuitBreakerClosed), int32(CircuitBreakerOpen)) {
-				if internal.LogLevel.WarnOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(cb.endpoint, failures))
-				}
-			}
-		}
-	case CircuitBreakerHalfOpen:
-		// Any failure in half-open state immediately opens the circuit
-		if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerOpen)) {
-			if internal.LogLevel.WarnOrAbove() {
-				internal.Logger.Printf(context.Background(), logs.CircuitBreakerReopened(cb.endpoint))
-			}
-		}
-	}
+	cb.CircuitBreaker.RecordFailure()
 }
 
-// recordSuccess records a success and potentially closes the circuit
+// recordSuccess records a success (for external use when not using Execute)
 func (cb *CircuitBreaker) recordSuccess() {
 	cb.lastSuccessTime.Store(time.Now().Unix())
-
-	state := CircuitBreakerState(cb.state.Load())
-
-	switch state {
-	case CircuitBreakerClosed:
-		// Reset failure count on success in closed state
-		cb.failures.Store(0)
-	case CircuitBreakerHalfOpen:
-		successes := cb.successes.Add(1)
-
-		// If we've had enough successful requests, close the circuit
-		if successes >= int64(cb.maxRequests) {
-			if cb.state.CompareAndSwap(int32(CircuitBreakerHalfOpen), int32(CircuitBreakerClosed)) {
-				cb.failures.Store(0)
-				if internal.LogLevel.InfoOrAbove() {
-					internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(cb.endpoint, successes))
-				}
-			}
-		}
-	}
+	cb.CircuitBreaker.RecordSuccess()
 }
 
 // GetState returns the current state of the circuit breaker
 func (cb *CircuitBreaker) GetState() CircuitBreakerState {
-	return CircuitBreakerState(cb.state.Load())
+	return cb.CircuitBreaker.State()
 }
 
 // GetStats returns current statistics for monitoring
 func (cb *CircuitBreaker) GetStats() CircuitBreakerStats {
+	stats := cb.CircuitBreaker.Stats()
 	return CircuitBreakerStats{
 		Endpoint:        cb.endpoint,
-		State:           cb.GetState(),
-		Failures:        cb.failures.Load(),
-		Successes:       cb.successes.Load(),
-		Requests:        cb.requests.Load(),
-		LastFailureTime: time.Unix(cb.lastFailureTime.Load(), 0),
+		State:           stats.State,
+		Failures:        int64(stats.Failures),
+		Successes:       int64(stats.Successes),
+		Requests:        int64(stats.Requests),
+		LastFailureTime: stats.LastFailureTime,
 		LastSuccessTime: time.Unix(cb.lastSuccessTime.Load(), 0),
 	}
 }
@@ -341,13 +268,8 @@ func (cbm *CircuitBreakerManager) Shutdown() {
 func (cbm *CircuitBreakerManager) Reset() {
 	cbm.breakers.Range(func(key, value interface{}) bool {
 		entry := value.(*CircuitBreakerEntry)
-		breaker := entry.breaker
-		breaker.state.Store(int32(CircuitBreakerClosed))
-		breaker.failures.Store(0)
-		breaker.successes.Store(0)
-		breaker.requests.Store(0)
-		breaker.lastFailureTime.Store(0)
-		breaker.lastSuccessTime.Store(0)
+		entry.breaker.CircuitBreaker.Reset()
+		entry.breaker.lastSuccessTime.Store(0)
 		return true
 	})
 }
