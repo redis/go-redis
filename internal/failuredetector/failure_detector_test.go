@@ -85,6 +85,48 @@ func TestCommandFailureDetector_IgnoresContextErrors(t *testing.T) {
 	}
 }
 
+func TestCommandFailureDetector_IgnoresNilError(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// A nil error represents success and must not be counted as a failure.
+	for i := 0; i < 10; i++ {
+		fd.RecordFailure(nil)
+	}
+
+	_, failures, _ := fd.Stats()
+	if failures != 0 {
+		t.Errorf("expected 0 failures for nil errors, got %d", failures)
+	}
+	if fd.ShouldFailover() {
+		t.Error("should not failover when only nil errors were recorded")
+	}
+}
+
+func TestCommandFailureDetector_DefaultsWindowWhenUnset(t *testing.T) {
+	// A zero window must fall back to the documented default so the counters
+	// are not reset on every call (which would prevent failover entirely).
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:       1,
+		FailureRateThreshold: 0.0,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	fd.RecordFailure(errors.New("error"))
+	if !fd.ShouldFailover() {
+		t.Error("should failover after a failure with the defaulted window")
+	}
+
+	_, failures, _ := fd.Stats()
+	if failures != 1 {
+		t.Errorf("expected 1 failure to be retained within the window, got %d", failures)
+	}
+}
+
 func TestCommandFailureDetector_WindowReset(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         5,
@@ -98,8 +140,9 @@ func TestCommandFailureDetector_WindowReset(t *testing.T) {
 		fd.RecordFailure(errors.New("error"))
 	}
 
-	// Wait for window to expire
-	time.Sleep(60 * time.Millisecond)
+	// Wait for the window to expire. Use a generous buffer (2x the window)
+	// so the test does not flake on slow or loaded CI runners.
+	time.Sleep(100 * time.Millisecond)
 
 	// Record a success to trigger window check
 	fd.RecordSuccess()

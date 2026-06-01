@@ -35,7 +35,9 @@ type CommandFailureDetectorConfig struct {
 	// Default: 0.1
 	FailureRateThreshold float64
 	// FailureDetectionWindow is the time window for failure detection.
-	// Counters are reset when this window expires.
+	// It is implemented as a tumbling window: the success/failure counters
+	// are reset in full once the window elapses, rather than expiring
+	// individual events as in a sliding window.
 	// Default: 2 seconds
 	FailureDetectionWindow time.Duration
 }
@@ -61,6 +63,14 @@ type CommandFailureDetector struct {
 
 // NewCommandFailureDetector creates a new command failure detector.
 func NewCommandFailureDetector(config CommandFailureDetectorConfig) *CommandFailureDetector {
+	// A non-positive window would make checkWindow treat the window as
+	// permanently expired, resetting the counters on every call so that
+	// ShouldFailover could never trigger. Fall back to the documented default.
+	// MinNumFailures and FailureRateThreshold are intentionally not defaulted
+	// here, as a zero value carries the documented "disabled" meaning.
+	if config.FailureDetectionWindow <= 0 {
+		config.FailureDetectionWindow = 2 * time.Second
+	}
 	return &CommandFailureDetector{
 		config:      config,
 		windowStart: time.Now(),
@@ -77,10 +87,17 @@ func (d *CommandFailureDetector) RecordSuccess() {
 }
 
 // RecordFailure records a failed operation.
-// Context errors (Canceled, DeadlineExceeded) are ignored.
+// A nil error is treated as success and ignored. Context errors
+// (Canceled, DeadlineExceeded) are also ignored as they are client-side.
 func (d *CommandFailureDetector) RecordFailure(err error) {
+	// A nil error represents success, not a failure - ignore it so callers
+	// that forward errors unconditionally don't accumulate phantom failures.
+	if err == nil {
+		return
+	}
+
 	// Ignore context errors - they're client-side, not server failures
-	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return
 	}
 
@@ -139,7 +156,8 @@ func (d *CommandFailureDetector) Reset() {
 	d.windowStart = time.Now()
 }
 
-// checkWindow checks if the current window has expired and resets if needed.
+// checkWindow checks if the current tumbling window has expired and, if so,
+// resets all counters and starts a new window.
 // Must be called with lock held.
 func (d *CommandFailureDetector) checkWindow() {
 	if time.Since(d.windowStart) >= d.config.FailureDetectionWindow {
@@ -153,5 +171,8 @@ func (d *CommandFailureDetector) checkWindow() {
 func (d *CommandFailureDetector) Stats() (successes, failures int, windowStart time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Apply window expiry first so callers never observe stale counts from a
+	// window that has already elapsed, consistent with ShouldFailover.
+	d.checkWindow()
 	return d.successCount, d.failuresCount, d.windowStart
 }
