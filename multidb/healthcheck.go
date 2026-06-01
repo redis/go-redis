@@ -275,10 +275,19 @@ func runProbesMajority(ctx context.Context, hc redis.MultiDBHealthCheck, probeFn
 	// Strict majority: more than half must pass
 	// (probes - 1) // 2 gives the max allowed failures
 	allowedFailures := (cfg.Probes - 1) / 2
+	// requiredSuccesses is the number of successful probes that guarantees a
+	// strict majority, allowing an early exit once it is reached.
+	requiredSuccesses := cfg.Probes - allowedFailures
 	failures := 0
+	successes := 0
 
 	for i := 0; i < cfg.Probes; i++ {
-		if !probeFn(ctx, hc) {
+		if probeFn(ctx, hc) {
+			successes++
+			if successes >= requiredSuccesses {
+				return true
+			}
+		} else {
 			failures++
 			if failures > allowedFailures {
 				return false

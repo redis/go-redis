@@ -14,12 +14,15 @@ func TestPingHealthCheck(t *testing.T) {
 		client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 		defer client.Close()
 
-		hc := NewPingHealthCheck()
 		ctx := context.Background()
+		if err := client.Ping(ctx).Err(); err != nil {
+			t.Skipf("Redis not available: %v", err)
+		}
 
-		// This test requires a running Redis server
-		// If no server, we just verify the check doesn't panic
-		_ = hc.CheckHealth(ctx, client)
+		hc := NewPingHealthCheck()
+		if !hc.CheckHealth(ctx, client) {
+			t.Error("expected CheckHealth to return true for healthy client")
+		}
 	})
 
 	t.Run("CheckHealth returns false for unreachable client", func(t *testing.T) {
@@ -158,6 +161,47 @@ H8PD6BY8JK7P5K8K0K8K0K8K0K8K0K8K0K8K0A==
 			t.Error("expected RootCAs to be set")
 		}
 	})
+}
+
+func TestLagAwareHostFromAddr(t *testing.T) {
+	tests := []struct {
+		addr     string
+		wantHost string
+		wantOK   bool
+	}{
+		{"localhost:6379", "localhost", true},
+		{"10.0.0.1:6379", "10.0.0.1", true},
+		{"redis.example.com:9443", "redis.example.com", true},
+		{"[::1]:6379", "::1", true},
+		{"[2001:db8::1]:6379", "2001:db8::1", true},
+		{"localhost", "localhost", true},
+		{"", "", false},
+		{"/tmp/redis.sock", "", false},
+		{"unix:///tmp/redis.sock", "", false},
+	}
+	for _, tc := range tests {
+		host, ok := hostFromAddr(tc.addr)
+		if ok != tc.wantOK || host != tc.wantHost {
+			t.Errorf("hostFromAddr(%q) = (%q, %v), want (%q, %v)",
+				tc.addr, host, ok, tc.wantHost, tc.wantOK)
+		}
+	}
+}
+
+func TestLagAwareConfigErrorFailsHealthCheck(t *testing.T) {
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	// An invalid PEM records a config error, which must fail health checks.
+	hc := NewLagAwareHealthCheck(
+		WithLagAwareRootCAs([]byte("not a valid pem")),
+	)
+	if hc.configErr == nil {
+		t.Fatal("expected configErr to be set for invalid root CA PEM")
+	}
+	if hc.CheckHealth(context.Background(), client) {
+		t.Error("expected CheckHealth to return false when config error is set")
+	}
 }
 
 // mockHTTPClient is a mock HTTP client for testing.

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -32,6 +33,10 @@ type LagAwareHealthCheck struct {
 	username     string
 	password     string
 	tlsConfig    *tls.Config
+	// configErr records the first error encountered while applying options
+	// (e.g. an invalid PEM or unreadable cert file). When set, health checks
+	// fail fast rather than silently running with an incomplete TLS config.
+	configErr error
 }
 
 // HTTPClient is an interface for making HTTP requests.
@@ -41,6 +46,16 @@ type HTTPClient interface {
 
 // LagAwareHealthCheckOption is a functional option for LagAwareHealthCheck.
 type LagAwareHealthCheckOption func(*LagAwareHealthCheck)
+
+// WithLagAwareHealthCheckConfig applies generic HealthCheckOption values
+// (e.g. WithProbes, WithDelay, WithTimeout) to a LagAwareHealthCheck.
+func WithLagAwareHealthCheckConfig(opts ...HealthCheckOption) LagAwareHealthCheckOption {
+	return func(h *LagAwareHealthCheck) {
+		for _, opt := range opts {
+			opt(&h.config)
+		}
+	}
+}
 
 // WithLagAwareBaseURL sets the base URL for the REST API.
 func WithLagAwareBaseURL(baseURL string) LagAwareHealthCheckOption {
@@ -83,6 +98,8 @@ func WithLagAwareInsecureSkipVerify() LagAwareHealthCheckOption {
 }
 
 // WithLagAwareRootCAs sets the root CA certificates for TLS verification.
+// If the PEM data cannot be parsed, the error is recorded and subsequent
+// health checks fail rather than silently running without the CAs.
 func WithLagAwareRootCAs(certPEM []byte) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) {
 		if h.tlsConfig == nil {
@@ -91,15 +108,20 @@ func WithLagAwareRootCAs(certPEM []byte) LagAwareHealthCheckOption {
 		if h.tlsConfig.RootCAs == nil {
 			h.tlsConfig.RootCAs = x509.NewCertPool()
 		}
-		h.tlsConfig.RootCAs.AppendCertsFromPEM(certPEM)
+		if !h.tlsConfig.RootCAs.AppendCertsFromPEM(certPEM) {
+			h.setConfigErr(fmt.Errorf("multidb: failed to parse root CA PEM"))
+		}
 	}
 }
 
 // WithLagAwareRootCAsFromFile loads root CA certificates from a PEM file.
+// If the file cannot be read or parsed, the error is recorded and subsequent
+// health checks fail rather than silently running without the CAs.
 func WithLagAwareRootCAsFromFile(caFile string) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) {
 		certPEM, err := os.ReadFile(caFile)
 		if err != nil {
+			h.setConfigErr(fmt.Errorf("multidb: failed to read root CA file %q: %w", caFile, err))
 			return
 		}
 		if h.tlsConfig == nil {
@@ -108,15 +130,20 @@ func WithLagAwareRootCAsFromFile(caFile string) LagAwareHealthCheckOption {
 		if h.tlsConfig.RootCAs == nil {
 			h.tlsConfig.RootCAs = x509.NewCertPool()
 		}
-		h.tlsConfig.RootCAs.AppendCertsFromPEM(certPEM)
+		if !h.tlsConfig.RootCAs.AppendCertsFromPEM(certPEM) {
+			h.setConfigErr(fmt.Errorf("multidb: failed to parse root CA PEM from file %q", caFile))
+		}
 	}
 }
 
 // WithLagAwareClientCert sets the client certificate for mutual TLS (mTLS).
+// If the key pair cannot be loaded, the error is recorded and subsequent
+// health checks fail rather than silently disabling mTLS.
 func WithLagAwareClientCert(certPEM, keyPEM []byte) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) {
 		cert, err := tls.X509KeyPair(certPEM, keyPEM)
 		if err != nil {
+			h.setConfigErr(fmt.Errorf("multidb: failed to load client certificate: %w", err))
 			return
 		}
 		if h.tlsConfig == nil {
@@ -127,10 +154,13 @@ func WithLagAwareClientCert(certPEM, keyPEM []byte) LagAwareHealthCheckOption {
 }
 
 // WithLagAwareClientCertFromFiles loads client cert and key from files.
+// If the key pair cannot be loaded, the error is recorded and subsequent
+// health checks fail rather than silently disabling mTLS.
 func WithLagAwareClientCertFromFiles(certFile, keyFile string) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) {
 		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
+			h.setConfigErr(fmt.Errorf("multidb: failed to load client certificate from files: %w", err))
 			return
 		}
 		if h.tlsConfig == nil {
@@ -140,23 +170,33 @@ func WithLagAwareClientCertFromFiles(certFile, keyFile string) LagAwareHealthChe
 	}
 }
 
+// setConfigErr records the first configuration error encountered.
+func (h *LagAwareHealthCheck) setConfigErr(err error) {
+	if h.configErr == nil {
+		h.configErr = err
+	}
+}
+
 // NewLagAwareHealthCheck creates a new LagAwareHealthCheck.
-func NewLagAwareHealthCheck(opts ...interface{}) *LagAwareHealthCheck {
+//
+// Generic health check settings (probes, delay, timeout) can be supplied via
+// WithLagAwareHealthCheckConfig.
+func NewLagAwareHealthCheck(opts ...LagAwareHealthCheckOption) *LagAwareHealthCheck {
 	h := &LagAwareHealthCheck{
 		config:       DefaultHealthCheckConfig(),
 		restAPIPort:  DefaultRESTAPIPort,
 		lagTolerance: DefaultLagTolerance,
 	}
 	for _, opt := range opts {
-		switch o := opt.(type) {
-		case LagAwareHealthCheckOption:
-			o(h)
-		case HealthCheckOption:
-			o(&h.config)
-		}
+		opt(h)
 	}
 	if h.httpClient == nil {
-		transport := &http.Transport{}
+		transport, ok := http.DefaultTransport.(*http.Transport)
+		if ok {
+			transport = transport.Clone()
+		} else {
+			transport = &http.Transport{}
+		}
 		if h.tlsConfig != nil {
 			transport.TLSClientConfig = h.tlsConfig
 		}
@@ -167,30 +207,53 @@ func NewLagAwareHealthCheck(opts ...interface{}) *LagAwareHealthCheck {
 
 func (h *LagAwareHealthCheck) Config() HealthCheckConfig { return h.config }
 
+// hostFromAddr extracts the host from a Redis address, stripping the port and
+// any IPv6 brackets. It reports false for unix-socket addresses, which cannot
+// be used to derive an HTTPS REST API base URL.
+func hostFromAddr(addr string) (string, bool) {
+	if addr == "" {
+		return "", false
+	}
+	if strings.HasPrefix(addr, "/") || strings.HasPrefix(addr, "unix://") {
+		return "", false
+	}
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host, true
+	}
+	// No port present; treat the whole value as the host.
+	return addr, true
+}
+
 // CheckHealth performs a single REST API health check probe.
 func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) bool {
-	host := client.Options().Addr
-	if idx := strings.LastIndex(host, ":"); idx > 0 {
-		host = host[:idx]
+	if h.configErr != nil {
+		return false
+	}
+	host, ok := hostFromAddr(client.Options().Addr)
+	if !ok {
+		return false
 	}
 	return h.checkLagHealth(ctx, host)
 }
 
 // CheckClusterHealth performs a single REST API health check probe.
 func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) bool {
+	if h.configErr != nil {
+		return false
+	}
 	opts := client.Options()
 	if len(opts.Addrs) == 0 {
 		return false
 	}
-	host := opts.Addrs[0]
-	if idx := strings.LastIndex(host, ":"); idx > 0 {
-		host = host[:idx]
+	host, ok := hostFromAddr(opts.Addrs[0])
+	if !ok {
+		return false
 	}
 	return h.checkLagHealth(ctx, host)
 }
 
 func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string) bool {
-	baseURL := h.baseURL
+	baseURL := strings.TrimRight(h.baseURL, "/")
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("https://%s:%d", dbHost, h.restAPIPort)
 	}
