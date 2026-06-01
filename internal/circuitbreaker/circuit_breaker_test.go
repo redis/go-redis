@@ -208,6 +208,42 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_CallbackObservesSuccessCountOnClose(t *testing.T) {
+	config := Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 2,
+		OpenTimeout:      50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	var closeSuccesses int32 = -1
+	cb.OnStateChange(func(oldState, newState State) {
+		if oldState == StateHalfOpen && newState == StateClosed {
+			closeSuccesses = cb.Stats().Successes
+		}
+	})
+
+	// Open the circuit, wait for the timeout, then transition to half-open.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState()
+
+	// Record enough successes to close the circuit.
+	cb.RecordSuccess()
+	cb.RecordSuccess()
+
+	if cb.State() != StateClosed {
+		t.Fatalf("expected state to be Closed, got %v", cb.State())
+	}
+	// The callback must see the success count that triggered the close, not the
+	// post-reset value of 0.
+	if closeSuccesses != int32(config.SuccessThreshold) {
+		t.Errorf("expected callback to observe %d successes, got %d",
+			config.SuccessThreshold, closeSuccesses)
+	}
+}
+
 func TestCircuitBreaker_Reset(t *testing.T) {
 	config := Config{
 		FailureThreshold: 2,

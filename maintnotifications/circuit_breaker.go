@@ -80,9 +80,11 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 	return cb
 }
 
-// IsOpen returns true if the circuit breaker is open (rejecting requests)
+// IsOpen returns true if the circuit breaker is open (rejecting requests).
+// It uses CheckState so the open->half-open transition is honored once
+// OpenTimeout has elapsed, rather than reporting a stale open state.
 func (cb *CircuitBreaker) IsOpen() bool {
-	return cb.CircuitBreaker.State() == circuitbreaker.StateOpen
+	return cb.CircuitBreaker.CheckState() == circuitbreaker.StateOpen
 }
 
 // Execute runs the given function with circuit breaker protection

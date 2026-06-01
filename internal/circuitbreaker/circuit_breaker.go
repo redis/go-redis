@@ -119,9 +119,11 @@ func (cb *CircuitBreaker) CheckState() State {
 	state := State(cb.state.Load())
 
 	if state == StateOpen {
-		// Check if we should transition to half-open
-		lastFailure := time.Unix(0, cb.lastFailure.Load())
-		if time.Since(lastFailure) >= cb.config.OpenTimeout {
+		// Check if we should transition to half-open.
+		// Guard against a zero timestamp (no failure recorded yet) so we don't
+		// treat the Unix epoch as the last failure and transition immediately.
+		lastFailure := cb.lastFailure.Load()
+		if lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
 			if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
@@ -170,10 +172,12 @@ func (cb *CircuitBreaker) RecordSuccess() {
 		}
 		if int(successes) >= cb.config.SuccessThreshold {
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
+				// Notify callbacks before resetting counters so they observe
+				// the success count that triggered the transition.
+				cb.notifyCallbacks(StateHalfOpen, StateClosed)
 				cb.failures.Store(0)
 				cb.successes.Store(0)
 				cb.requests.Store(0)
-				cb.notifyCallbacks(StateHalfOpen, StateClosed)
 			}
 		}
 	case StateClosed:
