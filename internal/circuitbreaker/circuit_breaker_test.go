@@ -164,6 +164,52 @@ func TestCircuitBreaker_MaxHalfOpenRequests(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_ReleaseHalfOpen(t *testing.T) {
+	config := Config{
+		FailureThreshold:    2,
+		SuccessThreshold:    3,
+		MaxHalfOpenRequests: 2,
+		OpenTimeout:         50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	// Open the circuit, then wait for the half-open window.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+
+	// Reserve both half-open slots.
+	if !cb.IsAllowed() {
+		t.Fatal("first request should be allowed in half-open")
+	}
+	if !cb.IsAllowed() {
+		t.Fatal("second request should be allowed in half-open")
+	}
+	if cb.IsAllowed() {
+		t.Fatal("third request should be rejected before release")
+	}
+
+	// Releasing a reserved slot should let a subsequent probe through.
+	cb.ReleaseHalfOpen()
+	if !cb.IsAllowed() {
+		t.Error("request should be allowed after ReleaseHalfOpen")
+	}
+
+	// Release must not drive the counter negative or admit extra probes.
+	cb.ReleaseHalfOpen()
+	cb.ReleaseHalfOpen()
+	if cb.requests.Load() < 0 {
+		t.Errorf("requests counter must not go negative, got %d", cb.requests.Load())
+	}
+
+	// ReleaseHalfOpen is a no-op outside the half-open state.
+	cb.Reset()
+	cb.ReleaseHalfOpen()
+	if cb.requests.Load() != 0 {
+		t.Errorf("expected requests to remain 0 when closed, got %d", cb.requests.Load())
+	}
+}
+
 func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	config := Config{
 		FailureThreshold: 2,

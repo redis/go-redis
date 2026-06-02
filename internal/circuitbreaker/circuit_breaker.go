@@ -159,6 +159,21 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 	}
 }
 
+// ReleaseHalfOpen returns a half-open request slot previously reserved by a
+// successful IsAllowed call when the operation produced neither a recordable
+// success nor failure (for example, it was aborted for an unrelated reason).
+// Without this, a reserved-but-never-completed probe could permanently starve
+// half-open recovery once MaxHalfOpenRequests slots are exhausted. It only has
+// an effect while the breaker is half-open.
+func (cb *CircuitBreaker) ReleaseHalfOpen() {
+	if State(cb.state.Load()) != StateHalfOpen {
+		return
+	}
+	if cb.requests.Add(-1) < 0 {
+		cb.requests.Store(0)
+	}
+}
+
 // RecordSuccess records a successful operation.
 func (cb *CircuitBreaker) RecordSuccess() {
 	state := State(cb.state.Load())
@@ -200,11 +215,14 @@ func (cb *CircuitBreaker) RecordFailure() {
 			}
 		}
 	case StateHalfOpen:
-		// Any failure in half-open state opens the circuit
+		// Any failure in half-open state opens the circuit.
 		if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
+			// Notify callbacks before resetting counters so they observe the
+			// counts that triggered the transition, matching the half-open ->
+			// closed path in RecordSuccess.
+			cb.notifyCallbacks(StateHalfOpen, StateOpen)
 			cb.successes.Store(0)
 			cb.requests.Store(0)
-			cb.notifyCallbacks(StateHalfOpen, StateOpen)
 		}
 	}
 }
