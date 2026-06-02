@@ -157,6 +157,9 @@ const (
 	SearchToList
 	SearchFirstValue
 	SearchRandomSample
+	// SearchCollect is the in-group sorting reducer for FT.AGGREGATE.
+	// Requires Redis 8.8+.
+	SearchCollect
 )
 
 func (a SearchAggregator) String() string {
@@ -187,6 +190,8 @@ func (a SearchAggregator) String() string {
 		return "FIRST_VALUE"
 	case SearchRandomSample:
 		return "RANDOM_SAMPLE"
+	case SearchCollect:
+		return "COLLECT"
 	default:
 		return ""
 	}
