@@ -196,3 +196,78 @@ func TestFTHybridWithArgsAcceptsVectorFP32(t *testing.T) {
 		})
 	}
 }
+
+// TestFTHybridWithArgs_ShardKRatio verifies the SHARD_K_RATIO option
+// (Redis 8.8+) is emitted on the VSIM clause after the KNN method block and
+// before FILTER when a positive ratio is set, and omitted entirely when the
+// ratio is left at its zero value (server default of 1.0 applies).
+func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
+	indexOf := func(args []interface{}, want string) int {
+		for i, a := range args {
+			if s, ok := a.(string); ok && s == want {
+				return i
+			}
+		}
+		return -1
+	}
+
+	t.Run("emitted with KNN", func(t *testing.T) {
+		m := &mockCmdable{}
+		c := m.asCmdable()
+		const ratio = 0.6
+		cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+			SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+			VectorExpressions: []FTHybridVectorExpression{{
+				VectorField:     "embedding",
+				VectorData:      &VectorFP32{Val: []byte{1, 2, 3, 4}},
+				VectorParamName: "vec",
+				Method:          "KNN",
+				MethodParams:    []interface{}{"K", 10, "EF_RUNTIME", 50},
+				ShardKRatio:     ratio,
+				Filter:          "@brand:{trek}",
+			}},
+		})
+		if cmd.Err() != nil {
+			t.Fatalf("unexpected error: %v", cmd.Err())
+		}
+		gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+		if !ok {
+			t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+		}
+
+		idxKNN := indexOf(gotCmd.args, "KNN")
+		idxShard := indexOf(gotCmd.args, "SHARD_K_RATIO")
+		idxFilter := indexOf(gotCmd.args, "FILTER")
+		if idxKNN == -1 || idxShard == -1 || idxFilter == -1 {
+			t.Fatalf("missing token in args: KNN=%d SHARD_K_RATIO=%d FILTER=%d (args=%v)",
+				idxKNN, idxShard, idxFilter, gotCmd.args)
+		}
+		if !(idxKNN < idxShard && idxShard < idxFilter) {
+			t.Fatalf("expected KNN < SHARD_K_RATIO < FILTER, got %d, %d, %d", idxKNN, idxShard, idxFilter)
+		}
+		if got := gotCmd.args[idxShard+1]; got != ratio {
+			t.Fatalf("SHARD_K_RATIO value: got %v (%T), want %v", got, got, ratio)
+		}
+	})
+
+	t.Run("omitted when zero", func(t *testing.T) {
+		m := &mockCmdable{}
+		c := m.asCmdable()
+		cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+			SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+			VectorExpressions: []FTHybridVectorExpression{{
+				VectorField:  "embedding",
+				VectorData:   &VectorFP32{Val: []byte{1, 2, 3, 4}},
+				Method:       "KNN",
+				MethodParams: []interface{}{"K", 10},
+			}},
+		})
+		if cmd.Err() != nil {
+			t.Fatalf("unexpected error: %v", cmd.Err())
+		}
+		gotCmd := m.lastCmd.(*FTHybridCmd)
+		if indexOf(gotCmd.args, "SHARD_K_RATIO") != -1 {
+			t.Fatalf("expected SHARD_K_RATIO to be absent, args=%v", gotCmd.args)
+		}
+	})
+}
