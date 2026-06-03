@@ -3,6 +3,7 @@ package proto
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
 	"strings"
 	"testing"
@@ -620,4 +621,112 @@ func TestPeekPushNotificationNameBehavior(t *testing.T) {
 		t.Log("")
 		t.Log("Note: Buffer must be primed with a peek operation first")
 	})
+}
+
+// chunkedReader hands its data out in fixed-size chunks, one per Read. This
+// lets us deterministically reproduce the bufio fill boundary that landed in
+// the middle of a push frame header in issue #3839.
+type chunkedReader struct {
+	data      []byte
+	chunkSize int
+	off       int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.off+n > len(r.data) {
+		n = len(r.data) - r.off
+	}
+	copy(p, r.data[r.off:r.off+n])
+	r.off += n
+	return n, nil
+}
+
+// TestPeekPushNotificationName_TruncatedHeader covers issue #3839: when only
+// a prefix of a push frame is buffered, PeekPushNotificationName must NOT
+// return a truncated name. It should block to fetch the rest of the header
+// (so the caller can identify the notification correctly) or, when the
+// underlying read fails, return that error.
+func TestPeekPushNotificationName_TruncatedHeader(t *testing.T) {
+	const frame = ">3\r\n$7\r\nmessage\r\n$7\r\nchannel\r\n$5\r\nhello\r\n"
+
+	// Boundaries that previously caused PeekPushNotificationName to silently
+	// return a truncated name. `prefix` is the number of bytes the chunked
+	// reader hands out per Read call; with the bug, every chunk boundary that
+	// lands inside the frame header is a place where the function returned a
+	// truncated name instead of blocking for the rest.
+	cutpoints := []struct {
+		name   string
+		prefix int
+	}{
+		{"after_push_marker", 1},
+		{"inside_array_len_line", 3},
+		{"after_array_len_line", 4},
+		{"after_dollar", 5},
+		{"inside_bulk_len_line", 6},
+		{"after_bulk_len_line", 8},
+		{"inside_name", 13}, // the exact failure mode from #3839 ("messa")
+		{"before_name_crlf", 15},
+	}
+
+	for _, tc := range cutpoints {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(frame)
+			// Use a chunked reader whose first chunk equals tc.prefix and
+			// whose second chunk delivers the rest. bufio will fill from the
+			// first chunk only, then block-fill from the second when we
+			// peek past it.
+			rd := NewReader(&chunkedReader{data: data, chunkSize: tc.prefix})
+
+			if _, err := rd.PeekReplyType(); err != nil {
+				t.Fatalf("PeekReplyType: %v", err)
+			}
+
+			name, err := rd.PeekPushNotificationName()
+			if err != nil {
+				t.Fatalf("PeekPushNotificationName: unexpected error: %v", err)
+			}
+			if name != "message" {
+				t.Fatalf("PeekPushNotificationName: got %q, want %q", name, "message")
+			}
+
+			// And the full frame must still be readable afterwards.
+			reply, err := rd.ReadReply()
+			if err != nil {
+				t.Fatalf("ReadReply: %v", err)
+			}
+			arr, ok := reply.([]interface{})
+			if !ok || len(arr) != 3 || arr[0] != "message" || arr[1] != "channel" || arr[2] != "hello" {
+				t.Fatalf("ReadReply: got %#v, want [message channel hello]", reply)
+			}
+		})
+	}
+}
+
+// TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF covers the case
+// where the underlying connection delivers a partial frame and then closes.
+// PeekPushNotificationName must surface the read error rather than returning
+// a truncated name.
+func TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF(t *testing.T) {
+	// A push frame that ends mid-name.
+	data := []byte(">3\r\n$7\r\nmessa")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
 }
