@@ -211,7 +211,18 @@ func (cb *CircuitBreaker) RecordFailure() {
 		failures := cb.failures.Add(1)
 		if int(failures) >= cb.config.FailureThreshold {
 			if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
+				// Notify callbacks before clearing the half-open counters so
+				// observers see the failure count that triggered the
+				// transition, matching the half-open -> closed/open paths.
 				cb.notifyCallbacks(StateClosed, StateOpen)
+				// successes and requests should already be 0 in Closed (they
+				// are only incremented while half-open, and every half-open
+				// exit zeroes them). Reset defensively so the invariant
+				// "successes/requests are clean on entry to Open" is upheld
+				// consistently across all transitions into Open, even if a
+				// future change starts touching those counters in Closed.
+				cb.successes.Store(0)
+				cb.requests.Store(0)
 			}
 		}
 	case StateHalfOpen:

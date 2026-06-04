@@ -403,3 +403,64 @@ func TestCircuitBreaker_Stats(t *testing.T) {
 		t.Error("expected LastFailureTime to be set")
 	}
 }
+
+// TestCircuitBreaker_HalfOpenCountersAreCleanOnReentry asserts the invariant
+// that successes and requests start at 0 every time the breaker enters the
+// HalfOpen state, regardless of what activity preceded it. The transitions
+// out of HalfOpen and out of Open each zero those counters; this test guards
+// against a future change that lets them carry over from a previous cycle.
+func TestCircuitBreaker_HalfOpenCountersAreCleanOnReentry(t *testing.T) {
+	config := Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 2,
+		OpenTimeout:      50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	// Cycle 1: drive the breaker through Open -> HalfOpen -> Closed so the
+	// counters have non-trivial values before the next failure burst.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState() // -> HalfOpen
+	cb.RecordSuccess()
+	cb.RecordSuccess() // -> Closed (zeroes failures, successes, requests)
+
+	if cb.State() != StateClosed {
+		t.Fatalf("setup: expected Closed after first cycle, got %v", cb.State())
+	}
+
+	// Run plenty of successful traffic in Closed; this must not leak into
+	// the successes counter (which is only meaningful in HalfOpen).
+	for i := 0; i < 50; i++ {
+		cb.RecordSuccess()
+	}
+	if s := cb.Stats().Successes; s != 0 {
+		t.Errorf("successes must remain 0 in Closed, got %d", s)
+	}
+
+	// Cycle 2: drive Closed -> Open. After the transition both half-open
+	// counters must be 0 so the next HalfOpen cycle starts clean.
+	cb.RecordFailure()
+	cb.RecordFailure() // -> Open
+	if cb.State() != StateOpen {
+		t.Fatalf("expected Open after threshold, got %v", cb.State())
+	}
+	stats := cb.Stats()
+	if stats.Successes != 0 {
+		t.Errorf("successes must be 0 on entry to Open, got %d", stats.Successes)
+	}
+	if stats.Requests != 0 {
+		t.Errorf("requests must be 0 on entry to Open, got %d", stats.Requests)
+	}
+
+	// And the first success after Open -> HalfOpen must count as 1, not as
+	// "1 + whatever leaked from before".
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState() // -> HalfOpen
+	cb.RecordSuccess()
+	if s := cb.Stats().Successes; s != 1 {
+		t.Errorf("first success in HalfOpen must be 1, got %d", s)
+	}
+}
+
