@@ -26,22 +26,33 @@ type FailureDetector interface {
 	Reset()
 }
 
-// CommandFailureDetectorConfig configures CommandFailureDetector.
+// CommandFailureDetectorConfig configures CommandFailureDetector. Every
+// field has a documented default that NewCommandFailureDetector applies when
+// the field is left at its zero value, so a zero-valued config is a valid
+// way to ask for the recommended defaults.
 type CommandFailureDetectorConfig struct {
 	// MinNumFailures is the minimum number of failed commands that must be
 	// observed within the detection window before failover is considered.
-	// A value of 0 means the failure count is ignored and only
-	// FailureRateThreshold is taken into account.
-	// Default: 1000
+	// Ignored when IgnoreMinNumFailures is true.
+	// Default: 1000.
 	MinNumFailures uint64
+
+	// IgnoreMinNumFailures disables the MinNumFailures check, so ShouldFailover
+	// considers only FailureRateThreshold. Use this when the rate alone is the
+	// signal you trust (typically combined with a small FailureRateThreshold).
+	IgnoreMinNumFailures bool
 
 	// FailureRateThreshold is the failure rate (0.0-1.0) that, together with
 	// MinNumFailures, triggers failover. For example, 0.1 means failover when
 	// 10% or more of the commands in the window fail.
-	// A value of 0.0 means the rate is ignored and only MinNumFailures is
-	// taken into account.
-	// Default: 0.1
+	// Ignored when IgnoreFailureRateThreshold is true.
+	// Default: 0.1.
 	FailureRateThreshold float64
+
+	// IgnoreFailureRateThreshold disables the FailureRateThreshold check, so
+	// ShouldFailover considers only MinNumFailures. Use this when the absolute
+	// number of failures is the signal you trust regardless of traffic volume.
+	IgnoreFailureRateThreshold bool
 
 	// FailureDetectionWindow is the sliding time window over which command
 	// outcomes are considered. Outcomes older than FailureDetectionWindow
@@ -59,19 +70,40 @@ type CommandFailureDetectorConfig struct {
 }
 
 // DefaultCommandFailureDetectorConfig returns the default configuration.
+// NewCommandFailureDetector applies the same defaults to any zero-valued
+// field, so this is mainly useful as a starting point for tuning.
 func DefaultCommandFailureDetectorConfig() CommandFailureDetectorConfig {
 	return CommandFailureDetectorConfig{
-		MinNumFailures:         1000,
-		FailureRateThreshold:   0.1,
+		MinNumFailures:         defaultMinNumFailures,
+		FailureRateThreshold:   defaultFailureRateThreshold,
 		FailureDetectionWindow: defaultFailureDetectionWindow,
 		NumBuckets:             defaultNumBuckets,
 	}
 }
 
 const (
+	defaultMinNumFailures         = 1000
+	defaultFailureRateThreshold   = 0.1
 	defaultFailureDetectionWindow = 2 * time.Second
 	defaultNumBuckets             = 10
 )
+
+// applyDefaults fills zero-valued fields with their documented defaults so
+// the rest of the detector can assume every threshold is set.
+func (c *CommandFailureDetectorConfig) applyDefaults() {
+	if c.MinNumFailures == 0 {
+		c.MinNumFailures = defaultMinNumFailures
+	}
+	if c.FailureRateThreshold <= 0 {
+		c.FailureRateThreshold = defaultFailureRateThreshold
+	}
+	if c.FailureDetectionWindow <= 0 {
+		c.FailureDetectionWindow = defaultFailureDetectionWindow
+	}
+	if c.NumBuckets <= 0 {
+		c.NumBuckets = defaultNumBuckets
+	}
+}
 
 // bucket holds the outcomes recorded inside a single sub-bucket of the
 // sliding window. All fields are accessed atomically so the detector is
@@ -103,21 +135,21 @@ type CommandFailureDetector struct {
 }
 
 // NewCommandFailureDetector creates a new sliding-window failure detector
-// with the given configuration. Zero values for FailureDetectionWindow or
-// NumBuckets fall back to the package defaults; the threshold fields
-// (MinNumFailures, FailureRateThreshold) are intentionally not defaulted
-// because a zero value carries the documented "disabled" meaning.
+// with the given configuration. Any zero-valued field in config is replaced
+// with its documented default, so passing the zero value is equivalent to
+// passing DefaultCommandFailureDetectorConfig().
 func NewCommandFailureDetector(config CommandFailureDetectorConfig) *CommandFailureDetector {
-	if config.FailureDetectionWindow <= 0 {
-		config.FailureDetectionWindow = defaultFailureDetectionWindow
-	}
-	if config.NumBuckets <= 0 {
-		config.NumBuckets = defaultNumBuckets
+	config.applyDefaults()
+	// Clamp to at least one nanosecond so bucketFor never divides by zero
+	// when a caller picks a window shorter than NumBuckets nanoseconds.
+	bucketWidthNano := int64(config.FailureDetectionWindow) / int64(config.NumBuckets)
+	if bucketWidthNano < 1 {
+		bucketWidthNano = 1
 	}
 	return &CommandFailureDetector{
 		config:          config,
 		buckets:         make([]bucket, config.NumBuckets),
-		bucketWidthNano: int64(config.FailureDetectionWindow) / int64(config.NumBuckets),
+		bucketWidthNano: bucketWidthNano,
 		windowNano:      int64(config.FailureDetectionWindow),
 		now:             time.Now,
 	}
@@ -146,8 +178,10 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 // ShouldFailover returns true when the outcomes observed within the trailing
 // FailureDetectionWindow indicate that failover should be triggered. A
 // database is considered faulty when at least MinNumFailures commands have
-// failed AND the observed failure rate is at least FailureRateThreshold; a
-// zero value for either threshold disables that half of the check.
+// failed AND the observed failure rate is at least FailureRateThreshold.
+// Either half of the check can be disabled by setting IgnoreMinNumFailures
+// or IgnoreFailureRateThreshold; when both are disabled, any single failure
+// in the window triggers failover.
 // At least one failure must have been observed for failover to be considered.
 func (d *CommandFailureDetector) ShouldFailover() bool {
 	successes, failures := d.snapshot()
@@ -155,17 +189,16 @@ func (d *CommandFailureDetector) ShouldFailover() bool {
 	if failures == 0 {
 		return false
 	}
-
-	countMet := d.config.MinNumFailures == 0 || failures >= d.config.MinNumFailures
-
-	rateMet := true
-	if d.config.FailureRateThreshold > 0 {
-		total := successes + failures
-		failureRate := float64(failures) / float64(total)
-		rateMet = failureRate >= d.config.FailureRateThreshold
+	if !d.config.IgnoreMinNumFailures && failures < d.config.MinNumFailures {
+		return false
+	}
+	if d.config.IgnoreFailureRateThreshold {
+		return true
 	}
 
-	return countMet && rateMet
+	total := successes + failures
+	failureRate := float64(failures) / float64(total)
+	return failureRate >= d.config.FailureRateThreshold
 }
 
 // Reset discards all recorded outcomes. Concurrent recorders may race with

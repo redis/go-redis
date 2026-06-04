@@ -195,22 +195,78 @@ func TestCommandFailureDetector_Reset(t *testing.T) {
 	}
 }
 
-func TestCommandFailureDetector_RateOnly(t *testing.T) {
-	// MinNumFailures == 0 means only the failure rate is taken into account.
+func TestCommandFailureDetector_AppliesDefaultsForZeroFields(t *testing.T) {
+	// A zero-valued config must be equivalent to passing the documented
+	// defaults; reviewers flagged that the field comments promised defaults
+	// the constructor did not apply.
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{})
+	defaults := DefaultCommandFailureDetectorConfig()
+
+	if fd.config.MinNumFailures != defaults.MinNumFailures {
+		t.Errorf("MinNumFailures: got %d, want %d (default)",
+			fd.config.MinNumFailures, defaults.MinNumFailures)
+	}
+	if fd.config.FailureRateThreshold != defaults.FailureRateThreshold {
+		t.Errorf("FailureRateThreshold: got %v, want %v (default)",
+			fd.config.FailureRateThreshold, defaults.FailureRateThreshold)
+	}
+	if fd.config.FailureDetectionWindow != defaults.FailureDetectionWindow {
+		t.Errorf("FailureDetectionWindow: got %v, want %v (default)",
+			fd.config.FailureDetectionWindow, defaults.FailureDetectionWindow)
+	}
+	if fd.config.NumBuckets != defaults.NumBuckets {
+		t.Errorf("NumBuckets: got %d, want %d (default)",
+			fd.config.NumBuckets, defaults.NumBuckets)
+	}
+}
+
+func TestCommandFailureDetector_PreservesExplicitValues(t *testing.T) {
+	// Defaults must not overwrite explicit non-zero settings, otherwise the
+	// detector would be impossible to tune away from the defaults.
 	config := CommandFailureDetectorConfig{
-		MinNumFailures:         0,
-		FailureRateThreshold:   0.5,
-		FailureDetectionWindow: time.Hour,
+		MinNumFailures:         5,
+		FailureRateThreshold:   0.25,
+		FailureDetectionWindow: 500 * time.Millisecond,
+		NumBuckets:             4,
 	}
 	fd := NewCommandFailureDetector(config)
+	if fd.config != config {
+		t.Errorf("explicit config was overwritten: got %+v, want %+v", fd.config, config)
+	}
+}
 
-	// 1 failure out of 1 command => 100% rate, count threshold disabled.
+func TestCommandFailureDetector_DoesNotPanicOnTinyWindow(t *testing.T) {
+	// A FailureDetectionWindow shorter than NumBuckets nanoseconds would
+	// previously produce bucketWidthNano=0 and panic on the first record
+	// via "%". The constructor must clamp the bucket width.
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		FailureDetectionWindow: 5 * time.Nanosecond,
+		NumBuckets:             10,
+	})
+	// Both hot-path entry points must not panic.
+	fd.RecordSuccess()
+	fd.RecordFailure(errors.New("error"))
+	_ = fd.ShouldFailover()
+}
+
+func TestCommandFailureDetector_IgnoreMinNumFailures(t *testing.T) {
+	// With IgnoreMinNumFailures set, ShouldFailover should ignore the count
+	// threshold and decide purely on the failure rate.
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         10_000, // would otherwise gate every reasonable burst
+		IgnoreMinNumFailures:   true,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: time.Hour,
+	})
+
+	// 1 failure out of 1 command => 100% rate, well above the threshold.
 	fd.RecordFailure(errors.New("error"))
 	if !fd.ShouldFailover() {
-		t.Error("should failover when rate exceeds threshold and count is disabled")
+		t.Error("should failover when rate exceeds threshold and count is ignored")
 	}
 
-	// Drive the rate below the threshold with successes.
+	// Drive the rate below the threshold with successes; the count threshold
+	// is still ignored, but the rate check must now reject.
 	for i := 0; i < 10; i++ {
 		fd.RecordSuccess()
 	}
@@ -219,14 +275,15 @@ func TestCommandFailureDetector_RateOnly(t *testing.T) {
 	}
 }
 
-func TestCommandFailureDetector_CountOnly(t *testing.T) {
-	// FailureRateThreshold == 0.0 means only the failure count is considered.
-	config := CommandFailureDetectorConfig{
-		MinNumFailures:         3,
-		FailureRateThreshold:   0.0,
-		FailureDetectionWindow: time.Hour,
-	}
-	fd := NewCommandFailureDetector(config)
+func TestCommandFailureDetector_IgnoreFailureRateThreshold(t *testing.T) {
+	// With IgnoreFailureRateThreshold set, ShouldFailover should ignore the
+	// rate threshold and decide purely on the absolute failure count.
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:             3,
+		FailureRateThreshold:       0.99, // would otherwise be impossible to meet
+		IgnoreFailureRateThreshold: true,
+		FailureDetectionWindow:     time.Hour,
+	})
 
 	// A small failure rate but below the count threshold => no failover.
 	fd.RecordFailure(errors.New("error"))
@@ -238,10 +295,31 @@ func TestCommandFailureDetector_CountOnly(t *testing.T) {
 		t.Error("should not failover before reaching the failure count")
 	}
 
-	// Reaching the count threshold triggers failover regardless of rate.
+	// Reaching the count threshold triggers failover regardless of the rate.
 	fd.RecordFailure(errors.New("error"))
 	if !fd.ShouldFailover() {
 		t.Error("should failover once the failure count is reached")
+	}
+}
+
+func TestCommandFailureDetector_IgnoreBothThresholds(t *testing.T) {
+	// With both thresholds ignored, any single failure in the window should
+	// be enough to trigger failover.
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:             10_000,
+		IgnoreMinNumFailures:       true,
+		FailureRateThreshold:       0.99,
+		IgnoreFailureRateThreshold: true,
+		FailureDetectionWindow:     time.Hour,
+	})
+
+	if fd.ShouldFailover() {
+		t.Error("should not failover before any failure is recorded")
+	}
+
+	fd.RecordFailure(errors.New("error"))
+	if !fd.ShouldFailover() {
+		t.Error("any single failure should trigger when both thresholds are ignored")
 	}
 }
 
