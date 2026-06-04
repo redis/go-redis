@@ -3,9 +3,20 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// withFakeClock returns the detector with a hand-driven clock so tests can
+// advance time without sleeping. The returned closure shifts the clock by
+// the given duration. Use this for any test that depends on window expiry.
+func withFakeClock(fd *CommandFailureDetector, start time.Time) (advance func(time.Duration)) {
+	cur := start
+	fd.now = func() time.Time { return cur }
+	return func(d time.Duration) { cur = cur.Add(d) }
+}
 
 func TestCommandFailureDetector_ShouldFailover(t *testing.T) {
 	config := CommandFailureDetectorConfig{
@@ -76,7 +87,7 @@ func TestCommandFailureDetector_IgnoresContextErrors(t *testing.T) {
 	}
 
 	// Only successes should be counted
-	successes, failures, _ := fd.Stats()
+	successes, failures := fd.Stats()
 	if failures != 0 {
 		t.Errorf("expected 0 failures, got %d", failures)
 	}
@@ -98,7 +109,7 @@ func TestCommandFailureDetector_IgnoresNilError(t *testing.T) {
 		fd.RecordFailure(nil)
 	}
 
-	_, failures, _ := fd.Stats()
+	_, failures := fd.Stats()
 	if failures != 0 {
 		t.Errorf("expected 0 failures for nil errors, got %d", failures)
 	}
@@ -121,38 +132,44 @@ func TestCommandFailureDetector_DefaultsWindowWhenUnset(t *testing.T) {
 		t.Error("should failover after a failure with the defaulted window")
 	}
 
-	_, failures, _ := fd.Stats()
+	_, failures := fd.Stats()
 	if failures != 1 {
 		t.Errorf("expected 1 failure to be retained within the window, got %d", failures)
 	}
 }
 
-func TestCommandFailureDetector_WindowReset(t *testing.T) {
+func TestCommandFailureDetector_WindowExpiry(t *testing.T) {
+	// Outcomes older than the window must not be counted. The sliding
+	// implementation drops them one bucket at a time, so by advancing time
+	// past the full window every previously-recorded outcome should age out.
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         5,
 		FailureRateThreshold:   0.5,
-		FailureDetectionWindow: 50 * time.Millisecond,
+		FailureDetectionWindow: time.Second,
+		NumBuckets:             10,
 	}
 	fd := NewCommandFailureDetector(config)
+	advance := withFakeClock(fd, time.Unix(1_700_000_000, 0))
 
-	// Record failures
 	for i := 0; i < 10; i++ {
 		fd.RecordFailure(errors.New("error"))
 	}
+	if _, failures := fd.Stats(); failures != 10 {
+		t.Fatalf("expected 10 failures before expiry, got %d", failures)
+	}
 
-	// Wait for the window to expire. Use a generous buffer (2x the window)
-	// so the test does not flake on slow or loaded CI runners.
-	time.Sleep(100 * time.Millisecond)
+	// Step past the window by one full bucket width so every bucket falls
+	// outside the trailing window.
+	advance(config.FailureDetectionWindow + config.FailureDetectionWindow/time.Duration(config.NumBuckets))
 
-	// Record a success to trigger window check
 	fd.RecordSuccess()
 
-	successes, failures, _ := fd.Stats()
+	successes, failures := fd.Stats()
 	if failures != 0 {
-		t.Errorf("expected 0 failures after window reset, got %d", failures)
+		t.Errorf("expected 0 failures after window expiry, got %d", failures)
 	}
 	if successes != 1 {
-		t.Errorf("expected 1 success after window reset, got %d", successes)
+		t.Errorf("expected 1 success after window expiry, got %d", successes)
 	}
 }
 
@@ -172,7 +189,7 @@ func TestCommandFailureDetector_Reset(t *testing.T) {
 
 	fd.Reset()
 
-	successes, failures, _ := fd.Stats()
+	successes, failures := fd.Stats()
 	if failures != 0 || successes != 0 {
 		t.Errorf("expected 0/0 after reset, got %d/%d", successes, failures)
 	}
@@ -246,5 +263,191 @@ func TestCommandFailureDetector_RequiresBothThresholds(t *testing.T) {
 	}
 	if fd.ShouldFailover() {
 		t.Error("should not failover when only the count threshold is met")
+	}
+}
+
+// TestCommandFailureDetector_SlidingWindow exercises the property that
+// distinguishes a sliding window from a tumbling one: outcomes age out one
+// bucket at a time as time advances, rather than disappearing en masse at a
+// fixed window boundary.
+func TestCommandFailureDetector_SlidingWindow(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Second,
+		NumBuckets:             10,
+	}
+	fd := NewCommandFailureDetector(config)
+	advance := withFakeClock(fd, time.Unix(1_700_000_000, 0))
+
+	bucket := config.FailureDetectionWindow / time.Duration(config.NumBuckets)
+
+	// Spread one failure across each of the first three buckets.
+	fd.RecordFailure(errors.New("e"))
+	advance(bucket)
+	fd.RecordFailure(errors.New("e"))
+	advance(bucket)
+	fd.RecordFailure(errors.New("e"))
+
+	if _, failures := fd.Stats(); failures != 3 {
+		t.Fatalf("expected 3 failures in window, got %d", failures)
+	}
+
+	// Step time so the very first bucket falls outside the trailing window.
+	// In a tumbling implementation, advancing by < window would change
+	// nothing; in a sliding implementation, the oldest failure must have
+	// aged out.
+	advance(config.FailureDetectionWindow - bucket)
+	if _, failures := fd.Stats(); failures != 2 {
+		t.Fatalf("expected 2 failures after oldest bucket aged out, got %d", failures)
+	}
+
+	// One more bucket-width drops the next oldest failure.
+	advance(bucket)
+	if _, failures := fd.Stats(); failures != 1 {
+		t.Fatalf("expected 1 failure after second bucket aged out, got %d", failures)
+	}
+
+	// And once we walk past the full window, everything is gone.
+	advance(config.FailureDetectionWindow)
+	if _, failures := fd.Stats(); failures != 0 {
+		t.Fatalf("expected 0 failures after full window elapsed, got %d", failures)
+	}
+}
+
+// TestCommandFailureDetector_ConcurrentRecord checks that the lock-free
+// hot path doesn't lose counts under contention. We fan out N goroutines
+// each recording a fixed number of successes and failures and assert the
+// totals match. The window is long enough that no bucket rotates during
+// the test, so the count must be exact.
+func TestCommandFailureDetector_ConcurrentRecord(t *testing.T) {
+	const (
+		numGoroutines     = 32
+		opsPerGoroutine   = 5_000
+		expectedSuccesses = numGoroutines * opsPerGoroutine
+		expectedFailures  = numGoroutines * opsPerGoroutine
+	)
+
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		FailureDetectionWindow: time.Hour,
+		NumBuckets:             10,
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines * 2)
+	errFail := errors.New("failure")
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				fd.RecordSuccess()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				fd.RecordFailure(errFail)
+			}
+		}()
+	}
+	wg.Wait()
+
+	successes, failures := fd.Stats()
+	if successes != uint64(expectedSuccesses) {
+		t.Errorf("successes: got %d, want %d", successes, expectedSuccesses)
+	}
+	if failures != uint64(expectedFailures) {
+		t.Errorf("failures: got %d, want %d", failures, expectedFailures)
+	}
+}
+
+// TestCommandFailureDetector_ConcurrentRecordWithReaders pairs the
+// concurrent recorders above with a flock of concurrent readers calling
+// ShouldFailover. The test passes if no race is reported (-race) and no
+// panic is observed.
+func TestCommandFailureDetector_ConcurrentRecordWithReaders(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         50,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: time.Hour,
+		NumBuckets:             10,
+	})
+
+	var wg sync.WaitGroup
+	var stop atomic.Bool
+	errFail := errors.New("failure")
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				fd.RecordSuccess()
+				fd.RecordFailure(errFail)
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for !stop.Load() {
+				_ = fd.ShouldFailover()
+			}
+		}()
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	stop.Store(true)
+	wg.Wait()
+}
+
+// BenchmarkCommandFailureDetector_RecordSuccess measures the cost of the
+// hot path under contention so we can compare future implementations.
+func BenchmarkCommandFailureDetector_RecordSuccess(b *testing.B) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		FailureDetectionWindow: time.Hour,
+		NumBuckets:             10,
+	})
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			fd.RecordSuccess()
+		}
+	})
+}
+
+// BenchmarkCommandFailureDetector_RecordFailure mirrors RecordSuccess for
+// the failure path (same hot-path code, includes the error filter).
+func BenchmarkCommandFailureDetector_RecordFailure(b *testing.B) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		FailureDetectionWindow: time.Hour,
+		NumBuckets:             10,
+	})
+	err := errors.New("failure")
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			fd.RecordFailure(err)
+		}
+	})
+}
+
+// BenchmarkCommandFailureDetector_ShouldFailover measures the read path,
+// which sums NumBuckets atomically-loaded counters.
+func BenchmarkCommandFailureDetector_ShouldFailover(b *testing.B) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         100,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: time.Hour,
+		NumBuckets:             10,
+	})
+	// Populate so the rate check branch runs.
+	for i := 0; i < 1000; i++ {
+		fd.RecordSuccess()
+	}
+	fd.RecordFailure(errors.New("failure"))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = fd.ShouldFailover()
 	}
 }
