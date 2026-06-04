@@ -678,10 +678,13 @@ func TestPeekPushNotificationName_TruncatedHeader(t *testing.T) {
 	for _, tc := range cutpoints {
 		t.Run(tc.name, func(t *testing.T) {
 			data := []byte(frame)
-			// Use a chunked reader whose first chunk equals tc.prefix and
-			// whose second chunk delivers the rest. bufio will fill from the
-			// first chunk only, then block-fill from the second when we
-			// peek past it.
+			// Use a chunked reader that hands out tc.prefix bytes per Read
+			// call (not per fill). bufio's first fill therefore returns only
+			// tc.prefix bytes; satisfying a Peek that wants more forces
+			// additional Reads, each capped at tc.prefix bytes, until the
+			// peek window is full. That sequence reproduces the partial-fill
+			// boundary from issue #3839 where the buffered prefix landed in
+			// the middle of the push frame header.
 			rd := NewReader(&chunkedReader{data: data, chunkSize: tc.prefix})
 
 			if _, err := rd.PeekReplyType(); err != nil {
@@ -728,5 +731,30 @@ func TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF(t *testing.T) {
 	}
 	if name != "" {
 		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+}
+
+// TestPeekPushNotificationName_EmptyArrayLength asserts that ">\r\n" is
+// reported as a malformed frame rather than an incomplete prefix. RESP
+// requires at least one digit after '>' for the array length; without the
+// empty-length check in parsePushNotificationName the parser would treat
+// ">\r\n" as a valid prefix and PeekPushNotificationName would block
+// waiting for the rest of a frame that is already corrupt.
+func TestPeekPushNotificationName_EmptyArrayLength(t *testing.T) {
+	rd := NewReader(bytes.NewReader([]byte(">\r\n")))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for empty array length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+	if !strings.Contains(err.Error(), "empty push notification array length") {
+		t.Fatalf("PeekPushNotificationName: error should mention empty array length, got %v", err)
 	}
 }

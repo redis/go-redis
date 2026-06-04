@@ -173,12 +173,20 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 	}
 
 	// Skip the array length line ">N\r\n".
-	pos, ok, err := skipDigitsThenCRLF(buf, 1)
+	const arrayLenStart = 1 // first byte after the '>' marker
+	pos, ok, err := skipDigitsThenCRLF(buf, arrayLenStart)
 	if err != nil {
 		return "", false, fmt.Errorf("redis: can't parse push notification: %w", err)
 	}
 	if !ok {
 		return "", false, nil
+	}
+	// Reject ">\r\n": RESP requires at least one digit for the array length.
+	// Without this check the empty length looks like a valid prefix and the
+	// caller would block fetching more bytes for a frame that is already
+	// malformed.
+	if pos-2 == arrayLenStart {
+		return "", false, fmt.Errorf("redis: empty push notification array length")
 	}
 
 	// First element type byte: '$' (bulk) or '+' (simple-string).
