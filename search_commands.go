@@ -3900,9 +3900,10 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		if len(params) > 0 {
 			args = append(args, "PARAMS", len(params)*2)
 			for key, value := range params {
-				// Parameter keys should already have '$' prefix from the user
-				// Don't add it again if it's already there
+				// PARAMS entries are passed without a '$' prefix; they are referenced in
+				// the query and clauses using "$<name>".
 				args = append(args, key, value)
+			}
 			}
 		}
 
