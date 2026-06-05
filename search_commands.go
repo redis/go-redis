@@ -3749,19 +3749,22 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		}
 
 		// Vector data is always passed via the PARAMS mechanism (inline vector blobs
-		// are no longer supported by Redis). Build a local copy of the caller-provided
-		// params so options.Params is never mutated, and pre-reserve any explicit
-		// VectorParamName values so generated names never collide with them.
-		params := make(map[string]interface{}, len(options.Params)+len(options.VectorExpressions))
-		for k, v := range options.Params {
-			params[k] = v
-		}
-		for _, vectorExpr := range options.VectorExpressions {
-			if vectorExpr.VectorParamName != "" {
-				params[vectorExpr.VectorParamName] = nil
+		// are no longer supported by Redis). When vectors are present, build a local
+		// copy of the caller-provided params so options.Params is never mutated, and
+		// pre-reserve any explicit VectorParamName values so generated names never
+		// collide with them.
+		params := options.Params
+		if len(options.VectorExpressions) > 0 {
+			params = make(map[string]interface{}, len(options.Params)+len(options.VectorExpressions))
+			for k, v := range options.Params {
+				params[k] = v
+			}
+			for _, vectorExpr := range options.VectorExpressions {
+				if vectorExpr.VectorParamName != "" {
+					params[vectorExpr.VectorParamName] = nil
+				}
 			}
 		}
-
 		// Add vector expressions
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
