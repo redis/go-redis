@@ -236,8 +236,7 @@ func assertVectorParam(t *testing.T, args []interface{}, field, name string, blo
 	if nameIdx+1 >= len(args) {
 		t.Fatalf("expected param value after %q, got %v", name, args)
 	}
-	gotBlob, ok := args[nameIdx+1].([]byte)
-	if !ok || string(gotBlob) != string(blob) {
+	if !reflect.DeepEqual(args[nameIdx+1], blob) {
 		t.Fatalf("expected param %q to carry blob %v, got %v", name, blob, args[nameIdx+1])
 	}
 }
