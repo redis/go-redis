@@ -3679,7 +3679,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform basic hybrid search", Label("search", "fthybrid"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// Basic hybrid search combining text and vector search
 		searchQuery := "@color:{red}"
 		vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
@@ -3700,7 +3699,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// Test with TFIDF scorer
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3737,7 +3735,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		// This query won't have results from search, so we can validate vector filter
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3781,7 +3778,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3807,7 +3803,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3835,7 +3830,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3866,7 +3860,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3895,7 +3888,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3938,7 +3930,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3963,7 +3954,6 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
 		SkipBeforeRedisVersion(8.4, "no support")
-		SkipAfterRedisVersion(8.5, "inline vector blobs not supported in Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{

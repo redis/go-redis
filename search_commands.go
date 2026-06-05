@@ -408,11 +408,12 @@ const (
 type FTHybridVectorExpression struct {
 	VectorField string
 	VectorData  Vector
-	// VectorParamName specifies the parameter name for passing vector data via PARAMS mechanism.
-	// REQUIRED for Redis 8.6+ (inline vector blobs are not supported in 8.6+).
-	// Optional for Redis 8.4-8.5 (both inline and PARAMS are supported).
-	// When set, the vector blob will be passed as: VSIM @field $VectorParamName PARAMS ... VectorParamName <blob>
-	// When empty, the vector blob will be inlined: VSIM @field <blob> (fails on Redis 8.6+)
+	// VectorParamName optionally specifies the parameter name used to pass the
+	// vector data via the PARAMS mechanism.
+	// Vector data is always passed via PARAMS because inline vector blobs are no
+	// longer supported by Redis. When left empty, the library generates a unique
+	// parameter name automatically.
+	// The vector blob is passed as: VSIM @field $VectorParamName ... PARAMS ... VectorParamName <blob>
 	VectorParamName string
 	Method          FTHybridVectorMethod
 	MethodParams    []interface{}
@@ -3700,6 +3701,19 @@ func hybridVectorBytes(blob []byte) ([]byte, error) {
 	return blob, nil
 }
 
+// generateVectorParamName returns a parameter name that is not already present
+// in params. It is used to pass vector data via the PARAMS mechanism when the
+// caller does not provide a VectorParamName, since inline vector blobs are no
+// longer supported by Redis.
+func generateVectorParamName(params map[string]interface{}) string {
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("__vector_param_%d", i)
+		if _, ok := params[name]; !ok {
+			return name
+		}
+	}
+}
+
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
@@ -3733,19 +3747,18 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				return cmd
 			}
 
-			// If VectorParamName is provided, use PARAMS mechanism (required for Redis 8.6+)
-			// If not provided, inline the vector blob (works on Redis 8.4/8.5, fails on 8.6+)
-			if vectorExpr.VectorParamName != "" {
-				// Use PARAMS mechanism
-				args = append(args, "$"+vectorExpr.VectorParamName)
-				if options.Params == nil {
-					options.Params = make(map[string]interface{})
-				}
-				options.Params[vectorExpr.VectorParamName] = vectorBlob
-			} else {
-				// Inline the vector blob (deprecated in Redis 8.6+)
-				args = append(args, vectorBlob)
+			// Vector data is always passed via the PARAMS mechanism. Inline vector
+			// blobs are no longer supported by Redis, so when VectorParamName is not
+			// provided we generate a unique parameter name and use it.
+			paramName := vectorExpr.VectorParamName
+			if paramName == "" {
+				paramName = generateVectorParamName(options.Params)
 			}
+			args = append(args, "$"+paramName)
+			if options.Params == nil {
+				options.Params = make(map[string]interface{})
+			}
+			options.Params[paramName] = vectorBlob
 
 			if vectorExpr.Method != "" {
 				args = append(args, vectorExpr.Method)
