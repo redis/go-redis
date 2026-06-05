@@ -412,13 +412,9 @@ type FTHybridVectorExpression struct {
 	// vector data via the PARAMS mechanism.
 	// Vector data is always passed via PARAMS because inline vector blobs are no
 	// longer supported by Redis. When left empty, the library generates a unique
-	// parameter name automatically (e.g. "__vector_param_0").
+	// parameter name automatically (e.g. "__vector_param_0") without mutating
+	// FTHybridOptions.Params and without colliding with any explicit names.
 	// The vector blob is passed as: VSIM @field $VectorParamName ... PARAMS ... VectorParamName <blob>
-	//
-	// Setting VectorParamName explicitly is recommended. The auto-generated names
-	// come with a couple of known limitations (see FTHybridWithArgs for details):
-	// generated names are written back into FTHybridOptions.Params, and they may
-	// collide with explicit names that follow the "__vector_param_N" pattern.
 	VectorParamName string
 	Method          FTHybridVectorMethod
 	MethodParams    []interface{}
@@ -3725,19 +3721,13 @@ func generateVectorParamName(params map[string]interface{}) string {
 // Vector data is always sent through the PARAMS mechanism, because inline vector
 // blobs are no longer supported by Redis. For every vector expression whose
 // VectorParamName is empty, a unique name is generated (e.g. "__vector_param_0")
-// and the corresponding blob is added to options.Params.
+// and the corresponding blob is passed via PARAMS.
 //
-// Known limitations of the auto-generated names (set VectorParamName explicitly to
-// avoid them):
-//   - options.Params is mutated: generated entries are written into the provided
-//     options. Reusing the same *FTHybridOptions across multiple calls will keep
-//     accumulating "__vector_param_N" entries, so prefer a fresh options value per
-//     call (or set VectorParamName explicitly) when reusing options.
-//   - name collisions: if some expressions set VectorParamName explicitly to a value
-//     matching the generated "__vector_param_N" pattern while others rely on
-//     generation, a generated name may overwrite an explicit one and a VSIM clause
-//     could reference the wrong blob. Setting VectorParamName on all expressions
-//     avoids this.
+// options.Params is never mutated: the command is built from a local copy that
+// combines the caller-provided params with any generated vector parameters. This
+// makes it safe to reuse the same *FTHybridOptions across multiple calls. Generated
+// names are also reserved against all explicit VectorParamName values, so they never
+// collide with explicit names (even those following the "__vector_param_N" pattern).
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
 	args := []interface{}{"FT.HYBRID", index}
 
@@ -3758,6 +3748,20 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			}
 		}
 
+		// Vector data is always passed via the PARAMS mechanism (inline vector blobs
+		// are no longer supported by Redis). Build a local copy of the caller-provided
+		// params so options.Params is never mutated, and pre-reserve any explicit
+		// VectorParamName values so generated names never collide with them.
+		params := make(map[string]interface{}, len(options.Params)+len(options.VectorExpressions))
+		for k, v := range options.Params {
+			params[k] = v
+		}
+		for _, vectorExpr := range options.VectorExpressions {
+			if vectorExpr.VectorParamName != "" {
+				params[vectorExpr.VectorParamName] = nil
+			}
+		}
+
 		// Add vector expressions
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
@@ -3769,18 +3773,15 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				return cmd
 			}
 
-			// Vector data is always passed via the PARAMS mechanism. Inline vector
-			// blobs are no longer supported by Redis, so when VectorParamName is not
-			// provided we generate a unique parameter name and use it.
+			// When VectorParamName is not provided, generate a unique name. Generated
+			// names are tracked only in the local params map, never written back to
+			// options.Params.
 			paramName := vectorExpr.VectorParamName
 			if paramName == "" {
-				paramName = generateVectorParamName(options.Params)
+				paramName = generateVectorParamName(params)
 			}
 			args = append(args, "$"+paramName)
-			if options.Params == nil {
-				options.Params = make(map[string]interface{})
-			}
-			options.Params[paramName] = vectorBlob
+			params[paramName] = vectorBlob
 
 			if vectorExpr.Method != "" {
 				args = append(args, vectorExpr.Method)
@@ -3891,9 +3892,11 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		}
 
 		// Add PARAMS
-		if len(options.Params) > 0 {
-			args = append(args, "PARAMS", len(options.Params)*2)
-			for key, value := range options.Params {
+		// Emit from the local params map, which contains the caller-provided params
+		// plus any generated vector parameter names. options.Params is left untouched.
+		if len(params) > 0 {
+			args = append(args, "PARAMS", len(params)*2)
+			for key, value := range params {
 				// Parameter keys should already have '$' prefix from the user
 				// Don't add it again if it's already there
 				args = append(args, key, value)

@@ -327,3 +327,62 @@ func TestGenerateVectorParamName(t *testing.T) {
 		params[name] = struct{}{}
 	}
 }
+
+func TestFTHybridWithArgsDoesNotMutateParams(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	blob := []byte{1, 2, 3, 4}
+	options := &FTHybridOptions{
+		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+		VectorExpressions: []FTHybridVectorExpression{{
+			VectorField: "embedding",
+			VectorData:  &VectorFP32{Val: blob},
+		}},
+		Params: map[string]interface{}{"existing": "value"},
+	}
+	want := map[string]interface{}{"existing": "value"}
+
+	// Calling multiple times with the same options must not accumulate generated
+	// parameters in options.Params nor otherwise mutate it.
+	for i := 0; i < 3; i++ {
+		cmd := c.FTHybridWithArgs(context.Background(), "idx", options)
+		if cmd.Err() != nil {
+			t.Fatalf("unexpected error on call %d: %v", i, cmd.Err())
+		}
+		gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+		if !ok {
+			t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+		}
+		// The generated param and the user-provided param are both emitted.
+		assertVectorParam(t, gotCmd.args, "embedding", "__vector_param_0", blob)
+		if !reflect.DeepEqual(options.Params, want) {
+			t.Fatalf("options.Params mutated after call %d: got %v, want %v", i, options.Params, want)
+		}
+	}
+}
+
+func TestFTHybridWithArgsGeneratedNameAvoidsExplicitCollision(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+	blob0 := []byte{1, 2, 3, 4}
+	blob1 := []byte{5, 6, 7, 8}
+	// The first expression auto-generates a name while the second explicitly uses
+	// the name the generator would otherwise pick. The generated name must avoid
+	// the explicit one regardless of ordering.
+	cmd := c.FTHybridWithArgs(context.Background(), "idx", &FTHybridOptions{
+		SearchExpressions: []FTHybridSearchExpression{{Query: "*"}},
+		VectorExpressions: []FTHybridVectorExpression{
+			{VectorField: "embedding", VectorData: &VectorFP32{Val: blob0}},
+			{VectorField: "embedding2", VectorData: &VectorFP32{Val: blob1}, VectorParamName: "__vector_param_0"},
+		},
+	})
+	if cmd.Err() != nil {
+		t.Fatalf("unexpected error: %v", cmd.Err())
+	}
+	gotCmd, ok := m.lastCmd.(*FTHybridCmd)
+	if !ok {
+		t.Fatalf("expected FTHybridCmd, got %T", m.lastCmd)
+	}
+	assertVectorParam(t, gotCmd.args, "embedding2", "__vector_param_0", blob1)
+	assertVectorParam(t, gotCmd.args, "embedding", "__vector_param_1", blob0)
+}
