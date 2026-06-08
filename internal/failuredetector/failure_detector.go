@@ -42,11 +42,11 @@ type CommandFailureDetectorConfig struct {
 	// signal you trust (typically combined with a small FailureRateThreshold).
 	IgnoreMinNumFailures bool
 
-	// FailureRateThreshold is the failure rate (0.0-1.0) that, together with
+	// FailureRateThreshold is the failure rate (0.0-1.0] that, together with
 	// MinNumFailures, triggers failover. For example, 0.1 means failover when
 	// 10% or more of the commands in the window fail.
 	// Ignored when IgnoreFailureRateThreshold is true.
-	// Default: 0.1.
+	// Default: 0.1. (A zero value means "use the default".)
 	FailureRateThreshold float64
 
 	// IgnoreFailureRateThreshold disables the FailureRateThreshold check, so
