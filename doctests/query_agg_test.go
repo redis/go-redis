@@ -228,15 +228,13 @@ func ExampleClient_query_agg() {
 		"idx:bicycle",
 		"@condition:{new}",
 		&redis.FTAggregateOptions{
-			Apply: []redis.FTAggregateApply{
-				{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "__key"}},
+				{Load: &redis.FTAggregateLoad{Field: "price"}},
+				{Apply: &redis.FTAggregateApply{
 					Field: "@price - (@price * 0.1)",
 					As:    "discounted",
-				},
-			},
-			Load: []redis.FTAggregateLoad{
-				{Field: "__key"},
-				{Field: "price"},
+				}},
 			},
 		},
 	).Result()
@@ -271,17 +269,13 @@ func ExampleClient_query_agg() {
 	res2, err := rdb.FTAggregateWithArgs(ctx,
 		"idx:bicycle", "*",
 		&redis.FTAggregateOptions{
-			Load: []redis.FTAggregateLoad{
-				{Field: "price"},
-			},
-			Apply: []redis.FTAggregateApply{
-				{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "price"}},
+				{Apply: &redis.FTAggregateApply{
 					Field: "@price<1000",
 					As:    "price_category",
-				},
-			},
-			GroupBy: []redis.FTAggregateGroupBy{
-				{
+				}},
+				{GroupBy: &redis.FTAggregateGroupBy{
 					Fields: []interface{}{"@condition"},
 					Reduce: []redis.FTAggregateReducer{
 						{
@@ -290,7 +284,7 @@ func ExampleClient_query_agg() {
 							As:      "num_affordable",
 						},
 					},
-				},
+				}},
 			},
 		},
 	).Result()
@@ -323,14 +317,12 @@ func ExampleClient_query_agg() {
 	res3, err := rdb.FTAggregateWithArgs(ctx,
 		"idx:bicycle", "*",
 		&redis.FTAggregateOptions{
-			Apply: []redis.FTAggregateApply{
-				{
+			Steps: []redis.FTAggregateStep{
+				{Apply: &redis.FTAggregateApply{
 					Field: "'bicycle'",
 					As:    "type",
-				},
-			},
-			GroupBy: []redis.FTAggregateGroupBy{
-				{
+				}},
+				{GroupBy: &redis.FTAggregateGroupBy{
 					Fields: []interface{}{"@type"},
 					Reduce: []redis.FTAggregateReducer{
 						{
@@ -338,7 +330,7 @@ func ExampleClient_query_agg() {
 							As:      "num_total",
 						},
 					},
-				},
+				}},
 			},
 		},
 	).Result()
@@ -363,11 +355,9 @@ func ExampleClient_query_agg() {
 	res4, err := rdb.FTAggregateWithArgs(ctx,
 		"idx:bicycle", "*",
 		&redis.FTAggregateOptions{
-			Load: []redis.FTAggregateLoad{
-				{Field: "__key"},
-			},
-			GroupBy: []redis.FTAggregateGroupBy{
-				{
+			Steps: []redis.FTAggregateStep{
+				{Load: &redis.FTAggregateLoad{Field: "__key"}},
+				{GroupBy: &redis.FTAggregateGroupBy{
 					Fields: []interface{}{"@condition"},
 					Reduce: []redis.FTAggregateReducer{
 						{
@@ -376,7 +366,7 @@ func ExampleClient_query_agg() {
 							As:      "bicycles",
 						},
 					},
-				},
+				}},
 			},
 		},
 	).Result()

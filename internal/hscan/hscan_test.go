@@ -48,6 +48,19 @@ type TimeData struct {
 	Time *TimeRFC3339Nano `redis:"login"`
 }
 
+type binaryUnmarshaler struct {
+	s string
+}
+
+func (b *binaryUnmarshaler) UnmarshalBinary(data []byte) error {
+	b.s = string(data)
+	return nil
+}
+
+type BinaryData struct {
+	Binary *binaryUnmarshaler `redis:"binary"`
+}
+
 type i []interface{}
 
 func TestGinkgoSuite(t *testing.T) {
@@ -216,5 +229,10 @@ var _ = Describe("Scan", func() {
 		var tt TimeTime
 		Expect(Scan(&tt, i{"time"}, i{now.Format(time.RFC3339Nano)})).NotTo(HaveOccurred())
 		Expect(now.Unix()).To(Equal(tt.Time.Unix()))
+	})
+	It("Implements BinaryUnmarshaler", func() {
+		var bd BinaryData
+		Expect(Scan(&bd, i{"binary"}, i{"hello"})).NotTo(HaveOccurred())
+		Expect(bd.Binary.s).To(Equal("hello"))
 	})
 })

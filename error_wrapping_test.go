@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"testing"
 
@@ -257,6 +258,12 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 			retryTimeout: false,
 		},
 		{
+			name:         "Lua script READONLY error should retry",
+			errorMsg:     "ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica.",
+			shouldRetry:  true,
+			retryTimeout: false,
+		},
+		{
 			name:         "CLUSTERDOWN error should retry",
 			errorMsg:     "CLUSTERDOWN The cluster is down",
 			shouldRetry:  true,
@@ -302,6 +309,51 @@ func TestShouldRetryWithTypedErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLuaScriptReadOnlyError tests that READONLY errors from Lua scripts
+// are correctly detected by IsReadOnlyError and ShouldRetry.
+func TestLuaScriptReadOnlyError(t *testing.T) {
+	luaReadOnlyMsg := "ERR Error running script (call to f_abc123): @user_script:1: -READONLY You can't write against a read only replica."
+
+	t.Run("IsReadOnlyError detects Lua script READONLY", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		if !redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should detect Lua script READONLY error: %v", err)
+		}
+	})
+
+	t.Run("ShouldRetry retries Lua script READONLY", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		if !redis.ShouldRetry(err, false) {
+			t.Errorf("ShouldRetry should retry Lua script READONLY error: %v", err)
+		}
+	})
+
+	t.Run("wrapped Lua script READONLY detected", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-" + luaReadOnlyMsg))
+		wrappedErr := fmt.Errorf("hook wrapper: %w", err)
+		if !redis.IsReadOnlyError(wrappedErr) {
+			t.Errorf("IsReadOnlyError should detect wrapped Lua script READONLY error: %v", wrappedErr)
+		}
+		if !redis.ShouldRetry(wrappedErr, false) {
+			t.Errorf("ShouldRetry should retry wrapped Lua script READONLY error: %v", wrappedErr)
+		}
+	})
+
+	t.Run("false positive: non-script error with -READONLY not matched", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-ERR something-READONLY-key"))
+		if redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should NOT match non-script error containing -READONLY: %v", err)
+		}
+	})
+
+	t.Run("false positive: script error without -READONLY not matched", func(t *testing.T) {
+		err := proto.ParseErrorReply([]byte("-ERR Error running script (call to f_abc): @user_script:1: some other error"))
+		if redis.IsReadOnlyError(err) {
+			t.Errorf("IsReadOnlyError should NOT match script error without -READONLY: %v", err)
+		}
+	})
 }
 
 // TestSetErrWithWrappedError tests that when a hook wraps an error and sets it
@@ -583,6 +635,59 @@ func TestContextErrorWrapping(t *testing.T) {
 		}
 		if redis.ShouldRetry(doubleWrappedErr, true) {
 			t.Errorf("Should not retry wrapped context.DeadlineExceeded even with retryTimeout=true")
+		}
+	})
+}
+
+// TestDialTimeoutShouldRetry tests that dial errors wrapped in context.DeadlineExceeded
+// (as produced by pool.go's context.WithTimeout(ctx, DialTimeout)) are retried.
+func TestDialTimeoutShouldRetry(t *testing.T) {
+	makeDialOpError := func(inner error) *net.OpError {
+		return &net.OpError{Op: "dial", Net: "tcp", Err: inner}
+	}
+
+	t.Run("bare dial OpError retries", func(t *testing.T) {
+		err := makeDialOpError(&net.AddrError{Err: "connection refused", Addr: "127.0.0.1:6379"})
+		if !redis.ShouldRetry(err, false) {
+			t.Errorf("bare dial OpError should retry")
+		}
+	})
+
+	t.Run("dial OpError wrapped in context.DeadlineExceeded retries", func(t *testing.T) {
+		// Simulates pool.go wraps net.OpError as DeadlineExceeded.
+		dialErr := makeDialOpError(context.DeadlineExceeded)
+		wrappedErr := fmt.Errorf("dial tcp: %w", dialErr)
+		if !redis.ShouldRetry(wrappedErr, false) {
+			t.Errorf("dial OpError wrapped in DeadlineExceeded should retry, got false")
+		}
+		if !redis.ShouldRetry(wrappedErr, true) {
+			t.Errorf("dial OpError wrapped in DeadlineExceeded should retry, got false")
+		}
+	})
+
+	t.Run("plain context.DeadlineExceeded does not retry", func(t *testing.T) {
+		err := fmt.Errorf("op failed: %w", context.DeadlineExceeded)
+		if redis.ShouldRetry(err, false) {
+			t.Errorf("plain DeadlineExceeded should not retry")
+		}
+		if redis.ShouldRetry(err, true) {
+			t.Errorf("plain DeadlineExceeded should not retry even with retryTimeout=true")
+		}
+	})
+
+	t.Run("plain context.Canceled does not retry", func(t *testing.T) {
+		err := fmt.Errorf("op failed: %w", context.Canceled)
+		if redis.ShouldRetry(err, false) {
+			t.Errorf("plain context.Canceled should not retry")
+		}
+	})
+
+	t.Run("non-dial OpError does not bypass DeadlineExceeded check", func(t *testing.T) {
+		// Op="read" wrapped in DeadlineExceeded should NOT retry (user context expired)
+		readErr := &net.OpError{Op: "read", Net: "tcp", Err: context.DeadlineExceeded}
+		wrappedErr := fmt.Errorf("read: %w", readErr)
+		if redis.ShouldRetry(wrappedErr, false) {
+			t.Errorf("non-dial OpError with DeadlineExceeded should not retry")
 		}
 	})
 }

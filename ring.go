@@ -5,21 +5,18 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/cespare/xxhash/v2"
-	"github.com/dgryski/go-rendezvous" //nolint
 	"github.com/redis/go-redis/v9/auth"
-
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -36,16 +33,8 @@ type ConsistentHash interface {
 	Get(string) string
 }
 
-type rendezvousWrapper struct {
-	*rendezvous.Rendezvous
-}
-
-func (w rendezvousWrapper) Get(key string) string {
-	return w.Lookup(key)
-}
-
 func newRendezvous(shards []string) ConsistentHash {
-	return rendezvousWrapper{rendezvous.New(shards, xxhash.Sum64String)}
+	return hashtag.NewRendezvousHash(shards)
 }
 
 //------------------------------------------------------------------------------
@@ -169,7 +158,11 @@ type RingOptions struct {
 	// default: false
 	DisableIdentity bool
 	IdentitySuffix  string
-	UnstableResp3   bool
+
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
+	UnstableResp3 bool
 }
 
 func (opt *RingOptions) init() {
@@ -782,7 +775,10 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 }
 
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	pos := cmdFirstKeyPos(cmd)
+	// TODO: populate cmdsInfoCache lazily (via cmdsInfoCache.Get) so that
+	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
+	// mirroring how ClusterClient.cmdInfo works. For now pass nil
+	pos := cmdFirstKeyPosWithInfo(cmd, nil)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -850,7 +846,7 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		hash := cmd.stringArg(cmdFirstKeyPos(cmd))
+		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}

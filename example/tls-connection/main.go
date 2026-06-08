@@ -31,7 +31,7 @@ func main() {
 
 	// Example 2: TLS with CA certificate verification
 	fmt.Println("\nExample 2: TLS with CA certificate verification")
-	
+
 	// Load CA certificate
 	caCert, err := os.ReadFile("path/to/ca.crt")
 	if err != nil {
@@ -58,7 +58,7 @@ func main() {
 
 	// Example 3: TLS with client certificate (mutual TLS)
 	fmt.Println("\nExample 3: TLS with client certificate (mutual TLS)")
-	
+
 	// Load CA certificate
 	caCert, err = os.ReadFile("path/to/ca.crt")
 	if err != nil {
@@ -92,18 +92,18 @@ func main() {
 
 	// Example 4: Using rediss:// URL scheme
 	fmt.Println("\nExample 4: Using rediss:// URL scheme")
-	
+
 	opt, err := redis.ParseURL("rediss://localhost:6666")
 	if err != nil {
 		fmt.Printf("Failed to parse URL: %v\n", err)
 		return
 	}
-	
+
 	// Add InsecureSkipVerify for testing with self-signed certs
 	opt.TLSConfig = &tls.Config{
 		InsecureSkipVerify: true,
 	}
-	
+
 	client4 := redis.NewClient(opt)
 	defer client4.Close()
 
@@ -121,4 +121,3 @@ func main() {
 	fmt.Println("The certificate's CN (Common Name) field will be used as the Redis username")
 	fmt.Println("See tls_cert_auth_test.go for a complete working example")
 }
-

@@ -81,6 +81,72 @@ var _ = Describe("PubSub", func() {
 		Expect(stats.Misses).To(Equal(uint32(1)))
 	})
 
+	It("should receive hash field subkey notifications", Label("hash-expiration", "NonRedisEnterprise"), func() {
+		SkipBeforeRedisVersion(8.8, "subkeyspace notifications require Redis 8.8")
+
+		config, err := client.ConfigGet(ctx, "notify-keyspace-events").Result()
+		Expect(err).NotTo(HaveOccurred())
+		previousNotifyConfig := config["notify-keyspace-events"]
+		Expect(client.ConfigSet(ctx, "notify-keyspace-events", "STh").Err()).NotTo(HaveOccurred())
+		defer client.ConfigSet(ctx, "notify-keyspace-events", previousNotifyConfig)
+
+		const (
+			hashKey         = "skn:hash"
+			field           = "field-alpha"
+			hexpireChannel  = "__subkeyevent@0__:hexpire"
+			expiredChannel  = "__subkeyevent@0__:hexpired"
+			expectedPayload = "8:skn:hash|11:field-alpha"
+		)
+		Expect(client.Del(ctx, hashKey).Err()).NotTo(HaveOccurred())
+
+		pubsub := client.Subscribe(ctx, hexpireChannel, expiredChannel)
+		defer pubsub.Close()
+
+		for _, expected := range []redis.Subscription{
+			{Kind: "subscribe", Channel: hexpireChannel, Count: 1},
+			{Kind: "subscribe", Channel: expiredChannel, Count: 2},
+		} {
+			msgi, err := pubsub.ReceiveTimeout(ctx, time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(msgi).To(Equal(&expected))
+		}
+
+		Expect(client.HSet(ctx, hashKey, field, "value").Err()).NotTo(HaveOccurred())
+		res, err := client.HPExpire(ctx, hashKey, 50*time.Millisecond, field).Result()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(Equal([]int64{1}))
+
+		seen := make(map[string]string)
+		deadline := time.Now().Add(10 * time.Second)
+
+		for time.Now().Before(deadline) &&
+			(seen[hexpireChannel] == "" || seen[expiredChannel] == "") {
+			msgi, err := pubsub.ReceiveTimeout(ctx, 500*time.Millisecond)
+			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			msg, ok := msgi.(*redis.Message)
+			if !ok {
+				continue
+			}
+			if msg.Channel != hexpireChannel && msg.Channel != expiredChannel {
+				continue
+			}
+
+			Expect(msg.Pattern).To(BeEmpty())
+			Expect(msg.Payload).To(Equal(expectedPayload))
+			Expect(msg.PayloadSlice).To(BeEmpty())
+			seen[msg.Channel] = msg.Payload
+		}
+
+		Expect(seen).To(HaveKeyWithValue(hexpireChannel, expectedPayload))
+		Expect(seen).To(HaveKeyWithValue(expiredChannel, expectedPayload))
+	})
+
 	It("should pub/sub channels", func() {
 		channels, err := client.PubSubChannels(ctx, "mychannel*").Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -570,6 +636,13 @@ var _ = Describe("PubSub", func() {
 		err = pubsub.ClientSetName(ctx, "my-subscriber")
 		Expect(err).NotTo(HaveOccurred())
 
+		// PubSub.ClientSetName only writes the command; the +OK reply is
+		// drained here. This also synchronizes us with the server so that
+		// the subsequent CLIENT LIST on a different connection observes
+		// the rename (CLIENT LIST may otherwise race the SETNAME packet).
+		_, err = pubsub.Receive(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
 		// Verify the name is set via CLIENT LIST
 		clientList, err := client.ClientList(ctx).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -580,19 +653,24 @@ var _ = Describe("PubSub", func() {
 		pubsub := client.Subscribe(ctx, "mychannel")
 		defer pubsub.Close()
 
+		// Wait for the SUBSCRIBE confirmation before calling Channel(), so the
+		// server is guaranteed to have registered the subscription before we
+		// Publish. Once Channel() starts its pump goroutine, all subsequent
+		// reads happen there and Subscription frames are filtered out.
+		_, err := pubsub.ReceiveTimeout(ctx, 5*time.Second)
+		Expect(err).NotTo(HaveOccurred())
+
 		ch := pubsub.Channel(
 			redis.WithChannelSize(10),
 			redis.WithChannelHealthCheckInterval(time.Second),
 		)
 
 		text := "test channel message"
-		err := client.Publish(ctx, "mychannel", text).Err()
+		err = client.Publish(ctx, "mychannel", text).Err()
 		Expect(err).NotTo(HaveOccurred())
 
-		time.Sleep(10 * time.Millisecond)
-
 		var msg *redis.Message
-		Eventually(ch).Should(Receive(&msg))
+		Eventually(ch, 5*time.Second).Should(Receive(&msg))
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(text))
 	})

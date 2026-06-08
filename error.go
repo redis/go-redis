@@ -91,6 +91,14 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 
+	// Dial errors mean TCP connection was never established — safe to retry even
+	// when wrapped inside context.DeadlineExceeded (from DialTimeout context).
+	// Must be checked before the context error check below.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+
 	// Check for context errors (works with wrapped errors)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
@@ -142,6 +150,9 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return true
 	}
 	if strings.HasPrefix(s, "READONLY ") {
+		return true
+	}
+	if strings.Contains(s, "-READONLY You can't write against a read only replica") {
 		return true
 	}
 	if strings.HasPrefix(s, "CLUSTERDOWN ") {

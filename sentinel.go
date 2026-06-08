@@ -5,8 +5,10 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,7 +17,6 @@ import (
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -159,6 +160,9 @@ type FailoverOptions struct {
 	// Only applies to failover cluster clients. Default is 15 seconds.
 	FailingTimeoutSeconds int
 
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
 	UnstableResp3 bool
 
 	// PushNotificationProcessor is the processor for handling push notifications.
@@ -532,7 +536,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	rdb := &Client{
 		baseClient: &baseClient{
-			opt: opt,
+			opt:     opt,
+			onClose: &onCloseHooks{},
 		},
 	}
 	rdb.init()
@@ -556,7 +561,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	rdb.onClose = rdb.wrappedOnClose(failover.Close)
+	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
@@ -620,7 +625,8 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
-			opt: opt,
+			opt:     opt,
+			onClose: &onCloseHooks{},
 		},
 	}
 
@@ -948,6 +954,7 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				errCh <- err
 				return
 			}
+
 			once.Do(func() {
 				masterAddr = net.JoinHostPort(addrVal[0], addrVal[1])
 				// Push working sentinel to the top
@@ -956,6 +963,10 @@ func (c *sentinelFailover) MasterAddr(ctx context.Context) (string, error) {
 				internal.Logger.Printf(ctx, "sentinel: selected addr=%s masterAddr=%s", addr, masterAddr)
 				cancel()
 			})
+
+			if sentinelCli != c.sentinel {
+				_ = sentinelCli.Close()
+			}
 		}(i, sentinelAddr)
 	}
 
@@ -1005,8 +1016,16 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 				c.opt.MasterName, err)
 		} else if len(addrs) > 0 {
 			return addrs, nil
+		} else if !useDisconnected {
+			// No error and no replicas — valid steady state for master-only setups.
+			// Preserve the sentinel connection for master discovery and failover
+			// pub/sub monitoring. Only return early when useDisconnected is false;
+			// when true, fall through to the discovery loop which passes
+			// useDisconnected to parseReplicaAddrs (getReplicaAddrs hardcodes false).
+			return []string{}, nil
 		} else {
-			// No error and no replicas.
+			// useDisconnected=true: close sentinel so the discovery loop can call
+			// setSentinel if it finds disconnected replicas.
 			_ = c.closeSentinel()
 		}
 	}
@@ -1039,9 +1058,9 @@ func (c *sentinelFailover) replicaAddrs(ctx context.Context, useDisconnected boo
 	}
 
 	if sentinelReachable {
-		return []string{}, nil
+		return nil, nil
 	}
-	return []string{}, errors.New("redis: all sentinels specified in configuration are unreachable")
+	return nil, errors.New("redis: all sentinels specified in configuration are unreachable")
 }
 
 func (c *sentinelFailover) getMasterAddr(ctx context.Context, sentinel *SentinelClient) (string, error) {
@@ -1138,7 +1157,7 @@ func (c *sentinelFailover) discoverSentinels(ctx context.Context) {
 		}
 		if ip != "" && port != "" {
 			sentinelAddr := net.JoinHostPort(ip, port)
-			if !contains(c.sentinelAddrs, sentinelAddr) {
+			if !slices.Contains(c.sentinelAddrs, sentinelAddr) {
 				internal.Logger.Printf(ctx, "sentinel: discovered new sentinel=%q for master=%q",
 					sentinelAddr, c.opt.MasterName)
 				c.sentinelAddrs = append(c.sentinelAddrs, sentinelAddr)
@@ -1170,15 +1189,6 @@ func (c *sentinelFailover) listen(pubsub *PubSub) {
 			c.onUpdate(ctx)
 		}
 	}
-}
-
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
 }
 
 //------------------------------------------------------------------------------

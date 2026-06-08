@@ -1,0 +1,69 @@
+# .github/workflows/govulncheck.yml
+name: govulncheck
+
+on:
+  pull_request:
+    branches: [master, v9, v9.7, v9.8, "ndyakov/**", "ofekshenawa/**", "ce/**"]
+  push:
+    branches: [master, v9, "v9.*"]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: govulncheck-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+
+      - name: Run govulncheck (all modules)
+        shell: bash
+        run: |
+          set -u -o pipefail
+
+          status=0
+          found=0
+
+          while IFS= read -r gomod; do
+            found=1
+            mod=$(dirname "$gomod")
+            echo "Scanning module: $mod"
+
+            if ! (
+              cd "$mod" && govulncheck ./...
+            ); then
+              status=1
+            fi
+          done < <(
+            find . \
+              -type f -name go.mod \
+              -not -path '*/vendor/*' \
+              -not -path '*/.git/*' \
+              | sort -u
+          )
+
+          if [ "$found" -eq 0 ]; then
+            echo "No Go modules found to scan."
+            exit 1
+          fi
+
+          exit "$status"

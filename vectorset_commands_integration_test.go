@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -25,7 +24,6 @@ func expectEqual[T any, U any](a T, b U) {
 }
 
 func generateRandomVector(dim int) redis.VectorValues {
-	rand.Seed(time.Now().UnixNano())
 	v := make([]float64, dim)
 	for i := range v {
 		v[i] = float64(rand.Intn(1000)) + rand.Float64()
@@ -278,6 +276,15 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 					expectEqual(len(res), 2)
 				}
 
+				// VIsMember
+				ok, err := client.VIsMember(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(ok)
+
+				ok, err = client.VIsMember(ctx, vecName, "k5").Result()
+				expectNil(err)
+				expectEqual(ok, false)
+
 				// test equality
 				sim, err := client.VSimWithArgs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 					Filter: `.age == 25`,
@@ -338,6 +345,92 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectEqual(len(sim), 1)
 				expectEqual(sim[0], vals[0].name)
+
+				// test withscores
+				simScores, err := client.VSimWithArgsWithScores(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+					Filter: `.age < 30 or .age > 35`,
+				}).Result()
+				expectNil(err)
+				expectEqual(len(simScores), 1)
+				expectEqual(simScores[0].Name, vals[0].name)
+				expectEqual(simScores[0].Score, float64(1))
+
+				if RedisVersion >= 8.2 {
+					// test withattribs
+					simAttribs, err := client.VSimWithArgsWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[0].name)
+					expectEqual(*simAttribs[0].Attribs, vals[0].attr)
+
+					// test withscores && withattribs
+					simScoresAttribs, err := client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
+						Filter: `.age < 30 or .age > 35`,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[0].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(*simScoresAttribs[0].Attribs, vals[0].attr)
+
+					// test withattribs null attrs
+					simAttribs, err = client.VSimWithArgsWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simAttribs), 1)
+					expectEqual(simAttribs[0].Name, vals[3].name)
+					expectEqual(simAttribs[0].Attribs, (*string)(nil))
+
+					// test withscores && withattribs null attrs
+					simScoresAttribs, err = client.VSimWithArgsWithScoresWithAttribs(ctx, vecName, &vals[3].v, &redis.VSimArgs{
+						Count: 1,
+					}).Result()
+					expectNil(err)
+					expectEqual(len(simScoresAttribs), 1)
+					expectEqual(simScoresAttribs[0].Name, vals[3].name)
+					expectEqual(simScoresAttribs[0].Score, float64(1))
+					expectEqual(simScoresAttribs[0].Attribs, (*string)(nil))
+				}
+
+				// test vlinks and vlinks with scores
+				links, err := client.VLinks(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(len(links) > 0)
+
+				// Last layer should contain all other elements (order may vary)
+				lastLayer := links[len(links)-1]
+				expectEqual(len(lastLayer), 4)
+
+				linksWithScores, err := client.VLinksWithScores(ctx, vecName, "k1").Result()
+				expectNil(err)
+				expectTrue(len(linksWithScores) > 0)
+
+				// Last layer should contain all other elements with scores
+				lastLayerScores := linksWithScores[len(linksWithScores)-1]
+				expectEqual(len(lastLayerScores), 4)
+			})
+
+			It("vlinks with single element", func() {
+				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				vecName := "vlinks_single"
+
+				// Add only one vector
+				ok, err := client.VAdd(ctx, vecName, "only", &redis.VectorValues{
+					Val: []float64{1, 1},
+				}).Result()
+				expectNil(err)
+				expectTrue(ok)
+
+				links, err := client.VLinks(ctx, vecName, "only").Result()
+				expectNil(err)
+				expectTrue(len(links) > 0)
+
+				linksWithScores, err := client.VLinksWithScores(ctx, vecName, "only").Result()
+				expectNil(err)
+				expectTrue(len(linksWithScores) > 0)
 			})
 		})
 	}

@@ -229,3 +229,39 @@ func TestPoolWithHooks(t *testing.T) {
 		t.Errorf("Expected 1 hook after removing, got %d", manager.GetHookCount())
 	}
 }
+
+// TestCloseConnInvokesOnRemove guards against a regression where (*ConnPool).CloseConn
+// removed a connection from the pool without notifying pool hooks via OnRemove,
+// causing per-connection state (e.g. streaming credentials listeners) to leak
+// for every stale-conn close, idle/lifetime expiry, or health-check failure.
+func TestCloseConnInvokesOnRemove(t *testing.T) {
+	opt := &Options{
+		Dialer: func(ctx context.Context) (net.Conn, error) {
+			return &net.TCPConn{}, nil
+		},
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		DialTimeout:        time.Second,
+	}
+
+	p := NewConnPool(opt)
+	defer p.Close()
+
+	hook := &TestHook{ShouldPool: true, ShouldAccept: true}
+	p.AddPoolHook(hook)
+
+	ctx := context.Background()
+	cn, err := p.NewConn(ctx)
+	if err != nil {
+		t.Fatalf("NewConn failed: %v", err)
+	}
+
+	// The underlying net.TCPConn{} is a zero value, so cn.Close() may report
+	// "invalid argument" — we don't care about the close error, only about
+	// whether the OnRemove hook fired before the close.
+	_ = p.CloseConn(ctx, cn, CloseReasonStale, MetricStateIdle)
+
+	if hook.OnRemoveCalled != 1 {
+		t.Errorf("Expected OnRemove to fire once for CloseConn, got %d", hook.OnRemoveCalled)
+	}
+}
