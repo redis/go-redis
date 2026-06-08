@@ -86,6 +86,11 @@ func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, er
 	}
 
 	channels := mapKeys(c.channels)
+	// Include sharded channels so that, on reconnect of a sharded subscription,
+	// the cluster newConn resolves the node from the shard channel's slot
+	// instead of falling back to a random node (which would silently route
+	// messages away from the correct shard).
+	channels = append(channels, mapKeys(c.schannels)...)
 	channels = append(channels, newChannels...)
 
 	cn, err := c.newConn(ctx, c.opt.Addr, channels)

@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/hashtag"
 )
@@ -67,6 +68,35 @@ func TestShardedPubSubSSubscribeWhenClosed(t *testing.T) {
 	err := sps.SSubscribe(context.Background(), "ch1")
 	if err == nil {
 		t.Fatal("expected error when subscribing on closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubChannelOptionSize(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// WithChannelSize must be honored even when a later option (which does not
+	// touch chanSize) is applied. A previous bug reset the probe on every
+	// iteration, so the size from an earlier option was lost.
+	ch := sps.Channel(WithChannelSize(500), WithChannelSendTimeout(time.Second))
+	if cap(ch) != 500 {
+		t.Fatalf("expected channel buffer size 500, got %d", cap(ch))
+	}
+}
+
+func TestShardedPubSubChannelDefaultSize(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	ch := sps.Channel()
+	if cap(ch) != 100 {
+		t.Fatalf("expected default channel buffer size 100, got %d", cap(ch))
 	}
 }
 

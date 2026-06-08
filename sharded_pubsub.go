@@ -16,6 +16,13 @@ import (
 // can only receive messages for channels on the shard it is connected to.
 // ShardedPubSub transparently manages one PubSub per shard and multiplexes
 // all messages into a single Go channel.
+//
+// Supported API surface mirrors the relevant parts of PubSub: SSubscribe,
+// SUnsubscribe, Channel, ReceiveMessage, ReceiveTimeout, Ping and Close.
+// ChannelWithSubscriptions is intentionally not supported: subscription
+// bookkeeping spans multiple shard connections, so a single merged stream of
+// *Subscription messages would not map cleanly onto the per-shard model.
+// Use Channel together with the topology-change handling to consume messages.
 type ShardedPubSub struct {
 	cluster *ClusterClient
 
@@ -27,18 +34,22 @@ type ShardedPubSub struct {
 	closed bool
 	exit   chan struct{}
 
-	chOnce     sync.Once
-	msgCh      chan *Message
-	chOpts     []ChannelOption
+	chOnce sync.Once
+	msgCh  chan *Message
+	chOpts []ChannelOption
+	// forwarding tracks which shard addresses already have a forwarder
+	// goroutine running, so we never start more than one per shard.
+	forwarding map[string]struct{}
 	forwarders sync.WaitGroup
 }
 
 func newShardedPubSub(cluster *ClusterClient) *ShardedPubSub {
 	sps := &ShardedPubSub{
-		cluster:   cluster,
-		shards:    make(map[string]*PubSub),
-		chanShard: make(map[string]string),
-		exit:      make(chan struct{}),
+		cluster:    cluster,
+		shards:     make(map[string]*PubSub),
+		chanShard:  make(map[string]string),
+		forwarding: make(map[string]struct{}),
+		exit:       make(chan struct{}),
 	}
 	cluster.registerShardedPubSub(sps)
 	return sps
@@ -66,7 +77,14 @@ func (s *ShardedPubSub) nodeAddrForChannel(ctx context.Context, channel string) 
 }
 
 // getOrCreateShard returns an existing PubSub for the given node address,
-// or creates a new one.
+// or creates a new one. The caller must hold s.mu.
+//
+// It deliberately does not start a forwarder goroutine. Forwarding must only
+// begin after the shard's connection has been established to the correct node
+// via a successful SSubscribe; otherwise the forwarder's Receive would call
+// PubSub.conn with no channels and connect to a random node, racing with the
+// caller's SSubscribe for the connection. Use startForwarderLocked after a
+// successful subscribe instead.
 func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
 	if ps, ok := s.shards[addr]; ok {
 		return ps
@@ -75,15 +93,38 @@ func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
 	// Create a new PubSub via the cluster's pubSub factory.
 	ps := s.cluster.pubSub()
 	s.shards[addr] = ps
-
-	// If the message channel is already initialized, start forwarding
-	// messages from this new shard.
-	if s.msgCh != nil {
-		s.forwarders.Add(1)
-		go s.forwardMessages(ps, s.chOpts)
-	}
-
 	return ps
+}
+
+// startForwarderLocked starts a forwarder goroutine for the shard at addr if
+// the user-facing channel is active and no forwarder is already running for
+// that shard. The caller must hold s.mu and must only call this after the
+// shard's connection has been established (i.e. after a successful subscribe).
+func (s *ShardedPubSub) startForwarderLocked(addr string) {
+	if s.msgCh == nil {
+		return
+	}
+	if _, ok := s.forwarding[addr]; ok {
+		return
+	}
+	ps, ok := s.shards[addr]
+	if !ok {
+		return
+	}
+	s.forwarding[addr] = struct{}{}
+	s.forwarders.Add(1)
+	go s.forwardMessages(ps, s.chOpts)
+}
+
+// removeShardLocked closes the shard at addr (if any), removes it from the
+// shard map and clears its forwarding marker so a future shard created at the
+// same address can start a fresh forwarder. The caller must hold s.mu.
+func (s *ShardedPubSub) removeShardLocked(addr string) {
+	if ps, ok := s.shards[addr]; ok {
+		_ = ps.Close()
+		delete(s.shards, addr)
+	}
+	delete(s.forwarding, addr)
 }
 
 // SSubscribe subscribes to the given shard channels. Channels are automatically
@@ -127,10 +168,15 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
 			// Reactive reconnect: close failed shard, re-resolve, and retry once.
+			// resubscribeShard starts forwarders for the shards it recreates.
 			if reconnErr := s.resubscribeShard(ctx, addr); reconnErr != nil {
 				return err // return original error if reconnect also fails
 			}
+			continue
 		}
+		// Connection is now established to the correct node, so it is safe to
+		// start forwarding messages from this shard.
+		s.startForwarderLocked(addr)
 	}
 
 	return nil
@@ -175,22 +221,24 @@ func (s *ShardedPubSub) Channel(opts ...ChannelOption) <-chan *Message {
 		defer s.mu.Unlock()
 
 		// Determine the channel buffer size. We default to 100 but respect
-		// WithChannelSize if provided. We create a temporary channel struct
-		// just to extract the configured size.
+		// WithChannelSize if provided. We apply all options to a single probe
+		// (matching newChannel in pubsub.go) so later options don't reset the
+		// values set by earlier ones.
 		size := 100
-		for _, opt := range opts {
-			// Use a probe to extract chanSize from options.
+		if len(opts) > 0 {
 			probe := &channel{chanSize: 100}
-			opt(probe)
+			for _, opt := range opts {
+				opt(probe)
+			}
 			size = probe.chanSize
 		}
 
 		s.msgCh = make(chan *Message, size)
 		s.chOpts = opts
-		// Start forwarding from all existing shards.
-		for _, ps := range s.shards {
-			s.forwarders.Add(1)
-			go s.forwardMessages(ps, opts)
+		// Start forwarding from all existing shards. These shards have already
+		// been subscribed, so their connections point at the correct nodes.
+		for addr := range s.shards {
+			s.startForwarderLocked(addr)
 		}
 	})
 	return s.msgCh
@@ -267,20 +315,24 @@ func (s *ShardedPubSub) onTopologyChange() {
 
 	for oldAddr, targets := range migrations {
 		for newAddr, channels := range targets {
-			// Unsubscribe from old shard.
-			if ps, ok := s.shards[oldAddr]; ok {
-				_ = ps.SUnsubscribe(ctx, channels...)
-			}
-
-			// Subscribe on new shard.
+			// Subscribe on the new shard first. If this fails we keep the old
+			// subscription and mapping intact so messages are never dropped.
 			ps := s.getOrCreateShard(newAddr)
 			if err := ps.SSubscribe(ctx, channels...); err != nil {
-				// SSubscribe failed — keep the old mapping so the channel
-				// isn't orphaned with an incorrect chanShard entry.
 				continue
 			}
+			// Connection to the new node is established; start forwarding.
+			s.startForwarderLocked(newAddr)
 
-			// Update channel->shard mapping only on successful subscribe.
+			// Now that the new shard is subscribed, unsubscribe from the old
+			// one so we never have a window with no active subscription.
+			if oldPS, ok := s.shards[oldAddr]; ok {
+				_ = oldPS.SUnsubscribe(ctx, channels...)
+			}
+
+			// Update channel->shard mapping only for channels that still exist
+			// (a concurrent SUnsubscribe may have removed some while the lock
+			// was released during address resolution).
 			for _, ch := range channels {
 				if _, exists := s.chanShard[ch]; exists {
 					s.chanShard[ch] = newAddr
@@ -297,10 +349,7 @@ func (s *ShardedPubSub) onTopologyChange() {
 			}
 		}
 		if !hasChannels {
-			if ps, ok := s.shards[oldAddr]; ok {
-				_ = ps.Close()
-				delete(s.shards, oldAddr)
-			}
+			s.removeShardLocked(oldAddr)
 		}
 	}
 }
@@ -311,11 +360,8 @@ func (s *ShardedPubSub) onTopologyChange() {
 // resolution to avoid deadlock (nodeAddrForChannel -> state.Get -> Reload ->
 // onReload -> onTopologyChange -> s.mu).
 func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string) error {
-	// Close the failed shard.
-	if ps, ok := s.shards[failedAddr]; ok {
-		_ = ps.Close()
-		delete(s.shards, failedAddr)
-	}
+	// Close the failed shard and clear its forwarding marker.
+	s.removeShardLocked(failedAddr)
 
 	// Collect channels that were on the failed shard.
 	var channels []string
@@ -352,9 +398,15 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
 			return err
 		}
-		// Only update mapping on successful subscribe.
+		// Connection is established; start forwarding from the fresh shard.
+		s.startForwarderLocked(addr)
+		// Only update the mapping on successful subscribe, and only for
+		// channels that still exist (a concurrent SUnsubscribe may have
+		// removed some while the lock was released during resolution).
 		for _, ch := range chs {
-			s.chanShard[ch] = addrMap[ch]
+			if _, exists := s.chanShard[ch]; exists {
+				s.chanShard[ch] = addrMap[ch]
+			}
 		}
 	}
 
