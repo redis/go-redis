@@ -1161,7 +1161,8 @@ type ClusterClient struct {
 
 	spsMu          sync.Mutex
 	shardedPubSubs []*ShardedPubSub
-	spsNotifying   uint32 // CAS guard for async topology notifications
+	spsNotifying   uint32 // CAS guard ensuring a single async notifier goroutine
+	spsPending     uint32 // set when a reload arrives; coalesces overlapping notifications
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1237,24 +1238,46 @@ func (c *ClusterClient) deregisterShardedPubSub(sps *ShardedPubSub) {
 }
 
 // notifyShardedPubSubs asynchronously notifies all registered ShardedPubSubs
-// of a topology change. Uses a compare-and-swap to avoid triggering multiple
-// concurrent migrations — if one is already in-flight, this is a no-op since
-// the running migration will pick up the latest state anyway.
+// of a topology change. At most one notifier goroutine runs at a time, but
+// reloads that arrive while a notification is in flight are coalesced into a
+// follow-up pass via spsPending. This guarantees that a reload happening during
+// an in-flight migration is not dropped: the running notifier re-runs once more
+// against the latest state, so subscriptions never get stranded on stale nodes.
 func (c *ClusterClient) notifyShardedPubSubs() {
+	// Record that there is work to do, then try to become the notifier.
+	atomic.StoreUint32(&c.spsPending, 1)
 	if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+		// A notifier is already running; it will observe spsPending and re-run.
 		return
 	}
 
 	go func() {
-		defer atomic.StoreUint32(&c.spsNotifying, 0)
+		for {
+			// Claim the currently pending work before processing it. Any
+			// reload that arrives after this point re-sets spsPending and is
+			// handled by a subsequent iteration.
+			atomic.StoreUint32(&c.spsPending, 0)
 
-		c.spsMu.Lock()
-		subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
-		copy(subs, c.shardedPubSubs)
-		c.spsMu.Unlock()
+			c.spsMu.Lock()
+			subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+			copy(subs, c.shardedPubSubs)
+			c.spsMu.Unlock()
 
-		for _, sps := range subs {
-			sps.onTopologyChange()
+			for _, sps := range subs {
+				sps.onTopologyChange()
+			}
+
+			// Release the notifier slot, then check whether new work arrived
+			// while we were processing.
+			atomic.StoreUint32(&c.spsNotifying, 0)
+			if atomic.LoadUint32(&c.spsPending) == 0 {
+				return
+			}
+			// New work arrived. Try to re-acquire the slot; if another caller
+			// already started a fresh notifier, let it handle the work.
+			if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+				return
+			}
 		}
 	}()
 }

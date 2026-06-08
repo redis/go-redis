@@ -191,12 +191,14 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 		return pool.ErrClosed
 	}
 
-	// Group channels by their known shard.
+	// Group channels by their known shard. The mapping is intentionally left
+	// in place here and only removed after a successful unsubscribe below, so
+	// that a failed SUnsubscribe does not desync our bookkeeping from the
+	// server (where the subscription and its forwarder may still be active).
 	groups := make(map[string][]string)
 	for _, ch := range channels {
 		if addr, ok := s.chanShard[ch]; ok {
 			groups[addr] = append(groups[addr], ch)
-			delete(s.chanShard, ch)
 		}
 	}
 
@@ -205,6 +207,11 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 			if err := ps.SUnsubscribe(ctx, chs...); err != nil {
 				return err
 			}
+		}
+		// Drop the mapping only after the unsubscribe succeeded (or when there
+		// is no live shard connection to unsubscribe from).
+		for _, ch := range chs {
+			delete(s.chanShard, ch)
 		}
 	}
 
@@ -393,10 +400,22 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		return pool.ErrClosed
 	}
 
+	// Try every target group rather than bailing out on the first failure.
+	// Returning early would leave channels in not-yet-processed groups pointing
+	// at the removed shard address with no connection, orphaning them until a
+	// full resubscribe. We re-subscribe as many channels as possible and report
+	// the first error so the caller knows the operation was not fully clean.
+	var firstErr error
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Drop the freshly created (but unusable) shard so a later attempt
+			// recreates it against current topology.
+			s.removeShardLocked(addr)
+			continue
 		}
 		// Connection is established; start forwarding from the fresh shard.
 		s.startForwarderLocked(addr)
@@ -410,7 +429,7 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 // Close closes all underlying PubSub connections and the message channel.
