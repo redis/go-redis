@@ -226,6 +226,52 @@ func TestShardedPubSubSUnsubscribeKeepsMappingOnError(t *testing.T) {
 	}
 }
 
+func TestShardedPubSubSUnsubscribeAll(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Two tracked channels with no live shard connections. Calling
+	// SUnsubscribe with no arguments must unsubscribe from all of them,
+	// mirroring PubSub.SUnsubscribe ("unsubscribe from all").
+	sps.mu.Lock()
+	sps.chanShard["ch1"] = "127.0.0.1:7000"
+	sps.chanShard["ch2"] = "127.0.0.1:7001"
+	sps.mu.Unlock()
+
+	if err := sps.SUnsubscribe(context.Background()); err != nil {
+		t.Fatalf("expected nil error for unsubscribe-all, got %v", err)
+	}
+
+	sps.mu.Lock()
+	n := len(sps.chanShard)
+	sps.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected all channel mappings removed, got %d", n)
+	}
+}
+
+func TestShardedPubSubChannelAfterClose(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	if err := sps.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Calling Channel() after Close() must return an already-closed channel
+	// rather than a new open channel that would block consumers forever.
+	ch := sps.Channel()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel from Channel()-after-Close to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Channel() after Close() returned a channel that never closes")
+	}
+}
+
 func TestShardedPubSubChannelIdempotent(t *testing.T) {
 	cluster := &ClusterClient{opt: &ClusterOptions{}}
 	sps := newShardedPubSub(cluster)
