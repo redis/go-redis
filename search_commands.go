@@ -3904,7 +3904,6 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				// the query and clauses using "$<name>".
 				args = append(args, key, value)
 			}
-			}
 		}
 
 		// Add EXPLAINSCORE
