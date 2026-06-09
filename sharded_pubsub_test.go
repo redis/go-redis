@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -154,6 +155,76 @@ func failingPubSub(err error) *PubSub {
 	return ps
 }
 
+// newNoopPubSub returns a *PubSub backed by a connection whose writes are
+// discarded, so subscribe/unsubscribe commands succeed without a live server.
+// Only the write path is exercised (we never start a receive loop), which is
+// all SSubscribe/SUnsubscribe need.
+func newNoopPubSub() *PubSub {
+	serverConn, clientConn := net.Pipe()
+	// Drain anything written to the client connection so writes never block.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	cn := pool.NewConn(clientConn)
+	ps := &PubSub{
+		opt: &Options{Addr: "127.0.0.1:0"},
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			return cn, nil
+		},
+		closeConn: func(c *pool.Conn) error { return clientConn.Close() },
+	}
+	ps.init()
+	return ps
+}
+
+func TestPubSubSUnsubscribeRetainsSchannelsOnError(t *testing.T) {
+	// When the underlying SUNSUBSCRIBE fails (here: connection unavailable), the
+	// channels must stay tracked in schannels so a later reconnect re-subscribes
+	// them instead of silently desyncing local state from the server.
+	ps := failingPubSub(errors.New("boom"))
+	ps.schannels = map[string]struct{}{"ch1": {}, "ch2": {}}
+
+	if err := ps.SUnsubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error from the failing connection")
+	}
+	if _, ok := ps.schannels["ch1"]; !ok {
+		t.Fatal("ch1 must be retained when SUNSUBSCRIBE fails")
+	}
+	if _, ok := ps.schannels["ch2"]; !ok {
+		t.Fatal("ch2 must be retained when SUNSUBSCRIBE fails")
+	}
+}
+
+func TestPubSubSUnsubscribeDropsSchannelsOnSuccess(t *testing.T) {
+	ps := newNoopPubSub()
+	ps.schannels = map[string]struct{}{"ch1": {}, "ch2": {}}
+
+	if err := ps.SUnsubscribe(context.Background(), "ch1", "ch2"); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(ps.schannels) != 0 {
+		t.Fatalf("expected schannels cleared on success, got %v", ps.schannels)
+	}
+}
+
+func TestPubSubSSubscribeTracksOnlyOnSuccess(t *testing.T) {
+	// A failed SSUBSCRIBE must not add the channels to schannels — otherwise the
+	// client would claim subscriptions the server never accepted.
+	ps := failingPubSub(errors.New("boom"))
+
+	if err := ps.SSubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error from the failing connection")
+	}
+	if len(ps.schannels) != 0 {
+		t.Fatalf("expected no schannels tracked after failed SSUBSCRIBE, got %v", ps.schannels)
+	}
+}
+
 func TestShardedPubSubSUnsubscribeWhenClosed(t *testing.T) {
 	cluster := &ClusterClient{opt: &ClusterOptions{}}
 	sps := newShardedPubSub(cluster)
@@ -248,6 +319,48 @@ func TestShardedPubSubSUnsubscribeAll(t *testing.T) {
 	sps.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("expected all channel mappings removed, got %d", n)
+	}
+}
+
+func TestShardedPubSubSUnsubscribePartialFailureAttemptsAllShards(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// ch1 and ch2 hash to different slots and are placed on different shard
+	// addresses. One shard's SUnsubscribe fails, the other succeeds. The call
+	// must attempt both groups (not bail out on the first failure), return the
+	// first error, drop the mapping for the group that succeeded, and keep the
+	// mapping for the group that failed.
+	errBoom := errors.New("boom")
+	failAddr := "127.0.0.1:7000"
+	okAddr := "127.0.0.1:7001"
+
+	sps.mu.Lock()
+	sps.shards[failAddr] = failingPubSub(errBoom)
+	sps.shards[okAddr] = newNoopPubSub()
+	sps.chanShard["ch1"] = failAddr
+	sps.chanShard["ch2"] = okAddr
+	sps.mu.Unlock()
+
+	if err := sps.SUnsubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error because one shard's SUnsubscribe fails")
+	}
+
+	sps.mu.Lock()
+	_, failKept := sps.chanShard["ch1"]
+	_, okKept := sps.chanShard["ch2"]
+	_, okShardKept := sps.shards[okAddr]
+	sps.mu.Unlock()
+
+	if !failKept {
+		t.Fatal("mapping for the failed shard must be retained")
+	}
+	if okKept {
+		t.Fatal("mapping for the successfully-unsubscribed channel must be dropped")
+	}
+	if okShardKept {
+		t.Fatal("empty shard after successful unsubscribe must be closed")
 	}
 }
 

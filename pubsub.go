@@ -290,11 +290,17 @@ func (c *PubSub) SSubscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	err := c.subscribeSharded(ctx, "ssubscribe", channels...)
+	failed, err := c.subscribeSharded(ctx, "ssubscribe", channels...)
 	if c.schannels == nil {
 		c.schannels = make(map[string]struct{})
 	}
+	// Only track channels whose slot-group SSUBSCRIBE actually succeeded. A
+	// multi-slot batch is sent one command per slot, so a partial failure must
+	// not leave us claiming channels the server never subscribed.
 	for _, s := range channels {
+		if _, bad := failed[s]; bad {
+			continue
+		}
 		c.schannels[s] = struct{}{}
 	}
 	return err
@@ -344,16 +350,25 @@ func (c *PubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	failed, err := c.subscribeSharded(ctx, "sunsubscribe", channels...)
+
 	if len(channels) > 0 {
+		// Only drop channels whose slot-group SUNSUBSCRIBE succeeded. Keeping
+		// the failed ones tracked means a later reconnect/resubscribe still
+		// knows about subscriptions that are (or may still be) live on the
+		// server, instead of silently desyncing local state from Redis.
 		for _, channel := range channels {
+			if _, bad := failed[channel]; bad {
+				continue
+			}
 			delete(c.schannels, channel)
 		}
-	} else {
-		// Unsubscribe from all channels.
+	} else if err == nil {
+		// "Unsubscribe from all" only clears local state if the bare
+		// SUNSUBSCRIBE succeeded; otherwise we may still be subscribed.
 		clear(c.schannels)
 	}
 
-	err := c.subscribeSharded(ctx, "sunsubscribe", channels...)
 	return err
 }
 
@@ -375,25 +390,46 @@ func (c *PubSub) subscribe(ctx context.Context, redisCmd string, channels ...str
 // slots served by the same node are valid on a single connection, just not in
 // one command. With no channels the bare command is sent, which mirrors
 // SUNSUBSCRIBE's "unsubscribe from all" semantics.
-func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels ...string) error {
+//
+// It returns the first error encountered together with the set of channels
+// whose slot-group command failed, so the caller can keep its schannels
+// bookkeeping consistent with what the server actually applied. Channels in a
+// slot-group that succeeded are absent from the returned set even when another
+// slot-group in the same call failed.
+func (c *PubSub) subscribeSharded(ctx context.Context, redisCmd string, channels ...string) (map[string]struct{}, error) {
 	cn, err := c.conn(ctx, channels)
 	if err != nil {
-		return err
+		// The connection itself is unavailable, so nothing was applied; report
+		// every channel as failed.
+		failed := make(map[string]struct{}, len(channels))
+		for _, ch := range channels {
+			failed[ch] = struct{}{}
+		}
+		return failed, err
 	}
 
 	var firstErr error
+	var failed map[string]struct{}
 	if len(channels) == 0 {
 		firstErr = c._subscribe(ctx, cn, redisCmd, channels)
 	} else {
 		for _, slotChannels := range groupChannelsBySlot(channels) {
-			if e := c._subscribe(ctx, cn, redisCmd, slotChannels); e != nil && firstErr == nil {
-				firstErr = e
+			if e := c._subscribe(ctx, cn, redisCmd, slotChannels); e != nil {
+				if firstErr == nil {
+					firstErr = e
+				}
+				if failed == nil {
+					failed = make(map[string]struct{})
+				}
+				for _, ch := range slotChannels {
+					failed[ch] = struct{}{}
+				}
 			}
 		}
 	}
 
 	c.releaseConn(ctx, cn, firstErr, false)
-	return firstErr
+	return failed, firstErr
 }
 
 func (c *PubSub) Ping(ctx context.Context, payload ...string) error {

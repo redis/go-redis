@@ -239,10 +239,23 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 		}
 	}
 
+	// Attempt every shard group rather than bailing out on the first failure.
+	// Returning early would leave earlier groups unsubscribed-and-untracked
+	// while later groups stay both subscribed and tracked, with no signal to
+	// the caller that the unsubscribe only partially completed. We unsubscribe
+	// as many groups as possible and report the first error.
+	var firstErr error
 	for addr, chs := range groups {
 		if ps, ok := s.shards[addr]; ok {
 			if err := ps.SUnsubscribe(ctx, chs...); err != nil {
-				return err
+				// Keep this group's mappings (and its shard) in place so our
+				// bookkeeping stays consistent with the server, where the
+				// subscription may still be active. Record the error and move
+				// on to the remaining groups.
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
 			}
 		}
 		// Drop the mapping only after the unsubscribe succeeded (or when there
@@ -265,7 +278,7 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 		}
 	}
 
-	return nil
+	return firstErr
 }
 
 // Channel returns a Go channel that receives messages from all shards.
@@ -417,12 +430,35 @@ func (s *ShardedPubSub) onTopologyChange() {
 			// one so we never have a window with no active subscription.
 			if oldPS, ok := s.shards[oldAddr]; ok {
 				if err := oldPS.SUnsubscribe(ctx, channels...); err != nil {
-					// The new subscription is already active, so messages are
-					// not lost; log the stale old-shard subscription so the
-					// divergence from server state is diagnosable.
+					// The old shard still has the migrated channels subscribed,
+					// so without intervention the user would receive duplicate
+					// messages (once from oldAddr, once from newAddr) until the
+					// next reload. The new subscription is already active, so we
+					// can safely drop the old connection entirely: closing it
+					// terminates every server-side subscription on it. Any
+					// channels that legitimately remain on oldAddr are restored
+					// via resubscribeShard, which rebuilds a fresh connection.
 					internal.Logger.Printf(ctx,
-						"redis: sharded pubsub: failed to unsubscribe channels %v from old shard %s during topology change: %v",
+						"redis: sharded pubsub: failed to unsubscribe channels %v from old shard %s during topology change, rebuilding it: %v",
 						channels, oldAddr, err)
+					// Move the migrated channels off oldAddr first so
+					// resubscribeShard does not try to restore them there.
+					for _, ch := range channels {
+						if _, exists := s.chanShard[ch]; exists {
+							s.chanShard[ch] = newAddr
+						}
+					}
+					// resubscribeShard releases and re-acquires s.mu; that is
+					// safe here because we still hold it and have no per-iteration
+					// state that must survive the unlock.
+					if reErr := s.resubscribeShard(ctx, oldAddr); reErr != nil {
+						internal.Logger.Printf(ctx,
+							"redis: sharded pubsub: failed to rebuild old shard %s after unsubscribe error during topology change: %v",
+							oldAddr, reErr)
+					}
+					// resubscribeShard already removed oldAddr and remapped its
+					// remaining channels, so skip the rest of this iteration.
+					continue
 				}
 			}
 
@@ -509,7 +545,9 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 				firstErr = err
 			}
 			// Drop the freshly created (but unusable) shard so a later attempt
-			// recreates it against current topology.
+			// recreates it against current topology. These channels still point
+			// at the removed failedAddr; the sweep after the loop drops those
+			// stale mappings so they are not treated as live subscriptions.
 			s.removeShardLocked(addr)
 			continue
 		}
@@ -521,6 +559,17 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		for _, ch := range chs {
 			if _, exists := s.chanShard[ch]; exists {
 				s.chanShard[ch] = addrMap[ch]
+			}
+		}
+	}
+
+	// Channels that failed to resolve above (firstErr set, not in any group)
+	// still point at the now-removed failedAddr. Drop those stale mappings too
+	// so they are not treated as live subscriptions with no connection.
+	if firstErr != nil {
+		for ch, addr := range s.chanShard {
+			if addr == failedAddr {
+				delete(s.chanShard, ch)
 			}
 		}
 	}
