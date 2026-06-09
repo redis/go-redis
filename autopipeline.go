@@ -138,6 +138,7 @@ func getQueueSlice(capacity int) []*queuedCmd {
 	slice = slice[:0]
 	// If the capacity is too small, allocate a new one
 	if cap(slice) < capacity {
+		queueSlicePool.Put(slice)
 		return make([]*queuedCmd, 0, capacity)
 	}
 	return slice
