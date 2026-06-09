@@ -323,7 +323,7 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("REST API returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("multidb: REST API returned status %d", resp.StatusCode)
 	}
 	var bdbs []bdbInfo
 	if err := json.NewDecoder(resp.Body).Decode(&bdbs); err != nil {
