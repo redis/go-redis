@@ -699,13 +699,11 @@ func (c *channel) initHealthCheck() {
 				cancel()
 
 				if pingErr != nil {
-					reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
-
 					c.pubSub.mu.Lock()
+					reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 10*time.Second)
 					c.pubSub.reconnect(reconnectCtx, pingErr)
-					c.pubSub.mu.Unlock()
-
 					reconnectCancel()
+					c.pubSub.mu.Unlock()
 				}
 			case <-c.pubSub.exit:
 				return
