@@ -42,6 +42,24 @@ func TestPingHealthCheck(t *testing.T) {
 			t.Error("expected CheckHealth to return a non-nil error for unreachable client")
 		}
 	})
+
+	t.Run("CheckClusterHealth returns false+error for unreachable/empty cluster", func(t *testing.T) {
+		// A cluster with no reachable shards must not be reported as trivially
+		// healthy: CheckClusterHealth must return (false, err) rather than
+		// (true, nil) when no shard was actually pinged.
+		client := redis.NewClusterClient(&redis.ClusterOptions{
+			Addrs:       []string{"localhost:59999"},
+			DialTimeout: 100 * time.Millisecond,
+		})
+		defer client.Close()
+
+		hc := NewPingHealthCheck()
+		if ok, err := hc.CheckClusterHealth(context.Background(), client); ok {
+			t.Error("expected CheckClusterHealth to return false for an empty/unreachable cluster")
+		} else if err == nil {
+			t.Error("expected CheckClusterHealth to return a non-nil error for an empty/unreachable cluster")
+		}
+	})
 }
 
 // mockHealthCheck is a test helper that returns a configurable result

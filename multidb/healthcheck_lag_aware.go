@@ -314,7 +314,7 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	if err != nil {
 		return nil, err
 	}
-	if h.username != "" && h.password != "" {
+	if h.username != "" {
 		req.SetBasicAuth(h.username, h.password)
 	}
 	resp, err := h.httpClient.Do(req)
