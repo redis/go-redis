@@ -476,11 +476,6 @@ func (ap *AutoPipeliner) flushBatchSlice() {
 		}
 	}
 
-	if len(queuedCmds) == 0 {
-		ap.sem.Release()
-		return
-	}
-
 	// Fast path for single command
 	if len(queuedCmds) == 1 {
 		qc := queuedCmds[0]
