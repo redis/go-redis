@@ -186,18 +186,15 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
-			// Reactive reconnect: close failed shard, re-resolve, and retry once.
-			// resubscribeShard starts forwarders for the shards it recreates.
+			// Reactive reconnect: close the failed shard, re-resolve, and retry.
+			// resubscribeShard owns the chanShard cleanup for this shard's
+			// channels — it remaps the ones it recovers (starting their
+			// forwarders) and drops the ones it cannot. Re-dropping here would
+			// also delete channels it recovered onto the same address, orphaning
+			// a live, forwarded subscription, so only record the error.
 			if reconnErr := s.resubscribeShard(ctx, addr); reconnErr != nil {
 				if firstErr == nil {
 					firstErr = err // keep the original error
-				}
-				// These channels could not be subscribed; drop their mappings
-				// so they don't point at a shard with no live connection.
-				for _, ch := range chs {
-					if s.chanShard[ch] == addr {
-						delete(s.chanShard, ch)
-					}
 				}
 			}
 			continue
@@ -538,6 +535,7 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 	// at the removed shard address with no connection, orphaning them until a
 	// full resubscribe. We re-subscribe as many channels as possible and report
 	// the first error so the caller knows the operation was not fully clean.
+	recovered := make(map[string]struct{})
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
@@ -559,16 +557,26 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		for _, ch := range chs {
 			if _, exists := s.chanShard[ch]; exists {
 				s.chanShard[ch] = addrMap[ch]
+				recovered[ch] = struct{}{}
 			}
 		}
 	}
 
-	// Channels that failed to resolve above (firstErr set, not in any group)
-	// still point at the now-removed failedAddr. Drop those stale mappings too
-	// so they are not treated as live subscriptions with no connection.
+	// Drop the mappings of the channels this call could not recover (failed
+	// resolution or failed SSUBSCRIBE) so they are not treated as live
+	// subscriptions pointing at the removed failedAddr with no connection.
+	//
+	// Only consider the channels we collected at entry, and only drop those
+	// that still point at failedAddr: while s.mu was released a concurrent
+	// SSubscribe/onTopologyChange may have re-added or migrated some of these
+	// channels (or reused failedAddr for brand-new channels). A blanket
+	// "delete everything on failedAddr" sweep would silently orphan those.
 	if firstErr != nil {
-		for ch, addr := range s.chanShard {
-			if addr == failedAddr {
+		for _, ch := range channels {
+			if _, ok := recovered[ch]; ok {
+				continue
+			}
+			if s.chanShard[ch] == failedAddr {
 				delete(s.chanShard, ch)
 			}
 		}
