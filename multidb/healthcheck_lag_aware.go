@@ -285,7 +285,7 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string)
 	if err != nil {
 		return false, err
 	}
-	if h.username != "" && h.password != "" {
+	if h.username != "" {
 		req.SetBasicAuth(h.username, h.password)
 	}
 	resp, err := h.httpClient.Do(req)
