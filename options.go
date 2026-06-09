@@ -290,9 +290,6 @@ type Options struct {
 	// IdentitySuffix - add suffix to client name.
 	IdentitySuffix string
 
-	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
-	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
-	//
 	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.

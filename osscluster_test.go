@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
 	"strconv"
@@ -1353,6 +1354,27 @@ var _ = Describe("ClusterClient", func() {
 			Expect(err).ToNot(HaveOccurred())
 			info := client.Info(ctx, "server")
 			Expect(info.Val()).Should(ContainSubstring("tcp_port:16601"))
+		})
+
+		It("should not retry Watch callback errors wrapping io.EOF", func() {
+			opt := redisClusterOptions()
+			opt.MaxRedirects = 1
+			opt.MinRetryBackoff = -1
+			opt.MaxRetryBackoff = -1
+
+			client := cluster.newClusterClient(ctx, opt)
+			defer func() {
+				Expect(client.Close()).NotTo(HaveOccurred())
+			}()
+
+			calls := 0
+			err := client.Watch(ctx, func(tx *redis.Tx) error {
+				calls++
+				return fmt.Errorf("external call failed: %w", io.EOF)
+			}, "watch-callback-net-error")
+
+			Expect(errors.Is(err, io.EOF)).To(BeTrue())
+			Expect(calls).To(Equal(1))
 		})
 
 		assertClusterClient()
