@@ -24,6 +24,13 @@ import (
 // bookkeeping spans multiple shard connections, so a single merged stream of
 // *Subscription messages would not map cleanly onto the per-shard model.
 // Use Channel together with the topology-change handling to consume messages.
+//
+// Connection health: ShardedPubSub does not run a separate health check.
+// Transient connection drops are handled by the underlying per-shard PubSub,
+// which automatically reconnects on the next Receive. Recovery from a node
+// that is permanently gone (e.g. its slots moved during resharding) is
+// reload-driven: a cluster topology reload triggers onTopologyChange, which
+// migrates the affected subscriptions to the new owning node.
 type ShardedPubSub struct {
 	cluster *ClusterClient
 
@@ -144,10 +151,18 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 	// which also needs to acquire s.mu.
 	groups := make(map[string][]string)
 	addrMap := make(map[string]string) // channel -> addr
+	// Resolve every channel rather than aborting on the first failure: a single
+	// unresolvable channel must not prevent the channels that did resolve from
+	// being subscribed. The first resolution error is carried into firstErr and
+	// returned to the caller.
+	var firstErr error
 	for _, ch := range channels {
 		addr, err := s.nodeAddrForChannel(ctx, ch)
 		if err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		groups[addr] = append(groups[addr], ch)
 		addrMap[ch] = addr
@@ -168,7 +183,6 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 	// rather than bailing out on the first failure, so a single failing shard
 	// does not leave channels in other groups unsubscribed while their
 	// chanShard entries remain. The first error is returned to the caller.
-	var firstErr error
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
@@ -530,14 +544,20 @@ func (s *ShardedPubSub) Close() error {
 		delete(s.shards, addr)
 	}
 
+	// Capture the current msgCh under the lock. If a first-ever Channel() call
+	// races us during the forwarders.Wait() window below, it will observe
+	// s.closed and create+close its own channel; by closing only this captured
+	// reference we avoid double-closing the same channel.
+	msgCh := s.msgCh
+
 	// Wait for all forwarder goroutines to exit before closing msgCh
 	// to avoid a send-on-closed-channel panic.
 	s.mu.Unlock()
 	s.forwarders.Wait()
 	s.mu.Lock()
 
-	if s.msgCh != nil {
-		close(s.msgCh)
+	if msgCh != nil {
+		close(msgCh)
 	}
 
 	return firstErr
@@ -546,16 +566,27 @@ func (s *ShardedPubSub) Close() error {
 // Ping sends a PING to all underlying shard PubSub connections.
 // Returns the first error encountered, if any.
 func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
+	// Snapshot the shards under the lock, then perform the Ping I/O without
+	// holding s.mu so a slow/blocked shard does not head-of-line-block
+	// SSubscribe/SUnsubscribe/migration work.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return pool.ErrClosed
 	}
-
+	type shardPing struct {
+		addr string
+		ps   *PubSub
+	}
+	shards := make([]shardPing, 0, len(s.shards))
 	for addr, ps := range s.shards {
-		if err := ps.Ping(ctx, payload...); err != nil {
-			return fmt.Errorf("shard %s ping failed: %w", addr, err)
+		shards = append(shards, shardPing{addr: addr, ps: ps})
+	}
+	s.mu.Unlock()
+
+	for _, sh := range shards {
+		if err := sh.ps.Ping(ctx, payload...); err != nil {
+			return fmt.Errorf("shard %s ping failed: %w", sh.addr, err)
 		}
 	}
 	return nil
@@ -565,12 +596,17 @@ func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
 // This is a blocking call that reads from the multiplexed message channel.
 // Channel() must be called before ReceiveMessage.
 func (s *ShardedPubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
-	if s.msgCh == nil {
+	// Read msgCh under the lock: Channel() writes it under s.mu, so an
+	// unsynchronized read here would be a data race.
+	s.mu.Lock()
+	msgCh := s.msgCh
+	s.mu.Unlock()
+	if msgCh == nil {
 		return nil, fmt.Errorf("redis: Channel() must be called before ReceiveMessage")
 	}
 
 	select {
-	case msg, ok := <-s.msgCh:
+	case msg, ok := <-msgCh:
 		if !ok {
 			return nil, pool.ErrClosed
 		}

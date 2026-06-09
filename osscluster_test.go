@@ -672,6 +672,63 @@ var _ = Describe("ClusterClient", func() {
 			}, 30*time.Second).ShouldNot(HaveOccurred())
 		})
 
+		It("should support sharded PubSub across multiple shards", func() {
+			// Channels chosen so they hash to different slots and are therefore
+			// served by different cluster nodes. A single SSubscribe connection
+			// only receives messages from one shard, missing the others; this is
+			// the multi-shard case ShardedPubSub fixes (issue #3133).
+			channels := []string{"ch1", "ch2", "ch3", "ch4", "ch5", "ch6", "ch7", "ch8", "ch9"}
+
+			// Sanity check: the channels must span at least two slots, otherwise
+			// this would not exercise the cross-shard path.
+			slotSet := make(map[int]struct{})
+			for _, ch := range channels {
+				slotSet[hashtag.Slot(ch)] = struct{}{}
+			}
+			Expect(len(slotSet)).To(BeNumerically(">=", 2))
+
+			sps := client.SSubscribeSharded(ctx, channels...)
+			defer sps.Close()
+
+			msgCh := sps.Channel()
+
+			// Wait for all shard connections to be established.
+			Eventually(func() error {
+				return sps.Ping(ctx)
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			// Re-publish any not-yet-received channel each iteration (sharded
+			// pub/sub has no persistence, so an early publish before the
+			// server-side subscription settles can be missed) and drain whatever
+			// has arrived until every channel's message has been received.
+			received := make(map[string]string, len(channels))
+			Eventually(func() error {
+				for _, ch := range channels {
+					if _, ok := received[ch]; ok {
+						continue
+					}
+					if err := client.SPublish(ctx, ch, "msg-"+ch).Err(); err != nil {
+						return err
+					}
+				}
+				for {
+					select {
+					case msg := <-msgCh:
+						received[msg.Channel] = msg.Payload
+						if len(received) == len(channels) {
+							return nil
+						}
+					case <-time.After(200 * time.Millisecond):
+						return fmt.Errorf("received %d of %d messages so far", len(received), len(channels))
+					}
+				}
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			for _, ch := range channels {
+				Expect(received[ch]).To(Equal("msg-" + ch))
+			}
+		})
+
 		It("should support PubSub.Ping without channels", func() {
 			pubsub := client.Subscribe(ctx)
 			defer pubsub.Close()

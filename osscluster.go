@@ -2361,6 +2361,11 @@ func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *Pub
 // automatically managing connections to all relevant cluster nodes.
 // Unlike SSubscribe, this correctly handles channels that hash to different
 // slots by maintaining one connection per shard node.
+//
+// As with Subscribe/SSubscribe, the error from the initial subscribe is
+// intentionally ignored here. Callers that need to observe subscription
+// errors should create the ShardedPubSub without channels and call
+// sps.SSubscribe(ctx, channels...) explicitly.
 func (c *ClusterClient) SSubscribeSharded(ctx context.Context, channels ...string) *ShardedPubSub {
 	sps := newShardedPubSub(c)
 	if len(channels) > 0 {
