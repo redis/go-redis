@@ -86,6 +86,25 @@ type Recorder interface {
 	// consumerName: name of the consumer
 	RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, streamName, consumerGroup, consumerName string)
 
+	// RecordMultiDBFailover records a MultiDB (geo-failover) failover from one
+	// member database to another. fromFQDN/toFQDN are host-only database FQDNs,
+	// reason is "automatic" or "manual", and duration is the wall time of the
+	// failover.
+	RecordMultiDBFailover(ctx context.Context, fromFQDN, toFQDN, reason string, duration time.Duration)
+
+	// RecordMultiDBActiveDatabaseChange records a change of the active MultiDB
+	// member database (failover, fallback, or manual selection). fromFQDN/toFQDN
+	// are host-only database FQDNs.
+	RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string)
+
+	// RecordMultiDBCircuitStateChange records a MultiDB circuit breaker state
+	// transition for the database identified by dbFQDN.
+	RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string)
+
+	// RecordMultiDBHealthCheck records the result of a MultiDB health-check pass
+	// for the database identified by dbFQDN. duration is the wall time of the check.
+	RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration)
+
 	// RecordConnectionCount records a change in connection count (UpDownCounter)
 	// delta: +1 when connection added, -1 when connection removed
 	// state: connection state (e.g., "idle", "used")
@@ -243,6 +262,26 @@ func RecordStreamLag(ctx context.Context, lag time.Duration, cn *pool.Conn, stre
 	getRecorder().RecordStreamLag(ctx, lag, cn, streamName, consumerGroup, consumerName)
 }
 
+// RecordMultiDBFailover records a MultiDB failover from one database to another.
+func RecordMultiDBFailover(ctx context.Context, fromFQDN, toFQDN, reason string, duration time.Duration) {
+	getRecorder().RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, duration)
+}
+
+// RecordMultiDBActiveDatabaseChange records a change of the active MultiDB database.
+func RecordMultiDBActiveDatabaseChange(ctx context.Context, fromFQDN, toFQDN string) {
+	getRecorder().RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
+}
+
+// RecordMultiDBCircuitStateChange records a MultiDB circuit breaker state transition.
+func RecordMultiDBCircuitStateChange(ctx context.Context, dbFQDN, fromState, toState string) {
+	getRecorder().RecordMultiDBCircuitStateChange(ctx, dbFQDN, fromState, toState)
+}
+
+// RecordMultiDBHealthCheck records the result of a MultiDB health-check pass.
+func RecordMultiDBHealthCheck(ctx context.Context, dbFQDN string, success bool, duration time.Duration) {
+	getRecorder().RecordMultiDBHealthCheck(ctx, dbFQDN, success, duration)
+}
+
 type noopRecorder struct{}
 
 func (noopRecorder) RecordOperationDuration(context.Context, time.Duration, Cmder, int, error, *pool.Conn, int) {
@@ -263,6 +302,12 @@ func (noopRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, str
 
 func (noopRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
 }
+
+func (noopRecorder) RecordMultiDBFailover(context.Context, string, string, string, time.Duration) {}
+func (noopRecorder) RecordMultiDBActiveDatabaseChange(context.Context, string, string)            {}
+func (noopRecorder) RecordMultiDBCircuitStateChange(context.Context, string, string, string)      {}
+func (noopRecorder) RecordMultiDBHealthCheck(context.Context, string, bool, time.Duration)        {}
+
 func (noopRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
 func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
 
