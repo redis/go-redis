@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -224,42 +225,47 @@ func hostFromAddr(addr string) (string, bool) {
 	return addr, true
 }
 
-// CheckHealth performs a single REST API health check probe.
-func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) bool {
+// CheckHealth performs a single REST API health check probe. It returns
+// (false, err) with the error that made the database unhealthy (config error,
+// an unusable address, or a REST API failure) so callers can record it.
+func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
 	if h.configErr != nil {
-		return false
+		return false, h.configErr
 	}
 	host, ok := hostFromAddr(client.Options().Addr)
 	if !ok {
-		return false
+		return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", client.Options().Addr)
 	}
 	return h.checkLagHealth(ctx, host)
 }
 
 // CheckClusterHealth performs a single REST API health check probe.
-func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) bool {
+func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	if h.configErr != nil {
-		return false
+		return false, h.configErr
 	}
 	opts := client.Options()
 	if len(opts.Addrs) == 0 {
-		return false
+		return false, fmt.Errorf("multidb: cluster client has no addresses")
 	}
 	host, ok := hostFromAddr(opts.Addrs[0])
 	if !ok {
-		return false
+		return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", opts.Addrs[0])
 	}
 	return h.checkLagHealth(ctx, host)
 }
 
-func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string) bool {
+func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string) (bool, error) {
 	baseURL := strings.TrimRight(h.baseURL, "/")
 	if baseURL == "" {
-		baseURL = fmt.Sprintf("https://%s:%d", dbHost, h.restAPIPort)
+		// net.JoinHostPort brackets IPv6 literals so the URL is valid
+		// (e.g. https://[::1]:9443 rather than https://::1:9443).
+		hostPort := net.JoinHostPort(dbHost, strconv.Itoa(h.restAPIPort))
+		baseURL = fmt.Sprintf("https://%s", hostPort)
 	}
 	bdbs, err := h.getBDBs(ctx, fmt.Sprintf("%s/v1/bdbs", baseURL))
 	if err != nil {
-		return false
+		return false, err
 	}
 	var uid int
 	found := false
@@ -271,23 +277,26 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string)
 		}
 	}
 	if !found {
-		return false
+		return false, fmt.Errorf("multidb: no matching bdb found for host %q", dbHost)
 	}
 	url := fmt.Sprintf("%s/v1/bdbs/%d/availability?extend_check=lag&availability_lag_tolerance_ms=%d",
 		baseURL, uid, h.lagTolerance)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if h.username != "" && h.password != "" {
 		req.SetBasicAuth(h.username, h.password)
 	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("multidb: availability check returned status %d", resp.StatusCode)
+	}
+	return true, nil
 }
 
 type bdbInfo struct {

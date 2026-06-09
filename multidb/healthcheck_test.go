@@ -3,6 +3,7 @@ package multidb
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -20,8 +21,8 @@ func TestPingHealthCheck(t *testing.T) {
 		}
 
 		hc := NewPingHealthCheck()
-		if !hc.CheckHealth(ctx, client) {
-			t.Error("expected CheckHealth to return true for healthy client")
+		if ok, err := hc.CheckHealth(ctx, client); !ok {
+			t.Errorf("expected CheckHealth to return true for healthy client, err=%v", err)
 		}
 	})
 
@@ -35,8 +36,10 @@ func TestPingHealthCheck(t *testing.T) {
 		hc := NewPingHealthCheck()
 		ctx := context.Background()
 
-		if hc.CheckHealth(ctx, client) {
+		if ok, err := hc.CheckHealth(ctx, client); ok {
 			t.Error("expected CheckHealth to return false for unreachable client")
+		} else if err == nil {
+			t.Error("expected CheckHealth to return a non-nil error for unreachable client")
 		}
 	})
 }
@@ -46,12 +49,12 @@ type mockHealthCheck struct {
 	healthy bool
 }
 
-func (m *mockHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) bool {
-	return m.healthy
+func (m *mockHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
+	return m.healthy, nil
 }
 
-func (m *mockHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) bool {
-	return m.healthy
+func (m *mockHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
+	return m.healthy, nil
 }
 
 // --- LagAwareHealthCheck Tests ---
@@ -103,7 +106,7 @@ func TestLagAwareHealthCheck(t *testing.T) {
 		)
 
 		ctx := context.Background()
-		if hc.CheckHealth(ctx, client) {
+		if ok, _ := hc.CheckHealth(ctx, client); ok {
 			t.Error("expected CheckHealth to return false when REST API is unreachable")
 		}
 	})
@@ -199,8 +202,10 @@ func TestLagAwareConfigErrorFailsHealthCheck(t *testing.T) {
 	if hc.configErr == nil {
 		t.Fatal("expected configErr to be set for invalid root CA PEM")
 	}
-	if hc.CheckHealth(context.Background(), client) {
+	if ok, err := hc.CheckHealth(context.Background(), client); ok {
 		t.Error("expected CheckHealth to return false when config error is set")
+	} else if err == nil {
+		t.Error("expected CheckHealth to surface the config error")
 	}
 }
 
@@ -215,6 +220,138 @@ func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, m.err
 	}
 	return m.response, nil
+}
+
+// urlCapturingHTTPClient records the URLs it is asked to fetch and always
+// fails the request, so the caller's CheckHealth returns early. It is used to
+// assert how the base URL is constructed without needing a live REST API.
+type urlCapturingHTTPClient struct {
+	urls []string
+}
+
+func (c *urlCapturingHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.urls = append(c.urls, req.URL.String())
+	return nil, context.DeadlineExceeded
+}
+
+func TestLagAwareIPv6BaseURL(t *testing.T) {
+	// An IPv6 Redis address must produce a bracketed, parseable HTTPS base URL
+	// (https://[::1]:9443/...), not the malformed https://::1:9443/...
+	capture := &urlCapturingHTTPClient{}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(capture))
+
+	client := redis.NewClient(&redis.Options{Addr: "[::1]:6379"})
+	defer client.Close()
+
+	if ok, _ := hc.CheckHealth(context.Background(), client); ok {
+		t.Fatal("expected CheckHealth to fail with the capturing client")
+	}
+	if len(capture.urls) == 0 {
+		t.Fatal("expected at least one REST API request")
+	}
+	got := capture.urls[0]
+	wantPrefix := "https://[::1]:9443/v1/bdbs"
+	if got != wantPrefix {
+		t.Errorf("IPv6 base URL = %q, want %q", got, wantPrefix)
+	}
+	// The URL must be parseable and round-trip the IPv6 host with brackets.
+	u, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("constructed URL %q is not parseable: %v", got, err)
+	}
+	if u.Hostname() != "::1" {
+		t.Errorf("parsed hostname = %q, want ::1", u.Hostname())
+	}
+}
+
+func TestLagAwareCheckHealthReturnsError(t *testing.T) {
+	// CheckHealth must surface the underlying failure (here: the HTTP error)
+	// so health-check metrics can record why the check was unhealthy.
+	hc := NewLagAwareHealthCheck(
+		WithLagAwareHTTPClient(&mockHTTPClient{err: context.DeadlineExceeded}),
+	)
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	ok, err := hc.CheckHealth(context.Background(), client)
+	if ok {
+		t.Error("expected CheckHealth to return false")
+	}
+	if err == nil {
+		t.Error("expected CheckHealth to return a non-nil error")
+	}
+}
+
+func TestLagAwareUnusableAddrReturnsError(t *testing.T) {
+	// A unix-socket address cannot yield a REST API host; CheckHealth must
+	// report this as an error rather than a silent false.
+	hc := NewLagAwareHealthCheck()
+	client := redis.NewClient(&redis.Options{Network: "unix", Addr: "/tmp/redis.sock"})
+	defer client.Close()
+
+	ok, err := hc.CheckHealth(context.Background(), client)
+	if ok {
+		t.Error("expected CheckHealth to return false for unix-socket address")
+	}
+	if err == nil {
+		t.Error("expected CheckHealth to return an error for unix-socket address")
+	}
+}
+
+func TestGetConfigClampsInvalidValues(t *testing.T) {
+	// A configurable check returning non-positive Probes/Timeout (or negative
+	// Delay) must be clamped to defaults so probe runners stay robust.
+	hc := &configReturningCheck{cfg: HealthCheckConfig{Probes: 0, Timeout: 0, Delay: -1}}
+	got := getConfig(hc)
+	if got.Probes != DefaultHealthCheckProbes {
+		t.Errorf("Probes = %d, want clamped to %d", got.Probes, DefaultHealthCheckProbes)
+	}
+	if got.Timeout != DefaultHealthCheckTimeout {
+		t.Errorf("Timeout = %v, want clamped to %v", got.Timeout, DefaultHealthCheckTimeout)
+	}
+	if got.Delay != DefaultHealthCheckDelay {
+		t.Errorf("Delay = %v, want clamped to %v", got.Delay, DefaultHealthCheckDelay)
+	}
+
+	// A check with Probes=0 must not be treated as trivially healthy.
+	policy := NewHealthyAllPolicy()
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+	bad := &countingCheck{}
+	bad.cfg = HealthCheckConfig{Probes: 0, Timeout: time.Second}
+	policy.Execute(context.Background(), []redis.MultiDBHealthCheck{bad}, client)
+	if bad.calls == 0 {
+		t.Error("expected at least one probe call after clamping Probes=0 to default")
+	}
+}
+
+// configReturningCheck is a ConfigurableHealthCheck that returns a fixed config.
+type configReturningCheck struct {
+	cfg HealthCheckConfig
+}
+
+func (c *configReturningCheck) Config() HealthCheckConfig { return c.cfg }
+func (c *configReturningCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	return true, nil
+}
+func (c *configReturningCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	return true, nil
+}
+
+// countingCheck records how many probe calls it received.
+type countingCheck struct {
+	cfg   HealthCheckConfig
+	calls int
+}
+
+func (c *countingCheck) Config() HealthCheckConfig { return c.cfg }
+func (c *countingCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	c.calls++
+	return true, nil
+}
+func (c *countingCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	c.calls++
+	return true, nil
 }
 
 // --- Health Check Policy Tests ---
@@ -241,16 +378,16 @@ func (s *sequenceHealthCheck) Config() HealthCheckConfig {
 	return s.config
 }
 
-func (s *sequenceHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) bool {
+func (s *sequenceHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
 	if s.index >= len(s.results) {
-		return false
+		return false, nil
 	}
 	result := s.results[s.index]
 	s.index++
-	return result
+	return result, nil
 }
 
-func (s *sequenceHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) bool {
+func (s *sequenceHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	return s.CheckHealth(ctx, nil)
 }
 

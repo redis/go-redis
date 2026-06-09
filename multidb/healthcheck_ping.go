@@ -36,15 +36,25 @@ func (h *PingHealthCheck) Config() HealthCheckConfig {
 	return h.config
 }
 
-// CheckHealth performs a single PING probe against the client.
-func (h *PingHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) bool {
-	return client.Ping(ctx).Err() == nil
+// CheckHealth performs a single PING probe against the client. It returns
+// (false, err) with the PING error when the probe fails so callers can record
+// why the check was unhealthy.
+func (h *PingHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
+	if err := client.Ping(ctx).Err(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// CheckClusterHealth performs a single PING probe against ALL nodes in the cluster.
-func (h *PingHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) bool {
+// CheckClusterHealth performs a single PING probe against ALL nodes in the
+// cluster. It returns (false, err) with the first shard's PING error when the
+// probe fails.
+func (h *PingHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	err := client.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
 		return shard.Ping(ctx).Err()
 	})
-	return err == nil
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
