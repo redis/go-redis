@@ -472,11 +472,19 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 
 	groups := make(map[string][]string)
 	addrMap := make(map[string]string)
+	// Resolve every channel rather than aborting on the first failure: a single
+	// unresolvable channel must not abandon the other channels that were on the
+	// failed shard. The first resolution error is carried into firstErr and
+	// returned to the caller after every channel has been attempted, mirroring
+	// the tolerance pattern in SSubscribe.
+	var firstErr error
 	for _, ch := range channels {
 		newAddr, err := s.nodeAddrForChannel(ctx, ch)
 		if err != nil {
-			s.mu.Lock()
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		groups[newAddr] = append(groups[newAddr], ch)
 		addrMap[ch] = newAddr
@@ -494,7 +502,6 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 	// at the removed shard address with no connection, orphaning them until a
 	// full resubscribe. We re-subscribe as many channels as possible and report
 	// the first error so the caller knows the operation was not fully clean.
-	var firstErr error
 	for addr, chs := range groups {
 		ps := s.getOrCreateShard(addr)
 		if err := ps.SSubscribe(ctx, chs...); err != nil {
