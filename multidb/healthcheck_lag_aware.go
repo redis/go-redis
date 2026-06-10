@@ -199,9 +199,18 @@ func NewLagAwareHealthCheck(opts ...LagAwareHealthCheckOption) *LagAwareHealthCh
 			transport = &http.Transport{}
 		}
 		if h.tlsConfig != nil {
-			transport.TLSClientConfig = h.tlsConfig
+			// Clone so a caller-supplied tls.Config that is shared or later
+			// mutated cannot race with the transport's use of it.
+			transport.TLSClientConfig = h.tlsConfig.Clone()
 		}
-		h.httpClient = &http.Client{Timeout: DefaultHTTPTimeout, Transport: transport}
+		// Honor a configured probe timeout larger than the default so REST
+		// calls are not capped below the probe budget; the request context
+		// still bounds each individual call.
+		httpTimeout := DefaultHTTPTimeout
+		if h.config.Timeout > httpTimeout {
+			httpTimeout = h.config.Timeout
+		}
+		h.httpClient = &http.Client{Timeout: httpTimeout, Transport: transport}
 	}
 	return h
 }

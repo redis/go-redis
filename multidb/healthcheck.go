@@ -118,7 +118,7 @@ func runChecks(ctx context.Context, checks []redis.MultiDBHealthCheck, probe pro
 		wg.Add(1)
 		go func(check redis.MultiDBHealthCheck) {
 			defer wg.Done()
-			results <- runner(ctx, check, probe)
+			results <- safeRunner(ctx, check, probe, runner)
 		}(hc)
 	}
 	go func() { wg.Wait(); close(results) }()
@@ -130,6 +130,19 @@ func runChecks(ctx context.Context, checks []redis.MultiDBHealthCheck, probe pro
 		}
 	}
 	return true
+}
+
+// safeRunner invokes runner and recovers from any panic, reporting the check
+// as unhealthy in that case. This guarantees every worker in runChecks sends
+// exactly one result: a panicking runner must not be silently dropped, which
+// would let the consumer return true after fewer than len(checks) results.
+func safeRunner(ctx context.Context, hc redis.MultiDBHealthCheck, probe probeFunc, runner checkRunner) (ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			ok = false
+		}
+	}()
+	return runner(ctx, hc, probe)
 }
 
 func standaloneProbe(client *redis.Client) probeFunc {

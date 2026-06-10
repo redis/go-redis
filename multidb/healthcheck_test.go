@@ -2,6 +2,7 @@ package multidb
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/url"
 	"testing"
@@ -547,4 +548,78 @@ func TestHealthCheckConfig(t *testing.T) {
 			t.Errorf("expected Timeout=5s, got %v", hc.Config().Timeout)
 		}
 	})
+}
+
+// panicHealthCheck panics on every probe, simulating a buggy check.
+type panicHealthCheck struct{}
+
+func (panicHealthCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	panic("panicHealthCheck: boom")
+}
+func (panicHealthCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	panic("panicHealthCheck: boom")
+}
+
+func TestRunChecksRecoversFromPanic(t *testing.T) {
+	// A panicking check must be treated as unhealthy rather than dropping its
+	// result: otherwise the consumer could return true after fewer than
+	// len(checks) results.
+	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	defer client.Close()
+
+	checks := []redis.MultiDBHealthCheck{
+		newSequenceHealthCheck([]bool{true, true, true}),
+		panicHealthCheck{},
+	}
+	if NewHealthyAllPolicy().Execute(context.Background(), checks, client) {
+		t.Error("expected a panicking health check to make the policy report unhealthy")
+	}
+}
+
+func TestLagAwareHTTPClientTimeout(t *testing.T) {
+	t.Run("defaults to DefaultHTTPTimeout", func(t *testing.T) {
+		hc := NewLagAwareHealthCheck()
+		client, ok := hc.httpClient.(*http.Client)
+		if !ok {
+			t.Fatalf("expected default *http.Client, got %T", hc.httpClient)
+		}
+		if client.Timeout != DefaultHTTPTimeout {
+			t.Errorf("http client timeout = %v, want %v", client.Timeout, DefaultHTTPTimeout)
+		}
+	})
+
+	t.Run("honors a larger probe timeout", func(t *testing.T) {
+		hc := NewLagAwareHealthCheck(
+			WithLagAwareHealthCheckConfig(WithTimeout(30 * time.Second)),
+		)
+		client, ok := hc.httpClient.(*http.Client)
+		if !ok {
+			t.Fatalf("expected default *http.Client, got %T", hc.httpClient)
+		}
+		if client.Timeout < 30*time.Second {
+			t.Errorf("http client timeout = %v, want >= 30s", client.Timeout)
+		}
+	})
+}
+
+func TestLagAwareTLSConfigIsCloned(t *testing.T) {
+	// The transport must use a clone of the supplied tls.Config so a later
+	// mutation by the caller cannot race the transport's use of it.
+	cfg := &tls.Config{InsecureSkipVerify: true}
+	hc := NewLagAwareHealthCheck(WithLagAwareTLSConfig(cfg))
+
+	client, ok := hc.httpClient.(*http.Client)
+	if !ok {
+		t.Fatalf("expected default *http.Client, got %T", hc.httpClient)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", client.Transport)
+	}
+	if transport.TLSClientConfig == cfg {
+		t.Error("expected transport TLS config to be a clone, not the same pointer")
+	}
+	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
+		t.Error("expected cloned TLS config to preserve InsecureSkipVerify")
+	}
 }
