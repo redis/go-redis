@@ -3766,6 +3766,16 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			// SHARD_K_RATIO applies to the KNN method only (Redis 8.8+, cluster only).
 			// Zero means "unset" and falls back to the server default of 1.0.
 			if vectorExpr.ShardKRatio > 0 {
+				if vectorExpr.Method != "KNN" {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO requires KNN method"))
+					return cmd
+				}
+				if vectorExpr.ShardKRatio < 0.1 || vectorExpr.ShardKRatio > 1.0 {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0"))
+					return cmd
+				}
 				args = append(args, "SHARD_K_RATIO", vectorExpr.ShardKRatio)
 			}
 
