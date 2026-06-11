@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -756,5 +758,27 @@ func TestPeekPushNotificationName_EmptyArrayLength(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty push notification array length") {
 		t.Fatalf("PeekPushNotificationName: error should mention empty array length, got %v", err)
+	}
+}
+
+// TestPeekPushNotificationName_OverflowingNameLength asserts that a frame
+// advertising a name length near math.MaxInt does not panic. Computing
+// next+nameLen would overflow int and wrap negative, slipping past a naive
+// "end > len(buf)" guard and panicking the backing slice; the parser must
+// instead treat it as incomplete and surface an error without crashing.
+func TestPeekPushNotificationName_OverflowingNameLength(t *testing.T) {
+	data := []byte(">1\r\n$" + strconv.Itoa(math.MaxInt) + "\r\n")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for overflowing name length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
 	}
 }

@@ -219,11 +219,15 @@ func parsePushNotificationName(buf []byte) (string, bool, error) {
 		if nameLen < 0 {
 			return "", false, fmt.Errorf("redis: negative push notification name length: %d", nameLen)
 		}
-		end := next + nameLen
-		if end > len(buf) {
+		// Compare against the remaining bytes instead of computing
+		// next+nameLen: a hugely advertised length on malformed input could
+		// overflow int, wrap negative, slip past an "end > len(buf)" guard and
+		// panic the slice below. next <= len(buf) here, so the subtraction is
+		// safe.
+		if nameLen > len(buf)-next {
 			return "", false, nil
 		}
-		return util.BytesToString(buf[next:end]), true, nil
+		return util.BytesToString(buf[next : next+nameLen]), true, nil
 	}
 
 	// RespStatus: scan for the terminating CRLF.
