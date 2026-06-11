@@ -228,7 +228,7 @@ func TestLagAwareConfigErrorFailsHealthCheck(t *testing.T) {
 	}
 }
 
-func TestLagAwareTLSConfigIsCloned(t *testing.T) {
+func TestLagAwareTLSConfigOptionIsCloned(t *testing.T) {
 	caller := &tls.Config{}
 	hc := NewLagAwareHealthCheck(
 		WithLagAwareTLSConfig(caller),
