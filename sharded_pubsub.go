@@ -109,7 +109,10 @@ func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
 // that shard. The caller must hold s.mu and must only call this after the
 // shard's connection has been established (i.e. after a successful subscribe).
 func (s *ShardedPubSub) startForwarderLocked(addr string) {
-	if s.msgCh == nil {
+	// Never start a forwarder on a closed ShardedPubSub: Close may have
+	// already waited for the forwarders and closed msgCh, so a late forwarder
+	// could panic sending on the closed channel.
+	if s.closed || s.msgCh == nil {
 		return
 	}
 	if _, ok := s.forwarding[addr]; ok {
@@ -192,7 +195,18 @@ func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) erro
 			// forwarders) and drops the ones it cannot. Re-dropping here would
 			// also delete channels it recovered onto the same address, orphaning
 			// a live, forwarded subscription, so only record the error.
-			if reconnErr := s.resubscribeShard(ctx, addr); reconnErr != nil {
+			reconnErr := s.resubscribeShard(ctx, addr)
+			// resubscribeShard released and re-acquired s.mu. If Close ran in
+			// that window, stop instead of creating new shards (and
+			// forwarders) that Close will never clean up: that would leak
+			// connections and risk a send on the already-closed msgCh.
+			if s.closed {
+				if firstErr == nil {
+					firstErr = pool.ErrClosed
+				}
+				return firstErr
+			}
+			if reconnErr != nil {
 				if firstErr == nil {
 					firstErr = err // keep the original error
 				}
@@ -423,6 +437,26 @@ func (s *ShardedPubSub) onTopologyChange() {
 			// Connection to the new node is established; start forwarding.
 			s.startForwarderLocked(newAddr)
 
+			// While s.mu was released during address resolution a concurrent
+			// SUnsubscribe may have dropped some of these channels from
+			// chanShard. The SSUBSCRIBE above re-created those subscriptions
+			// server-side, so undo them on the new shard: skipping only the
+			// mapping update would leave a live, untracked subscription that
+			// keeps delivering messages the user unsubscribed from.
+			var gone []string
+			for _, ch := range channels {
+				if _, exists := s.chanShard[ch]; !exists {
+					gone = append(gone, ch)
+				}
+			}
+			if len(gone) > 0 {
+				if err := ps.SUnsubscribe(ctx, gone...); err != nil {
+					internal.Logger.Printf(ctx,
+						"redis: sharded pubsub: failed to unsubscribe concurrently-removed channels %v from new shard %s during topology change: %v",
+						gone, newAddr, err)
+				}
+			}
+
 			// Now that the new shard is subscribed, unsubscribe from the old
 			// one so we never have a window with no active subscription.
 			if oldPS, ok := s.shards[oldAddr]; ok {
@@ -452,6 +486,12 @@ func (s *ShardedPubSub) onTopologyChange() {
 						internal.Logger.Printf(ctx,
 							"redis: sharded pubsub: failed to rebuild old shard %s after unsubscribe error during topology change: %v",
 							oldAddr, reErr)
+					}
+					// resubscribeShard released and re-acquired s.mu. If Close
+					// ran in that window, stop migrating: creating new shards
+					// now would leak connections Close already cleaned up.
+					if s.closed {
+						return
 					}
 					// resubscribeShard already removed oldAddr and remapped its
 					// remaining channels, so skip the rest of this iteration.
@@ -554,10 +594,24 @@ func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string)
 		// Only update the mapping on successful subscribe, and only for
 		// channels that still exist (a concurrent SUnsubscribe may have
 		// removed some while the lock was released during resolution).
+		var gone []string
 		for _, ch := range chs {
 			if _, exists := s.chanShard[ch]; exists {
 				s.chanShard[ch] = addrMap[ch]
 				recovered[ch] = struct{}{}
+			} else {
+				gone = append(gone, ch)
+			}
+		}
+		// The SSUBSCRIBE above re-created subscriptions for channels a
+		// concurrent SUnsubscribe removed while the lock was released. Undo
+		// them so the fresh shard does not keep delivering messages for
+		// channels the user already unsubscribed from.
+		if len(gone) > 0 {
+			if err := ps.SUnsubscribe(ctx, gone...); err != nil {
+				internal.Logger.Printf(ctx,
+					"redis: sharded pubsub: failed to unsubscribe concurrently-removed channels %v from rebuilt shard %s: %v",
+					gone, addr, err)
 			}
 		}
 	}

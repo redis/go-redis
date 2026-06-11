@@ -176,7 +176,12 @@ func newNoopPubSub() *PubSub {
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			return cn, nil
 		},
-		closeConn: func(c *pool.Conn) error { return clientConn.Close() },
+		closeConn: func(c *pool.Conn) error {
+			// Close both pipe ends so the drain goroutine exits via the read
+			// error instead of lingering on a half-open pipe.
+			_ = serverConn.Close()
+			return clientConn.Close()
+		},
 	}
 	ps.init()
 	return ps
@@ -202,6 +207,7 @@ func TestPubSubSUnsubscribeRetainsSchannelsOnError(t *testing.T) {
 
 func TestPubSubSUnsubscribeDropsSchannelsOnSuccess(t *testing.T) {
 	ps := newNoopPubSub()
+	defer func() { _ = ps.Close() }()
 	ps.schannels = map[string]struct{}{"ch1": {}, "ch2": {}}
 
 	if err := ps.SUnsubscribe(context.Background(), "ch1", "ch2"); err != nil {
@@ -451,6 +457,35 @@ func TestShardedPubSubPingClosedAndEmpty(t *testing.T) {
 	_ = sps.Close()
 	if err := sps.Ping(context.Background()); err == nil {
 		t.Fatal("expected error pinging a closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubStartForwarderAfterClose(t *testing.T) {
+	// startForwarderLocked must be a no-op once the ShardedPubSub is closed.
+	// resubscribeShard temporarily releases s.mu, so a concurrent Close can
+	// complete (waiting out the forwarders and closing msgCh) before a caller
+	// resumes; a forwarder started after that could panic sending on the
+	// closed msgCh and would leak its shard connection.
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	_ = sps.Channel() // msgCh non-nil, so only the closed check can stop us
+	if err := sps.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	ps := newNoopPubSub()
+	defer func() { _ = ps.Close() }()
+
+	sps.mu.Lock()
+	sps.shards["127.0.0.1:7000"] = ps
+	sps.startForwarderLocked("127.0.0.1:7000")
+	started := len(sps.forwarding)
+	delete(sps.shards, "127.0.0.1:7000")
+	sps.mu.Unlock()
+
+	if started != 0 {
+		t.Fatal("startForwarderLocked must not start a forwarder after Close")
 	}
 }
 
