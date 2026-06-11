@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -1792,6 +1793,106 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("0"))
+		})
+
+		It("should GetToBuffer", func() {
+			// Missing key returns redis.Nil.
+			buf := make([]byte, 64)
+			miss := client.GetToBuffer(ctx, "missing", buf)
+			Expect(miss.Err()).To(Equal(redis.Nil))
+			Expect(miss.Val()).To(Equal(0))
+
+			Expect(client.Set(ctx, "key", "hello", 0).Err()).NotTo(HaveOccurred())
+
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(5))
+			Expect(get.Bytes()).To(Equal([]byte("hello")))
+		})
+
+		It("should GetToBuffer with buffer too small", func() {
+			Expect(client.Set(ctx, "key", "hello world", 0).Err()).NotTo(HaveOccurred())
+
+			small := make([]byte, 4)
+			get := client.GetToBuffer(ctx, "key", small)
+			Expect(get.Err()).To(HaveOccurred())
+			Expect(get.Err().Error()).To(ContainSubstring("buffer too small"))
+		})
+
+		It("should SetFromBuffer and GetToBuffer round-trip", func() {
+			payload := bytes.Repeat([]byte{'x'}, 1024)
+			set := client.SetFromBuffer(ctx, "key", payload)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
+		})
+
+		It("should SetFromBuffer and GetToBuffer with payload > read buffer", func() {
+			// Default read buffer is 32 KiB; pick something larger so the
+			// payload spills past the bufio buffer on the read path.
+			payload := bytes.Repeat([]byte{'z'}, 128*1024)
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
+		})
+
+		It("should SetFromBuffer and GetToBuffer with 10 MiB payload", func() {
+			// Large-payload regression coverage: exercises many bufio
+			// refills on the read path and several direct socket writes
+			// on the write path. Uses crypto/rand so any byte-shift bug
+			// (e.g. the verbatim-misdetection issue addressed by
+			// commit fix(proto): avoid stale line[0] after bufio refill)
+			// surfaces as a mismatch rather than coincidentally aligning.
+			const size = 10 * 1024 * 1024
+			payload := make([]byte, size)
+			_, err := rand.Read(payload)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, size)
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(size))
+			// Use bytes.Equal rather than gomega's Equal to keep the
+			// diff out of the failure message if a single byte is off.
+			Expect(bytes.Equal(get.Bytes(), payload)).To(BeTrue(),
+				"round-tripped 10 MiB payload does not match")
+		})
+
+		It("should reject cloned GetToBuffer with a clear error", func() {
+			// A cloned ZeroCopyStringCmd has no usable destination
+			// buffer — see the godoc on Clone. Processing the clone
+			// must fail with an explicit error rather than silently
+			// writing the reply somewhere the caller can't see, and
+			// the underlying connection must remain usable for the
+			// follow-up GetToBuffer below.
+			Expect(client.Set(ctx, "key", "value", 0).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, 16)
+			orig := client.GetToBuffer(ctx, "key", buf)
+			Expect(orig.Err()).NotTo(HaveOccurred())
+			Expect(string(orig.Bytes())).To(Equal("value"))
+
+			clone := orig.Clone()
+			Expect(client.Process(ctx, clone)).To(MatchError(ContainSubstring("cannot be cloned")))
+
+			// Follow-up call on the same client must work: the clone's
+			// readReply drained the network reply so the connection
+			// stays aligned.
+			buf2 := make([]byte, 16)
+			again := client.GetToBuffer(ctx, "key", buf2)
+			Expect(again.Err()).NotTo(HaveOccurred())
+			Expect(string(again.Bytes())).To(Equal("value"))
 		})
 
 		It("should GetEX", func() {
