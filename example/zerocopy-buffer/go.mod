@@ -1,10 +1,10 @@
-module github.com/redis/go-redis/example/search-aggregate-steps
+module github.com/redis/go-redis/example/zerocopy-buffer
 
 go 1.24
 
 replace github.com/redis/go-redis/v9 => ../..
 
-require github.com/redis/go-redis/v9 v9.20.1
+require github.com/redis/go-redis/v9 v9.20.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
