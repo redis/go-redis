@@ -3,7 +3,10 @@ package proto
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -620,4 +623,162 @@ func TestPeekPushNotificationNameBehavior(t *testing.T) {
 		t.Log("")
 		t.Log("Note: Buffer must be primed with a peek operation first")
 	})
+}
+
+// chunkedReader hands its data out in fixed-size chunks, one per Read. This
+// lets us deterministically reproduce the bufio fill boundary that landed in
+// the middle of a push frame header in issue #3839.
+type chunkedReader struct {
+	data      []byte
+	chunkSize int
+	off       int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.off+n > len(r.data) {
+		n = len(r.data) - r.off
+	}
+	copy(p, r.data[r.off:r.off+n])
+	r.off += n
+	return n, nil
+}
+
+// TestPeekPushNotificationName_TruncatedHeader covers issue #3839: when only
+// a prefix of a push frame is buffered, PeekPushNotificationName must NOT
+// return a truncated name. It should block to fetch the rest of the header
+// (so the caller can identify the notification correctly) or, when the
+// underlying read fails, return that error.
+func TestPeekPushNotificationName_TruncatedHeader(t *testing.T) {
+	const frame = ">3\r\n$7\r\nmessage\r\n$7\r\nchannel\r\n$5\r\nhello\r\n"
+
+	// Boundaries that previously caused PeekPushNotificationName to silently
+	// return a truncated name. `prefix` is the number of bytes the chunked
+	// reader hands out per Read call; with the bug, every chunk boundary that
+	// lands inside the frame header is a place where the function returned a
+	// truncated name instead of blocking for the rest.
+	cutpoints := []struct {
+		name   string
+		prefix int
+	}{
+		{"after_push_marker", 1},
+		{"inside_array_len_line", 3},
+		{"after_array_len_line", 4},
+		{"after_dollar", 5},
+		{"inside_bulk_len_line", 6},
+		{"after_bulk_len_line", 8},
+		{"inside_name", 13}, // the exact failure mode from #3839 ("messa")
+		{"before_name_crlf", 15},
+	}
+
+	for _, tc := range cutpoints {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(frame)
+			// Use a chunked reader that hands out tc.prefix bytes per Read
+			// call (not per fill). bufio's first fill therefore returns only
+			// tc.prefix bytes; satisfying a Peek that wants more forces
+			// additional Reads, each capped at tc.prefix bytes, until the
+			// peek window is full. That sequence reproduces the partial-fill
+			// boundary from issue #3839 where the buffered prefix landed in
+			// the middle of the push frame header.
+			rd := NewReader(&chunkedReader{data: data, chunkSize: tc.prefix})
+
+			if _, err := rd.PeekReplyType(); err != nil {
+				t.Fatalf("PeekReplyType: %v", err)
+			}
+
+			name, err := rd.PeekPushNotificationName()
+			if err != nil {
+				t.Fatalf("PeekPushNotificationName: unexpected error: %v", err)
+			}
+			if name != "message" {
+				t.Fatalf("PeekPushNotificationName: got %q, want %q", name, "message")
+			}
+
+			// And the full frame must still be readable afterwards.
+			reply, err := rd.ReadReply()
+			if err != nil {
+				t.Fatalf("ReadReply: %v", err)
+			}
+			arr, ok := reply.([]interface{})
+			if !ok || len(arr) != 3 || arr[0] != "message" || arr[1] != "channel" || arr[2] != "hello" {
+				t.Fatalf("ReadReply: got %#v, want [message channel hello]", reply)
+			}
+		})
+	}
+}
+
+// TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF covers the case
+// where the underlying connection delivers a partial frame and then closes.
+// PeekPushNotificationName must surface the read error rather than returning
+// a truncated name.
+func TestPeekPushNotificationName_TruncatedHeaderUnderlyingEOF(t *testing.T) {
+	// A push frame that ends mid-name.
+	data := []byte(">3\r\n$7\r\nmessa")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+}
+
+// TestPeekPushNotificationName_EmptyArrayLength asserts that ">\r\n" is
+// reported as a malformed frame rather than an incomplete prefix. RESP
+// requires at least one digit after '>' for the array length; without the
+// empty-length check in parsePushNotificationName the parser would treat
+// ">\r\n" as a valid prefix and PeekPushNotificationName would block
+// waiting for the rest of a frame that is already corrupt.
+func TestPeekPushNotificationName_EmptyArrayLength(t *testing.T) {
+	rd := NewReader(bytes.NewReader([]byte(">\r\n")))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for empty array length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+	if !strings.Contains(err.Error(), "empty push notification array length") {
+		t.Fatalf("PeekPushNotificationName: error should mention empty array length, got %v", err)
+	}
+}
+
+// TestPeekPushNotificationName_OverflowingNameLength asserts that a frame
+// advertising a name length near math.MaxInt does not panic. Computing
+// next+nameLen would overflow int and wrap negative, slipping past a naive
+// "end > len(buf)" guard and panicking the backing slice; the parser must
+// instead treat it as incomplete and surface an error without crashing.
+func TestPeekPushNotificationName_OverflowingNameLength(t *testing.T) {
+	data := []byte(">1\r\n$" + strconv.Itoa(math.MaxInt) + "\r\n")
+	rd := NewReader(bytes.NewReader(data))
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := rd.PeekPushNotificationName()
+	if err == nil {
+		t.Fatalf("PeekPushNotificationName: want error for overflowing name length, got name=%q", name)
+	}
+	if name != "" {
+		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
 }
