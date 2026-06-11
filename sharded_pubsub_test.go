@@ -439,9 +439,18 @@ func TestShardedPubSubReceiveMessageBeforeChannel(t *testing.T) {
 	sps := newShardedPubSub(cluster)
 	defer func() { _ = sps.Close() }()
 
-	// ReceiveMessage must error if Channel was never called.
-	if _, err := sps.ReceiveMessage(context.Background()); err == nil {
-		t.Fatal("expected error when ReceiveMessage is called before Channel")
+	// ReceiveMessage auto-initializes the multiplexed channel (mirroring
+	// PubSub.ReceiveMessage, which needs no prior Channel call). With no
+	// shards there is nothing to receive, so the context deadline fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := sps.ReceiveMessage(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// The auto-initialized channel must be the one Channel() returns.
+	if sps.Channel() == nil {
+		t.Fatal("expected Channel() to return the auto-initialized channel")
 	}
 }
 
@@ -457,6 +466,63 @@ func TestShardedPubSubPingClosedAndEmpty(t *testing.T) {
 	_ = sps.Close()
 	if err := sps.Ping(context.Background()); err == nil {
 		t.Fatal("expected error pinging a closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubPingReportsNotReady(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Channels tracked but no live shard connections (e.g. every initial
+	// subscribe failed): Ping must not report a false-positive nil, since it
+	// doubles as a readiness probe.
+	sps.mu.Lock()
+	sps.chanShard["ch1"] = "127.0.0.1:7000"
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging with tracked channels but no shards")
+	}
+
+	// A pending subscription must also be reported.
+	ps := newNoopPubSub()
+	sps.mu.Lock()
+	sps.shards["127.0.0.1:7000"] = ps
+	sps.pending["ch1"] = struct{}{}
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging with a pending subscription")
+	}
+
+	// Confirmed subscription with a live shard: Ping succeeds.
+	sps.mu.Lock()
+	delete(sps.pending, "ch1")
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err != nil {
+		t.Fatalf("expected nil error once subscription is confirmed, got %v", err)
+	}
+}
+
+func TestClusterClientCloseClosesShardedPubSubs(t *testing.T) {
+	cluster := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:0"}})
+
+	sps := cluster.SSubscribeSharded(context.Background())
+	if err := cluster.Close(); err != nil {
+		t.Fatalf("ClusterClient.Close failed: %v", err)
+	}
+
+	sps.mu.Lock()
+	closed := sps.closed
+	sps.mu.Unlock()
+	if !closed {
+		t.Fatal("expected ClusterClient.Close to close registered ShardedPubSubs")
+	}
+
+	cluster.spsMu.Lock()
+	n := len(cluster.shardedPubSubs)
+	cluster.spsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected 0 registered ShardedPubSubs after client close, got %d", n)
 	}
 }
 

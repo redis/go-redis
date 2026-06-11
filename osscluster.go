@@ -1299,6 +1299,19 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
+	// Close any registered ShardedPubSubs first so their shard connections
+	// and forwarder goroutines are torn down; otherwise they would outlive
+	// the client that owns their topology updates.
+	c.spsMu.Lock()
+	subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+	copy(subs, c.shardedPubSubs)
+	c.spsMu.Unlock()
+	for _, sps := range subs {
+		// Each Close deregisters itself; ErrClosed from an already-closed
+		// instance is fine here.
+		_ = sps.Close()
+	}
+
 	return c.nodes.Close()
 }
 
@@ -2295,6 +2308,54 @@ func (c *ClusterClient) pubSub() *PubSub {
 				if err != nil {
 					return nil, err
 				}
+			}
+			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
+			if err != nil {
+				node = nil
+				return nil, err
+			}
+			// will return nil if already initialized
+			err = node.Client.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				node = nil
+				return nil, err
+			}
+			node.Client.pubSubPool.TrackConn(cn)
+			return cn, nil
+		},
+		closeConn: func(cn *pool.Conn) error {
+			// Untrack connection from PubSubPool
+			node.Client.pubSubPool.UntrackConn(cn)
+			err := cn.Close()
+			node = nil
+			return err
+		},
+	}
+	pubsub.init()
+
+	return pubsub
+}
+
+// pubSubForAddr returns a PubSub whose connections are always established to
+// the cluster node at addr, regardless of the subscribed channels. It is used
+// by ShardedPubSub, which resolves the owning node per channel itself and
+// needs every (re)connection to land exactly on the node its bookkeeping is
+// keyed by — the channel-derived resolution in pubSub() could pick a
+// different node (e.g. another replica) on reconnect.
+func (c *ClusterClient) pubSubForAddr(addr string) *PubSub {
+	var node *clusterNode
+	pubsub := &PubSub{
+		opt: c.opt.clientOptions(),
+		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
+			if node != nil {
+				panic("node != nil")
+			}
+
+			var err error
+			node, err = c.nodes.GetOrCreate(addr)
+			if err != nil {
+				return nil, err
 			}
 			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
 			if err != nil {

@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,12 @@ import (
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+// shardedPubSubMigrationTimeout bounds a single onTopologyChange pass. The
+// pass runs on the cluster's notifier goroutine and performs network I/O
+// against nodes that may be unhealthy (that is often why the topology changed
+// in the first place), so it must not be allowed to hang indefinitely.
+const shardedPubSubMigrationTimeout = time.Minute
 
 // ShardedPubSub wraps multiple PubSub connections to support sharded pub/sub
 // across different cluster nodes. In a Redis cluster, channels hash to
@@ -30,24 +37,52 @@ import (
 // which automatically reconnects on the next Receive. Recovery from a node
 // that is permanently gone (e.g. its slots moved during resharding) is
 // reload-driven: a cluster topology reload triggers onTopologyChange, which
-// migrates the affected subscriptions to the new owning node.
+// migrates the affected subscriptions to the new owning node. Subscriptions
+// that could not be established (or re-established) are kept tracked and
+// marked pending; every topology pass retries them until they succeed or are
+// explicitly unsubscribed. Use Ping as a readiness probe: it returns an error
+// while any subscription is pending or has no live shard connection.
+//
+// During a topology migration the new shard is subscribed before the old one
+// is unsubscribed so there is no window with no active subscription. The
+// trade-off is a brief window in which the consumer may receive duplicate
+// messages for the migrating channels (once from each shard); consumers that
+// cannot tolerate duplicates should deduplicate.
+//
+// Sharded pub/sub always resolves and connects to master nodes, even when the
+// client is configured with ReadOnly: the master receives messages first, and
+// replica resolution is not deterministic (consecutive resolutions may pick
+// different replicas), which would cause spurious shard churn.
 type ShardedPubSub struct {
 	cluster *ClusterClient
 
+	// opMu serializes the logical operations (SSubscribe, SUnsubscribe and
+	// onTopologyChange) so one operation's resolve→subscribe→bookkeep
+	// sequence never interleaves with another's. Network I/O happens while
+	// holding opMu, but never while holding mu. Close deliberately does not
+	// take opMu so it stays responsive even when an operation is stuck in
+	// network I/O.
+	opMu sync.Mutex
+
+	// mu protects the fields below. It is never held across network I/O.
 	mu     sync.Mutex
 	shards map[string]*PubSub // addr -> PubSub
-	// Track which PubSub each channel is on
+	// chanShard tracks which shard address each channel is (or should be) on.
 	chanShard map[string]string // channel -> addr
+	// pending tracks channels whose mapping exists but whose server-side
+	// SSUBSCRIBE has not (yet) succeeded — e.g. after a failed subscribe or
+	// shard rebuild. Every topology pass retries them.
+	pending map[string]struct{}
+	closed  bool
 
-	closed bool
-	exit   chan struct{}
-
-	chOnce sync.Once
 	msgCh  chan *Message
 	chOpts []ChannelOption
 	// forwarding tracks which shard addresses already have a forwarder
 	// goroutine running, so we never start more than one per shard.
 	forwarding map[string]struct{}
+
+	chOnce     sync.Once
+	exit       chan struct{}
 	forwarders sync.WaitGroup
 }
 
@@ -56,6 +91,7 @@ func newShardedPubSub(cluster *ClusterClient) *ShardedPubSub {
 		cluster:    cluster,
 		shards:     make(map[string]*PubSub),
 		chanShard:  make(map[string]string),
+		pending:    make(map[string]struct{}),
 		forwarding: make(map[string]struct{}),
 		exit:       make(chan struct{}),
 	}
@@ -63,20 +99,11 @@ func newShardedPubSub(cluster *ClusterClient) *ShardedPubSub {
 	return sps
 }
 
-// nodeAddrForChannel returns the cluster node address responsible for a channel's slot.
+// nodeAddrForChannel returns the address of the master node serving the
+// channel's slot. See the type documentation for why ReadOnly is deliberately
+// ignored here.
 func (s *ShardedPubSub) nodeAddrForChannel(ctx context.Context, channel string) (string, error) {
 	slot := hashtag.Slot(channel)
-	if s.cluster.opt.ReadOnly {
-		state, err := s.cluster.state.Get(ctx)
-		if err != nil {
-			return "", err
-		}
-		node, err := s.cluster.slotReadOnlyNode(state, slot)
-		if err != nil {
-			return "", err
-		}
-		return node.Client.opt.Addr, nil
-	}
 	node, err := s.cluster.slotMasterNode(ctx, slot)
 	if err != nil {
 		return "", err
@@ -84,24 +111,74 @@ func (s *ShardedPubSub) nodeAddrForChannel(ctx context.Context, channel string) 
 	return node.Client.opt.Addr, nil
 }
 
-// getOrCreateShard returns an existing PubSub for the given node address,
-// or creates a new one. The caller must hold s.mu.
+// resolveChannels groups channels by the address of their owning node.
+// Resolution of every channel is attempted rather than aborting on the first
+// failure: a single unresolvable channel must not prevent the channels that
+// did resolve from being handled. The first resolution error is returned
+// alongside the groups.
 //
-// It deliberately does not start a forwarder goroutine. Forwarding must only
-// begin after the shard's connection has been established to the correct node
-// via a successful SSubscribe; otherwise the forwarder's Receive would call
-// PubSub.conn with no channels and connect to a random node, racing with the
-// caller's SSubscribe for the connection. Use startForwarderLocked after a
-// successful subscribe instead.
-func (s *ShardedPubSub) getOrCreateShard(addr string) *PubSub {
-	if ps, ok := s.shards[addr]; ok {
-		return ps
+// It must be called without holding mu: resolution may trigger a cluster
+// state reload, which re-enters through notifyShardedPubSubs (asynchronously,
+// so no deadlock, but the notifier must not find mu held for the duration of
+// network I/O).
+func (s *ShardedPubSub) resolveChannels(ctx context.Context, channels []string) (map[string][]string, error) {
+	groups := make(map[string][]string)
+	var firstErr error
+	for _, ch := range channels {
+		addr, err := s.nodeAddrForChannel(ctx, ch)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		groups[addr] = append(groups[addr], ch)
+	}
+	return groups, firstErr
+}
+
+// subscribeOnShard subscribes chs on the shard at addr, creating the shard if
+// needed. On success it maps the channels to addr, clears their pending mark
+// and starts the shard's forwarder. On failure the bookkeeping is left
+// untouched — the caller decides whether to remap, mark pending or rebuild.
+// The caller must hold opMu and must not hold mu.
+func (s *ShardedPubSub) subscribeOnShard(ctx context.Context, addr string, chs []string) error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return pool.ErrClosed
+	}
+	ps, ok := s.shards[addr]
+	if !ok {
+		// The shard's connections are pinned to addr (pubSubForAddr), so the
+		// connection always lands on the node the bookkeeping is keyed by.
+		ps = s.cluster.pubSubForAddr(addr)
+		s.shards[addr] = ps
+	}
+	s.mu.Unlock()
+
+	if err := ps.SSubscribe(ctx, chs...); err != nil {
+		return err
 	}
 
-	// Create a new PubSub via the cluster's pubSub factory.
-	ps := s.cluster.pubSub()
-	s.shards[addr] = ps
-	return ps
+	s.mu.Lock()
+	if s.closed {
+		// Close ran while the subscribe was in flight; it already popped and
+		// closed the shard, which drops the server-side subscription.
+		s.mu.Unlock()
+		return pool.ErrClosed
+	}
+	for _, ch := range chs {
+		s.chanShard[ch] = addr
+		delete(s.pending, ch)
+	}
+	// Connection is established to the correct node, so it is safe to start
+	// forwarding messages from this shard. Starting earlier would let the
+	// forwarder's Receive call PubSub.conn with no channels and connect to a
+	// random node, racing the subscribe above for the connection.
+	s.startForwarderLocked(addr)
+	s.mu.Unlock()
+	return nil
 }
 
 // startForwarderLocked starts a forwarder goroutine for the shard at addr if
@@ -127,137 +204,196 @@ func (s *ShardedPubSub) startForwarderLocked(addr string) {
 	go s.forwardMessages(ps, s.chOpts)
 }
 
-// removeShardLocked closes the shard at addr (if any), removes it from the
-// shard map and clears its forwarding marker so a future shard created at the
-// same address can start a fresh forwarder. The caller must hold s.mu.
-func (s *ShardedPubSub) removeShardLocked(addr string) {
-	if ps, ok := s.shards[addr]; ok {
-		_ = ps.Close()
-		delete(s.shards, addr)
+// markPending marks the given channels as pending so the next topology pass
+// retries their subscription. Channels that are no longer tracked are skipped.
+func (s *ShardedPubSub) markPending(channels []string) {
+	s.mu.Lock()
+	if !s.closed {
+		for _, ch := range channels {
+			if _, ok := s.chanShard[ch]; ok {
+				s.pending[ch] = struct{}{}
+			}
+		}
 	}
-	delete(s.forwarding, addr)
+	s.mu.Unlock()
 }
 
-// SSubscribe subscribes to the given shard channels. Channels are automatically
-// routed to the correct cluster node based on their hash slot.
-func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) error {
-	// Check closed state first (quick path).
+// cleanupUnreferencedShards closes and removes every shard no tracked channel
+// points at. Closing the connection also drops any server-side subscriptions
+// that may linger on it (e.g. after a failed unsubscribe or a migration), so
+// unreferenced shards never keep delivering messages.
+// The caller must hold opMu and must not hold mu.
+func (s *ShardedPubSub) cleanupUnreferencedShards() {
+	var toClose []*PubSub
+	s.mu.Lock()
+	if !s.closed {
+		referenced := make(map[string]struct{}, len(s.chanShard))
+		for _, addr := range s.chanShard {
+			referenced[addr] = struct{}{}
+		}
+		for addr, ps := range s.shards {
+			if _, ok := referenced[addr]; !ok {
+				toClose = append(toClose, ps)
+				delete(s.shards, addr)
+				delete(s.forwarding, addr)
+			}
+		}
+	}
+	s.mu.Unlock()
+	for _, ps := range toClose {
+		_ = ps.Close()
+	}
+}
+
+// rebuildShard tears down the shard at addr and re-subscribes every channel
+// mapped to it on freshly resolved nodes. Channels it cannot recover stay
+// mapped and pending, so the next topology pass retries them.
+// The caller must hold opMu and must not hold mu.
+func (s *ShardedPubSub) rebuildShard(ctx context.Context, addr string) error {
+	// Detach the shard and collect its channels under mu; close the old
+	// connection outside the lock. Closing drops every server-side
+	// subscription that was on it.
+	var old *PubSub
+	var channels []string
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		return pool.ErrClosed
 	}
+	if ps, ok := s.shards[addr]; ok {
+		old = ps
+		delete(s.shards, addr)
+	}
+	delete(s.forwarding, addr)
+	for ch, a := range s.chanShard {
+		if a == addr {
+			channels = append(channels, ch)
+			s.pending[ch] = struct{}{}
+		}
+	}
 	s.mu.Unlock()
 
-	// Resolve node addresses without holding the mutex to avoid deadlock:
-	// nodeAddrForChannel -> state.Get -> Reload -> onReload -> onTopologyChange
-	// which also needs to acquire s.mu.
-	groups := make(map[string][]string)
-	addrMap := make(map[string]string) // channel -> addr
-	// Resolve every channel rather than aborting on the first failure: a single
-	// unresolvable channel must not prevent the channels that did resolve from
-	// being subscribed. The first resolution error is carried into firstErr and
-	// returned to the caller.
-	var firstErr error
-	for _, ch := range channels {
-		addr, err := s.nodeAddrForChannel(ctx, ch)
-		if err != nil {
+	if old != nil {
+		_ = old.Close()
+	}
+	if len(channels) == 0 {
+		return nil
+	}
+
+	// Re-resolve against current topology and re-subscribe. Channels whose
+	// resolution or subscribe fails stay mapped and pending for the next
+	// topology pass.
+	groups, firstErr := s.resolveChannels(ctx, channels)
+	for newAddr, chs := range groups {
+		if err := s.subscribeOnShard(ctx, newAddr, chs); err != nil {
+			if errors.Is(err, pool.ErrClosed) {
+				return err
+			}
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
 		}
-		groups[addr] = append(groups[addr], ch)
-		addrMap[ch] = addr
 	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return pool.ErrClosed
-	}
-
-	for ch, addr := range addrMap {
-		s.chanShard[ch] = addr
-	}
-
-	// Subscribe on the correct shard for each group. We attempt every group
-	// rather than bailing out on the first failure, so a single failing shard
-	// does not leave channels in other groups unsubscribed while their
-	// chanShard entries remain. The first error is returned to the caller.
-	for addr, chs := range groups {
-		ps := s.getOrCreateShard(addr)
-		if err := ps.SSubscribe(ctx, chs...); err != nil {
-			// Reactive reconnect: close the failed shard, re-resolve, and retry.
-			// resubscribeShard owns the chanShard cleanup for this shard's
-			// channels — it remaps the ones it recovers (starting their
-			// forwarders) and drops the ones it cannot. Re-dropping here would
-			// also delete channels it recovered onto the same address, orphaning
-			// a live, forwarded subscription, so only record the error.
-			reconnErr := s.resubscribeShard(ctx, addr)
-			// resubscribeShard released and re-acquired s.mu. If Close ran in
-			// that window, stop instead of creating new shards (and
-			// forwarders) that Close will never clean up: that would leak
-			// connections and risk a send on the already-closed msgCh.
-			if s.closed {
-				if firstErr == nil {
-					firstErr = pool.ErrClosed
-				}
-				return firstErr
-			}
-			if reconnErr != nil {
-				if firstErr == nil {
-					firstErr = err // keep the original error
-				}
-			}
-			continue
-		}
-		// Connection is now established to the correct node, so it is safe to
-		// start forwarding messages from this shard.
-		s.startForwarderLocked(addr)
-	}
-
 	return firstErr
 }
 
-// SUnsubscribe unsubscribes from the given shard channels.
-func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// SSubscribe subscribes to the given shard channels. Channels are automatically
+// routed to the correct cluster node based on their hash slot.
+//
+// On failure the channels remain tracked and marked pending: one immediate
+// reactive rebuild of the failing shard is attempted, and every later cluster
+// topology reload retries the pending subscriptions. The first error is
+// returned so the caller knows the operation was not (fully) applied yet.
+func (s *ShardedPubSub) SSubscribe(ctx context.Context, channels ...string) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
 
-	if s.closed {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
 		return pool.ErrClosed
 	}
 
-	// With no channels, SUnsubscribe targets every currently-tracked channel,
-	// mirroring PubSub.SUnsubscribe ("unsubscribe from all").
+	groups, firstErr := s.resolveChannels(ctx, channels)
+
+	// Attempt every group rather than bailing out on the first failure, so a
+	// single failing shard does not prevent the channels in other groups from
+	// being subscribed. The first error is returned to the caller.
+	for addr, chs := range groups {
+		err := s.subscribeOnShard(ctx, addr, chs)
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, pool.ErrClosed) {
+			return pool.ErrClosed
+		}
+		// Track the channels as pending on this shard so topology passes
+		// retry them even if the reactive rebuild below fails too.
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return pool.ErrClosed
+		}
+		for _, ch := range chs {
+			s.chanShard[ch] = addr
+			s.pending[ch] = struct{}{}
+		}
+		s.mu.Unlock()
+		// Reactive reconnect: tear the shard down and retry once against a
+		// freshly resolved topology.
+		if reErr := s.rebuildShard(ctx, addr); reErr != nil {
+			if firstErr == nil {
+				firstErr = err // keep the original subscribe error
+			}
+			if errors.Is(reErr, pool.ErrClosed) {
+				return firstErr
+			}
+		}
+	}
+
+	s.cleanupUnreferencedShards()
+	return firstErr
+}
+
+// SUnsubscribe unsubscribes from the given shard channels. With no channels it
+// unsubscribes from all currently-tracked channels, mirroring
+// PubSub.SUnsubscribe.
+//
+// Mappings are only dropped after a successful unsubscribe, so a failure does
+// not desync the local bookkeeping from the server (where the subscription and
+// its forwarder may still be active). All shard groups are attempted; the
+// first error is returned.
+func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return pool.ErrClosed
+	}
 	if len(channels) == 0 {
 		channels = make([]string, 0, len(s.chanShard))
 		for ch := range s.chanShard {
 			channels = append(channels, ch)
 		}
 	}
-
-	// Group channels by their known shard. The mapping is intentionally left
-	// in place here and only removed after a successful unsubscribe below, so
-	// that a failed SUnsubscribe does not desync our bookkeeping from the
-	// server (where the subscription and its forwarder may still be active).
 	groups := make(map[string][]string)
 	for _, ch := range channels {
 		if addr, ok := s.chanShard[ch]; ok {
 			groups[addr] = append(groups[addr], ch)
 		}
 	}
+	s.mu.Unlock()
 
-	// Attempt every shard group rather than bailing out on the first failure.
-	// Returning early would leave earlier groups unsubscribed-and-untracked
-	// while later groups stay both subscribed and tracked, with no signal to
-	// the caller that the unsubscribe only partially completed. We unsubscribe
-	// as many groups as possible and report the first error.
 	var firstErr error
 	for addr, chs := range groups {
-		if ps, ok := s.shards[addr]; ok {
+		s.mu.Lock()
+		ps, ok := s.shards[addr]
+		s.mu.Unlock()
+
+		if ok {
 			if err := ps.SUnsubscribe(ctx, chs...); err != nil {
 				// Keep this group's mappings (and its shard) in place so our
 				// bookkeeping stays consistent with the server, where the
@@ -269,26 +405,23 @@ func (s *ShardedPubSub) SUnsubscribe(ctx context.Context, channels ...string) er
 				continue
 			}
 		}
-		// Drop the mapping only after the unsubscribe succeeded (or when there
-		// is no live shard connection to unsubscribe from).
+		// Drop the mapping only after the unsubscribe succeeded (or when
+		// there is no live shard connection to unsubscribe from).
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return pool.ErrClosed
+		}
 		for _, ch := range chs {
 			delete(s.chanShard, ch)
+			delete(s.pending, ch)
 		}
-		// If the shard has no remaining channels, close it so we don't leak an
-		// idle connection and forwarder, matching onTopologyChange's invariant
-		// of one PubSub per active shard.
-		hasChannels := false
-		for _, a := range s.chanShard {
-			if a == addr {
-				hasChannels = true
-				break
-			}
-		}
-		if !hasChannels {
-			s.removeShardLocked(addr)
-		}
+		s.mu.Unlock()
 	}
 
+	// Close shards that no longer carry any channels so we don't leak idle
+	// connections and forwarders.
+	s.cleanupUnreferencedShards()
 	return firstErr
 }
 
@@ -356,15 +489,20 @@ func (s *ShardedPubSub) forwardMessages(ps *PubSub, opts []ChannelOption) {
 	}
 }
 
-// onTopologyChange is called by the ClusterClient when the cluster topology
-// changes. It re-resolves all subscribed channels and migrates subscriptions
-// to the correct nodes.
+// onTopologyChange is called (via the cluster's coalesced notifier goroutine)
+// when the cluster topology changes. It re-resolves all tracked channels and
+// migrates subscriptions to the correct nodes, and retries any pending or
+// connection-less subscriptions.
 func (s *ShardedPubSub) onTopologyChange() {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), shardedPubSubMigrationTimeout)
+	defer cancel()
 
-	// Take a snapshot of current channel->shard mappings without holding
-	// the lock during node address resolution, which may trigger further
-	// state reloads and re-enter through notifyShardedPubSubs.
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+
+	// Snapshot under mu. opMu guarantees no other operation mutates the
+	// bookkeeping while this pass runs, so the snapshot stays authoritative
+	// for the whole pass.
 	s.mu.Lock()
 	if s.closed || len(s.chanShard) == 0 {
 		s.mu.Unlock()
@@ -374,9 +512,19 @@ func (s *ShardedPubSub) onTopologyChange() {
 	for ch, addr := range s.chanShard {
 		snapshot[ch] = addr
 	}
+	pending := make(map[string]struct{}, len(s.pending))
+	for ch := range s.pending {
+		pending[ch] = struct{}{}
+	}
+	liveShards := make(map[string]struct{}, len(s.shards))
+	for addr := range s.shards {
+		liveShards[addr] = struct{}{}
+	}
 	s.mu.Unlock()
 
-	// Re-resolve all channels outside the lock.
+	// Re-resolve all channels without holding any lock. Only channels that
+	// actually need work are collected: moved to another node, pending, or
+	// mapped to an address with no live shard connection.
 	migrations := make(map[string]map[string][]string) // oldAddr -> newAddr -> channels
 	for ch, oldAddr := range snapshot {
 		newAddr, err := s.nodeAddrForChannel(ctx, ch)
@@ -389,291 +537,122 @@ func (s *ShardedPubSub) onTopologyChange() {
 				ch, err)
 			continue
 		}
-		if newAddr != oldAddr {
-			if migrations[oldAddr] == nil {
-				migrations[oldAddr] = make(map[string][]string)
-			}
-			migrations[oldAddr][newAddr] = append(migrations[oldAddr][newAddr], ch)
+		_, isPending := pending[ch]
+		_, hasShard := liveShards[oldAddr]
+		if newAddr == oldAddr && !isPending && hasShard {
+			continue
 		}
+		if migrations[oldAddr] == nil {
+			migrations[oldAddr] = make(map[string][]string)
+		}
+		migrations[oldAddr][newAddr] = append(migrations[oldAddr][newAddr], ch)
 	}
 
 	if len(migrations) == 0 {
 		return
 	}
 
-	// Apply migrations under the lock.
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.closed {
-		return
-	}
-
 	for oldAddr, targets := range migrations {
 		for newAddr, channels := range targets {
-			// Subscribe on the new shard first. If this fails we keep the old
-			// subscription and mapping intact so messages are never dropped.
-			ps := s.getOrCreateShard(newAddr)
-			if err := ps.SSubscribe(ctx, channels...); err != nil {
-				// Subscribing on the new node failed. Keep the old mapping so
-				// a later reload retries the migration, but log it and drop a
-				// freshly-created empty shard so we don't pin an idle
-				// connection to a node that may not serve these slots.
+			// Subscribe on the new shard first so there is never a window
+			// with no active subscription. Until the old subscription is
+			// dropped below the consumer may briefly receive duplicates.
+			if err := s.subscribeOnShard(ctx, newAddr, channels); err != nil {
+				if errors.Is(err, pool.ErrClosed) {
+					return
+				}
+				// Keep the old mapping and subscription intact (no message
+				// gap) and mark the channels pending so a later reload
+				// retries the migration.
 				internal.Logger.Printf(ctx,
 					"redis: sharded pubsub: failed to subscribe channels %v on new shard %s during topology change: %v",
 					channels, newAddr, err)
-				hasNew := false
-				for _, addr := range s.chanShard {
-					if addr == newAddr {
-						hasNew = true
-						break
-					}
-				}
-				if !hasNew {
-					s.removeShardLocked(newAddr)
-				}
+				s.markPending(channels)
 				continue
 			}
-			// Connection to the new node is established; start forwarding.
-			s.startForwarderLocked(newAddr)
 
-			// While s.mu was released during address resolution a concurrent
-			// SUnsubscribe may have dropped some of these channels from
-			// chanShard. The SSUBSCRIBE above re-created those subscriptions
-			// server-side, so undo them on the new shard: skipping only the
-			// mapping update would leave a live, untracked subscription that
-			// keeps delivering messages the user unsubscribed from.
-			var gone []string
-			for _, ch := range channels {
-				if _, exists := s.chanShard[ch]; !exists {
-					gone = append(gone, ch)
-				}
-			}
-			if len(gone) > 0 {
-				if err := ps.SUnsubscribe(ctx, gone...); err != nil {
-					internal.Logger.Printf(ctx,
-						"redis: sharded pubsub: failed to unsubscribe concurrently-removed channels %v from new shard %s during topology change: %v",
-						gone, newAddr, err)
-				}
+			if newAddr == oldAddr {
+				// Pending/connection-less retry on the same node; nothing to
+				// unsubscribe.
+				continue
 			}
 
-			// Now that the new shard is subscribed, unsubscribe from the old
-			// one so we never have a window with no active subscription.
-			if oldPS, ok := s.shards[oldAddr]; ok {
+			// The new subscription is live (the mapping now points at
+			// newAddr); drop the old one.
+			s.mu.Lock()
+			oldPS, ok := s.shards[oldAddr]
+			s.mu.Unlock()
+			if ok {
 				if err := oldPS.SUnsubscribe(ctx, channels...); err != nil {
 					// The old shard still has the migrated channels subscribed,
-					// so without intervention the user would receive duplicate
-					// messages (once from oldAddr, once from newAddr) until the
-					// next reload. The new subscription is already active, so we
-					// can safely drop the old connection entirely: closing it
-					// terminates every server-side subscription on it. Any
-					// channels that legitimately remain on oldAddr are restored
-					// via resubscribeShard, which rebuilds a fresh connection.
+					// so the user would receive duplicate messages until the
+					// next reload. The new subscription is already active, so
+					// we can safely rebuild the old shard: closing its
+					// connection terminates every server-side subscription on
+					// it, and any channels that legitimately remain on oldAddr
+					// are re-subscribed on a fresh connection.
 					internal.Logger.Printf(ctx,
 						"redis: sharded pubsub: failed to unsubscribe channels %v from old shard %s during topology change, rebuilding it: %v",
 						channels, oldAddr, err)
-					// Move the migrated channels off oldAddr first so
-					// resubscribeShard does not try to restore them there.
-					for _, ch := range channels {
-						if _, exists := s.chanShard[ch]; exists {
-							s.chanShard[ch] = newAddr
+					if reErr := s.rebuildShard(ctx, oldAddr); reErr != nil {
+						if errors.Is(reErr, pool.ErrClosed) {
+							return
 						}
-					}
-					// resubscribeShard releases and re-acquires s.mu; that is
-					// safe here because we still hold it and have no per-iteration
-					// state that must survive the unlock.
-					if reErr := s.resubscribeShard(ctx, oldAddr); reErr != nil {
 						internal.Logger.Printf(ctx,
 							"redis: sharded pubsub: failed to rebuild old shard %s after unsubscribe error during topology change: %v",
 							oldAddr, reErr)
 					}
-					// resubscribeShard released and re-acquired s.mu. If Close
-					// ran in that window, stop migrating: creating new shards
-					// now would leak connections Close already cleaned up.
-					if s.closed {
-						return
-					}
-					// resubscribeShard already removed oldAddr and remapped its
-					// remaining channels, so skip the rest of this iteration.
-					continue
-				}
-			}
-
-			// Update channel->shard mapping only for channels that still exist
-			// (a concurrent SUnsubscribe may have removed some while the lock
-			// was released during address resolution).
-			for _, ch := range channels {
-				if _, exists := s.chanShard[ch]; exists {
-					s.chanShard[ch] = newAddr
 				}
 			}
 		}
-
-		// If old shard has no more channels, close it.
-		hasChannels := false
-		for _, addr := range s.chanShard {
-			if addr == oldAddr {
-				hasChannels = true
-				break
-			}
-		}
-		if !hasChannels {
-			s.removeShardLocked(oldAddr)
-		}
-	}
-}
-
-// resubscribeShard closes a failed shard connection, re-resolves the channels
-// that were on it, and re-subscribes them on fresh connections.
-// The caller must hold s.mu. The lock is temporarily released during address
-// resolution to avoid deadlock (nodeAddrForChannel -> state.Get -> Reload ->
-// onReload -> onTopologyChange -> s.mu).
-func (s *ShardedPubSub) resubscribeShard(ctx context.Context, failedAddr string) error {
-	// Close the failed shard and clear its forwarding marker.
-	s.removeShardLocked(failedAddr)
-
-	// Collect channels that were on the failed shard.
-	var channels []string
-	for ch, addr := range s.chanShard {
-		if addr == failedAddr {
-			channels = append(channels, ch)
-		}
 	}
 
-	// Release lock before resolving addresses to avoid deadlock.
-	s.mu.Unlock()
-
-	groups := make(map[string][]string)
-	addrMap := make(map[string]string)
-	// Resolve every channel rather than aborting on the first failure: a single
-	// unresolvable channel must not abandon the other channels that were on the
-	// failed shard. The first resolution error is carried into firstErr and
-	// returned to the caller after every channel has been attempted, mirroring
-	// the tolerance pattern in SSubscribe.
-	var firstErr error
-	for _, ch := range channels {
-		newAddr, err := s.nodeAddrForChannel(ctx, ch)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		groups[newAddr] = append(groups[newAddr], ch)
-		addrMap[ch] = newAddr
-	}
-
-	// Re-acquire lock for state mutations.
-	s.mu.Lock()
-
-	if s.closed {
-		return pool.ErrClosed
-	}
-
-	// Try every target group rather than bailing out on the first failure.
-	// Returning early would leave channels in not-yet-processed groups pointing
-	// at the removed shard address with no connection, orphaning them until a
-	// full resubscribe. We re-subscribe as many channels as possible and report
-	// the first error so the caller knows the operation was not fully clean.
-	recovered := make(map[string]struct{})
-	for addr, chs := range groups {
-		ps := s.getOrCreateShard(addr)
-		if err := ps.SSubscribe(ctx, chs...); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			// Drop the freshly created (but unusable) shard so a later attempt
-			// recreates it against current topology. These channels still point
-			// at the removed failedAddr; the sweep after the loop drops those
-			// stale mappings so they are not treated as live subscriptions.
-			s.removeShardLocked(addr)
-			continue
-		}
-		// Connection is established; start forwarding from the fresh shard.
-		s.startForwarderLocked(addr)
-		// Only update the mapping on successful subscribe, and only for
-		// channels that still exist (a concurrent SUnsubscribe may have
-		// removed some while the lock was released during resolution).
-		var gone []string
-		for _, ch := range chs {
-			if _, exists := s.chanShard[ch]; exists {
-				s.chanShard[ch] = addrMap[ch]
-				recovered[ch] = struct{}{}
-			} else {
-				gone = append(gone, ch)
-			}
-		}
-		// The SSUBSCRIBE above re-created subscriptions for channels a
-		// concurrent SUnsubscribe removed while the lock was released. Undo
-		// them so the fresh shard does not keep delivering messages for
-		// channels the user already unsubscribed from.
-		if len(gone) > 0 {
-			if err := ps.SUnsubscribe(ctx, gone...); err != nil {
-				internal.Logger.Printf(ctx,
-					"redis: sharded pubsub: failed to unsubscribe concurrently-removed channels %v from rebuilt shard %s: %v",
-					gone, addr, err)
-			}
-		}
-	}
-
-	// Drop the mappings of the channels this call could not recover (failed
-	// resolution or failed SSUBSCRIBE) so they are not treated as live
-	// subscriptions pointing at the removed failedAddr with no connection.
-	//
-	// Only consider the channels we collected at entry, and only drop those
-	// that still point at failedAddr: while s.mu was released a concurrent
-	// SSubscribe/onTopologyChange may have re-added or migrated some of these
-	// channels (or reused failedAddr for brand-new channels). A blanket
-	// "delete everything on failedAddr" sweep would silently orphan those.
-	if firstErr != nil {
-		for _, ch := range channels {
-			if _, ok := recovered[ch]; ok {
-				continue
-			}
-			if s.chanShard[ch] == failedAddr {
-				delete(s.chanShard, ch)
-			}
-		}
-	}
-
-	return firstErr
+	// Close shards that no longer carry any channels (e.g. fully migrated
+	// away) so we don't leak idle connections and forwarders.
+	s.cleanupUnreferencedShards()
 }
 
 // Close closes all underlying PubSub connections and the message channel.
+//
+// Close deliberately does not take opMu, so it stays responsive even when a
+// subscribe/unsubscribe/migration operation is stuck in network I/O; such an
+// in-flight operation observes the closed state at its next bookkeeping step
+// and aborts.
 func (s *ShardedPubSub) Close() error {
 	// Deregister before acquiring the lock — deregister doesn't need it
 	// and doing it first avoids holding s.mu longer than necessary.
 	s.cluster.deregisterShardedPubSub(s)
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.closed {
+		s.mu.Unlock()
 		return pool.ErrClosed
 	}
 	s.closed = true
 	close(s.exit)
+	shards := make([]*PubSub, 0, len(s.shards))
+	for addr, ps := range s.shards {
+		shards = append(shards, ps)
+		delete(s.shards, addr)
+	}
+	// Capture the current msgCh under the lock. If a first-ever Channel()
+	// call races us below, it will observe s.closed and create+close its own
+	// channel; by closing only this captured reference we avoid double-closing
+	// the same channel.
+	msgCh := s.msgCh
+	s.mu.Unlock()
 
 	var firstErr error
-	for addr, ps := range s.shards {
+	for _, ps := range shards {
 		if err := ps.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		delete(s.shards, addr)
 	}
 
-	// Capture the current msgCh under the lock. If a first-ever Channel() call
-	// races us during the forwarders.Wait() window below, it will observe
-	// s.closed and create+close its own channel; by closing only this captured
-	// reference we avoid double-closing the same channel.
-	msgCh := s.msgCh
-
-	// Wait for all forwarder goroutines to exit before closing msgCh
-	// to avoid a send-on-closed-channel panic.
-	s.mu.Unlock()
+	// Wait for all forwarder goroutines to exit before closing msgCh to avoid
+	// a send-on-closed-channel panic. No forwarder can start after this
+	// point: startForwarderLocked checks closed, which was set under mu above.
 	s.forwarders.Wait()
-	s.mu.Lock()
-
 	if msgCh != nil {
 		close(msgCh)
 	}
@@ -681,7 +660,9 @@ func (s *ShardedPubSub) Close() error {
 	return firstErr
 }
 
-// Ping sends a PING to all underlying shard PubSub connections.
+// Ping sends a PING to all underlying shard PubSub connections and doubles as
+// a readiness probe: it returns an error while any tracked subscription is
+// still pending or there is no live shard connection for tracked channels.
 // Returns the first error encountered, if any.
 func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
 	// Snapshot the shards under the lock, then perform the Ping I/O without
@@ -700,7 +681,18 @@ func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
 	for addr, ps := range s.shards {
 		shards = append(shards, shardPing{addr: addr, ps: ps})
 	}
+	tracked := len(s.chanShard)
+	pendingCount := len(s.pending)
 	s.mu.Unlock()
+
+	if pendingCount > 0 {
+		return fmt.Errorf("redis: sharded pubsub: %d subscription(s) pending", pendingCount)
+	}
+	// Channels are tracked but every shard connection is gone (e.g. all
+	// initial subscribes failed): report it instead of a false-positive nil.
+	if len(shards) == 0 && tracked > 0 {
+		return fmt.Errorf("redis: sharded pubsub: %d channel(s) tracked but no live shard connections", tracked)
+	}
 
 	for _, sh := range shards {
 		if err := sh.ps.Ping(ctx, payload...); err != nil {
@@ -711,17 +703,10 @@ func (s *ShardedPubSub) Ping(ctx context.Context, payload ...string) error {
 }
 
 // ReceiveMessage waits for a message from any shard.
-// This is a blocking call that reads from the multiplexed message channel.
-// Channel() must be called before ReceiveMessage.
+// This is a blocking call that reads from the multiplexed message channel,
+// initializing it with default options if Channel has not been called yet.
 func (s *ShardedPubSub) ReceiveMessage(ctx context.Context) (*Message, error) {
-	// Read msgCh under the lock: Channel() writes it under s.mu, so an
-	// unsynchronized read here would be a data race.
-	s.mu.Lock()
-	msgCh := s.msgCh
-	s.mu.Unlock()
-	if msgCh == nil {
-		return nil, fmt.Errorf("redis: Channel() must be called before ReceiveMessage")
-	}
+	msgCh := s.Channel()
 
 	select {
 	case msg, ok := <-msgCh:
