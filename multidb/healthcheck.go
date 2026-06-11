@@ -12,10 +12,9 @@ import (
 
 // Default values for health check configuration
 const (
-	DefaultHealthCheckProbes   = 3
-	DefaultHealthCheckDelay    = 500 * time.Millisecond
-	DefaultHealthCheckTimeout  = 3 * time.Second
-	DefaultHealthCheckInterval = 5 * time.Second
+	DefaultHealthCheckProbes  = 3
+	DefaultHealthCheckDelay   = 500 * time.Millisecond
+	DefaultHealthCheckTimeout = 3 * time.Second
 )
 
 // HealthCheckConfig holds configuration for health checks.

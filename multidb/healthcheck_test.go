@@ -228,6 +228,23 @@ func TestLagAwareConfigErrorFailsHealthCheck(t *testing.T) {
 	}
 }
 
+func TestLagAwareTLSConfigIsCloned(t *testing.T) {
+	caller := &tls.Config{}
+	hc := NewLagAwareHealthCheck(
+		WithLagAwareTLSConfig(caller),
+		WithLagAwareInsecureSkipVerify(),
+	)
+	if !hc.tlsConfig.InsecureSkipVerify {
+		t.Error("expected health check TLS config to have InsecureSkipVerify set")
+	}
+	if caller.InsecureSkipVerify {
+		t.Error("expected caller TLS config to be left unmodified")
+	}
+	if hc.tlsConfig == caller {
+		t.Error("expected health check to hold a clone, not the caller's TLS config")
+	}
+}
+
 // mockHTTPClient is a mock HTTP client for testing.
 type mockHTTPClient struct {
 	response *http.Response
