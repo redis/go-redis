@@ -255,9 +255,11 @@ var _ = Describe("MinIdleConns", func() {
 						mu.RUnlock()
 					})
 
+					// Refilling MinIdleConns happens on a background worker, so give
+					// loaded CI runners enough time to redial all idle connections.
 					Eventually(func() int {
 						return connPool.Len()
-					}).Should(Equal(minIdleConns))
+					}, 5*time.Second, 50*time.Millisecond).Should(Equal(minIdleConns))
 				})
 
 				It("has idle connections", func() {
