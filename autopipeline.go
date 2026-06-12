@@ -316,7 +316,7 @@ var closedQueuedCmd = &queuedCmd{
 
 // processWithQueuedCmd is the internal method that queues a command and returns the queuedCmd.
 // The caller is responsible for returning the queuedCmd to the pool after use.
-func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *queuedCmd {
+func (ap *AutoPipeliner) processWithQueuedCmd(_ context.Context, cmd Cmder) *queuedCmd {
 	if ap.closed.Load() {
 		cmd.SetErr(ErrClosed)
 		return closedQueuedCmd
@@ -354,9 +354,9 @@ func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *q
 }
 
 // process is the internal method that queues a command and returns its done channel.
-func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
-	return ap.processWithQueuedCmd(ctx, cmd).done
-}
+// func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
+//  	return ap.processWithQueuedCmd(ctx, cmd).done
+// }
 
 // Close stops the autopipeliner and flushes any pending commands.
 func (ap *AutoPipeliner) Close() error {
