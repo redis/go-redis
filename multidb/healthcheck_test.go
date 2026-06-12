@@ -197,6 +197,8 @@ func TestLagAwareHostFromAddr(t *testing.T) {
 		{"[::1]:6379", "::1", true},
 		{"[2001:db8::1]:6379", "2001:db8::1", true},
 		{"localhost", "localhost", true},
+		{"[::1]", "::1", true},
+		{"[2001:db8::1]", "2001:db8::1", true},
 		{"", "", false},
 		{"/tmp/redis.sock", "", false},
 		{"unix:///tmp/redis.sock", "", false},

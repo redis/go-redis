@@ -231,7 +231,12 @@ func hostFromAddr(addr string) (string, bool) {
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return host, true
 	}
-	// No port present; treat the whole value as the host.
+	// No port present; treat the whole value as the host. Strip any surrounding
+	// IPv6 brackets (e.g. "[::1]") so callers can re-bracket the host via
+	// net.JoinHostPort without producing a doubly-bracketed "[[::1]]:9443".
+	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
+		addr = addr[1 : len(addr)-1]
+	}
 	return addr, true
 }
 
