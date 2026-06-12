@@ -15,17 +15,20 @@ var pipelinePool = sync.Pool{
 	},
 }
 
-// cmdSlicePool is a sync.Pool for command slices to reduce allocations
+// cmdSlicePool is a sync.Pool for command slices to reduce allocations.
+// We store *[]Cmder rather than []Cmder so that Put doesn't allocate a
+// boxed interface value for the slice header (staticcheck SA6002).
 var cmdSlicePool = sync.Pool{
 	New: func() interface{} {
 		// Pre-allocate with reasonable capacity for typical batch sizes
-		return make([]Cmder, 0, 100)
+		s := make([]Cmder, 0, 100)
+		return &s
 	},
 }
 
 // getCmdSlice gets a command slice from the pool
 func getCmdSlice() []Cmder {
-	slice := cmdSlicePool.Get().([]Cmder)
+	slice := *cmdSlicePool.Get().(*[]Cmder)
 	// Clear the slice but keep capacity
 	return slice[:0]
 }
@@ -34,7 +37,11 @@ func getCmdSlice() []Cmder {
 func putCmdSlice(slice []Cmder) {
 	// Only pool slices that aren't too large (avoid memory bloat)
 	if cap(slice) <= 1000 {
-		cmdSlicePool.Put(slice)
+		full := slice[:cap(slice)]
+		for i := range full {
+			full[i] = nil
+		}
+		cmdSlicePool.Put(&slice)
 	}
 }
 
@@ -173,8 +180,6 @@ func putPipeliner(pipe Pipeliner) {
 		putPipeline(p)
 	}
 }
-
-
 
 func (c *Pipeline) Pipeline() Pipeliner {
 	return c
