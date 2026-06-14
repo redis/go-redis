@@ -313,9 +313,9 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
-	// ClientSideCacheConfig enables client-side caching when non-nil.
-	// Requires Protocol: 3 (RESP3) so that invalidation messages are delivered
-	// as out-of-band push notifications. If ClientSideCache is also set, it
+	// ClientSideCacheConfig enables client-side caching when non-nil. Together
+	// with ClientSideCache it is the on/off switch for the feature: leave both
+	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
 	// takes precedence over this config.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
@@ -324,7 +324,43 @@ type Options struct {
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the invalidation architecture used when
+	// client-side caching is enabled (via ClientSideCacheConfig or
+	// ClientSideCache); it is ignored when CSC is disabled.
+	// See docs/csc-strategy-guide.md for when to choose the others.
+	ClientSideCacheStrategy CSCStrategy
 }
+
+// CSCStrategy selects the client-side caching invalidation architecture.
+// It is set at client construction via Options.ClientSideCacheStrategy and
+// is immutable for the lifetime of the client.
+type CSCStrategy int
+
+const (
+	// CSCStrategyBroadcast (default): one shared cache; a dedicated out-of-pool
+	// "sidecar" connection subscribes with CLIENT TRACKING ON BCAST and owns
+	// all invalidation traffic. Pool connections never track, so cache hits
+	// are pure in-memory lookups. Best throughput and tail latency at every
+	// tested concurrency; robust to invalidation noise from other
+	// applications. Recommended for virtually all deployments.
+	CSCStrategyBroadcast CSCStrategy = iota
+
+	// CSCStrategyPerConnection: every pool connection owns a private cache and its
+	// own CLIENT TRACKING ON subscription; invalidations affect only the
+	// receiving connection's cache. Eliminates cross-connection staleness on
+	// connection close, at the cost of duplicated cache memory and per-conn
+	// warm-up. Suited to clients with few, long-lived connections.
+	CSCStrategyPerConnection
+
+	// CSCStrategySharedTracking: one shared cache; every pool connection issues
+	// CLIENT TRACKING ON, and a background drainer consumes buffered
+	// invalidation frames once per drain period. Throughput-competitive with
+	// Broadcast, but with heavier tail latency under high concurrency because
+	// invalidations are spread across the pool connections instead of a single
+	// dedicated one.
+	CSCStrategySharedTracking
+)
 
 func (opt *Options) init() {
 	if opt.Addr == "" {

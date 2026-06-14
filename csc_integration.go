@@ -4,12 +4,36 @@ import (
 	"bytes"
 	"context"
 	"strconv"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/push"
 )
+
+// RESPInvalidationBytesRead returns the cumulative byte count of key names
+// received in "invalidate" push frames since process start. This counter is
+// shared across all clients in the process and is never reset by the library.
+func RESPInvalidationBytesRead() int64 {
+	return proto.InvalidationBytesRead.Load()
+}
+
+// commandHits / commandMisses count cache outcomes at the SERVED-COMMAND
+// boundary — exactly one increment per `processCached` invocation,
+// regardless of how many internal cache.Get probes it issues.
+var (
+	commandHits   atomic.Uint64
+	commandMisses atomic.Uint64
+)
+
+// CommandStats returns the cumulative count of CSC-served-command hits and
+// misses since process start.
+func CommandStats() (hits, misses uint64) {
+	return commandHits.Load(), commandMisses.Load()
+}
 
 // ClientSideCacheConfig configures the built-in client-side cache. Pass a
 // non-nil value to Options.ClientSideCacheConfig to enable caching on a RESP3
@@ -18,7 +42,10 @@ type ClientSideCacheConfig = CacheConfig
 
 const (
 	invalidatePushName = "invalidate"
-	// cscNamespaceSep is a NUL byte so it cannot occur inside a Redis key name.
+	// cscNamespaceSep separates the DB-number prefix from the rest of a
+	// namespaced cache/redis key. NUL is technically a legal byte inside a
+	// Redis key (keys are binary-safe), so this prefix is not collision-proof
+	// against an adversarial key like "0\x00foo".
 	cscNamespaceSep = "\x00"
 )
 
@@ -78,8 +105,21 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int
 // invalidate handler. Safe to call with a nil cache. On registration failure
 // the cache reference is left unset so cacheable commands fall back to normal
 // round-trips.
+//
+// CSC is only enabled when Options.DB == 0. Redis CLIENT TRACKING is
+// per-connection and bound to the database the connection was on when tracking
+// was enabled; a runtime SELECT mid-session changes the active DB but does not
+// re-key the server's tracking table. Cache entries written under one DB would
+// then be invalidated by writes against a different DB, silently serving stale
+// data. Users that need multi-DB caching must run one client per DB.
 func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	if cache == nil || c.opt.Protocol != 3 {
+		return
+	}
+	if c.opt.DB != 0 {
+		internal.Logger.Printf(ctx,
+			"csc: client-side caching is restricted to DB 0; disabling CSC for client configured with DB=%d. "+
+				"Use one client per DB if you need caching against non-zero databases.", c.opt.DB)
 		return
 	}
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.opt.DB); err != nil {
@@ -87,6 +127,51 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 		return
 	}
 	c.csc = cache
+	// Only the SharedTracking strategy delivers invalidations to pool
+	// connections, so only it needs the background drainer. Under Broadcast
+	// the sidecar owns all invalidation traffic and pool conns receive none;
+	// under PerConnection this shared-cache path is never reached.
+	if c.opt.ClientSideCacheStrategy == CSCStrategySharedTracking {
+		c.startBackgroundDrainer()
+	}
+}
+
+// cscDrainStopField maps *baseClient -> chan struct{} used to stop that
+// client's background drainer goroutine. The entry is removed on Close.
+var cscDrainStopField sync.Map
+
+// startBackgroundDrainer launches the per-client invalidation drainer. The
+// drainer wakes every cscDrainSkipWindow and walks the idle pool conns,
+// consuming buffered invalidate push frames. Moving the walk OFF the
+// command hot path means cache hits are pure in-memory lookups
+func (c *baseClient) startBackgroundDrainer() {
+	stop := make(chan struct{})
+	if _, loaded := cscDrainStopField.LoadOrStore(c, stop); loaded {
+		return // already running
+	}
+	go func() {
+		ticker := time.NewTicker(cscDrainSkipWindow)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				walkCtx, cancel := context.WithTimeout(
+					context.Background(), cscDrainSkipWindow/2)
+				c.drainPendingInvalidationsWalk(walkCtx)
+				cancel()
+			}
+		}
+	}()
+}
+
+// stopBackgroundDrainer halts the client's drainer goroutine. Idempotent;
+// called from baseClient.Close.
+func (c *baseClient) stopBackgroundDrainer() {
+	if v, ok := cscDrainStopField.LoadAndDelete(c); ok {
+		close(v.(chan struct{}))
+	}
 }
 
 // applyCachedReply populates cmd from a previously captured raw RESP reply by
@@ -95,15 +180,25 @@ func applyCachedReply(cmd Cmder, raw []byte) error {
 	return cmd.readReply(proto.NewReader(bytes.NewReader(raw)))
 }
 
-// drainPendingInvalidations processes buffered push notifications across the
-// client's currently idle pool connections. Invalidations are delivered to the
-// specific connection that read the tracked key, so a hit served from a
-// different connection could otherwise race ahead of a pending "invalidate".
-// The walk is bounded by an IdleLen snapshot and dedup'd by connection ID so a
-// rotating pool (FIFO/LIFO) is not traversed indefinitely, and each connection
-// is peeked via peekAndProcessPushNotifications so the recent-health-check
-// shortcut does not suppress drainage on this non-reply-read path.
-func (c *baseClient) drainPendingInvalidations(ctx context.Context) {
+// cscDrainSkipWindow is the period of the SharedTracking background drainer:
+// the drainer wakes once per window and walks the idle pool connections,
+// consuming any buffered invalidate push frames (each walk is bounded by half
+// a window). Staleness under SharedTracking is therefore bounded by one
+// window — an invalidation buffered on a connection is picked up by the next
+// drain at the latest.
+const cscDrainSkipWindow = 5 * time.Millisecond
+
+// drainPendingInvalidationsWalk processes buffered push notifications across
+// the client's currently idle pool connections. Invalidations are delivered
+// to the specific connection that read the tracked key, so a hit served from
+// a different connection could otherwise race ahead of a pending
+// "invalidate".
+//
+// ctx carries the walk deadline (the background drainer passes half the
+// drain period): when it expires, pool.Get fails, the loop breaks, and all
+// borrowed conns are released — bounding how long the walk can hold pool
+// capacity away from serving traffic.
+func (c *baseClient) drainPendingInvalidationsWalk(ctx context.Context) {
 	if c.connPool == nil || c.opt.Protocol != 3 {
 		return
 	}
@@ -115,6 +210,9 @@ func (c *baseClient) drainPendingInvalidations(ctx context.Context) {
 	seen := make(map[uint64]struct{}, remaining)
 	borrowed := make([]*pool.Conn, 0, remaining)
 	for i := 0; i < remaining; i++ {
+		if ctx.Err() != nil {
+			break
+		}
 		cn, err := c.connPool.Get(ctx)
 		if err != nil {
 			break
@@ -126,7 +224,7 @@ func (c *baseClient) drainPendingInvalidations(ctx context.Context) {
 		seen[cn.GetID()] = struct{}{}
 		borrowed = append(borrowed, cn)
 		if err := c.peekAndProcessPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "csc: error draining invalidations on cache hit: %v", err)
+			internal.Logger.Printf(ctx, "csc: error draining invalidations: %v", err)
 		}
 	}
 	for _, cn := range borrowed {
@@ -156,16 +254,13 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		nsRedisKeys[i] = dbNamespacedKey(db, k)
 	}
 
-	if _, ok := c.csc.Get(ctx, key); ok {
-		// Drain pending invalidations and re-check so the hit path cannot
-		// serve a value the server has already marked stale.
-		c.drainPendingInvalidations(ctx)
-		if data, ok := c.csc.Get(ctx, key); ok {
-			if err := applyCachedReply(cmd, data); err == nil {
-				return nil
-			}
-			c.csc.DeleteByCacheKey(key)
+	// Serve hits straight from the cache.
+	if data, ok := c.csc.Get(ctx, key); ok {
+		if err := applyCachedReply(cmd, data); err == nil {
+			commandHits.Add(1)
+			return nil
 		}
+		c.csc.DeleteByCacheKey(key)
 	}
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
@@ -173,6 +268,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		// Another goroutine is fetching; Reserve blocks until it completes.
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := applyCachedReply(cmd, data); err == nil {
+				commandHits.Add(1)
 				return nil
 			}
 			c.csc.DeleteByCacheKey(key)
@@ -205,5 +301,8 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 			c.csc.Cancel(key, token)
 		}
 	}
+	// Reaching here means the command's reply came from Redis (the miss
+	// path). Count as a command-level miss.
+	commandMisses.Add(1)
 	return err
 }

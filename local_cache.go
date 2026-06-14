@@ -1,9 +1,10 @@
 package redis
 
 import (
-	"container/list"
 	"context"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,7 +30,20 @@ type CacheEntry struct {
 	reservedAt time.Time
 	waitCh     chan struct{}
 	waitClosed bool
-	lruElem    *list.Element
+
+	// lastAccessNs is a recency token for LRU eviction: a global atomic counter
+	// bumped on every access, stored atomically so the read path can mark a
+	// touch under the shard's RLock without upgrading to a write lock.
+	lastAccessNs atomic.Int64
+}
+
+// lruSequence is the global monotonic counter feeding lastAccessNs. It totally
+// orders recency across all entries in all shards for approximate-LRU eviction.
+var lruSequence atomic.Int64
+
+// nextLRUToken returns the next strictly-greater LRU token.
+func nextLRUToken() int64 {
+	return lruSequence.Add(1)
 }
 
 // CacheSizer calculates estimated memory usage in bytes for a cache entry.
@@ -64,9 +78,20 @@ type Cache interface {
 	MemoryUsage() int64
 }
 
-const defaultStaleTimeout = 5 * time.Second
+const (
+	defaultStaleTimeout    = 5 * time.Second
+	defaultCacheShardCount = 16
 
-// NewLocalCache creates a thread-safe local cache with strict LRU eviction.
+	// shardingThresholdEntries / shardingThresholdBytes: caches with capacity
+	// below these thresholds fall back to a single shard so global LRU /
+	// memory-cap semantics behave exactly as a non-sharded cache would.
+	shardingThresholdEntries = 64
+	shardingThresholdBytes   = 64 * 1024
+)
+
+// NewLocalCache creates a thread-safe local cache with approximate-LRU
+// eviction. The cache is internally sharded by cache-key hash to reduce
+// mutex contention under high concurrent access.
 func NewLocalCache(cfg CacheConfig) Cache {
 	sizer := cfg.Sizer
 	if sizer == nil {
@@ -78,33 +103,87 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		staleTimeout = defaultStaleTimeout
 	}
 
-	return &localCache{
-		entries:        make(map[string]*CacheEntry),
-		byRedisKey:     make(map[string]map[string]struct{}),
-		lru:            list.New(),
-		maxEntries:     cfg.MaxEntries,
-		maxMemoryBytes: cfg.MaxMemoryBytes,
-		sizer:          sizer,
-		staleTimeout:   staleTimeout,
+	shardCount := defaultCacheShardCount
+	if cfg.MaxEntries > 0 && cfg.MaxEntries < shardingThresholdEntries {
+		shardCount = 1
 	}
+	if cfg.MaxMemoryBytes > 0 && cfg.MaxMemoryBytes < int64(shardingThresholdBytes) {
+		shardCount = 1
+	}
+
+	perShardEntries := 0
+	if cfg.MaxEntries > 0 {
+		perShardEntries = (cfg.MaxEntries + shardCount - 1) / shardCount
+	}
+	var perShardBytes int64
+	if cfg.MaxMemoryBytes > 0 {
+		perShardBytes = (cfg.MaxMemoryBytes + int64(shardCount) - 1) / int64(shardCount)
+	}
+
+	c := &localCache{
+		shards:     make([]cacheShard, shardCount),
+		shardCount: uint32(shardCount),
+		shardMask:  uint32(shardCount - 1),
+		sizer:      sizer,
+	}
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.entries = make(map[string]*CacheEntry)
+		s.byRedisKey = make(map[string]map[string]struct{})
+		s.maxEntries = perShardEntries
+		s.maxMemoryBytes = perShardBytes
+		s.sizer = sizer
+		s.staleTimeout = staleTimeout
+	}
+	return c
 }
 
+// localCache is a sharded approximate-LRU cache.
 type localCache struct {
-	// A single RWMutex protects both maps and the LRU list.
-	// Reads are lock-free from each other, while writes keep map/list updates atomic.
-	mu sync.RWMutex
+	shards     []cacheShard
+	shardCount uint32
+	shardMask  uint32
+	sizer      CacheSizer
 
+	nextToken atomic.Uint64
+	hits      atomic.Uint64
+	misses    atomic.Uint64
+}
+
+// cacheShard holds the state for one shard of localCache. The mutex
+// protects entries, byRedisKey, and usedBytes.
+type cacheShard struct {
+	mu         sync.RWMutex
 	entries    map[string]*CacheEntry
 	byRedisKey map[string]map[string]struct{}
-	lru        *list.List
-
-	usedBytes int64
+	usedBytes  int64
 
 	maxEntries     int
 	maxMemoryBytes int64
 	sizer          CacheSizer
 	staleTimeout   time.Duration
-	nextToken      uint64
+}
+
+// shardFor returns the shard responsible for cacheKey.
+func (c *localCache) shardFor(cacheKey string) *cacheShard {
+	if c.shardCount == 1 {
+		return &c.shards[0]
+	}
+	return &c.shards[fnv1a32(cacheKey)&c.shardMask]
+}
+
+// fnv1a32 returns the FNV-1a 32-bit hash of s. Allocation-free.
+func fnv1a32(s string) uint32 {
+	const (
+		offset uint32 = 2166136261
+		prime  uint32 = 16777619
+	)
+	h := offset
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= prime
+	}
+	return h
 }
 
 const defaultCacheEntryOverhead int64 = 96
@@ -124,18 +203,30 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	value, ok := c.shardFor(cacheKey).get(ctx, cacheKey)
+	if ok {
+		c.hits.Add(1)
+	} else {
+		c.misses.Add(1)
+	}
+	return value, ok
+}
+
+// get is the read-side hot path. Holds only the shard's read lock; updates
+// the LRU recency timestamp via atomic store on the entry — no write-lock
+// upgrade is needed.
+func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
 	for {
-		c.mu.RLock()
-		entry, ok := c.entries[cacheKey]
+		s.mu.RLock()
+		entry, ok := s.entries[cacheKey]
 		if !ok {
-			c.mu.RUnlock()
+			s.mu.RUnlock()
 			return nil, false
 		}
 
 		if entry.State == CacheEntryInProgress {
 			waitCh := entry.waitCh
-			c.mu.RUnlock()
-			// Wait for the in-flight fetch to either publish (Fulfill) or abort (Cancel/Delete/Flush).
+			s.mu.RUnlock()
 			if waitCh != nil {
 				select {
 				case <-waitCh:
@@ -143,45 +234,39 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 					return nil, false
 				}
 			} else {
-				// Defensive: Reserve always creates a waitCh for IN_PROGRESS entries.
-				// If it is nil, treat as a cache miss to avoid busy-looping.
 				return nil, false
 			}
 			continue
 		}
 
 		if entry.State != CacheEntryValid {
-			c.mu.RUnlock()
+			s.mu.RUnlock()
 			return nil, false
 		}
 
 		value := cloneBytes(entry.Value)
-		c.mu.RUnlock()
-
-		c.mu.Lock()
-		// Touch under write lock keeps LRU metadata consistent with concurrent deletes/updates.
-		if current, exists := c.entries[cacheKey]; exists && current == entry && current.State == CacheEntryValid {
-			c.touchEntryLocked(current)
-		}
-		c.mu.Unlock()
-
+		// Record access timestamp without upgrading the lock. Last writer
+		// wins; cross-goroutine ordering of timestamps is fine for
+		// approximate-LRU semantics.
+		entry.lastAccessNs.Store(nextLRUToken())
+		s.mu.RUnlock()
 		return value, true
 	}
+}
+
+// Stats returns cumulative (hits, misses). Exposed via the optional
+// cacheStatsReporter interface (see csc_stats.go).
+func (c *localCache) Stats() (hits, misses uint64) {
+	return c.hits.Load(), c.misses.Load()
 }
 
 func (c *localCache) Set(cacheKey string, redisKeys []string, value []byte) bool {
 	valueCopy := cloneBytes(value)
 	keysCopy := cloneStrings(redisKeys)
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	entrySize := c.computeSizeLocked(cacheKey, keysCopy, valueCopy)
-	if c.maxMemoryBytes > 0 && entrySize > c.maxMemoryBytes {
-		c.removeEntryLocked(cacheKey)
-		return false
+	entrySize := c.sizer(cacheKey, keysCopy, valueCopy)
+	if entrySize < 0 {
+		entrySize = 0
 	}
-
 	entry := &CacheEntry{
 		CacheKey:   cacheKey,
 		RedisKeys:  keysCopy,
@@ -190,120 +275,145 @@ func (c *localCache) Set(cacheKey string, redisKeys []string, value []byte) bool
 		sizeBytes:  entrySize,
 		waitClosed: true,
 	}
+	entry.lastAccessNs.Store(nextLRUToken())
 
-	c.setEntryLocked(entry)
-	c.evictIfNeededLocked()
-	return c.entries[cacheKey] == entry
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.maxMemoryBytes > 0 && entrySize > s.maxMemoryBytes {
+		s.removeEntryLocked(cacheKey)
+		return false
+	}
+
+	s.setEntryLocked(entry)
+	s.evictIfNeededLocked()
+	return s.entries[cacheKey] == entry
 }
 
 func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64, shouldFetch bool) {
 	keysCopy := cloneStrings(redisKeys)
+	waitCh := make(chan struct{})
+	reservedAt := time.Now()
+	sizeBytes := c.sizer(cacheKey, keysCopy, nil)
+	if sizeBytes < 0 {
+		sizeBytes = 0
+	}
+	newToken := c.nextToken.Add(1)
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if entry, ok := c.entries[cacheKey]; ok {
+	if entry, ok := s.entries[cacheKey]; ok {
 		switch entry.State {
 		case CacheEntryValid:
-			c.touchEntryLocked(entry)
+			// Existing-VALID hit: record access; caller will re-Get to
+			// retrieve.
+			entry.lastAccessNs.Store(nextLRUToken())
 			return 0, false
 		case CacheEntryInProgress:
-			if time.Since(entry.reservedAt) < c.staleTimeout {
-				// Active fetch in progress — join the wait, don't take over.
+			if time.Since(entry.reservedAt) < s.staleTimeout {
 				return 0, false
 			}
-			// Stale placeholder: the original fetcher likely died without
-			// calling Fulfill/Cancel.  Remove the old entry (unblocking any
-			// waiters) and fall through to create a fresh one.
-			c.removeEntryLocked(cacheKey)
+			s.removeEntryLocked(cacheKey)
 		default:
 			return 0, false
 		}
 	}
 
-	c.nextToken++
-	token = c.nextToken
+	if s.maxMemoryBytes > 0 && sizeBytes > s.maxMemoryBytes {
+		return 0, true
+	}
 
 	entry := &CacheEntry{
 		CacheKey:   cacheKey,
 		RedisKeys:  keysCopy,
 		State:      CacheEntryInProgress,
-		token:      token,
-		reservedAt: time.Now(),
-		waitCh:     make(chan struct{}),
+		token:      newToken,
+		reservedAt: reservedAt,
+		waitCh:     waitCh,
+		sizeBytes:  sizeBytes,
 	}
-	entry.sizeBytes = c.computeSizeLocked(cacheKey, keysCopy, nil)
+	entry.lastAccessNs.Store(nextLRUToken())
+	_ = reservedAt
 
-	if c.maxMemoryBytes > 0 && entry.sizeBytes > c.maxMemoryBytes {
+	s.setEntryLocked(entry)
+	s.evictIfNeededLocked()
+	if s.entries[cacheKey] != entry {
 		return 0, true
 	}
-
-	c.setEntryLocked(entry)
-	c.evictIfNeededLocked()
-	if c.entries[cacheKey] != entry {
-		return 0, true
-	}
-	return token, true
+	return newToken, true
 }
 
 func (c *localCache) Fulfill(cacheKey string, token uint64, value []byte) bool {
 	valueCopy := cloneBytes(value)
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	entry, ok := c.entries[cacheKey]
+	entry, ok := s.entries[cacheKey]
 	if !ok || entry.State != CacheEntryInProgress || entry.token != token {
 		return false
 	}
 
-	valueSize := c.computeSizeLocked(cacheKey, entry.RedisKeys, valueCopy)
-	if c.maxMemoryBytes > 0 && valueSize > c.maxMemoryBytes {
-		c.removeEntryLocked(cacheKey)
+	valueSize := s.sizer(cacheKey, entry.RedisKeys, valueCopy)
+	if valueSize < 0 {
+		valueSize = 0
+	}
+	if s.maxMemoryBytes > 0 && valueSize > s.maxMemoryBytes {
+		s.removeEntryLocked(cacheKey)
 		return false
 	}
 
-	c.usedBytes += valueSize - entry.sizeBytes
+	s.usedBytes += valueSize - entry.sizeBytes
 	entry.Value = valueCopy
 	entry.sizeBytes = valueSize
 	entry.State = CacheEntryValid
 	entry.token = 0
-	c.closeWaitersLocked(entry)
-	c.touchEntryLocked(entry)
+	entry.lastAccessNs.Store(nextLRUToken())
+	s.closeWaitersLocked(entry)
 
-	c.evictIfNeededLocked()
-	current, stillExists := c.entries[cacheKey]
+	s.evictIfNeededLocked()
+	current, stillExists := s.entries[cacheKey]
 	return stillExists && current == entry && entry.State == CacheEntryValid
 }
 
 func (c *localCache) Cancel(cacheKey string, token uint64) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	entry, ok := c.entries[cacheKey]
+	entry, ok := s.entries[cacheKey]
 	if !ok || entry.State != CacheEntryInProgress || entry.token != token {
 		return false
 	}
 
-	c.removeEntryLocked(cacheKey)
+	s.removeEntryLocked(cacheKey)
 	return true
 }
 
 func (c *localCache) DeleteByRedisKey(redisKey string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	removed := 0
+	for i := range c.shards {
+		removed += c.shards[i].deleteByRedisKey(redisKey)
+	}
+	return removed
+}
 
-	cacheKeys, ok := c.byRedisKey[redisKey]
+func (s *cacheShard) deleteByRedisKey(redisKey string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cacheKeys, ok := s.byRedisKey[redisKey]
 	if !ok {
 		return 0
 	}
 
-	// IN_PROGRESS placeholders are preserved: their pending reply, read from
-	// the same TCP stream as this invalidation, will reflect post-invalidation
-	// server state, so the fetch remains valid.
 	toRemove := make([]string, 0, len(cacheKeys))
 	for cacheKey := range cacheKeys {
-		if entry, exists := c.entries[cacheKey]; exists && entry.State == CacheEntryInProgress {
+		if entry, exists := s.entries[cacheKey]; exists && entry.State == CacheEntryInProgress {
 			continue
 		}
 		toRemove = append(toRemove, cacheKey)
@@ -311,7 +421,7 @@ func (c *localCache) DeleteByRedisKey(redisKey string) int {
 
 	removed := 0
 	for _, cacheKey := range toRemove {
-		if c.removeEntryLocked(cacheKey) {
+		if s.removeEntryLocked(cacheKey) {
 			removed++
 		}
 	}
@@ -319,36 +429,61 @@ func (c *localCache) DeleteByRedisKey(redisKey string) int {
 }
 
 func (c *localCache) DeleteByCacheKey(cacheKey string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.removeEntryLocked(cacheKey)
+	s := c.shardFor(cacheKey)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.removeEntryLocked(cacheKey)
 }
 
 func (c *localCache) DeleteByCacheKeys(cacheKeys []string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	removed := 0
-	for _, cacheKey := range cacheKeys {
-		if c.removeEntryLocked(cacheKey) {
-			removed++
+	if c.shardCount == 1 {
+		s := &c.shards[0]
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, k := range cacheKeys {
+			if s.removeEntryLocked(k) {
+				removed++
+			}
 		}
+		return removed
+	}
+	groups := make(map[uint32][]string)
+	for _, k := range cacheKeys {
+		idx := fnv1a32(k) & c.shardMask
+		groups[idx] = append(groups[idx], k)
+	}
+	for idx, keys := range groups {
+		s := &c.shards[idx]
+		s.mu.Lock()
+		for _, k := range keys {
+			if s.removeEntryLocked(k) {
+				removed++
+			}
+		}
+		s.mu.Unlock()
 	}
 	return removed
 }
 
 func (c *localCache) Flush() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// IN_PROGRESS placeholders survive Flush for the same reason as in
-	// DeleteByRedisKey: the in-flight reply is post-invalidation.
 	removed := 0
-	for cacheKey, entry := range c.entries {
+	for i := range c.shards {
+		removed += c.shards[i].flush()
+	}
+	return removed
+}
+
+func (s *cacheShard) flush() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	removed := 0
+	for cacheKey, entry := range s.entries {
 		if entry.State == CacheEntryInProgress {
 			continue
 		}
-		if c.removeEntryLocked(cacheKey) {
+		if s.removeEntryLocked(cacheKey) {
 			removed++
 		}
 	}
@@ -356,118 +491,114 @@ func (c *localCache) Flush() int {
 }
 
 func (c *localCache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
+	n := 0
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.RLock()
+		n += len(s.entries)
+		s.mu.RUnlock()
+	}
+	return n
 }
 
 func (c *localCache) MemoryUsage() int64 {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.usedBytes
+	var total int64
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.RLock()
+		total += s.usedBytes
+		s.mu.RUnlock()
+	}
+	return total
 }
 
-func (c *localCache) computeSizeLocked(cacheKey string, redisKeys []string, value []byte) int64 {
-	size := c.sizer(cacheKey, redisKeys, value)
-	if size < 0 {
-		return 0
-	}
-	return size
-}
-
-func (c *localCache) setEntryLocked(entry *CacheEntry) {
-	if old, exists := c.entries[entry.CacheKey]; exists {
-		c.removeEntryLocked(old.CacheKey)
+func (s *cacheShard) setEntryLocked(entry *CacheEntry) {
+	if old, exists := s.entries[entry.CacheKey]; exists {
+		s.removeEntryLocked(old.CacheKey)
 	}
 
-	c.entries[entry.CacheKey] = entry
-	c.usedBytes += entry.sizeBytes
+	s.entries[entry.CacheKey] = entry
+	s.usedBytes += entry.sizeBytes
 
 	for _, redisKey := range entry.RedisKeys {
-		cacheKeys := c.byRedisKey[redisKey]
+		cacheKeys := s.byRedisKey[redisKey]
 		if cacheKeys == nil {
 			cacheKeys = make(map[string]struct{})
-			c.byRedisKey[redisKey] = cacheKeys
+			s.byRedisKey[redisKey] = cacheKeys
 		}
 		cacheKeys[entry.CacheKey] = struct{}{}
 	}
-
-	entry.lruElem = c.lru.PushFront(entry)
 }
 
-func (c *localCache) removeEntryLocked(cacheKey string) bool {
-	entry, exists := c.entries[cacheKey]
+func (s *cacheShard) removeEntryLocked(cacheKey string) bool {
+	entry, exists := s.entries[cacheKey]
 	if !exists {
 		return false
 	}
 
-	delete(c.entries, cacheKey)
-	c.usedBytes -= entry.sizeBytes
-	if c.usedBytes < 0 {
-		c.usedBytes = 0
+	delete(s.entries, cacheKey)
+	s.usedBytes -= entry.sizeBytes
+	if s.usedBytes < 0 {
+		s.usedBytes = 0
 	}
 
 	for _, redisKey := range entry.RedisKeys {
-		cacheKeys := c.byRedisKey[redisKey]
+		cacheKeys := s.byRedisKey[redisKey]
 		if cacheKeys == nil {
 			continue
 		}
 		delete(cacheKeys, cacheKey)
 		if len(cacheKeys) == 0 {
-			delete(c.byRedisKey, redisKey)
+			delete(s.byRedisKey, redisKey)
 		}
 	}
 
-	if entry.lruElem != nil {
-		c.lru.Remove(entry.lruElem)
-		entry.lruElem = nil
-	}
-
-	c.closeWaitersLocked(entry)
+	s.closeWaitersLocked(entry)
 	return true
 }
 
-func (c *localCache) closeWaitersLocked(entry *CacheEntry) {
+func (s *cacheShard) closeWaitersLocked(entry *CacheEntry) {
 	if entry.waitCh != nil && !entry.waitClosed {
 		close(entry.waitCh)
 		entry.waitClosed = true
 	}
 }
 
-func (c *localCache) touchEntryLocked(entry *CacheEntry) {
-	// O(1) recency update using list element pointer stored on the entry.
-	if entry.lruElem == nil {
-		entry.lruElem = c.lru.PushFront(entry)
-		return
-	}
-	c.lru.MoveToFront(entry.lruElem)
-}
-
-func (c *localCache) overCapacityLocked() bool {
-	if c.maxEntries > 0 && len(c.entries) > c.maxEntries {
+func (s *cacheShard) overCapacityLocked() bool {
+	if s.maxEntries > 0 && len(s.entries) > s.maxEntries {
 		return true
 	}
-	if c.maxMemoryBytes > 0 && c.usedBytes > c.maxMemoryBytes {
+	if s.maxMemoryBytes > 0 && s.usedBytes > s.maxMemoryBytes {
 		return true
 	}
 	return false
 }
 
-func (c *localCache) evictIfNeededLocked() {
-	// Strict LRU eviction: list back is always the least recently used entry.
-	for c.overCapacityLocked() {
-		victimElem := c.lru.Back()
-		if victimElem == nil {
+// evictIfNeededLocked is an approximate-LRU eviction: it scans the shard's
+// entries for the one with the oldest lastAccessNs and removes it. This is
+// O(N) per eviction, but evictions are rare in production caches that
+// allocate enough capacity.
+// IN_PROGRESS entries are not evictable — the in-flight reply may complete
+// and rely on the slot.
+func (s *cacheShard) evictIfNeededLocked() {
+	for s.overCapacityLocked() {
+		var victim *CacheEntry
+		var oldestNs int64 = math.MaxInt64
+		for _, e := range s.entries {
+			if e.State != CacheEntryValid {
+				continue
+			}
+			ns := e.lastAccessNs.Load()
+			if ns < oldestNs {
+				oldestNs = ns
+				victim = e
+			}
+		}
+		if victim == nil {
+			// Only IN_PROGRESS entries left; can't evict any.
 			return
 		}
-
-		victim, ok := victimElem.Value.(*CacheEntry)
-		if !ok || victim == nil {
-			c.lru.Remove(victimElem)
-			continue
-		}
-
-		c.removeEntryLocked(victim.CacheKey)
+		s.removeEntryLocked(victim.CacheKey)
 	}
 }
 
