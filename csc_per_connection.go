@@ -53,9 +53,8 @@ type perConnState struct {
 	db     int
 
 	// metrics
-	hits          atomic.Uint64
-	misses        atomic.Uint64
-	drainsSkipped atomic.Uint64 // cache-hit-path drains skipped via lastPushDrainAt window
+	hits   atomic.Uint64
+	misses atomic.Uint64
 }
 
 func newPerConnState(cfg CacheConfig, db int) *perConnState {
@@ -305,8 +304,6 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 		if drainErr := c.peekAndProcessPushNotifications(ctx, cn); drainErr != nil {
 			internal.Logger.Printf(ctx, "csc per-connection: drain pending invalidations failed: %v", drainErr)
 		}
-	} else {
-		state.drainsSkipped.Add(1)
 	}
 
 	cache := state.getCache(cn.GetID())
@@ -439,17 +436,6 @@ func (c *baseClient) perConnStats() (uint64, uint64, int) {
 		return 0, 0, 0
 	}
 	return state.hits.Load(), state.misses.Load(), state.len()
-}
-
-// perConnDrainSkips returns the number of times the cache-hit-path drain
-// was skipped because cn.LastPushDrainAtNs() fell inside
-// cscPerConnDrainSkipWindow. Useful for benchmark instrumentation.
-func (c *baseClient) perConnDrainSkips() uint64 {
-	state := perConnStateFor(c)
-	if state == nil {
-		return 0
-	}
-	return state.drainsSkipped.Load()
 }
 
 // cscPerConnOnClose flushes every per-connection cache owned by c and

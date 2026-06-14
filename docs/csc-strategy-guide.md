@@ -38,10 +38,6 @@ once CSC is enabled; on its own it does nothing.
 | Conn-churn behaviour | unaffected (cache outlives conns) | per-conn cache dies with its conn (clean) | server drops tracking state on conn close; churned entries persist until overwrite+drain |
 | Extra cost | one extra connection; receives invalidates for ALL DB writes | memory × conns; per-conn warm-up | background goroutine; pool walk every 5 ms |
 
-Indicative throughput (EC2 → Redis Enterprise, 0.22 ms RTT, 100 goroutines,
-cold, ReadHeavy99, June 2026): Broadcast ≈ 62 k ops/s, SharedTracking ≈ 58 k
-ops/s, PerConnection ≈ 22 k ops/s, no cache ≈ 41 k ops/s.
-
 ## When to choose each
 
 ### `CSCStrategyBroadcast` — the default; use unless you have a reason not to
@@ -79,29 +75,19 @@ Choose when:
 Avoid when:
 - Concurrency is high: hit rate caps at roughly (1 / active conns) of the
   shared-cache equivalent because every conn must warm independently
-  (measured: hit_rate ~0.4 at 100 goroutines vs 0.98 shared). Throughput at
-  100 goroutines was ~22 k ops/s — below the no-cache baseline.
+
 - Memory matters: cache memory multiplies by pool size.
 
 ### `CSCStrategySharedTracking` — shared cache without BCAST
 
 A shared cache with per-connection `CLIENT TRACKING ON` and a background
-drainer that consumes buffered invalidation frames once per 5 ms. This is
-the same layout used by redis-py's CSC implementation.
-
+drainer that consumes buffered invalidation frames once per 5 ms. 
 Choose when:
 - Policy requires plain `CLIENT TRACKING ON` semantics (no BCAST) with a
   shared cache — e.g. proxies or managed environments where BCAST is
   restricted.
 
-Trade-offs vs Broadcast (measured June 2026):
-- Throughput within ~10 % of Broadcast on read-heavy workloads (58 k vs
-  62 k ops/s at 100 goroutines, cold).
-- Higher tail latency: the 5 ms drainer borrows idle pool connections; at
-  high hit rates p99 ≈ 33–53 ms vs Broadcast's ≈ 31–43 ms.
-- Higher stale-read rate under churn: ~1–2 % vs ≤0.6 % (Broadcast) — the
-  drain period plus per-conn tracking-table loss on disconnect.
-- Higher memory under load (the pool grows while the drainer holds conns).
+
 
 ## Operational notes
 
@@ -110,13 +96,3 @@ Trade-offs vs Broadcast (measured June 2026):
 - **`Options.ClientSideCache` (explicit cache instance)**: honoured by
   Broadcast and SharedTracking. PerConnection ignores it (per-conn caches
   are built from `ClientSideCacheConfig`) and logs a warning.
-- **Stats**: `client.CSCStats()` returns (hits, misses) for any strategy.
-  Process-wide command-level counters: `redis.CommandStats()`.
-- **Push-frame delivery quirk**: some proxied environments (notably Redis
-  inside Docker Desktop for Mac) hold push frames until the next command
-  cycle on the tracked connection. SharedTracking/PerConnection invalidation
-  then rides the reply-read path instead of the idle-conn peek; the staleness
-  bound degrades from the drain period to "next interaction with that
-  conn". Broadcast is unaffected (its sidecar blocks in read). Production
-  Linux/direct-TCP deployments deliver pushes to idle connections
-  immediately — verified against Redis Enterprise.
