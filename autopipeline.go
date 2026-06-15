@@ -123,22 +123,25 @@ func putQueuedCmd(qc *queuedCmd) {
 	queuedCmdPool.Put(qc)
 }
 
-// queueSlicePool is a sync.Pool for queue slices to reduce allocations
+// queueSlicePool is a sync.Pool for queue slices to reduce allocations.
+// We store *[]*queuedCmd rather than []*queuedCmd so that Put doesn't
+// allocate a boxed interface value for the slice header (staticcheck SA6002).
 var queueSlicePool = sync.Pool{
 	New: func() interface{} {
 		// Create a slice with capacity for typical batch size
-		return make([]*queuedCmd, 0, 100)
+		s := make([]*queuedCmd, 0, 100)
+		return &s
 	},
 }
 
 // getQueueSlice gets a queue slice from the pool
 func getQueueSlice(capacity int) []*queuedCmd {
-	slice := queueSlicePool.Get().([]*queuedCmd)
+	slice := *queueSlicePool.Get().(*[]*queuedCmd)
 	// Clear the slice but keep capacity
 	slice = slice[:0]
 	// If the capacity is too small, allocate a new one
 	if cap(slice) < capacity {
-		queueSlicePool.Put(slice)
+		queueSlicePool.Put(&slice)
 		return make([]*queuedCmd, 0, capacity)
 	}
 	return slice
@@ -148,11 +151,12 @@ func getQueueSlice(capacity int) []*queuedCmd {
 func putQueueSlice(slice []*queuedCmd) {
 	// Only pool slices that aren't too large (avoid memory bloat)
 	if cap(slice) <= 1000 {
-		// Clear all pointers to avoid holding references
-		for i := range slice {
-			slice[i] = nil
+		// Clear all pointers up to capacity to avoid holding references.
+		full := slice[:cap(slice)]
+		for i := range full {
+			full[i] = nil
 		}
-		queueSlicePool.Put(slice[:0])
+		queueSlicePool.Put(&slice)
 	}
 }
 
@@ -312,7 +316,7 @@ var closedQueuedCmd = &queuedCmd{
 
 // processWithQueuedCmd is the internal method that queues a command and returns the queuedCmd.
 // The caller is responsible for returning the queuedCmd to the pool after use.
-func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *queuedCmd {
+func (ap *AutoPipeliner) processWithQueuedCmd(_ context.Context, cmd Cmder) *queuedCmd {
 	if ap.closed.Load() {
 		cmd.SetErr(ErrClosed)
 		return closedQueuedCmd
@@ -350,9 +354,9 @@ func (ap *AutoPipeliner) processWithQueuedCmd(ctx context.Context, cmd Cmder) *q
 }
 
 // process is the internal method that queues a command and returns its done channel.
-func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
-	return ap.processWithQueuedCmd(ctx, cmd).done
-}
+// func (ap *AutoPipeliner) process(ctx context.Context, cmd Cmder) <-chan struct{} {
+//  	return ap.processWithQueuedCmd(ctx, cmd).done
+// }
 
 // Close stops the autopipeliner and flushes any pending commands.
 func (ap *AutoPipeliner) Close() error {
