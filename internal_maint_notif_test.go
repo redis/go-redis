@@ -100,7 +100,6 @@ func TestInitConnNilMaintNotificationsConfig(t *testing.T) {
 	_ = c.initConn(context.Background(), cn)
 }
 
-
 // mockRESP2Server is a minimal RESP server used to exercise the HELLO
 // fallback path in initConn. It replies with a Redis protocol error to
 // HELLO (simulating a server that only speaks RESP2) and with +OK to every
@@ -211,21 +210,20 @@ func startMockRESP2Server(t *testing.T) *mockRESP2Server {
 	return s
 }
 
-
 // assertNoMaintNotifications fails the test if a CLIENT MAINT_NOTIFICATIONS
 // command was observed by srv.
 func assertNoMaintNotifications(t *testing.T, srv *mockRESP2Server) {
 	t.Helper()
 	for _, cmd := range srv.Commands() {
-		if cmd == "CLIENT MAINT_NOTIFICATIONS" {
-			t.Fatalf("CLIENT MAINT_NOTIFICATIONS must not be sent when HELLO falls back to RESP2; commands observed: %v", srv.Commands())
+		if cmd == maintNotificationsCommand {
+			t.Fatalf("%s must not be sent when HELLO falls back to RESP2; commands observed: %v", maintNotificationsCommand, srv.Commands())
 		}
 	}
 }
 
 // initConnOnMockServer dials srv, puts the connection into INITIALIZING and
 // runs c.initConn against it. It returns the error from initConn (if any).
-func initConnOnMockServer(t *testing.T, c *baseClient, srv *mockRESP2Server) error {
+func initConnOnMockServer(t *testing.T, c *baseClient, srv interface{ Addr() string }) error {
 	t.Helper()
 	netConn, err := net.DialTimeout("tcp", srv.Addr(), 2*time.Second)
 	if err != nil {
@@ -303,4 +301,162 @@ func TestInitConn_HelloFallback_ModeAuto(t *testing.T) {
 	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
 		t.Fatalf("expected mode to be silently set to Disabled after RESP2 fallback, got %q", opt.MaintNotificationsConfig.Mode)
 	}
+}
+
+const maintNotificationsCommand = "CLIENT MAINT_NOTIFICATIONS"
+
+// mockMaintNotificationsChangingServer accepts the first maintnotifications
+// probe and rejects later probes, simulating support changing across reconnects.
+type mockMaintNotificationsChangingServer struct {
+	ln net.Listener
+
+	mu                      sync.Mutex
+	commands                []string
+	maintNotificationsCalls int
+}
+
+func (s *mockMaintNotificationsChangingServer) Addr() string { return s.ln.Addr().String() }
+func (s *mockMaintNotificationsChangingServer) Close()       { _ = s.ln.Close() }
+
+func (s *mockMaintNotificationsChangingServer) Commands() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.commands))
+	copy(out, s.commands)
+	return out
+}
+
+func (s *mockMaintNotificationsChangingServer) record(full string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commands = append(s.commands, full)
+	if full != maintNotificationsCommand {
+		return 0
+	}
+	s.maintNotificationsCalls++
+	return s.maintNotificationsCalls
+}
+
+func (s *mockMaintNotificationsChangingServer) handle(c net.Conn) {
+	defer c.Close()
+	r := bufio.NewReader(c)
+	for {
+		args, err := readRESPCommand(r)
+		if err != nil {
+			return
+		}
+		if len(args) == 0 {
+			continue
+		}
+		name := strings.ToUpper(args[0])
+		full := name
+		if len(args) > 1 {
+			full = name + " " + strings.ToUpper(args[1])
+		}
+
+		if call := s.record(full); call > 0 {
+			if call == 1 {
+				_, _ = c.Write([]byte("+OK\r\n"))
+			} else {
+				_, _ = c.Write([]byte("-ERR unknown subcommand 'MAINT_NOTIFICATIONS'\r\n"))
+			}
+			continue
+		}
+
+		if name == "HELLO" {
+			_, _ = c.Write([]byte("%1\r\n+proto\r\n:3\r\n"))
+			continue
+		}
+		_, _ = c.Write([]byte("+OK\r\n"))
+	}
+}
+
+func startMockMaintNotificationsChangingServer(t *testing.T) *mockMaintNotificationsChangingServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	s := &mockMaintNotificationsChangingServer{ln: ln}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.handle(conn)
+		}
+	}()
+	return s
+}
+
+func newMaintNotificationsTestClient(addr string, mode maintnotifications.Mode) (*Options, *baseClient) {
+	opt := &Options{
+		Addr:     addr,
+		Protocol: 3,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: mode,
+		},
+	}
+	opt.init()
+	return opt, newTestBaseClient(opt)
+}
+
+func assertMaintNotificationsCalls(t *testing.T, srv *mockMaintNotificationsChangingServer, want int) {
+	t.Helper()
+	commands := srv.Commands()
+	got := 0
+	for _, cmd := range commands {
+		if cmd == maintNotificationsCommand {
+			got++
+		}
+	}
+	if got != want {
+		t.Fatalf("expected %d %s calls, got %d; commands: %v", want, maintNotificationsCommand, got, commands)
+	}
+}
+
+// TestInitConn_ModeAuto_RemainsFailOpenAfterSuccessfulHandshake verifies that
+// a successful auto probe does not turn ModeAuto into fail-closed ModeEnabled.
+func TestInitConn_ModeAuto_RemainsFailOpenAfterSuccessfulHandshake(t *testing.T) {
+	srv := startMockMaintNotificationsChangingServer(t)
+	defer srv.Close()
+	opt, c := newMaintNotificationsTestClient(srv.Addr(), maintnotifications.ModeAuto)
+
+	if err := initConnOnMockServer(t, c, srv); err != nil {
+		t.Fatalf("first initConn returned error: %v", err)
+	}
+	if got := opt.MaintNotificationsConfig.Mode; got != maintnotifications.ModeAuto {
+		t.Fatalf("ModeAuto should remain the configured policy after a successful probe, got %q", got)
+	}
+
+	if err := initConnOnMockServer(t, c, srv); err != nil {
+		t.Fatalf("ModeAuto should downgrade and continue when a later maintnotifications probe is unsupported, got: %v", err)
+	}
+	assertMaintNotificationsCalls(t, srv, 2)
+
+	if err := initConnOnMockServer(t, c, srv); err != nil {
+		t.Fatalf("initConn after ModeAuto downgrade returned error: %v", err)
+	}
+	assertMaintNotificationsCalls(t, srv, 2)
+}
+
+// TestInitConn_ModeEnabled_RemainsFailClosedAfterSuccessfulHandshake verifies
+// that explicit ModeEnabled keeps fail-closed semantics.
+func TestInitConn_ModeEnabled_RemainsFailClosedAfterSuccessfulHandshake(t *testing.T) {
+	srv := startMockMaintNotificationsChangingServer(t)
+	defer srv.Close()
+	_, c := newMaintNotificationsTestClient(srv.Addr(), maintnotifications.ModeEnabled)
+
+	if err := initConnOnMockServer(t, c, srv); err != nil {
+		t.Fatalf("first initConn returned error: %v", err)
+	}
+	err := initConnOnMockServer(t, c, srv)
+	if err == nil {
+		t.Fatal("ModeEnabled should fail when a later maintnotifications probe is unsupported")
+	}
+	if !strings.Contains(err.Error(), "MAINT_NOTIFICATIONS") {
+		t.Fatalf("expected maintnotifications error, got: %v", err)
+	}
+	assertMaintNotificationsCalls(t, srv, 2)
 }

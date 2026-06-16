@@ -706,6 +706,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 			true,
 			endpointType.String(),
 		).Err()
+		// A successful handshake enables maintnotifications for this connection,
+		// but must not promote ModeAuto to ModeEnabled. ModeEnabled is the
+		// explicit fail-closed policy; ModeAuto must remain able to downgrade if a
+		// later reconnect/failover reaches an endpoint that rejects the command.
 		if maintNotifHandshakeErr != nil {
 			if !isRedisError(maintNotifHandshakeErr) {
 				// if not redis error, fail the connection
@@ -738,13 +742,6 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 					internal.Logger.Printf(ctx, "failed to disable maintnotifications in auto mode: %v", initErr)
 				}
 			}
-		} else {
-			// handshake was executed successfully
-			// to make sure that the handshake will be executed on other connections as well if it was successfully
-			// executed on this connection, we will force the handshake to be executed on all connections
-			c.optLock.Lock()
-			c.opt.MaintNotificationsConfig.Mode = maintnotifications.ModeEnabled
-			c.optLock.Unlock()
 		}
 	}
 
