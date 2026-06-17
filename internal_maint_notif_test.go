@@ -402,7 +402,7 @@ func newMaintNotificationsTestClient(addr string, mode maintnotifications.Mode) 
 	return opt, newTestBaseClient(opt)
 }
 
-func assertMaintNotificationsCalls(t *testing.T, srv *mockMaintNotificationsChangingServer, want int) {
+func assertMaintNotificationsCalls(t *testing.T, srv interface{ Commands() []string }, want int) {
 	t.Helper()
 	commands := srv.Commands()
 	got := 0
@@ -457,6 +457,165 @@ func TestInitConn_ModeEnabled_RemainsFailClosedAfterSuccessfulHandshake(t *testi
 	}
 	if !strings.Contains(err.Error(), "MAINT_NOTIFICATIONS") {
 		t.Fatalf("expected maintnotifications error, got: %v", err)
+	}
+	assertMaintNotificationsCalls(t, srv, 2)
+}
+
+type mockMaintNotificationsDowngradeServer struct {
+	ln net.Listener
+
+	mu       sync.Mutex
+	commands []string
+
+	firstPingBlocked chan struct{}
+	releaseFirstPing chan struct{}
+	blockFirstPing   sync.Once
+}
+
+func (s *mockMaintNotificationsDowngradeServer) Addr() string { return s.ln.Addr().String() }
+func (s *mockMaintNotificationsDowngradeServer) Close()       { _ = s.ln.Close() }
+
+func (s *mockMaintNotificationsDowngradeServer) Commands() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.commands))
+	copy(out, s.commands)
+	return out
+}
+
+func (s *mockMaintNotificationsDowngradeServer) record(full string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commands = append(s.commands, full)
+	if full != maintNotificationsCommand {
+		return 0
+	}
+	calls := 0
+	for _, cmd := range s.commands {
+		if cmd == maintNotificationsCommand {
+			calls++
+		}
+	}
+	return calls
+}
+
+func (s *mockMaintNotificationsDowngradeServer) handle(c net.Conn) {
+	defer c.Close()
+	r := bufio.NewReader(c)
+	for {
+		args, err := readRESPCommand(r)
+		if err != nil {
+			return
+		}
+		if len(args) == 0 {
+			continue
+		}
+		name := strings.ToUpper(args[0])
+		full := name
+		if len(args) > 1 {
+			full = name + " " + strings.ToUpper(args[1])
+		}
+
+		switch {
+		case name == "HELLO":
+			s.record(full)
+			_, _ = c.Write([]byte("%1\r\n+proto\r\n:3\r\n"))
+		case full == maintNotificationsCommand:
+			if call := s.record(full); call == 1 {
+				_, _ = c.Write([]byte("+OK\r\n"))
+			} else {
+				_, _ = c.Write([]byte("-ERR unknown subcommand 'MAINT_NOTIFICATIONS'\r\n"))
+			}
+		case name == "PING":
+			s.record(full)
+			shouldBlock := false
+			s.blockFirstPing.Do(func() {
+				shouldBlock = true
+				close(s.firstPingBlocked)
+			})
+			if shouldBlock {
+				<-s.releaseFirstPing
+			}
+			_, _ = c.Write([]byte("+PONG\r\n"))
+		default:
+			s.record(full)
+			_, _ = c.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+func startMockMaintNotificationsDowngradeServer(t *testing.T) *mockMaintNotificationsDowngradeServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	s := &mockMaintNotificationsDowngradeServer{
+		ln:               ln,
+		firstPingBlocked: make(chan struct{}),
+		releaseFirstPing: make(chan struct{}),
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.handle(conn)
+		}
+	}()
+	return s
+}
+
+func TestClient_ModeAutoDowngradeRetiresEnabledInUseConnOnPut(t *testing.T) {
+	srv := startMockMaintNotificationsDowngradeServer(t)
+	defer srv.Close()
+
+	client := NewClient(&Options{
+		Addr:     srv.Addr(),
+		Protocol: 3,
+		PoolSize: 2,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeAuto,
+		},
+	})
+	defer client.Close()
+
+	firstPingDone := make(chan error, 1)
+	go func() {
+		firstPingDone <- client.Ping(context.Background()).Err()
+	}()
+
+	select {
+	case <-srv.firstPingBlocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first ping to block")
+	}
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("second ping should succeed after ModeAuto downgrade, got: %v", err)
+	}
+	assertMaintNotificationsCalls(t, srv, 2)
+	if got := client.connPool.Len(); got != 2 {
+		t.Fatalf("expected both connections to remain in pool before first ping returns, got %d", got)
+	}
+
+	close(srv.releaseFirstPing)
+	select {
+	case err := <-firstPingDone:
+		if err != nil {
+			t.Fatalf("first ping returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first ping to finish")
+	}
+
+	if got := client.connPool.Len(); got != 1 {
+		t.Fatalf("expected maintnotifications-enabled connection to be retired on put, got pool len %d", got)
+	}
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Fatalf("ping after downgrade returned error: %v", err)
 	}
 	assertMaintNotificationsCalls(t, srv, 2)
 }
