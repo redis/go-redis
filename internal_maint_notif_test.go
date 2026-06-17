@@ -619,3 +619,123 @@ func TestClient_ModeAutoDowngradeRetiresEnabledInUseConnOnPut(t *testing.T) {
 	}
 	assertMaintNotificationsCalls(t, srv, 2)
 }
+
+type mockMaintNotificationsBlockingHandshakeServer struct {
+	ln net.Listener
+
+	handshakeStarted chan struct{}
+	releaseHandshake chan struct{}
+	startOnce        sync.Once
+}
+
+func (s *mockMaintNotificationsBlockingHandshakeServer) Addr() string { return s.ln.Addr().String() }
+func (s *mockMaintNotificationsBlockingHandshakeServer) Close()       { _ = s.ln.Close() }
+
+func (s *mockMaintNotificationsBlockingHandshakeServer) handle(c net.Conn) {
+	defer c.Close()
+	r := bufio.NewReader(c)
+	for {
+		args, err := readRESPCommand(r)
+		if err != nil {
+			return
+		}
+		if len(args) == 0 {
+			continue
+		}
+		name := strings.ToUpper(args[0])
+		full := name
+		if len(args) > 1 {
+			full = name + " " + strings.ToUpper(args[1])
+		}
+
+		switch {
+		case name == "HELLO":
+			_, _ = c.Write([]byte("%1\r\n+proto\r\n:3\r\n"))
+		case full == maintNotificationsCommand:
+			s.startOnce.Do(func() { close(s.handshakeStarted) })
+			<-s.releaseHandshake
+			_, _ = c.Write([]byte("+OK\r\n"))
+		case name == "PING":
+			_, _ = c.Write([]byte("+PONG\r\n"))
+		default:
+			_, _ = c.Write([]byte("+OK\r\n"))
+		}
+	}
+}
+
+func startMockMaintNotificationsBlockingHandshakeServer(t *testing.T) *mockMaintNotificationsBlockingHandshakeServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	s := &mockMaintNotificationsBlockingHandshakeServer{
+		ln:               ln,
+		handshakeStarted: make(chan struct{}),
+		releaseHandshake: make(chan struct{}),
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.handle(conn)
+		}
+	}()
+	return s
+}
+
+func TestClient_ModeAutoDowngradeWaitsForInFlightMaintNotificationsHandshake(t *testing.T) {
+	srv := startMockMaintNotificationsBlockingHandshakeServer(t)
+	defer srv.Close()
+
+	client := NewClient(&Options{
+		Addr:     srv.Addr(),
+		Protocol: 3,
+		PoolSize: 1,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeAuto,
+		},
+	})
+	defer client.Close()
+
+	pingDone := make(chan error, 1)
+	go func() {
+		pingDone <- client.Ping(context.Background()).Err()
+	}()
+
+	select {
+	case <-srv.handshakeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for maintnotifications handshake")
+	}
+
+	downgradeDone := make(chan error, 1)
+	go func() {
+		downgradeDone <- client.disableMaintNotificationsUpgrades()
+	}()
+
+	close(srv.releaseHandshake)
+
+	select {
+	case err := <-pingDone:
+		if err != nil {
+			t.Fatalf("ping returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ping")
+	}
+	select {
+	case err := <-downgradeDone:
+		if err != nil {
+			t.Fatalf("downgrade returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for downgrade")
+	}
+
+	if got := client.connPool.Len(); got != 0 {
+		t.Fatalf("expected in-flight maintnotifications connection to be retired after downgrade, got pool len %d", got)
+	}
+}

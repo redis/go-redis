@@ -701,6 +701,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	var maintNotifHandshakeErr error
 	if maintNotifEnabled && protocol == 3 {
+		// Hold the manager read lock across the handshake and tracking so a
+		// concurrent downgrade cannot remove pool-level listeners before a
+		// successfully enabled connection is tracked for retirement.
+		c.maintNotificationsManagerLock.RLock()
+		manager := c.maintNotificationsManager
 		maintNotifHandshakeErr = conn.ClientMaintNotifications(
 			ctx,
 			true,
@@ -710,14 +715,10 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// but must not promote ModeAuto to ModeEnabled. ModeEnabled is the
 		// explicit fail-closed policy; ModeAuto must remain able to downgrade if a
 		// later reconnect/failover reaches an endpoint that rejects the command.
-		if maintNotifHandshakeErr == nil {
-			c.maintNotificationsManagerLock.RLock()
-			manager := c.maintNotificationsManager
-			c.maintNotificationsManagerLock.RUnlock()
-			if manager != nil {
-				manager.TrackMaintNotificationsConn(cn)
-			}
+		if maintNotifHandshakeErr == nil && manager != nil {
+			manager.TrackMaintNotificationsConn(cn)
 		}
+		c.maintNotificationsManagerLock.RUnlock()
 		if maintNotifHandshakeErr != nil {
 			if !isRedisError(maintNotifHandshakeErr) {
 				// if not redis error, fail the connection
