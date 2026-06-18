@@ -2,11 +2,13 @@ package maintnotifications
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/interfaces"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // MockClient implements interfaces.ClientInterface for testing
@@ -75,6 +77,75 @@ func (mo *MockOptions) GetNetwork() string {
 func (mo *MockOptions) NewDialer() func(context.Context) (net.Conn, error) {
 	return func(ctx context.Context) (net.Conn, error) {
 		return nil, nil
+	}
+}
+
+type mockRetirePool struct {
+	pool.Pooler
+
+	retiredConns     []*pool.Conn
+	retireReason     string
+	removeHookCalled bool
+	retireBeforeHook bool
+}
+
+func (p *mockRetirePool) AddPoolHook(pool.PoolHook) {}
+func (p *mockRetirePool) RemovePoolHook(pool.PoolHook) {
+	p.removeHookCalled = true
+}
+func (p *mockRetirePool) RetireConns(_ context.Context, conns []*pool.Conn, reason string) {
+	p.retiredConns = append(p.retiredConns, conns...)
+	p.retireReason = reason
+	p.retireBeforeHook = !p.removeHookCalled
+}
+
+func TestManagerMaintNotificationsConnCleanup(t *testing.T) {
+	client := &MockClient{options: &MockOptions{}}
+	mockPool := &mockRetirePool{}
+	manager, err := NewManager(client, mockPool, DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	manager.InitPoolHook(func(context.Context, string, string) (net.Conn, error) { return nil, nil })
+
+	conn := createMockPoolConnection()
+	manager.TrackMaintNotificationsConn(conn)
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("manager close failed: %v", err)
+	}
+	if len(mockPool.retiredConns) != 1 || mockPool.retiredConns[0] != conn {
+		t.Fatalf("expected tracked connection to be retired, got %v", mockPool.retiredConns)
+	}
+	if mockPool.retireReason != pool.CloseReasonMaintNotificationsDisabled {
+		t.Fatalf("expected retire reason %q, got %q", pool.CloseReasonMaintNotificationsDisabled, mockPool.retireReason)
+	}
+	if !mockPool.retireBeforeHook {
+		t.Fatal("expected maintnotifications connections to be retired before removing the pool hook")
+	}
+	if !mockPool.removeHookCalled {
+		t.Fatal("expected pool hook to be removed")
+	}
+}
+
+func TestManagerOnRemoveUntracksMaintNotificationsConn(t *testing.T) {
+	client := &MockClient{options: &MockOptions{}}
+	mockPool := &mockRetirePool{}
+	manager, err := NewManager(client, mockPool, DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	manager.InitPoolHook(func(context.Context, string, string) (net.Conn, error) { return nil, nil })
+
+	conn := createMockPoolConnection()
+	manager.TrackMaintNotificationsConn(conn)
+	manager.poolHooksRef.OnRemove(context.Background(), conn, errors.New("removed"))
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("manager close failed: %v", err)
+	}
+	if len(mockPool.retiredConns) != 0 {
+		t.Fatalf("expected removed connection not to be retired, got %v", mockPool.retiredConns)
 	}
 }
 
