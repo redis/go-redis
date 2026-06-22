@@ -43,7 +43,7 @@ If you can't get a spec, STOP and ask the user — guessing the reply shape prod
 |-----------|------|
 | `references/core-command-pattern.md` | Always — the 7-step Go pattern (interface method, Cmder type, RESP parsing, tests, vet, fmt). Worked example: `LCS`. |
 | `references/module-commands.md` | Adding a RediSearch / TimeSeries / VectorSet / Bloom subcommand — naming, RESP2-vs-RESP3 shape differences, where the Cmd type lives. |
-| `references/cluster-routing.md` | Command is keyless, fans out, multi-key, or aggregates across shards. |
+| `references/cluster-routing-wiring.md` | Command is keyless, fans out, multi-key, or aggregates across shards. |
 
 When several apply, read in order: core → module → cluster.
 

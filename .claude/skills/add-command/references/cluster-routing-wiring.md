@@ -2,7 +2,7 @@
 
 Read this only when the new command is keyless, fans out, targets multiple keys, or aggregates results across shards. **Most simple single-key commands need no cluster-side change** — slot routing is inferred from the key argument automatically.
 
-This file (the skill reference) is a wiring checklist. For the full routing *design* — slot computation, MOVED/ASK, aggregator internals — read the separate architecture spec at the repo path `.claude/specs/cluster-routing.md` (different file, same name) before changing routing code.
+This file (the skill reference) is a wiring checklist. For the full routing *design* — slot computation, MOVED/ASK, aggregator internals — read the separate architecture spec at the repo path `.claude/specs/cluster-routing.md` before changing routing code.
 
 ## When a command needs wiring
 
