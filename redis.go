@@ -963,7 +963,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 	}
 
 	var usedConn *pool.Conn
-	retryTimeout := uint32(0)
+	var retryTimeout atomic.Uint32
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
 		// Process any pending push notifications before executing the command
@@ -974,7 +974,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			return writeCmd(wr, cmd)
 		}); err != nil {
-			atomic.StoreUint32(&retryTimeout, 1)
+			retryTimeout.Store(1)
 			return err
 		}
 		readReplyFunc := cmd.readReply
@@ -996,16 +996,16 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return readReplyFunc(rd)
 		}); err != nil {
 			if cmd.readTimeout() == nil {
-				atomic.StoreUint32(&retryTimeout, 1)
+				retryTimeout.Store(1)
 			} else {
-				atomic.StoreUint32(&retryTimeout, 0)
+				retryTimeout.Store(0)
 			}
 			return err
 		}
 
 		return nil
 	}); err != nil {
-		retry := shouldRetry(err, atomic.LoadUint32(&retryTimeout) == 1)
+		retry := shouldRetry(err, retryTimeout.Load() == 1)
 		return retry, usedConn, err
 	}
 

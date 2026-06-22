@@ -45,7 +45,7 @@ func GetCachedTimeNs() int64 {
 }
 
 // Global atomic counter for connection IDs
-var connIDCounter uint64
+var connIDCounter atomic.Uint64
 
 // HandoffState represents the atomic state for connection handoffs
 // This struct is stored atomically to prevent race conditions between
@@ -63,7 +63,7 @@ type atomicNetConn struct {
 
 // generateConnID generates a fast unique identifier for a connection with zero allocations
 func generateConnID() uint64 {
-	return atomic.AddUint64(&connIDCounter, 1)
+	return connIDCounter.Add(1)
 }
 
 type Conn struct {
