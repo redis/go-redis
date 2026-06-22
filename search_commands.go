@@ -423,8 +423,15 @@ type FTHybridVectorExpression struct {
 	VectorParamName string
 	Method          FTHybridVectorMethod
 	MethodParams    []interface{}
-	Filter          string
-	YieldScoreAs    string
+	// ShardKRatio controls how many results each shard returns relative to the
+	// requested KNN K, trading recall for latency in Redis cluster setups.
+	// Valid range: 0.1 - 1.0. The zero value means "unset" and falls back to
+	// the server default of 1.0 (no per-shard reduction). Has no effect on
+	// standalone Redis, and only applies to the KNN method. Requires Redis 8.8+.
+	// See https://redis.io/docs/latest/develop/ai/search-and-query/query/vector-search/
+	ShardKRatio  float64
+	Filter       string
+	YieldScoreAs string
 }
 
 // FTHybridCombineOptions represents options for result fusion
@@ -3798,6 +3805,22 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					args = append(args, len(vectorExpr.MethodParams))
 					args = append(args, vectorExpr.MethodParams...)
 				}
+			}
+
+			// SHARD_K_RATIO applies to the KNN method only (Redis 8.8+, cluster only).
+			// Zero means "unset" and falls back to the server default of 1.0.
+			if vectorExpr.ShardKRatio > 0 {
+				if vectorExpr.Method != "KNN" {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO requires KNN method"))
+					return cmd
+				}
+				if vectorExpr.ShardKRatio < 0.1 || vectorExpr.ShardKRatio > 1.0 {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0"))
+					return cmd
+				}
+				args = append(args, "SHARD_K_RATIO", vectorExpr.ShardKRatio)
 			}
 
 			if vectorExpr.Filter != "" {

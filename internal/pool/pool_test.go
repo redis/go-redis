@@ -75,6 +75,25 @@ var _ = Describe("ConnPool", func() {
 		}))
 	})
 
+	It("should retire idle conns and mark in-use conns for close on put", func() {
+		idleConn, err := connPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		inUseConn, err := connPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		connPool.Put(ctx, idleConn)
+
+		connPool.RetireConns(ctx, []*pool.Conn{idleConn, inUseConn}, pool.CloseReasonMaintNotificationsDisabled)
+		Expect(idleConn.IsClosed()).To(BeTrue())
+		Expect(inUseConn.IsClosed()).To(BeFalse())
+		Expect(inUseConn.CloseOnPutReason()).To(Equal(pool.CloseReasonMaintNotificationsDisabled))
+
+		connPool.Put(ctx, inUseConn)
+		Expect(inUseConn.IsClosed()).To(BeTrue())
+		Expect(connPool.Len()).To(Equal(0))
+		Expect(connPool.IdleLen()).To(Equal(0))
+	})
+
 	It("should unblock client when conn is removed", func() {
 		// Reserve one connection.
 		cn, err := connPool.Get(ctx)
