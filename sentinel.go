@@ -123,6 +123,14 @@ type FailoverOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining, with
+	// its own (typically larger) buffers. See the same-named fields on Options
+	// for details. Zero values disable the separate pool.
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
 	PoolFIFO bool
 
 	PoolSize int
@@ -176,7 +184,7 @@ type FailoverOptions struct {
 	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications upgrades are disabled.
 	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
-	//MaintNotificationsConfig *maintnotifications.Config
+	// MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -201,6 +209,10 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -317,6 +329,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -559,6 +575,27 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 	rdb.pubSubPool, err = newPubSubPool(opt, rdb.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
+	}
+
+	// Optionally create a separate connection pool for pipelining, with its own
+	// (typically larger) buffers. Enabled when either pipeline buffer size is set.
+	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 {
+		pipelineOpt := opt.clone()
+		if opt.PipelineReadBufferSize > 0 {
+			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+		}
+		if opt.PipelineWriteBufferSize > 0 {
+			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
+		}
+		if opt.PipelinePoolSize > 0 {
+			pipelineOpt.PoolSize = opt.PipelinePoolSize
+		} else {
+			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
+		}
+		rdb.pipelinePool, err = newConnPool(pipelineOpt, rdb.dialHook, mainPoolName+"_pipeline")
+		if err != nil {
+			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
+		}
 	}
 
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)

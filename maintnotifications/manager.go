@@ -82,6 +82,14 @@ type Manager struct {
 	hooksMu      sync.RWMutex // Protects hooks slice
 	poolHooksRef *PoolHook
 
+	// additionalPoolHooks are pool hooks bound to pools other than the primary
+	// one (e.g. a dedicated pipeline connection pool). Each is an independent
+	// *PoolHook bound to its own pool because the hook's failed-handoff removal
+	// target (HandoffRequest.Pool) is taken from the hook's single pool field,
+	// so one hook cannot safely serve two pools. They share this Manager as
+	// their operations manager, keeping MOVING/MIGRATING tracking centralized.
+	additionalPoolHooks []additionalPoolHook
+
 	// Connections that successfully enabled maintnotifications. These need to be
 	// retired before the pool-level listeners are removed.
 	maintNotificationsConns sync.Map // connID -> *pool.Conn
@@ -132,6 +140,49 @@ func NewManager(client interfaces.ClientInterface, pool pool.Pooler, config *Con
 func (hm *Manager) InitPoolHook(baseDialer func(context.Context, string, string) (net.Conn, error)) {
 	poolHook := hm.createPoolHook(baseDialer)
 	hm.pool.AddPoolHook(poolHook)
+}
+
+// additionalPoolHook pairs a pool hook with the pool it was attached to so the
+// manager can shut it down and detach it on Close.
+type additionalPoolHook struct {
+	pool pool.Pooler
+	hook *PoolHook
+}
+
+// InitPoolHookForPool attaches a maintnotifications pool hook to an additional
+// pool (e.g. a client's dedicated pipeline connection pool). A fresh, independent
+// *PoolHook is created and bound to the given pool so that connections which fail
+// handoff are removed from the correct pool — the hook's removal target is its own
+// single pool field, so the primary hook cannot be reused for a second pool. The
+// new hook shares this Manager as its operations manager, so MOVING/MIGRATING
+// tracking and notification handling stay centralized across both pools.
+func (hm *Manager) InitPoolHookForPool(p pool.Pooler, baseDialer func(context.Context, string, string) (net.Conn, error)) {
+	if p == nil {
+		return
+	}
+	poolSize := 0
+	network := ""
+	if hm.options != nil {
+		poolSize = hm.options.GetPoolSize()
+		network = hm.options.GetNetwork()
+	}
+	hook := NewPoolHookWithPoolSize(baseDialer, network, hm.config, hm, poolSize)
+	hook.SetPool(p)
+	// The closed check and the append must be atomic with respect to Close's
+	// snapshot: under the same lock, either Close runs first (closed==true here,
+	// so we don't register and the hook is never attached) or we register first
+	// (Close's snapshot then includes this hook and tears it down). Without the
+	// lock around the check, a hook could be appended after Close snapshotted,
+	// leaking it (never shut down, never removed from the pool). In practice this
+	// only runs at construction, but the lock makes it correct regardless.
+	hm.hooksMu.Lock()
+	if hm.closed.Load() {
+		hm.hooksMu.Unlock()
+		return
+	}
+	hm.additionalPoolHooks = append(hm.additionalPoolHooks, additionalPoolHook{pool: p, hook: hook})
+	hm.hooksMu.Unlock()
+	p.AddPoolHook(hook)
 }
 
 // setupPushNotifications sets up push notification handling by registering with the client's processor.
@@ -324,6 +375,28 @@ func (hm *Manager) Close() error {
 		// Remove the pool hook from the pool
 		if hm.pool != nil {
 			hm.pool.RemovePoolHook(hm.poolHooksRef)
+		}
+	}
+
+	// Shutdown and detach any hooks bound to additional pools (e.g. a dedicated
+	// pipeline pool). Snapshot under the lock so we don't iterate concurrently
+	// with a registering InitPoolHookForPool; Shutdown itself runs unlocked.
+	hm.hooksMu.Lock()
+	additional := hm.additionalPoolHooks
+	hm.additionalPoolHooks = nil
+	hm.hooksMu.Unlock()
+	for _, ah := range additional {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := ah.hook.Shutdown(shutdownCtx)
+		cancel()
+		if err != nil {
+			// Could not cleanly shut down an additional hook; stay open so the
+			// caller can retry Close, matching the primary-hook behavior above.
+			hm.closed.Store(false)
+			return err
+		}
+		if ah.pool != nil {
+			ah.pool.RemovePoolHook(ah.hook)
 		}
 	}
 

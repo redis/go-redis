@@ -143,6 +143,14 @@ type RingOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining on
+	// each shard, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. Zero values disable the separate pool.
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
 	TLSConfig *tls.Config
 	Limiter   Limiter
 
@@ -246,6 +254,10 @@ func (opt *RingOptions) clientOptions() *Options {
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
 
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
