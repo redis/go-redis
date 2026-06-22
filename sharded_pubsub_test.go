@@ -1,0 +1,597 @@
+package redis
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/pool"
+)
+
+func TestShardedPubSubChannelGrouping(t *testing.T) {
+	// Verify that channels hash to different slots (the core issue).
+	// In the bug report, ch1-ch9 hash to different slots, but only
+	// messages from one shard's channels are received.
+	slots := make(map[int][]string)
+	for i := 1; i <= 9; i++ {
+		ch := "ch" + string(rune('0'+i))
+		slot := hashtag.Slot(ch)
+		slots[slot] = append(slots[slot], ch)
+	}
+
+	// There should be multiple different slots for ch1-ch9.
+	if len(slots) <= 1 {
+		t.Fatalf("expected channels to hash to multiple slots, got %d", len(slots))
+	}
+	t.Logf("channels hash to %d different slots: %v", len(slots), slots)
+}
+
+func TestShardedPubSubNewAndClose(t *testing.T) {
+	// Test that ShardedPubSub can be created and closed without panics.
+	// We can't test actual cluster connectivity without a running cluster,
+	// but we can verify the struct initializes correctly.
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+
+	sps := newShardedPubSub(cluster)
+	if sps == nil {
+		t.Fatal("newShardedPubSub returned nil")
+	}
+	if sps.closed {
+		t.Fatal("new ShardedPubSub should not be closed")
+	}
+	if len(sps.shards) != 0 {
+		t.Fatalf("expected 0 shards, got %d", len(sps.shards))
+	}
+
+	// Close should work on empty ShardedPubSub.
+	err := sps.Close()
+	if err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Double close should return ErrClosed.
+	err = sps.Close()
+	if err == nil {
+		t.Fatal("expected error on double close")
+	}
+}
+
+func TestShardedPubSubSSubscribeWhenClosed(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+	sps := newShardedPubSub(cluster)
+	_ = sps.Close()
+
+	err := sps.SSubscribe(context.Background(), "ch1")
+	if err == nil {
+		t.Fatal("expected error when subscribing on closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubChannelOptionSize(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// WithChannelSize must be honored even when a later option (which does not
+	// touch chanSize) is applied. A previous bug reset the probe on every
+	// iteration, so the size from an earlier option was lost.
+	ch := sps.Channel(WithChannelSize(500), WithChannelSendTimeout(time.Second))
+	if cap(ch) != 500 {
+		t.Fatalf("expected channel buffer size 500, got %d", cap(ch))
+	}
+}
+
+func TestShardedPubSubChannelDefaultSize(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	ch := sps.Channel()
+	if cap(ch) != 100 {
+		t.Fatalf("expected default channel buffer size 100, got %d", cap(ch))
+	}
+}
+
+func TestShardedPubSubRegistration(t *testing.T) {
+	cluster := &ClusterClient{
+		opt: &ClusterOptions{},
+	}
+
+	sps1 := newShardedPubSub(cluster)
+	sps2 := newShardedPubSub(cluster)
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 2 {
+		t.Fatalf("expected 2 registered, got %d", len(cluster.shardedPubSubs))
+	}
+	cluster.spsMu.Unlock()
+
+	// Close sps1 should deregister it.
+	_ = sps1.Close()
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 1 {
+		t.Fatalf("expected 1 registered after close, got %d", len(cluster.shardedPubSubs))
+	}
+	if cluster.shardedPubSubs[0] != sps2 {
+		t.Fatal("expected sps2 to remain registered")
+	}
+	cluster.spsMu.Unlock()
+
+	_ = sps2.Close()
+
+	cluster.spsMu.Lock()
+	if len(cluster.shardedPubSubs) != 0 {
+		t.Fatalf("expected 0 registered after all closed, got %d", len(cluster.shardedPubSubs))
+	}
+	cluster.spsMu.Unlock()
+}
+
+// failingPubSub returns a *PubSub whose subscribe/unsubscribe calls always fail
+// because its newConn factory returns err. This lets us exercise error paths in
+// ShardedPubSub without a live server.
+func failingPubSub(err error) *PubSub {
+	ps := &PubSub{
+		opt: &Options{},
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			return nil, err
+		},
+		closeConn: func(cn *pool.Conn) error { return nil },
+	}
+	ps.init()
+	return ps
+}
+
+// newNoopPubSub returns a *PubSub backed by a connection whose writes are
+// discarded, so subscribe/unsubscribe commands succeed without a live server.
+// Only the write path is exercised (we never start a receive loop), which is
+// all SSubscribe/SUnsubscribe need.
+func newNoopPubSub() *PubSub {
+	serverConn, clientConn := net.Pipe()
+	// Drain anything written to the client connection so writes never block.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := serverConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	cn := pool.NewConn(clientConn)
+	ps := &PubSub{
+		opt: &Options{Addr: "127.0.0.1:0"},
+		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
+			return cn, nil
+		},
+		closeConn: func(c *pool.Conn) error {
+			// Close both pipe ends so the drain goroutine exits via the read
+			// error instead of lingering on a half-open pipe.
+			_ = serverConn.Close()
+			return clientConn.Close()
+		},
+	}
+	ps.init()
+	return ps
+}
+
+func TestPubSubSUnsubscribeRetainsSchannelsOnError(t *testing.T) {
+	// When the underlying SUNSUBSCRIBE fails (here: connection unavailable), the
+	// channels must stay tracked in schannels so a later reconnect re-subscribes
+	// them instead of silently desyncing local state from the server.
+	ps := failingPubSub(errors.New("boom"))
+	ps.schannels = map[string]struct{}{"ch1": {}, "ch2": {}}
+
+	if err := ps.SUnsubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error from the failing connection")
+	}
+	if _, ok := ps.schannels["ch1"]; !ok {
+		t.Fatal("ch1 must be retained when SUNSUBSCRIBE fails")
+	}
+	if _, ok := ps.schannels["ch2"]; !ok {
+		t.Fatal("ch2 must be retained when SUNSUBSCRIBE fails")
+	}
+}
+
+func TestPubSubSUnsubscribeDropsSchannelsOnSuccess(t *testing.T) {
+	ps := newNoopPubSub()
+	defer func() { _ = ps.Close() }()
+	ps.schannels = map[string]struct{}{"ch1": {}, "ch2": {}}
+
+	if err := ps.SUnsubscribe(context.Background(), "ch1", "ch2"); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(ps.schannels) != 0 {
+		t.Fatalf("expected schannels cleared on success, got %v", ps.schannels)
+	}
+}
+
+func TestPubSubSSubscribeTracksOnlyOnSuccess(t *testing.T) {
+	// A failed SSUBSCRIBE must not add the channels to schannels — otherwise the
+	// client would claim subscriptions the server never accepted.
+	ps := failingPubSub(errors.New("boom"))
+
+	if err := ps.SSubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error from the failing connection")
+	}
+	if len(ps.schannels) != 0 {
+		t.Fatalf("expected no schannels tracked after failed SSUBSCRIBE, got %v", ps.schannels)
+	}
+}
+
+func TestShardedPubSubSUnsubscribeWhenClosed(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	_ = sps.Close()
+
+	if err := sps.SUnsubscribe(context.Background(), "ch1"); err == nil {
+		t.Fatal("expected error when unsubscribing on closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubSUnsubscribeUntracked(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Unsubscribing channels that were never subscribed is a no-op.
+	if err := sps.SUnsubscribe(context.Background(), "never-subscribed"); err != nil {
+		t.Fatalf("expected nil error for untracked channel, got %v", err)
+	}
+}
+
+func TestShardedPubSubSUnsubscribeNoShardConnection(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Channel is tracked but there is no live shard connection for its addr.
+	// SUnsubscribe should drop the mapping and return nil (nothing to send).
+	sps.mu.Lock()
+	sps.chanShard["ch1"] = "127.0.0.1:7000"
+	sps.mu.Unlock()
+
+	if err := sps.SUnsubscribe(context.Background(), "ch1"); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	sps.mu.Lock()
+	_, ok := sps.chanShard["ch1"]
+	sps.mu.Unlock()
+	if ok {
+		t.Fatal("expected mapping to be removed after successful unsubscribe")
+	}
+}
+
+func TestShardedPubSubSUnsubscribeKeepsMappingOnError(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	errBoom := errors.New("boom")
+	addr := "127.0.0.1:7000"
+
+	sps.mu.Lock()
+	sps.shards[addr] = failingPubSub(errBoom)
+	sps.chanShard["ch1"] = addr
+	sps.mu.Unlock()
+
+	// The underlying SUnsubscribe fails, so the channel mapping must be
+	// preserved — otherwise the client would forget a channel whose server-side
+	// subscription is still active.
+	if err := sps.SUnsubscribe(context.Background(), "ch1"); err == nil {
+		t.Fatal("expected error from failing shard SUnsubscribe")
+	}
+
+	sps.mu.Lock()
+	_, ok := sps.chanShard["ch1"]
+	sps.mu.Unlock()
+	if !ok {
+		t.Fatal("mapping must be retained when the underlying SUnsubscribe fails")
+	}
+}
+
+func TestShardedPubSubSUnsubscribeAll(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Two tracked channels with no live shard connections. Calling
+	// SUnsubscribe with no arguments must unsubscribe from all of them,
+	// mirroring PubSub.SUnsubscribe ("unsubscribe from all").
+	sps.mu.Lock()
+	sps.chanShard["ch1"] = "127.0.0.1:7000"
+	sps.chanShard["ch2"] = "127.0.0.1:7001"
+	sps.mu.Unlock()
+
+	if err := sps.SUnsubscribe(context.Background()); err != nil {
+		t.Fatalf("expected nil error for unsubscribe-all, got %v", err)
+	}
+
+	sps.mu.Lock()
+	n := len(sps.chanShard)
+	sps.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected all channel mappings removed, got %d", n)
+	}
+}
+
+func TestShardedPubSubSUnsubscribePartialFailureAttemptsAllShards(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// ch1 and ch2 hash to different slots and are placed on different shard
+	// addresses. One shard's SUnsubscribe fails, the other succeeds. The call
+	// must attempt both groups (not bail out on the first failure), return the
+	// first error, drop the mapping for the group that succeeded, and keep the
+	// mapping for the group that failed.
+	errBoom := errors.New("boom")
+	failAddr := "127.0.0.1:7000"
+	okAddr := "127.0.0.1:7001"
+
+	sps.mu.Lock()
+	sps.shards[failAddr] = failingPubSub(errBoom)
+	sps.shards[okAddr] = newNoopPubSub()
+	sps.chanShard["ch1"] = failAddr
+	sps.chanShard["ch2"] = okAddr
+	sps.mu.Unlock()
+
+	if err := sps.SUnsubscribe(context.Background(), "ch1", "ch2"); err == nil {
+		t.Fatal("expected an error because one shard's SUnsubscribe fails")
+	}
+
+	sps.mu.Lock()
+	_, failKept := sps.chanShard["ch1"]
+	_, okKept := sps.chanShard["ch2"]
+	_, okShardKept := sps.shards[okAddr]
+	sps.mu.Unlock()
+
+	if !failKept {
+		t.Fatal("mapping for the failed shard must be retained")
+	}
+	if okKept {
+		t.Fatal("mapping for the successfully-unsubscribed channel must be dropped")
+	}
+	if okShardKept {
+		t.Fatal("empty shard after successful unsubscribe must be closed")
+	}
+}
+
+func TestShardedPubSubChannelAfterClose(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	if err := sps.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Calling Channel() after Close() must return an already-closed channel
+	// rather than a new open channel that would block consumers forever.
+	ch := sps.Channel()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel from Channel()-after-Close to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Channel() after Close() returned a channel that never closes")
+	}
+}
+
+func TestShardedPubSubChannelIdempotent(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	ch1 := sps.Channel(WithChannelSize(250))
+	ch2 := sps.Channel(WithChannelSize(999))
+
+	// Channel must be created once (sync.Once); later calls return the same
+	// channel and must not reset the buffer size.
+	if ch1 != ch2 {
+		t.Fatal("expected Channel to return the same channel on repeated calls")
+	}
+	if cap(ch1) != 250 {
+		t.Fatalf("expected buffer size 250 from the first call, got %d", cap(ch1))
+	}
+}
+
+func TestShardedPubSubChannelClosedAfterClose(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	ch := sps.Channel()
+	if err := sps.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// The multiplexed channel must be closed once Close completes.
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to be closed and drained")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for channel to close")
+	}
+
+	// ReceiveMessage must report closed after Close.
+	if _, err := sps.ReceiveMessage(context.Background()); err == nil {
+		t.Fatal("expected error from ReceiveMessage after Close")
+	}
+}
+
+func TestShardedPubSubReceiveMessageBeforeChannel(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// ReceiveMessage auto-initializes the multiplexed channel (mirroring
+	// PubSub.ReceiveMessage, which needs no prior Channel call). With no
+	// shards there is nothing to receive, so the context deadline fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := sps.ReceiveMessage(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// The auto-initialized channel must be the one Channel() returns.
+	if sps.Channel() == nil {
+		t.Fatal("expected Channel() to return the auto-initialized channel")
+	}
+}
+
+func TestShardedPubSubPingClosedAndEmpty(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	// Ping with no shards is a no-op success.
+	if err := sps.Ping(context.Background()); err != nil {
+		t.Fatalf("expected nil error pinging with no shards, got %v", err)
+	}
+
+	_ = sps.Close()
+	if err := sps.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging a closed ShardedPubSub")
+	}
+}
+
+func TestShardedPubSubPingReportsNotReady(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+	defer func() { _ = sps.Close() }()
+
+	// Channels tracked but no live shard connections (e.g. every initial
+	// subscribe failed): Ping must not report a false-positive nil, since it
+	// doubles as a readiness probe.
+	sps.mu.Lock()
+	sps.chanShard["ch1"] = "127.0.0.1:7000"
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging with tracked channels but no shards")
+	}
+
+	// A pending subscription must also be reported.
+	ps := newNoopPubSub()
+	sps.mu.Lock()
+	sps.shards["127.0.0.1:7000"] = ps
+	sps.pending["ch1"] = struct{}{}
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err == nil {
+		t.Fatal("expected error pinging with a pending subscription")
+	}
+
+	// Confirmed subscription with a live shard: Ping succeeds.
+	sps.mu.Lock()
+	delete(sps.pending, "ch1")
+	sps.mu.Unlock()
+	if err := sps.Ping(context.Background()); err != nil {
+		t.Fatalf("expected nil error once subscription is confirmed, got %v", err)
+	}
+}
+
+func TestClusterClientCloseClosesShardedPubSubs(t *testing.T) {
+	cluster := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:0"}})
+
+	sps := cluster.SSubscribeSharded(context.Background())
+	if err := cluster.Close(); err != nil {
+		t.Fatalf("ClusterClient.Close failed: %v", err)
+	}
+
+	sps.mu.Lock()
+	closed := sps.closed
+	sps.mu.Unlock()
+	if !closed {
+		t.Fatal("expected ClusterClient.Close to close registered ShardedPubSubs")
+	}
+
+	cluster.spsMu.Lock()
+	n := len(cluster.shardedPubSubs)
+	cluster.spsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("expected 0 registered ShardedPubSubs after client close, got %d", n)
+	}
+}
+
+func TestShardedPubSubStartForwarderAfterClose(t *testing.T) {
+	// startForwarderLocked must be a no-op once the ShardedPubSub is closed.
+	// resubscribeShard temporarily releases s.mu, so a concurrent Close can
+	// complete (waiting out the forwarders and closing msgCh) before a caller
+	// resumes; a forwarder started after that could panic sending on the
+	// closed msgCh and would leak its shard connection.
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	sps := newShardedPubSub(cluster)
+
+	_ = sps.Channel() // msgCh non-nil, so only the closed check can stop us
+	if err := sps.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	ps := newNoopPubSub()
+	defer func() { _ = ps.Close() }()
+
+	sps.mu.Lock()
+	sps.shards["127.0.0.1:7000"] = ps
+	sps.startForwarderLocked("127.0.0.1:7000")
+	started := len(sps.forwarding)
+	delete(sps.shards, "127.0.0.1:7000")
+	sps.mu.Unlock()
+
+	if started != 0 {
+		t.Fatal("startForwarderLocked must not start a forwarder after Close")
+	}
+}
+
+// waitClusterFlagsZero waits until the notifier flags settle back to zero. A
+// stuck notifier (e.g. a lost wakeup in the coalescing loop) would leave
+// spsNotifying or spsPending set and trip the timeout.
+func waitClusterFlagsZero(t *testing.T, c *ClusterClient, d time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if atomic.LoadUint32(&c.spsNotifying) == 0 && atomic.LoadUint32(&c.spsPending) == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("notifier flags did not settle: notifying=%d pending=%d",
+		atomic.LoadUint32(&c.spsNotifying), atomic.LoadUint32(&c.spsPending))
+}
+
+func TestClusterClientNotifyShardedPubSubsCoalesce(t *testing.T) {
+	cluster := &ClusterClient{opt: &ClusterOptions{}}
+	// Registered subs with empty channel maps make onTopologyChange a no-op,
+	// so this exercises the coalescing state machine, not cluster state access.
+	sps1 := newShardedPubSub(cluster)
+	sps2 := newShardedPubSub(cluster)
+	defer func() { _ = sps1.Close(); _ = sps2.Close() }()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cluster.notifyShardedPubSubs()
+		}()
+	}
+	wg.Wait()
+	waitClusterFlagsZero(t, cluster, 2*time.Second)
+
+	// A later notification must still spawn a notifier and settle, proving the
+	// notifier slot was released (not stuck at 1) after the burst.
+	cluster.notifyShardedPubSubs()
+	waitClusterFlagsZero(t, cluster, 2*time.Second)
+}
