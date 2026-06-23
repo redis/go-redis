@@ -37,6 +37,7 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 					AutoPipelineConfig: &redis.AutoPipelineConfig{
 						MaxBatchSize:         300,
 						MaxConcurrentBatches: 80,
+						Unordered:            true,
 					},
 				})
 				defer c.Close()

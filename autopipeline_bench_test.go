@@ -72,6 +72,7 @@ func BenchmarkAutoPipeline(b *testing.B) {
 			MaxBatchSize:         100,
 			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 10,
+			Unordered:            true,
 		},
 	})
 	defer client.Close()
@@ -158,6 +159,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 					MaxBatchSize:         100,
 					MaxFlushDelay:        10 * time.Millisecond,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -204,6 +206,7 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 					MaxBatchSize:         batchSize,
 					MaxFlushDelay:        10 * time.Millisecond,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -241,6 +244,7 @@ func BenchmarkAutoPipelineMaxFlushDelays(b *testing.B) {
 					MaxBatchSize:         100,
 					MaxFlushDelay:        delay,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -358,6 +362,7 @@ func BenchmarkMaxFlushDelay(b *testing.B) {
 					MaxBatchSize:         50,
 					MaxFlushDelay:        delay,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -400,6 +405,7 @@ func BenchmarkBufferSizes(b *testing.B) {
 					MaxBatchSize:         50,
 					MaxFlushDelay:        time.Millisecond,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -440,6 +446,7 @@ func BenchmarkAutoPipelineMaxBatchSizes(b *testing.B) {
 					MaxBatchSize:         size,
 					MaxFlushDelay:        time.Millisecond,
 					MaxConcurrentBatches: 10,
+					Unordered:            true,
 				},
 			})
 			defer client.Close()
@@ -498,6 +505,7 @@ func BenchmarkHighConcurrencyThroughput(b *testing.B) {
 			opt.AutoPipelineConfig = &redis.AutoPipelineConfig{
 				MaxBatchSize:         300,
 				MaxConcurrentBatches: 80,
+				Unordered:            true,
 			}
 		}
 		client := redis.NewClient(opt)
