@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,14 +84,12 @@ func BenchmarkAutoPipeline(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			key := fmt.Sprintf("key%d", i)
-			ap.Do(ctx, "SET", key, i)
+			_ = ap.Do(ctx, "SET", key, i).Err()
 			i++
 		}
 	})
 
 	b.StopTimer()
-	// Wait for final flush
-	time.Sleep(50 * time.Millisecond)
 }
 
 // BenchmarkAutoPipelineVsManual compares autopipelining with manual pipelining
@@ -132,7 +129,7 @@ func BenchmarkAutoPipelineVsManual(b *testing.B) {
 			ap := client.AutoPipeline()
 			for i := 0; i < numCommands; i++ {
 				key := fmt.Sprintf("key%d", i)
-				ap.Do(ctx, "SET", key, i)
+				_ = ap.Do(ctx, "SET", key, i).Err()
 			}
 			ap.Close()
 		}
@@ -181,7 +178,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 					defer wg.Done()
 					for i := 0; i < commandsPerGoroutine; i++ {
 						key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-						ap.Do(ctx, "SET", key, i)
+						_ = ap.Do(ctx, "SET", key, i).Err()
 					}
 				}(g)
 			}
@@ -217,7 +214,7 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				key := fmt.Sprintf("key%d", i)
-				ap.Do(ctx, "SET", key, i)
+				_ = ap.Do(ctx, "SET", key, i).Err()
 			}
 
 			b.StopTimer()
@@ -255,93 +252,13 @@ func BenchmarkAutoPipelineMaxFlushDelays(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				key := fmt.Sprintf("key%d", i)
-				ap.Do(ctx, "SET", key, i)
+				_ = ap.Do(ctx, "SET", key, i).Err()
 			}
 
 			b.StopTimer()
 			time.Sleep(100 * time.Millisecond)
 		})
 	}
-}
-
-// BenchmarkThroughput measures throughput (ops/sec) for different approaches
-func BenchmarkThroughput(b *testing.B) {
-	const duration = 5 * time.Second
-	const numGoroutines = 10
-
-	b.Run("Individual", func(b *testing.B) {
-		ctx := context.Background()
-		client := redis.NewClient(&redis.Options{
-			Addr: ":6379",
-		})
-		defer client.Close()
-
-		b.ResetTimer()
-
-		var wg sync.WaitGroup
-		var count int64
-
-		deadline := time.Now().Add(duration)
-
-		wg.Add(numGoroutines)
-		for g := 0; g < numGoroutines; g++ {
-			go func(goroutineID int) {
-				defer wg.Done()
-				i := 0
-				for time.Now().Before(deadline) {
-					key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-					if err := client.Set(ctx, key, i, 0).Err(); err != nil {
-						b.Error(err)
-						return
-					}
-					i++
-					count++
-				}
-			}(g)
-		}
-		wg.Wait()
-
-		b.ReportMetric(float64(count)/duration.Seconds(), "ops/sec")
-	})
-
-	b.Run("AutoPipeline", func(b *testing.B) {
-		ctx := context.Background()
-		client := redis.NewClient(&redis.Options{
-			Addr:               ":6379",
-			AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
-		})
-		defer client.Close()
-
-		ap := client.AutoPipeline()
-		defer ap.Close()
-
-		b.ResetTimer()
-
-		var wg sync.WaitGroup
-		var count int64
-
-		deadline := time.Now().Add(duration)
-
-		wg.Add(numGoroutines)
-		for g := 0; g < numGoroutines; g++ {
-			go func(goroutineID int) {
-				defer wg.Done()
-				i := 0
-				for time.Now().Before(deadline) {
-					key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-					ap.Do(ctx, "SET", key, i)
-					i++
-					count++
-				}
-			}(g)
-		}
-		wg.Wait()
-
-		b.StopTimer()
-		time.Sleep(100 * time.Millisecond)
-
-		b.ReportMetric(float64(count)/duration.Seconds(), "ops/sec")
-	})
 }
 
 // BenchmarkMaxFlushDelay benchmarks different MaxFlushDelay values
@@ -376,7 +293,7 @@ func BenchmarkMaxFlushDelay(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					ap.Do(ctx, "SET", key, i)
+					_ = ap.Do(ctx, "SET", key, i).Err()
 					i++
 				}
 			})
@@ -419,7 +336,7 @@ func BenchmarkBufferSizes(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					ap.Do(ctx, "SET", key, i)
+					_ = ap.Do(ctx, "SET", key, i).Err()
 					i++
 				}
 			})
@@ -460,91 +377,10 @@ func BenchmarkAutoPipelineMaxBatchSizes(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					ap.Do(ctx, "SET", key, i)
+					_ = ap.Do(ctx, "SET", key, i).Err()
 					i++
 				}
 			})
 		})
 	}
-}
-
-// BenchmarkHighConcurrencyThroughput is the benchmark that demonstrates the
-// core value of autopipelining: under many concurrent, independent callers,
-// commands coalesce into large pipelines and throughput rises ~15-25x versus
-// issuing the same commands individually over a normal connection pool.
-//
-// Two things drive the multiple:
-//
-//   - Connection multiplexing. Plain commands occupy a connection for a whole
-//     round-trip, so individual throughput is capped by the pool size. The
-//     pipeliner packs many commands per connection, so a small pool sustains a
-//     far higher command rate.
-//   - Concurrency. ap.Do blocks until its command's batch is flushed, so the
-//     batch can never grow larger than the number of goroutines issuing
-//     commands at once. A handful of callers only batches a handful of
-//     commands; the win shows up at hundreds-to-thousands of concurrent
-//     callers, which is the workload autopipelining targets.
-func BenchmarkHighConcurrencyThroughput(b *testing.B) {
-	const (
-		duration   = 3 * time.Second
-		goroutines = 2000
-	)
-
-	run := func(b *testing.B, auto bool) {
-		ctx := context.Background()
-		// A typical application pool. Without autopipelining, throughput is
-		// bounded by how many commands can be in flight at once — i.e. the pool
-		// size — because each Set occupies a connection for a full round-trip.
-		opt := &redis.Options{Addr: ":6379", PoolSize: 10}
-		if auto {
-			// Autopipelining multiplexes many commands per connection by
-			// batching them into pipelines, so a small pool still sustains a
-			// high command rate. Larger batch and concurrent-batch limits let
-			// the flusher keep many full pipelines in flight under thousands of
-			// callers, which is where it reaches its ~15-25x throughput multiple.
-			opt.AutoPipelineConfig = &redis.AutoPipelineConfig{
-				MaxBatchSize:         300,
-				MaxConcurrentBatches: 80,
-				Unordered:            true,
-			}
-		}
-		client := redis.NewClient(opt)
-		defer client.Close()
-
-		var ap *redis.AutoPipeliner
-		if auto {
-			ap = client.AutoPipeline()
-			defer ap.Close()
-		}
-
-		var count int64
-		deadline := time.Now().Add(duration)
-
-		b.ResetTimer()
-		var wg sync.WaitGroup
-		wg.Add(goroutines)
-		for g := 0; g < goroutines; g++ {
-			go func(id int) {
-				defer wg.Done()
-				i := 0
-				for time.Now().Before(deadline) {
-					key := fmt.Sprintf("g%d:key%d", id, i)
-					if auto {
-						ap.Do(ctx, "SET", key, i)
-					} else {
-						_ = client.Set(ctx, key, i, 0).Err()
-					}
-					i++
-					atomic.AddInt64(&count, 1)
-				}
-			}(g)
-		}
-		wg.Wait()
-		b.StopTimer()
-
-		b.ReportMetric(float64(count)/duration.Seconds(), "ops/sec")
-	}
-
-	b.Run("Individual", func(b *testing.B) { run(b, false) })
-	b.Run("AutoPipeline", func(b *testing.B) { run(b, true) })
 }

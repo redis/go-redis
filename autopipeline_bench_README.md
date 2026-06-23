@@ -1,110 +1,99 @@
 # Autopipelining benchmarks
 
-`autopipeline_bench_test.go` validates the goal of autopipelining: batching
-concurrent commands into pipelines cuts network round-trips and raises
-throughput, without callers writing pipeline code.
+These benchmarks validate the goal of autopipelining: batching concurrent
+commands into pipelines cuts network round-trips and raises throughput, without
+callers writing pipeline code.
+
+**Throughput is always measured on executed commands** — a command is counted
+only after its result has been read (`.Result()` / `.Err()`), never when it is
+merely queued. `ap.Do`/`ap.Set` return immediately (the result is deferred), so
+a benchmark that counts calls without reading results measures enqueue speed,
+not throughput. The throughput benchmarks here read every result before counting.
 
 ## Running
 
 The benchmarks talk to a real Redis on `:6379`. Start one first:
 
 ```sh
-# from the repo root, using the project's docker stack
 make docker.start            # or: docker run --rm -p 6379:6379 redis
 
-go test -run '^$' -bench 'BenchmarkAutoPipeline|BenchmarkManualPipeline|BenchmarkIndividualCommands' -benchmem .
+# the headline three-way throughput comparison:
+go test -run '^$' -bench BenchmarkAutoPipelineThroughput -benchtime=1x .
+
+# everything (latency micro-benches + tuning sweeps):
+go test -run '^$' -bench Benchmark -benchmem -benchtime=1x .
 ```
 
-Run the full suite (sweeps included) with:
+The throughput benchmarks run for a fixed wall-clock duration and report
+`ops/sec`, so `-benchtime=1x` (one iteration) is correct for them.
 
-```sh
-go test -run '^$' -bench 'Benchmark' -benchmem -benchtime 3s .
-```
+## The headline benchmark: BenchmarkAutoPipelineThroughput
 
-## What each benchmark shows
+Three ways to issue the same workload (2000 goroutines), each counting only
+executed commands. The autopipeline variants use a parallel-batch config
+(`MaxBatchSize: 300, MaxConcurrentBatches: 80, Unordered: true`):
 
-The goal is proven by the first group; the rest are tuning sweeps.
-
-- **BenchmarkIndividualCommands** — baseline: one command per round-trip.
-- **BenchmarkManualPipeline** — hand-written `Pipeline()` batching (the
-  ceiling autopipelining aims to approach automatically).
-- **BenchmarkAutoPipeline** — `WithAutoPipeline()`/`AutoPipeline()` under
-  concurrent load. Expected: ops/sec well above IndividualCommands and close
-  to ManualPipeline, with no pipeline code at the call site.
-- **BenchmarkAutoPipelineVsManual** — head-to-head of the two batched paths.
-- **BenchmarkConcurrentAutoPipeline** — scaling with concurrent goroutines.
-
-Tuning sweeps (pick config for a workload):
-
-- **BenchmarkAutoPipelineBatchSizes / BenchmarkAutoPipelineMaxBatchSizes** —
-  `MaxBatchSize` vs throughput.
-- **BenchmarkAutoPipelineMaxFlushDelays / BenchmarkMaxFlushDelay** —
-  latency/CPU trade-off of `MaxFlushDelay` (and `AdaptiveDelay`).
-- **BenchmarkBufferSizes** — effect of the dedicated pipeline pool buffers
-  (`PipelineReadBufferSize` / `PipelineWriteBufferSize`, see the pool change).
-- **BenchmarkThroughput** — aggregate ops/sec under a representative mix.
-
-## Reading results
-
-Compare ns/op and B/op across IndividualCommands → AutoPipeline → ManualPipeline.
-Autopipelining is working as intended when AutoPipeline sits much closer to
-ManualPipeline than to IndividualCommands while requiring no manual batching.
+1. **Normal** — a plain client; each `Set` is a blocking round-trip. Bounded by
+   Redis's non-pipelined ceiling (~100k SET/sec, like `redis-benchmark` without
+   `-P`).
+2. **AutoPipelineBlocking** — `ap.Set(...).Result()` read immediately, the way a
+   normal client is used (drop-in). Only one command per caller is in flight,
+   but the flusher batches across the 2000 callers into deep, parallel pipelines.
+3. **AutoPipelineWindowed** — submit a window of commands, then read their
+   results. Keeps each pipeline deepest; the high-throughput async usage.
 
 ## Sample results
 
 Local run, redis:latest on `:6379`, Apple Silicon (14 logical CPUs).
-Numbers are indicative, not a spec.
-
-The headline result — `BenchmarkHighConcurrencyThroughput`, 2000 concurrent
-callers issuing independent commands over a typical pool (`PoolSize: 10`):
+Indicative, not a spec.
 
 ```
-BenchmarkHighConcurrencyThroughput/Individual-14        36600 ops/sec
-BenchmarkHighConcurrencyThroughput/AutoPipeline-14     972000 ops/sec   (~26x)
+BenchmarkAutoPipelineThroughput/Normal-14                  ~82k  ops/sec   1x
+BenchmarkAutoPipelineThroughput/AutoPipelineBlocking-14    ~1.1M ops/sec  ~14x
+BenchmarkAutoPipelineThroughput/AutoPipelineWindowed-14    ~2.5M ops/sec  ~30x
 ```
 
-That is the workload autopipelining is for: many goroutines issuing commands
-that cannot be batched by hand. Two effects compound:
+For reference, `redis-benchmark -t set` on the same box: ~50–80k/sec without
+pipelining (`-c 50`), ~1.1M/sec with `-P 16`. The Normal client matches the
+former; autopipelining reaches the latter automatically.
 
-1. **Connection multiplexing.** A plain command holds a connection for the
-   whole round-trip, so individual throughput is capped by the pool size
-   (PoolSize=10 here → ~37k ops/sec, and it stays there no matter how many
-   goroutines call). Autopipelining packs many commands per connection, so the
-   same small pool sustains ~1M ops/sec.
-2. **Concurrency.** `ap.Do` blocks until its command's batch is flushed, so the
-   batch can never be larger than the number of goroutines issuing commands at
-   once. The win scales with concurrent callers.
+What the numbers say:
 
-The multiple therefore depends on the baseline pool size — i.e. how starved
-the non-pipelined client is:
+- **Blocking autopipelining clears ~1.1M executed SET/sec** even though each
+  caller reads its result before issuing the next — the flusher coalesces the
+  2000 concurrent callers into deep pipelines and runs many batches in parallel.
+  This is a drop-in replacement for a normal client (`.Result()` immediately),
+  ~14× its throughput.
+- **Windowed autopipelining reaches ~2.5M** by also batching within each caller
+  (submit a window, then read) — the highest-throughput usage.
+- **Config matters.** The numbers above use parallel batches
+  (`MaxConcurrentBatches: 80, Unordered: true`). The **default** config is
+  ordered (`MaxConcurrentBatches: 1`): it serializes batch execution, so
+  blocking usage caps near ~500k — but windowed still reaches a few million
+  because one ordered batch stays deep. Choose ordered for a drop-in correctness-
+  preserving speedup, parallel/unordered for maximum throughput.
 
-```
-individual PoolSize=10   ~37k ops/sec  -> ~26x
-individual PoolSize=50   ~63k ops/sec  -> ~15x
-individual PoolSize=140  ~90k ops/sec  -> ~11x   (redis single-instance ceiling)
-autopipeline (any of the above pools)  ~970k-1M ops/sec
-```
+## Other benchmarks
 
-Autopipelining is bounded by what a pipelined single redis instance can
-service (~1M SET/sec on this box); the individual client is bounded by its
-pool. Past ~PoolSize 140 the individual client hits redis's own non-pipelined
-ceiling and cannot improve, so the gap is structural, not a tuning artifact.
+- **BenchmarkIndividualCommands / BenchmarkManualPipeline** — baselines: one
+  command per round-trip, vs hand-written `Pipeline()` (the ceiling
+  autopipelining approaches automatically).
+- **BenchmarkAutoPipeline / BenchmarkConcurrentAutoPipeline** — per-operation
+  latency of the autopipeline path; each command awaits its result, so `ns/op`
+  is real round-trip latency (1 caller has nothing to batch with and is slowest;
+  latency drops as more goroutines let batches fill).
+- **BenchmarkAutoPipelineBatchSizes / MaxBatchSizes / MaxFlushDelays /
+  MaxFlushDelay / BufferSizes** — tuning sweeps for `MaxBatchSize`,
+  `MaxFlushDelay` (and `AdaptiveDelay`), and the dedicated pipeline pool buffers.
+- **BenchmarkAutoPipelineSubmit / BenchmarkFutureFace** — the lower-level
+  `Submit`/windowed paths; their windowed variants also reach ~2.3M ops/sec,
+  consistent with the headline.
 
-Concurrency scaling (per-op latency, `BenchmarkConcurrentAutoPipeline`):
-
-```
-1goroutine    ~1.3 ms/op     (one caller, nothing to batch with)
-10goroutines  ~206 µs/op
-100goroutines  ~17 µs/op     (batches fill, round-trips amortized)
-```
-
-Other notes:
+## Notes
 
 - **Manual pipelining is still fastest when applicable** — it batches a known
   set with zero coordination overhead. Autopipelining's value is doing this
-  automatically for concurrent, independent callers that cannot batch by hand,
+  automatically for concurrent or windowed callers that cannot batch by hand,
   not beating a hand-written pipeline.
-- Tune `MaxBatchSize` / `MaxFlushDelay` (and `AdaptiveDelay`) for the workload;
-  the sweep benchmarks exist for exactly that. The flusher also coalesces with
-  a small default window when `MaxFlushDelay` is 0, and flushes early as soon
-  as the batch is full or the queue stops growing.
+- The flusher coalesces with a small default window when `MaxFlushDelay` is 0,
+  and flushes early as soon as the batch is full.
