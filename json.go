@@ -105,6 +105,7 @@ func (cmd *JSONCmd) SetVal(val string) {
 
 // Val returns the result of the JSON.GET command as a string.
 func (cmd *JSONCmd) Val() string {
+	cmd.await()
 	if len(cmd.val) == 0 && cmd.expanded != nil {
 		val, err := json.Marshal(cmd.expanded)
 		if err != nil {
@@ -119,6 +120,7 @@ func (cmd *JSONCmd) Val() string {
 }
 
 func (cmd *JSONCmd) Result() (string, error) {
+	cmd.await()
 	return cmd.Val(), cmd.Err()
 }
 
@@ -307,10 +309,12 @@ func (cmd *IntPointerSliceCmd) SetVal(val []*int64) {
 }
 
 func (cmd *IntPointerSliceCmd) Val() []*int64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *IntPointerSliceCmd) Result() ([]*int64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 

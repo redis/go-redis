@@ -241,10 +241,12 @@ func (cmd *ScanDumpCmd) SetVal(val ScanDump) {
 }
 
 func (cmd *ScanDumpCmd) Result() (ScanDump, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ScanDumpCmd) Val() ScanDump {
+	cmd.await()
 	return cmd.val
 }
 
@@ -320,10 +322,12 @@ func (cmd *BFInfoCmd) String() string {
 }
 
 func (cmd *BFInfoCmd) Val() BFInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *BFInfoCmd) Result() (BFInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -657,10 +661,12 @@ func (cmd *CFInfoCmd) String() string {
 }
 
 func (cmd *CFInfoCmd) Val() CFInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *CFInfoCmd) Result() (CFInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -827,10 +833,12 @@ func (cmd *CMSInfoCmd) String() string {
 }
 
 func (cmd *CMSInfoCmd) Val() CMSInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *CMSInfoCmd) Result() (CMSInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -1028,10 +1036,12 @@ func (cmd *TopKInfoCmd) String() string {
 }
 
 func (cmd *TopKInfoCmd) Val() TopKInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *TopKInfoCmd) Result() (TopKInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -1283,10 +1293,12 @@ func (cmd *TDigestInfoCmd) String() string {
 }
 
 func (cmd *TDigestInfoCmd) Val() TDigestInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *TDigestInfoCmd) Result() (TDigestInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 

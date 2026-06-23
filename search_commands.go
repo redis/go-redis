@@ -943,10 +943,12 @@ func (cmd *AggregateCmd) SetVal(val *FTAggregateResult) {
 }
 
 func (cmd *AggregateCmd) Val() *FTAggregateResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -1571,7 +1573,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
-
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -2142,10 +2143,12 @@ func (cmd *FTInfoCmd) SetVal(val FTInfoResult) {
 }
 
 func (cmd *FTInfoCmd) Result() (FTInfoResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTInfoCmd) Val() FTInfoResult {
+	cmd.await()
 	return cmd.val
 }
 
@@ -2156,6 +2159,7 @@ func (cmd *FTInfoCmd) RawVal() interface{} {
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
 	return cmd.rawVal, cmd.err
 }
+
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	readType, err := rd.PeekReplyType()
 	if err != nil {
@@ -2344,10 +2348,12 @@ func (cmd *FTSpellCheckCmd) SetVal(val []SpellCheckResult) {
 }
 
 func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
+	cmd.await()
 	return cmd.val
 }
 
@@ -2660,10 +2666,12 @@ func (cmd *FTSearchCmd) SetVal(val FTSearchResult) {
 }
 
 func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSearchCmd) Val() FTSearchResult {
+	cmd.await()
 	return cmd.val
 }
 
@@ -2941,6 +2949,7 @@ func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
 }
 
 func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -2949,6 +2958,7 @@ func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
 }
 
 func (cmd *FTHybridCmd) Val() FTHybridResult {
+	cmd.await()
 	return cmd.val
 }
 
@@ -3475,10 +3485,12 @@ func (cmd *FTSynDumpCmd) SetVal(val []FTSynDumpResult) {
 }
 
 func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
