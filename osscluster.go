@@ -150,6 +150,10 @@ type ClusterOptions struct {
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
 
+	// AutoPipelineConfig is the default config for AsyncAutoPipeline.
+	// See Options.AutoPipelineConfig.
+	AutoPipelineConfig *AutoPipelineConfig
+
 	TLSConfig *tls.Config
 
 	// DisableRoutingPolicies disables the request/response policy routing system.
@@ -1165,6 +1169,9 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+	autopipelinerMu    *sync.Mutex    // guards both autopipeliner fields against concurrent first-call creation
+	autopipeliner      *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
+	asyncAutopipeliner *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1177,8 +1184,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:             opt,
+		nodes:           newClusterNodes(opt),
+		autopipelinerMu: &sync.Mutex{},
 	}
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -1235,7 +1243,25 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	return c.nodes.Close()
+	// Stop the shared AutoPipeliner (if AutoPipeline() created one) before
+	// closing nodes, so its background flusher goroutines don't outlive the
+	// client. AutoPipeliner.Close is idempotent and nil-safe here.
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.nodes.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
@@ -1566,6 +1592,71 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	pipe.init()
 	return &pipe
 }
+
+// AutoPipeline returns the blocking autopipeliner for this cluster client: each
+// command call blocks until executed (drop-in shape) while the engine batches
+// concurrent callers into pipelines. Commands keep per-goroutine order. Pass an
+// optional config to override DefaultBlockingAutoPipelineConfig. Cached/shared;
+// first call's config wins. Close it (or the client) to release its goroutines.
+func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner
+	}
+	cfg := DefaultBlockingAutoPipelineConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	c.autopipeliner = newAutoPipeliner(c, cfg, true)
+	c.installAutoPipelineSharding(c.autopipeliner)
+	return c.autopipeliner
+}
+
+// installAutoPipelineSharding routes commands to shards by cluster slot so each
+// shard's batch lands on a single master node, keeping per-node pipelines deep
+// instead of splitting every batch across all nodes at flush. Cluster slots are
+// contiguous per node, so bucketing by slot range (slot*shards/16384) keeps a
+// node's slots together. Keyless commands hash to slot -1 → bucket 0; multi-node
+// commands are already rejected from pipelines, so only single-node commands
+// reach here.
+func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
+	const slots = 16384
+	n := ap.numShards()
+	ap.setShardFn(func(cmd Cmder) int {
+		// Compute the exact slot once and cache it on the command; the flush
+		// router (mapCmdsByNode) reuses the cached value, so the slot is resolved
+		// once per command, not twice. Keyless (slot -1) buckets to shard 0.
+		slot := c.cmdSlot(cmd, -1)
+		if slot < 0 {
+			return 0
+		}
+		return slot * n / slots
+	})
+}
+
+// AsyncAutoPipeline returns the deferred autopipeliner: command calls return
+// immediately and the result accessors block. Submit a window then read results
+// for the highest throughput. Default config is ordered (DefaultAutoPipelineConfig);
+// pass a config to override. Cached/shared; first call's config wins.
+func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
+		return c.asyncAutopipeliner
+	}
+	cfg := c.opt.AutoPipelineConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	if cfg == nil {
+		cfg = DefaultAutoPipelineConfig()
+	}
+	c.asyncAutopipeliner = newAutoPipeliner(c, cfg, false)
+	c.installAutoPipelineSharding(c.asyncAutopipeliner)
+	return c.asyncAutopipeliner
+}
+
 
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(ctx, fn)
@@ -2377,8 +2468,22 @@ func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
+	// Serve/populate the per-command slot cache only on the natural-slot path
+	// (prefferedSlot == -1). A forced prefferedSlot (retry re-routing) must not be
+	// cached or served from cache. The cache lets the autopipeline shard router
+	// and the pipeline-flush router (mapCmdsByNode) share one slot computation
+	// instead of each recomputing it.
+	if prefferedSlot == -1 {
+		if slot, ok := cmd.cachedSlot(); ok {
+			return slot
+		}
+	}
 	info := c.cmdInfoPeek(cmd.Name())
-	return c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	slot := c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	if prefferedSlot == -1 && slot >= 0 {
+		cmd.setCachedSlot(slot)
+	}
+	return slot
 }
 
 // cmdSlotWithPos computes the cluster slot for cmd given a pre-resolved first key
