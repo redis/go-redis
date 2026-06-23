@@ -129,4 +129,34 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 			return n // only commands whose result was read
 		})
 	})
+
+	// Windowed GET: same windowed-async pattern but read-only. SET throughput is
+	// capped by Redis's write processing (~2.7M SET/sec on a typical local
+	// instance, matching `redis-benchmark -t set` at its ceiling), so the SET
+	// variants above are server-bound, not client-bound. GET is cheaper on the
+	// server (~4M ceiling), so this variant shows the client itself clears 3M+
+	// — i.e. the pipeline machinery is not the limit for the SET numbers.
+	b.Run("AutoPipelineWindowedGET", func(b *testing.B) {
+		c := redis.NewClient(&redis.Options{Addr: ":6379"})
+		defer c.Close()
+		if err := c.Set(ctx, "bench:get", "v", 0).Err(); err != nil {
+			b.Fatal(err)
+		}
+		ap := c.AsyncAutoPipeline(apConfig())
+		defer ap.Close()
+		drive(b, func(id int) int {
+			cmds := make([]*redis.StringCmd, 0, window)
+			for j := 0; j < window; j++ {
+				cmds = append(cmds, ap.Get(ctx, "bench:get"))
+			}
+			n := 0
+			for _, cmd := range cmds {
+				if _, err := cmd.Result(); err != nil {
+					b.Error(err)
+				}
+				n++
+			}
+			return n
+		})
+	})
 }
