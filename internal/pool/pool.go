@@ -304,6 +304,9 @@ func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn 
 }
 
 // Stats contains pool state information and accumulated stats.
+//
+// TODO(cxl): the uint32/int64 fields below will be changed to atomic value
+// types (atomic.Uint32/atomic.Int64) in v10, which is a breaking API change.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
 	Misses         uint32 // number of times free connection was NOT found in the pool
