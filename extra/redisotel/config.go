@@ -1,6 +1,7 @@
 package redisotel
 
 import (
+	"context"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -24,9 +25,9 @@ type config struct {
 
 	dbStmtEnabled         bool
 	callerEnabled         bool
-	filterDial            bool
-	filterProcessPipeline func(cmds []redis.Cmder) bool
-	filterProcess         func(cmd redis.Cmder) bool
+	filterDial            func(ctx context.Context, network, addr string) bool
+	filterProcessPipeline func(ctx context.Context, cmds []redis.Cmder) bool
+	filterProcess         func(ctx context.Context, cmd redis.Cmder) bool
 
 	// Metrics options.
 
@@ -67,8 +68,10 @@ func newConfig(opts ...baseOption) *config {
 		mp:            otel.GetMeterProvider(),
 		dbStmtEnabled: true,
 		callerEnabled: true,
-		filterProcess: DefaultCommandFilter,
-		filterProcessPipeline: func(cmds []redis.Cmder) bool {
+		filterProcess: func(ctx context.Context, cmd redis.Cmder) bool {
+			return DefaultCommandFilter(cmd)
+		},
+		filterProcessPipeline: func(ctx context.Context, cmds []redis.Cmder) bool {
 			for _, cmd := range cmds {
 				if DefaultCommandFilter(cmd) {
 					return true
@@ -147,29 +150,57 @@ func WithCallerEnabled(on bool) TracingOption {
 
 // WithCommandFilter allows filtering of commands when tracing to omit commands that may have sensitive details like
 // passwords.
+// Deprecated: use WithCommandFilterCtx instead to have access to the context in the filter.
+// TODO: Deprecation timeline?
 func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
-	return tracingOption(func(conf *config) {
-		conf.filterProcess = filter
+	return WithCommandFilterCtx(func(ctx context.Context, cmd redis.Cmder) bool {
+		return filter(cmd)
 	})
 }
 
 // WithCommandsFilter allows filtering of pipeline commands
 // when tracing to omit commands that may have sensitive details like
 // passwords in a pipeline.
+// Deprecated: use WithCommandsFilterCtx instead to have access to the context in the filter.
+// TODO: Deprecation timeline?
 func WithCommandsFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
+	return WithCommandsFilterCtx(func(ctx context.Context, cmds []redis.Cmder) bool {
+		return filter(cmds)
+	})
+}
+
+// WithDialFilter enables or disables filtering of dial commands.
+// Deprecated: use WithDialFilterCtx instead to have access to the context in the filter.
+// TODO: Deprecation timeline?
+func WithDialFilter(on bool) TracingOption {
+	return WithDialFilterCtx(func(ctx context.Context, network, addr string) bool {
+		return on
+	})
+}
+
+// WithDialFilterCtx enables or disables filtering of dial commands with access to context, network and address.
+func WithDialFilterCtx(filter func(ctx context.Context, network, addr string) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterDial = filter
+	})
+}
+
+// WithCommandFilterCtx allows filtering of commands with access to the context and cmd.
+func WithCommandFilterCtx(filter func(ctx context.Context, cmd redis.Cmder) bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.filterProcess = filter
+	})
+}
+
+// WithCommandsFilterCtx allows filtering of pipeline commands with access to the context and cmds.
+func WithCommandsFilterCtx(filter func(ctx context.Context, cmds []redis.Cmder) bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.filterProcessPipeline = filter
 	})
 }
 
-// WithDialFilter enables or disables filtering of dial commands.
-func WithDialFilter(on bool) TracingOption {
-	return tracingOption(func(conf *config) {
-		conf.filterDial = on
-	})
-}
-
 // DefaultCommandFilter filters out AUTH commands from tracing.
+// Intentionally skipped context as context is not needed for this default filter.
 func DefaultCommandFilter(cmd redis.Cmder) bool {
 	if strings.ToLower(cmd.Name()) == "auth" {
 		return true
@@ -195,6 +226,7 @@ func DefaultCommandFilter(cmd redis.Cmder) bool {
 
 // BasicCommandFilter filters out AUTH commands from tracing.
 // Deprecated: use DefaultCommandFilter instead.
+// TODO: Deprecation timeline?
 func BasicCommandFilter(cmd redis.Cmder) bool {
 	return DefaultCommandFilter(cmd)
 }
