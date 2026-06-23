@@ -21,7 +21,7 @@ func BenchmarkFutureFace(b *testing.B) {
 		ctx := context.Background()
 		c := redis.NewClient(&redis.Options{Addr: ":6379", PoolSize: 250})
 		defer c.Close()
-		fap := c.FutureAutoPipeline()
+		fap := c.AutoPipeline()
 		defer fap.Close()
 
 		const duration = 3 * time.Second

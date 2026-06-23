@@ -20,7 +20,7 @@ func BenchmarkAutoPipelineSubmit(b *testing.B) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{Addr: ":6379", PoolSize: 250})
 	defer client.Close()
-	ap := client.FutureAutoPipeline()
+	ap := client.AutoPipeline()
 	defer ap.Close()
 
 	const (
