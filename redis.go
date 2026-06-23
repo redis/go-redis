@@ -1432,6 +1432,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 type Client struct {
 	*baseClient
 	cmdable
+	autopipelinerMu    *sync.Mutex    // guards both autopipeliner fields against concurrent first-call creation
+	autopipeliner      *AutoPipeliner // blocking face (Client.AutoPipeline)
+	asyncAutopipeliner *AutoPipeliner // deferred face (Client.AsyncAutoPipeline)
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -1536,6 +1539,11 @@ func NewClient(opt *Options) *Client {
 }
 
 func (c *Client) init() {
+	// Fresh per-Client guard and no inherited autopipeliner: a WithTimeout clone
+	// (clone := *c) must not share the parent's mutex or AutoPipeliner instance.
+	c.autopipelinerMu = &sync.Mutex{}
+	c.autopipeliner = nil
+	c.asyncAutopipeliner = nil
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
@@ -1550,6 +1558,29 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
 	return &clone
+}
+
+// Close closes the client, stopping the shared AutoPipeliner (if one was
+// created via AutoPipeline()) before releasing the underlying resources, so its
+// background flusher goroutines don't outlive the client. AutoPipeliner.Close is
+// idempotent and safe to call here even if AutoPipeline() was never used.
+func (c *Client) Close() error {
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.baseClient.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *Client) Conn() *Conn {
@@ -1640,6 +1671,58 @@ func (c *Client) Pipeline() Pipeliner {
 	pipe.init()
 	return &pipe
 }
+
+// AutoPipeline returns the blocking autopipeliner for this client: a drop-in
+// replacement for the normal command surface where each command call (ap.Set,
+// ap.Get, ...) blocks until executed, exactly like a plain client — but the
+// engine batches concurrent callers' commands into pipelines, so throughput is
+// far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
+//
+// Pass an optional config to override the default (DefaultBlockingAutoPipelineConfig:
+// parallel batches for throughput). The instance is cached and shared; the first
+// call's config wins and later calls return the same instance until it is closed.
+// It must be closed (or close the client) to release its goroutines.
+func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner
+	}
+	cfg := DefaultBlockingAutoPipelineConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	c.autopipeliner = newAutoPipeliner(c, cfg, true)
+	return c.autopipeliner
+}
+
+// AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
+// return immediately and the result accessors (Val/Result/Err) block until the
+// command has executed. Submit a window of commands, then read their results, to
+// keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
+//
+// The default config is ordered (DefaultAutoPipelineConfig, MaxConcurrentBatches:
+// 1) so a single goroutine's deferred commands execute in submit order; pass a
+// config to override (and, for parallel batches, set Unordered). The instance is
+// cached and shared; the first call's config wins. Close it (or the client) to
+// release its goroutines.
+func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
+		return c.asyncAutopipeliner
+	}
+	cfg := c.opt.AutoPipelineConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	if cfg == nil {
+		cfg = DefaultAutoPipelineConfig()
+	}
+	c.asyncAutopipeliner = newAutoPipeliner(c, cfg, false)
+	return c.asyncAutopipeliner
+}
+
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().Pipelined(ctx, fn)
