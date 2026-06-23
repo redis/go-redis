@@ -1650,7 +1650,9 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 					return errClusterNoNodes
 				}
 				// For read-only keyless commands, pick from all nodes (masters + slaves)
-				allNodes := append(state.Masters, state.Slaves...)
+				allNodes := make([]*clusterNode, 0, len(state.Masters)+len(state.Slaves))
+				allNodes = append(allNodes, state.Masters...)
+				allNodes = append(allNodes, state.Slaves...)
 				idx := c.opt.ShardPicker.Next(len(allNodes))
 				node = allNodes[idx]
 			} else {
