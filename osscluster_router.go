@@ -496,12 +496,14 @@ func (c *ClusterClient) pickArbitraryNode(ctx context.Context) *clusterNode {
 		return nil
 	}
 
-	allNodes := make([]*clusterNode, 0, len(state.Masters)+len(state.Slaves))
-	allNodes = append(allNodes, state.Masters...)
-	allNodes = append(allNodes, state.Slaves...)
-
-	idx := c.opt.ShardPicker.Next(len(allNodes))
-	return allNodes[idx]
+	// Index into masters+slaves without materializing a combined slice.
+	// append(state.Masters, state.Slaves...) writes into the shared snapshot's
+	// spare capacity and races other routers, so pick directly.
+	idx := c.opt.ShardPicker.Next(len(state.Masters) + len(state.Slaves))
+	if idx < len(state.Masters) {
+		return state.Masters[idx]
+	}
+	return state.Slaves[idx-len(state.Masters)]
 }
 
 // hasKeys checks if a command operates on keys
