@@ -76,39 +76,48 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 		defer c.Close()
 		i := 0
 		drive(b, func(id int) int {
-			i++
-			if err := c.Set(ctx, fmt.Sprintf("n:%d", id), i, 0).Err(); err != nil {
-				b.Error(err)
+			const run = 50 // amortize the harness per-step cost; each Set still blocks
+			for k := 0; k < run; k++ {
+				i++
+				if err := c.Set(ctx, fmt.Sprintf("n:%d", id), i, 0).Err(); err != nil {
+					b.Error(err)
+				}
 			}
-			return 1 // one executed command (result/err read)
+			return run
 		})
 	})
 
 	b.Run("AutoPipelineBlocking", func(b *testing.B) {
-		c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: apConfig()})
+		c := redis.NewClient(&redis.Options{Addr: ":6379"})
 		defer c.Close()
-		ap := c.AutoPipeline()
+		ap := c.AutoPipeline() // blocking face: ap.Set blocks until executed (parallel-batch default)
 		defer ap.Close()
 		i := 0
 		drive(b, func(id int) int {
-			i++
-			// Result() blocks until executed — same call shape as a normal client.
-			if _, err := ap.Set(ctx, fmt.Sprintf("b:%d", id), i, 0).Result(); err != nil {
-				b.Error(err)
+			// Each command call blocks until executed (drop-in shape, no .Result()
+			// needed). We issue a small run per drive() step so the harness's
+			// per-step atomic/closure cost is amortized and doesn't understate the
+			// command rate — every command here still fully executes and is counted.
+			const run = 50
+			for k := 0; k < run; k++ {
+				i++
+				if err := ap.Set(ctx, fmt.Sprintf("b:%d", id), i, 0).Err(); err != nil {
+					b.Error(err)
+				}
 			}
-			return 1
+			return run
 		})
 	})
 
 	b.Run("AutoPipelineWindowed", func(b *testing.B) {
-		c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: apConfig()})
+		c := redis.NewClient(&redis.Options{Addr: ":6379"})
 		defer c.Close()
-		ap := c.AutoPipeline()
+		ap := c.AsyncAutoPipeline(apConfig()) // deferred face: submit a window, read later
 		defer ap.Close()
 		drive(b, func(id int) int {
 			cmds := make([]*redis.StatusCmd, 0, window)
 			for j := 0; j < window; j++ {
-				cmds = append(cmds, ap.Set(ctx, fmt.Sprintf("w:%d", id), j, 0))
+				cmds = append(cmds, ap.Set(ctx, fmt.Sprintf("w:%d", id), j, 0)) // does not block
 			}
 			n := 0
 			for _, cmd := range cmds {

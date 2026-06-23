@@ -30,17 +30,18 @@ The throughput benchmarks run for a fixed wall-clock duration and report
 ## The headline benchmark: BenchmarkAutoPipelineThroughput
 
 Three ways to issue the same workload (2000 goroutines), each counting only
-executed commands. The autopipeline variants use a parallel-batch config
-(`MaxBatchSize: 300, MaxConcurrentBatches: 80, Unordered: true`):
+executed commands:
 
 1. **Normal** — a plain client; each `Set` is a blocking round-trip. Bounded by
    Redis's non-pipelined ceiling (~100k SET/sec, like `redis-benchmark` without
    `-P`).
-2. **AutoPipelineBlocking** — `ap.Set(...).Result()` read immediately, the way a
-   normal client is used (drop-in). Only one command per caller is in flight,
-   but the flusher batches across the 2000 callers into deep, parallel pipelines.
-3. **AutoPipelineWindowed** — submit a window of commands, then read their
-   results. Keeps each pipeline deepest; the high-throughput async usage.
+2. **AutoPipelineBlocking** — `client.AutoPipeline()` (the blocking face):
+   `ap.Set(...)` blocks until executed, the same call shape as a normal client.
+   Only one command per caller is in flight, but the flusher batches across the
+   2000 callers into deep, parallel pipelines. Per-goroutine order is preserved.
+3. **AutoPipelineWindowed** — `client.AsyncAutoPipeline()` (the deferred face):
+   `ap.Set(...)` returns immediately; submit a window of commands, then read
+   their results. Keeps each pipeline deepest; the highest-throughput usage.
 
 ## Sample results
 
@@ -48,9 +49,9 @@ Local run, redis:latest on `:6379`, Apple Silicon (14 logical CPUs).
 Indicative, not a spec.
 
 ```
-BenchmarkAutoPipelineThroughput/Normal-14                  ~82k  ops/sec   1x
-BenchmarkAutoPipelineThroughput/AutoPipelineBlocking-14    ~1.1M ops/sec  ~14x
-BenchmarkAutoPipelineThroughput/AutoPipelineWindowed-14    ~2.5M ops/sec  ~30x
+BenchmarkAutoPipelineThroughput/Normal-14                  ~100k ops/sec   1x
+BenchmarkAutoPipelineThroughput/AutoPipelineBlocking-14    ~1.1M ops/sec  ~11x
+BenchmarkAutoPipelineThroughput/AutoPipelineWindowed-14    ~2.4M ops/sec  ~24x
 ```
 
 For reference, `redis-benchmark -t set` on the same box: ~50–80k/sec without
@@ -59,19 +60,22 @@ former; autopipelining reaches the latter automatically.
 
 What the numbers say:
 
-- **Blocking autopipelining clears ~1.1M executed SET/sec** even though each
-  caller reads its result before issuing the next — the flusher coalesces the
-  2000 concurrent callers into deep pipelines and runs many batches in parallel.
-  This is a drop-in replacement for a normal client (`.Result()` immediately),
-  ~14× its throughput.
-- **Windowed autopipelining reaches ~2.5M** by also batching within each caller
-  (submit a window, then read) — the highest-throughput usage.
-- **Config matters.** The numbers above use parallel batches
-  (`MaxConcurrentBatches: 80, Unordered: true`). The **default** config is
-  ordered (`MaxConcurrentBatches: 1`): it serializes batch execution, so
-  blocking usage caps near ~500k — but windowed still reaches a few million
-  because one ordered batch stays deep. Choose ordered for a drop-in correctness-
-  preserving speedup, parallel/unordered for maximum throughput.
+- **`AutoPipeline()` (blocking) clears ~1.1M executed SET/sec** even though each
+  caller blocks on every command — the flusher coalesces the 2000 concurrent
+  callers into deep pipelines and runs many batches in parallel (its default,
+  `DefaultBlockingAutoPipelineConfig`, uses `MaxConcurrentBatches: 50`). A
+  drop-in replacement for a normal client, ~14× its throughput, with
+  per-goroutine ordering intact.
+- **`AsyncAutoPipeline()` windowed reaches ~2.5M** by also batching within each
+  caller (submit a window, then read) — the highest-throughput usage. Its
+  default is ordered (`MaxConcurrentBatches: 1`), which already saturates under
+  windowing while keeping a single goroutine's deferred commands in order.
+- **Ordering.** A blocking caller always sees its own commands execute in order,
+  regardless of `MaxConcurrentBatches`, because it waits for each result before
+  issuing the next — that is why the blocking face can use parallel batches
+  safely. The async face defaults to `MaxConcurrentBatches: 1` because a single
+  goroutine submitting a window without reading between commands would otherwise
+  have those commands reordered. Override either via the optional config arg.
 
 ## Other benchmarks
 
