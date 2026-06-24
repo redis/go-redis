@@ -2187,7 +2187,6 @@ func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeline
 	return c.asyncAutopipeliner, nil
 }
 
-
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().Pipelined(ctx, fn)
 }
