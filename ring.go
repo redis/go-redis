@@ -369,9 +369,10 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 		return
 	}
 	existing := c.shards
+	onNewNode := c.onNewNode
 	c.mu.RUnlock()
 
-	shards, created, unused := c.newRingShards(addrs, existing)
+	shards, created, unused := c.newRingShards(addrs, existing, onNewNode)
 
 	c.mu.Lock()
 	if c.closed {
@@ -387,7 +388,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 }
 
 func (c *ringSharding) newRingShards(
-	addrs map[string]string, existing *ringShards,
+	addrs map[string]string, existing *ringShards, onNewNode []func(rdb *Client),
 ) (shards *ringShards, created, unused map[string]*ringShard) {
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
 	created = make(map[string]*ringShard) // indexed by addr
@@ -408,7 +409,7 @@ func (c *ringSharding) newRingShards(
 			shards.m[name] = shard
 			created[addr] = shard
 
-			for _, fn := range c.onNewNode {
+			for _, fn := range onNewNode {
 				fn(shard.Client)
 			}
 		}
