@@ -42,7 +42,10 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 				})
 				defer c.Close()
 				c.FlushDB(ctx)
-				ap := c.AutoPipeline()
+				ap, err := c.AutoPipeline()
+				if err != nil {
+					b.Fatal(err)
+				}
 				defer ap.Close()
 
 				payload := make([]byte, sz)
