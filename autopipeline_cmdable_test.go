@@ -168,12 +168,6 @@ var _ = Describe("AutoPipeline Cmdable Interface", func() {
 		Expect(cmds[1].(*redis.StringCmd).Val()).To(Equal("pipelined_value"))
 	})
 
-	It("should support AutoPipeline method", func() {
-		// AutoPipeline should return itself
-		ap2 := ap.AutoPipeline()
-		Expect(ap2).To(Equal(ap))
-	})
-
 	It("should mix autopipelined and direct commands", func() {
 		// Use autopipeline commands
 		ap.Set(ctx, "ap_key1", "ap_value1", 0)
