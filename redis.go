@@ -1168,7 +1168,7 @@ func (c *baseClient) Close() error {
 	}
 
 	// Unregister pools from OTel before closing them
-	otel.UnregisterPools(c.connPool, c.pubSubPool)
+	otel.UnregisterPools(c.connPool, c.pubSubPool, c.pipelinePool)
 
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
@@ -1516,7 +1516,7 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.connPool, c.pubSubPool, opt.Addr)
+	otel.RegisterPools(c.connPool, c.pubSubPool, c.pipelinePool, opt.Addr)
 
 	return &c
 }
