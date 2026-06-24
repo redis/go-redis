@@ -1682,18 +1682,25 @@ func (c *Client) Pipeline() Pipeliner {
 // parallel batches for throughput). The instance is cached and shared; the first
 // call's config wins and later calls return the same instance until it is closed.
 // It must be closed (or close the client) to release its goroutines.
-func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
 	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
-		return c.autopipeliner
+		return c.autopipeliner, nil
 	}
 	cfg := DefaultBlockingAutoPipelineConfig()
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
 	}
-	c.autopipeliner = newAutoPipeliner(c, cfg, true)
-	return c.autopipeliner
+	ap, err := newAutoPipeliner(c, cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	c.autopipeliner = ap
+	return c.autopipeliner, nil
 }
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
@@ -1706,11 +1713,14 @@ func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
 // config to override (and, for parallel batches, set Unordered). The instance is
 // cached and shared; the first call's config wins. Close it (or the client) to
 // release its goroutines.
-func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
 	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
-		return c.asyncAutopipeliner
+		return c.asyncAutopipeliner, nil
 	}
 	cfg := c.opt.AutoPipelineConfig
 	if len(config) > 0 && config[0] != nil {
@@ -1719,8 +1729,12 @@ func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner
 	if cfg == nil {
 		cfg = DefaultAutoPipelineConfig()
 	}
-	c.asyncAutopipeliner = newAutoPipeliner(c, cfg, false)
-	return c.asyncAutopipeliner
+	ap, err := newAutoPipeliner(c, cfg, false)
+	if err != nil {
+		return nil, err
+	}
+	c.asyncAutopipeliner = ap
+	return c.asyncAutopipeliner, nil
 }
 
 
