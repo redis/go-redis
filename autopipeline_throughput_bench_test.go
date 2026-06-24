@@ -90,7 +90,10 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 	b.Run("AutoPipelineBlocking", func(b *testing.B) {
 		c := redis.NewClient(&redis.Options{Addr: ":6379"})
 		defer c.Close()
-		ap := c.AutoPipeline() // blocking face: ap.Set blocks until executed (parallel-batch default)
+		ap, err := c.AutoPipeline() // blocking face: ap.Set blocks until executed (parallel-batch default)
+		if err != nil {
+			b.Fatal(err)
+		}
 		defer ap.Close()
 		i := 0
 		drive(b, func(id int) int {
@@ -112,7 +115,10 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 	b.Run("AutoPipelineWindowed", func(b *testing.B) {
 		c := redis.NewClient(&redis.Options{Addr: ":6379"})
 		defer c.Close()
-		ap := c.AsyncAutoPipeline(apConfig()) // deferred face: submit a window, read later
+		ap, err := c.AsyncAutoPipeline(apConfig()) // deferred face: submit a window, read later
+		if err != nil {
+			b.Fatal(err)
+		}
 		defer ap.Close()
 		drive(b, func(id int) int {
 			cmds := make([]*redis.StatusCmd, 0, window)
@@ -142,7 +148,10 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 		if err := c.Set(ctx, "bench:get", "v", 0).Err(); err != nil {
 			b.Fatal(err)
 		}
-		ap := c.AsyncAutoPipeline(apConfig())
+		ap, err := c.AsyncAutoPipeline(apConfig())
+		if err != nil {
+			b.Fatal(err)
+		}
 		defer ap.Close()
 		drive(b, func(id int) int {
 			cmds := make([]*redis.StringCmd, 0, window)

@@ -35,7 +35,10 @@ func BenchmarkClusterAutoPipelineThroughput(b *testing.B) {
 	b.Run("Blocking", func(b *testing.B) {
 		c := newClusterBenchClient(b)
 		defer c.Close()
-		ap := c.AutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 512, MaxConcurrentBatches: 200, Unordered: true})
+		ap, err := c.AutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 512, MaxConcurrentBatches: 200, Unordered: true})
+		if err != nil {
+			b.Fatal(err)
+		}
 		defer ap.Close()
 		const G = 16000
 		var count int64
@@ -66,7 +69,10 @@ func BenchmarkClusterAutoPipelineThroughput(b *testing.B) {
 	b.Run("Windowed", func(b *testing.B) {
 		c := newClusterBenchClient(b)
 		defer c.Close()
-		ap := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300, MaxConcurrentBatches: 96, Unordered: true})
+		ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300, MaxConcurrentBatches: 96, Unordered: true})
+		if err != nil {
+			b.Fatal(err)
+		}
 		defer ap.Close()
 		const G, W = 1000, 300
 		var count int64

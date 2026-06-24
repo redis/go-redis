@@ -76,7 +76,10 @@ func BenchmarkAutoPipeline(b *testing.B) {
 	})
 	defer client.Close()
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		b.Fatal(err)
+	}
 	defer ap.Close()
 
 	b.ResetTimer()
@@ -126,7 +129,10 @@ func BenchmarkAutoPipelineVsManual(b *testing.B) {
 
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			for i := 0; i < numCommands; i++ {
 				key := fmt.Sprintf("key%d", i)
 				_ = ap.Do(ctx, "SET", key, i).Err()
@@ -161,7 +167,10 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
@@ -208,7 +217,10 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
@@ -246,7 +258,10 @@ func BenchmarkAutoPipelineMaxFlushDelays(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
@@ -284,7 +299,10 @@ func BenchmarkMaxFlushDelay(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
@@ -327,7 +345,10 @@ func BenchmarkBufferSizes(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
@@ -368,7 +389,10 @@ func BenchmarkAutoPipelineMaxBatchSizes(b *testing.B) {
 			})
 			defer client.Close()
 
-			ap := client.AutoPipeline()
+			ap, err := client.AutoPipeline()
+			if err != nil {
+				b.Fatal(err)
+			}
 			defer ap.Close()
 
 			b.ResetTimer()
