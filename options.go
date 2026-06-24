@@ -197,19 +197,25 @@ type Options struct {
 	// If not set (0), pipeline operations will use the regular connection pool with
 	// ReadBufferSize buffers.
 	//
-	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	// Recommended: 64–128 KiB for high-throughput pipelining. The only benefit is
+	// making the buffer large enough to hold a typical batch's wire bytes, so the
+	// batch flushes in one syscall instead of overflowing mid-write. Size it to
+	// roughly MaxBatchSize × average-command-bytes, rounded up. Benchmarks show
+	// throughput climbs from the 32 KiB default up to ~64 KiB and then plateaus;
+	// going beyond ~128 KiB gives no further gain and very large buffers (≥512 KiB)
+	// can regress throughput and waste memory. Bigger is not better.
 	//
 	// Example:
 	//   client := redis.NewClient(&redis.Options{
 	//       Addr:                    "localhost:6379",
-	//       ReadBufferSize:          64 * 1024,   // 64 KiB for regular commands
-	//       PipelineReadBufferSize:  512 * 1024,  // 512 KiB for pipelining
-	//       PipelineWriteBufferSize: 512 * 1024,
+	//       ReadBufferSize:          32 * 1024,   // 32 KiB for regular commands
+	//       PipelineReadBufferSize:  128 * 1024,  // 128 KiB for pipelining
+	//       PipelineWriteBufferSize: 128 * 1024,
 	//   })
 	//
 	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
-	//   - Without pipeline pool: 100 conns × 1 MiB = 100 MB (if all use 512 KiB buffers)
-	//   - With pipeline pool: (100 × 128 KiB) + (10 × 1 MiB) = 22.8 MB (77% savings)
+	//   - Without pipeline pool: 100 conns × 128 KiB = 12.8 MB (if all use 128 KiB buffers)
+	//   - With pipeline pool: (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
 	//
 	// default: 0 (use ReadBufferSize)
 	PipelineReadBufferSize int
@@ -224,7 +230,10 @@ type Options struct {
 	// If not set (0), pipeline operations will use the regular connection pool with
 	// WriteBufferSize buffers.
 	//
-	// Recommended: 512 KiB for high-throughput pipelining workloads.
+	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
+	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
+	// gains nothing beyond ~128 KiB; very large buffers (≥512 KiB) can regress it.
+	// See PipelineReadBufferSize for the full rationale.
 	//
 	// default: 0 (use WriteBufferSize)
 	PipelineWriteBufferSize int
