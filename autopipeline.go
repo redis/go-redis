@@ -272,12 +272,15 @@ type apShard struct {
 // client (*Client or *ClusterClient): command methods return immediately and
 // the result accessors block. For the blocking drop-in form, use
 // newAutoPipeliner with blocking=true (exposed via Client.AutoPipeline).
-func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) *AutoPipeliner {
+//
+// It returns an error if the config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); a nil config uses defaults.
+func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return newAutoPipeliner(pipeliner, config, false)
 }
 
 // newAutoPipeliner builds an autopipeliner in either blocking or deferred mode.
-func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, blocking bool) *AutoPipeliner {
+func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, blocking bool) (*AutoPipeliner, error) {
 	if config == nil {
 		config = DefaultAutoPipelineConfig()
 	} else {
@@ -300,10 +303,10 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 	}
 
 	// Reject configurations that silently drop ordering. This is a deterministic
-	// misconfiguration, so panic (matching NewClient on bad Options) — call
-	// AutoPipelineConfig.Validate beforehand to handle it as an error.
+	// misconfiguration; surface it as an error so the post-init AutoPipeline /
+	// AsyncAutoPipeline calls never panic on a bad config.
 	if err := config.Validate(); err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -351,7 +354,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 		go s.flusher()
 	}
 
-	return ap
+	return ap, nil
 }
 
 // Do queues a command for autopipelined execution and returns immediately.
