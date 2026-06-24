@@ -635,7 +635,7 @@ func TestRingShardsCleanup(t *testing.T) {
 
 		var (
 			ring        *Ring
-			shouldClose int32
+			shouldClose atomic.Int32
 		)
 
 		ring = NewRing(&RingOptions{
@@ -643,7 +643,7 @@ func TestRingShardsCleanup(t *testing.T) {
 				ringShard1Name: ringShard1Addr,
 			},
 			NewClient: func(opt *Options) *Client {
-				if atomic.LoadInt32(&shouldClose) != 0 {
+				if shouldClose.Load() != 0 {
 					ring.Close()
 				}
 				createCounter.increment(opt.Addr)
@@ -658,7 +658,7 @@ func TestRingShardsCleanup(t *testing.T) {
 		createCounter.expect(map[string]int{ringShard1Addr: 1})
 		closeCounter.expect(map[string]int{})
 
-		atomic.StoreInt32(&shouldClose, 1)
+		shouldClose.Store(1)
 
 		ring.SetAddrs(map[string]string{
 			ringShard2Name: ringShard2Addr,
@@ -836,10 +836,10 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	const id = "same-id"
 	const iterations = 10_000
 
-	var lastSeen int32
+	var lastSeen atomic.Int32
 	for i := 0; i < iterations; i++ {
 		i := int32(i)
-		h.register(id, func() error { atomic.StoreInt32(&lastSeen, i); return nil })
+		h.register(id, func() error { lastSeen.Store(i); return nil })
 	}
 
 	if got := len(h.order); got != 1 {
@@ -852,7 +852,7 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got := atomic.LoadInt32(&lastSeen); got != iterations-1 {
+	if got := lastSeen.Load(); got != iterations-1 {
 		t.Fatalf("last-registered callback not invoked: lastSeen = %d, want %d", got, iterations-1)
 	}
 }
@@ -862,17 +862,17 @@ func TestOnCloseHooks_RegisterSameIDReplaces(t *testing.T) {
 // previously registered ids.
 func TestOnCloseHooks_DistinctIDsCoexist(t *testing.T) {
 	h := &onCloseHooks{}
-	var aCount, bCount int32
+	var aCount, bCount atomic.Int32
 
-	h.register("a", func() error { atomic.AddInt32(&aCount, 1); return nil })
-	h.register("b", func() error { atomic.AddInt32(&bCount, 1); return nil })
+	h.register("a", func() error { aCount.Add(1); return nil })
+	h.register("b", func() error { bCount.Add(1); return nil })
 	// Re-registering "a" must not drop "b".
-	h.register("a", func() error { atomic.AddInt32(&aCount, 1); return nil })
+	h.register("a", func() error { aCount.Add(1); return nil })
 
 	if err := h.run(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if a, b := atomic.LoadInt32(&aCount), atomic.LoadInt32(&bCount); a != 1 || b != 1 {
+	if a, b := aCount.Load(), bCount.Load(); a != 1 || b != 1 {
 		t.Fatalf("call counts a=%d b=%d, want a=1 b=1", a, b)
 	}
 }
@@ -973,12 +973,12 @@ func TestOnCloseHooks_ConcurrentRegisterSameID(t *testing.T) {
 type entraidLikeProvider struct {
 	mu         sync.Mutex
 	listeners  []auth.CredentialsListener
-	subscribeN int32
-	unsubCalls int32
+	subscribeN atomic.Int32
+	unsubCalls atomic.Int32
 }
 
 func (p *entraidLikeProvider) Subscribe(listener auth.CredentialsListener) (auth.Credentials, auth.UnsubscribeFunc, error) {
-	atomic.AddInt32(&p.subscribeN, 1)
+	p.subscribeN.Add(1)
 
 	p.mu.Lock()
 	already := false
@@ -994,7 +994,7 @@ func (p *entraidLikeProvider) Subscribe(listener auth.CredentialsListener) (auth
 	p.mu.Unlock()
 
 	unsub := func() error {
-		atomic.AddInt32(&p.unsubCalls, 1)
+		p.unsubCalls.Add(1)
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		for i, l := range p.listeners {
@@ -1058,7 +1058,7 @@ func TestInitConn_EntraidLike_NoLeakAcrossReinits(t *testing.T) {
 	if got := provider.listenerCount(); got != 1 {
 		t.Fatalf("after %d Subscribes with same listener, listener count = %d, want 1", reinits, got)
 	}
-	if got := atomic.LoadInt32(&provider.subscribeN); got != int32(reinits) {
+	if got := provider.subscribeN.Load(); got != int32(reinits) {
 		t.Fatalf("Subscribe call count = %d, want %d", got, reinits)
 	}
 

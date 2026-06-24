@@ -217,7 +217,7 @@ var _ = Describe("races", func() {
 	It("should BLPop", func() {
 		C := 5
 		N := 5
-		var received uint32
+		var received atomic.Uint32
 
 		wg := performAsync(C, func(id int) {
 			for {
@@ -229,7 +229,7 @@ var _ = Describe("races", func() {
 					Expect(err).NotTo(HaveOccurred())
 				}
 				Expect(v).To(Equal([]string{"list", "hello"}))
-				atomic.AddUint32(&received, 1)
+				received.Add(1)
 			}
 		})
 
@@ -241,7 +241,7 @@ var _ = Describe("races", func() {
 		})
 
 		wg.Wait()
-		Expect(atomic.LoadUint32(&received)).To(Equal(uint32(C * N)))
+		Expect(received.Load()).To(Equal(uint32(C * N)))
 	})
 })
 

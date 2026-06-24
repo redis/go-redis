@@ -262,7 +262,7 @@ func (opt *RingOptions) clientOptions() *Options {
 
 type ringShard struct {
 	Client *Client
-	down   int32
+	down   atomic.Int32
 	addr   string
 }
 
@@ -288,7 +288,7 @@ func (shard *ringShard) String() string {
 
 func (shard *ringShard) IsDown() bool {
 	const threshold = 3
-	return atomic.LoadInt32(&shard.down) >= threshold
+	return shard.down.Load() >= threshold
 }
 
 func (shard *ringShard) IsUp() bool {
@@ -299,7 +299,7 @@ func (shard *ringShard) IsUp() bool {
 func (shard *ringShard) Vote(up bool) bool {
 	if up {
 		changed := shard.IsDown()
-		atomic.StoreInt32(&shard.down, 0)
+		shard.down.Store(0)
 		return changed
 	}
 
@@ -307,7 +307,7 @@ func (shard *ringShard) Vote(up bool) bool {
 		return false
 	}
 
-	atomic.AddInt32(&shard.down, 1)
+	shard.down.Add(1)
 	return shard.IsDown()
 }
 
