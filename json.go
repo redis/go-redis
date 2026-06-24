@@ -126,6 +126,7 @@ func (cmd *JSONCmd) Result() (string, error) {
 
 // Expanded returns the result of the JSON.GET command as unmarshalled JSON.
 func (cmd *JSONCmd) Expanded() (interface{}, error) {
+	cmd.await()
 	if len(cmd.val) != 0 && cmd.expanded == nil {
 		err := json.Unmarshal([]byte(cmd.val), &cmd.expanded)
 		if err != nil {
@@ -138,15 +139,18 @@ func (cmd *JSONCmd) Expanded() (interface{}, error) {
 
 func (cmd *JSONCmd) readReply(rd *proto.Reader) error {
 	// nil response from JSON.(M)GET (cmd.baseCmd.err will be "redis: nil")
-	// This happens when the key doesn't exist
-	if cmd.baseCmd.Err() == Nil {
+	// This happens when the key doesn't exist.
+	// Use rawErr() (not Err()): readReply runs inside the batch's Exec, before
+	// the autopipeline batch's done channel is closed, so Err()->await() would
+	// deadlock on the very Exec that is calling readReply.
+	if cmd.baseCmd.rawErr() == Nil {
 		cmd.val = ""
 		return Nil
 	}
 
 	// Handle other base command errors
-	if cmd.baseCmd.Err() != nil {
-		return cmd.baseCmd.Err()
+	if cmd.baseCmd.rawErr() != nil {
+		return cmd.baseCmd.rawErr()
 	}
 
 	if readType, err := rd.PeekReplyType(); err != nil {
@@ -222,15 +226,19 @@ func (cmd *JSONSliceCmd) SetVal(val []interface{}) {
 }
 
 func (cmd *JSONSliceCmd) Val() []interface{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *JSONSliceCmd) Result() ([]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
-	if cmd.baseCmd.Err() == Nil {
+	// rawErr(), not Err(): readReply runs inside Exec before the batch's done
+	// channel closes, so Err()->await() would deadlock (see JSONCmd.readReply).
+	if cmd.baseCmd.rawErr() == Nil {
 		cmd.val = nil
 		return Nil
 	}
