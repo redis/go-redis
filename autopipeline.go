@@ -215,9 +215,13 @@ func putQueueSlice(slice []Cmder) {
 // This provides significant performance improvements for workloads with many
 // concurrent small operations, as it reduces the number of network round-trips.
 //
-// AutoPipeliner implements the Cmdable interface, so you can use it like a regular client:
+// AutoPipeliner implements the Cmdable interface, so you can use it like a regular client.
+// AutoPipeline / AsyncAutoPipeline return an error for an invalid config, so check it once:
 //
-//	ap := client.AutoPipeline()
+//	ap, err := client.AutoPipeline()
+//	if err != nil {
+//		return err
+//	}
 //	ap.Set(ctx, "key", "value", 0)
 //	ap.Get(ctx, "key")
 //	ap.Close()
