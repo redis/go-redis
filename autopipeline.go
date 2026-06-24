@@ -873,12 +873,6 @@ func (ap *AutoPipeliner) Pipeline() Pipeliner {
 	return ap.pipeliner.Pipeline()
 }
 
-// AutoPipeline returns itself.
-// This satisfies the Cmdable interface.
-func (ap *AutoPipeliner) AutoPipeline() *AutoPipeliner {
-	return ap
-}
-
 // Pipelined executes a function in a pipeline context.
 // This is a convenience method that creates a pipeline, executes the function,
 // and returns the results.
