@@ -72,6 +72,16 @@ type AutoPipelineConfig struct {
 // command being flushed on its own.
 const defaultAccumulateWindow = 200 * time.Microsecond
 
+// autoPipelinePermitBackstop bounds how long a flush waits for a concurrency
+// permit when all are busy. It is only a safety net against a wedged semaphore:
+// every permit holder releases it (via defer) and each batch Exec is itself
+// bounded by the connection's read/write timeout, so in normal operation a
+// permit frees long before this. It is set well above the default ReadTimeout
+// and a maintnotifications relaxed window so a legitimately slow in-flight batch
+// never makes waiters fail spuriously. The wait also ends immediately when
+// ap.ctx is cancelled by Close.
+const autoPipelinePermitBackstop = 30 * time.Second
+
 // numAutoPipelineShards chooses how many independent queue+flusher shards to
 // run. More shards reduce enqueue mutex contention and let several batches be
 // assembled in parallel, but there is no point exceeding the concurrent-batch
@@ -681,13 +691,24 @@ func (s *apShard) flushBatchSlice() {
 	s.queueLen.Store(0)
 	s.mu.Unlock()
 
-	// Acquire semaphore (limit concurrent batches)
+	// Acquire a concurrency permit. The wait is bounded by ap.ctx (cancelled on
+	// Close) with a generous backstop deadline against a wedged semaphore. The
+	// backstop is deliberately well above both the default ReadTimeout and a
+	// maintnotifications relaxed window, so a legitimately slow batch (e.g. during
+	// a failover) holding a permit does not cause waiters to spuriously fail.
 	if !s.sem.TryAcquire() {
-		err := s.sem.Acquire(ap.ctx, 5*time.Second, context.DeadlineExceeded)
+		err := s.sem.Acquire(ap.ctx, autoPipelinePermitBackstop, context.DeadlineExceeded)
 		if err != nil {
-			// Context cancelled: error all commands and signal completion.
+			// Distinguish a real shutdown (ap.ctx cancelled) from the backstop
+			// firing: ErrClosed only when the client/pipeliner is actually closing;
+			// otherwise propagate the timeout as-is so callers see a deadline, not
+			// a misleading "closed".
+			batchErr := err
+			if ap.ctx.Err() != nil {
+				batchErr = ErrClosed
+			}
 			for _, qc := range queuedCmds {
-				qc.SetErr(ErrClosed)
+				qc.SetErr(batchErr)
 			}
 			close(batch.done)
 			putQueueSlice(queuedCmds)
