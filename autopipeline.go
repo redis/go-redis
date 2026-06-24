@@ -765,9 +765,16 @@ func (s *apShard) flushBatchSliceShutdown() {
 			defer putQueueSlice(queuedCmds)
 			defer close(batch.done)
 
-			// Use a reasonable timeout - if Redis is unresponsive, fail fast.
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+			// ap.ctx is already cancelled here (Close cancels it before draining),
+			// so use a fresh background context with no artificial deadline. The
+			// wire timeout is then governed by the connection's ReadTimeout /
+			// WriteTimeout — exactly like the normal flush path and a plain client
+			// Exec. Crucially this lets a relaxed timeout (set by maintnotifications
+			// during a failover/migration) take effect; a hardcoded short deadline
+			// here would cap that relaxed window and time out in-flight commands the
+			// relaxation was meant to protect. (A user who wants shutdown bounded
+			// sets ReadTimeout/WriteTimeout on the client, as for any command.)
+			ctx := context.Background()
 			pipe := ap.Pipeline()
 			defer putPipeliner(pipe)
 			for _, qc := range queuedCmds {
