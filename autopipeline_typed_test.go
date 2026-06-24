@@ -21,7 +21,10 @@ func TestAutoPipelineTypedCommands(t *testing.T) {
 		t.Skipf("Redis not available: %v", err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Test Set and Get
@@ -58,7 +61,10 @@ func TestAutoPipelineTypedCommandsMultiple(t *testing.T) {
 		t.Skipf("Redis not available: %v", err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Queue multiple Set commands
@@ -108,7 +114,10 @@ func TestAutoPipelineTypedCommandsVal(t *testing.T) {
 		t.Skipf("Redis not available: %v", err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Set a value

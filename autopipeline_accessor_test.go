@@ -21,7 +21,10 @@ func TestAutoPipelineSecondaryAccessors(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const G = 50

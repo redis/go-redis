@@ -34,7 +34,10 @@ func TestAPClusterCrossSlotRouting(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 100
@@ -105,7 +108,10 @@ func TestAPClusterPerGoroutineOrder(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 80

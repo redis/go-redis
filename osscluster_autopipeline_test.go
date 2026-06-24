@@ -28,7 +28,10 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Queue commands concurrently across different keys (different slots)
@@ -78,7 +81,10 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const numGoroutines = 10
@@ -134,7 +140,10 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Use keys that will hash to different slots

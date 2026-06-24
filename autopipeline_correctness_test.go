@@ -22,7 +22,10 @@ func TestAPNoCrossTalk(t *testing.T) {
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 200
@@ -82,7 +85,10 @@ func TestAPPerGoroutineOrder(t *testing.T) {
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 100
@@ -118,7 +124,10 @@ func TestAPNoLostCommands(t *testing.T) {
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 300
@@ -157,7 +166,10 @@ func TestAPErrorIsolation(t *testing.T) {
 	c.FlushDB(ctx)
 	// Seed a list key so INCR on it errors with WRONGTYPE.
 	c.RPush(ctx, "alist", "x")
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const goroutines = 50
