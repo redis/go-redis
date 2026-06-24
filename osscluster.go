@@ -1598,19 +1598,26 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 // concurrent callers into pipelines. Commands keep per-goroutine order. Pass an
 // optional config to override DefaultBlockingAutoPipelineConfig. Cached/shared;
 // first call's config wins. Close it (or the client) to release its goroutines.
-func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
 	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
-		return c.autopipeliner
+		return c.autopipeliner, nil
 	}
 	cfg := DefaultBlockingAutoPipelineConfig()
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
 	}
-	c.autopipeliner = newAutoPipeliner(c, cfg, true)
-	c.installAutoPipelineSharding(c.autopipeliner)
-	return c.autopipeliner
+	ap, err := newAutoPipeliner(c, cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	c.installAutoPipelineSharding(ap)
+	c.autopipeliner = ap
+	return c.autopipeliner, nil
 }
 
 // installAutoPipelineSharding routes commands to shards by cluster slot so each
@@ -1639,11 +1646,14 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 // immediately and the result accessors block. Submit a window then read results
 // for the highest throughput. Default config is ordered (DefaultAutoPipelineConfig);
 // pass a config to override. Cached/shared; first call's config wins.
-func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPipeliner {
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
 	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
-		return c.asyncAutopipeliner
+		return c.asyncAutopipeliner, nil
 	}
 	cfg := c.opt.AutoPipelineConfig
 	if len(config) > 0 && config[0] != nil {
@@ -1652,9 +1662,13 @@ func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) *AutoPi
 	if cfg == nil {
 		cfg = DefaultAutoPipelineConfig()
 	}
-	c.asyncAutopipeliner = newAutoPipeliner(c, cfg, false)
-	c.installAutoPipelineSharding(c.asyncAutopipeliner)
-	return c.asyncAutopipeliner
+	ap, err := newAutoPipeliner(c, cfg, false)
+	if err != nil {
+		return nil, err
+	}
+	c.installAutoPipelineSharding(ap)
+	c.asyncAutopipeliner = ap
+	return c.asyncAutopipeliner, nil
 }
 
 

@@ -31,7 +31,9 @@ var _ = Describe("AutoPipeline", func() {
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
-		ap = client.AutoPipeline()
+		var err error
+		ap, err = client.AutoPipeline()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -247,7 +249,8 @@ var _ = Describe("AutoPipeline", func() {
 		})
 		defer client2.Close()
 
-		ap2 := client2.AutoPipeline()
+		ap2, err := client2.AutoPipeline()
+		Expect(err).NotTo(HaveOccurred())
 		defer ap2.Close()
 
 		// Queue many commands to trigger multiple batches concurrently
@@ -313,7 +316,10 @@ func TestAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Queue commands concurrently
@@ -363,7 +369,10 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Send commands slowly, one at a time
@@ -422,7 +431,10 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const numGoroutines = 100
@@ -463,12 +475,15 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	})
 	defer client.Close()
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	start := time.Now()
 	cmd := ap.Do(ctx, "PING")
-	err := cmd.Err()
+	err = cmd.Err()
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -496,7 +511,10 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	})
 	defer client.Close()
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Execute 10 commands sequentially in a single thread

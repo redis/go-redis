@@ -21,7 +21,9 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 		})
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
-		ap = client.AutoPipeline()
+		var err error
+		ap, err = client.AutoPipeline()
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

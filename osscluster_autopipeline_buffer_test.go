@@ -22,7 +22,10 @@ func TestAPZeroCopyBufferCluster(t *testing.T) {
 		t.Skipf("cluster not reachable: %v", err)
 	}
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error { return m.FlushAll(ctx).Err() })
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	const g = 80

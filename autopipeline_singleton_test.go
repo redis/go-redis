@@ -21,6 +21,7 @@ func TestAutoPipelineConcurrentFirstCall(t *testing.T) {
 
 	const G = 64
 	results := make([]*redis.AutoPipeliner, G)
+	errs := make([]error, G)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	wg.Add(G)
@@ -28,11 +29,17 @@ func TestAutoPipelineConcurrentFirstCall(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // maximize the race on the first call
-			results[i] = c.AutoPipeline()
+			results[i], errs[i] = c.AutoPipeline()
 		}(g)
 	}
 	close(start)
 	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("call %d: AutoPipeline() returned error: %v", i, err)
+		}
+	}
 
 	first := results[0]
 	if first == nil {
