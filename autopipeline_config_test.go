@@ -15,7 +15,10 @@ func TestAutoPipelineConfigNotMutated(t *testing.T) {
 
 	c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
 	defer c.Close()
-	ap := c.AutoPipeline()
+	ap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	if cfg.MaxBatchSize != 0 {
@@ -29,7 +32,10 @@ func TestAutoPipelineConfigNotMutated(t *testing.T) {
 	// usable (defaults applied to an internal copy, not the shared struct).
 	c2 := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
 	defer c2.Close()
-	ap2 := c2.AutoPipeline()
+	ap2, err := c2.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap2.Close()
 	if cfg.MaxBatchSize != 0 || cfg.MaxConcurrentBatches != 0 {
 		t.Fatal("shared config mutated after second client created an AutoPipeliner")

@@ -18,7 +18,10 @@ func TestFutureFaceTyped(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap := c.AutoPipeline()
+	fap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer fap.Close()
 
 	const G, N = 100, 50
@@ -58,7 +61,10 @@ func TestFutureFaceOrdering(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap := c.AutoPipeline()
+	fap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer fap.Close()
 
 	const G, N = 100, 100
@@ -93,7 +99,10 @@ func TestOrderedModeWindowed(t *testing.T) {
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap := c.AutoPipeline()
+	fap, err := c.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer fap.Close()
 
 	const G, N = 80, 150
@@ -156,15 +165,17 @@ func TestAutoPipelineConfigValidate(t *testing.T) {
 	}
 }
 
-// TestAutoPipelinePanicsOnUnsafeConfig verifies the unsafe config is rejected
-// at construction (NewAutoPipeliner panics, matching NewClient on bad Options).
-func TestAutoPipelinePanicsOnUnsafeConfig(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected panic for MaxConcurrentBatches>1 without Unordered")
-		}
-	}()
+// TestAutoPipelineErrorsOnUnsafeConfig verifies the unsafe config is rejected
+// with an error (not a panic): NewAutoPipeliner runs from a post-init call, so a
+// bad config surfaces as a returned error the caller can handle.
+func TestAutoPipelineErrorsOnUnsafeConfig(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
-	redis.NewAutoPipeliner(c, &redis.AutoPipelineConfig{MaxConcurrentBatches: 8})
+	ap, err := redis.NewAutoPipeliner(c, &redis.AutoPipelineConfig{MaxConcurrentBatches: 8})
+	if err == nil {
+		t.Fatal("expected error for MaxConcurrentBatches>1 without Unordered")
+	}
+	if ap != nil {
+		t.Fatal("expected nil AutoPipeliner on config error")
+	}
 }

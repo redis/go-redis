@@ -27,7 +27,10 @@ func TestAutoPipelineSequential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Sequential usage - no goroutines needed!
@@ -76,7 +79,10 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Queue commands sequentially with small delays
@@ -124,7 +130,10 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap := client.AutoPipeline()
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer ap.Close()
 
 	// Queue some commands
