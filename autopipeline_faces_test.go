@@ -166,12 +166,12 @@ func TestAutoPipelineConfigValidate(t *testing.T) {
 }
 
 // TestAutoPipelineErrorsOnUnsafeConfig verifies the unsafe config is rejected
-// with an error (not a panic): NewAutoPipeliner runs from a post-init call, so a
+// with an error (not a panic): AsyncAutoPipeline runs from a post-init call, so a
 // bad config surfaces as a returned error the caller can handle.
 func TestAutoPipelineErrorsOnUnsafeConfig(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
-	ap, err := redis.NewAutoPipeliner(c, &redis.AutoPipelineConfig{MaxConcurrentBatches: 8})
+	ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 8})
 	if err == nil {
 		t.Fatal("expected error for MaxConcurrentBatches>1 without Unordered")
 	}

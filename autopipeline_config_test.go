@@ -6,7 +6,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// TestAutoPipelineConfigNotMutated guards a regression where NewAutoPipeliner
+// TestAutoPipelineConfigNotMutated guards a regression where the autopipeliner
 // filled zero-value defaults (MaxBatchSize, MaxConcurrentBatches) directly into
 // the caller's *AutoPipelineConfig. A config shared across clients (or inspected
 // later by the caller) must not be mutated by creating an AutoPipeliner.
