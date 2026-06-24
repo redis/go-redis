@@ -1671,7 +1671,6 @@ func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoP
 	return c.asyncAutopipeliner, nil
 }
 
-
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.Pipeline().Pipelined(ctx, fn)
 }
