@@ -282,18 +282,11 @@ type apShard struct {
 	sem      *internal.FIFOSemaphore // per-shard concurrent-batch budget
 }
 
-// NewAutoPipeliner creates a deferred (async) autopipeliner for the given
-// client (*Client or *ClusterClient): command methods return immediately and
-// the result accessors block. For the blocking drop-in form, use
-// newAutoPipeliner with blocking=true (exposed via Client.AutoPipeline).
-//
-// It returns an error if the config is invalid (e.g. MaxConcurrentBatches>1
-// without Unordered, or a negative size); a nil config uses defaults.
-func NewAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig) (*AutoPipeliner, error) {
-	return newAutoPipeliner(pipeliner, config, false)
-}
-
 // newAutoPipeliner builds an autopipeliner in either blocking or deferred mode.
+// It is unexported on purpose: the public entry points are
+// Client/ClusterClient.AutoPipeline and AsyncAutoPipeline, which also install
+// cluster slot-sharding. Constructing one directly would skip that wiring and
+// give a *ClusterClient degraded (cross-node) batching.
 func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, blocking bool) (*AutoPipeliner, error) {
 	if config == nil {
 		config = DefaultAutoPipelineConfig()
@@ -371,9 +364,11 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 	return ap, nil
 }
 
-// Do queues a command for autopipelined execution and returns immediately.
-// The returned command will block when you access its result (Err(), Val(), Result(), etc.)
-// until the command has been executed.
+// Do queues a command for autopipelined execution, following the
+// autopipeliner's mode. On a deferred (async) autopipeliner it returns
+// immediately and the returned command blocks when you access its result
+// (Err/Val/Result) until the batch has executed; on a blocking autopipeliner
+// the call blocks until the command has executed (the result is already there).
 //
 // This allows sequential usage without goroutines:
 //
@@ -399,11 +394,13 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 	return cmd
 }
 
-// Process queues a command for autopipelined execution and returns immediately.
-// The command is executed asynchronously when its batch is flushed; reading the
-// command's result (Val/Result/Err) blocks until then.
+// Process queues a command for autopipelined execution, following the
+// autopipeliner's mode like the typed methods and Do: on a blocking
+// autopipeliner the call blocks until the command has executed; on a deferred
+// (async) one it returns immediately and reading the command's result
+// (Val/Result/Err) blocks until its batch is flushed.
 func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
-	return ap.processAsync(ctx, cmd)
+	return ap.cmdable(ctx, cmd)
 }
 
 // AutoFuture is the handle returned by Submit. Call Wait (or Result on the
@@ -882,19 +879,14 @@ func (ap *AutoPipeliner) Pipelined(ctx context.Context, fn func(Pipeliner) error
 
 // TxPipelined executes a function in a transaction pipeline context.
 // This is a convenience method that creates a transaction pipeline, executes the function,
-// and returns the results.
-//
-// Note: This uses the underlying client's TxPipeline if available (Client, Ring, ClusterClient).
-// For other clients, this will panic.
+// and returns the results. It delegates to the underlying client's TxPipeline.
 func (ap *AutoPipeliner) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return ap.pipeliner.TxPipeline().Pipelined(ctx, fn)
 }
 
 // TxPipeline returns a new transaction pipeline that uses the underlying pipeliner.
 // This allows you to create a traditional transaction pipeline from an autopipeliner.
-//
-// Note: This uses the underlying client's TxPipeline if available (Client, Ring, ClusterClient).
-// For other clients, this will panic.
+// It delegates to the underlying client's TxPipeline.
 func (ap *AutoPipeliner) TxPipeline() Pipeliner {
 	return ap.pipeliner.TxPipeline()
 }
