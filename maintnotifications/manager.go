@@ -168,20 +168,21 @@ func (hm *Manager) InitPoolHookForPool(p pool.Pooler, baseDialer func(context.Co
 	}
 	hook := NewPoolHookWithPoolSize(baseDialer, network, hm.config, hm, poolSize)
 	hook.SetPool(p)
-	// The closed check and the append must be atomic with respect to Close's
-	// snapshot: under the same lock, either Close runs first (closed==true here,
-	// so we don't register and the hook is never attached) or we register first
-	// (Close's snapshot then includes this hook and tears it down). Without the
-	// lock around the check, a hook could be appended after Close snapshotted,
-	// leaking it (never shut down, never removed from the pool). In practice this
-	// only runs at construction, but the lock makes it correct regardless.
+	// The closed check, the append, AND the AddPoolHook must all be atomic with
+	// respect to Close's snapshot: hold the lock across all three so either Close
+	// runs first (closed==true here, so we neither register nor attach) or we
+	// register+attach first (Close's snapshot then includes this hook and tears
+	// it down). Attaching outside the lock left a window where Close could
+	// snapshot/tear-down between the append and the attach, then AddPoolHook
+	// would re-attach to a closed manager's pool — leaking an active hook.
+	// p.AddPoolHook is lock-free (atomic swap on the pool's own hook manager) and
+	// never calls back into this manager, so holding hooksMu across it is safe.
 	hm.hooksMu.Lock()
+	defer hm.hooksMu.Unlock()
 	if hm.closed.Load() {
-		hm.hooksMu.Unlock()
 		return
 	}
 	hm.additionalPoolHooks = append(hm.additionalPoolHooks, additionalPoolHook{pool: p, hook: hook})
-	hm.hooksMu.Unlock()
 	p.AddPoolHook(hook)
 }
 
