@@ -4,6 +4,7 @@ APIs
 autoload
 autoloader
 autoloading
+autopipelining
 analytics
 Autoloading
 backend
@@ -23,6 +24,8 @@ fieldset
 fieldsets
 FPM
 Golang
+goroutine
+goroutines
 IANA
 keyspace
 keyspaces
