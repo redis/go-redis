@@ -24,6 +24,8 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 	})
 	defer client.Close()
 
+	skipIfClusterUnhealthy(t, client)
+
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +78,8 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 		},
 	})
 	defer client.Close()
+
+	skipIfClusterUnhealthy(t, client)
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatal(err)
@@ -135,6 +139,8 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		},
 	})
 	defer client.Close()
+
+	skipIfClusterUnhealthy(t, client)
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatal(err)
