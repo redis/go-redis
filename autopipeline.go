@@ -14,7 +14,7 @@ import (
 // AutoPipelineConfig configures the autopipelining behavior.
 type AutoPipelineConfig struct {
 	// MaxBatchSize is the maximum number of commands to batch before flushing.
-	// Default: 100
+	// Default: 200
 	MaxBatchSize int
 
 	// MaxConcurrentBatches is the maximum number of pipeline batches that may
