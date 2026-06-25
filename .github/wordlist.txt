@@ -3,6 +3,7 @@ APIs
 autoload
 autoloader
 autoloading
+autopipelining
 analytics
 Autoloading
 backend
@@ -20,6 +21,8 @@ ElastiCache
 extensibility
 FPM
 Golang
+goroutine
+goroutines
 IANA
 keyspace
 keyspaces
