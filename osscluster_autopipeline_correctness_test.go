@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -19,6 +20,26 @@ func newTestCluster() *redis.ClusterClient {
 	})
 }
 
+// skipIfClusterUnhealthy skips the test unless a real, formed cluster answers.
+// Ping alone is insufficient: in CI's standalone test job a Redis may answer on
+// the cluster ports while the cluster is not formed (CLUSTER INFO reports
+// cluster_state:fail / CLUSTERDOWN, and commands return MOVED), which would turn
+// "no cluster available" into spurious failures. Gate on cluster_state:ok.
+func skipIfClusterUnhealthy(t *testing.T, c *redis.ClusterClient) {
+	t.Helper()
+	ctx := context.Background()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("cluster not reachable: %v", err)
+	}
+	info, err := c.ClusterInfo(ctx).Result()
+	if err != nil {
+		t.Skipf("cluster not reachable (CLUSTER INFO): %v", err)
+	}
+	if !strings.Contains(info, "cluster_state:ok") {
+		t.Skipf("cluster not healthy (no cluster_state:ok)")
+	}
+}
+
 // Validates cluster routing: a single autopipeline batch contains keys that
 // hash to MANY different slots/shards. Each command must route to the correct
 // node and return its own correct value. If routing were wrong, GETs would
@@ -27,9 +48,7 @@ func TestAPClusterCrossSlotRouting(t *testing.T) {
 	ctx := context.Background()
 	c := newTestCluster()
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("cluster not reachable: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error {
 		return m.FlushAll(ctx).Err()
 	})
@@ -100,9 +119,7 @@ func TestAPClusterPerGoroutineOrder(t *testing.T) {
 	ctx := context.Background()
 	c := newTestCluster()
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("cluster not reachable: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	// Start from a clean slate so INCR counts are deterministic across runs.
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error {
 		return m.FlushAll(ctx).Err()

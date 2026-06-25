@@ -122,7 +122,10 @@ func benchOrderedBlocking(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
-	ap := rdb.AutoPipeline() // blocking face (default parallel-batch config)
+	ap, err := rdb.AutoPipeline() // blocking face (default parallel-batch config)
+	if err != nil {
+		panic(err)
+	}
 	defer ap.Close()
 
 	return run(func(g int, doOp func()) {
@@ -140,7 +143,11 @@ func benchOrderedReadLater(ctx context.Context) float64 {
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
 	// Default async config is ordered (MaxConcurrentBatches=1).
-	return benchReadLater(ctx, rdb, rdb.AsyncAutoPipeline())
+	ap, err := rdb.AsyncAutoPipeline()
+	if err != nil {
+		panic(err)
+	}
+	return benchReadLater(ctx, rdb, ap)
 }
 
 // 4. Async autopipeline, unordered, read later: parallel batches for peak
@@ -150,11 +157,14 @@ func benchUnorderedReadLater(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
-	ap := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{
 		MaxBatchSize:         300,
 		MaxConcurrentBatches: 80,
 		Unordered:            true, // required for MaxConcurrentBatches > 1
 	})
+	if err != nil {
+		panic(err)
+	}
 	return benchReadLater(ctx, rdb, ap)
 }
 
