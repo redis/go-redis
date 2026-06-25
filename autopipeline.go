@@ -561,6 +561,18 @@ func (ap *AutoPipeliner) Close() error {
 	// Wait for flushers to finish
 	ap.wg.Wait()
 
+	// Final sweep: a command can pass enqueue's under-lock closed-recheck just
+	// before Close's CompareAndSwap and append to a shard AFTER that shard's
+	// flusher has already drained and exited — leaving its batch.done unclosed
+	// and the caller's accessor blocked forever. With the flushers provably gone
+	// (wg.Wait above), drain each shard once more under its lock. This pairs with
+	// the closed-recheck in enqueue: s.mu serializes the two, so either the late
+	// enqueue appends first and this sweep flushes it, or the sweep runs first
+	// and the enqueue then observes closed==true and rejects with ErrClosed.
+	for _, s := range ap.shards {
+		s.flushBatchSliceShutdown()
+	}
+
 	// Wait for all batch execution goroutines to finish
 	ap.batchWg.Wait()
 
@@ -770,7 +782,14 @@ func (s *apShard) flushBatchSlice() {
 func (s *apShard) flushBatchSliceShutdown() {
 	ap := s.ap
 	// Flush all remaining commands synchronously to preserve order.
-	for s.Len() > 0 {
+	//
+	// The loop condition is checked UNDER the lock (not via the unlocked
+	// s.Len()): a late enqueue appends to s.queue and updates queueLen under
+	// s.mu, so reading queueLen without the lock could miss a command that was
+	// just appended (seeing 0 and exiting while a command sits in the queue).
+	// Locking first makes "is the queue empty?" and "take the queue" atomic
+	// against that enqueue — this is what closes the lost-command race on Close.
+	for {
 		s.mu.Lock()
 		if len(s.queue) == 0 {
 			s.mu.Unlock()
