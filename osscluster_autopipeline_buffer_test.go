@@ -18,9 +18,7 @@ func TestAPZeroCopyBufferCluster(t *testing.T) {
 		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
 	})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("cluster not reachable: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error { return m.FlushAll(ctx).Err() })
 	ap, err := c.AutoPipeline()
 	if err != nil {
