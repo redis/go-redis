@@ -58,6 +58,14 @@ func TestParseURL(t *testing.T) {
 			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
+			// a zero or negative duration written with a unit disables the timeout,
+			// the same as the plain "0" / "-1" forms above
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0s",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1s",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
 			// absent timeout values will use defaults
 			url: "redis://localhost:123/?db=2&conn_max_idle_time=",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: 0},
