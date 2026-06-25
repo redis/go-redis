@@ -360,7 +360,10 @@ rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 defer rdb.Close()
 
 // Blocking face: drop-in for a normal client, batched under the hood.
-ap := rdb.AutoPipeline()
+ap, err := rdb.AutoPipeline()
+if err != nil { // only on an invalid AutoPipelineConfig
+    log.Fatal(err)
+}
 defer ap.Close()
 
 var wg sync.WaitGroup
@@ -380,7 +383,10 @@ wg.Wait()
 For maximum throughput, submit a window on the async face and read later:
 
 ```go
-ap := rdb.AsyncAutoPipeline() // ordered by default
+ap, err := rdb.AsyncAutoPipeline() // ordered by default
+if err != nil {
+    log.Fatal(err)
+}
 defer ap.Close()
 
 cmds := make([]*redis.StatusCmd, 0, 200)
@@ -394,9 +400,10 @@ for _, cmd := range cmds {
 }
 ```
 
-Both faces take an optional `*AutoPipelineConfig` (e.g.
-`rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 80, Unordered: true})`)
-and work on `ClusterClient` too: commands are routed to the correct shard per
+Both faces take an optional `*AutoPipelineConfig` and return `(*AutoPipeliner, error)`
+— the error is non-nil only for an invalid config (e.g.
+`ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 80, Unordered: true})`).
+They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots. Autopipelining is only a win under
 concurrency (or windowed submission) — a single goroutine issuing one blocking
 command at a time sees little benefit, and a hand-written `Pipeline()` is still
