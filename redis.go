@@ -840,10 +840,22 @@ func (c *baseClient) withConn(
 // otherwise it falls back to the regular pool via withConn.
 func (c *baseClient) withPipelineConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
-) error {
+) (retErr error) {
 	// Use pipeline pool if available, otherwise fall back to regular pool.
 	if c.pipelinePool == nil {
 		return c.withConn(ctx, fn)
+	}
+
+	// Honor the Limiter on the dedicated pipeline-pool path too, mirroring
+	// getConn/releaseConn: Allow() before acquiring and ReportResult() on every
+	// exit (including the early init/re-acquire failures below). Without this,
+	// enabling the pipeline pool would silently bypass throttling and failure
+	// reporting for callers that set a Limiter.
+	if c.opt.Limiter != nil {
+		if err := c.opt.Limiter.Allow(); err != nil {
+			return err
+		}
+		defer func() { c.opt.Limiter.ReportResult(retErr) }()
 	}
 
 	cn, err := c.pipelinePool.Get(ctx)
@@ -874,6 +886,7 @@ func (c *baseClient) withPipelineConn(
 
 	var fnErr error
 	defer func() {
+		retErr = fnErr
 		if isBadConn(fnErr, false, c.opt.Addr) {
 			c.pipelinePool.Remove(ctx, cn, fnErr)
 		} else {

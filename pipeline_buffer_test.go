@@ -13,7 +13,7 @@ func TestPipelineBufferSizes(t *testing.T) {
 
 	// Create client with custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:                    "localhost:6379",
+		Addr:                    redisAddr,
 		ReadBufferSize:          64 * 1024,  // 64 KiB for regular connections
 		WriteBufferSize:         64 * 1024,  // 64 KiB for regular connections
 		PipelineReadBufferSize:  512 * 1024, // 512 KiB for pipeline connections
@@ -69,7 +69,7 @@ func TestNoPipelinePool(t *testing.T) {
 
 	// Create client WITHOUT custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:            "localhost:6379",
+		Addr:            redisAddr,
 		ReadBufferSize:  64 * 1024, // 64 KiB for all connections
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 		// No PipelineReadBufferSize or PipelineWriteBufferSize
@@ -109,7 +109,7 @@ func TestPipelinePoolStats(t *testing.T) {
 
 	// Create client with custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:                    "localhost:6379",
+		Addr:                    redisAddr,
 		ReadBufferSize:          64 * 1024,  // 64 KiB for regular connections
 		WriteBufferSize:         64 * 1024,  // 64 KiB for regular connections
 		PipelineReadBufferSize:  512 * 1024, // 512 KiB for pipeline connections
@@ -159,7 +159,7 @@ func TestNoPipelinePoolStats(t *testing.T) {
 
 	// Create client WITHOUT custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:            "localhost:6379",
+		Addr:            redisAddr,
 		ReadBufferSize:  64 * 1024, // 64 KiB for all connections
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 	})
