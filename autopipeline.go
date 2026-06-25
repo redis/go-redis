@@ -13,7 +13,12 @@ import (
 
 // AutoPipelineConfig configures the autopipelining behavior.
 type AutoPipelineConfig struct {
-	// MaxBatchSize is the maximum number of commands to batch before flushing.
+	// MaxBatchSize is the target batch size: the accumulator stops waiting for
+	// more commands once the shard queue reaches it, so a batch flushes promptly
+	// instead of lingering. It is a soft threshold, not a hard cap — under heavy
+	// concurrent enqueue (or while a flush waits on the concurrency semaphore) the
+	// queue can grow past it and execute as a single larger pipeline, which is
+	// safe and simply yields a deeper pipeline.
 	// Default: 200
 	MaxBatchSize int
 

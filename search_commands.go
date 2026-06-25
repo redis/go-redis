@@ -2954,6 +2954,7 @@ func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
 }
 
 func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	cmd.await()
 	return cmd.cursorVal, cmd.err
 }
 
@@ -2963,14 +2964,17 @@ func (cmd *FTHybridCmd) Val() FTHybridResult {
 }
 
 func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	cmd.await()
 	return cmd.cursorVal
 }
 
 func (cmd *FTHybridCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
