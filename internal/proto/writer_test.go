@@ -137,7 +137,7 @@ var _ = Describe("WriteArg", func() {
 		(*uint)(nil):                           "$1\r\n0\r\n",
 		uint8(10):                              "$2\r\n10\r\n",
 		util.ToPtr(uint8(10)):                  "$2\r\n10\r\n",
-		(*uint8)(nil):                          "$0\r\n\r\n",
+		(*uint8)(nil):                          "$1\r\n0\r\n",
 		uint16(10):                             "$2\r\n10\r\n",
 		util.ToPtr(uint16(10)):                 "$2\r\n10\r\n",
 		(*uint16)(nil):                         "$1\r\n0\r\n",
