@@ -3002,7 +3002,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQ when value matches", func() {
-			if RedisVersion < 8.4 {
+			if !redisVersionAtLeast("8.4") {
 				Skip("CAS/CAD commands require Redis >= 8.4")
 			}
 
@@ -3022,7 +3022,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQ fail when value does not match", func() {
-			if RedisVersion < 8.4 {
+			if !redisVersionAtLeast("8.4") {
 				Skip("CAS/CAD commands require Redis >= 8.4")
 			}
 
@@ -8605,7 +8605,7 @@ var _ = Describe("Commands", func() {
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
 				}
-				if RedisVersion < 8.6 {
+				if !redisVersionAtLeast("8.6") {
 					expectedRes.IDMPDuration = 0
 					expectedRes.IDMPMaxSize = 0
 					expectedRes.PIDsTracked = 0
@@ -8642,7 +8642,7 @@ var _ = Describe("Commands", func() {
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
 				}
-				if RedisVersion < 8.6 {
+				if !redisVersionAtLeast("8.6") {
 					expectedRes.IDMPDuration = 0
 					expectedRes.IDMPMaxSize = 0
 					expectedRes.PIDsTracked = 0

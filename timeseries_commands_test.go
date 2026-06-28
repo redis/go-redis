@@ -271,7 +271,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				if client.Options().Protocol == 2 {
 					Expect(resultInfo["labels"].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"Time", "Series"}))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					if RedisVersion >= 8 {
+					if redisVersionAtLeast("8") {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
 					} else {
 						// Older versions of Redis had a bug where the duplicate policy was not set correctly
@@ -280,7 +280,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				} else {
 					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					if RedisVersion >= 8 {
+					if redisVersionAtLeast("8") {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
 					} else {
 						// Older versions of Redis had a bug where the duplicate policy was not set correctly

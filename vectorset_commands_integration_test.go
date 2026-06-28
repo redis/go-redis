@@ -258,7 +258,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectEqual(len(res), len(vals))
 
-				if RedisVersion >= 8.4 {
+				if redisVersionAtLeast("8.4") {
 					res, err = client.VRange(ctx, vecName, "[k1", "[k2", -1).Result()
 					expectNil(err)
 					expectEqual(len(res), 2)
@@ -355,7 +355,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(simScores[0].Name, vals[0].name)
 				expectEqual(simScores[0].Score, float64(1))
 
-				if RedisVersion >= 8.2 {
+				if redisVersionAtLeast("8.2") {
 					// test withattribs
 					simAttribs, err := client.VSimWithArgsWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 						Filter: `.age < 30 or .age > 35`,

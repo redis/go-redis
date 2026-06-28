@@ -94,6 +94,12 @@ func parseRedisVersionStr(v string) (int, int) {
 	return major, minor
 }
 
+// redisVersionAtLeast returns true when the running Redis is >= major.minor.
+func redisVersionAtLeast(version string) bool {
+	major, minor := parseRedisVersionStr(version)
+	return redisMajorVersion > major || (redisMajorVersion == major && redisMinorVersion >= minor)
+}
+
 func SkipBeforeRedisVersion(version string, msg string) {
 	major, minor := parseRedisVersionStr(version)
 	if redisMajorVersion < major || (redisMajorVersion == major && redisMinorVersion < minor) {
