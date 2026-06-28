@@ -63,7 +63,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("basic", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "basic"
 				val := &redis.VectorValues{
 					Val: []float64{1.5, 2.4, 3.3, 4.2},
@@ -98,7 +98,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("basic similarity", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "basic_similarity"
 
 				ok, err := client.VAdd(ctx, vecName, "k1", &redis.VectorValues{
@@ -132,7 +132,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("dimension operation", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "dimension_op"
 				originalDim := 100
 				reducedDim := 50
@@ -167,7 +167,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("remove", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "remove"
 				v1 := generateRandomVector(5)
 				ok, err := client.VAdd(ctx, vecName, "k1", &v1).Result()
@@ -188,7 +188,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("all operations", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "commands"
 				vals := []struct {
 					name string
@@ -414,7 +414,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("vlinks with single element", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "vlinks_single"
 
 				// Add only one vector
