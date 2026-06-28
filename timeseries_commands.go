@@ -40,6 +40,10 @@ type TimeseriesCmdable interface {
 	TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd
 	TSMGet(ctx context.Context, filters []string) *MapStringSliceInterfaceCmd
 	TSMGetWithArgs(ctx context.Context, filters []string, options *TSMGetOptions) *MapStringSliceInterfaceCmd
+	TSNRange(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}) *TSNRangePivotRowSliceCmd
+	TSNRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRangeOptions) *TSNRangePivotRowSliceCmd
+	TSNRevRange(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}) *TSNRangePivotRowSliceCmd
+	TSNRevRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRevRangeOptions) *TSNRangePivotRowSliceCmd
 }
 
 type TSOptions struct {
@@ -253,6 +257,30 @@ type TSMGetOptions struct {
 	Latest         bool
 	WithLabels     bool
 	SelectedLabels []interface{}
+}
+
+type TSNRangeOptions struct {
+	Latest          bool
+	FilterByTS      []int
+	FilterByValue   []int
+	Count           int
+	Align           interface{}
+	Aggregators     []Aggregator
+	BucketDuration  int
+	BucketTimestamp interface{}
+	Empty           bool
+}
+
+type TSNRevRangeOptions struct {
+	Latest          bool
+	FilterByTS      []int
+	FilterByValue   []int
+	Count           int
+	Align           interface{}
+	Aggregators     []Aggregator
+	BucketDuration  int
+	BucketTimestamp interface{}
+	Empty           bool
 }
 
 // TSAdd - Adds one or more observations to a t-digest sketch.
@@ -1103,6 +1131,262 @@ func (c cmdable) TSMGetWithArgs(ctx context.Context, filters []string, options *
 		args = append(args, f)
 	}
 	cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSNRangePivotRow represents a single row in the pivot response from TS.NRANGE / TS.NREVRANGE.
+// Timestamp is the row's timestamp; Values holds one float64 per input key in input-key order.
+// Missing samples and missing aggregation buckets are represented as NaN.
+type TSNRangePivotRow struct {
+	Timestamp int64
+	Values    []float64
+}
+
+type TSNRangePivotRowSliceCmd struct {
+	baseCmd
+	val []TSNRangePivotRow
+}
+
+func newTSNRangePivotRowSliceCmd(ctx context.Context, args ...interface{}) *TSNRangePivotRowSliceCmd {
+	return &TSNRangePivotRowSliceCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeTSNRangePivotRowSlice,
+		},
+	}
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) SetVal(val []TSNRangePivotRow) {
+	cmd.val = val
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) Result() ([]TSNRangePivotRow, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) Val() []TSNRangePivotRow {
+	return cmd.val
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]TSNRangePivotRow, n)
+	for i := 0; i < n; i++ {
+		// Each row is a 2-element array: [timestamp, [value_0, value_1, ...]]
+		if _, err = rd.ReadArrayLen(); err != nil {
+			return err
+		}
+		timestamp, err := rd.ReadInt()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Timestamp = timestamp
+
+		valCount, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i].Values = make([]float64, valCount)
+		for j := 0; j < valCount; j++ {
+			s, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			cmd.val[i].Values[j], err = util.ParseStringToFloat(s)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (cmd *TSNRangePivotRowSliceCmd) Clone() Cmder {
+	var val []TSNRangePivotRow
+	if cmd.val != nil {
+		val = make([]TSNRangePivotRow, len(cmd.val))
+		copy(val, cmd.val)
+		for i := range cmd.val {
+			if cmd.val[i].Values != nil {
+				val[i].Values = make([]float64, len(cmd.val[i].Values))
+				copy(val[i].Values, cmd.val[i].Values)
+			}
+		}
+	}
+	return &TSNRangePivotRowSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+// buildNRangeAggregationArgs validates and returns one aggregator string per key for TS.NRANGE / TS.NREVRANGE.
+// The number of aggregators must equal the number of keys. Aggregators are emitted as separate wire tokens.
+func buildNRangeAggregationArgs(keys []string, aggregators []Aggregator) ([]string, error) {
+	if len(aggregators) != len(keys) {
+		return nil, fmt.Errorf("redis: TS.NRANGE/TS.NREVRANGE requires exactly %d aggregator(s), got %d", len(keys), len(aggregators))
+	}
+	parts := make([]string, len(aggregators))
+	for i, agg := range aggregators {
+		if agg == Invalid {
+			return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d: Invalid (%d)", i, agg)
+		}
+		s := agg.String()
+		if s == "" {
+			return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d: %d", i, agg)
+		}
+		parts[i] = s
+	}
+	return parts, nil
+}
+
+// appendNRangeOptions appends optional TS.NRANGE / TS.NREVRANGE arguments to args.
+func appendNRangeOptions(
+	args []interface{},
+	keys []string,
+	latest bool,
+	filterByTS []int,
+	filterByValue []int,
+	count int,
+	align interface{},
+	aggregators []Aggregator,
+	bucketDuration int,
+	bucketTimestamp interface{},
+	empty bool,
+) ([]interface{}, error) {
+	if latest {
+		args = append(args, "LATEST")
+	}
+	if filterByTS != nil {
+		args = append(args, "FILTER_BY_TS")
+		for _, ts := range filterByTS {
+			args = append(args, ts)
+		}
+	}
+	if filterByValue != nil {
+		args = append(args, "FILTER_BY_VALUE")
+		for _, v := range filterByValue {
+			args = append(args, v)
+		}
+	}
+	if count != 0 {
+		args = append(args, "COUNT", count)
+	}
+	if align != nil {
+		args = append(args, "ALIGN", align)
+	}
+	if len(aggregators) > 0 {
+		aggParts, err := buildNRangeAggregationArgs(keys, aggregators)
+		if err != nil {
+			return args, err
+		}
+		args = append(args, "AGGREGATION")
+		for _, a := range aggParts {
+			args = append(args, a)
+		}
+		if bucketDuration != 0 {
+			args = append(args, bucketDuration)
+		}
+		if bucketTimestamp != nil {
+			args = append(args, "BUCKETTIMESTAMP", bucketTimestamp)
+		}
+		if empty {
+			args = append(args, "EMPTY")
+		}
+	}
+	return args, nil
+}
+
+// TSNRange - Queries multiple time-series keys and returns a pivot response in forward (ascending) order.
+// For more information - https://redis.io/commands/ts.nrange/
+func (c cmdable) TSNRange(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}) *TSNRangePivotRowSliceCmd {
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "TS.NRANGE", len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	args = append(args, fromTimestamp, toTimestamp)
+	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSNRangeWithArgs - Queries multiple time-series keys and returns a pivot response in forward (ascending) order with additional options.
+// This function allows for specifying additional options such as:
+// Latest, FilterByTS, FilterByValue, Count, Align, Aggregators, BucketDuration, BucketTimestamp and Empty.
+// Aggregators must contain exactly one entry per key; they are emitted as separate wire tokens.
+// For more information - https://redis.io/commands/ts.nrange/
+func (c cmdable) TSNRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRangeOptions) *TSNRangePivotRowSliceCmd {
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "TS.NRANGE", len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	args = append(args, fromTimestamp, toTimestamp)
+	if options != nil {
+		var err error
+		args, err = appendNRangeOptions(args, keys,
+			options.Latest, options.FilterByTS, options.FilterByValue,
+			options.Count, options.Align, options.Aggregators,
+			options.BucketDuration, options.BucketTimestamp, options.Empty)
+		if err != nil {
+			cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+	}
+	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSNRevRange - Queries multiple time-series keys and returns a pivot response in reverse (descending) order.
+// For more information - https://redis.io/commands/ts.nrevrange/
+func (c cmdable) TSNRevRange(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}) *TSNRangePivotRowSliceCmd {
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "TS.NREVRANGE", len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	args = append(args, fromTimestamp, toTimestamp)
+	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSNRevRangeWithArgs - Queries multiple time-series keys and returns a pivot response in reverse (descending) order with additional options.
+// This function allows for specifying additional options such as:
+// Latest, FilterByTS, FilterByValue, Count, Align, Aggregators, BucketDuration, BucketTimestamp and Empty.
+// Aggregators must contain exactly one entry per key; they are emitted as separate wire tokens.
+// For more information - https://redis.io/commands/ts.nrevrange/
+func (c cmdable) TSNRevRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRevRangeOptions) *TSNRangePivotRowSliceCmd {
+	args := make([]interface{}, 0, 3+len(keys))
+	args = append(args, "TS.NREVRANGE", len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	args = append(args, fromTimestamp, toTimestamp)
+	if options != nil {
+		var err error
+		args, err = appendNRangeOptions(args, keys,
+			options.Latest, options.FilterByTS, options.FilterByValue,
+			options.Count, options.Align, options.Aggregators,
+			options.BucketDuration, options.BucketTimestamp, options.Empty)
+		if err != nil {
+			cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+	}
+	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
