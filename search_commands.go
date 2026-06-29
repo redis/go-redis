@@ -953,10 +953,12 @@ func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
 }
 
 func (cmd *AggregateCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2153,10 +2155,12 @@ func (cmd *FTInfoCmd) Val() FTInfoResult {
 }
 
 func (cmd *FTInfoCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2358,10 +2362,12 @@ func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
 }
 
 func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2676,10 +2682,12 @@ func (cmd *FTSearchCmd) Val() FTSearchResult {
 }
 
 func (cmd *FTSearchCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -3499,10 +3507,12 @@ func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
 }
 
 func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
