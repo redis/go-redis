@@ -327,39 +327,30 @@ type Options struct {
 
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
-	// ClientSideCache); it is ignored when CSC is disabled.
-	// See docs/csc-strategy-guide.md for when to choose the others.
+	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
+	// CSCStrategySharedTracking (the default). See docs/csc-strategy-guide.md.
 	ClientSideCacheStrategy CSCStrategy
 }
 
-// CSCStrategy selects the client-side caching invalidation architecture.
-// It is set at client construction via Options.ClientSideCacheStrategy and
-// is immutable for the lifetime of the client.
+// CSCStrategy selects the client-side caching invalidation architecture. Set via
+// Options.ClientSideCacheStrategy; fixed for the client's lifetime.
 type CSCStrategy int
 
 const (
-	// CSCStrategyBroadcast (default): one shared cache; a dedicated out-of-pool
-	// "sidecar" connection subscribes with CLIENT TRACKING ON BCAST and owns
-	// all invalidation traffic. Pool connections never track, so cache hits
-	// are pure in-memory lookups. Best throughput and tail latency at every
-	// tested concurrency; robust to invalidation noise from other
-	// applications. Recommended for virtually all deployments.
-	CSCStrategyBroadcast CSCStrategy = iota
+	// CSCStrategySharedTracking (default, the zero value): one shared cache; every
+	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
+	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
+	CSCStrategySharedTracking CSCStrategy = iota
 
-	// CSCStrategyPerConnection: every pool connection owns a private cache and its
-	// own CLIENT TRACKING ON subscription; invalidations affect only the
-	// receiving connection's cache. Eliminates cross-connection staleness on
-	// connection close, at the cost of duplicated cache memory and per-conn
-	// warm-up. Suited to clients with few, long-lived connections.
+	// CSCStrategyBroadcast: one shared cache fed by a dedicated out-of-pool sidecar on
+	// CLIENT TRACKING ON BCAST; pool connections never track. Highest throughput in
+	// go-redis benchmarks — opt in where BCAST is available.
+	CSCStrategyBroadcast
+
+	// CSCStrategyPerConnection: each pool connection keeps its own private cache and
+	// CLIENT TRACKING ON subscription. No cross-connection staleness, at the cost of
+	// duplicated memory and per-conn warm-up; suited to few, long-lived connections.
 	CSCStrategyPerConnection
-
-	// CSCStrategySharedTracking: one shared cache; every pool connection issues
-	// CLIENT TRACKING ON, and a background drainer consumes buffered
-	// invalidation frames once per drain period. Throughput-competitive with
-	// Broadcast, but with heavier tail latency under high concurrency because
-	// invalidations are spread across the pool connections instead of a single
-	// dedicated one.
-	CSCStrategySharedTracking
 )
 
 func (opt *Options) init() {

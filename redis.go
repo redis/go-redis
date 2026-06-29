@@ -1355,11 +1355,11 @@ func NewClient(opt *Options) *Client {
 	//   - CSCStrategyPerConnection: cscPerConnInit takes the invalidation
 	//     handler for per-connection caches, so attachCSC leaves c.csc == nil
 	//     on purpose — that nil is what the per-conn path expects.
-	//   - CSCStrategySharedTracking: attachCSC builds the shared cache plus a
-	//     background drainer that applies invalidations to it.
-	//   - CSCStrategyBroadcast (default): shared cache plus a BCAST sidecar. If
-	//     the sidecar can't start, CSC is disabled (c.csc = nil) to avoid
-	//     serving stale values that nothing would evict.
+	//   - CSCStrategySharedTracking (default): attachCSC builds the shared cache
+	//     plus a background drainer that applies invalidations to it.
+	//   - CSCStrategyBroadcast: shared cache plus a BCAST sidecar. If the sidecar
+	//     can't start, CSC is disabled (c.csc = nil) to avoid serving stale values
+	//     that nothing would evict.
 	if opt.Protocol == 3 {
 		c.baseClient.cscPerConnInit()
 
@@ -1768,6 +1768,79 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
 	}
 	return err
+}
+
+// drainPushNotifications drains the push frames buffered on a connection the CSC
+// drainer has claimed, under a HARD read deadline. Returns a non-nil error only for
+// a FATAL connection error (drainer removes the conn); a benign read timeout returns
+// nil. The built-in processor surfaces read errors; a custom processor runs via its
+// own ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
+func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+	// Skip only when nothing is buffered (reader) AND nothing on the socket:
+	// MaybeHasData peeks only the socket, but an invalidate can sit in cn.rd.
+	if !cn.HasBufferedData() && !cn.MaybeHasData() {
+		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+		return nil
+	}
+
+	err := cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		// Built-in processor: use our loop that SURFACES read errors (it swallows them).
+		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+			return c.drainPendingPushNotifications(cn, rd)
+		}
+		// Custom processor: its error is not contractually connection-fatal, so log
+		// + re-pool (only the built-in path / a reader-setup failure drives removal).
+		handlerCtx := c.pushNotificationHandlerContext(cn)
+		if perr := c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd); perr != nil {
+			internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (re-pooling): %v", perr)
+		}
+		return nil
+	})
+	if err != nil && isBadConn(err, true, c.opt.Addr) {
+		return err // fatal read/protocol/connection error — remove the conn
+	}
+	cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+	return nil
+}
+
+// drainPendingPushNotifications dispatches the push frames currently buffered on
+// rd and STOPS when the buffer empties (it never blocks for more). Returns the
+// first read/peek error for the caller to classify; handler errors are logged and
+// draining continues. (Built-in ProcessPendingNotifications swallows read errors.)
+func (c *baseClient) drainPendingPushNotifications(cn *pool.Conn, rd *proto.Reader) error {
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	for {
+		typ, err := rd.PeekReplyType()
+		if err != nil {
+			return err // surfaced for the caller to classify (benign timeout vs fatal)
+		}
+		if typ != proto.RespPush {
+			// Not a push frame — do not consume a command reply.
+			return nil
+		}
+		reply, err := rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		if notification, ok := reply.([]interface{}); ok && len(notification) > 0 {
+			if name, ok := notification[0].(string); ok {
+				if handler := c.pushProcessor.GetHandler(name); handler != nil {
+					if herr := handler.HandlePushNotification(context.Background(), handlerCtx, notification); herr != nil {
+						internal.Logger.Printf(context.Background(), "csc: drain: push handler %q failed: %v", name, herr)
+					}
+				}
+				// Unhandled notification name: consumed and dropped (consume-and-dispatch-all).
+			}
+		}
+		// Stop when nothing is buffered — don't block for a new frame. That terminal
+		// wait added ~cap to the hold with no latency gain (csc_drain_readcap_test.go).
+		if rd.Buffered() == 0 {
+			return nil
+		}
+	}
 }
 
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection

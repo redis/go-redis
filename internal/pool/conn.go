@@ -860,6 +860,22 @@ func (cn *Conn) WithReader(
 	return fn(cn.rd)
 }
 
+// WithReaderHardDeadline runs fn under a HARD read deadline of now+timeout,
+// bypassing getEffectiveReadTimeout so a relaxed maintenance timeout can't extend
+// it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
+// become the socket deadline, or the read surfaces context.DeadlineExceeded, which
+// isBadConn treats as fatal.
+func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	return fn(cn.rd)
+}
+
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {

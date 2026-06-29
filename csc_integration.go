@@ -127,50 +127,77 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 		return
 	}
 	c.csc = cache
-	// Only the SharedTracking strategy delivers invalidations to pool
-	// connections, so only it needs the background drainer. Under Broadcast
-	// the sidecar owns all invalidation traffic and pool conns receive none;
-	// under PerConnection this shared-cache path is never reached.
+	// Only SharedTracking delivers invalidations to pool connections, so only it
+	// runs the drainer (Broadcast uses the sidecar; PerConnection never gets here).
 	if c.opt.ClientSideCacheStrategy == CSCStrategySharedTracking {
 		c.startBackgroundDrainer()
 	}
 }
 
-// cscDrainStopField maps *baseClient -> chan struct{} used to stop that
-// client's background drainer goroutine. The entry is removed on Close.
-var cscDrainStopField sync.Map
+// cscDrainHandle holds a drainer goroutine's lifecycle channels: stop signals
+// shutdown; done is closed on exit so stopBackgroundDrainer can JOIN before teardown.
+type cscDrainHandle struct {
+	stop chan struct{}
+	done chan struct{}
+}
 
-// startBackgroundDrainer launches the per-client invalidation drainer. The
-// drainer wakes every cscDrainSkipWindow and walks the idle pool conns,
-// consuming buffered invalidate push frames. Moving the walk OFF the
-// command hot path means cache hits are pure in-memory lookups
+// cscDrainHandles maps *baseClient -> *cscDrainHandle for its background drainer.
+// The entry is removed (and the goroutine joined) on Close.
+var cscDrainHandles sync.Map
+
+// cscDrainInterval returns ClientSideCacheConfig.DrainInterval, or the default
+// (cscDrainSkipWindow, 5ms) when unset.
+func (c *baseClient) cscDrainInterval() time.Duration {
+	if cfg := c.opt.ClientSideCacheConfig; cfg != nil && cfg.DrainInterval > 0 {
+		return cfg.DrainInterval
+	}
+	return cscDrainSkipWindow
+}
+
+// startBackgroundDrainer launches the per-client invalidation drainer. Each tick
+// (ClientSideCacheConfig.DrainInterval, default 5ms) runs one pass of
+// pool.DrainIdleConns — claiming one idle connection at a time, draining its
+// buffered push frames, and returning it via Put (so OnPut can queue a maintenance
+// handoff). Only the standard *pool.ConnPool is supported; other poolers no-op.
 func (c *baseClient) startBackgroundDrainer() {
-	stop := make(chan struct{})
-	if _, loaded := cscDrainStopField.LoadOrStore(c, stop); loaded {
+	cp, ok := c.connPool.(*pool.ConnPool)
+	if !ok {
+		return
+	}
+	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	if _, loaded := cscDrainHandles.LoadOrStore(c, h); loaded {
 		return // already running
 	}
+	interval := c.cscDrainInterval()
 	go func() {
-		ticker := time.NewTicker(cscDrainSkipWindow)
+		defer close(h.done)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		// st persists round/visited across ticks; single-goroutine, no lock.
+		var st pool.DrainState
+		drain := func(cn *pool.Conn) error { return c.drainPushNotifications(cn) }
 		for {
 			select {
-			case <-stop:
+			case <-h.stop:
 				return
 			case <-ticker.C:
-				walkCtx, cancel := context.WithTimeout(
-					context.Background(), cscDrainSkipWindow/2)
-				c.drainPendingInvalidationsWalk(walkCtx)
+				// ctx bounds the whole pass; the drain read has its own hard deadline.
+				cycleCtx, cancel := context.WithTimeout(context.Background(), interval/2)
+				cp.DrainIdleConns(cycleCtx, &st, drain)
 				cancel()
 			}
 		}
 	}()
 }
 
-// stopBackgroundDrainer halts the client's drainer goroutine. Idempotent;
-// called from baseClient.Close.
+// stopBackgroundDrainer halts the client's drainer goroutine and JOINS it before
+// returning, so a pass in progress cannot touch the pool after baseClient.Close
+// tears it down. Idempotent; called from baseClient.Close.
 func (c *baseClient) stopBackgroundDrainer() {
-	if v, ok := cscDrainStopField.LoadAndDelete(c); ok {
-		close(v.(chan struct{}))
+	if v, ok := cscDrainHandles.LoadAndDelete(c); ok {
+		h := v.(*cscDrainHandle)
+		close(h.stop)
+		<-h.done
 	}
 }
 
@@ -180,57 +207,16 @@ func applyCachedReply(cmd Cmder, raw []byte) error {
 	return cmd.readReply(proto.NewReader(bytes.NewReader(raw)))
 }
 
-// cscDrainSkipWindow is the period of the SharedTracking background drainer:
-// the drainer wakes once per window and walks the idle pool connections,
-// consuming any buffered invalidate push frames (each walk is bounded by half
-// a window). Staleness under SharedTracking is therefore bounded by one
-// window — an invalidation buffered on a connection is picked up by the next
-// drain at the latest.
+// cscDrainSkipWindow is the default SharedTracking drain period (overridable via
+// ClientSideCacheConfig.DrainInterval). A buffered invalidation is picked up within
+// roughly one round; MaxStaleness is the hard backstop.
 const cscDrainSkipWindow = 5 * time.Millisecond
 
-// drainPendingInvalidationsWalk processes buffered push notifications across
-// the client's currently idle pool connections. Invalidations are delivered
-// to the specific connection that read the tracked key, so a hit served from
-// a different connection could otherwise race ahead of a pending
-// "invalidate".
-//
-// ctx carries the walk deadline (the background drainer passes half the
-// drain period): when it expires, pool.Get fails, the loop breaks, and all
-// borrowed conns are released — bounding how long the walk can hold pool
-// capacity away from serving traffic.
-func (c *baseClient) drainPendingInvalidationsWalk(ctx context.Context) {
-	if c.connPool == nil || c.opt.Protocol != 3 {
-		return
-	}
-	remaining := c.connPool.IdleLen()
-	if remaining < 1 {
-		remaining = 1
-	}
-
-	seen := make(map[uint64]struct{}, remaining)
-	borrowed := make([]*pool.Conn, 0, remaining)
-	for i := 0; i < remaining; i++ {
-		if ctx.Err() != nil {
-			break
-		}
-		cn, err := c.connPool.Get(ctx)
-		if err != nil {
-			break
-		}
-		if _, dup := seen[cn.GetID()]; dup {
-			c.connPool.Put(ctx, cn)
-			break
-		}
-		seen[cn.GetID()] = struct{}{}
-		borrowed = append(borrowed, cn)
-		if err := c.peekAndProcessPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "csc: error draining invalidations: %v", err)
-		}
-	}
-	for _, cn := range borrowed {
-		c.connPool.Put(ctx, cn)
-	}
-}
+// cscDrainHardReadCap is the HARD socket read deadline the drainer applies via
+// Conn.WithReaderHardDeadline (a relaxed maintenance timeout can't extend it). The
+// drain reads only buffered frames and stops when empty, so this bounds only a rare
+// partial-frame mid-read. A var (not const) so the tuning harness can sweep it.
+var cscDrainHardReadCap = 50 * time.Microsecond
 
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
 // Only invoked after process has verified that CSC is active and cmd is

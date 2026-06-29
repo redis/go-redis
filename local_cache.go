@@ -35,6 +35,10 @@ type CacheEntry struct {
 	// bumped on every access, stored atomically so the read path can mark a
 	// touch under the shard's RLock without upgrading to a write lock.
 	lastAccessNs atomic.Int64
+
+	// validAtNs is the wall-clock UnixNano when the entry became Valid, used by the
+	// MaxStaleness backstop. Written under Lock (Set/Fulfill), read under RLock (get).
+	validAtNs int64
 }
 
 // lruSequence is the global monotonic counter feeding lastAccessNs. It totally
@@ -61,6 +65,20 @@ type CacheConfig struct {
 	// considered stale and eligible for takeover by a new Reserve call.
 	// If zero, defaults to defaultStaleTimeout (5s).
 	StaleTimeout time.Duration
+
+	// DrainInterval is the CSCStrategySharedTracking background-drainer period
+	// (default 5ms; zero uses the default): how often idle pool connections are swept
+	// for buffered "invalidate" frames. Cache-hit staleness is bounded by roughly one
+	// drain pass; MaxStaleness is the hard backstop. Shorter intervals tighten the
+	// bound at the cost of more frequent sweeps. Ignored by Broadcast and PerConnection.
+	DrainInterval time.Duration
+
+	// MaxStaleness caps how long a cached entry is served after it became valid,
+	// regardless of invalidation. Zero (default) disables it. It is a correctness
+	// BACKSTOP for lost invalidations or connection-lifecycle gaps ("Window 2"), not
+	// the primary freshness mechanism. Keep it well above the invalidation round-trip
+	// (e.g. seconds); per-entry refetch overhead scales ~1/MaxStaleness.
+	MaxStaleness time.Duration
 }
 
 // Cache is a thread-safe local cache used by client-side caching logic.
@@ -132,6 +150,7 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		s.byRedisKey = make(map[string]map[string]struct{})
 		s.maxEntries = perShardEntries
 		s.maxMemoryBytes = perShardBytes
+		s.maxStalenessNs = int64(cfg.MaxStaleness)
 		s.sizer = sizer
 		s.staleTimeout = staleTimeout
 	}
@@ -160,6 +179,7 @@ type cacheShard struct {
 
 	maxEntries     int
 	maxMemoryBytes int64
+	maxStalenessNs int64
 	sizer          CacheSizer
 	staleTimeout   time.Duration
 }
@@ -244,6 +264,21 @@ func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
 			return nil, false
 		}
 
+		// Max-staleness backstop: a Valid entry older than maxStalenessNs is treated
+		// as a miss and evicted, so a lost invalidation or connection-lifecycle
+		// staleness (Window 2) cannot keep a stale value resident past MaxStaleness.
+		// Evict under the write lock so the next access re-fetches — a stale-but-present
+		// entry would otherwise suppress the re-fetch via Reserve.
+		if s.maxStalenessNs > 0 && time.Now().UnixNano()-entry.validAtNs > s.maxStalenessNs {
+			s.mu.RUnlock()
+			s.mu.Lock()
+			if cur, ok := s.entries[cacheKey]; ok && cur == entry {
+				s.removeEntryLocked(cacheKey)
+			}
+			s.mu.Unlock()
+			return nil, false
+		}
+
 		value := cloneBytes(entry.Value)
 		// Record access timestamp without upgrading the lock. Last writer
 		// wins; cross-goroutine ordering of timestamps is fine for
@@ -274,6 +309,7 @@ func (c *localCache) Set(cacheKey string, redisKeys []string, value []byte) bool
 		State:      CacheEntryValid,
 		sizeBytes:  entrySize,
 		waitClosed: true,
+		validAtNs:  time.Now().UnixNano(),
 	}
 	entry.lastAccessNs.Store(nextLRUToken())
 
@@ -371,6 +407,7 @@ func (c *localCache) Fulfill(cacheKey string, token uint64, value []byte) bool {
 	entry.Value = valueCopy
 	entry.sizeBytes = valueSize
 	entry.State = CacheEntryValid
+	entry.validAtNs = time.Now().UnixNano()
 	entry.token = 0
 	entry.lastAccessNs.Store(nextLRUToken())
 	s.closeWaitersLocked(entry)
