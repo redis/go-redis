@@ -164,13 +164,18 @@ func (ph *PoolHook) OnPut(ctx context.Context, conn *pool.Conn) (shouldPool bool
 	}
 
 	if err := conn.MarkQueuedForHandoff(); err != nil {
-		// The handoff was already queued successfully above, so a worker owns
-		// this connection. MarkQueuedForHandoff only fails when that worker has
-		// concurrently advanced the connection's state (handoff in progress or
-		// already completed). Removing the connection here would discard a
-		// healthy connection that is being handed off; pool it instead and let
-		// the worker remove it itself if the handoff ultimately fails.
-		return true, false, nil
+		// Marking can fail if a worker advanced the connection's state between
+		// our queueHandoff above and here. Re-check ShouldHandoff: with the CAS
+		// rollback in Conn.MarkQueuedForHandoff, a worker that already cleared
+		// the handoff state is no longer misreported as ShouldHandoff=true, so a
+		// cleared connection is reliably detected and pooled here.
+		if !conn.ShouldHandoff() {
+			// Handoff was processed - this is normal, pool the connection.
+			return true, false, nil
+		}
+		// Still marked for handoff in an ambiguous state — remove it rather than
+		// returning a connection a queued worker may still close or replace.
+		return false, true, nil
 	}
 	internal.Logger.Printf(ctx, logs.MarkedForHandoff(conn.GetID()))
 	return true, false, nil
