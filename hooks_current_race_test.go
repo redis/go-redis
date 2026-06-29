@@ -15,10 +15,11 @@ func (noopRaceHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelin
 }
 
 // AddHook publishes a fresh hooks snapshot via hs.state, while the command-path
-// getters (processHook, processPipelineHook, processTxPipelineHook) and the
-// AddHook slice append all touch the same hook state. Exercise concurrent
-// AddHook writers against the command-path readers; run with -race to catch a
-// torn read of the published snapshot or an unsynchronized slice append.
+// getters (processHook, processPipelineHook, processTxPipelineHook), the slice
+// readers (withProcessHook, withProcessPipelineHook) and the AddHook slice
+// append all touch the same hook state. Exercise concurrent AddHook writers
+// against both reader groups; run with -race to catch a torn read of the
+// published snapshot or an unsynchronized slice append.
 func TestHooksMixinCurrentConcurrent(t *testing.T) {
 	var hs hooksMixin
 	hs.initHooks(hooks{})
@@ -49,7 +50,12 @@ func TestHooksMixinCurrentConcurrent(t *testing.T) {
 		}()
 	}
 
-	// Reader: the command-path getters Load hs.state lock-free.
+	noopProcess := func(context.Context, Cmder) error { return nil }
+	noopPipeline := func(context.Context, []Cmder) error { return nil }
+
+	// Reader: the command-path getters Load hs.state lock-free; the slice
+	// readers (withProcessHook, withProcessPipelineHook) iterate the published
+	// snapshot's hook slice.
 	go func() {
 		defer wg.Done()
 		defer close(done)
@@ -57,6 +63,8 @@ func TestHooksMixinCurrentConcurrent(t *testing.T) {
 			_ = hs.processHook(ctx, cmd)
 			_ = hs.processPipelineHook(ctx, cmds)
 			_ = hs.processTxPipelineHook(ctx, cmds)
+			_ = hs.withProcessHook(ctx, cmd, noopProcess)
+			_ = hs.withProcessPipelineHook(ctx, cmds, noopPipeline)
 		}
 	}()
 
