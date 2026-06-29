@@ -5427,8 +5427,9 @@ func (c *cmdsInfoCache) Refresh() {
 
 // Peek returns the cached CommandInfo map without triggering a Redis round-trip.
 // Returns nil when the cache is cold; callers should fall back to other heuristics.
-// Note: during the very first Get() (initial population) this call will block on
-// the writer lock. After that, concurrent Peek() calls do not block each other.
+// The read is lock-free (a single atomic load) and never blocks, even while a
+// concurrent Get() is populating the cache — it simply returns nil until the
+// first population publishes the map.
 // The returned map and its entries MUST NOT be mutated by the caller.
 func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
 	if c == nil {

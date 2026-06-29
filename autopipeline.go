@@ -55,7 +55,10 @@ type AutoPipelineConfig struct {
 	//
 	// Based on benchmarks, 100μs can reduce CPU usage by 50%
 	// while adding only ~100μs average latency per command.
-	// Default: 0 (no delay)
+	// Default: 0. Note that 0 does not mean "flush instantly": the flusher
+	// still applies a small default coalescing window (defaultAccumulateWindow)
+	// so concurrently-enqueued commands can batch. Set a value here only to
+	// widen that window.
 	MaxFlushDelay time.Duration
 
 	// AdaptiveDelay enables smart delay calculation based on queue fill level.
@@ -117,7 +120,7 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         200,
 		MaxConcurrentBatches: 1, // ordered by default
-		MaxFlushDelay:        0, // No delay by default (lowest latency)
+		MaxFlushDelay:        0, // lowest latency; flusher still uses the default coalescing window
 	}
 }
 
@@ -236,6 +239,9 @@ func putQueueSlice(slice []Cmder) {
 // deadline or cancellation is therefore not honored once the command is queued
 // (this is deliberate — a per-batch timer per command would cost a goroutine
 // each). Use a plain client for commands that need their own deadline.
+// The one exception is a blocking command (readTimeout() != nil, e.g. BLPOP):
+// it is never batched and runs directly on the caller's context, which is
+// honored as usual.
 //
 // Lifetime: AutoPipeline() returns a single, client-owned instance shared by all
 // callers. Close()ing it (or closing the client) stops the shared pipeliner for
@@ -347,18 +353,29 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 	nShards := numAutoPipelineShards(config.MaxConcurrentBatches)
 	// Split the concurrent-batch budget across shards so each shard has its own
 	// semaphore. A single shared semaphore became a contention point once the
-	// per-shard queue mutexes were no longer the bottleneck.
+	// per-shard queue mutexes were no longer the bottleneck. Integer division
+	// drops a remainder, so hand the leftover permits to the first shards: the
+	// per-shard permits then sum to exactly MaxConcurrentBatches.
 	perShard := config.MaxConcurrentBatches / nShards
+	remainder := config.MaxConcurrentBatches % nShards
 	if perShard < 1 {
+		// Budget smaller than the shard count: give every shard one permit so
+		// each flusher can still make progress. The sum then exceeds the
+		// configured budget, which is unavoidable with per-shard semaphores.
 		perShard = 1
+		remainder = 0
 	}
 	ap.shards = make([]*apShard, nShards)
 	for i := range ap.shards {
+		permits := perShard
+		if i < remainder {
+			permits++
+		}
 		s := &apShard{
 			ap:       ap,
 			notify:   make(chan struct{}, 1),
 			queue:    getQueueSlice(config.MaxBatchSize),
-			sem:      internal.NewFIFOSemaphore(int32(perShard)),
+			sem:      internal.NewFIFOSemaphore(int32(permits)),
 			curBatch: newAPBatch(),
 		}
 		ap.shards[i] = s
@@ -428,7 +445,13 @@ func (f AutoFuture) Cmd() Cmder { return f.cmd }
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	if cmd.readTimeout() != nil {
-		// Blocking commands are executed directly, outside the pipeline.
+		// Blocking commands are executed directly, outside the pipeline. They
+		// still must respect a closed AutoPipeliner: enqueue() rejects on the
+		// batched path, so mirror that here instead of running after Close().
+		if ap.closed.Load() {
+			cmd.SetErr(ErrClosed)
+			return AutoFuture{cmd: cmd, batch: closedBatch}
+		}
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return AutoFuture{cmd: cmd, batch: closedBatch}
 	}
@@ -652,10 +675,12 @@ func (s *apShard) accumulateBatch() {
 	}
 
 	// Pick the accumulation window. With AdaptiveDelay set, calculateDelay scales
-	// it down as the queue fills (and returns 0 once it's ≥75% full, flushing
-	// immediately); otherwise it's the fixed MaxFlushDelay. Fall back to the
-	// default window only when no delay is configured at all.
-	window := ap.calculateDelay()
+	// it down as this shard's queue fills (and returns 0 once it's ≥75% full,
+	// flushing immediately); otherwise it's the fixed MaxFlushDelay. Fall back to
+	// the default window only when no delay is configured at all. The fill level
+	// is this shard's own length — each shard flushes independently, so a global
+	// count would mis-tune a quiet shard while another is busy.
+	window := ap.calculateDelay(s.Len())
 	if window <= 0 {
 		if ap.config.MaxFlushDelay > 0 || ap.config.AdaptiveDelay {
 			// A delay/adaptive mode was configured and the current fill level
@@ -845,10 +870,11 @@ func (ap *AutoPipeliner) Len() int {
 	return total
 }
 
-// calculateDelay calculates the delay based on current queue length.
+// calculateDelay calculates the delay based on the given queue length (the
+// caller's own shard, not the global total, so each shard tunes independently).
 // Uses integer-only arithmetic for optimal performance (no float operations).
 // Returns 0 if MaxFlushDelay is 0.
-func (ap *AutoPipeliner) calculateDelay() time.Duration {
+func (ap *AutoPipeliner) calculateDelay(queueLen int) time.Duration {
 	maxDelay := ap.config.MaxFlushDelay
 	if maxDelay == 0 {
 		return 0
@@ -859,8 +885,6 @@ func (ap *AutoPipeliner) calculateDelay() time.Duration {
 		return maxDelay
 	}
 
-	// Get current queue length
-	queueLen := ap.Len()
 	if queueLen == 0 {
 		return 0
 	}
