@@ -304,6 +304,9 @@ func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn 
 }
 
 // Stats contains pool state information and accumulated stats.
+//
+// TODO(cxl): the uint32/int64 fields below will be changed to atomic value
+// types (atomic.Uint32/atomic.Int64) in v10, which is a breaking API change.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
 	Misses         uint32 // number of times free connection was NOT found in the pool
@@ -394,7 +397,7 @@ type lastDialErrorWrap struct {
 type ConnPool struct {
 	cfg *Options
 
-	dialErrorsNum uint32 // atomic
+	dialErrorsNum atomic.Uint32
 	lastDialError atomic.Value
 
 	dialsInProgress chan struct{}
@@ -415,7 +418,7 @@ type ConnPool struct {
 	stats          Stats
 	waitDurationNs atomic.Int64
 
-	_closed uint32 // atomic
+	_closed atomic.Uint32
 
 	// Pool hooks manager for flexible connection processing
 	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
@@ -651,7 +654,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	if atomic.LoadUint32(&p.dialErrorsNum) >= uint32(p.cfg.PoolSize) {
+	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
 		return nil, p.getLastDialError()
 	}
 
@@ -724,7 +727,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
 	// All retries failed - handle error tracking
 	p.setLastDialError(lastErr)
-	if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
+	if p.dialErrorsNum.Add(1) == uint32(p.cfg.PoolSize) {
 		go p.tryDial()
 	}
 	return nil, lastErr
@@ -789,7 +792,7 @@ func (p *ConnPool) tryDial() {
 			continue
 		}
 
-		atomic.StoreUint32(&p.dialErrorsNum, 0)
+		p.dialErrorsNum.Store(0)
 		_ = conn.Close()
 		return
 	}
@@ -1573,7 +1576,7 @@ func (p *ConnPool) Stats() *Stats {
 }
 
 func (p *ConnPool) closed() bool {
-	return atomic.LoadUint32(&p._closed) == 1
+	return p._closed.Load() == 1
 }
 
 func (p *ConnPool) RetireConns(ctx context.Context, conns []*Conn, reason string) {
@@ -1653,7 +1656,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 }
 
 func (p *ConnPool) Close() error {
-	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
+	if !p._closed.CompareAndSwap(0, 1) {
 		return ErrClosed
 	}
 
