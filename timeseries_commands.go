@@ -1136,7 +1136,7 @@ func (c cmdable) TSMGetWithArgs(ctx context.Context, filters []string, options *
 }
 
 // TSNRangePivotRow represents a single row in the pivot response from TS.NRANGE / TS.NREVRANGE.
-// Timestamp is the row's timestamp; Values holds one float64 per input key in input-key order.
+// Timestamp is the row's timestamp, Values holds one float64 per input key in input-key order.
 // Missing samples and missing aggregation buckets are represented as NaN.
 type TSNRangePivotRow struct {
 	Timestamp int64
@@ -1265,13 +1265,13 @@ func appendNRangeOptions(
 	if latest {
 		args = append(args, "LATEST")
 	}
-	if filterByTS != nil {
+	if len(filterByTS) > 0 {
 		args = append(args, "FILTER_BY_TS")
 		for _, ts := range filterByTS {
 			args = append(args, ts)
 		}
 	}
-	if filterByValue != nil {
+	if len(filterByValue) > 0 {
 		args = append(args, "FILTER_BY_VALUE")
 		for _, v := range filterByValue {
 			args = append(args, v)
