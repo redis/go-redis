@@ -387,6 +387,74 @@ func TestFTHybridWithArgsGeneratedNameAvoidsExplicitCollision(t *testing.T) {
 	assertVectorParam(t, gotCmd.args, "embedding", "__vector_param_1", blob0)
 }
 
+// TestSearchAggregator_StringCovers ensures every SearchAggregator constant
+// renders to the expected REDUCE function name.
+func TestSearchAggregator_String(t *testing.T) {
+	cases := map[SearchAggregator]string{
+		SearchInvalid:          "",
+		SearchAvg:              "AVG",
+		SearchSum:              "SUM",
+		SearchMin:              "MIN",
+		SearchMax:              "MAX",
+		SearchCount:            "COUNT",
+		SearchCountDistinct:    "COUNT_DISTINCT",
+		SearchCountDistinctish: "COUNT_DISTINCTISH",
+		SearchStdDev:           "STDDEV",
+		SearchQuantile:         "QUANTILE",
+		SearchToList:           "TOLIST",
+		SearchFirstValue:       "FIRST_VALUE",
+		SearchRandomSample:     "RANDOM_SAMPLE",
+		SearchCollect:          "COLLECT",
+	}
+	for agg, want := range cases {
+		if got := agg.String(); got != want {
+			t.Fatalf("SearchAggregator(%d).String() = %q, want %q", agg, got, want)
+		}
+	}
+}
+
+// TestFTAggregateWithArgs_CollectReducer verifies that a GROUPBY using the
+// COLLECT reducer (Redis 8.8+) produces the expected REDUCE COLLECT clause,
+// passing FIELDS / SORTBY / LIMIT through verbatim from Args.
+func TestFTAggregateWithArgs_CollectReducer(t *testing.T) {
+	m := &mockCmdable{}
+	c := m.asCmdable()
+
+	collect := FTAggregateReducer{
+		Reducer: SearchCollect,
+		Args: []interface{}{
+			"FIELDS", 3, "@title", "@rating", "@year",
+			"SORTBY", 2, "@rating", "DESC",
+			"LIMIT", 0, 5,
+		},
+		As: "top_movies",
+	}
+	options := &FTAggregateOptions{
+		GroupBy: []FTAggregateGroupBy{{
+			Fields: []interface{}{"@genre"},
+			Reduce: []FTAggregateReducer{collect},
+		}},
+	}
+	cmd := c.FTAggregateWithArgs(context.Background(), "idx", "*", options)
+	if cmd.Err() != nil {
+		t.Fatalf("unexpected error: %v", cmd.Err())
+	}
+
+	want := []interface{}{
+		"FT.AGGREGATE", "idx", "*",
+		"GROUPBY", 1, "@genre",
+		"REDUCE", "COLLECT", len(collect.Args),
+		"FIELDS", 3, "@title", "@rating", "@year",
+		"SORTBY", 2, "@rating", "DESC",
+		"LIMIT", 0, 5,
+		"AS", "top_movies",
+		"DIALECT", 2,
+	}
+	if !reflect.DeepEqual(cmd.args, want) {
+		t.Fatalf("FTAggregateWithArgs args mismatch:\n got:  %v\n want: %v", cmd.args, want)
+	}
+}
+
 // TestFTHybridWithArgs_ShardKRatio verifies the SHARD_K_RATIO option
 // (Redis 8.8+) is emitted on the VSIM clause after the KNN method block and
 // before FILTER when a positive ratio is set, and omitted entirely when the
@@ -460,4 +528,4 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 			t.Fatalf("expected SHARD_K_RATIO to be absent, args=%v", gotCmd.args)
 		}
 	})
-}
+ }
