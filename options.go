@@ -313,9 +313,9 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
-	// ClientSideCacheConfig enables client-side caching when non-nil.
-	// Requires Protocol: 3 (RESP3) so that invalidation messages are delivered
-	// as out-of-band push notifications. If ClientSideCache is also set, it
+	// ClientSideCacheConfig enables client-side caching when non-nil. Together
+	// with ClientSideCache it is the on/off switch for the feature: leave both
+	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
 	// takes precedence over this config.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
@@ -324,7 +324,34 @@ type Options struct {
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
 	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the invalidation architecture used when
+	// client-side caching is enabled (via ClientSideCacheConfig or
+	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
+	// CSCStrategySharedTracking (the default). See docs/csc-strategy-guide.md.
+	ClientSideCacheStrategy CSCStrategy
 }
+
+// CSCStrategy selects the client-side caching invalidation architecture. Set via
+// Options.ClientSideCacheStrategy; fixed for the client's lifetime.
+type CSCStrategy int
+
+const (
+	// CSCStrategySharedTracking (default, the zero value): one shared cache; every
+	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
+	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
+	CSCStrategySharedTracking CSCStrategy = iota
+
+	// CSCStrategyBroadcast: one shared cache fed by a dedicated out-of-pool sidecar on
+	// CLIENT TRACKING ON BCAST; pool connections never track. Highest throughput in
+	// go-redis benchmarks — opt in where BCAST is available.
+	CSCStrategyBroadcast
+
+	// CSCStrategyPerConnection: each pool connection keeps its own private cache and
+	// CLIENT TRACKING ON subscription. No cross-connection staleness, at the cost of
+	// duplicated memory and per-conn warm-up; suited to few, long-lived connections.
+	CSCStrategyPerConnection
+)
 
 func (opt *Options) init() {
 	if opt.Addr == "" {

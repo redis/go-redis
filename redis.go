@@ -402,6 +402,25 @@ func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
 	}
 }
 
+// resolveCredentials returns the username/password to authenticate with, using
+// the non-streaming credential sources in precedence order:
+// CredentialsProviderContext, then CredentialsProvider, then the static
+// Username/Password fields. The StreamingCredentialsProvider path is handled
+// separately by initConn (it requires per-connection listener wiring) and is
+// intentionally not covered here. Returns empty strings when no credentials
+// are configured.
+func (opt *Options) resolveCredentials(ctx context.Context) (username, password string, err error) {
+	switch {
+	case opt.CredentialsProviderContext != nil:
+		return opt.CredentialsProviderContext(ctx)
+	case opt.CredentialsProvider != nil:
+		username, password = opt.CredentialsProvider()
+	case opt.Username != "" || opt.Password != "":
+		username, password = opt.Username, opt.Password
+	}
+	return username, password, nil
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
@@ -505,16 +524,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 
 		username, password = credentials.BasicAuth()
-	} else if c.opt.CredentialsProviderContext != nil {
-		username, password, initErr = c.opt.CredentialsProviderContext(ctx)
+	} else {
+		username, password, initErr = c.opt.resolveCredentials(ctx)
 		if initErr != nil {
 			cn.GetStateMachine().Transition(pool.StateClosed)
-			return fmt.Errorf("failed to get credentials from context provider: %w", initErr)
+			return fmt.Errorf("failed to resolve credentials: %w", initErr)
 		}
-	} else if c.opt.CredentialsProvider != nil {
-		username, password = c.opt.CredentialsProvider()
-	} else if c.opt.Username != "" || c.opt.Password != "" {
-		username, password = c.opt.Username, c.opt.Password
 	}
 
 	// for redis-server versions that do not support the HELLO command,
@@ -544,7 +559,18 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	trackingEnabled := c.csc != nil && c.opt.Protocol == 3
+	// trackingEnabled reports whether THIS pool connection must issue
+	// CLIENT TRACKING ON during init. True for the two strategies that track on
+	// pool connections; false for Broadcast (whose sidecar owns tracking). It is
+	// distinct from per-connection cache provisioning (see cscPerConnOnInitConn
+	// below, which is gated separately on cscPerConnEnabled).
+	//   - CSCStrategySharedTracking: shared cache + every pool conn tracks.
+	//   - CSCStrategyPerConnection: per-conn caches, every pool conn tracks
+	//     (c.csc stays nil; the per-conn dispatch state is the signal).
+	//   - CSCStrategyBroadcast: the sidecar owns the tracking subscription;
+	//     pool conns must NOT track (cscShouldTrackOnPoolConn → false).
+	trackingEnabled := ((c.csc != nil && cscShouldTrackOnPoolConn(c)) || c.cscPerConnEnabled()) &&
+		c.opt.Protocol == 3
 	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -568,6 +594,14 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if initErr != nil {
 		cn.GetStateMachine().Transition(pool.StateClosed)
 		return fmt.Errorf("failed to initialize connection options: %w", initErr)
+	}
+
+	// CSCStrategyPerConnection only: provision this connection's private cache
+	// and wire its lifecycle to the connection's close. Gated on
+	// cscPerConnEnabled so the intent is explicit — the shared-cache strategies
+	// never provision per-connection caches.
+	if c.cscPerConnEnabled() {
+		c.cscPerConnOnInitConn(ctx, cn)
 	}
 
 	// Enable maintnotifications if maintnotifications are configured
@@ -708,6 +742,13 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	// CSCStrategyPerConnection hot path: binds the command to a specific conn and
+	// serves from that conn's private cache. Returns (false, nil) for other
+	// strategies (or non-cacheable commands), falling through below.
+	if handled, err := c.cscPerConnTryProcess(ctx, cmd); handled {
+		return err
+	}
+	// Shared-cache strategies (Broadcast, SharedTracking).
 	if c.csc != nil && isCacheable(cmd) {
 		return c.processCached(ctx, cmd)
 	}
@@ -996,6 +1037,16 @@ func (c *baseClient) disableMaintNotificationsUpgrades() error {
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
 	var firstErr error
+
+	// CSC teardown, strategy by strategy (each is a no-op when its strategy
+	// is not active):
+	//   - SharedTracking: stop the background invalidation drainer before the
+	//     pool it walks is torn down.
+	//   - Broadcast: shut down the sidecar before closing the pool.
+	//   - PerConn: drop the per-connection cache dispatch state.
+	c.stopBackgroundDrainer()
+	cscShutdownBroadcastSidecar(c)
+	c.cscPerConnOnClose()
 
 	// Close maintnotifications manager first
 	if err := c.disableMaintNotificationsUpgrades(); err != nil {
@@ -1298,9 +1349,20 @@ func NewClient(opt *Options) *Client {
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 	}
 
-	// Initialize client-side caching for RESP3 clients. Invalidations are
-	// delivered as push notifications, so RESP2 clients cannot use CSC.
+	// The three calls below run for every strategy,
+	//  but each one lands differently (Options.ClientSideCacheStrategy):
+	//
+	//   - CSCStrategyPerConnection: cscPerConnInit takes the invalidation
+	//     handler for per-connection caches, so attachCSC leaves c.csc == nil
+	//     on purpose — that nil is what the per-conn path expects.
+	//   - CSCStrategySharedTracking (default): attachCSC builds the shared cache
+	//     plus a background drainer that applies invalidations to it.
+	//   - CSCStrategyBroadcast: shared cache plus a BCAST sidecar. If the sidecar
+	//     can't start, CSC is disabled (c.csc = nil) to avoid serving stale values
+	//     that nothing would evict.
 	if opt.Protocol == 3 {
+		c.baseClient.cscPerConnInit()
+
 		var cache Cache
 		if explicit := opt.ClientSideCache; explicit != nil {
 			cache = explicit
@@ -1308,6 +1370,12 @@ func NewClient(opt *Options) *Client {
 			cache = NewLocalCache(*cfg)
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
+
+		if err := cscAttachBroadcastSidecarIfNeeded(context.Background(), c.baseClient); err != nil {
+			internal.Logger.Printf(context.Background(),
+				"redis: csc sidecar failed to start (%v); disabling client-side caching for this client", err)
+			c.baseClient.csc = nil
+		}
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
@@ -1352,6 +1420,9 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone := *c
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
+	// CSCStrategyPerConnection: route the clone through the same per-connection
+	// dispatch table. No-op for other strategies.
+	c.baseClient.cscPerConnPropagateTo(clone.baseClient)
 	return &clone
 }
 
@@ -1360,6 +1431,9 @@ func (c *Client) Conn() *Conn {
 	// Derived single-connection clients share the parent's client-side cache
 	// so that invalidations observed on any connection evict the same entries.
 	conn.baseClient.attachCSC(context.Background(), c.csc)
+	// CSCStrategyPerConnection: propagate the parent's per-connection dispatch
+	// state so derived sticky clients route to the same per-conn caches.
+	c.baseClient.cscPerConnPropagateTo(&conn.baseClient)
 	return conn
 }
 
@@ -1677,15 +1751,96 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 	}
 
 	if !cn.MaybeHasData() {
+		// Socket peek confirmed no pending data — stamp the conn so a tight
+		// follow-up op (the CSCStrategyPerConnection hot path) can skip the
+		// redundant syscall.
+		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
 		return nil
 	}
 
 	// Short read timeout: 10us is enough to consume any already-buffered push
 	// notifications without blocking the caller.
-	return cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
+	err := cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
+	if err == nil {
+		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+	}
+	return err
+}
+
+// drainPushNotifications drains the push frames buffered on a connection the CSC
+// drainer has claimed, under a HARD read deadline. Returns a non-nil error only for
+// a FATAL connection error (drainer removes the conn); a benign read timeout returns
+// nil. The built-in processor surfaces read errors; a custom processor runs via its
+// own ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
+func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+	// Skip only when nothing is buffered (reader) AND nothing on the socket:
+	// MaybeHasData peeks only the socket, but an invalidate can sit in cn.rd.
+	if !cn.HasBufferedData() && !cn.MaybeHasData() {
+		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+		return nil
+	}
+
+	err := cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		// Built-in processor: use our loop that SURFACES read errors (it swallows them).
+		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+			return c.drainPendingPushNotifications(cn, rd)
+		}
+		// Custom processor: its error is not contractually connection-fatal, so log
+		// + re-pool (only the built-in path / a reader-setup failure drives removal).
+		handlerCtx := c.pushNotificationHandlerContext(cn)
+		if perr := c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd); perr != nil {
+			internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (re-pooling): %v", perr)
+		}
+		return nil
+	})
+	if err != nil && isBadConn(err, true, c.opt.Addr) {
+		return err // fatal read/protocol/connection error — remove the conn
+	}
+	cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+	return nil
+}
+
+// drainPendingPushNotifications dispatches the push frames currently buffered on
+// rd and STOPS when the buffer empties (it never blocks for more). Returns the
+// first read/peek error for the caller to classify; handler errors are logged and
+// draining continues. (Built-in ProcessPendingNotifications swallows read errors.)
+func (c *baseClient) drainPendingPushNotifications(cn *pool.Conn, rd *proto.Reader) error {
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	for {
+		typ, err := rd.PeekReplyType()
+		if err != nil {
+			return err // surfaced for the caller to classify (benign timeout vs fatal)
+		}
+		if typ != proto.RespPush {
+			// Not a push frame — do not consume a command reply.
+			return nil
+		}
+		reply, err := rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		if notification, ok := reply.([]interface{}); ok && len(notification) > 0 {
+			if name, ok := notification[0].(string); ok {
+				if handler := c.pushProcessor.GetHandler(name); handler != nil {
+					if herr := handler.HandlePushNotification(context.Background(), handlerCtx, notification); herr != nil {
+						internal.Logger.Printf(context.Background(), "csc: drain: push handler %q failed: %v", name, herr)
+					}
+				}
+				// Unhandled notification name: consumed and dropped (consume-and-dispatch-all).
+			}
+		}
+		// Stop when nothing is buffered — don't block for a new frame. That terminal
+		// wait added ~cap to the hold with no latency gain (csc_drain_readcap_test.go).
+		if rd.Buffered() == 0 {
+			return nil
+		}
+	}
 }
 
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection
@@ -1699,7 +1854,13 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 
 	// Create handler context with client, connection pool, and connection information
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	err := c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	if err == nil {
+		// Drain succeeded inside the reader path; stamp the conn so the
+		// per-conn hot path can skip an immediate redundant peek.
+		cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
+	}
+	return err
 }
 
 // pushNotificationHandlerContext creates a handler context for push notification processing

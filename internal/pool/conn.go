@@ -69,9 +69,10 @@ type Conn struct {
 	// Connection identifier for unique tracking
 	id uint64
 
-	usedAt      atomic.Int64
-	lastPutAt   atomic.Int64
-	dialStartNs atomic.Int64 // Time when dial started (for connection create time metric)
+	usedAt          atomic.Int64
+	lastPutAt       atomic.Int64
+	lastPushDrainAt atomic.Int64 // Monotonic ns of last successful push-notification drain on this conn
+	dialStartNs     atomic.Int64 // Time when dial started (for connection create time metric)
 
 	// Lock-free netConn access using atomic.Value
 	// Contains *atomicNetConn wrapper, accessed atomically for better performance
@@ -184,6 +185,16 @@ func (cn *Conn) LastPutAtNs() int64 {
 }
 func (cn *Conn) SetLastPutAtNs(ns int64) {
 	cn.lastPutAt.Store(ns)
+}
+
+// LastPushDrainAtNs returns the cached-ns timestamp of the last successful
+// push-notification drain on this conn. Used by the PerConnection hot path to
+// skip a redundant MaybeHasData() syscall when a drain just ran.
+func (cn *Conn) LastPushDrainAtNs() int64 {
+	return cn.lastPushDrainAt.Load()
+}
+func (cn *Conn) SetLastPushDrainAtNs(ns int64) {
+	cn.lastPushDrainAt.Store(ns)
 }
 
 // GetDialStartNs returns the time when the dial started (in nanoseconds since epoch).
@@ -845,6 +856,22 @@ func (cn *Conn) WithReader(
 		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
 			return err
 		}
+	}
+	return fn(cn.rd)
+}
+
+// WithReaderHardDeadline runs fn under a HARD read deadline of now+timeout,
+// bypassing getEffectiveReadTimeout so a relaxed maintenance timeout can't extend
+// it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
+// become the socket deadline, or the read surfaces context.DeadlineExceeded, which
+// isBadConn treats as fatal.
+func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
 	}
 	return fn(cn.rd)
 }

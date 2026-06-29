@@ -480,3 +480,32 @@ func TestLocalCache_ConcurrentReserveFulfill_NoHijack(t *testing.T) {
 	}
 	getWg.Wait()
 }
+
+func TestLocalCache_MaxStalenessBackstop(t *testing.T) {
+	ctx := context.Background()
+
+	// With MaxStaleness set, a fresh entry hits; one older than the window misses
+	// and is evicted so the next access re-fetches (else Reserve suppresses it).
+	c := NewLocalCache(CacheConfig{MaxStaleness: 30 * time.Millisecond})
+	if !c.Set("k", []string{"rk"}, []byte("v")) {
+		t.Fatal("Set failed")
+	}
+	if v, ok := c.Get(ctx, "k"); !ok || string(v) != "v" {
+		t.Fatalf("fresh entry should hit: v=%q ok=%v", v, ok)
+	}
+	time.Sleep(45 * time.Millisecond)
+	if _, ok := c.Get(ctx, "k"); ok {
+		t.Fatal("entry past MaxStaleness should miss")
+	}
+	if n := c.Len(); n != 0 {
+		t.Fatalf("stale entry should be evicted, got Len=%d", n)
+	}
+
+	// MaxStaleness disabled (zero) must not expire entries by age.
+	c2 := NewLocalCache(CacheConfig{})
+	c2.Set("k", []string{"rk"}, []byte("v"))
+	time.Sleep(20 * time.Millisecond)
+	if _, ok := c2.Get(ctx, "k"); !ok {
+		t.Fatal("MaxStaleness=0 must not expire entries by age")
+	}
+}

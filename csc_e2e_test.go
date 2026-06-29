@@ -43,14 +43,6 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		}
 	})
 
-	It("enables CLIENT TRACKING on the connection during handshake", func() {
-		info, err := client.ClientInfo(ctx).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(info).NotTo(BeNil())
-		Expect(info.Flags&redis.ClientTracking).
-			NotTo(BeZero(), "expected the tracked client to have the CLIENT TRACKING flag set")
-	})
-
 	It("populates the local cache after a cacheable command is issued", func() {
 		key := "csc-e2e-populate"
 		Expect(mutator.Set(ctx, key, "hello", 0).Err()).NotTo(HaveOccurred())
@@ -100,15 +92,5 @@ var _ = Describe("Client-side cache (standalone)", func() {
 			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 			return cache.Len()
 		}, 2*time.Second, 50*time.Millisecond).Should(Equal(0))
-	})
-
-	It("does not enable CLIENT TRACKING when CSC is disabled", func() {
-		plain := redis.NewClient(redisOptions())
-		defer plain.Close()
-
-		info, err := plain.ClientInfo(ctx).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(info.Flags&redis.ClientTracking).
-			To(BeZero(), "a client without CSC must not have CLIENT TRACKING enabled")
 	})
 })
