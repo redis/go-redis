@@ -1,15 +1,19 @@
 ---
 name: add-command
-description: Use when adding a new Redis command (or RediSearch / TimeSeries / VectorSet / module subcommand) to go-redis — covers fetching the command spec, the Cmder type, Cmdable interface wiring, RESP parsing, tests, and the custom-vet rule that enforces SetVal.
+description: Use when adding a new Redis command (or RediSearch / TimeSeries / VectorSet / module subcommand) to go-redis — covers fetching the command spec and docs, the Cmder type, Cmdable interface wiring, RESP parsing, tests, and the custom-vet rule that enforces SetVal.
 ---
 
 # Adding a new Redis command
 
 Router for adding a Redis command to the root `redis` package. Read the reference file for the area you're touching — don't load all of them.
 
-## Step 0 — Get the command spec FIRST
+## Step 0 — Get the command spec AND docs FIRST
 
-Before writing any Go, know the exact command shape (arguments, optional flags, reply structure, since-version, key positions). Resolve the spec in this order:
+Before writing any Go, know the exact command shape (arguments, optional flags, reply structure, since-version, key positions) **and** its documented semantics (what each reply field means, RESP2-vs-RESP3 differences, examples). Fetch **two** sources — the machine-readable spec and the prose docs. They cover different gaps: the spec nails arguments and key positions, the docs nail what the reply actually looks like.
+
+### A. Machine-readable spec (arguments, key specs, reply schema)
+
+Resolve the spec in this order:
 
 1. **Spec file argument** — if the user passed a path to a spec/JSON file, read it.
 2. **PR URL argument** — if the user passed a `github.com/redis/redis` PR (or other repo) URL, fetch the diff and read the command definition + `src/commands/<cmd>.json` it adds.
@@ -19,17 +23,35 @@ Before writing any Go, know the exact command shape (arguments, optional flags, 
    ```
    Container subcommands use `<container>-<sub>.json` (e.g. `client-info.json`). **A 404 means it's a module command** (RediSearch, TimeSeries, VectorSet, Bloom) — those specs live in the **module's own repo**, not redis/redis. Switch to the module repo (see `references/module-commands.md` §1) or ask the user for the spec/PR. Don't retry the redis/redis URL.
 
-Map spec fields to the implementation:
+### B. Prose docs (semantics, return value, RESP2/RESP3 reply, examples)
 
-| Spec field | Drives |
-|------------|--------|
-| `arguments` | method signature, args-slice build order, optional `FooArgs` struct |
-| `reply_schema` | the `readReply` parser and Cmder result type |
-| `since` | `SkipBeforeRedisVersion(...)` in the integration test, doc comment |
-| `key_specs` | key-position maps in `command.go`; cluster routing |
-| `command_flags` (e.g. `READONLY`, no key) | keyless / fan-out handling, cluster routing |
+The JSON `reply_schema` is often thin or missing; the docs spell out what the reply actually is — including separate **RESP2 Reply** and **RESP3 Reply** sections, which decide your `readReply` and any module RESP2-vs-RESP3 handling. Fetch the command's doc page:
 
-If you can't get a spec, STOP and ask the user — guessing the reply shape produces a broken `readReply`.
+```
+https://redis.io/docs/latest/commands/<command>/
+```
+
+Raw markdown source (alternative, good for diffing or when the rendered page is noisy):
+`https://raw.githubusercontent.com/redis/redis-doc/master/commands/<command>.md`.
+**Module commands** (RediSearch, TimeSeries, …) are documented under their own
+path on redis.io (e.g. `/docs/latest/commands/ft.search/`) or in the module repo
+— see `references/module-commands.md`.
+
+Read the **Return value / RESP2 Reply / RESP3 Reply** sections plus the examples, and reconcile them against the JSON `reply_schema`. When the two disagree, the docs' reply description (and a quick `redis-cli` check) win.
+
+### Map both sources to the implementation
+
+| Source | Drives |
+|--------|--------|
+| spec `arguments` | method signature, args-slice build order, optional `FooArgs` struct |
+| spec `reply_schema` + docs **Return value** | the `readReply` parser and Cmder result type |
+| docs **RESP2 Reply / RESP3 Reply** | RESP2-vs-RESP3 branching in `readReply` (see `references/module-commands.md`) |
+| spec `since` + docs `@history` | `SkipBeforeRedisVersion(...)` in the integration test, doc comment |
+| spec `key_specs` | key-position maps in `command.go`; cluster routing |
+| spec `command_flags` (e.g. `READONLY`, no key) | keyless / fan-out handling, cluster routing |
+| docs examples | integration-test cases and expected values |
+
+If you can't get either source, STOP and ask the user — guessing the reply shape produces a broken `readReply`.
 
 ## Decide before you start
 
