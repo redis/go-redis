@@ -964,7 +964,7 @@ func TestConnectionHook(t *testing.T) {
 		}
 
 		// Set a dialer that will check the context timeout
-		var timeoutVerified int32 // Use atomic for thread safety
+		var timeoutVerified atomic.Int32
 		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error {
 			// Check that the context has the expected timeout
 			deadline, ok := ctx.Deadline()
@@ -980,7 +980,7 @@ func TestConnectionHook(t *testing.T) {
 				t.Errorf("Context deadline not as expected. Expected around %v, got %v (diff: %v)",
 					expectedDeadline, deadline, timeDiff)
 			} else {
-				atomic.StoreInt32(&timeoutVerified, 1)
+				timeoutVerified.Store(1)
 			}
 
 			return nil // Successful handoff
@@ -1000,7 +1000,7 @@ func TestConnectionHook(t *testing.T) {
 		// Wait for handoff to complete
 		time.Sleep(500 * time.Millisecond)
 
-		if atomic.LoadInt32(&timeoutVerified) == 0 {
+		if timeoutVerified.Load() == 0 {
 			t.Error("HandoffTimeout was not properly applied to context")
 		}
 

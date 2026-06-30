@@ -45,7 +45,7 @@ func GetCachedTimeNs() int64 {
 }
 
 // Global atomic counter for connection IDs
-var connIDCounter uint64
+var connIDCounter atomic.Uint64
 
 // HandoffState represents the atomic state for connection handoffs
 // This struct is stored atomically to prevent race conditions between
@@ -63,7 +63,7 @@ type atomicNetConn struct {
 
 // generateConnID generates a fast unique identifier for a connection with zero allocations
 func generateConnID() uint64 {
-	return atomic.AddUint64(&connIDCounter, 1)
+	return connIDCounter.Add(1)
 }
 
 type Conn struct {
@@ -113,6 +113,11 @@ type Conn struct {
 	// closeReason is only used when an in-use connection is closed by another goroutine,
 	// to inform the goroutine using the connection why the connection was closed.
 	closeReason uberatomic.String
+
+	// closeOnPutReason marks an in-use connection for removal when it is returned
+	// to the pool. The socket is left open for the in-flight command and closed
+	// by ConnPool.Put.
+	closeOnPutReason uberatomic.String
 
 	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
 
@@ -435,6 +440,17 @@ func (cn *Conn) IncrementAndGetHandoffRetries(n int) int {
 // IsPooled returns true if the connection is managed by a pool and will be pooled on Put.
 func (cn *Conn) IsPooled() bool {
 	return cn.pooled
+}
+
+// MarkCloseOnPut marks the connection for removal when it is returned to the pool.
+func (cn *Conn) MarkCloseOnPut(reason string) {
+	cn.closeOnPutReason.Store(reason)
+}
+
+// CloseOnPutReason returns a non-empty reason when the connection should be
+// removed instead of pooled on Put.
+func (cn *Conn) CloseOnPutReason() string {
+	return cn.closeOnPutReason.Load()
 }
 
 // IsPubSub returns true if the connection is used for PubSub.

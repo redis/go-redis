@@ -627,6 +627,10 @@ func (o *queryOptions) duration(name string) time.Duration {
 	}
 	dur, err := time.ParseDuration(s)
 	if err == nil {
+		if dur <= 0 {
+			// disable timeouts
+			return -1
+		}
 		return dur
 	}
 	if o.err == nil {
