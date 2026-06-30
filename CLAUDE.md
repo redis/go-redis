@@ -10,9 +10,9 @@ imported below; edit `AGENTS.md`, not this file, for that content.
 
 ## Claude-specific
 
-- Repo-local **skills** under `.claude/skills/` (`testing`, `add-command`,
-  `commit-style`, `update-ci-image`) auto-trigger from their descriptions — no
-  need to invoke them manually.
+- Repo-local **skills** under `.claude/skills/` auto-trigger from their
+  descriptions — no need to invoke them manually (the set is listed in
+  `AGENTS.md`).
 - **Slash commands** under `.claude/commands/` (e.g. `/check-ci`) are available
   in-session.
 - Architectural **specs** under `.claude/specs/` are read on demand; open the
