@@ -20,5 +20,6 @@ choice for the whole team.
 ## Layout
 
 - `settings.json` — shared, committed Claude Code settings.
+- `commands/` — repo-specific slash commands (e.g. `check-ci`).
 - `skills/` — repo-specific skills (e.g. `add-command`).
 - `specs/` — architecture specs referenced by skills and by maintainers.
