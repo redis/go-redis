@@ -1,6 +1,7 @@
 ---
 name: prepare-release
 description: Use when preparing a go-redis release — cutting a new version, bumping version.go, updating the go-redis dependency version in submodule go.mod files, or writing the RELEASE-NOTES.md entry for a new vX.Y.Z. Covers choosing the next semver, finding the last release and gathering merged PRs since then, the release-notes format and what to exclude, running scripts/release.sh to bump versions, and verifying with the scripts/tag.sh dry-run. Does NOT create tags, push, or commit — publishing stays a manual maintainer step.
+allowed-tools: Bash(git describe:*), Bash(gh pr list:*)
 ---
 
 # Preparing a go-redis release

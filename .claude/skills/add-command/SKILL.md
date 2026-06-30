@@ -1,6 +1,7 @@
 ---
 name: add-command
 description: Use when adding a new Redis command (or RediSearch / TimeSeries / VectorSet / module subcommand) to go-redis — covers fetching the command spec and docs, the Cmder type, Cmdable interface wiring, RESP parsing, tests, and the custom-vet rule that enforces SetVal.
+allowed-tools: WebFetch
 ---
 
 # Adding a new Redis command
