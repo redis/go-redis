@@ -64,17 +64,61 @@ type (
 )
 
 type hooksMixin struct {
-	hooksMu *sync.RWMutex
+	// hooksMu serializes writers (AddHook); readers never take it.
+	hooksMu *sync.Mutex
+	// state holds the immutable hook snapshot. Readers Load it lock-free;
+	// writers publish a replacement copy-on-write under hooksMu.
+	state *atomic.Pointer[hooksState]
+}
 
+// hooksState is an immutable snapshot of the hook configuration. Once stored
+// in hooksMixin.state it is never mutated; AddHook builds a fresh copy.
+type hooksState struct {
 	slice   []Hook
 	initial hooks
 	current hooks
 }
 
+// rebuild recomputes current from initial + slice. It mutates the receiver, so
+// it must only run on a state that has not yet been published.
+func (s *hooksState) rebuild() {
+	s.initial.setDefaults()
+
+	s.current.dial = s.initial.dial
+	s.current.process = s.initial.process
+	s.current.pipeline = s.initial.pipeline
+	s.current.txPipeline = s.initial.txPipeline
+
+	for i := len(s.slice) - 1; i >= 0; i-- {
+		if wrapped := s.slice[i].DialHook(s.current.dial); wrapped != nil {
+			s.current.dial = wrapped
+		}
+		if wrapped := s.slice[i].ProcessHook(s.current.process); wrapped != nil {
+			s.current.process = wrapped
+		}
+		if wrapped := s.slice[i].ProcessPipelineHook(s.current.pipeline); wrapped != nil {
+			s.current.pipeline = wrapped
+		}
+		if wrapped := s.slice[i].ProcessPipelineHook(s.current.txPipeline); wrapped != nil {
+			s.current.txPipeline = wrapped
+		}
+	}
+}
+
 func (hs *hooksMixin) initHooks(hooks hooks) {
-	hs.hooksMu = new(sync.RWMutex)
-	hs.initial = hooks
-	hs.chain()
+	var slice []Hook
+	if hs.state != nil {
+		if old := hs.state.Load(); old != nil {
+			slice = old.slice
+		}
+	}
+
+	hs.hooksMu = new(sync.Mutex)
+	hs.state = new(atomic.Pointer[hooksState])
+
+	state := &hooksState{slice: slice, initial: hooks}
+	state.rebuild()
+	hs.state.Store(state)
 }
 
 type hooks struct {
@@ -136,51 +180,42 @@ func (h *hooks) setDefaults() {
 // Please note: "next(ctx, cmd)" is very important, it will call the next hook,
 // if "next(ctx, cmd)" is not executed, the redis command will not be executed.
 func (hs *hooksMixin) AddHook(hook Hook) {
-	hs.slice = append(hs.slice, hook)
-	hs.chain()
-}
-
-func (hs *hooksMixin) chain() {
-	hs.initial.setDefaults()
-
 	hs.hooksMu.Lock()
 	defer hs.hooksMu.Unlock()
 
-	hs.current.dial = hs.initial.dial
-	hs.current.process = hs.initial.process
-	hs.current.pipeline = hs.initial.pipeline
-	hs.current.txPipeline = hs.initial.txPipeline
-
-	for i := len(hs.slice) - 1; i >= 0; i-- {
-		if wrapped := hs.slice[i].DialHook(hs.current.dial); wrapped != nil {
-			hs.current.dial = wrapped
-		}
-		if wrapped := hs.slice[i].ProcessHook(hs.current.process); wrapped != nil {
-			hs.current.process = wrapped
-		}
-		if wrapped := hs.slice[i].ProcessPipelineHook(hs.current.pipeline); wrapped != nil {
-			hs.current.pipeline = wrapped
-		}
-		if wrapped := hs.slice[i].ProcessPipelineHook(hs.current.txPipeline); wrapped != nil {
-			hs.current.txPipeline = wrapped
-		}
+	old := hs.state.Load()
+	state := &hooksState{
+		slice:   make([]Hook, len(old.slice)+1),
+		initial: old.initial,
 	}
+	copy(state.slice, old.slice)
+	state.slice[len(old.slice)] = hook
+	state.rebuild()
+
+	hs.state.Store(state)
 }
 
 func (hs *hooksMixin) clone() hooksMixin {
-	hs.hooksMu.Lock()
-	defer hs.hooksMu.Unlock()
+	old := hs.state.Load()
+	l := len(old.slice)
+	state := &hooksState{
+		slice:   old.slice[:l:l],
+		initial: old.initial,
+		current: old.current,
+	}
 
-	clone := *hs
-	l := len(clone.slice)
-	clone.slice = clone.slice[:l:l]
-	clone.hooksMu = new(sync.RWMutex)
+	clone := hooksMixin{
+		hooksMu: new(sync.Mutex),
+		state:   new(atomic.Pointer[hooksState]),
+	}
+	clone.state.Store(state)
 	return clone
 }
 
 func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error {
-	for i := len(hs.slice) - 1; i >= 0; i-- {
-		if wrapped := hs.slice[i].ProcessHook(hook); wrapped != nil {
+	slice := hs.state.Load().slice
+	for i := len(slice) - 1; i >= 0; i-- {
+		if wrapped := slice[i].ProcessHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
@@ -190,8 +225,9 @@ func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook Proce
 func (hs *hooksMixin) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
-	for i := len(hs.slice) - 1; i >= 0; i-- {
-		if wrapped := hs.slice[i].ProcessPipelineHook(hook); wrapped != nil {
+	slice := hs.state.Load().slice
+	for i := len(slice) - 1; i >= 0; i-- {
+		if wrapped := slice[i].ProcessPipelineHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
@@ -199,26 +235,19 @@ func (hs *hooksMixin) withProcessPipelineHook(
 }
 
 func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.Conn, error) {
-	// Access to hs.current is guarded by a read-only lock since it may be mutated by AddHook(...)
-	// while this dialer is concurrently accessed by the background connection pool population
-	// routine when MinIdleConns > 0.
-	hs.hooksMu.RLock()
-	current := hs.current
-	hs.hooksMu.RUnlock()
-
-	return current.dial(ctx, network, addr)
+	return hs.state.Load().current.dial(ctx, network, addr)
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
-	return hs.current.process(ctx, cmd)
+	return hs.state.Load().current.process(ctx, cmd)
 }
 
 func (hs *hooksMixin) processPipelineHook(ctx context.Context, cmds []Cmder) error {
-	return hs.current.pipeline(ctx, cmds)
+	return hs.state.Load().current.pipeline(ctx, cmds)
 }
 
 func (hs *hooksMixin) processTxPipelineHook(ctx context.Context, cmds []Cmder) error {
-	return hs.current.txPipeline(ctx, cmds)
+	return hs.state.Load().current.txPipeline(ctx, cmds)
 }
 
 //------------------------------------------------------------------------------

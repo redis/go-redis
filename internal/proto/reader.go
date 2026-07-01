@@ -738,7 +738,15 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	n, err := replyLen(line)
-	if err != nil && err != Nil {
+	if err != nil {
+		if err == Nil {
+			// A nil reply ($-1, =-1, !-1, *-1, %-1) carries no payload; the
+			// header line was already consumed by readLine, so there is
+			// nothing to discard. Falling through would Discard(n+2)==2 bytes
+			// that belong to the next reply and desync the stream, matching
+			// how readRawReplyBuf/readRawReplyWriteTo already treat Nil.
+			return nil
+		}
 		return err
 	}
 
