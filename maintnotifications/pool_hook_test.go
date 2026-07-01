@@ -1007,3 +1007,100 @@ func TestConnectionHook(t *testing.T) {
 		t.Logf("HandoffTimeout configuration test completed successfully")
 	})
 }
+
+// TestPoolHookNeverReturnsConnectionMarkedForHandoff verifies the core
+// guarantee that the pool hook never hands a connection back to a caller while
+// it is marked for (or undergoing) handoff, and that OnPut pools — never
+// removes — such a connection (the handoff worker owns it once queued).
+//
+// Both OnGet guard layers are exercised:
+//   - ShouldHandoff(): connection marked for handoff but not yet queued
+//   - !IsUsable():     connection queued / handoff in progress
+func TestPoolHookNeverReturnsConnectionMarkedForHandoff(t *testing.T) {
+	baseDialer := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return &mockNetConn{addr: addr}, nil
+	}
+	ctx := context.Background()
+
+	t.Run("OnGet refuses a connection marked or queued for handoff", func(t *testing.T) {
+		processor := NewPoolHook(baseDialer, "tcp", nil, nil)
+		defer processor.Shutdown(ctx)
+
+		conn := createMockPoolConnection()
+
+		// Healthy, usable connection: accepted.
+		if accept, err := processor.OnGet(ctx, conn, false); !accept || err != nil {
+			t.Fatalf("OnGet should accept a healthy connection: accept=%v err=%v", accept, err)
+		}
+
+		// Marked for handoff (ShouldHandoff()==true, still usable): refused via
+		// the ShouldHandoff guard.
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("MarkForHandoff: %v", err)
+		}
+		if !conn.ShouldHandoff() {
+			t.Fatal("connection should be marked for handoff")
+		}
+		if accept, err := processor.OnGet(ctx, conn, false); accept || err != ErrConnectionMarkedForHandoffWithState {
+			t.Fatalf("OnGet must refuse a connection marked for handoff: accept=%v err=%v", accept, err)
+		}
+
+		// Queued for handoff: MarkQueuedForHandoff clears ShouldHandoff and makes
+		// the connection UNUSABLE, so it is now refused via the usable guard.
+		if err := conn.MarkQueuedForHandoff(); err != nil {
+			t.Fatalf("MarkQueuedForHandoff: %v", err)
+		}
+		if conn.ShouldHandoff() {
+			t.Fatal("queued connection should have ShouldHandoff()==false")
+		}
+		if conn.IsUsable() {
+			t.Fatal("queued connection should be unusable")
+		}
+		if accept, err := processor.OnGet(ctx, conn, false); accept || err != ErrConnectionMarkedForHandoff {
+			t.Fatalf("OnGet must refuse a connection queued for handoff: accept=%v err=%v", accept, err)
+		}
+	})
+
+	t.Run("OnPut pools (never removes) a connection being handed off", func(t *testing.T) {
+		config := &Config{
+			Mode:              ModeAuto,
+			EndpointType:      EndpointTypeAuto,
+			MaxWorkers:        1,
+			HandoffQueueSize:  10,
+			MaxHandoffRetries: 3,
+		}
+		processor := NewPoolHook(baseDialer, "tcp", config, nil)
+		defer processor.Shutdown(ctx)
+
+		conn := createMockPoolConnection()
+		conn.SetInitConnFunc(func(ctx context.Context, cn *pool.Conn) error { return nil })
+		if err := conn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+			t.Fatalf("MarkForHandoff: %v", err)
+		}
+
+		// Returning a marked connection queues the async handoff. The worker now
+		// owns it, so OnPut must pool it, never remove it.
+		shouldPool, shouldRemove, err := processor.OnPut(ctx, conn)
+		if err != nil {
+			t.Fatalf("OnPut should not error: %v", err)
+		}
+		if !shouldPool || shouldRemove {
+			t.Fatalf("a connection being handed off must be pooled, not removed (shouldPool=%v, shouldRemove=%v)", shouldPool, shouldRemove)
+		}
+
+		// Once the handoff completes the connection is healthy and acceptable again.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if conn.IsUsable() && !processor.IsHandoffPending(conn) {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !conn.IsUsable() || processor.IsHandoffPending(conn) {
+			t.Fatalf("handoff did not complete (IsUsable=%v, pending=%v)", conn.IsUsable(), processor.IsHandoffPending(conn))
+		}
+		if accept, err := processor.OnGet(ctx, conn, false); !accept || err != nil {
+			t.Fatalf("OnGet should accept the connection after handoff completes: accept=%v err=%v", accept, err)
+		}
+	})
+}
