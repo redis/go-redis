@@ -17,3 +17,17 @@ maintenanceNotifications/docs/
 # Docker-generated files (TLS certificates, cluster data, etc.)
 dockers/*/tls/
 dockers/osscluster-tls/
+
+# Per-user Claude Code settings (machine/personal overrides, not shared policy)
+.claude/settings.local.json
+
+# Local-only caveman skill plugin (symlinks into untracked .agents/)
+.agents/
+skills-lock.json
+.claude/skills/caveman
+.claude/skills/caveman-commit
+.claude/skills/caveman-compress
+.claude/skills/caveman-help
+.claude/skills/caveman-review
+.claude/skills/caveman-stats
+.claude/skills/cavecrew
