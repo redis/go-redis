@@ -452,6 +452,12 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 			}
 			return nil, err
 		}
+
+		switch k.(type) {
+		case []interface{}, map[interface{}]interface{}:
+    		return nil, fmt.Errorf("redis: RESP3 map key must be a scalar type, got %T", k)
+		}
+
 		m[k] = v
 	}
 	return m, nil
