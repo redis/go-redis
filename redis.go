@@ -455,6 +455,7 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 		return err
 	}
 }
+
 func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 	return func(poolCn *pool.Conn, err error) {
 		if err != nil {
@@ -1248,7 +1249,9 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 		}
 	}
 	// Retry errors like "LOADING redis is loading the dataset in memory".
-	return cmds[0].Err()
+	// rawErr: this runs on the execution path; never await here (an async
+	// autopipeline command's ready channel is closed by this very batch).
+	return cmds[0].rawErr()
 }
 
 func (c *baseClient) txPipelineProcessCmds(
@@ -1505,7 +1508,7 @@ type PoolStats pool.Stats
 // PoolStats returns connection pool stats.
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
-	stats.PubSubStats = *(c.pubSubPool.Stats())
+	stats.PubSubStats = *c.pubSubPool.Stats()
 	return (*PoolStats)(stats)
 }
 

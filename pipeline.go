@@ -119,6 +119,21 @@ func (c *Pipeline) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]C
 	return c.Exec(ctx)
 }
 
+// putPipeliner clears a finished Pipeline's references after a batch so the
+// executor closure and command slice can be collected promptly. It is a no-op
+// for any other Pipeliner. (There is intentionally no object pool here: pooling
+// Pipelines requires a matching Get on the construction path, which the shared
+// Client.Pipeline()/ClusterClient.Pipeline() do not have — a write-only pool
+// would only add Put overhead without ever handing an object back.)
+func putPipeliner(pipe Pipeliner) {
+	if p, ok := pipe.(*Pipeline); ok {
+		p.exec = nil
+		p.cmds = nil
+		p.cmdable = nil
+		p.statefulCmdable = nil
+	}
+}
+
 func (c *Pipeline) Pipeline() Pipeliner {
 	return c
 }

@@ -571,10 +571,12 @@ func (cmd *TSTimestampValueCmd) SetVal(val TSTimestampValue) {
 }
 
 func (cmd *TSTimestampValueCmd) Result() (TSTimestampValue, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSTimestampValueCmd) Val() TSTimestampValue {
+	cmd.await()
 	return cmd.val
 }
 
@@ -814,10 +816,12 @@ func (cmd *TSTimestampValueSliceCmd) SetVal(val []TSTimestampValue) {
 }
 
 func (cmd *TSTimestampValueSliceCmd) Result() ([]TSTimestampValue, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSTimestampValueSliceCmd) Val() []TSTimestampValue {
+	cmd.await()
 	return cmd.val
 }
 

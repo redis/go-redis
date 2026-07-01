@@ -1786,7 +1786,8 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 	}
 
-	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+	// rawErr: execution path; never await an async command's batch here.
+	if err := cmds[0].rawErr(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		return err
 	}
