@@ -347,6 +347,44 @@ func TestReader_ReadStringInto_BufferTooSmall(t *testing.T) {
 	}
 }
 
+func TestReader_Discard_NilReplies(t *testing.T) {
+	// Discard must consume only the header line of a nil reply, leaving the
+	// following reply byte-aligned. A nil bulk string ($-1), verbatim (=-1)
+	// and blob error (!-1) each have no payload; discarding an extra 2 bytes
+	// (the phantom payload CRLF) eats into the next reply and desyncs a
+	// pooled connection so one command's data bleeds into another's.
+	nilHeaders := []string{"$-1", "=-1", "!-1", "*-1", "%-1"}
+	for _, h := range nilHeaders {
+		src := h + "\r\n$5\r\nhello\r\n"
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if err := r.DiscardNext(); err != nil {
+			t.Fatalf("%s: DiscardNext: %v", h, err)
+		}
+		s, err := r.ReadString()
+		if err != nil {
+			t.Fatalf("%s: follow-up ReadString: %v (stream left misaligned by Discard)", h, err)
+		}
+		if s != "hello" {
+			t.Fatalf("%s: follow-up got %q, want \"hello\"", h, s)
+		}
+	}
+}
+
+func TestReader_Discard_AttributeWithNilValue(t *testing.T) {
+	// A RESP3 attribute carrying a nil bulk value is skipped via Discard on
+	// the read path (ReadLine -> RespAttr -> Discard). The real reply that
+	// follows the attribute must parse unchanged.
+	src := "|1\r\n$3\r\nttl\r\n$-1\r\n$6\r\nsecond\r\n"
+	r := proto.NewReader(bytes.NewReader([]byte(src)))
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString after nil-valued attribute: %v", err)
+	}
+	if s != "second" {
+		t.Fatalf("got %q, want \"second\"", s)
+	}
+}
+
 func TestReader_ReadStringInto_Large(t *testing.T) {
 	// Payload deliberately larger than the default bufio buffer (32 KiB)
 	// so we exercise the path where bufio.Reader drains its internal
