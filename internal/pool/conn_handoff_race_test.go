@@ -20,7 +20,10 @@ import (
 // the previous plain-Store rollback a resurrected ShouldHandoff is observed
 // within these iterations; with the CAS rollback it never is.
 func TestMarkQueuedForHandoffRollbackDoesNotResurrectClearedState(t *testing.T) {
-	const iterations = 20000
+	iterations := 20000
+	if testing.Short() {
+		iterations = 2000
+	}
 
 	for i := 0; i < iterations; i++ {
 		cn := NewConn(nil)
