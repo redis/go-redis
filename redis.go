@@ -1432,9 +1432,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 type Client struct {
 	*baseClient
 	cmdable
-	autopipelinerMu    *sync.Mutex    // guards both autopipeliner fields against concurrent first-call creation
-	autopipeliner      *AutoPipeliner // blocking face (Client.AutoPipeline)
-	asyncAutopipeliner *AutoPipeliner // deferred face (Client.AsyncAutoPipeline)
+	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
+	autopipeliner       *AutoPipeliner // blocking face (Client.AutoPipeline)
+	asyncAutopipeliner  *AutoPipeliner // deferred face (Client.AsyncAutoPipeline)
+	autopipelinerClosed bool           // set by Close: refuse to resurrect a pipeliner on a closed client
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -1568,6 +1569,10 @@ func (c *Client) Close() error {
 	c.autopipelinerMu.Lock()
 	ap, async := c.autopipeliner, c.asyncAutopipeliner
 	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	// A later AutoPipeline()/AsyncAutoPipeline() call must not build a fresh
+	// pipeliner against the closed pools: nothing would ever close it and its
+	// flusher goroutines would leak. The getters check this flag.
+	c.autopipelinerClosed = true
 	c.autopipelinerMu.Unlock()
 	var firstErr error
 	for _, p := range []*AutoPipeliner{ap, async} {
@@ -1678,30 +1683,24 @@ func (c *Client) Pipeline() Pipeliner {
 // engine batches concurrent callers' commands into pipelines, so throughput is
 // far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
 //
-// Pass an optional config to override the default (DefaultBlockingAutoPipelineConfig:
-// a single ordered batch stream, which maximizes throughput and minimizes latency
-// for the blocking face — see its doc). The instance is cached and shared; the first
+// When called without a config, Options.AutoPipelineConfig is used if set,
+// otherwise DefaultBlockingAutoPipelineConfig (a single ordered batch stream,
+// which maximizes throughput and minimizes latency for the blocking face — see
+// its doc). The instance is cached and shared; the first
 // call's config wins and later calls return the same instance until it is closed.
 // It must be closed (or close the client) to release its goroutines.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
 func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
-	c.autopipelinerMu.Lock()
-	defer c.autopipelinerMu.Unlock()
-	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
-		return c.autopipeliner, nil
-	}
-	cfg := DefaultBlockingAutoPipelineConfig()
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-	}
-	ap, err := newAutoPipeliner(c, cfg, true)
-	if err != nil {
-		return nil, err
-	}
-	c.autopipeliner = ap
-	return c.autopipeliner, nil
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
+		func() *AutoPipelineConfig {
+			if c.opt.AutoPipelineConfig != nil {
+				return c.opt.AutoPipelineConfig
+			}
+			return DefaultBlockingAutoPipelineConfig()
+		},
+		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
 }
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
@@ -1709,33 +1708,24 @@ func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, er
 // command has executed. Submit a window of commands, then read their results, to
 // keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
 //
-// The default config is ordered (DefaultAutoPipelineConfig, MaxConcurrentBatches:
-// 1) so a single goroutine's deferred commands execute in submit order; pass a
-// config to override (and, for parallel batches, set Unordered). The instance is
+// When called without a config, Options.AutoPipelineConfig is used if set,
+// otherwise DefaultAutoPipelineConfig (ordered, MaxConcurrentBatches: 1) — a
+// single goroutine's deferred commands execute in submit order. Pass a config
+// to override both (and, for parallel batches, set Unordered). The instance is
 // cached and shared; the first call's config wins. Close it (or the client) to
 // release its goroutines.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
 func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
-	c.autopipelinerMu.Lock()
-	defer c.autopipelinerMu.Unlock()
-	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
-		return c.asyncAutopipeliner, nil
-	}
-	cfg := c.opt.AutoPipelineConfig
-	if len(config) > 0 && config[0] != nil {
-		cfg = config[0]
-	}
-	if cfg == nil {
-		cfg = DefaultAutoPipelineConfig()
-	}
-	ap, err := newAutoPipeliner(c, cfg, false)
-	if err != nil {
-		return nil, err
-	}
-	c.asyncAutopipeliner = ap
-	return c.asyncAutopipeliner, nil
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
+		func() *AutoPipelineConfig {
+			if c.opt.AutoPipelineConfig != nil {
+				return c.opt.AutoPipelineConfig
+			}
+			return DefaultAutoPipelineConfig()
+		},
+		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

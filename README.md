@@ -348,9 +348,11 @@ comes in two faces:
 
 - **`AutoPipeline()` — blocking, drop-in.** Each command call blocks until it
   executes and returns its own value/error, exactly like a normal client, so
-  existing code keeps working unchanged. Under concurrency the engine batches
-  across goroutines into parallel pipelines, reaching ~1M+ SET/sec (vs ~100k for
-  a plain client). Per-goroutine ordering is preserved.
+  existing code keeps working unchanged. Under concurrency the engine coalesces
+  commands from all goroutines into deep, back-to-back pipelines (a single
+  ordered batch stream by default), reaching ~1M+ SET/sec vs ~100k for a plain
+  client (measured locally over loopback; indicative, not a spec).
+  Per-goroutine ordering is preserved.
 - **`AsyncAutoPipeline()` — deferred, highest throughput.** Command calls return
   immediately; you submit a window of commands and read their results afterward,
   which keeps each pipeline deep (~2-3M SET/sec). Ordered by default.
@@ -404,10 +406,24 @@ Both faces take an optional `*AutoPipelineConfig` and return `(*AutoPipeliner, e
 — the error is non-nil only for an invalid config (e.g.
 `ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 80, Unordered: true})`).
 They work on `ClusterClient` too: commands are routed to the correct shard per
-key, so a single batch may span many slots. Autopipelining is only a win under
-concurrency (or windowed submission) — a single goroutine issuing one blocking
-command at a time sees little benefit, and a hand-written `Pipeline()` is still
-fastest when you can batch by hand. A runnable comparison lives in
+key, so a single batch may span many slots; ordering across nodes is per key
+(same-key commands stay in order, different nodes' sub-pipelines run
+concurrently). Because batches share a few pipeline connections, autopipelining
+also needs far fewer connections than a plain client at the same concurrency
+(see `PipelinePoolSize`). Autopipelining is only a win under concurrency (or
+windowed submission) — a single goroutine issuing one blocking command at a
+time sees little benefit, and a hand-written `Pipeline()` is still fastest when
+you can batch by hand.
+
+Caveats: a command's context is not honored once it is queued (batches execute
+on the autopipeliner's own context) — use a plain client for per-command
+deadlines. Blocking commands (`BLPOP`, `WAIT`, ...) are never batched and run
+directly on your context, and `Do` also bypasses batching with plain
+`Client.Do` semantics — prefer the typed methods (`ap.Set`, `ap.Get`, ...). On
+a dropped connection a batch is retried whole (up to `MaxRetries`), so
+non-idempotent commands may execute twice. Both faces return a cached,
+client-shared instance: the first call's config wins and `Close` stops it for
+all callers. A runnable tour and throughput comparison live in
 [`example/autopipeline`](example/autopipeline).
 
 ### Advanced Configuration
