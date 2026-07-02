@@ -171,23 +171,7 @@ func (s *FIFOSemaphore) Acquire(ctx context.Context, timeout time.Duration, time
 	}
 }
 
-// AcquireBlocking acquires a token, blocking indefinitely until one is available.
-func (s *FIFOSemaphore) AcquireBlocking() {
-	<-s.tokens
-}
-
 // Release releases a token back to the semaphore.
 func (s *FIFOSemaphore) Release() {
 	s.tokens <- struct{}{}
-}
-
-// Close closes the semaphore, unblocking all waiting goroutines.
-// After close, all Acquire calls will receive a closed channel signal.
-func (s *FIFOSemaphore) Close() {
-	close(s.tokens)
-}
-
-// Len returns the current number of acquired tokens.
-func (s *FIFOSemaphore) Len() int32 {
-	return s.max - int32(len(s.tokens))
 }
