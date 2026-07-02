@@ -1601,6 +1601,20 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
+// clusterAutoPipelineConfig applies the cluster shard-count default: commands
+// are routed to shards by slot (see installAutoPipelineSharding), so unlike a
+// standalone client — which defaults to a single deep queue — a cluster client
+// wants several shards to keep concurrent nodes' batches separate. The caller's
+// config is copied before the default is filled in, never mutated.
+func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
+	if cfg.NumShards != 0 {
+		return cfg
+	}
+	c2 := *cfg
+	c2.NumShards = numAutoPipelineShards(c2.MaxConcurrentBatches)
+	return &c2
+}
+
 func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
@@ -1611,7 +1625,7 @@ func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeli
 	if len(config) > 0 && config[0] != nil {
 		cfg = config[0]
 	}
-	ap, err := newAutoPipeliner(c, cfg, true)
+	ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), true)
 	if err != nil {
 		return nil, err
 	}
@@ -1662,7 +1676,7 @@ func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoP
 	if cfg == nil {
 		cfg = DefaultAutoPipelineConfig()
 	}
-	ap, err := newAutoPipeliner(c, cfg, false)
+	ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), false)
 	if err != nil {
 		return nil, err
 	}
