@@ -135,17 +135,22 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 }
 
 // DefaultBlockingAutoPipelineConfig is the default for the blocking face
-// (Client.AutoPipeline). It runs many batches in parallel (MaxConcurrentBatches:
-// 50) for high throughput. Unordered is set because the engine requires it for
-// MaxConcurrentBatches>1 — but a blocking caller still observes per-goroutine
-// ordering, since it waits for each command's result before issuing the next.
-// Global cross-goroutine order (which is not meaningful for independent callers)
-// is what Unordered relaxes.
+// (Client.AutoPipeline). It uses a single ordered batch stream
+// (MaxConcurrentBatches: 1). Counterintuitively this maximizes both throughput
+// AND latency for the blocking face: with one batch in flight, callers whose
+// commands return while it executes re-enqueue and flush together as the next
+// batch, so batches stay deep (a near-continuous, double-buffered pipeline),
+// while a lone caller still flushes promptly via the stops-growing window in
+// accumulateBatch. More parallel permits (MaxConcurrentBatches>1) do the
+// opposite: each command finds a free permit and flushes on its own before
+// others accumulate, collapsing batch size — and throughput — toward one command
+// per round-trip while latency rises. For maximum throughput use the async face
+// (AsyncAutoPipeline) with a window of in-flight commands (inflight>1); it keeps
+// MaxConcurrentBatches: 1 as well.
 func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         300,
-		MaxConcurrentBatches: 50,
-		Unordered:            true,
+		MaxConcurrentBatches: 1,
 	}
 }
 
