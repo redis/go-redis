@@ -1610,14 +1610,6 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	return &pipe
 }
 
-// AutoPipeline returns the blocking autopipeliner for this cluster client: each
-// command call blocks until executed (drop-in shape) while the engine batches
-// concurrent callers into pipelines. Commands keep per-goroutine order. Pass an
-// optional config to override DefaultBlockingAutoPipelineConfig. Cached/shared;
-// first call's config wins. Close it (or the client) to release its goroutines.
-//
-// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
-// without Unordered, or a negative size); on error no instance is cached.
 // clusterAutoPipelineConfig applies the cluster shard-count default: commands
 // are routed to shards by slot (see installAutoPipelineSharding), so unlike a
 // standalone client — which defaults to a single deep queue — a cluster client
@@ -1628,10 +1620,24 @@ func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
 		return cfg
 	}
 	c2 := *cfg
-	c2.NumShards = numAutoPipelineShards(c2.MaxConcurrentBatches)
+	c2.NumShards = numAutoPipelineShards()
+	// Slot routing keeps every key on one shard, so per-key order holds with
+	// several shards; mark it so construction's NumShards ordering check
+	// (which targets round-robin sharding) does not reject the cluster default.
+	c2.contentSharded = true
 	return &c2
 }
 
+// AutoPipeline returns the blocking autopipeliner for this cluster client: each
+// command call blocks until executed (drop-in shape) while the engine batches
+// concurrent callers into pipelines. Commands keep per-goroutine order; across
+// nodes, ordering is per key (slot routing keeps a key on one shard and node
+// sub-pipelines execute concurrently). Pass an optional config to override
+// DefaultBlockingAutoPipelineConfig. Cached/shared; first call's config wins.
+// Close it (or the client) to release its goroutines.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
 func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
 	c.autopipelinerMu.Lock()
 	defer c.autopipelinerMu.Unlock()
@@ -1920,7 +1926,7 @@ func (c *ClusterClient) processPipelineNodeConn(
 			setCmdsErr(cmds, err)
 			return err
 		}
-		err := c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+		err := c.pipelineReadCmds(ctx, node, cn, rd, cmds, failedCmds)
 		if err == nil || isRedisError(err) {
 			node.Client.himportAfterBatch(cn, injected, cmds)
 			// SETs of registered fieldsets that lost their session state
@@ -1941,11 +1947,22 @@ func (c *ClusterClient) processPipelineNodeConn(
 func (c *ClusterClient) pipelineReadCmds(
 	ctx context.Context,
 	node *clusterNode,
+	cn *pool.Conn,
 	rd *proto.Reader,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	for i, cmd := range cmds {
+		// Drain any buffered RESP3 push notifications before reading each
+		// reply — otherwise a push frame (e.g. a maintnotifications MOVING
+		// notification) is consumed AS the command's reply and every
+		// subsequent reply in the pipeline shifts by one command. The
+		// standalone pipeline and the cluster TxPipeline read loops already
+		// do this; this loop was the only push-blind reader, and the
+		// autopipeliner routes all cluster traffic through it.
+		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 

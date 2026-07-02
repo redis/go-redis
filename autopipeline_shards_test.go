@@ -62,8 +62,19 @@ func TestClusterAutoPipelineConfigShardDefault(t *testing.T) {
 	if user.NumShards != 0 {
 		t.Fatalf("caller's config mutated: NumShards=%d, want 0", user.NumShards)
 	}
-	if want := numAutoPipelineShards(8); got.NumShards != want {
+	if want := numAutoPipelineShards(); got.NumShards != want {
 		t.Fatalf("cluster default NumShards = %d, want %d", got.NumShards, want)
+	}
+	if !got.contentSharded {
+		t.Fatalf("cluster default must mark contentSharded (slot routing preserves per-key order)")
+	}
+
+	// The DEFAULT config (MaxConcurrentBatches=1) must still get several
+	// slot-routed shards — deriving the shard count from the permit budget
+	// once collapsed cluster slot routing to a single shard at the default.
+	def := clusterAutoPipelineConfig(DefaultAutoPipelineConfig())
+	if def.NumShards < 2 {
+		t.Fatalf("cluster default-config NumShards = %d, want >= 2 (slot routing must not be dead code at defaults)", def.NumShards)
 	}
 
 	explicit := &AutoPipelineConfig{MaxConcurrentBatches: 8, Unordered: true, NumShards: 3}

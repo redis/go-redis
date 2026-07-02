@@ -39,7 +39,8 @@ func TestAutoPipelineStopsGrowingDefaultWindow(t *testing.T) {
 	defer ap.Close()
 
 	start := time.Now()
-	cmd := ap.Do(ctx, "SET", "sg-key", "v")
+	// Typed call: goes through the engine (Do bypasses the pipeline entirely).
+	cmd := ap.Set(ctx, "sg-key", "v", 0)
 	if err := cmd.Err(); err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -85,7 +86,8 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	defer ap.Close()
 
 	start := time.Now()
-	cmd := ap.Do(ctx, "SET", "ed-key", "v")
+	// Typed call: goes through the engine (Do bypasses the pipeline entirely).
+	cmd := ap.Set(ctx, "ed-key", "v", 0)
 	if err := cmd.Err(); err != nil {
 		t.Fatalf("set: %v", err)
 	}
