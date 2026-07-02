@@ -315,15 +315,46 @@ type AutoPipeliner struct {
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
 // goroutines (under mu) and by its own single flusher goroutine.
-type apShard struct {
-	ap *AutoPipeliner
+// apEnqueueStripes is how many enqueue stripes a shard runs when striping is
+// safe (unordered configs, and every blocking-face shard — a blocking caller
+// waits for each command, so stripes cannot reorder its stream). The
+// enqueue mutex is the hottest lock in the engine (128 concurrent callers on
+// one shard spend ~half their CPU in lock slow paths); striping the queue
+// spreads that contention while the flusher still drains every stripe into ONE
+// merged pipeline, so batches stay deep. Ordered shards always use a single
+// stripe: with several stripes a caller's consecutive commands can land in
+// stripes on opposite sides of an in-progress drain and execute out of order.
+const apEnqueueStripes = 8
 
+// apStripe is one striped slice of a shard's enqueue queue. Each stripe has
+// its own batch-completion signal so a drain can take stripes one lock at a
+// time; every batch taken in one drain completes together after the merged
+// pipeline executes. Padded so neighbouring stripes' mutexes do not share a
+// cache line.
+type apStripe struct {
 	mu       sync.Mutex
 	queue    []Cmder
 	queueLen atomic.Int32
-	curBatch *apBatch                // completion signal for currently-queued cmds
-	notify   chan struct{}           // buffered (cap 1) enqueue wake-up
-	sem      *internal.FIFOSemaphore // per-shard concurrent-batch budget
+	curBatch *apBatch // completion signal for currently-queued cmds
+	_        [40]byte // pad against false sharing
+}
+
+type apShard struct {
+	ap *AutoPipeliner
+
+	next    atomic.Uint32           // round-robin stripe pick (unordered mode)
+	stripes []apStripe              // 1 stripe when ordered, apEnqueueStripes when Unordered
+	notify  chan struct{}           // buffered (cap 1) enqueue wake-up
+	sem     *internal.FIFOSemaphore // per-shard concurrent-batch budget
+}
+
+// stripe picks the enqueue stripe for the next command: the single stripe in
+// ordered mode (preserving strict FIFO), round-robin in unordered mode.
+func (s *apShard) stripe() *apStripe {
+	if len(s.stripes) == 1 {
+		return &s.stripes[0]
+	}
+	return &s.stripes[s.next.Add(1)%uint32(len(s.stripes))]
 }
 
 // newAutoPipeliner builds an autopipeliner in either blocking or deferred mode.
@@ -410,12 +441,24 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 		if i < remainder {
 			permits++
 		}
+		// Stripe when reordering is impossible or waived: a BLOCKING caller
+		// waits for each command before issuing its next, so its per-goroutine
+		// order holds no matter which stripe each command lands in; the async
+		// face may only stripe when the user set Unordered. The remaining case
+		// (async, ordered) keeps one stripe to preserve strict submit order.
+		nStripes := 1
+		if config.Unordered || blocking {
+			nStripes = apEnqueueStripes
+		}
 		s := &apShard{
-			ap:       ap,
-			notify:   make(chan struct{}, 1),
-			queue:    getQueueSlice(config.MaxBatchSize),
-			sem:      internal.NewFIFOSemaphore(int32(permits)),
-			curBatch: newAPBatch(),
+			ap:      ap,
+			notify:  make(chan struct{}, 1),
+			stripes: make([]apStripe, nStripes),
+			sem:     internal.NewFIFOSemaphore(int32(permits)),
+		}
+		for j := range s.stripes {
+			s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
+			s.stripes[j].curBatch = newAPBatch()
 		}
 		ap.shards[i] = s
 		ap.wg.Add(1)
@@ -560,19 +603,20 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 		s = ap.shards[int(ap.next.Add(1)-1)%len(ap.shards)]
 	}
 
-	s.mu.Lock()
-	// Re-check closed under the shard lock (see Close): either we win the lock
+	st := s.stripe()
+	st.mu.Lock()
+	// Re-check closed under the stripe lock (see Close): either we win the lock
 	// first and the shutdown drain flushes us, or the drain ran first and we
 	// reject here — so a late enqueue never hangs on an unclosed done.
 	if ap.closed.Load() {
-		s.mu.Unlock()
+		st.mu.Unlock()
 		cmd.SetErr(ErrClosed)
 		return closedBatch
 	}
-	batch := s.curBatch
-	s.queue = append(s.queue, cmd)
-	s.queueLen.Store(int32(len(s.queue)))
-	s.mu.Unlock()
+	batch := st.curBatch
+	st.queue = append(st.queue, cmd)
+	st.queueLen.Store(int32(len(st.queue)))
+	st.mu.Unlock()
 
 	s.wake()
 	return batch
@@ -802,22 +846,29 @@ func (s *apShard) accumulateBatch() {
 func (s *apShard) flushBatchSlice() {
 	ap := s.ap
 
-	s.mu.Lock()
-	if len(s.queue) == 0 {
-		s.mu.Unlock()
-		s.queueLen.Store(0)
+	// Drain every stripe into one combined batch and roll fresh queues for the
+	// commands enqueued after this point. Striped enqueue spreads the hot
+	// mutex; one merged flush keeps the pipeline deep. accumulateBatch already
+	// bounds the total to roughly MaxBatchSize before we get here.
+	queues := make([][]Cmder, 0, len(s.stripes))
+	batches := make([]*apBatch, 0, len(s.stripes))
+	total := 0
+	for i := range s.stripes {
+		st := &s.stripes[i]
+		st.mu.Lock()
+		if len(st.queue) > 0 {
+			queues = append(queues, st.queue)
+			batches = append(batches, st.curBatch)
+			total += len(st.queue)
+			st.queue = getQueueSlice(ap.config.MaxBatchSize)
+			st.curBatch = newAPBatch()
+			st.queueLen.Store(0)
+		}
+		st.mu.Unlock()
+	}
+	if total == 0 {
 		return
 	}
-	// Take the whole queue as this batch and roll a fresh batch for the
-	// commands enqueued after this point. accumulateBatch already bounds the
-	// queue to roughly MaxBatchSize before we get here, so taking it whole
-	// keeps batches large without a split that would span two batch signals.
-	queuedCmds := s.queue
-	batch := s.curBatch
-	s.queue = getQueueSlice(ap.config.MaxBatchSize)
-	s.curBatch = newAPBatch()
-	s.queueLen.Store(0)
-	s.mu.Unlock()
 
 	// Acquire a concurrency permit. The wait is bounded by ap.ctx (cancelled on
 	// Close) with a generous backstop deadline against a wedged semaphore. The
@@ -835,24 +886,26 @@ func (s *apShard) flushBatchSlice() {
 			if ap.ctx.Err() != nil {
 				batchErr = ErrClosed
 			}
-			for _, qc := range queuedCmds {
-				qc.SetErr(batchErr)
+			for i := range queues {
+				for _, qc := range queues[i] {
+					qc.SetErr(batchErr)
+				}
+				close(batches[i].done)
+				putQueueSlice(queues[i])
 			}
-			close(batch.done)
-			putQueueSlice(queuedCmds)
 			return
 		}
 	}
 
-	// Fast path for single command. Run inside a func so close(batch.done) and
+	// Fast path for single command. Run inside a func so the batch close and
 	// the semaphore release are deferred: a panic in Process still signals
 	// completion (waking await()) and frees the permit before it propagates.
-	if len(queuedCmds) == 1 {
+	if total == 1 {
 		func() {
 			defer s.sem.Release()
-			defer putQueueSlice(queuedCmds)
-			defer close(batch.done)
-			_ = ap.pipeliner.Process(ap.ctx, queuedCmds[0])
+			defer putQueueSlice(queues[0])
+			defer close(batches[0].done)
+			_ = ap.pipeliner.Process(ap.ctx, queues[0][0])
 		}()
 		return
 	}
@@ -863,12 +916,17 @@ func (s *apShard) flushBatchSlice() {
 	go func() {
 		defer ap.batchWg.Done()
 		defer s.sem.Release()
-		defer putQueueSlice(queuedCmds)
-		// Signal completion with a single close. Deferred so a panic in
-		// Process/Exec (e.g. a malformed command or encoder panic) still wakes
-		// every waiter in await() instead of hanging them forever; the close
-		// runs after Exec on the happy path, so results are populated first.
-		defer close(batch.done)
+		// Signal completion with one close per taken stripe. Deferred so a
+		// panic in Process/Exec (e.g. a malformed command or encoder panic)
+		// still wakes every waiter in await() instead of hanging them forever;
+		// the closes run after Exec on the happy path, so results are
+		// populated first.
+		defer func() {
+			for i := range queues {
+				close(batches[i].done)
+				putQueueSlice(queues[i])
+			}
+		}()
 
 		// Use the autopipeliner's long-lived context (cancelled by Close)
 		// rather than a per-batch context.WithTimeout, which allocated a timer
@@ -878,8 +936,10 @@ func (s *apShard) flushBatchSlice() {
 		pipe := ap.Pipeline()
 		defer putPipeliner(pipe)
 
-		for _, qc := range queuedCmds {
-			_ = pipe.Process(ctx, qc)
+		for i := range queues {
+			for _, qc := range queues[i] {
+				_ = pipe.Process(ctx, qc)
+			}
 		}
 		_, _ = pipe.Exec(ctx)
 	}()
@@ -893,33 +953,45 @@ func (s *apShard) flushBatchSliceShutdown() {
 	ap := s.ap
 	// Flush all remaining commands synchronously to preserve order.
 	//
-	// The loop condition is checked UNDER the lock (not via the unlocked
-	// s.Len()): a late enqueue appends to s.queue and updates queueLen under
-	// s.mu, so reading queueLen without the lock could miss a command that was
-	// just appended (seeing 0 and exiting while a command sits in the queue).
-	// Locking first makes "is the queue empty?" and "take the queue" atomic
-	// against that enqueue — this is what closes the lost-command race on Close.
+	// The loop condition is checked UNDER each stripe's lock (not via the
+	// unlocked s.Len()): a late enqueue appends to a stripe's queue and updates
+	// its queueLen under that stripe's mutex, so reading queueLen without the
+	// lock could miss a command that was just appended (seeing 0 and exiting
+	// while a command sits in the queue). Locking first makes "is the stripe
+	// empty?" and "take the stripe" atomic against that enqueue — this is what
+	// closes the lost-command race on Close.
 	for {
-		s.mu.Lock()
-		if len(s.queue) == 0 {
-			s.mu.Unlock()
-			s.queueLen.Store(0)
+		// Take every stripe's queue as one merged batch and roll fresh queues.
+		queues := make([][]Cmder, 0, len(s.stripes))
+		batches := make([]*apBatch, 0, len(s.stripes))
+		total := 0
+		for i := range s.stripes {
+			st := &s.stripes[i]
+			st.mu.Lock()
+			if len(st.queue) > 0 {
+				queues = append(queues, st.queue)
+				batches = append(batches, st.curBatch)
+				total += len(st.queue)
+				st.queue = getQueueSlice(ap.config.MaxBatchSize)
+				st.curBatch = newAPBatch()
+				st.queueLen.Store(0)
+			}
+			st.mu.Unlock()
+		}
+		if total == 0 {
 			return
 		}
-		// Take the whole queue as one batch and roll a fresh batch.
-		queuedCmds := s.queue
-		batch := s.curBatch
-		s.queue = getQueueSlice(ap.config.MaxBatchSize)
-		s.curBatch = newAPBatch()
-		s.queueLen.Store(0)
-		s.mu.Unlock()
 
 		// Execute each batch in a func so close(batch.done) is deferred: a panic
 		// in Process/Exec still signals completion (waking await()) before it
 		// propagates, instead of leaving shutdown waiters hung.
 		func() {
-			defer putQueueSlice(queuedCmds)
-			defer close(batch.done)
+			defer func() {
+				for i := range queues {
+					close(batches[i].done)
+					putQueueSlice(queues[i])
+				}
+			}()
 
 			// ap.ctx is already cancelled here (Close cancels it before draining),
 			// so use a fresh background context with no artificial deadline. The
@@ -933,8 +1005,10 @@ func (s *apShard) flushBatchSliceShutdown() {
 			ctx := context.Background()
 			pipe := ap.Pipeline()
 			defer putPipeliner(pipe)
-			for _, qc := range queuedCmds {
-				_ = pipe.Process(ctx, qc)
+			for i := range queues {
+				for _, qc := range queues[i] {
+					_ = pipe.Process(ctx, qc)
+				}
 			}
 			_, _ = pipe.Exec(ctx)
 		}()
@@ -943,7 +1017,11 @@ func (s *apShard) flushBatchSliceShutdown() {
 
 // Len returns the number of queued commands in this shard.
 func (s *apShard) Len() int {
-	return int(s.queueLen.Load())
+	n := 0
+	for i := range s.stripes {
+		n += int(s.stripes[i].queueLen.Load())
+	}
+	return n
 }
 
 // Len returns the current number of queued commands across all shards.
