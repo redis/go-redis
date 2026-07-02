@@ -27,18 +27,18 @@ func TestAutoPipelineSequential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ap.Close()
 
-	// Sequential usage - no goroutines needed!
-	// Commands will be queued and batched automatically
+	// Sequential usage - no goroutines needed: typed calls on the deferred
+	// face queue without blocking and are batched automatically
 	cmds := make([]redis.Cmder, 20)
 	for i := 0; i < 20; i++ {
 		key := fmt.Sprintf("key%d", i)
-		cmds[i] = ap.Do(ctx, "SET", key, i)
+		cmds[i] = ap.Set(ctx, key, i, 0)
 	}
 
 	// Now access results - this will block until commands execute
@@ -79,7 +79,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 	// They should be flushed by timer, not batch size
 	for i := 0; i < 5; i++ {
 		key := fmt.Sprintf("key%d", i)
-		cmd := ap.Do(ctx, "SET", key, i)
+		cmd := ap.Set(ctx, key, i, 0)
 
 		// Access result immediately - should block until flush
 		if err := cmd.Err(); err != nil {
@@ -130,16 +130,16 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ap.Close()
 
 	// Queue some commands
-	cmd1 := ap.Do(ctx, "SET", "key1", "value1")
-	cmd2 := ap.Do(ctx, "SET", "key2", "value2")
-	cmd3 := ap.Do(ctx, "SET", "key3", "value3")
+	cmd1 := ap.Set(ctx, "key1", "value1", 0)
+	cmd2 := ap.Set(ctx, "key2", "value2", 0)
+	cmd3 := ap.Set(ctx, "key3", "value3", 0)
 
 	// Access first result - should trigger batch flush
 	if err := cmd1.Err(); err != nil {

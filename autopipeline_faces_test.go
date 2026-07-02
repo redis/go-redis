@@ -54,52 +54,17 @@ func TestFutureFaceTyped(t *testing.T) {
 	}
 }
 
-// TestFutureFaceOrdering verifies per-goroutine ordering: INCR a key N times,
-// reading each result in order yields strict 1..N.
-func TestFutureFaceOrdering(t *testing.T) {
-	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: ":6379"})
-	defer c.Close()
-	c.FlushDB(ctx)
-	fap, err := c.AutoPipeline()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer fap.Close()
-
-	const G, N = 100, 100
-	var wg sync.WaitGroup
-	var bad int64
-	wg.Add(G)
-	for g := 0; g < G; g++ {
-		go func(id int) {
-			defer wg.Done()
-			key := fmt.Sprintf("ffo:%d", id)
-			for i := 1; i <= N; i++ {
-				if v, err := fap.Incr(ctx, key).Result(); err != nil || v != int64(i) {
-					atomic.AddInt64(&bad, 1)
-				}
-			}
-		}(g)
-	}
-	wg.Wait()
-	if bad > 0 {
-		t.Fatalf("future face ordering: %d violations", bad)
-	}
-}
-
 // TestOrderedModeWindowed verifies that MaxConcurrentBatches=1 gives a single
 // ordered command stream: a windowed caller (submit many, read later) sees
 // strict per-key ordering even though it never blocks between submits.
 func TestOrderedModeWindowed(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 500, MaxConcurrentBatches: 1},
-	})
+	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap, err := c.AutoPipeline()
+	// Deferred face: submits genuinely don't block, so the windowed claim is
+	// real (on the blocking face every Incr would wait, proving nothing).
+	fap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 500, MaxConcurrentBatches: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

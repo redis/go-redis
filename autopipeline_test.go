@@ -44,7 +44,7 @@ var _ = Describe("AutoPipeline", func() {
 	})
 
 	It("should batch commands automatically", func() {
-		// Queue multiple commands concurrently to enable batching. ap.Do queues
+		// Issue multiple commands concurrently to enable batching. A typed call
 		// without blocking, so each goroutine must await its own command's result
 		// (cmd.Err) before reporting done — wg.Wait alone only waits for the
 		// queueing, not the batch flush+execute, which would race the reads below.
@@ -54,7 +54,7 @@ var _ = Describe("AutoPipeline", func() {
 			go func(idx int) {
 				defer wg.Done()
 				key := fmt.Sprintf("key%d", idx)
-				Expect(ap.Do(ctx, "SET", key, idx).Err()).NotTo(HaveOccurred())
+				Expect(ap.Set(ctx, key, idx, 0).Err()).NotTo(HaveOccurred())
 			}(i)
 		}
 
@@ -79,7 +79,7 @@ var _ = Describe("AutoPipeline", func() {
 			go func(idx int) {
 				defer wg.Done()
 				key := fmt.Sprintf("key%d", idx)
-				Expect(ap.Do(ctx, "SET", key, idx).Err()).NotTo(HaveOccurred())
+				Expect(ap.Set(ctx, key, idx, 0).Err()).NotTo(HaveOccurred())
 			}(i)
 		}
 
@@ -98,7 +98,7 @@ var _ = Describe("AutoPipeline", func() {
 	It("should flush on timer expiry", func() {
 		// Queue a single command (will block until flushed by timer)
 		go func() {
-			ap.Do(ctx, "SET", "key1", "value1")
+			ap.Set(ctx, "key1", "value1", 0)
 		}()
 
 		// Wait for timer to expire and command to complete
@@ -122,7 +122,7 @@ var _ = Describe("AutoPipeline", func() {
 				defer wg.Done()
 				for i := 0; i < commandsPerGoroutine; i++ {
 					key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-					ap.Do(ctx, "SET", key, i)
+					ap.Set(ctx, key, i, 0)
 				}
 			}(g)
 		}
@@ -149,7 +149,7 @@ var _ = Describe("AutoPipeline", func() {
 			go func(idx int) {
 				defer wg.Done()
 				key := fmt.Sprintf("key%d", idx)
-				ap.Do(ctx, "SET", key, idx)
+				ap.Set(ctx, key, idx, 0)
 			}(i)
 		}
 
@@ -172,19 +172,22 @@ var _ = Describe("AutoPipeline", func() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ap.Do(ctx, "SET", "key1", "value1")
+			ap.Set(ctx, "key1", "value1", 0)
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ap.Do(ctx, "INVALID_COMMAND")
+			// A command failing with a redis error (WRONGTYPE) inside a batch
+			// must not affect its batch neighbours.
+			client.Set(ctx, "not-a-counter", "str", 0)
+			_ = ap.Incr(ctx, "not-a-counter").Err()
 		}()
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ap.Do(ctx, "SET", "key2", "value2")
+			ap.Set(ctx, "key2", "value2", 0)
 		}()
 
 		// Wait for all commands to complete
@@ -208,7 +211,7 @@ var _ = Describe("AutoPipeline", func() {
 			go func(idx int) {
 				defer wg.Done()
 				key := fmt.Sprintf("key%d", idx)
-				ap.Do(ctx, "SET", key, idx)
+				ap.Set(ctx, key, idx, 0)
 			}(i)
 		}
 
@@ -232,7 +235,7 @@ var _ = Describe("AutoPipeline", func() {
 		Expect(ap.Close()).NotTo(HaveOccurred())
 
 		// Commands after close should fail
-		cmd := ap.Do(ctx, "SET", "key", "value")
+		cmd := ap.Set(ctx, "key", "value", 0)
 		Expect(cmd.Err()).To(Equal(redis.ErrClosed))
 	})
 
@@ -260,7 +263,7 @@ var _ = Describe("AutoPipeline", func() {
 			go func(idx int) {
 				defer wg.Done()
 				key := fmt.Sprintf("key%d", idx)
-				ap2.Do(ctx, "SET", key, idx)
+				ap2.Set(ctx, key, idx, 0)
 			}(i)
 		}
 
@@ -277,24 +280,27 @@ var _ = Describe("AutoPipeline", func() {
 	})
 
 	It("should report queue length", func() {
-		// Initially empty
-		Expect(ap.Len()).To(Equal(0))
+		// Deferred face with a wide explicit window: queued commands stay
+		// queued until the window elapses, so Len is deterministic.
+		aap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+			MaxBatchSize:  100,
+			MaxFlushDelay: time.Second,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		defer aap.Close()
 
-		// Queue some commands concurrently
-		var wg sync.WaitGroup
+		Expect(aap.Len()).To(Equal(0))
+
+		cmds := make([]*redis.StatusCmd, 0, 5)
 		for i := 0; i < 5; i++ {
-			wg.Add(1)
-			go func(idx int) {
-				defer wg.Done()
-				ap.Do(ctx, "SET", fmt.Sprintf("key%d", idx), idx)
-			}(i)
+			cmds = append(cmds, aap.Set(ctx, fmt.Sprintf("key%d", i), i, 0)) // queued, non-blocking
 		}
+		Expect(aap.Len()).To(Equal(5))
 
-		// Wait for all commands to complete
-		wg.Wait()
-
-		// Should be empty after flush
-		Expect(ap.Len()).To(Equal(0))
+		for _, c := range cmds {
+			Expect(c.Err()).NotTo(HaveOccurred()) // blocks until the window flushes
+		}
+		Expect(aap.Len()).To(Equal(0))
 	})
 })
 
@@ -329,7 +335,7 @@ func TestAutoPipelineBasic(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			key := fmt.Sprintf("key%d", idx)
-			cmd := ap.Do(ctx, "SET", key, idx)
+			cmd := ap.Set(ctx, key, idx, 0)
 			// Wait for command to complete
 			_ = cmd.Err()
 		}(i)
@@ -385,7 +391,7 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			key := fmt.Sprintf("key%d", idx)
-			cmd := ap.Do(ctx, "SET", key, idx)
+			cmd := ap.Set(ctx, key, idx, 0)
 			// Wait for command to complete
 			_ = cmd.Err()
 		}(i)
@@ -449,7 +455,7 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < commandsPerGoroutine; i++ {
 				key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-				ap.Do(ctx, "SET", key, i)
+				ap.Set(ctx, key, i, 0)
 				successCount.Add(1)
 			}
 		}(g)
@@ -482,17 +488,16 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	defer ap.Close()
 
 	start := time.Now()
-	cmd := ap.Do(ctx, "PING")
+	cmd := ap.Ping(ctx)
 	err = cmd.Err()
 	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Fatalf("Command failed: %v", err)
 	}
-
-	// The command is wrapped in autoPipelineCmd, so we can't directly access Val()
-	// Just check that it completed without error
-	t.Logf("Command completed successfully")
+	if cmd.Val() != "PONG" {
+		t.Fatalf("Ping = %q, want PONG", cmd.Val())
+	}
 
 	// Single command should complete within 50ms (adaptive delay is 10ms)
 	if elapsed > 50*time.Millisecond {
@@ -522,7 +527,7 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("test:key:%d", i)
 		t.Logf("Sending command %d", i)
-		cmd := ap.Do(ctx, "SET", key, i)
+		cmd := ap.Set(ctx, key, i, 0)
 		t.Logf("Waiting for command %d to complete", i)
 		err := cmd.Err()
 		if err != nil {
