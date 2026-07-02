@@ -43,7 +43,7 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			key := fmt.Sprintf("key%d", idx)
-			cmd := ap.Do(ctx, "SET", key, idx)
+			cmd := ap.Set(ctx, key, idx, 0)
 			// Wait for command to complete
 			_ = cmd.Err()
 		}(i)
@@ -101,7 +101,7 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < commandsPerGoroutine; i++ {
 				key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-				cmd := ap.Do(ctx, "SET", key, i)
+				cmd := ap.Set(ctx, key, i, 0)
 				// Wait for command to complete
 				_ = cmd.Err()
 			}
@@ -168,7 +168,7 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		wg.Add(1)
 		go func(k string, val int) {
 			defer wg.Done()
-			cmd := ap.Do(ctx, "SET", k, val)
+			cmd := ap.Set(ctx, k, val, 0)
 			// Wait for command to complete
 			_ = cmd.Err()
 		}(key, i)
