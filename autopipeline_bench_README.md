@@ -63,7 +63,7 @@ What the numbers say:
 - **`AutoPipeline()` (blocking) clears ~1.1M executed SET/sec** even though each
   caller blocks on every command — the flusher coalesces the 2000 concurrent
   callers into deep pipelines and runs many batches in parallel (its default,
-  `DefaultBlockingAutoPipelineConfig`, uses `MaxConcurrentBatches: 50`). A
+  `DefaultBlockingAutoPipelineConfig`, uses `MaxConcurrentBatches: 1` — a single ordered batch stream). A
   drop-in replacement for a normal client, ~14× its throughput, with
   per-goroutine ordering intact.
 - **`AsyncAutoPipeline()` windowed reaches ~2.5M** by also batching within each
