@@ -372,8 +372,8 @@ type baseCmd struct {
 	slotCache uint16
 
 	// ready, when non-nil, is closed once the command has executed. It is set
-	// only by the asynchronous autopipeline faces (FutureAutoPipeline /
-	// ChanAutoPipeline), which hand the command back to the caller before it
+	// only by the deferred (async) autopipeliner, which hands the command
+	// back to the caller before it
 	// runs. The public result accessors (Err/Val/Result) call await so they
 	// transparently block until execution; internal execution-path reads use
 	// rawErr to avoid awaiting the very batch they are producing. ready stays
