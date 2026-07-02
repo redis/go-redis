@@ -591,6 +591,12 @@ func (f AutoFuture) Wait() error {
 // still executes and its result remains readable once its batch completes —
 // ctx abandons only this wait, it does not cancel the command (per-command
 // contexts are not honored after enqueue; see the AutoPipeliner doc).
+//
+// After a ctx error the result may simply not be there YET: the batch is
+// still in flight and may populate the command at any moment, so do not read
+// Cmd()'s value or error directly — that races the executing batch. Call Wait
+// (or WaitContext with a fresh context) again; once it returns a non-context
+// error, the command's result is complete and safe to read.
 func (f AutoFuture) WaitContext(ctx context.Context) error {
 	if f.batch == nil {
 		if f.cmd != nil {
