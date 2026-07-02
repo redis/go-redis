@@ -44,6 +44,19 @@ type AutoPipelineConfig struct {
 	// is a configuration error.
 	Unordered bool
 
+	// NumShards is the number of independent queue+flusher shards the
+	// autopipeliner runs. 0 (the default) means auto: a single shard, which
+	// funnels every caller into one queue so batches stay deep — measured
+	// throughput and latency are best with one shard even under heavy
+	// goroutine concurrency. Cluster clients default to several shards
+	// instead (commands are routed to shards by slot, so each shard's batch
+	// stays on one node). Raising NumShards splits the queue: it reduces
+	// enqueue-mutex contention but fragments batches, which usually costs far
+	// more than the contention saves. Every shard always has at least one
+	// concurrency permit, so the effective global batch concurrency is
+	// max(NumShards, MaxConcurrentBatches).
+	NumShards int
+
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
 	// A small delay (e.g., 100μs) can significantly reduce CPU usage by allowing
 	// more commands to batch together, at the cost of slightly higher latency.
@@ -100,10 +113,12 @@ var defaultAccumulateGap = 20 * time.Microsecond
 // ap.ctx is cancelled by Close.
 const autoPipelinePermitBackstop = 30 * time.Second
 
-// numAutoPipelineShards chooses how many independent queue+flusher shards to
-// run. More shards reduce enqueue mutex contention and let several batches be
-// assembled in parallel, but there is no point exceeding the concurrent-batch
-// budget or the number of CPUs.
+// numAutoPipelineShards is the shard-count default used by CLUSTER wiring,
+// where commands are routed to shards by slot and several shards keep each
+// batch on a single node. It is NOT used for standalone clients: those default
+// to one shard (see newAutoPipeliner), because a single deep queue pipelines
+// far better than a fragmented one. There is no point exceeding the
+// concurrent-batch budget or the number of CPUs.
 func numAutoPipelineShards(maxConcurrentBatches int) int {
 	n := runtime.GOMAXPROCS(0)
 	if n > maxConcurrentBatches {
@@ -174,6 +189,9 @@ func (cfg *AutoPipelineConfig) Validate() error {
 	}
 	if cfg.MaxFlushDelay < 0 {
 		return fmt.Errorf("redis: AutoPipelineConfig.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
+	}
+	if cfg.NumShards < 0 {
+		return fmt.Errorf("redis: AutoPipelineConfig.NumShards=%d must be >= 0", cfg.NumShards)
 	}
 	return nil
 }
@@ -361,11 +379,17 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 		ap.cmdable = ap.processAsync
 	}
 
-	// Pick a shard count: enough to spread mutex/flusher contention across
-	// cores, but never more than the concurrent-batch budget (extra shards
-	// could not all flush at once anyway) and capped so tiny configs stay
-	// single-shard.
-	nShards := numAutoPipelineShards(config.MaxConcurrentBatches)
+	// Pick the shard count. NumShards=0 (auto) means ONE shard: a single deep
+	// queue outperforms a sharded one because batches stay large — sharding by
+	// core count coupled batch fragmentation to MaxConcurrentBatches and
+	// collapsed pipelining (measured: 16 shards cut async throughput ~4x and
+	// tripled latency versus one shard at the same permit count). Cluster
+	// wiring passes an explicit NumShards so slot-routed shards keep each
+	// batch on one node.
+	nShards := config.NumShards
+	if nShards <= 0 {
+		nShards = 1
+	}
 	// Split the concurrent-batch budget across shards so each shard has its own
 	// semaphore. A single shared semaphore became a contention point once the
 	// per-shard queue mutexes were no longer the bottleneck. Integer division
