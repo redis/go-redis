@@ -336,17 +336,38 @@ func (hm *Manager) maintNotificationsConnSnapshot() []*pool.Conn {
 
 func (hm *Manager) retireMaintNotificationsConns(ctx context.Context) {
 	conns := hm.maintNotificationsConnSnapshot()
-	if len(conns) == 0 || hm.pool == nil {
+	if len(conns) == 0 {
 		return
 	}
 
-	if retirer, ok := hm.pool.(pool.ConnRetirer); ok {
-		retirer.RetireConns(ctx, conns, pool.CloseReasonMaintNotificationsDisabled)
-		return
+	// Tracked connections can live in the primary pool OR in any additional
+	// pool this manager attached a hook to (e.g. a client's dedicated pipeline
+	// connection pool — its conns run initConn and are tracked exactly like
+	// primary ones). Retire through every pool: RetireConns skips connections
+	// a pool does not own, so offering the full snapshot to each pool is safe.
+	// Missing the additional pools left pipeline connections in service with
+	// maintnotifications enabled but no hook attached after a runtime
+	// downgrade — pushes on them were silently dropped.
+	pools := make([]pool.Pooler, 0, 1+len(hm.additionalPoolHooks))
+	if hm.pool != nil {
+		pools = append(pools, hm.pool)
 	}
+	hm.hooksMu.RLock()
+	for _, ah := range hm.additionalPoolHooks {
+		if ah.pool != nil {
+			pools = append(pools, ah.pool)
+		}
+	}
+	hm.hooksMu.RUnlock()
 
-	for _, cn := range conns {
-		_ = hm.pool.CloseConn(ctx, cn, pool.CloseReasonMaintNotificationsDisabled, pool.MetricStateIdle)
+	for _, pl := range pools {
+		if retirer, ok := pl.(pool.ConnRetirer); ok {
+			retirer.RetireConns(ctx, conns, pool.CloseReasonMaintNotificationsDisabled)
+			continue
+		}
+		for _, cn := range conns {
+			_ = pl.CloseConn(ctx, cn, pool.CloseReasonMaintNotificationsDisabled, pool.MetricStateIdle)
+		}
 	}
 }
 
