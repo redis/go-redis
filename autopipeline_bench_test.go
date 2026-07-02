@@ -87,7 +87,7 @@ func BenchmarkAutoPipeline(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			key := fmt.Sprintf("key%d", i)
-			_ = ap.Do(ctx, "SET", key, i).Err()
+			_ = ap.Set(ctx, key, i, 0).Err()
 			i++
 		}
 	})
@@ -135,7 +135,7 @@ func BenchmarkAutoPipelineVsManual(b *testing.B) {
 			}
 			for i := 0; i < numCommands; i++ {
 				key := fmt.Sprintf("key%d", i)
-				_ = ap.Do(ctx, "SET", key, i).Err()
+				_ = ap.Set(ctx, key, i, 0).Err()
 			}
 			ap.Close()
 		}
@@ -187,7 +187,7 @@ func BenchmarkConcurrentAutoPipeline(b *testing.B) {
 					defer wg.Done()
 					for i := 0; i < commandsPerGoroutine; i++ {
 						key := fmt.Sprintf("g%d:key%d", goroutineID, i)
-						_ = ap.Do(ctx, "SET", key, i).Err()
+						_ = ap.Set(ctx, key, i, 0).Err()
 					}
 				}(g)
 			}
@@ -226,7 +226,7 @@ func BenchmarkAutoPipelineBatchSizes(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				key := fmt.Sprintf("key%d", i)
-				_ = ap.Do(ctx, "SET", key, i).Err()
+				_ = ap.Set(ctx, key, i, 0).Err()
 			}
 
 			b.StopTimer()
@@ -267,7 +267,7 @@ func BenchmarkAutoPipelineMaxFlushDelays(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				key := fmt.Sprintf("key%d", i)
-				_ = ap.Do(ctx, "SET", key, i).Err()
+				_ = ap.Set(ctx, key, i, 0).Err()
 			}
 
 			b.StopTimer()
@@ -311,7 +311,7 @@ func BenchmarkMaxFlushDelay(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					_ = ap.Do(ctx, "SET", key, i).Err()
+					_ = ap.Set(ctx, key, i, 0).Err()
 					i++
 				}
 			})
@@ -333,9 +333,11 @@ func BenchmarkBufferSizes(b *testing.B) {
 		b.Run(fmt.Sprintf("buffer_%dKiB", size/1024), func(b *testing.B) {
 			ctx := context.Background()
 			client := redis.NewClient(&redis.Options{
-				Addr:            ":6379",
-				ReadBufferSize:  size,
-				WriteBufferSize: size,
+				Addr: ":6379",
+				// The dedicated pipeline pool's buffers — what autopipeline
+				// batches actually write/read through.
+				PipelineReadBufferSize:  size,
+				PipelineWriteBufferSize: size,
 				AutoPipelineConfig: &redis.AutoPipelineConfig{
 					MaxBatchSize:         50,
 					MaxFlushDelay:        time.Millisecond,
@@ -357,7 +359,7 @@ func BenchmarkBufferSizes(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					_ = ap.Do(ctx, "SET", key, i).Err()
+					_ = ap.Set(ctx, key, i, 0).Err()
 					i++
 				}
 			})
@@ -401,7 +403,7 @@ func BenchmarkAutoPipelineMaxBatchSizes(b *testing.B) {
 				i := 0
 				for pb.Next() {
 					key := fmt.Sprintf("key%d", i)
-					_ = ap.Do(ctx, "SET", key, i).Err()
+					_ = ap.Set(ctx, key, i, 0).Err()
 					i++
 				}
 			})

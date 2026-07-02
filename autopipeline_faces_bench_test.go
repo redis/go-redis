@@ -21,7 +21,7 @@ func BenchmarkFutureFace(b *testing.B) {
 		ctx := context.Background()
 		c := redis.NewClient(&redis.Options{Addr: ":6379", PoolSize: 250})
 		defer c.Close()
-		fap, err := c.AutoPipeline()
+		fap, err := c.AsyncAutoPipeline() // windowed submit-then-read is the deferred pattern
 		if err != nil {
 			b.Fatal(err)
 		}
