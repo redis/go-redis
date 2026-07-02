@@ -44,6 +44,19 @@ type AutoPipelineConfig struct {
 	// is a configuration error.
 	Unordered bool
 
+	// NumShards is the number of independent queue+flusher shards the
+	// autopipeliner runs. 0 (the default) means auto: a single shard, which
+	// funnels every caller into one queue so batches stay deep — measured
+	// throughput and latency are best with one shard even under heavy
+	// goroutine concurrency. Cluster clients default to several shards
+	// instead (commands are routed to shards by slot, so each shard's batch
+	// stays on one node). Raising NumShards splits the queue: it reduces
+	// enqueue-mutex contention but fragments batches, which usually costs far
+	// more than the contention saves. Every shard always has at least one
+	// concurrency permit, so the effective global batch concurrency is
+	// max(NumShards, MaxConcurrentBatches).
+	NumShards int
+
 	// MaxFlushDelay is the maximum delay after flushing before checking for more commands.
 	// A small delay (e.g., 100μs) can significantly reduce CPU usage by allowing
 	// more commands to batch together, at the cost of slightly higher latency.
@@ -75,10 +88,20 @@ type AutoPipelineConfig struct {
 }
 
 // defaultAccumulateWindow is the batch-coalescing window used by the flusher
-// when MaxFlushDelay is not set. It is small enough to add negligible latency
-// but long enough to let concurrent callers fill a pipeline instead of each
-// command being flushed on its own.
-const defaultAccumulateWindow = 200 * time.Microsecond
+// when MaxFlushDelay is not set. It is only the upper bound on how long the
+// flusher waits: with the default window the stops-growing check in
+// accumulateBatch returns as soon as the queue stops filling, so a lone caller
+// is not taxed the whole window while concurrent callers still coalesce into a
+// pipeline. It is a var (not a const) so tests can enlarge it and observe the
+// stops-growing behavior without depending on sub-millisecond wall-clock timing.
+var defaultAccumulateWindow = 200 * time.Microsecond
+
+// defaultAccumulateGap is the "stops growing" gap used with the default window:
+// if no new command arrives for a whole gap, the callers that already enqueued
+// are blocked on their results and nothing more is coming, so the flusher stops
+// waiting. Small enough to keep single-caller latency near a raw round-trip,
+// large enough to still coalesce a concurrent burst into one pipeline.
+var defaultAccumulateGap = 20 * time.Microsecond
 
 // autoPipelinePermitBackstop bounds how long a flush waits for a concurrency
 // permit when all are busy. It is only a safety net against a wedged semaphore:
@@ -90,10 +113,12 @@ const defaultAccumulateWindow = 200 * time.Microsecond
 // ap.ctx is cancelled by Close.
 const autoPipelinePermitBackstop = 30 * time.Second
 
-// numAutoPipelineShards chooses how many independent queue+flusher shards to
-// run. More shards reduce enqueue mutex contention and let several batches be
-// assembled in parallel, but there is no point exceeding the concurrent-batch
-// budget or the number of CPUs.
+// numAutoPipelineShards is the shard-count default used by CLUSTER wiring,
+// where commands are routed to shards by slot and several shards keep each
+// batch on a single node. It is NOT used for standalone clients: those default
+// to one shard (see newAutoPipeliner), because a single deep queue pipelines
+// far better than a fragmented one. There is no point exceeding the
+// concurrent-batch budget or the number of CPUs.
 func numAutoPipelineShards(maxConcurrentBatches int) int {
 	n := runtime.GOMAXPROCS(0)
 	if n > maxConcurrentBatches {
@@ -125,17 +150,22 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 }
 
 // DefaultBlockingAutoPipelineConfig is the default for the blocking face
-// (Client.AutoPipeline). It runs many batches in parallel (MaxConcurrentBatches:
-// 50) for high throughput. Unordered is set because the engine requires it for
-// MaxConcurrentBatches>1 — but a blocking caller still observes per-goroutine
-// ordering, since it waits for each command's result before issuing the next.
-// Global cross-goroutine order (which is not meaningful for independent callers)
-// is what Unordered relaxes.
+// (Client.AutoPipeline). It uses a single ordered batch stream
+// (MaxConcurrentBatches: 1). Counterintuitively this maximizes both throughput
+// AND latency for the blocking face: with one batch in flight, callers whose
+// commands return while it executes re-enqueue and flush together as the next
+// batch, so batches stay deep (a near-continuous, double-buffered pipeline),
+// while a lone caller still flushes promptly via the stops-growing window in
+// accumulateBatch. More parallel permits (MaxConcurrentBatches>1) do the
+// opposite: each command finds a free permit and flushes on its own before
+// others accumulate, collapsing batch size — and throughput — toward one command
+// per round-trip while latency rises. For maximum throughput use the async face
+// (AsyncAutoPipeline) with a window of in-flight commands (inflight>1); it keeps
+// MaxConcurrentBatches: 1 as well.
 func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         300,
-		MaxConcurrentBatches: 50,
-		Unordered:            true,
+		MaxConcurrentBatches: 1,
 	}
 }
 
@@ -159,6 +189,9 @@ func (cfg *AutoPipelineConfig) Validate() error {
 	}
 	if cfg.MaxFlushDelay < 0 {
 		return fmt.Errorf("redis: AutoPipelineConfig.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
+	}
+	if cfg.NumShards < 0 {
+		return fmt.Errorf("redis: AutoPipelineConfig.NumShards=%d must be >= 0", cfg.NumShards)
 	}
 	return nil
 }
@@ -346,11 +379,17 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 		ap.cmdable = ap.processAsync
 	}
 
-	// Pick a shard count: enough to spread mutex/flusher contention across
-	// cores, but never more than the concurrent-batch budget (extra shards
-	// could not all flush at once anyway) and capped so tiny configs stay
-	// single-shard.
-	nShards := numAutoPipelineShards(config.MaxConcurrentBatches)
+	// Pick the shard count. NumShards=0 (auto) means ONE shard: a single deep
+	// queue outperforms a sharded one because batches stay large — sharding by
+	// core count coupled batch fragmentation to MaxConcurrentBatches and
+	// collapsed pipelining (measured: 16 shards cut async throughput ~4x and
+	// tripled latency versus one shard at the same permit count). Cluster
+	// wiring passes an explicit NumShards so slot-routed shards keep each
+	// batch on one node.
+	nShards := config.NumShards
+	if nShards <= 0 {
+		nShards = 1
+	}
 	// Split the concurrent-batch budget across shards so each shard has its own
 	// semaphore. A single shared semaphore became a contention point once the
 	// per-shard queue mutexes were no longer the bottleneck. Integer division
@@ -657,13 +696,16 @@ func (s *apShard) flusher() {
 // returns as soon as any of these holds:
 //
 //   - the queue reaches MaxBatchSize (batch is full);
-//   - the queue stops growing between two polls (all current callers are
-//     blocked on their results, so no more commands are coming right now);
-//   - MaxFlushDelay (or defaultAccumulateWindow when unset) elapses.
+//   - a configured MaxFlushDelay / AdaptiveDelay window elapses; or
+//   - with the implicit default window (no delay configured), no new command
+//     arrives for a whole defaultAccumulateGap — the callers that enqueued are
+//     then blocked on their results, so nothing more is coming right now.
 //
-// The "stops growing" check is what keeps latency low: with N concurrent
-// blocking callers the queue fills to N within a couple of polls and flushes
-// immediately, rather than always waiting the whole window.
+// The stops-growing gap applies only to the default window: an explicit
+// MaxFlushDelay is an intentional "wait this long to accumulate a fuller batch"
+// and is honored in full. It is what keeps single-caller latency low — a lone
+// caller flushes one gap after its command instead of waiting the whole window,
+// while under concurrent load each enqueue extends the gap so the batch grows.
 func (s *apShard) accumulateBatch() {
 	ap := s.ap
 	batchSize := ap.config.MaxBatchSize
@@ -681,6 +723,11 @@ func (s *apShard) accumulateBatch() {
 	// is this shard's own length — each shard flushes independently, so a global
 	// count would mis-tune a quiet shard while another is busy.
 	window := ap.calculateDelay(s.Len())
+
+	// stopsGrowing enables the "flush once the queue stops filling" early exit,
+	// but only for the implicit default window. An explicit MaxFlushDelay (or
+	// AdaptiveDelay) is an intentional accumulation window and is waited in full.
+	stopsGrowing := false
 	if window <= 0 {
 		if ap.config.MaxFlushDelay > 0 || ap.config.AdaptiveDelay {
 			// A delay/adaptive mode was configured and the current fill level
@@ -688,23 +735,61 @@ func (s *apShard) accumulateBatch() {
 			return
 		}
 		window = defaultAccumulateWindow
+		stopsGrowing = true
 	}
 
-	// Wait for enqueue wake-ups (no polling, no sleep) until the batch is full
-	// or the window elapses. Each enqueue sends on notify, so we re-check the
-	// queue length on every wake-up and return as soon as a full batch is ready.
-	deadline := time.NewTimer(window)
-	defer deadline.Stop()
+	if !stopsGrowing {
+		// Explicit window: wait the whole delay (or until the batch fills). Each
+		// enqueue sends on notify, so we re-check the queue length on every
+		// wake-up and return once the batch is full.
+		deadline := time.NewTimer(window)
+		defer deadline.Stop()
+		for {
+			select {
+			case <-ap.ctx.Done():
+				return
+			case <-deadline.C:
+				return
+			case <-s.notify:
+				if s.Len() >= batchSize {
+					return
+				}
+			}
+		}
+	}
+
+	// Default window: flush as soon as the queue stops growing. A single timer
+	// acts as a debounce gap — each enqueue extends it — bounded by the window
+	// deadline so a steadily-growing queue still flushes a full pipeline at the
+	// cap, while a lone caller flushes one gap after enqueuing. Reset is
+	// drain-safe on Go 1.23+ (see go.mod: go 1.24).
+	gap := defaultAccumulateGap
+	if gap > window {
+		gap = window
+	}
+	deadline := time.Now().Add(window)
+	burst := time.NewTimer(gap)
+	defer burst.Stop()
 	for {
 		select {
 		case <-ap.ctx.Done():
 			return
-		case <-deadline.C:
+		case <-burst.C:
+			// No new command for a whole gap: the burst is over, flush now.
 			return
 		case <-s.notify:
 			if s.Len() >= batchSize {
 				return
 			}
+			// Extend the gap to keep coalescing, but never past the window cap.
+			d := gap
+			if rem := time.Until(deadline); rem < d {
+				if rem <= 0 {
+					return
+				}
+				d = rem
+			}
+			burst.Reset(d)
 		}
 	}
 }
