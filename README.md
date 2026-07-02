@@ -347,7 +347,8 @@ rdb := redis.NewClient(&redis.Options{
 
 **Experimental** — the API may still change. Reach for autopipelining in
 high-throughput / high-load / scale scenarios; at low concurrency a plain
-client is simpler and just as fast.
+client is simpler and just as fast. A runnable usage tour and throughput
+comparison live in [`example/autopipeline`](example/autopipeline).
 
 When many goroutines issue commands concurrently, autopipelining batches them
 into Redis pipelines automatically — without you writing any pipeline code. It
@@ -430,8 +431,7 @@ directly on your context, and `Do` also bypasses batching with plain
 a dropped connection a batch is retried whole (up to `MaxRetries`), so
 non-idempotent commands may execute twice. Both faces return a cached,
 client-shared instance: the first call's config wins and `Close` stops it for
-all callers. A runnable tour and throughput comparison live in
-[`example/autopipeline`](example/autopipeline).
+all callers.
 
 ### Advanced Configuration
 
