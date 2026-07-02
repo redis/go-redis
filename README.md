@@ -78,6 +78,9 @@ surface. The API is experimental and may change in a future release.
 - [StreamingCredentialsProvider (e.g. entra id, oauth)](#1-streaming-credentials-provider-highest-priority) (experimental)
 - [Pub/Sub](https://redis.uptrace.dev/guide/go-redis-pubsub.html).
 - [Pipelines and transactions](https://redis.uptrace.dev/guide/go-redis-pipelines.html).
+- [Automatic pipelining](#automatic-pipelining) (experimental) — batches concurrent
+  commands into pipelines for you; meant for high-throughput / high-load / scale
+  use cases.
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
 - [Redis Sentinel](https://redis.uptrace.dev/guide/go-redis-sentinel.html).
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
@@ -341,6 +344,10 @@ rdb := redis.NewClient(&redis.Options{
 ```
 
 ### Automatic pipelining
+
+**Experimental** — the API may still change. Reach for autopipelining in
+high-throughput / high-load / scale scenarios; at low concurrency a plain
+client is simpler and just as fast.
 
 When many goroutines issue commands concurrently, autopipelining batches them
 into Redis pipelines automatically — without you writing any pipeline code. It
