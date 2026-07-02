@@ -200,8 +200,8 @@ func TestAdaptiveDelayCalculation(t *testing.T) {
 					AdaptiveDelay: tt.adaptive,
 				},
 			}
-			sh := &apShard{ap: ap}
-			sh.queueLen.Store(int32(tt.queueLen))
+			sh := &apShard{ap: ap, stripes: make([]apStripe, 1)}
+			sh.stripes[0].queueLen.Store(int32(tt.queueLen))
 			ap.shards = []*apShard{sh}
 
 			// Calculate delay
@@ -227,11 +227,11 @@ func TestAdaptiveDelayIntegerArithmetic(t *testing.T) {
 			AdaptiveDelay: true,
 		},
 	}
-	sh := &apShard{ap: ap}
+	sh := &apShard{ap: ap, stripes: make([]apStripe, 1)}
 	ap.shards = []*apShard{sh}
 
 	for queueLen := 0; queueLen <= maxBatch; queueLen++ {
-		sh.queueLen.Store(int32(queueLen))
+		sh.stripes[0].queueLen.Store(int32(queueLen))
 		delay := ap.calculateDelay(queueLen)
 
 		// Verify delay is one of the expected values
@@ -269,8 +269,8 @@ func BenchmarkCalculateDelay(b *testing.B) {
 			AdaptiveDelay: true,
 		},
 	}
-	sh := &apShard{ap: ap}
-	sh.queueLen.Store(50)
+	sh := &apShard{ap: ap, stripes: make([]apStripe, 1)}
+	sh.stripes[0].queueLen.Store(50)
 	ap.shards = []*apShard{sh}
 
 	b.ResetTimer()
@@ -288,8 +288,8 @@ func BenchmarkCalculateDelayDisabled(b *testing.B) {
 			AdaptiveDelay: false,
 		},
 	}
-	sh := &apShard{ap: ap}
-	sh.queueLen.Store(50)
+	sh := &apShard{ap: ap, stripes: make([]apStripe, 1)}
+	sh.stripes[0].queueLen.Store(50)
 	ap.shards = []*apShard{sh}
 
 	b.ResetTimer()
