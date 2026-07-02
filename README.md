@@ -340,6 +340,76 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
+### Automatic pipelining
+
+When many goroutines issue commands concurrently, autopipelining batches them
+into Redis pipelines automatically — without you writing any pipeline code. It
+comes in two faces:
+
+- **`AutoPipeline()` — blocking, drop-in.** Each command call blocks until it
+  executes and returns its own value/error, exactly like a normal client, so
+  existing code keeps working unchanged. Under concurrency the engine batches
+  across goroutines into parallel pipelines, reaching ~1M+ SET/sec (vs ~100k for
+  a plain client). Per-goroutine ordering is preserved.
+- **`AsyncAutoPipeline()` — deferred, highest throughput.** Command calls return
+  immediately; you submit a window of commands and read their results afterward,
+  which keeps each pipeline deep (~2-3M SET/sec). Ordered by default.
+
+```go
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+defer rdb.Close()
+
+// Blocking face: drop-in for a normal client, batched under the hood.
+ap, err := rdb.AutoPipeline()
+if err != nil { // only on an invalid AutoPipelineConfig
+    log.Fatal(err)
+}
+defer ap.Close()
+
+var wg sync.WaitGroup
+for i := 0; i < 1000; i++ {
+    wg.Add(1)
+    go func(i int) {
+        defer wg.Done()
+        key := fmt.Sprintf("key:%d", i)
+        if err := ap.Set(ctx, key, i, 0).Err(); err != nil { // blocks until executed
+            log.Printf("set %s: %v", key, err)
+        }
+    }(i)
+}
+wg.Wait()
+```
+
+For maximum throughput, submit a window on the async face and read later:
+
+```go
+ap, err := rdb.AsyncAutoPipeline() // ordered by default
+if err != nil {
+    log.Fatal(err)
+}
+defer ap.Close()
+
+cmds := make([]*redis.StatusCmd, 0, 200)
+for i := 0; i < 200; i++ {
+    cmds = append(cmds, ap.Set(ctx, fmt.Sprintf("key:%d", i), i, 0)) // returns immediately
+}
+for _, cmd := range cmds {
+    if err := cmd.Err(); err != nil { // blocks until executed
+        log.Printf("set: %v", err)
+    }
+}
+```
+
+Both faces take an optional `*AutoPipelineConfig` and return `(*AutoPipeliner, error)`
+— the error is non-nil only for an invalid config (e.g.
+`ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 80, Unordered: true})`).
+They work on `ClusterClient` too: commands are routed to the correct shard per
+key, so a single batch may span many slots. Autopipelining is only a win under
+concurrency (or windowed submission) — a single goroutine issuing one blocking
+command at a time sees little benefit, and a hand-written `Pipeline()` is still
+fastest when you can batch by hand. A runnable comparison lives in
+[`example/autopipeline`](example/autopipeline).
+
 ### Advanced Configuration
 
 go-redis supports extending the client identification phase to allow projects to send their own custom client identification.

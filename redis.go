@@ -318,6 +318,11 @@ type baseClient struct {
 	optLock    sync.RWMutex
 	connPool   pool.Pooler
 	pubSubPool *pool.PubSubPool
+	// pipelinePool is an optional separate connection pool for pipelining
+	// operations, used when PipelineReadBufferSize/PipelineWriteBufferSize is
+	// set so pipelines can use large buffers without bloating the main pool.
+	// nil means pipelines use connPool.
+	pipelinePool pool.Pooler
 	hooksMixin
 
 	// onClose holds named callbacks invoked when the client is closed.
@@ -830,6 +835,74 @@ func (c *baseClient) withConn(
 	return fnErr
 }
 
+// withPipelineConn executes fn with a connection from the pipeline pool when
+// one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
+// otherwise it falls back to the regular pool via withConn.
+func (c *baseClient) withPipelineConn(
+	ctx context.Context, fn func(context.Context, *pool.Conn) error,
+) (retErr error) {
+	// Use pipeline pool if available, otherwise fall back to regular pool.
+	if c.pipelinePool == nil {
+		return c.withConn(ctx, fn)
+	}
+
+	// Honor the Limiter on the dedicated pipeline-pool path too, mirroring
+	// getConn/releaseConn: Allow() before acquiring and ReportResult() on every
+	// exit (including the early init/re-acquire failures below). Without this,
+	// enabling the pipeline pool would silently bypass throttling and failure
+	// reporting for callers that set a Limiter.
+	if c.opt.Limiter != nil {
+		if err := c.opt.Limiter.Allow(); err != nil {
+			return err
+		}
+		defer func() { c.opt.Limiter.ReportResult(retErr) }()
+	}
+
+	cn, err := c.pipelinePool.Get(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Initialize connection if needed.
+	if !cn.IsInited() {
+		if err := c.initConn(ctx, cn); err != nil {
+			c.pipelinePool.Remove(ctx, cn, err)
+			if unwrapped := errors.Unwrap(err); unwrapped != nil {
+				return unwrapped
+			}
+			return err
+		}
+
+		// initConn transitions the connection to IDLE, so re-acquire it.
+		if !cn.TryAcquire() {
+			// Couldn't re-acquire: remove the connection so it isn't leaked from
+			// the pipeline pool's accounting (the deferred Put/Remove below only
+			// runs once fnErr is set, which it isn't on this early return).
+			err := fmt.Errorf("redis: connection is not usable")
+			c.pipelinePool.Remove(ctx, cn, err)
+			return err
+		}
+	}
+
+	var fnErr error
+	defer func() {
+		retErr = fnErr
+		if isBadConn(fnErr, false, c.opt.Addr) {
+			c.pipelinePool.Remove(ctx, cn, fnErr)
+		} else {
+			// Process any pending push notifications before returning the
+			// connection to the pool.
+			if err := c.processPushNotifications(ctx, cn); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+			}
+			c.pipelinePool.Put(ctx, cn)
+		}
+	}()
+
+	fnErr = fn(ctx, cn)
+	return fnErr
+}
+
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return c.opt.Dialer(ctx, network, addr)
 }
@@ -1065,6 +1138,13 @@ func (c *baseClient) enableMaintNotificationsUpgrades() error {
 
 	// Initialize pool hook (safe to call without lock since manager is now set)
 	manager.InitPoolHook(c.dialHook)
+	// If a dedicated pipeline connection pool is in use, attach an independent
+	// maintnotifications hook to it as well. Otherwise autopipelined/pipelined
+	// commands run on pipeline-pool connections that never receive MOVING/
+	// MIGRATING handoff handling.
+	if c.pipelinePool != nil {
+		manager.InitPoolHookForPool(c.pipelinePool, c.dialHook)
+	}
 	return nil
 }
 
@@ -1101,10 +1181,15 @@ func (c *baseClient) Close() error {
 	}
 
 	// Unregister pools from OTel before closing them
-	otel.UnregisterPools(c.connPool, c.pubSubPool)
+	otel.UnregisterPools(c.connPool, c.pubSubPool, c.pipelinePool)
 
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if c.pipelinePool != nil {
+		if err := c.pipelinePool.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -1164,7 +1249,9 @@ func (c *baseClient) generalProcessPipeline(
 
 		// Enable retries by default to retry dial errors returned by withConn.
 		canRetry := true
-		lastErr = c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+		// Route pipelines through the dedicated pipeline pool when configured;
+		// withPipelineConn falls back to the regular pool when it is not.
+		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			lastConn = cn
 			// Process any pending push notifications before executing the pipeline
 			if err := c.processPushNotifications(ctx, cn); err != nil {
@@ -1344,6 +1431,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 type Client struct {
 	*baseClient
 	cmdable
+	autopipelinerMu    *sync.Mutex    // guards both autopipeliner fields against concurrent first-call creation
+	autopipeliner      *AutoPipeliner // blocking face (Client.AutoPipeline)
+	asyncAutopipeliner *AutoPipeliner // deferred face (Client.AsyncAutoPipeline)
 }
 
 // NewClient returns a client to the Redis Server specified by Options.
@@ -1388,9 +1478,35 @@ func NewClient(opt *Options) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
+	// Optionally create a separate connection pool for pipelining, with its own
+	// (typically larger) buffers, so pipelines can use big buffers without
+	// bloating the main pool. Enabled when either pipeline buffer size is set.
+	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 {
+		pipelineOpt := opt.clone()
+		if opt.PipelineReadBufferSize > 0 {
+			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+		}
+		if opt.PipelineWriteBufferSize > 0 {
+			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
+		}
+		if opt.PipelinePoolSize > 0 {
+			pipelineOpt.PoolSize = opt.PipelinePoolSize
+		} else {
+			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
+		}
+		pipelinePoolName := opt.Addr + "_" + uniqueID + "_pipeline"
+		c.pipelinePool, err = newConnPool(pipelineOpt, c.dialHook, pipelinePoolName)
+		if err != nil {
+			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
+		}
+	}
+
 	if opt.StreamingCredentialsProvider != nil {
 		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+		if c.pipelinePool != nil {
+			c.pipelinePool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+		}
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
@@ -1416,12 +1532,17 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.connPool, c.pubSubPool, opt.Addr)
+	otel.RegisterPools(c.connPool, c.pubSubPool, c.pipelinePool, opt.Addr)
 
 	return &c
 }
 
 func (c *Client) init() {
+	// Fresh per-Client guard and no inherited autopipeliner: a WithTimeout clone
+	// (clone := *c) must not share the parent's mutex or AutoPipeliner instance.
+	c.autopipelinerMu = &sync.Mutex{}
+	c.autopipeliner = nil
+	c.asyncAutopipeliner = nil
 	c.cmdable = c.Process
 	c.initHooks(hooks{
 		dial:       c.baseClient.dial,
@@ -1436,6 +1557,29 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
 	return &clone
+}
+
+// Close closes the client, stopping the shared AutoPipeliner (if one was
+// created via AutoPipeline()) before releasing the underlying resources, so its
+// background flusher goroutines don't outlive the client. AutoPipeliner.Close is
+// idempotent and safe to call here even if AutoPipeline() was never used.
+func (c *Client) Close() error {
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.baseClient.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *Client) Conn() *Conn {
@@ -1509,6 +1653,9 @@ type PoolStats pool.Stats
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
 	stats.PubSubStats = *c.pubSubPool.Stats()
+	if c.pipelinePool != nil {
+		stats.PipelineStats = c.pipelinePool.Stats()
+	}
 	return (*PoolStats)(stats)
 }
 
@@ -1522,6 +1669,72 @@ func (c *Client) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// AutoPipeline returns the blocking autopipeliner for this client: a drop-in
+// replacement for the normal command surface where each command call (ap.Set,
+// ap.Get, ...) blocks until executed, exactly like a plain client — but the
+// engine batches concurrent callers' commands into pipelines, so throughput is
+// far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
+//
+// Pass an optional config to override the default (DefaultBlockingAutoPipelineConfig:
+// a single ordered batch stream, which maximizes both throughput and latency for
+// the blocking face — see its doc). The instance is cached and shared; the first
+// call's config wins and later calls return the same instance until it is closed.
+// It must be closed (or close the client) to release its goroutines.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner, nil
+	}
+	cfg := DefaultBlockingAutoPipelineConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	ap, err := newAutoPipeliner(c, cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	c.autopipeliner = ap
+	return c.autopipeliner, nil
+}
+
+// AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
+// return immediately and the result accessors (Val/Result/Err) block until the
+// command has executed. Submit a window of commands, then read their results, to
+// keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
+//
+// The default config is ordered (DefaultAutoPipelineConfig, MaxConcurrentBatches:
+// 1) so a single goroutine's deferred commands execute in submit order; pass a
+// config to override (and, for parallel batches, set Unordered). The instance is
+// cached and shared; the first call's config wins. Close it (or the client) to
+// release its goroutines.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
+		return c.asyncAutopipeliner, nil
+	}
+	cfg := c.opt.AutoPipelineConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	if cfg == nil {
+		cfg = DefaultAutoPipelineConfig()
+	}
+	ap, err := newAutoPipeliner(c, cfg, false)
+	if err != nil {
+		return nil, err
+	}
+	c.asyncAutopipeliner = ap
+	return c.asyncAutopipeliner, nil
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

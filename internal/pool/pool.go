@@ -321,6 +321,11 @@ type Stats struct {
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
 	PubSubStats PubSubStats
+
+	// PipelineStats holds the stats of the separate pipeline connection pool
+	// when one is configured (PipelineReadBufferSize/PipelineWriteBufferSize).
+	// nil when pipelines share the main pool.
+	PipelineStats *Stats
 }
 
 type ConnRetirer interface {

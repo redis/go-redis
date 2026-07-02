@@ -142,6 +142,18 @@ type ClusterOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining on
+	// each node, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. Zero values disable the separate pool.
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
+	// AutoPipelineConfig is the default config for AsyncAutoPipeline.
+	// See Options.AutoPipelineConfig.
+	AutoPipelineConfig *AutoPipelineConfig
+
 	TLSConfig *tls.Config
 
 	// DisableRoutingPolicies disables the request/response policy routing system.
@@ -455,11 +467,15 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
-		DisableIdentity:       opt.DisableIdentity,
-		DisableIndentity:      opt.DisableIdentity,
-		IdentitySuffix:        opt.IdentitySuffix,
-		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
-		TLSConfig:             opt.TLSConfig,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+		DisableIdentity:         opt.DisableIdentity,
+		DisableIndentity:        opt.DisableIdentity,
+		IdentitySuffix:          opt.IdentitySuffix,
+		FailingTimeoutSeconds:   opt.FailingTimeoutSeconds,
+		TLSConfig:               opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
@@ -1153,6 +1169,9 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+	autopipelinerMu    *sync.Mutex    // guards both autopipeliner fields against concurrent first-call creation
+	autopipeliner      *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
+	asyncAutopipeliner *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1165,8 +1184,9 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:             opt,
+		nodes:           newClusterNodes(opt),
+		autopipelinerMu: &sync.Mutex{},
 	}
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
@@ -1223,7 +1243,25 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	return c.nodes.Close()
+	// Stop the shared AutoPipeliner (if AutoPipeline() created one) before
+	// closing nodes, so its background flusher goroutines don't outlive the
+	// client. AutoPipeliner.Close is idempotent and nil-safe here.
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.nodes.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
@@ -1553,6 +1591,98 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// AutoPipeline returns the blocking autopipeliner for this cluster client: each
+// command call blocks until executed (drop-in shape) while the engine batches
+// concurrent callers into pipelines. Commands keep per-goroutine order. Pass an
+// optional config to override DefaultBlockingAutoPipelineConfig. Cached/shared;
+// first call's config wins. Close it (or the client) to release its goroutines.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+// clusterAutoPipelineConfig applies the cluster shard-count default: commands
+// are routed to shards by slot (see installAutoPipelineSharding), so unlike a
+// standalone client — which defaults to a single deep queue — a cluster client
+// wants several shards to keep concurrent nodes' batches separate. The caller's
+// config is copied before the default is filled in, never mutated.
+func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
+	if cfg.NumShards != 0 {
+		return cfg
+	}
+	c2 := *cfg
+	c2.NumShards = numAutoPipelineShards(c2.MaxConcurrentBatches)
+	return &c2
+}
+
+func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.autopipeliner != nil && !c.autopipeliner.closed.Load() {
+		return c.autopipeliner, nil
+	}
+	cfg := DefaultBlockingAutoPipelineConfig()
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), true)
+	if err != nil {
+		return nil, err
+	}
+	c.installAutoPipelineSharding(ap)
+	c.autopipeliner = ap
+	return c.autopipeliner, nil
+}
+
+// installAutoPipelineSharding routes commands to shards by cluster slot so each
+// shard's batch lands on a single master node, keeping per-node pipelines deep
+// instead of splitting every batch across all nodes at flush. Cluster slots are
+// contiguous per node, so bucketing by slot range (slot*shards/16384) keeps a
+// node's slots together. Keyless commands hash to slot -1 → bucket 0; multi-node
+// commands are already rejected from pipelines, so only single-node commands
+// reach here.
+func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
+	const slots = 16384
+	n := ap.numShards()
+	ap.setShardFn(func(cmd Cmder) int {
+		// Compute the exact slot once and cache it on the command; the flush
+		// router (mapCmdsByNode) reuses the cached value, so the slot is resolved
+		// once per command, not twice. Keyless (slot -1) buckets to shard 0.
+		slot := c.cmdSlot(cmd, -1)
+		if slot < 0 {
+			return 0
+		}
+		return slot * n / slots
+	})
+}
+
+// AsyncAutoPipeline returns the deferred autopipeliner: command calls return
+// immediately and the result accessors block. Submit a window then read results
+// for the highest throughput. Default config is ordered (DefaultAutoPipelineConfig);
+// pass a config to override. Cached/shared; first call's config wins.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	c.autopipelinerMu.Lock()
+	defer c.autopipelinerMu.Unlock()
+	if c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load() {
+		return c.asyncAutopipeliner, nil
+	}
+	cfg := c.opt.AutoPipelineConfig
+	if len(config) > 0 && config[0] != nil {
+		cfg = config[0]
+	}
+	if cfg == nil {
+		cfg = DefaultAutoPipelineConfig()
+	}
+	ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), false)
+	if err != nil {
+		return nil, err
+	}
+	c.installAutoPipelineSharding(ap)
+	c.asyncAutopipeliner = ap
+	return c.asyncAutopipeliner, nil
 }
 
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -2365,8 +2495,22 @@ func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
+	// Serve/populate the per-command slot cache only on the natural-slot path
+	// (prefferedSlot == -1). A forced prefferedSlot (retry re-routing) must not be
+	// cached or served from cache. The cache lets the autopipeline shard router
+	// and the pipeline-flush router (mapCmdsByNode) share one slot computation
+	// instead of each recomputing it.
+	if prefferedSlot == -1 {
+		if slot, ok := cmd.cachedSlot(); ok {
+			return slot
+		}
+	}
 	info := c.cmdInfoPeek(cmd.Name())
-	return c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	slot := c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	if prefferedSlot == -1 && slot >= 0 {
+		cmd.setCachedSlot(slot)
+	}
+	return slot
 }
 
 // cmdSlotWithPos computes the cluster slot for cmd given a pre-resolved first key
