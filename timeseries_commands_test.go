@@ -45,7 +45,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSCreate and TSCreateWithArgs", Label("timeseries", "tscreate", "tscreateWithArgs", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
+				SkipBeforeRedisVersion("7.4", "older redis stack has different results for timeseries module")
 				result, err := client.TSCreate(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo("OK"))
@@ -142,7 +142,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					{Timestamp: 1013, Value: 10.0}}))
 			})
 			It("should TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "tsaddWithArgs", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
+				SkipBeforeRedisVersion("7.4", "older redis stack has different results for timeseries module")
 				result, err := client.TSAdd(ctx, "1", 1, 1).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo(1))
@@ -236,7 +236,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSAlter", Label("timeseries", "tsalter", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
+				SkipBeforeRedisVersion("7.4", "older redis stack has different results for timeseries module")
 				result, err := client.TSCreate(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo("OK"))
@@ -271,7 +271,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				if client.Options().Protocol == 2 {
 					Expect(resultInfo["labels"].([]interface{})[0]).To(BeEquivalentTo([]interface{}{"Time", "Series"}))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					if RedisVersion >= 8 {
+					if redisVersionAtLeast("8") {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
 					} else {
 						// Older versions of Redis had a bug where the duplicate policy was not set correctly
@@ -280,7 +280,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				} else {
 					Expect(resultInfo["labels"].(map[interface{}]interface{})["Time"]).To(BeEquivalentTo("Series"))
 					Expect(resultInfo["retentionTime"]).To(BeEquivalentTo(10))
-					if RedisVersion >= 8 {
+					if redisVersionAtLeast("8") {
 						Expect(resultInfo["duplicatePolicy"]).To(BeEquivalentTo("block"))
 					} else {
 						// Older versions of Redis had a bug where the duplicate policy was not set correctly
@@ -364,7 +364,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSIncrBy, TSIncrByWithArgs, TSDecrBy and TSDecrByWithArgs", Label("timeseries", "tsincrby", "tsdecrby", "tsincrbyWithArgs", "tsdecrbyWithArgs", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(7.4, "older redis stack has different results for timeseries module")
+				SkipBeforeRedisVersion("7.4", "older redis stack has different results for timeseries module")
 				for i := 0; i < 100; i++ {
 					_, err := client.TSIncrBy(ctx, "1", 1).Result()
 					Expect(err).NotTo(HaveOccurred())
@@ -757,7 +757,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSRangeWithArgs support multiple aggregators", Label("timeseries", "tsrange", "tsrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "multiple aggregators require Redis 8.8+")
 
 				_, err := client.TSCreate(ctx, "multi-range").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -938,7 +938,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsrevrange", "tsrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "multiple aggregators require Redis 8.8+")
 
 				_, err := client.TSCreate(ctx, "multi-revrange").Result()
 				Expect(err).NotTo(HaveOccurred())
@@ -1153,7 +1153,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				}
 			})
 			It("should TSMRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrange", "tsmrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "multiple aggregators require Redis 8.8+")
 
 				_, err := client.TSCreateWithArgs(ctx, "multi-mrange-a", &redis.TSOptions{
 					Labels: map[string]string{"type": "sensor", "name": "a"},
@@ -1340,7 +1340,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSMRevRangeWithArgs support multiple aggregators", Label("timeseries", "tsmrevrange", "tsmrevrangeWithArgs", "aggregators", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.8, "multiple aggregators require Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "multiple aggregators require Redis 8.8+")
 
 				_, err := client.TSCreateWithArgs(ctx, "multi-mrevrange-a", &redis.TSOptions{
 					Labels: map[string]string{"type": "sensor", "name": "a"},
@@ -1454,7 +1454,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 			// NaN Value Support Tests
 			It("should support NaN values in TSAdd and TSAddWithArgs", Label("timeseries", "tsadd", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Test basic NaN insertion with TSAdd
 				result, err := client.TSAdd(ctx, "nan-test-1", 1000, math.NaN()).Result()
@@ -1475,7 +1475,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSMAdd", Label("timeseries", "tsmadd", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Create time series
 				_, err := client.TSCreate(ctx, "nan-madd-1").Result()
@@ -1503,7 +1503,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should retrieve NaN values with TSGet and TSMGet", Label("timeseries", "tsget", "tsmget", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Add NaN values to multiple time series
 				opt := &redis.TSOptions{Labels: map[string]string{"type": "sensor"}}
@@ -1550,7 +1550,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSRange and TSRevRange", Label("timeseries", "tsrange", "tsrevrange", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "mixed-values").Result()
@@ -1590,7 +1590,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support CountNaN and CountAll aggregators", Label("timeseries", "aggregator", "nan", "countnan", "countall", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN aggregators require Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "agg-test").Result()
@@ -1630,7 +1630,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should ignore NaN values in existing aggregators", Label("timeseries", "aggregator", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Create time series with mixed NaN and regular values
 				_, err := client.TSCreate(ctx, "agg-ignore-nan").Result()
@@ -1700,7 +1700,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN values in TSMRange and TSMRevRange", Label("timeseries", "tsmrange", "tsmrevrange", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Create multiple time series with NaN values
 				opt := &redis.TSOptions{Labels: map[string]string{"location": "sensor-room"}}
@@ -1731,7 +1731,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should support NaN with CountNaN and CountAll in TSMRange", Label("timeseries", "tsmrange", "aggregator", "nan", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN aggregators require Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN aggregators require Redis 8.6+")
 
 				// Create multiple time series with NaN values
 				opt := &redis.TSOptions{Labels: map[string]string{"device": "temp-sensor"}}
@@ -1775,7 +1775,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should handle duplicate policy with NaN values", Label("timeseries", "nan", "duplicatepolicy", "NonRedisEnterprise"), func() {
-				SkipBeforeRedisVersion(8.6, "NaN support requires Redis 8.6+")
+				SkipBeforeRedisVersion("8.6", "NaN support requires Redis 8.6+")
 
 				// Test BLOCK duplicate policy with NaN (should work - just blocks duplicates)
 				opt := &redis.TSOptions{DuplicatePolicy: "BLOCK"}
@@ -1815,6 +1815,185 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(redis.Avg.String()).To(Equal("AVG"))
 				Expect(redis.Sum.String()).To(Equal("SUM"))
 				Expect(redis.Count.String()).To(Equal("COUNT"))
+			})
+
+			It("should TSNRange, TSNRangeWithArgs", Label("timeseries", "tsnrange", "tsnrangeWithArgs", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				keys := []string{"{ts}:open", "{ts}:high", "{ts}:low"}
+				for _, k := range keys {
+					Expect(client.TSCreate(ctx, k).Err()).NotTo(HaveOccurred())
+				}
+				Expect(client.TSMAdd(ctx, [][]interface{}{
+					{"{ts}:open", 1000, 10.0},
+					{"{ts}:high", 1000, 13.0},
+					{"{ts}:low", 1000, 9.0},
+					{"{ts}:open", 2000, 12.0},
+					{"{ts}:high", 2000, 15.0},
+					// {ts}:low intentionally missing at 2000
+					{"{ts}:open", 3000, 11.0},
+					{"{ts}:high", 3000, 14.0},
+					{"{ts}:low", 3000, 8.0},
+				}).Err()).NotTo(HaveOccurred())
+
+				// Basic forward range
+				result, err := client.TSNRange(ctx, keys, 1000, 3000).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(3))
+				Expect(result[0].Timestamp).To(BeEquivalentTo(1000))
+				Expect(result[2].Timestamp).To(BeEquivalentTo(3000))
+				// Ascending order
+				Expect(result[0].Timestamp).To(BeNumerically("<", result[1].Timestamp))
+				Expect(result[1].Timestamp).To(BeNumerically("<", result[2].Timestamp))
+				// Values follow key order
+				Expect(result[0].Values[0]).To(BeEquivalentTo(10.0)) // open
+				Expect(result[0].Values[1]).To(BeEquivalentTo(13.0)) // high
+				Expect(result[0].Values[2]).To(BeEquivalentTo(9.0))  // low
+				// Missing low at t=2000 is NaN
+				Expect(math.IsNaN(result[1].Values[2])).To(BeTrue())
+
+				// COUNT limits rows
+				opt := &redis.TSNRangeOptions{Count: 2}
+				resultCount, err := client.TSNRangeWithArgs(ctx, keys, 1000, 3000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultCount)).To(Equal(2))
+				// COUNT limits in ascending order: first two rows
+				Expect(resultCount[0].Timestamp).To(BeEquivalentTo(1000))
+				Expect(resultCount[1].Timestamp).To(BeEquivalentTo(2000))
+
+				// FILTER_BY_TS
+				opt = &redis.TSNRangeOptions{FilterByTS: []int{1000, 3000}}
+				resultFilter, err := client.TSNRangeWithArgs(ctx, keys, 1000, 3000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultFilter)).To(Equal(2))
+				Expect(resultFilter[0].Timestamp).To(BeEquivalentTo(1000))
+				Expect(resultFilter[1].Timestamp).To(BeEquivalentTo(3000))
+
+				// Sentinel timestamps ("-" and "+")
+				resultSentinel, err := client.TSNRange(ctx, keys, "-", "+").Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultSentinel)).To(Equal(3))
+
+				// Aggregation: one aggregator per key
+				optAgg := &redis.TSNRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max, redis.Sum},
+					BucketDuration: 2000,
+				}
+				resultAgg, err := client.TSNRangeWithArgs(ctx, keys, 1000, 3000, optAgg).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultAgg)).To(BeNumerically(">", 0))
+				// Each row has exactly 3 values (one per key)
+				for _, row := range resultAgg {
+					Expect(len(row.Values)).To(Equal(3))
+				}
+
+				// EMPTY flag (emit empty buckets)
+				optEmpty := &redis.TSNRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max, redis.Sum},
+					BucketDuration: 500,
+					Empty:          true,
+				}
+				resultEmpty, err := client.TSNRangeWithArgs(ctx, keys, 1000, 3000, optEmpty).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultEmpty)).To(BeNumerically(">=", 3))
+			})
+
+			It("should TSNRevRange, TSNRevRangeWithArgs", Label("timeseries", "tsnrevrange", "tsnrevrangeWithArgs", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NREVRANGE requires Redis 8.10+")
+
+				keys := []string{"{ts2}:a", "{ts2}:b"}
+				for _, k := range keys {
+					Expect(client.TSCreate(ctx, k).Err()).NotTo(HaveOccurred())
+				}
+				Expect(client.TSMAdd(ctx, [][]interface{}{
+					{"{ts2}:a", 1000, 1.0},
+					{"{ts2}:b", 1000, 2.0},
+					{"{ts2}:a", 2000, 3.0},
+					{"{ts2}:b", 2000, 4.0},
+					{"{ts2}:a", 3000, 5.0},
+					{"{ts2}:b", 3000, 6.0},
+				}).Err()).NotTo(HaveOccurred())
+
+				// Basic reverse range: rows in descending order
+				result, err := client.TSNRevRange(ctx, keys, 1000, 3000).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(Equal(3))
+				Expect(result[0].Timestamp).To(BeEquivalentTo(3000))
+				Expect(result[1].Timestamp).To(BeEquivalentTo(2000))
+				Expect(result[2].Timestamp).To(BeEquivalentTo(1000))
+				// Descending order
+				Expect(result[0].Timestamp).To(BeNumerically(">", result[1].Timestamp))
+				Expect(result[1].Timestamp).To(BeNumerically(">", result[2].Timestamp))
+
+				// COUNT limits rows in descending order: most recent rows first
+				opt := &redis.TSNRevRangeOptions{Count: 2}
+				resultCount, err := client.TSNRevRangeWithArgs(ctx, keys, 1000, 3000, opt).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultCount)).To(Equal(2))
+				Expect(resultCount[0].Timestamp).To(BeEquivalentTo(3000))
+				Expect(resultCount[1].Timestamp).To(BeEquivalentTo(2000))
+
+				// Aggregation in reverse order
+				optAgg := &redis.TSNRevRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Max, redis.Min},
+					BucketDuration: 2000,
+				}
+				resultAgg, err := client.TSNRevRangeWithArgs(ctx, keys, 1000, 3000, optAgg).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(resultAgg)).To(BeNumerically(">", 0))
+				for _, row := range resultAgg {
+					Expect(len(row.Values)).To(Equal(2))
+				}
+				// Reverse: last bucket row first
+				if len(resultAgg) > 1 {
+					Expect(resultAgg[0].Timestamp).To(BeNumerically(">", resultAgg[1].Timestamp))
+				}
+			})
+
+			It("should TSNRange preserve key order and support duplicate keys", Label("timeseries", "tsnrange", "duplicatekeys", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				Expect(client.TSCreate(ctx, "{dup}:x").Err()).NotTo(HaveOccurred())
+				Expect(client.TSMAdd(ctx, [][]interface{}{
+					{"{dup}:x", 1000, 5.0},
+					{"{dup}:x", 2000, 10.0},
+				}).Err()).NotTo(HaveOccurred())
+
+				// Same key twice with different aggregators: two value columns from one physical series
+				dupKeys := []string{"{dup}:x", "{dup}:x"}
+				optAgg := &redis.TSNRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 2000,
+				}
+				result, err := client.TSNRangeWithArgs(ctx, dupKeys, 1000, 2000, optAgg).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeNumerically(">", 0))
+				for _, row := range result {
+					Expect(len(row.Values)).To(Equal(2))
+				}
+			})
+
+			It("should TSNRangeWithArgs validate aggregator count", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				keys := []string{"{val}:a", "{val}:b", "{val}:c"}
+				// 2 aggregators for 3 keys: must error
+				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 1000, &redis.TSNRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					BucketDuration: 100,
+				})
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("requires exactly 3 aggregator(s), got 2")))
+			})
+
+			It("should TSNRangeWithArgs reject Invalid aggregators", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				keys := []string{"{val2}:a", "{val2}:b"}
+				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 1000, &redis.TSNRangeOptions{
+					Aggregators:    []redis.Aggregator{redis.Min, redis.Invalid},
+					BucketDuration: 100,
+				})
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("invalid timeseries aggregator at index 1: Invalid")))
 			})
 		})
 	}
