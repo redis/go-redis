@@ -410,6 +410,41 @@ func (s *apShard) stripe() *apStripe {
 	return &s.stripes[s.next.Add(1)%uint32(len(s.stripes))]
 }
 
+// getOrCreateAutoPipeliner is the shared caching protocol behind the four
+// AutoPipeline/AsyncAutoPipeline getters (Client and ClusterClient, each
+// face): return the cached live instance, refuse on a closed client, or build
+// and cache a new one. The caller supplies its cached-slot pointer, its
+// closed flag (both guarded by the mutex), the explicit-config override, the
+// fallback config, and a build closure (the cluster one wraps
+// clusterAutoPipelineConfig and installs slot sharding).
+func getOrCreateAutoPipeliner(
+	mu *sync.Mutex,
+	slot **AutoPipeliner,
+	closed *bool,
+	override []*AutoPipelineConfig,
+	fallback func() *AutoPipelineConfig,
+	build func(*AutoPipelineConfig) (*AutoPipeliner, error),
+) (*AutoPipeliner, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if *closed {
+		return nil, ErrClosed
+	}
+	if *slot != nil && !(*slot).closed.Load() {
+		return *slot, nil
+	}
+	cfg := fallback()
+	if len(override) > 0 && override[0] != nil {
+		cfg = override[0]
+	}
+	ap, err := build(cfg)
+	if err != nil {
+		return nil, err
+	}
+	*slot = ap
+	return ap, nil
+}
+
 // newAutoPipeliner builds an autopipeliner in either blocking or deferred mode.
 // It is unexported on purpose: the public entry points are
 // Client/ClusterClient.AutoPipeline and AsyncAutoPipeline, which also install

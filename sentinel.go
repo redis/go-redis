@@ -131,6 +131,10 @@ type FailoverOptions struct {
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
 
+	// AutoPipelineConfig is the default config for the client's autopipeliner
+	// faces. See Options.AutoPipelineConfig.
+	AutoPipelineConfig *AutoPipelineConfig
+
 	PoolFIFO bool
 
 	PoolSize int
@@ -213,6 +217,7 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		AutoPipelineConfig:      opt.AutoPipelineConfig,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -333,6 +338,7 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
+		AutoPipelineConfig:      opt.AutoPipelineConfig,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
