@@ -335,12 +335,77 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
+	// execEWMA is an exponentially-weighted moving average (alpha 1/8) of
+	// batch execution time in nanoseconds — the engine's own view of the
+	// server round-trip. It drives the adaptive coalescing timings on the
+	// implicit default window (see adaptiveCoalesce): on loopback it clamps to
+	// the historical 20µs gap / 200µs window, while at WAN round-trip times it
+	// widens both so a reply-wakeup herd coalesces into one batch per RTT
+	// instead of fragmenting into serialized partial batches (each split costs
+	// a full RTT). Updates are racy read-modify-writes by design: losing an
+	// occasional sample is harmless for a smoothing heuristic, and it keeps
+	// the batch hot path free of CAS loops. 0 means "no sample yet".
+	execEWMA atomic.Int64
+
 	// Lifecycle
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup // Tracks flusher goroutines
 	batchWg sync.WaitGroup // Tracks batch execution goroutines
 	closed  atomic.Bool
+}
+
+// observeBatchExec folds one batch execution duration into execEWMA.
+func (ap *AutoPipeliner) observeBatchExec(d time.Duration) {
+	sample := int64(d)
+	if sample <= 0 {
+		return
+	}
+	old := ap.execEWMA.Load()
+	if old == 0 {
+		ap.execEWMA.Store(sample)
+		return
+	}
+	ap.execEWMA.Store(old + (sample-old)/8)
+}
+
+// adaptiveCoalesce derives the default-window coalescing timings from the
+// observed batch round-trip time. Pure function of the EWMA so it is unit
+// testable. Floors keep loopback behavior identical to the fixed constants;
+// ceilings bound the latency a lone late command can be taxed.
+//
+//	gap    = clamp(rtt/64, defaultAccumulateGap, 3ms)
+//	window = clamp(rtt/4, floorWindow, 15ms)
+//
+// floorWindow is defaultAccumulateWindow (a var so tests can enlarge it; when
+// a test raises it above the ceiling, the floor wins — the window never
+// shrinks below its configured floor).
+func adaptiveCoalesce(ewmaNs int64, floorWindow time.Duration) (gap, window time.Duration) {
+	const (
+		gapCeil    = 3 * time.Millisecond
+		windowCeil = 15 * time.Millisecond
+	)
+	gap = defaultAccumulateGap
+	window = floorWindow
+	if ewmaNs <= 0 {
+		return gap, window
+	}
+	if g := time.Duration(ewmaNs / 64); g > gap {
+		if g > gapCeil {
+			g = gapCeil
+		}
+		gap = g
+	}
+	if w := time.Duration(ewmaNs / 4); w > window {
+		if w > windowCeil {
+			w = windowCeil
+		}
+		window = w
+	}
+	if gap > window {
+		gap = window
+	}
+	return gap, window
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -900,7 +965,13 @@ func (s *apShard) accumulateBatch() {
 			// resolved to "flush now" — don't wait.
 			return
 		}
-		window = defaultAccumulateWindow
+		// Adaptive default window: scale the coalescing timings by the
+		// observed batch round-trip. On loopback this clamps to the fixed
+		// constants; on a slow network it holds the window open long enough
+		// for a reply-wakeup herd (hundreds of goroutines waking over
+		// milliseconds) to coalesce into ONE batch per round trip instead of
+		// fragmenting into serialized partial batches.
+		_, window = adaptiveCoalesce(ap.execEWMA.Load(), defaultAccumulateWindow)
 		stopsGrowing = true
 	}
 
@@ -927,9 +998,11 @@ func (s *apShard) accumulateBatch() {
 	// Default window: flush as soon as the queue stops growing. A single timer
 	// acts as a debounce gap — each enqueue extends it — bounded by the window
 	// deadline so a steadily-growing queue still flushes a full pipeline at the
-	// cap, while a lone caller flushes one gap after enqueuing. Reset is
-	// drain-safe on Go 1.23+ (see go.mod: go 1.24).
-	gap := defaultAccumulateGap
+	// cap, while a lone caller flushes one gap after enqueuing. The gap is
+	// RTT-adaptive (see adaptiveCoalesce): 20µs on loopback, wider on slow
+	// links so staggered reply-wakeups extend one batch instead of splitting
+	// it. Reset is drain-safe on Go 1.23+ (see go.mod: go 1.24).
+	gap, _ := adaptiveCoalesce(ap.execEWMA.Load(), defaultAccumulateWindow)
 	if gap > window {
 		gap = window
 	}
@@ -1042,7 +1115,9 @@ func (s *apShard) flushBatchSlice() {
 			defer close(batches[0].done)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
+			execStart := time.Now()
 			_ = ap.pipeliner.Process(context.Background(), queues[0][0])
+			ap.observeBatchExec(time.Since(execStart))
 		}()
 		return
 	}
@@ -1082,7 +1157,9 @@ func (s *apShard) flushBatchSlice() {
 				_ = pipe.Process(ctx, qc)
 			}
 		}
+		execStart := time.Now()
 		_, _ = pipe.Exec(ctx)
+		ap.observeBatchExec(time.Since(execStart))
 	}()
 }
 
