@@ -122,7 +122,7 @@ func benchOrderedBlocking(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
-	ap, err := rdb.AutoPipeline() // blocking face (default parallel-batch config)
+	ap, err := rdb.AutoPipeline() // blocking face (default: single ordered batch stream)
 	if err != nil {
 		panic(err)
 	}

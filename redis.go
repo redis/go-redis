@@ -1679,8 +1679,8 @@ func (c *Client) Pipeline() Pipeliner {
 // far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
 //
 // Pass an optional config to override the default (DefaultBlockingAutoPipelineConfig:
-// a single ordered batch stream, which maximizes both throughput and latency for
-// the blocking face — see its doc). The instance is cached and shared; the first
+// a single ordered batch stream, which maximizes throughput and minimizes latency
+// for the blocking face — see its doc). The instance is cached and shared; the first
 // call's config wins and later calls return the same instance until it is closed.
 // It must be closed (or close the client) to release its goroutines.
 //
