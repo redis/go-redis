@@ -669,9 +669,7 @@ func ExampleClient_timeseries_aggregation() {
 	// >>> [{0 1.9500000000000002} {2 2.0999999999999996} {4 1.78}]
 	// STEP_END
 
-	// This example uses multiple aggregators in a single range query but is
-	// not a documented tutorial step (see the "agg_multi" step below for the
-	// cross-series aggregation example that the docs reference).
+	// STEP_START agg_multi
 	res33, err := rdb.TSRangeWithArgs(
 		ctx,
 		"rg:2",
@@ -688,6 +686,7 @@ func ExampleClient_timeseries_aggregation() {
 
 	fmt.Println(res33)
 	// >>> [{0 [1.8 2.1]} {2 [1.9 2.3]} {4 [1.78 1.78]}]
+	// STEP_END
 
 	// Output:
 	// [{0 1.9500000000000002} {2 2.0999999999999996} {4 1.78}]
