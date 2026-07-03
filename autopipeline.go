@@ -320,23 +320,24 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
-	// resubmitDebt counts callers who were just woken by a completed batch and
-	// are expected to re-enqueue: each completed batch of N≥2 commands credits
-	// N (its waiters wake together and, in a closed loop, resubmit), and every
-	// enqueue debits 1. The default coalescing wait (coalesceCohort) holds the
-	// flusher while debt remains, so a wakeup herd flushes as one deep pipeline
-	// — the exact herd size, not a smoothed estimate, which cannot ratchet into
-	// fragmentation. Single-command batches credit nothing, so a lone caller
-	// and open-loop traffic never wait. May transiently go negative (arrivals
-	// with no outstanding debt); readers clamp to zero. Pipeliner-global, not
-	// per-shard: cluster routing may land a resubmission on a different shard
-	// than the batch that woke it.
-	resubmitDebt atomic.Int64
+	// expectedArrivals counts how many commands the engine expects to arrive
+	// at any moment: a completed batch of N≥2 commands wakes its N waiters
+	// together, and in a closed loop each immediately submits its next command
+	// — so completion announces N expected arrivals, and every enqueue accounts
+	// for one. The default coalescing wait (awaitExpectedArrivals) holds the
+	// flusher while arrivals are still expected, so the whole wakeup wave
+	// flushes as one deep pipeline — an exact count, not a smoothed estimate,
+	// which cannot ratchet into fragmentation. Single-command batches announce
+	// nothing, so a lone caller and open-loop traffic never wait. May
+	// transiently go negative (arrivals nobody announced); readers clamp to
+	// zero. Pipeliner-global, not per-shard: cluster routing may land a
+	// follow-up on a different shard than the batch that woke its caller.
+	expectedArrivals atomic.Int64
 
 	// execEWMA is an exponentially-weighted moving average (alpha 1/8) of
 	// batch execution time in nanoseconds — the engine's own view of the
-	// server round-trip. It scales coalesceCohort's silence fallback so a herd
-	// staggered by scheduling on a slow link is not split mid-landing. Updates
+	// server round-trip. It scales awaitExpectedArrivals's silence fallback so a
+	// wave staggered by scheduling on a slow link is not split mid-landing. Updates
 	// are racy read-modify-writes by design: losing an occasional sample is
 	// harmless for a smoothing heuristic. 0 means "no sample yet".
 	execEWMA atomic.Int64
@@ -388,10 +389,10 @@ type apShard struct {
 	sem     *internal.FIFOSemaphore // per-shard concurrent-batch budget
 
 	// inFlight counts this shard's dispatched-but-unfinished batches. When it
-	// is zero and no resubmission debt is outstanding, the shard is idle and a
+	// is zero and no arrivals are expected, the shard is idle and a
 	// new command flushes immediately; when batches are in flight, arrivals
 	// are mid-stream and the flusher holds them briefly to coalesce (see
-	// coalesceCohort).
+	// awaitExpectedArrivals).
 	inFlight atomic.Int32
 }
 
@@ -747,8 +748,8 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	st.queueLen.Store(int32(len(st.queue)))
 	st.mu.Unlock()
 
-	// One expected resubmission has landed (see resubmitDebt).
-	ap.resubmitDebt.Add(-1)
+	// One expected arrival has landed (see expectedArrivals).
+	ap.expectedArrivals.Add(-1)
 
 	s.wake()
 	return batch
@@ -880,7 +881,7 @@ func (s *apShard) flusher() {
 //   - the queue reaches MaxBatchSize (batch is full);
 //   - a configured MaxFlushDelay / AdaptiveDelay window elapses; or
 //   - with no configured window (the default), the expected resubmission
-//     cohort has landed — see coalesceCohort.
+//     wave of arrivals has landed — see awaitExpectedArrivals.
 //
 // A configured MaxFlushDelay / AdaptiveDelay is an intentional accumulation
 // window and is waited in full (AdaptiveDelay scales it down as the queue fills
@@ -903,8 +904,8 @@ func (s *apShard) accumulateBatch() {
 	window := ap.calculateDelay(s.Len())
 	if window <= 0 {
 		if ap.config.MaxFlushDelay == 0 && !ap.config.AdaptiveDelay {
-			// Default: coalesce by expected cohort size, not by wall-clock.
-			s.coalesceCohort(batchSize)
+			// Default: coalesce by expected-arrival count, not by wall-clock.
+			s.awaitExpectedArrivals(batchSize)
 		}
 		return
 	}
@@ -928,20 +929,21 @@ func (s *apShard) accumulateBatch() {
 	}
 }
 
-// coalesceGapFloor / coalesceGapCeil bound coalesceCohort's silence fallback.
+// silenceGapFloor / silenceGapCeil bound awaitExpectedArrivals's silence fallback.
 // The floor covers fast links; the RTT-scaled value (execEWMA/8) takes over on
-// slow ones, where a wakeup herd staggered by goroutine scheduling can pause
+// slow ones, where a wakeup wave staggered by goroutine scheduling can pause
 // longer than the floor mid-landing and a premature flush is expensive (each
 // batch fragment occupies a pipeline connection for a full round trip). The
-// ceiling bounds how long stale debt (callers that left) can delay a flush.
+// ceiling bounds how long a stale expectation (callers that left) can delay a
+// flush.
 const (
-	coalesceGapFloor = 200 * time.Microsecond
-	coalesceGapCeil  = 5 * time.Millisecond
+	silenceGapFloor = 200 * time.Microsecond
+	silenceGapCeil  = 5 * time.Millisecond
 )
 
 // coalesceMinFlush is the smallest pipeline worth dispatching while other
 // batches are still executing. Below it, a gap-fire holds the queued
-// stragglers for the next herd instead of burning a connection on a
+// stragglers for the next wave instead of burning a connection on a
 // near-empty flush; once nothing is in flight, any size flushes immediately.
 const coalesceMinFlush = 8
 
@@ -959,36 +961,37 @@ func (ap *AutoPipeliner) observeBatchExec(d time.Duration) {
 	ap.execEWMA.Store(old + (sample-old)/8)
 }
 
-// cohortGap returns the silence fallback for coalesceCohort, scaled to the
+// silenceGap returns the silence fallback for awaitExpectedArrivals, scaled to the
 // observed batch round-trip: clamp(execEWMA/8, floor, ceil).
-func (ap *AutoPipeliner) cohortGap() time.Duration {
+func (ap *AutoPipeliner) silenceGap() time.Duration {
 	g := time.Duration(ap.execEWMA.Load() / 8)
-	if g < coalesceGapFloor {
-		return coalesceGapFloor
+	if g < silenceGapFloor {
+		return silenceGapFloor
 	}
-	if g > coalesceGapCeil {
-		return coalesceGapCeil
+	if g > silenceGapCeil {
+		return silenceGapCeil
 	}
 	return g
 }
 
-// coalesceCohort holds the flusher while related work is in motion, so
+// awaitExpectedArrivals holds the flusher while related work is in motion, so
 // commands flush as deep pipelines instead of fragmenting into small batches
 // (each fragment costs a pipeline connection for a full round trip). Two
 // signals — both facts the engine already has, not wall-clock guesses — decide
 // whether anything is imminent:
 //
-//   - resubmitDebt: a completed batch of N commands wakes its N waiters
-//     together, and in a closed loop they resubmit. The exact count is
-//     credited at batch completion and debited per enqueue; the wait ends the
-//     moment it drains (the herd has landed). An exact per-herd count has no
-//     failure mode where an averaged estimate undershoots the true herd and
-//     locks the engine into fragmented flushes.
+//   - expectedArrivals: a completed batch of N commands wakes its N waiters
+//     together, and in a closed loop each immediately submits its next
+//     command. Completion announces the exact count; every enqueue accounts
+//     for one; the wait ends the moment the count drains — the wave of
+//     arrivals has fully landed. An exact per-wave count has no failure mode
+//     where an averaged estimate undershoots the true wave and locks the
+//     engine into fragmented flushes.
 //   - inFlight: batches still executing mean their waiters will wake shortly
 //     and stragglers are mid-stream — worth holding a moment to coalesce with,
 //     bounded by the silence gap. This also recovers a fragmented state (many
-//     singles in flight, which credit no debt): their staggered returns land
-//     within one gap, merge into a real batch, and debt tracking resumes.
+//     singles in flight, which announce nothing): their staggered returns land
+//     within one gap, merge into a real batch, and arrival tracking resumes.
 //
 // When neither holds, the shard is idle and the flush happens immediately: a
 // lone caller pays a single round trip with no timer armed. That is the point
@@ -997,40 +1000,40 @@ func (ap *AutoPipeliner) cohortGap() time.Duration {
 // requested delay), taxing every low-concurrency command ~5x its round trip.
 // Here the gap timer never fires in steady state, closed loop or open; it only
 // ends waits for callers that left.
-func (s *apShard) coalesceCohort(batchSize int) {
+func (s *apShard) awaitExpectedArrivals(batchSize int) {
 	ap := s.ap
-	debt := ap.resubmitDebt.Load()
-	if debt < 0 {
-		// Arrivals outran outstanding debt (open-loop traffic); re-zero so the
-		// deficit does not mask the next herd. CAS: only clear the value we
-		// saw, never a concurrent credit.
-		ap.resubmitDebt.CompareAndSwap(debt, 0)
-		debt = 0
+	expected := ap.expectedArrivals.Load()
+	if expected < 0 {
+		// Arrivals outran what was announced (open-loop traffic); re-zero so
+		// the deficit does not mask the next wave. CAS: only clear the value
+		// we saw, never a concurrent announcement.
+		ap.expectedArrivals.CompareAndSwap(expected, 0)
+		expected = 0
 	}
-	herdExpected := debt > 0
-	if !herdExpected && s.inFlight.Load() == 0 {
+	expectingWave := expected > 0
+	if !expectingWave && s.inFlight.Load() == 0 {
 		// Idle shard: nothing imminent, flush in one round trip.
 		return
 	}
 
-	gap := ap.cohortGap()
+	gap := ap.silenceGap()
 	// Reset is drain-safe on Go 1.23+ (see go.mod: go 1.24).
 	fallback := time.NewTimer(gap)
 	defer fallback.Stop()
-	lastSeenDebt := debt    // debt as of the most recent timer (re)arm
-	var holdStart time.Time // set on the first straggler-hold gap fire
+	lastSeenExpected := expected // count as of the most recent timer (re)arm
+	var holdStart time.Time      // set on the first straggler-hold gap fire
 	for {
 		select {
 		case <-ap.ctx.Done():
 			return
 		case <-fallback.C:
-			if !herdExpected && s.Len() < coalesceMinFlush && s.inFlight.Load() > 0 {
+			if !expectingWave && s.Len() < coalesceMinFlush && s.inFlight.Load() > 0 {
 				// Only stragglers queued while batches are still executing:
 				// flushing a near-empty pipeline burns a connection for a full
 				// round trip (measured at high WAN concurrency: straggler
 				// flushes of 1-3 commands starved the connection pool and
-				// doubled p50). Hold them — the next completed batch's herd
-				// sweeps them along, and the herd path below flushes promptly.
+				// doubled p50). Hold them — the next completed batch's wave
+				// sweeps them along, and the wave path below flushes promptly.
 				// The hold is bounded like the permit wait: with read timeouts
 				// disabled a wedged batch could pin inFlight forever, and the
 				// held stragglers must not hang with it.
@@ -1038,22 +1041,22 @@ func (s *apShard) coalesceCohort(batchSize int) {
 					holdStart = time.Now()
 				}
 				if time.Since(holdStart) < autoPipelinePermitBackstop {
-					lastSeenDebt = ap.resubmitDebt.Load()
+					lastSeenExpected = ap.expectedArrivals.Load()
 					fallback.Reset(gap)
 					continue
 				}
 			}
-			if herdExpected {
+			if expectingWave {
 				// A whole gap passed with no arrivals on this shard: the
-				// debtors left (workload shrank), so drop the stale debt or
-				// future flushes will wait for ghosts. But only if it did not
-				// GROW during the silent gap — growth means a batch elsewhere
-				// (another shard, or racing this fire) credited a fresh herd,
-				// and erasing that would fragment a herd that is really
-				// coming. CAS, never a blind store, so a credit racing the
-				// reset itself also survives.
-				if d := ap.resubmitDebt.Load(); d > 0 && d <= lastSeenDebt {
-					ap.resubmitDebt.CompareAndSwap(d, 0)
+				// expected callers left (workload shrank), so clear the stale
+				// expectation or future flushes will wait for ghosts. But only
+				// if it did not GROW during the silent gap — growth means a
+				// batch elsewhere (another shard, or racing this fire)
+				// announced a fresh wave, and erasing that would fragment a
+				// wave that is really coming. CAS, never a blind store, so an
+				// announcement racing the reset itself also survives.
+				if d := ap.expectedArrivals.Load(); d > 0 && d <= lastSeenExpected {
+					ap.expectedArrivals.CompareAndSwap(d, 0)
 				}
 			}
 			return
@@ -1061,16 +1064,16 @@ func (s *apShard) coalesceCohort(batchSize int) {
 			if s.Len() >= batchSize {
 				return
 			}
-			if d := ap.resubmitDebt.Load(); d > 0 {
-				// An in-flight batch completed mid-wait: its herd is now the
+			if d := ap.expectedArrivals.Load(); d > 0 {
+				// An in-flight batch completed mid-wait: its wave is now the
 				// thing to wait out, with the exact-count exit below.
-				herdExpected = true
-				lastSeenDebt = d
-			} else if herdExpected {
-				// The herd has fully landed; flush it as one batch.
+				expectingWave = true
+				lastSeenExpected = d
+			} else if expectingWave {
+				// The wave has fully landed; flush it as one batch.
 				return
 			} else if s.inFlight.Load() == 0 {
-				// Nothing executing and no herd expected: no completion will
+				// Nothing executing, no wave expected: no completion will
 				// wake more callers, so flush what we have now.
 				return
 			}
@@ -1150,18 +1153,18 @@ func (s *apShard) flushBatchSlice() {
 			return
 		}
 
-		// Cohort merge. We took the queue and then waited a full batch round
+		// Wave merge. We took the queue and then waited a full batch round
 		// trip for the permit; callers whose replies landed just after our
 		// take re-submitted into the FRESH queue during that wait. Executing
-		// without them locks the herd into two alternating cohorts — each
+		// without them splits the group into two alternating waves — each
 		// observing two round trips, at half throughput — a state that is
 		// stable once entered (measured: p50 pinned at 2xRTT for entire runs
 		// at mid worker counts on a 52ms link). On the default window, let the
-		// resubmission herd land and fold it into this batch before executing,
-		// which merges the cohorts back into one batch per round trip.
-		// Explicit-delay configs keep their own timing.
+		// wave of follow-ups land and fold it into this batch before
+		// executing, which merges the waves back into one batch per round
+		// trip. Explicit-delay configs keep their own timing.
 		if ap.config.MaxFlushDelay == 0 && !ap.config.AdaptiveDelay {
-			s.coalesceCohort(ap.config.MaxBatchSize)
+			s.awaitExpectedArrivals(ap.config.MaxBatchSize)
 			for i := range s.stripes {
 				st := &s.stripes[i]
 				if st.queueLen.Load() == 0 {
@@ -1184,12 +1187,12 @@ func (s *apShard) flushBatchSlice() {
 	// Fast path for single command: skip the pipeline and Process directly, in
 	// its own goroutine. The dispatch MUST NOT run inline in the flusher: a
 	// synchronous Process blocks the flusher for a full round trip, and on a
-	// slow link a solo straggler then holds up an entire landed herd for one
+	// slow link a solo straggler then holds up an entire landed wave for one
 	// RTT — whose flush then delays the straggler's next command in turn, a
 	// stable phase-lock where everyone pays 2x RTT (measured: ~25% of runs on
 	// a 57ms link locked at exactly 2x RTT until perturbed).
-	// No resubmitDebt credit: a single waiter waking is the lone-caller case,
-	// which must keep flushing immediately.
+	// No expectedArrivals announcement: a single waiter waking is the
+	// lone-caller case, which must keep flushing immediately.
 	if total == 1 {
 		ap.batchWg.Add(1)
 		s.inFlight.Add(1)
@@ -1249,10 +1252,10 @@ func (s *apShard) flushBatchSlice() {
 		_, _ = pipe.Exec(ctx)
 		ap.observeBatchExec(time.Since(execStart))
 
-		// Credit the resubmission debt BEFORE the deferred closes wake this
-		// batch's waiters, so the flusher sees the expected herd the moment the
-		// first resubmit lands (see resubmitDebt).
-		ap.resubmitDebt.Add(int64(total))
+		// Announce the expected arrivals BEFORE the deferred closes wake this
+		// batch's waiters, so the flusher knows the wave size the moment its
+		// first command lands (see expectedArrivals).
+		ap.expectedArrivals.Add(int64(total))
 	}()
 }
 

@@ -9,7 +9,7 @@ import (
 // TestAutoPipelineLoneCallerFlushesImmediately verifies that with the default
 // config (no MaxFlushDelay / AdaptiveDelay) a lone caller's command flushes
 // without any coalescing wait: an idle autopipeliner (no batches in flight, no
-// resubmission debt) must dispatch in a single round trip. This pins the fix
+// expected arrivals) must dispatch in a single round trip. This pins the fix
 // for the low-concurrency latency tax — the engine used to arm a ~20µs
 // debounce timer per flush, which fires ~1ms late on an idle host and made a
 // lone caller ~5x slower than a plain client.
@@ -125,39 +125,39 @@ func TestObserveBatchExecEWMA(t *testing.T) {
 	}
 }
 
-// TestCohortGap pins the silence-fallback derivation: loopback round trips
+// TestSilenceGap pins the silence-fallback derivation: loopback round trips
 // clamp to the floor, slow links scale as exec/8, and the ceiling bounds how
-// long stale debt can delay a flush.
-func TestCohortGap(t *testing.T) {
+// long a stale expectation can delay a flush.
+func TestSilenceGap(t *testing.T) {
 	cases := []struct {
 		name string
 		ewma time.Duration
 		want time.Duration
 	}{
-		{"no sample yet", 0, coalesceGapFloor},
-		{"loopback 100µs", 100 * time.Microsecond, coalesceGapFloor},
-		{"fast lan 1ms", time.Millisecond, coalesceGapFloor},
+		{"no sample yet", 0, silenceGapFloor},
+		{"loopback 100µs", 100 * time.Microsecond, silenceGapFloor},
+		{"fast lan 1ms", time.Millisecond, silenceGapFloor},
 		{"lan 4ms", 4 * time.Millisecond, 500 * time.Microsecond},
 		{"wan 24ms", 24 * time.Millisecond, 3 * time.Millisecond},
-		{"slow wan 200ms (ceiling)", 200 * time.Millisecond, coalesceGapCeil},
+		{"slow wan 200ms (ceiling)", 200 * time.Millisecond, silenceGapCeil},
 	}
 	for _, c := range cases {
 		ap := &AutoPipeliner{}
 		if c.ewma > 0 {
 			ap.execEWMA.Store(int64(c.ewma))
 		}
-		if got := ap.cohortGap(); got != c.want {
-			t.Errorf("%s: cohortGap() with ewma %v = %v, want %v", c.name, c.ewma, got, c.want)
+		if got := ap.silenceGap(); got != c.want {
+			t.Errorf("%s: silenceGap() with ewma %v = %v, want %v", c.name, c.ewma, got, c.want)
 		}
 	}
 }
 
-// TestAutoPipelineHerdCoalesces verifies the load path: concurrent blocking
+// TestAutoPipelineWaveCoalesces verifies the load path: concurrent blocking
 // callers cycling against the pipeliner make sustained progress and their
 // commands all execute. (The depth of the batches is a performance property
-// covered by benchmarks; this guards liveness of the debt/in-flight wait
-// machinery under a closed-loop herd.)
-func TestAutoPipelineHerdCoalesces(t *testing.T) {
+// covered by benchmarks; this guards liveness of the expected-arrivals /
+// in-flight wait machinery under a closed-loop wave.)
+func TestAutoPipelineWaveCoalesces(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: ":6379"})
 	defer client.Close()
@@ -177,7 +177,7 @@ func TestAutoPipelineHerdCoalesces(t *testing.T) {
 		go func() {
 			var err error
 			for i := 0; i < iters; i++ {
-				if e := ap.Incr(ctx, "herd-ctr").Err(); e != nil {
+				if e := ap.Incr(ctx, "wave-ctr").Err(); e != nil {
 					err = e
 					break
 				}
@@ -193,10 +193,10 @@ func TestAutoPipelineHerdCoalesces(t *testing.T) {
 				t.Fatalf("worker error: %v", err)
 			}
 		case <-deadline:
-			t.Fatalf("herd stalled: coalescing wait is not making progress")
+			t.Fatalf("wave stalled: coalescing wait is not making progress")
 		}
 	}
-	n, err := client.Get(ctx, "herd-ctr").Int()
+	n, err := client.Get(ctx, "wave-ctr").Int()
 	if err != nil || n != workers*iters {
 		t.Fatalf("herd-ctr = %d, %v; want %d", n, err, workers*iters)
 	}
