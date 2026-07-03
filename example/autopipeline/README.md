@@ -32,8 +32,10 @@ go run .
 3. `Submit` + `AutoFuture` for raw `Cmder`s (async face only — `Submit` is
    rejected on the blocking face by design). `Wait`/`WaitContext` to collect.
 4. `Do` — the escape hatch. Runs on a **normal** connection outside the
-   pipeline (plain `Client.Do` semantics); use it for anything stateful or
-   blocking, never expect it to batch.
+   pipeline (plain `Client.Do` semantics); use it for raw commands the typed
+   surface doesn't cover, never expect it to batch. (Typed blocking commands
+   — `BLPop`, `XRead` with `Block`, ... — are diverted to a normal connection
+   automatically.)
 5. Tuning notes: `Unordered` + `MaxConcurrentBatches: 2-4` for peak async
    throughput; leave `NumShards` at 0; the instance is cached per client
    (first call's config wins); optional dedicated pipeline pool via
@@ -44,10 +46,10 @@ indicative, not a spec):
 
 ```
   approach                                      ops/sec  ordering  vs normal
-  1. normal blocking                              56648  ordered   1.0x
-  2. autopipeline ordered, blocking read         552386  ordered   9.8x
-  3. autopipeline ordered, read later           2406600  ordered   42.5x
-  4. autopipeline unordered, read later         2661933  UNORDERED 47.0x
+  1. normal blocking                              57438  ordered   1.0x
+  2. autopipeline ordered, blocking read         632742  ordered   11.0x
+  3. autopipeline ordered, read later           2436067  ordered   42.4x
+  4. autopipeline unordered, read later         2629600  UNORDERED 45.8x
 ```
 
 ## Caveats worth knowing
@@ -57,3 +59,6 @@ indicative, not a spec):
 - A batch that fails on a network error is retried whole (up to `MaxRetries`),
   so non-idempotent commands may execute twice on a dropped connection.
 - On `ClusterClient`, ordering across nodes is per key.
+- Batched commands fire the client's *pipeline* hooks (one span per batch, not
+  per command), so per-command instrumentation looks different from a plain
+  client.
