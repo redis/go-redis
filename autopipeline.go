@@ -1017,6 +1017,8 @@ func (s *apShard) coalesceCohort(batchSize int) {
 	// Reset is drain-safe on Go 1.23+ (see go.mod: go 1.24).
 	fallback := time.NewTimer(gap)
 	defer fallback.Stop()
+	lastSeenDebt := debt    // debt as of the most recent timer (re)arm
+	var holdStart time.Time // set on the first straggler-hold gap fire
 	for {
 		select {
 		case <-ap.ctx.Done():
@@ -1029,14 +1031,30 @@ func (s *apShard) coalesceCohort(batchSize int) {
 				// flushes of 1-3 commands starved the connection pool and
 				// doubled p50). Hold them — the next completed batch's herd
 				// sweeps them along, and the herd path below flushes promptly.
-				fallback.Reset(gap)
-				continue
+				// The hold is bounded like the permit wait: with read timeouts
+				// disabled a wedged batch could pin inFlight forever, and the
+				// held stragglers must not hang with it.
+				if holdStart.IsZero() {
+					holdStart = time.Now()
+				}
+				if time.Since(holdStart) < autoPipelinePermitBackstop {
+					lastSeenDebt = ap.resubmitDebt.Load()
+					fallback.Reset(gap)
+					continue
+				}
 			}
 			if herdExpected {
-				// A whole gap with no arrivals: the debtors left (workload
-				// shrank). Drop the stale debt so future flushes don't wait
-				// for ghosts.
-				ap.resubmitDebt.Store(0)
+				// A whole gap passed with no arrivals on this shard: the
+				// debtors left (workload shrank), so drop the stale debt or
+				// future flushes will wait for ghosts. But only if it did not
+				// GROW during the silent gap — growth means a batch elsewhere
+				// (another shard, or racing this fire) credited a fresh herd,
+				// and erasing that would fragment a herd that is really
+				// coming. CAS, never a blind store, so a credit racing the
+				// reset itself also survives.
+				if d := ap.resubmitDebt.Load(); d > 0 && d <= lastSeenDebt {
+					ap.resubmitDebt.CompareAndSwap(d, 0)
+				}
 			}
 			return
 		case <-s.notify:
@@ -1047,6 +1065,7 @@ func (s *apShard) coalesceCohort(batchSize int) {
 				// An in-flight batch completed mid-wait: its herd is now the
 				// thing to wait out, with the exact-count exit below.
 				herdExpected = true
+				lastSeenDebt = d
 			} else if herdExpected {
 				// The herd has fully landed; flush it as one batch.
 				return

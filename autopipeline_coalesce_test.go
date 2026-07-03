@@ -13,9 +13,6 @@ import (
 // for the low-concurrency latency tax — the engine used to arm a ~20µs
 // debounce timer per flush, which fires ~1ms late on an idle host and made a
 // lone caller ~5x slower than a plain client.
-//
-// The config is passed as an argument to AutoPipeline (the honored path;
-// Options.AutoPipelineConfig is not consulted by the blocking face).
 func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: ":6379"})
