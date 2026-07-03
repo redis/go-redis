@@ -79,11 +79,11 @@ type AutoPipelineConfig struct {
 	//
 	// Based on benchmarks, 100μs can reduce CPU usage by 50%
 	// while adding only ~100μs average latency per command.
-	// Default: 0. Note that 0 does not mean "flush instantly": the flusher
-	// still applies a small default coalescing window (~200µs, ending early
-	// once the queue stops growing)
-	// so concurrently-enqueued commands can batch. Set a value here only to
-	// widen that window.
+	// Default: 0, meaning the flusher applies no coalescing wait — it flushes
+	// each batch as soon as the queue is ready and lets in-flight backpressure
+	// coalesce concurrent callers (see accumulateBatch). Set a value here to add
+	// an explicit accumulation window, trading latency for larger batches / less
+	// CPU as described above.
 	MaxFlushDelay time.Duration
 
 	// AdaptiveDelay enables smart delay calculation based on queue fill level.
@@ -98,22 +98,6 @@ type AutoPipelineConfig struct {
 	// Default: false (use fixed MaxFlushDelay)
 	AdaptiveDelay bool
 }
-
-// defaultAccumulateWindow is the batch-coalescing window used by the flusher
-// when MaxFlushDelay is not set. It is only the upper bound on how long the
-// flusher waits: with the default window the stops-growing check in
-// accumulateBatch returns as soon as the queue stops filling, so a lone caller
-// is not taxed the whole window while concurrent callers still coalesce into a
-// pipeline. It is a var (not a const) so tests can enlarge it and observe the
-// stops-growing behavior without depending on sub-millisecond wall-clock timing.
-var defaultAccumulateWindow = 200 * time.Microsecond
-
-// defaultAccumulateGap is the "stops growing" gap used with the default window:
-// if no new command arrives for a whole gap, the callers that already enqueued
-// are blocked on their results and nothing more is coming, so the flusher stops
-// waiting. Small enough to keep single-caller latency near a raw round-trip,
-// large enough to still coalesce a concurrent burst into one pipeline.
-const defaultAccumulateGap = 20 * time.Microsecond
 
 // autoPipelinePermitBackstop bounds how long a flush waits for a concurrency
 // permit when all are busy. It is only a safety net against a wedged semaphore:
@@ -159,7 +143,7 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 	return &AutoPipelineConfig{
 		MaxBatchSize:         200,
 		MaxConcurrentBatches: 1, // ordered by default
-		MaxFlushDelay:        0, // lowest latency; flusher still uses the default coalescing window
+		MaxFlushDelay:        0, // lowest latency; no coalescing wait (batch via in-flight backpressure)
 	}
 }
 
@@ -169,8 +153,8 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 // minimizes latency for the blocking face: with one batch in flight, callers whose
 // commands return while it executes re-enqueue and flush together as the next
 // batch, so batches stay deep (a near-continuous, double-buffered pipeline),
-// while a lone caller still flushes promptly via the stops-growing window in
-// accumulateBatch. More parallel permits (MaxConcurrentBatches>1) do the
+// while a lone caller flushes promptly in a single round-trip (no coalescing
+// wait — see accumulateBatch). More parallel permits (MaxConcurrentBatches>1) do the
 // opposite: each command finds a free permit and flushes on its own before
 // others accumulate, collapsing batch size — and throughput — toward one command
 // per round-trip while latency rises. For maximum throughput use the async face
@@ -271,9 +255,10 @@ func putQueueSlice(slice []Cmder) {
 //
 // AutoPipeliner works by collecting commands from multiple goroutines into a
 // shared queue and flushing them as one Redis pipeline when the batch reaches
-// MaxBatchSize, or when the coalescing window elapses (MaxFlushDelay if set;
-// otherwise a small default window that ends as soon as the queue stops
-// growing — a lone command flushes almost immediately).
+// MaxBatchSize or a configured coalescing window (MaxFlushDelay) elapses. By
+// default there is no window: each batch flushes as soon as the queue is ready
+// and concurrent callers coalesce via in-flight backpressure, so a lone command
+// flushes in a single round-trip while batches stay deep under load.
 //
 // This provides significant performance improvements for workloads with many
 // concurrent small operations, as it reduces the number of network round-trips.
@@ -335,16 +320,25 @@ type AutoPipeliner struct {
 	// batch across nodes). When nil, commands are assigned round-robin.
 	shardFn func(Cmder) int
 
+	// resubmitDebt counts callers who were just woken by a completed batch and
+	// are expected to re-enqueue: each completed batch of N≥2 commands credits
+	// N (its waiters wake together and, in a closed loop, resubmit), and every
+	// enqueue debits 1. The default coalescing wait (coalesceCohort) holds the
+	// flusher while debt remains, so a wakeup herd flushes as one deep pipeline
+	// — the exact herd size, not a smoothed estimate, which cannot ratchet into
+	// fragmentation. Single-command batches credit nothing, so a lone caller
+	// and open-loop traffic never wait. May transiently go negative (arrivals
+	// with no outstanding debt); readers clamp to zero. Pipeliner-global, not
+	// per-shard: cluster routing may land a resubmission on a different shard
+	// than the batch that woke it.
+	resubmitDebt atomic.Int64
+
 	// execEWMA is an exponentially-weighted moving average (alpha 1/8) of
 	// batch execution time in nanoseconds — the engine's own view of the
-	// server round-trip. It drives the adaptive coalescing timings on the
-	// implicit default window (see adaptiveCoalesce): on loopback it clamps to
-	// the historical 20µs gap / 200µs window, while at WAN round-trip times it
-	// widens both so a reply-wakeup herd coalesces into one batch per RTT
-	// instead of fragmenting into serialized partial batches (each split costs
-	// a full RTT). Updates are racy read-modify-writes by design: losing an
-	// occasional sample is harmless for a smoothing heuristic, and it keeps
-	// the batch hot path free of CAS loops. 0 means "no sample yet".
+	// server round-trip. It scales coalesceCohort's silence fallback so a herd
+	// staggered by scheduling on a slow link is not split mid-landing. Updates
+	// are racy read-modify-writes by design: losing an occasional sample is
+	// harmless for a smoothing heuristic. 0 means "no sample yet".
 	execEWMA atomic.Int64
 
 	// Lifecycle
@@ -353,59 +347,6 @@ type AutoPipeliner struct {
 	wg      sync.WaitGroup // Tracks flusher goroutines
 	batchWg sync.WaitGroup // Tracks batch execution goroutines
 	closed  atomic.Bool
-}
-
-// observeBatchExec folds one batch execution duration into execEWMA.
-func (ap *AutoPipeliner) observeBatchExec(d time.Duration) {
-	sample := int64(d)
-	if sample <= 0 {
-		return
-	}
-	old := ap.execEWMA.Load()
-	if old == 0 {
-		ap.execEWMA.Store(sample)
-		return
-	}
-	ap.execEWMA.Store(old + (sample-old)/8)
-}
-
-// adaptiveCoalesce derives the default-window coalescing timings from the
-// observed batch round-trip time. Pure function of the EWMA so it is unit
-// testable. Floors keep loopback behavior identical to the fixed constants;
-// ceilings bound the latency a lone late command can be taxed.
-//
-//	gap    = clamp(rtt/64, defaultAccumulateGap, 3ms)
-//	window = clamp(rtt/4, floorWindow, 15ms)
-//
-// floorWindow is defaultAccumulateWindow (a var so tests can enlarge it; when
-// a test raises it above the ceiling, the floor wins — the window never
-// shrinks below its configured floor).
-func adaptiveCoalesce(ewmaNs int64, floorWindow time.Duration) (gap, window time.Duration) {
-	const (
-		gapCeil    = 3 * time.Millisecond
-		windowCeil = 15 * time.Millisecond
-	)
-	gap = defaultAccumulateGap
-	window = floorWindow
-	if ewmaNs <= 0 {
-		return gap, window
-	}
-	if g := time.Duration(ewmaNs / 64); g > gap {
-		if g > gapCeil {
-			g = gapCeil
-		}
-		gap = g
-	}
-	if w := time.Duration(ewmaNs / 4); w > window {
-		if w > windowCeil {
-			w = windowCeil
-		}
-		window = w
-	}
-	if gap > window {
-		gap = window
-	}
-	return gap, window
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -445,6 +386,13 @@ type apShard struct {
 	stripes []apStripe              // 1 stripe when ordered, apEnqueueStripes when Unordered
 	notify  chan struct{}           // buffered (cap 1) enqueue wake-up
 	sem     *internal.FIFOSemaphore // per-shard concurrent-batch budget
+
+	// inFlight counts this shard's dispatched-but-unfinished batches. When it
+	// is zero and no resubmission debt is outstanding, the shard is idle and a
+	// new command flushes immediately; when batches are in flight, arrivals
+	// are mid-stream and the flusher holds them briefly to coalesce (see
+	// coalesceCohort).
+	inFlight atomic.Int32
 }
 
 // stripe picks the enqueue stripe for the next command: the single stripe in
@@ -799,6 +747,9 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	st.queueLen.Store(int32(len(st.queue)))
 	st.mu.Unlock()
 
+	// One expected resubmission has landed (see resubmitDebt).
+	ap.resubmitDebt.Add(-1)
+
 	s.wake()
 	return batch
 }
@@ -894,11 +845,10 @@ func (s *apShard) flusher() {
 			return
 		}
 
-		// Coalesce: after the first command wakes us, briefly wait for more
-		// commands to accumulate so we flush a full batch instead of one
-		// command at a time. This is what makes autopipelining batch under
-		// concurrent load. We stop waiting as soon as the queue reaches
-		// MaxBatchSize or MaxFlushDelay elapses (whichever comes first).
+		// Apply the coalescing window if one is configured (MaxFlushDelay /
+		// AdaptiveDelay). With the default config this returns at once: batching
+		// under concurrent load comes from in-flight backpressure, not a wait —
+		// see accumulateBatch.
 		s.accumulateBatch()
 
 		// Flush all pending commands
@@ -913,8 +863,9 @@ func (s *apShard) flusher() {
 
 			s.flushBatchSlice()
 
-			// Between batches, briefly coalesce again so the next pipeline is
-			// also full rather than draining one straggler at a time.
+			// Between batches, apply the configured window again so the next
+			// pipeline is also full. A no-op with the default config (see
+			// accumulateBatch); the next drain picks up whatever has queued.
 			if s.Len() > 0 && s.Len() < ap.config.MaxBatchSize {
 				s.accumulateBatch()
 			}
@@ -922,21 +873,18 @@ func (s *apShard) flusher() {
 	}
 }
 
-// accumulateBatch waits briefly for commands to pile up before the flusher
-// drains the queue, so pipelines carry many commands instead of one. It
-// returns as soon as any of these holds:
+// accumulateBatch lets commands pile up before the flusher drains the queue,
+// so pipelines carry many commands instead of one. It returns as soon as any
+// of these holds:
 //
 //   - the queue reaches MaxBatchSize (batch is full);
 //   - a configured MaxFlushDelay / AdaptiveDelay window elapses; or
-//   - with the implicit default window (no delay configured), no new command
-//     arrives for a whole defaultAccumulateGap — the callers that enqueued are
-//     then blocked on their results, so nothing more is coming right now.
+//   - with no configured window (the default), the expected resubmission
+//     cohort has landed — see coalesceCohort.
 //
-// The stops-growing gap applies only to the default window: an explicit
-// MaxFlushDelay is an intentional "wait this long to accumulate a fuller batch"
-// and is honored in full. It is what keeps single-caller latency low — a lone
-// caller flushes one gap after its command instead of waiting the whole window,
-// while under concurrent load each enqueue extends the gap so the batch grows.
+// A configured MaxFlushDelay / AdaptiveDelay is an intentional accumulation
+// window and is waited in full (AdaptiveDelay scales it down as the queue fills
+// and returns 0 — flush now — once the queue is ≥75% full).
 func (s *apShard) accumulateBatch() {
 	ap := s.ap
 	batchSize := ap.config.MaxBatchSize
@@ -947,88 +895,167 @@ func (s *apShard) accumulateBatch() {
 		return
 	}
 
-	// Pick the accumulation window. With AdaptiveDelay set, calculateDelay scales
-	// it down as this shard's queue fills (and returns 0 once it's ≥75% full,
-	// flushing immediately); otherwise it's the fixed MaxFlushDelay. Fall back to
-	// the default window only when no delay is configured at all. The fill level
-	// is this shard's own length — each shard flushes independently, so a global
-	// count would mis-tune a quiet shard while another is busy.
+	// Pick the accumulation window. calculateDelay returns 0 both when no
+	// MaxFlushDelay is configured (the default) and when AdaptiveDelay resolves
+	// the current fill level to "flush immediately". The fill level is this
+	// shard's own length — each shard flushes independently, so a global count
+	// would mis-tune a quiet shard while another is busy.
 	window := ap.calculateDelay(s.Len())
-
-	// stopsGrowing enables the "flush once the queue stops filling" early exit,
-	// but only for the implicit default window. An explicit MaxFlushDelay (or
-	// AdaptiveDelay) is an intentional accumulation window and is waited in full.
-	stopsGrowing := false
 	if window <= 0 {
-		if ap.config.MaxFlushDelay > 0 || ap.config.AdaptiveDelay {
-			// A delay/adaptive mode was configured and the current fill level
-			// resolved to "flush now" — don't wait.
-			return
+		if ap.config.MaxFlushDelay == 0 && !ap.config.AdaptiveDelay {
+			// Default: coalesce by expected cohort size, not by wall-clock.
+			s.coalesceCohort(batchSize)
 		}
-		// Adaptive default window: scale the coalescing timings by the
-		// observed batch round-trip. On loopback this clamps to the fixed
-		// constants; on a slow network it holds the window open long enough
-		// for a reply-wakeup herd (hundreds of goroutines waking over
-		// milliseconds) to coalesce into ONE batch per round trip instead of
-		// fragmenting into serialized partial batches.
-		_, window = adaptiveCoalesce(ap.execEWMA.Load(), defaultAccumulateWindow)
-		stopsGrowing = true
+		return
 	}
 
-	if !stopsGrowing {
-		// Explicit window: wait the whole delay (or until the batch fills). Each
-		// enqueue sends on notify, so we re-check the queue length on every
-		// wake-up and return once the batch is full.
-		deadline := time.NewTimer(window)
-		defer deadline.Stop()
-		for {
-			select {
-			case <-ap.ctx.Done():
-				return
-			case <-deadline.C:
-				return
-			case <-s.notify:
-				if s.Len() >= batchSize {
-					return
-				}
-			}
-		}
-	}
-
-	// Default window: flush as soon as the queue stops growing. A single timer
-	// acts as a debounce gap — each enqueue extends it — bounded by the window
-	// deadline so a steadily-growing queue still flushes a full pipeline at the
-	// cap, while a lone caller flushes one gap after enqueuing. The gap is
-	// RTT-adaptive (see adaptiveCoalesce): 20µs on loopback, wider on slow
-	// links so staggered reply-wakeups extend one batch instead of splitting
-	// it. Reset is drain-safe on Go 1.23+ (see go.mod: go 1.24).
-	gap, _ := adaptiveCoalesce(ap.execEWMA.Load(), defaultAccumulateWindow)
-	if gap > window {
-		gap = window
-	}
-	deadline := time.Now().Add(window)
-	burst := time.NewTimer(gap)
-	defer burst.Stop()
+	// Explicit window: wait the whole delay (or until the batch fills). Each
+	// enqueue sends on notify, so we re-check the queue length on every wake-up
+	// and return once the batch is full.
+	deadline := time.NewTimer(window)
+	defer deadline.Stop()
 	for {
 		select {
 		case <-ap.ctx.Done():
 			return
-		case <-burst.C:
-			// No new command for a whole gap: the burst is over, flush now.
+		case <-deadline.C:
 			return
 		case <-s.notify:
 			if s.Len() >= batchSize {
 				return
 			}
-			// Extend the gap to keep coalescing, but never past the window cap.
-			d := gap
-			if rem := time.Until(deadline); rem < d {
-				if rem <= 0 {
-					return
-				}
-				d = rem
+		}
+	}
+}
+
+// coalesceGapFloor / coalesceGapCeil bound coalesceCohort's silence fallback.
+// The floor covers fast links; the RTT-scaled value (execEWMA/8) takes over on
+// slow ones, where a wakeup herd staggered by goroutine scheduling can pause
+// longer than the floor mid-landing and a premature flush is expensive (each
+// batch fragment occupies a pipeline connection for a full round trip). The
+// ceiling bounds how long stale debt (callers that left) can delay a flush.
+const (
+	coalesceGapFloor = 200 * time.Microsecond
+	coalesceGapCeil  = 5 * time.Millisecond
+)
+
+// coalesceMinFlush is the smallest pipeline worth dispatching while other
+// batches are still executing. Below it, a gap-fire holds the queued
+// stragglers for the next herd instead of burning a connection on a
+// near-empty flush; once nothing is in flight, any size flushes immediately.
+const coalesceMinFlush = 8
+
+// observeBatchExec folds one batch execution duration into execEWMA.
+func (ap *AutoPipeliner) observeBatchExec(d time.Duration) {
+	sample := int64(d)
+	if sample <= 0 {
+		return
+	}
+	old := ap.execEWMA.Load()
+	if old == 0 {
+		ap.execEWMA.Store(sample)
+		return
+	}
+	ap.execEWMA.Store(old + (sample-old)/8)
+}
+
+// cohortGap returns the silence fallback for coalesceCohort, scaled to the
+// observed batch round-trip: clamp(execEWMA/8, floor, ceil).
+func (ap *AutoPipeliner) cohortGap() time.Duration {
+	g := time.Duration(ap.execEWMA.Load() / 8)
+	if g < coalesceGapFloor {
+		return coalesceGapFloor
+	}
+	if g > coalesceGapCeil {
+		return coalesceGapCeil
+	}
+	return g
+}
+
+// coalesceCohort holds the flusher while related work is in motion, so
+// commands flush as deep pipelines instead of fragmenting into small batches
+// (each fragment costs a pipeline connection for a full round trip). Two
+// signals — both facts the engine already has, not wall-clock guesses — decide
+// whether anything is imminent:
+//
+//   - resubmitDebt: a completed batch of N commands wakes its N waiters
+//     together, and in a closed loop they resubmit. The exact count is
+//     credited at batch completion and debited per enqueue; the wait ends the
+//     moment it drains (the herd has landed). An exact per-herd count has no
+//     failure mode where an averaged estimate undershoots the true herd and
+//     locks the engine into fragmented flushes.
+//   - inFlight: batches still executing mean their waiters will wake shortly
+//     and stragglers are mid-stream — worth holding a moment to coalesce with,
+//     bounded by the silence gap. This also recovers a fragmented state (many
+//     singles in flight, which credit no debt): their staggered returns land
+//     within one gap, merge into a real batch, and debt tracking resumes.
+//
+// When neither holds, the shard is idle and the flush happens immediately: a
+// lone caller pays a single round trip with no timer armed. That is the point
+// of the design — the previous fixed ~20µs debounce timer armed on every flush
+// fires ~1ms late on an idle or low-core host (wakeup latency dominates the
+// requested delay), taxing every low-concurrency command ~5x its round trip.
+// Here the gap timer never fires in steady state, closed loop or open; it only
+// ends waits for callers that left.
+func (s *apShard) coalesceCohort(batchSize int) {
+	ap := s.ap
+	debt := ap.resubmitDebt.Load()
+	if debt < 0 {
+		// Arrivals outran outstanding debt (open-loop traffic); re-zero so the
+		// deficit does not mask the next herd. CAS: only clear the value we
+		// saw, never a concurrent credit.
+		ap.resubmitDebt.CompareAndSwap(debt, 0)
+		debt = 0
+	}
+	herdExpected := debt > 0
+	if !herdExpected && s.inFlight.Load() == 0 {
+		// Idle shard: nothing imminent, flush in one round trip.
+		return
+	}
+
+	gap := ap.cohortGap()
+	// Reset is drain-safe on Go 1.23+ (see go.mod: go 1.24).
+	fallback := time.NewTimer(gap)
+	defer fallback.Stop()
+	for {
+		select {
+		case <-ap.ctx.Done():
+			return
+		case <-fallback.C:
+			if !herdExpected && s.Len() < coalesceMinFlush && s.inFlight.Load() > 0 {
+				// Only stragglers queued while batches are still executing:
+				// flushing a near-empty pipeline burns a connection for a full
+				// round trip (measured at high WAN concurrency: straggler
+				// flushes of 1-3 commands starved the connection pool and
+				// doubled p50). Hold them — the next completed batch's herd
+				// sweeps them along, and the herd path below flushes promptly.
+				fallback.Reset(gap)
+				continue
 			}
-			burst.Reset(d)
+			if herdExpected {
+				// A whole gap with no arrivals: the debtors left (workload
+				// shrank). Drop the stale debt so future flushes don't wait
+				// for ghosts.
+				ap.resubmitDebt.Store(0)
+			}
+			return
+		case <-s.notify:
+			if s.Len() >= batchSize {
+				return
+			}
+			if d := ap.resubmitDebt.Load(); d > 0 {
+				// An in-flight batch completed mid-wait: its herd is now the
+				// thing to wait out, with the exact-count exit below.
+				herdExpected = true
+			} else if herdExpected {
+				// The herd has fully landed; flush it as one batch.
+				return
+			} else if s.inFlight.Load() == 0 {
+				// Nothing executing and no herd expected: no completion will
+				// wake more callers, so flush what we have now.
+				return
+			}
+			fallback.Reset(gap)
 		}
 	}
 }
@@ -1110,12 +1137,12 @@ func (s *apShard) flushBatchSlice() {
 		// without them locks the herd into two alternating cohorts — each
 		// observing two round trips, at half throughput — a state that is
 		// stable once entered (measured: p50 pinned at 2xRTT for entire runs
-		// at mid worker counts on a 52ms link). On the default window,
-		// debounce the resubmission herd and fold it into this batch before
-		// executing, which merges the cohorts back into one batch per round
-		// trip. Explicit-delay configs keep their own timing.
+		// at mid worker counts on a 52ms link). On the default window, let the
+		// resubmission herd land and fold it into this batch before executing,
+		// which merges the cohorts back into one batch per round trip.
+		// Explicit-delay configs keep their own timing.
 		if ap.config.MaxFlushDelay == 0 && !ap.config.AdaptiveDelay {
-			s.accumulateBatch()
+			s.coalesceCohort(ap.config.MaxBatchSize)
 			for i := range s.stripes {
 				st := &s.stripes[i]
 				if st.queueLen.Load() == 0 {
@@ -1135,11 +1162,21 @@ func (s *apShard) flushBatchSlice() {
 		}
 	}
 
-	// Fast path for single command. Run inside a func so the batch close and
-	// the semaphore release are deferred: a panic in Process still signals
-	// completion (waking await()) and frees the permit before it propagates.
+	// Fast path for single command: skip the pipeline and Process directly, in
+	// its own goroutine. The dispatch MUST NOT run inline in the flusher: a
+	// synchronous Process blocks the flusher for a full round trip, and on a
+	// slow link a solo straggler then holds up an entire landed herd for one
+	// RTT — whose flush then delays the straggler's next command in turn, a
+	// stable phase-lock where everyone pays 2x RTT (measured: ~25% of runs on
+	// a 57ms link locked at exactly 2x RTT until perturbed).
+	// No resubmitDebt credit: a single waiter waking is the lone-caller case,
+	// which must keep flushing immediately.
 	if total == 1 {
-		func() {
+		ap.batchWg.Add(1)
+		s.inFlight.Add(1)
+		go func() {
+			defer ap.batchWg.Done()
+			defer s.inFlight.Add(-1)
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
 			defer close(batches[0].done)
@@ -1155,8 +1192,10 @@ func (s *apShard) flushBatchSlice() {
 	// Track this goroutine in the batchWg so Close() waits for it.
 	// IMPORTANT: Add to WaitGroup AFTER semaphore is acquired to avoid deadlock.
 	ap.batchWg.Add(1)
+	s.inFlight.Add(1)
 	go func() {
 		defer ap.batchWg.Done()
+		defer s.inFlight.Add(-1)
 		defer s.sem.Release()
 		// Signal completion with one close per taken stripe. Deferred so a
 		// panic in Process/Exec (e.g. a malformed command or encoder panic)
@@ -1190,6 +1229,11 @@ func (s *apShard) flushBatchSlice() {
 		execStart := time.Now()
 		_, _ = pipe.Exec(ctx)
 		ap.observeBatchExec(time.Since(execStart))
+
+		// Credit the resubmission debt BEFORE the deferred closes wake this
+		// batch's waiters, so the flusher sees the expected herd the moment the
+		// first resubmit lands (see resubmitDebt).
+		ap.resubmitDebt.Add(int64(total))
 	}()
 }
 
