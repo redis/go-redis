@@ -1791,9 +1791,15 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 			}
 			if policy != nil && !policy.CanBeUsedInPipeline() {
-				return fmt.Errorf(
+				// Fail ONLY the offending command, not the whole mapping: a merged
+				// autopipeline batch carries many unrelated callers' commands, and
+				// one caller enqueueing a non-pipelineable command (e.g. a
+				// multi-shard MGET under the dynamic resolver) must not error
+				// everyone else's batch.
+				cmd.SetErr(fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
-				)
+				))
+				continue
 			}
 			slot := c.cmdSlot(cmd, -1)
 			var node *clusterNode
@@ -1828,9 +1834,15 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 		}
 		if policy != nil && !policy.CanBeUsedInPipeline() {
-			return fmt.Errorf(
+			// Fail ONLY the offending command, not the whole mapping: a merged
+			// autopipeline batch carries many unrelated callers' commands, and
+			// one caller enqueueing a non-pipelineable command (e.g. a
+			// multi-shard MGET under the dynamic resolver) must not error
+			// everyone else's batch.
+			cmd.SetErr(fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
-			)
+			))
+			continue
 		}
 		slot := c.cmdSlot(cmd, -1)
 		var node *clusterNode
