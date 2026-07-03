@@ -1103,6 +1103,36 @@ func (s *apShard) flushBatchSlice() {
 			}
 			return
 		}
+
+		// Cohort merge. We took the queue and then waited a full batch round
+		// trip for the permit; callers whose replies landed just after our
+		// take re-submitted into the FRESH queue during that wait. Executing
+		// without them locks the herd into two alternating cohorts — each
+		// observing two round trips, at half throughput — a state that is
+		// stable once entered (measured: p50 pinned at 2xRTT for entire runs
+		// at mid worker counts on a 52ms link). On the default window,
+		// debounce the resubmission herd and fold it into this batch before
+		// executing, which merges the cohorts back into one batch per round
+		// trip. Explicit-delay configs keep their own timing.
+		if ap.config.MaxFlushDelay == 0 && !ap.config.AdaptiveDelay {
+			s.accumulateBatch()
+			for i := range s.stripes {
+				st := &s.stripes[i]
+				if st.queueLen.Load() == 0 {
+					continue
+				}
+				st.mu.Lock()
+				if len(st.queue) > 0 {
+					queues = append(queues, st.queue)
+					batches = append(batches, st.curBatch)
+					total += len(st.queue)
+					st.queue = getQueueSlice(ap.config.MaxBatchSize)
+					st.curBatch = newAPBatch()
+					st.queueLen.Store(0)
+				}
+				st.mu.Unlock()
+			}
+		}
 	}
 
 	// Fast path for single command. Run inside a func so the batch close and
