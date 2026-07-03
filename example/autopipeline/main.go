@@ -176,9 +176,12 @@ func usageTour(ctx context.Context) {
 
 	// --- d. Do: the escape hatch, NOT batched ------------------------------
 	// Do runs on a normal connection outside the pipeline (plain Client.Do
-	// semantics). It exists for arbitrary commands — including stateful or
-	// blocking ones (SELECT, SUBSCRIBE, BLPOP, ...) that must never ride a
-	// shared pipeline connection. Prefer the typed methods for data commands.
+	// semantics). It exists for arbitrary raw commands the typed surface does
+	// not cover. Blocking commands need no escape hatch: the typed methods
+	// (BLPop, XRead with Block, Wait, ...) are diverted to a normal connection
+	// automatically and never ride a shared pipeline connection. Keep
+	// connection-state commands away from Do just as with a plain client:
+	// pick the DB via Options.DB, subscribe via the PubSub API.
 	if err := aap.Do(ctx, "echo", "outside the pipeline").Err(); err != nil {
 		fatalf("do: %v", err)
 	}
@@ -188,11 +191,14 @@ func usageTour(ctx context.Context) {
 	// For peak throughput on the async face give up global ordering:
 	//
 	//	rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{
-	//		MaxConcurrentBatches: 4,   // 2-4 is the sweet spot; more mostly
-	//		Unordered:            true, // fragments batches — measure first
+	//		MaxConcurrentBatches: 4, // small values suffice
+	//		Unordered:            true,
 	//	})
 	//
-	// Leave NumShards at 0 (one deep queue; cluster clients shard by slot
+	// Extra permits add overlapping batches (each occupies a pipeline
+	// connection for its round trip, so the pipeline pool size is the real
+	// ceiling); they do not deepen batches — measure before raising. Leave
+	// NumShards at 0 (one deep queue; cluster clients shard by slot
 	// automatically). Remember the instance is cached per client: the FIRST
 	// call's config wins.
 
@@ -312,10 +318,10 @@ func benchOrderedReadLater(ctx context.Context) float64 {
 
 // 4. Async autopipeline, unordered, read later: a few overlapping batches for
 // peak throughput. MaxConcurrentBatches>1 gives up global ordering, so
-// Unordered must be true. 2-4 concurrent batches is the sweet spot — batch N+1
-// accumulates and executes while batch N's replies are in flight; much higher
-// values mostly add contention (the repo's internal benches use bigger numbers
-// on dedicated hardware).
+// Unordered must be true. A handful of concurrent batches is plenty — batch
+// N+1 accumulates and executes while batch N's replies are in flight; higher
+// values only add more overlapping batches (bounded by the pipeline pool
+// size), they don't deepen them.
 func benchUnorderedReadLater(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
