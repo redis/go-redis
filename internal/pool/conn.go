@@ -876,6 +876,18 @@ func (cn *Conn) PeekReplyTypeSafe() (byte, error) {
 	return cn.rd.PeekReplyType()
 }
 
+// PeekReplyTypeForCheck peeks at the reply type while holding readerMu, so it is
+// safe against a concurrent SetNetConn resetting the reader during handoff.
+// Unlike PeekReplyTypeSafe it does not require the data to already be buffered:
+// the pool health check calls it after connCheck reports unexpected socket data,
+// and connCheck only MSG_PEEKs, so the byte still has to be pulled from the
+// socket into the reader here.
+func (cn *Conn) PeekReplyTypeForCheck() (byte, error) {
+	cn.readerMu.RLock()
+	defer cn.readerMu.RUnlock()
+	return cn.rd.PeekReplyType()
+}
+
 func (cn *Conn) Write(b []byte) (int, error) {
 	// Lock-free netConn access for better performance
 	if netConn := cn.getNetConn(); netConn != nil {
