@@ -111,6 +111,23 @@ func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 	}
 }
 
+func TestLocalCache_Get_TimesOutOnAbandonedReservation(t *testing.T) {
+	cache := New(Config{MaxEntries: 4, StaleTimeout: 50 * time.Millisecond})
+
+	if _, shouldFetch := cache.Reserve("k", []string{"k"}); !shouldFetch {
+		t.Fatal("Reserve should grant the fetch")
+	}
+	// The fetcher "dies" without Fulfill/Cancel. A waiter with an unbounded
+	// context must still unblock once the placeholder's stale window passes.
+	start := time.Now()
+	if _, ok := cache.Get(context.Background(), "k"); ok {
+		t.Fatal("Get should miss on an abandoned reservation")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Get blocked for %v, want ~StaleTimeout (50ms)", elapsed)
+	}
+}
+
 func TestLocalCache_GetTouch_SecondChanceEviction(t *testing.T) {
 	cache := New(Config{MaxEntries: 3})
 
