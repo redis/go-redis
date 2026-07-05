@@ -146,6 +146,60 @@ func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 	}
 }
 
+func TestLocalCache_GetTouch_SecondChanceEviction(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 3})
+
+	for _, k := range []string{"a", "b", "c"} {
+		if !cache.Set(k, []string{k}, []byte(k)) {
+			t.Fatalf("failed to set %s", k)
+		}
+	}
+
+	// Reads record recency via an atomic token (no write lock); eviction must
+	// honor those touches and evict the untouched entry instead.
+	if _, ok := cache.Get(context.Background(), "a"); !ok {
+		t.Fatal("a should exist")
+	}
+	if _, ok := cache.Get(context.Background(), "b"); !ok {
+		t.Fatal("b should exist")
+	}
+
+	if !cache.Set("d", []string{"d"}, []byte("d")) {
+		t.Fatal("failed to set d")
+	}
+
+	if _, ok := cache.Get(context.Background(), "c"); ok {
+		t.Fatal("c should be evicted as least recently used")
+	}
+	for _, k := range []string{"a", "b", "d"} {
+		if _, ok := cache.Get(context.Background(), k); !ok {
+			t.Fatalf("%s should remain cached", k)
+		}
+	}
+}
+
+func TestLocalCache_ConcurrentGetsDuringEviction(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				key := fmt.Sprintf("k%d", i%16)
+				cache.Set(key, []string{key}, []byte("v"))
+				cache.Get(context.Background(), key)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if n := cache.Len(); n > 8 {
+		t.Fatalf("cache exceeded MaxEntries: %d", n)
+	}
+}
+
 func TestLocalCache_Evicts_ByMaxMemory(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{
 		MaxMemoryBytes: 5,

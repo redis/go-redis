@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,7 +31,18 @@ type CacheEntry struct {
 	waitCh     chan struct{}
 	waitClosed bool
 	lruElem    *list.Element
+
+	// lastAccess is a recency token bumped atomically on cache hits so the
+	// read path can record a touch under RLock without upgrading to a write
+	// lock. Eviction gives touched entries a second chance (see evictIfNeededLocked).
+	lastAccess atomic.Int64
+	// queuedAt is lastAccess's value when the entry was last (re)positioned
+	// in the LRU list; written only under the write lock.
+	queuedAt int64
 }
+
+// lruSequence feeds CacheEntry.lastAccess with monotonically increasing recency tokens.
+var lruSequence atomic.Int64
 
 // CacheSizer calculates estimated memory usage in bytes for a cache entry.
 type CacheSizer func(cacheKey string, redisKeys []string, value []byte) int64
@@ -42,6 +54,10 @@ type CacheConfig struct {
 	// MaxMemoryBytes limits estimated memory usage in bytes. Zero or negative means unlimited.
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
+	//
+	// Sizer is invoked while the cache's internal lock is held: it must return
+	// quickly and must not call back into the cache (Get, Set, Delete*, Flush,
+	// etc.), or it will deadlock.
 	Sizer CacheSizer
 	// StaleTimeout is the duration after which an IN_PROGRESS placeholder is
 	// considered stale and eligible for takeover by a new Reserve call.
@@ -156,14 +172,10 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 		}
 
 		value := cloneBytes(entry.Value)
+		// Record recency without upgrading to the write lock; eviction consults
+		// lastAccess to give recently read entries a second chance.
+		entry.lastAccess.Store(lruSequence.Add(1))
 		c.mu.RUnlock()
-
-		c.mu.Lock()
-		// Touch under write lock keeps LRU metadata consistent with concurrent deletes/updates.
-		if current, exists := c.entries[cacheKey]; exists && current == entry && current.State == CacheEntryValid {
-			c.touchEntryLocked(current)
-		}
-		c.mu.Unlock()
 
 		return value, true
 	}
@@ -392,6 +404,9 @@ func (c *localCache) setEntryLocked(entry *CacheEntry) {
 		cacheKeys[entry.CacheKey] = struct{}{}
 	}
 
+	token := lruSequence.Add(1)
+	entry.lastAccess.Store(token)
+	entry.queuedAt = token
 	entry.lruElem = c.lru.PushFront(entry)
 }
 
@@ -435,6 +450,9 @@ func (c *localCache) closeWaitersLocked(entry *CacheEntry) {
 }
 
 func (c *localCache) touchEntryLocked(entry *CacheEntry) {
+	token := lruSequence.Add(1)
+	entry.lastAccess.Store(token)
+	entry.queuedAt = token
 	// O(1) recency update using list element pointer stored on the entry.
 	if entry.lruElem == nil {
 		entry.lruElem = c.lru.PushFront(entry)
@@ -464,6 +482,17 @@ func (c *localCache) evictIfNeededLocked() {
 		victim, ok := victimElem.Value.(*CacheEntry)
 		if !ok || victim == nil {
 			c.lru.Remove(victimElem)
+			continue
+		}
+
+		// Second chance: the read path records hits in lastAccess without
+		// repositioning the list. If this entry was read since it was last
+		// queued, requeue it at the front instead of evicting. This loop is
+		// bounded: readers cannot bump lastAccess while the write lock is
+		// held, so each entry is requeued at most once per eviction pass.
+		if last := victim.lastAccess.Load(); last > victim.queuedAt {
+			victim.queuedAt = last
+			c.lru.MoveToFront(victimElem)
 			continue
 		}
 
