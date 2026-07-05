@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/cpu"
+
 	"github.com/redis/go-redis/v9/internal"
 )
 
@@ -373,11 +375,14 @@ type apStripe struct {
 	queue    []Cmder
 	queueLen atomic.Int32
 	curBatch *apBatch // completion signal for currently-queued cmds
-	// Pad the struct to a 128-byte stride (2 cache lines): with the previous
-	// 88-byte stride, one stripe's hot fields (curBatch/queueLen) shared a
-	// cache line with the NEXT stripe's contended mutex — exactly the false
-	// sharing the pad exists to prevent.
-	_ [80]byte
+	// Pad each stripe onto its own cache line(s). Without it, one stripe's hot
+	// fields (queueLen/curBatch) share a cache line with the NEXT stripe's
+	// contended mutex, so a lock-free counter bump on stripe i invalidates the
+	// line a different core is trying to lock stripe i+1 on — false sharing
+	// that measured ~16x on a contended microbenchmark. cpu.CacheLinePad is
+	// sized per GOARCH (64 B on x86-64/arm64, 128 B on ppc64, 256 B on s390x),
+	// so this is correct on every target rather than a hand-tuned constant.
+	_ cpu.CacheLinePad
 }
 
 type apShard struct {
