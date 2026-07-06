@@ -3,7 +3,6 @@ package redis
 import (
 	"bytes"
 	"strconv"
-	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -37,8 +36,9 @@ var defaultCacheableCommands = map[string]struct{}{
 	// Geo commands
 	"geodist": {}, "geohash": {}, "geopos": {}, "geosearch": {},
 	"georadiusbymember_ro": {}, "georadius_ro": {},
-	// Stream commands
-	"xlen": {}, "xpending": {}, "xrange": {}, "xread": {}, "xrevrange": {},
+	// Stream commands. XREAD is deliberately excluded: it supports BLOCK, and
+	// its $/+ IDs are state-relative, so identical args are not deterministic.
+	"xlen": {}, "xpending": {}, "xrange": {}, "xrevrange": {},
 	// JSON (RedisJSON) commands
 	"json.get": {}, "json.mget": {}, "json.arrindex": {}, "json.arrlen": {},
 	"json.objkeys": {}, "json.objlen": {}, "json.resp": {},
@@ -127,29 +127,6 @@ func extractRedisKeys(cmd Cmder) []string {
 		keys := make([]string, 0, lastKey-firstKey+1)
 		for i := firstKey; i <= lastKey; i++ {
 			keys = append(keys, cmd.stringArg(i))
-		}
-		return keys
-
-	// XREAD: keys appear after the STREAMS keyword; the second half of the
-	// remaining args are stream IDs, not keys.
-	case "xread":
-		streamsIdx := -1
-		for i := 0; i < argsLen; i++ {
-			if strings.EqualFold(cmd.stringArg(i), "streams") {
-				streamsIdx = i
-				break
-			}
-		}
-		if streamsIdx < 0 || streamsIdx >= argsLen-1 {
-			return nil
-		}
-		numStreams := (argsLen - streamsIdx - 1) / 2
-		if numStreams <= 0 {
-			return nil
-		}
-		keys := make([]string, numStreams)
-		for i := 0; i < numStreams; i++ {
-			keys[i] = cmd.stringArg(streamsIdx + 1 + i)
 		}
 		return keys
 	}

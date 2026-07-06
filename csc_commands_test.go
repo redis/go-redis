@@ -29,7 +29,7 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"EXISTS", "TYPE", "SORT_RO", "LCS",
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
-		"XLEN", "XPENDING", "XRANGE", "XREAD", "XREVRANGE",
+		"XLEN", "XPENDING", "XRANGE", "XREVRANGE",
 		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
@@ -60,6 +60,14 @@ func TestIsCacheable_WriteCommandsRejected(t *testing.T) {
 		if isCacheable(cmd) {
 			t.Errorf("expected %q to NOT be cacheable", name)
 		}
+	}
+}
+
+func TestIsCacheable_XReadRejected(t *testing.T) {
+	// XREAD supports BLOCK and state-relative $/+ IDs, so it must not be cached.
+	cmd := makeCmd("XREAD", "COUNT", "5", "STREAMS", "s", "0")
+	if isCacheable(cmd) {
+		t.Error("expected XREAD to NOT be cacheable")
 	}
 }
 
@@ -226,15 +234,6 @@ func TestExtractRedisKeys_JSONMGet(t *testing.T) {
 	keys := extractRedisKeys(cmd)
 	if len(keys) != 2 || keys[0] != "j1" || keys[1] != "j2" {
 		t.Errorf("JSON.MGET: expected [j1 j2], got %v", keys)
-	}
-}
-
-func TestExtractRedisKeys_XREAD(t *testing.T) {
-	// XREAD COUNT 10 STREAMS stream1 stream2 0 0
-	cmd := makeCmd("XREAD", "COUNT", 10, "STREAMS", "s1", "s2", "0", "0")
-	keys := extractRedisKeys(cmd)
-	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
-		t.Errorf("XREAD: expected [s1 s2], got %v", keys)
 	}
 }
 
