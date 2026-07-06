@@ -150,17 +150,27 @@ func (c *localCache) Get(ctx context.Context, cacheKey string) ([]byte, bool) {
 
 		if entry.State == CacheEntryInProgress {
 			waitCh := entry.waitCh
+			// Bound the wait by the placeholder's remaining stale window so an
+			// abandoned reservation cannot block waiters indefinitely.
+			remaining := c.staleTimeout - time.Since(entry.reservedAt)
 			c.mu.RUnlock()
+			if waitCh == nil {
+				// Defensive: treat a missing waitCh as a miss to avoid busy-looping.
+				return nil, false
+			}
+			if remaining <= 0 {
+				// Placeholder already stale; miss so the caller refetches.
+				return nil, false
+			}
 			// Wait for the in-flight fetch to either publish (Fulfill) or abort (Cancel/Delete/Flush).
-			if waitCh != nil {
-				select {
-				case <-waitCh:
-				case <-ctx.Done():
-					return nil, false
-				}
-			} else {
-				// Defensive: Reserve always creates a waitCh for IN_PROGRESS entries.
-				// If it is nil, treat as a cache miss to avoid busy-looping.
+			timer := time.NewTimer(remaining)
+			select {
+			case <-waitCh:
+				timer.Stop()
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, false
+			case <-timer.C:
 				return nil, false
 			}
 			continue

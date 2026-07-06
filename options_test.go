@@ -3,12 +3,16 @@
 package redis
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -436,4 +440,71 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+type capturingLogger struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (l *capturingLogger) Printf(_ context.Context, format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, fmt.Sprintf(format, v...))
+}
+
+func (l *capturingLogger) contains(substr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, msg := range l.logs {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestClientSideCacheRESP2Warning(t *testing.T) {
+	origLogger := internal.Logger
+	defer func() { internal.Logger = origLogger }()
+
+	cases := []struct {
+		name     string
+		opt      *Options
+		wantWarn bool
+	}{
+		{
+			name:     "RESP2 with cache config warns",
+			opt:      &Options{Protocol: 2, ClientSideCacheConfig: &ClientSideCacheConfig{}},
+			wantWarn: true,
+		},
+		{
+			name:     "RESP2 with explicit cache warns",
+			opt:      &Options{Protocol: 2, ClientSideCache: NewLocalCache(CacheConfig{})},
+			wantWarn: true,
+		},
+		{
+			name:     "RESP2 without cache does not warn",
+			opt:      &Options{Protocol: 2},
+			wantWarn: false,
+		},
+		{
+			name:     "RESP3 with cache config does not warn",
+			opt:      &Options{Protocol: 3, ClientSideCacheConfig: &ClientSideCacheConfig{}},
+			wantWarn: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := &capturingLogger{}
+			internal.Logger = logger
+
+			tc.opt.init()
+
+			if got := logger.contains("client-side caching requires Protocol: 3"); got != tc.wantWarn {
+				t.Errorf("warning logged = %v, want %v (logs: %v)", got, tc.wantWarn, logger.logs)
+			}
+		})
+	}
 }

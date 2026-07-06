@@ -18,7 +18,9 @@ type ClientSideCacheConfig = CacheConfig
 
 const (
 	invalidatePushName = "invalidate"
-	// cscNamespaceSep is a NUL byte so it cannot occur inside a Redis key name.
+	// cscNamespaceSep separates the DB-number prefix from the key. NUL is a
+	// legal byte in Redis keys, but CSC is restricted to DB 0 (see attachCSC),
+	// so a collision requires a key starting with "0\x00" — out of scope.
 	cscNamespaceSep = "\x00"
 )
 
@@ -78,8 +80,18 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int
 // invalidate handler. Safe to call with a nil cache. On registration failure
 // the cache reference is left unset so cacheable commands fall back to normal
 // round-trips.
+//
+// CSC is only enabled when Options.DB == 0: CLIENT TRACKING is per-connection
+// and not re-keyed by a runtime SELECT, so multi-DB use could serve stale
+// data. Users needing multi-DB caching must run one client per DB.
 func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	if cache == nil || c.opt.Protocol != 3 {
+		return
+	}
+	if c.opt.DB != 0 {
+		internal.Logger.Printf(ctx,
+			"csc: client-side caching is restricted to DB 0; disabling CSC for client configured with DB=%d. "+
+				"Use one client per DB if you need caching against non-zero databases.", c.opt.DB)
 		return
 	}
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.opt.DB); err != nil {

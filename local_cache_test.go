@@ -387,6 +387,23 @@ func TestLocalCache_Get_ReturnsOnContextCancel(t *testing.T) {
 	cache.Cancel("get:abandoned", token)
 }
 
+func TestLocalCache_Get_TimesOutOnAbandonedReservation(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 4, StaleTimeout: 50 * time.Millisecond})
+
+	if _, shouldFetch := cache.Reserve("k", []string{"k"}); !shouldFetch {
+		t.Fatal("Reserve should grant the fetch")
+	}
+	// Fetcher "dies" without Fulfill/Cancel; the waiter must unblock after
+	// the stale window even with an unbounded context.
+	start := time.Now()
+	if _, ok := cache.Get(context.Background(), "k"); ok {
+		t.Fatal("Get should miss on an abandoned reservation")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Get blocked for %v, want ~StaleTimeout (50ms)", elapsed)
+	}
+}
+
 func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 	// Use a very short stale timeout so the test triggers takeover quickly.
 	cache := NewLocalCache(CacheConfig{MaxEntries: 8, StaleTimeout: 10 * time.Millisecond})

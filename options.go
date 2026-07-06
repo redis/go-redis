@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -323,6 +324,10 @@ type Options struct {
 	// caching. When set, it overrides ClientSideCacheConfig. Intended for
 	// advanced users that want to share a cache across clients or supply a
 	// custom implementation.
+	//
+	// A shared Cache is only safe across clients on the same server and DB.
+	// Client-side caching is restricted to DB 0 and disabled with a warning
+	// otherwise.
 	ClientSideCache Cache
 }
 
@@ -422,6 +427,11 @@ func (opt *Options) init() {
 
 	if opt.FailingTimeoutSeconds == 0 {
 		opt.FailingTimeoutSeconds = 15
+	}
+
+	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
+		internal.Logger.Printf(context.Background(),
+			"redis: client-side caching requires Protocol: 3 (RESP3); caching is disabled")
 	}
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
