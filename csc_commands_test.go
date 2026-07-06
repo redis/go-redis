@@ -29,7 +29,7 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"EXISTS", "TYPE", "SORT_RO", "LCS",
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
-		"XLEN", "XPENDING", "XRANGE", "XREAD", "XREVRANGE",
+		"XLEN", "XPENDING", "XRANGE", "XREVRANGE",
 		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
@@ -63,6 +63,14 @@ func TestIsCacheable_WriteCommandsRejected(t *testing.T) {
 	}
 }
 
+func TestIsCacheable_XReadRejected(t *testing.T) {
+	// XREAD supports BLOCK and state-relative $/+ IDs, so it must not be cached.
+	cmd := makeCmd("XREAD", "COUNT", "5", "STREAMS", "s", "0")
+	if isCacheable(cmd) {
+		t.Error("expected XREAD to NOT be cacheable")
+	}
+}
+
 func TestIsCacheable_KeylessCommandRejected(t *testing.T) {
 	// PING has no keys; even if someone added it to the allow-list it
 	// should be rejected because cmdFirstKeyPos returns 0.
@@ -83,19 +91,19 @@ func TestIsCacheable_EmptyArgs(t *testing.T) {
 
 func TestBuildCacheKey_SimpleGet(t *testing.T) {
 	cmd := makeCmd("GET", "foo")
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key")
 	}
 	// Same command must produce identical keys.
-	if key2 := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
+	if key2, _ := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
 		t.Errorf("identical commands produced different keys: %q vs %q", key, key2)
 	}
 }
 
 func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("GET", "foo"))
-	k2 := buildCacheKey(makeCmd("GET", "bar"))
+	k1, _ := buildCacheKey(makeCmd("GET", "foo"))
+	k2, _ := buildCacheKey(makeCmd("GET", "bar"))
 	if k1 == k2 {
 		t.Error("different keys must produce different cache keys")
 	}
@@ -103,8 +111,8 @@ func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
 
 func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 	// "a|b" as one arg vs "a" and "b" as two args must differ.
-	k1 := buildCacheKey(makeCmd("GET", "a|b"))
-	k2 := buildCacheKey(makeCmd("GET", "a", "b"))
+	k1, _ := buildCacheKey(makeCmd("GET", "a|b"))
+	k2, _ := buildCacheKey(makeCmd("GET", "a", "b"))
 	if k1 == k2 {
 		t.Error("length-prefixing should prevent separator collision")
 	}
@@ -112,15 +120,15 @@ func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 
 func TestBuildCacheKey_BinaryData(t *testing.T) {
 	cmd := makeCmd("GET", []byte{0x00, 0x01, 0xff})
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key for binary argument")
 	}
 }
 
 func TestBuildCacheKey_MultiKey(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("MGET", "a", "b"))
-	k2 := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
+	k1, _ := buildCacheKey(makeCmd("MGET", "a", "b"))
+	k2, _ := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
 	if k1 == k2 {
 		t.Error("different arg counts must produce different cache keys")
 	}
@@ -128,8 +136,8 @@ func TestBuildCacheKey_MultiKey(t *testing.T) {
 
 func TestBuildCacheKey_EmptyArgs(t *testing.T) {
 	cmd := makeCmd()
-	if key := buildCacheKey(cmd); key != "" {
-		t.Errorf("expected empty cache key for no-args command, got %q", key)
+	if key, ok := buildCacheKey(cmd); ok || key != "" {
+		t.Errorf("expected empty cache key for no-args command, got %q (ok=%v)", key, ok)
 	}
 }
 
@@ -226,15 +234,6 @@ func TestExtractRedisKeys_JSONMGet(t *testing.T) {
 	keys := extractRedisKeys(cmd)
 	if len(keys) != 2 || keys[0] != "j1" || keys[1] != "j2" {
 		t.Errorf("JSON.MGET: expected [j1 j2], got %v", keys)
-	}
-}
-
-func TestExtractRedisKeys_XREAD(t *testing.T) {
-	// XREAD COUNT 10 STREAMS stream1 stream2 0 0
-	cmd := makeCmd("XREAD", "COUNT", 10, "STREAMS", "s1", "s2", "0", "0")
-	keys := extractRedisKeys(cmd)
-	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
-		t.Errorf("XREAD: expected [s1 s2], got %v", keys)
 	}
 }
 

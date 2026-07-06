@@ -199,6 +199,9 @@ type Cmdable interface {
 	ClientUnblock(ctx context.Context, id int64) *IntCmd
 	ClientUnblockWithError(ctx context.Context, id int64) *IntCmd
 	ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd
+	ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd
+	ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd
+	ClientTrackingOff(ctx context.Context) *StatusCmd
 	ConfigGet(ctx context.Context, parameter string) *MapStringStringCmd
 	ConfigResetStat(ctx context.Context) *StatusCmd
 	ConfigSet(ctx context.Context, parameter, value string) *StatusCmd
@@ -562,6 +565,84 @@ func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, end
 	cmd := NewStatusCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// ClientTrackingOptions configures CLIENT TRACKING ON. See
+// https://redis.io/commands/client-tracking/ for semantics.
+type ClientTrackingOptions struct {
+	Redirect int64
+	Bcast    bool
+	Prefixes []string
+	OptIn    bool
+	OptOut   bool
+	NoLoop   bool
+}
+
+// ClientTracking enables or disables server-assisted client-side caching on
+// the current connection. When on is false, opt is ignored. Invalid option
+// combinations are reported via the returned command's Err and nothing is
+// sent to the server.
+func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+func (c cmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		if err := validateClientTrackingOptions(opt); err != nil {
+			cmd := NewStatusCmd(ctx, args...)
+			cmd.SetErr(err)
+			return cmd
+		}
+		args = appendClientTrackingOptions(args, opt)
+	}
+	cmd := NewStatusCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func (c cmdable) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	cmd := NewStatusCmd(ctx, "client", "tracking", "off")
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+func validateClientTrackingOptions(opt *ClientTrackingOptions) error {
+	if opt.OptIn && opt.OptOut {
+		return errors.New("redis: CLIENT TRACKING OPTIN and OPTOUT are mutually exclusive")
+	}
+	if opt.Bcast && (opt.OptIn || opt.OptOut) {
+		return errors.New("redis: CLIENT TRACKING BCAST cannot be combined with OPTIN or OPTOUT")
+	}
+	if len(opt.Prefixes) > 0 && !opt.Bcast {
+		return errors.New("redis: CLIENT TRACKING PREFIX requires BCAST")
+	}
+	return nil
+}
+
+func appendClientTrackingOptions(args []interface{}, opt *ClientTrackingOptions) []interface{} {
+	if opt.Redirect != 0 {
+		args = append(args, "redirect", opt.Redirect)
+	}
+	if opt.Bcast {
+		args = append(args, "bcast")
+	}
+	for _, p := range opt.Prefixes {
+		args = append(args, "prefix", p)
+	}
+	if opt.OptIn {
+		args = append(args, "optin")
+	}
+	if opt.OptOut {
+		args = append(args, "optout")
+	}
+	if opt.NoLoop {
+		args = append(args, "noloop")
+	}
+	return args
 }
 
 // ------------------------------------------------------------------------------------------------
