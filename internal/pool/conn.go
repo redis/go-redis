@@ -774,8 +774,13 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 			// Already unusable - this is fine, keep the new handoff state
 			return nil
 		}
-		// Restore the original state if transition fails for other reasons
-		cn.handoffStateAtomic.Store(currentState)
+		// Restore the original handoff state only if nothing else changed it
+		// since our CAS above. A concurrent handoff worker may have completed
+		// the handoff and run ClearHandoffState in this window; a plain Store
+		// would clobber that, resurrecting ShouldHandoff=true and wedging the
+		// connection so it can never be acquired again. The CAS leaves the
+		// worker's state intact when it has taken over.
+		cn.handoffStateAtomic.CompareAndSwap(newState, currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
 	return nil
