@@ -943,7 +943,7 @@ func (s *apShard) accumulateBatch() {
 // flush.
 const (
 	silenceGapFloor = 200 * time.Microsecond
-	silenceGapCeil  = 5 * time.Millisecond
+	silenceGapCeil  = 2 * time.Millisecond
 )
 
 // coalesceMinFlush is the smallest pipeline worth dispatching while other

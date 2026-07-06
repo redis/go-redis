@@ -138,7 +138,7 @@ func TestSilenceGap(t *testing.T) {
 		{"loopback 100µs", 100 * time.Microsecond, silenceGapFloor},
 		{"fast lan 1ms", time.Millisecond, silenceGapFloor},
 		{"lan 4ms", 4 * time.Millisecond, 500 * time.Microsecond},
-		{"wan 24ms", 24 * time.Millisecond, 3 * time.Millisecond},
+		{"wan 12ms", 12 * time.Millisecond, 1500 * time.Microsecond},
 		{"slow wan 200ms (ceiling)", 200 * time.Millisecond, silenceGapCeil},
 	}
 	for _, c := range cases {
