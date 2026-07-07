@@ -206,6 +206,11 @@ func (cfg *AutoPipelineConfig) Validate() error {
 type cmdableClient interface {
 	Cmdable
 	Process(ctx context.Context, cmd Cmder) error
+	// processPipelineHook is the hook-wrapped []Cmder pipeline entry — the same
+	// method Pipeline.Exec is wired to (see Client.Pipeline). The flusher
+	// dispatches drained batches through it directly, skipping the per-batch
+	// Pipeline construction; hooks/OTel see the identical call.
+	processPipelineHook(ctx context.Context, cmds []Cmder) error
 }
 
 // apBatch is the completion signal shared by every command flushed together.
@@ -1122,6 +1127,27 @@ func (s *apShard) awaitExpectedArrivals(batchSize int) {
 	}
 }
 
+// dispatchCmds executes the drained stripe queues as one pipeline without
+// constructing a Pipeline object: the queue slices go straight to the client's
+// hook-wrapped pipeline processor (the exact entry Pipeline.Exec is wired to),
+// so hooks and OTel behave identically while the per-batch Pipeline allocation,
+// its append-growth reallocations and the per-command Process calls disappear.
+// A single-stripe drain (every ordered shard, and any drain that found one
+// non-empty stripe) passes its queue zero-copy; multi-stripe drains merge into
+// one pooled slice.
+func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, total int) {
+	if len(queues) == 1 {
+		_ = ap.pipeliner.processPipelineHook(ctx, queues[0])
+		return
+	}
+	merged := getQueueSlice(total)
+	for i := range queues {
+		merged = append(merged, queues[i]...)
+	}
+	_ = ap.pipeliner.processPipelineHook(ctx, merged)
+	putQueueSlice(merged)
+}
+
 // flushBatchSlice takes the shard's currently-queued commands as one batch,
 // swaps in a fresh batch for subsequent enqueues, and dispatches the taken
 // batch. Completion is signalled by closing the batch's done channel once
@@ -1280,16 +1306,8 @@ func (s *apShard) flushBatchSlice() {
 		// execution; no per-batch timer is allocated.
 		ctx := context.Background()
 
-		pipe := ap.Pipeline()
-		defer putPipeliner(pipe)
-
-		for i := range queues {
-			for _, qc := range queues[i] {
-				_ = pipe.Process(ctx, qc)
-			}
-		}
 		execStart := time.Now()
-		_, _ = pipe.Exec(ctx)
+		ap.dispatchCmds(ctx, queues, total)
 		ap.observeBatchExec(time.Since(execStart))
 
 		// Announce the expected arrivals BEFORE the deferred closes wake this
@@ -1376,15 +1394,7 @@ func (s *apShard) flushBatchSliceShutdown() {
 			// here would cap that relaxed window and time out in-flight commands the
 			// relaxation was meant to protect. (A user who wants shutdown bounded
 			// sets ReadTimeout/WriteTimeout on the client, as for any command.)
-			ctx := context.Background()
-			pipe := ap.Pipeline()
-			defer putPipeliner(pipe)
-			for i := range queues {
-				for _, qc := range queues[i] {
-					_ = pipe.Process(ctx, qc)
-				}
-			}
-			_, _ = pipe.Exec(ctx)
+			ap.dispatchCmds(context.Background(), queues, total)
 		}()
 	}
 }
