@@ -2384,6 +2384,11 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 				cmd.val[key] = append(cmd.val[key], data)
 			}
 		}
+	default:
+		// Any other reply type leaves the peeked frame unread. Returning nil
+		// here would put the connection back in the pool with those bytes
+		// buffered, so the next command reads them as its own reply.
+		return fmt.Errorf("redis: can't parse map-string-slice-interface reply: unexpected type %c", readType)
 	}
 
 	return nil
@@ -6620,6 +6625,10 @@ func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
 				engine.LibrariesCount, err = rd.ReadInt()
 			case "functions_count":
 				engine.FunctionsCount, err = rd.ReadInt()
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				err = rd.DiscardNext()
 			}
 			if err != nil {
 				return nil, err
@@ -6825,6 +6834,12 @@ func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
 			case "len":
 				// read match length
 				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				if err = rd.DiscardNext(); err != nil {
 					return err
 				}
 			}
