@@ -127,3 +127,6 @@ TOCTOU
 wordlist
 worktree
 fetch's
+loopback
+autopipeliner
+autopipeliner's
