@@ -20,3 +20,6 @@ dockers/osscluster-tls/
 
 # example build artifacts
 example/autopipeline/autopipeline
+
+# Claude Code worktrees (ephemeral, local)
+.claude/worktrees/
