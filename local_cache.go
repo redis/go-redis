@@ -58,8 +58,21 @@ type CacheConfig struct {
 	// MaxEntries limits the number of entries. Zero or negative means unlimited.
 	MaxEntries int
 	// MaxMemoryBytes limits estimated memory usage in bytes. Zero or negative means unlimited.
+	//
+	// If MaxEntries and MaxMemoryBytes are both unlimited, MaxEntries defaults
+	// to defaultCacheMaxEntries so the cache cannot grow without bound.
+	//
+	// The cache is sharded (16 ways above small thresholds) and each shard
+	// enforces its 1/16 share of MaxMemoryBytes, so a single entry larger
+	// than MaxMemoryBytes/16 is never admitted. Rejections are counted by
+	// CacheAdmissionRejects. Size MaxMemoryBytes to at least 16× the largest
+	// reply you want cached.
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
+	//
+	// Sizer is invoked while the cache's internal lock is held: it must return
+	// quickly and must not call back into the cache (Get, Set, Delete*, Flush,
+	// etc.), or it will deadlock.
 	Sizer CacheSizer
 	// StaleTimeout is the duration after which an IN_PROGRESS placeholder is
 	// considered stale and eligible for takeover by a new Reserve call.
@@ -70,7 +83,9 @@ type CacheConfig struct {
 	// (default 5ms; zero uses the default): how often idle pool connections are swept
 	// for buffered "invalidate" frames. Cache-hit staleness is bounded by roughly one
 	// drain pass; MaxStaleness is the hard backstop. Shorter intervals tighten the
-	// bound at the cost of more frequent sweeps. Ignored by Broadcast and PerConnection.
+	// bound at the cost of more frequent sweeps; values below 1ms are clamped to
+	// 1ms (sub-millisecond timers are unreliable). Ignored by Broadcast and
+	// PerConnection.
 	DrainInterval time.Duration
 
 	// MaxStaleness caps how long a cached entry is served after it became valid,
@@ -100,6 +115,11 @@ const (
 	defaultStaleTimeout    = 5 * time.Second
 	defaultCacheShardCount = 16
 
+	// defaultCacheMaxEntries bounds the cache when the config leaves both
+	// MaxEntries and MaxMemoryBytes unlimited (matches the 10k-entry default
+	// other Redis clients use, e.g. redis-py).
+	defaultCacheMaxEntries = 10000
+
 	// shardingThresholdEntries / shardingThresholdBytes: caches with capacity
 	// below these thresholds fall back to a single shard so global LRU /
 	// memory-cap semantics behave exactly as a non-sharded cache would.
@@ -121,21 +141,20 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		staleTimeout = defaultStaleTimeout
 	}
 
-	shardCount := defaultCacheShardCount
-	if cfg.MaxEntries > 0 && cfg.MaxEntries < shardingThresholdEntries {
-		shardCount = 1
-	}
-	if cfg.MaxMemoryBytes > 0 && cfg.MaxMemoryBytes < int64(shardingThresholdBytes) {
-		shardCount = 1
+	maxEntries := cfg.MaxEntries
+	maxMemoryBytes := cfg.MaxMemoryBytes
+	// An unbounded cache can grow until the process OOMs; require at least
+	// one limit.
+	if maxEntries <= 0 && maxMemoryBytes <= 0 {
+		maxEntries = defaultCacheMaxEntries
 	}
 
-	perShardEntries := 0
-	if cfg.MaxEntries > 0 {
-		perShardEntries = (cfg.MaxEntries + shardCount - 1) / shardCount
+	shardCount := defaultCacheShardCount
+	if maxEntries > 0 && maxEntries < shardingThresholdEntries {
+		shardCount = 1
 	}
-	var perShardBytes int64
-	if cfg.MaxMemoryBytes > 0 {
-		perShardBytes = (cfg.MaxMemoryBytes + int64(shardCount) - 1) / int64(shardCount)
+	if maxMemoryBytes > 0 && maxMemoryBytes < int64(shardingThresholdBytes) {
+		shardCount = 1
 	}
 
 	c := &localCache{
@@ -148,8 +167,21 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		s := &c.shards[i]
 		s.entries = make(map[string]*CacheEntry)
 		s.byRedisKey = make(map[string]map[string]struct{})
-		s.maxEntries = perShardEntries
-		s.maxMemoryBytes = perShardBytes
+		// Distribute capacity so the per-shard caps sum to exactly the
+		// configured limits; a ceil-per-shard split would let total residency
+		// exceed MaxEntries/MaxMemoryBytes.
+		if maxEntries > 0 {
+			s.maxEntries = maxEntries / shardCount
+			if i < maxEntries%shardCount {
+				s.maxEntries++
+			}
+		}
+		if maxMemoryBytes > 0 {
+			s.maxMemoryBytes = maxMemoryBytes / int64(shardCount)
+			if int64(i) < maxMemoryBytes%int64(shardCount) {
+				s.maxMemoryBytes++
+			}
+		}
 		s.maxStalenessNs = int64(cfg.MaxStaleness)
 		s.sizer = sizer
 		s.staleTimeout = staleTimeout
@@ -246,14 +278,27 @@ func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
 
 		if entry.State == CacheEntryInProgress {
 			waitCh := entry.waitCh
+			// Bound the wait by the placeholder's remaining stale window so an
+			// abandoned reservation cannot block waiters indefinitely.
+			remaining := s.staleTimeout - time.Since(entry.reservedAt)
 			s.mu.RUnlock()
-			if waitCh != nil {
-				select {
-				case <-waitCh:
-				case <-ctx.Done():
-					return nil, false
-				}
-			} else {
+			if waitCh == nil {
+				// Defensive: treat a missing waitCh as a miss to avoid busy-looping.
+				return nil, false
+			}
+			if remaining <= 0 {
+				// Placeholder already stale; miss so the caller refetches.
+				return nil, false
+			}
+			// Wait for the in-flight fetch to either publish (Fulfill) or abort (Cancel/Delete/Flush).
+			timer := time.NewTimer(remaining)
+			select {
+			case <-waitCh:
+				timer.Stop()
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, false
+			case <-timer.C:
 				return nil, false
 			}
 			continue
@@ -448,11 +493,14 @@ func (s *cacheShard) deleteByRedisKey(redisKey string) int {
 		return 0
 	}
 
+	// IN_PROGRESS placeholders are removed too: invalidations can arrive on
+	// a different TCP stream than the in-flight reply (BCAST sidecar, the
+	// background drainer's goroutine), so the pending fetch may predate the
+	// invalidating write. Removing the placeholder makes the racing Fulfill
+	// fail (stale token/entry), waiters wake and refetch — the value that
+	// raced an invalidation is never published.
 	toRemove := make([]string, 0, len(cacheKeys))
 	for cacheKey := range cacheKeys {
-		if entry, exists := s.entries[cacheKey]; exists && entry.State == CacheEntryInProgress {
-			continue
-		}
 		toRemove = append(toRemove, cacheKey)
 	}
 
@@ -515,11 +563,11 @@ func (s *cacheShard) flush() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Placeholders are flushed too (see deleteByRedisKey): a flush signals
+	// that everything the cache holds — including values currently being
+	// fetched — may be stale (FLUSHDB invalidation, sidecar outage teardown).
 	removed := 0
-	for cacheKey, entry := range s.entries {
-		if entry.State == CacheEntryInProgress {
-			continue
-		}
+	for cacheKey := range s.entries {
 		if s.removeEntryLocked(cacheKey) {
 			removed++
 		}

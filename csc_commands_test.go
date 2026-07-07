@@ -29,7 +29,7 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"EXISTS", "TYPE", "SORT_RO", "LCS",
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
-		"XLEN", "XPENDING", "XRANGE", "XREAD", "XREVRANGE",
+		"XLEN", "XPENDING", "XRANGE", "XREVRANGE",
 		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
@@ -60,6 +60,14 @@ func TestIsCacheable_WriteCommandsRejected(t *testing.T) {
 		if isCacheable(cmd) {
 			t.Errorf("expected %q to NOT be cacheable", name)
 		}
+	}
+}
+
+func TestIsCacheable_XReadRejected(t *testing.T) {
+	// XREAD supports BLOCK and state-relative $/+ IDs, so it must not be cached.
+	cmd := makeCmd("XREAD", "COUNT", "5", "STREAMS", "s", "0")
+	if isCacheable(cmd) {
+		t.Error("expected XREAD to NOT be cacheable")
 	}
 }
 
@@ -229,19 +237,28 @@ func TestExtractRedisKeys_JSONMGet(t *testing.T) {
 	}
 }
 
-func TestExtractRedisKeys_XREAD(t *testing.T) {
-	// XREAD COUNT 10 STREAMS stream1 stream2 0 0
-	cmd := makeCmd("XREAD", "COUNT", 10, "STREAMS", "s1", "s2", "0", "0")
-	keys := extractRedisKeys(cmd)
-	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
-		t.Errorf("XREAD: expected [s1 s2], got %v", keys)
-	}
-}
-
 func TestExtractRedisKeys_KeylessCommand(t *testing.T) {
 	cmd := makeCmd("ping")
 	keys := extractRedisKeys(cmd)
 	if keys != nil {
 		t.Errorf("expected nil for keyless command, got %v", keys)
+	}
+}
+
+func TestIsCacheable_SortRO_ByGetExcluded(t *testing.T) {
+	// Plain SORT_RO reads only the sorted key: cacheable.
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA"); !isCacheable(cmd) {
+		t.Error("plain SORT_RO should be cacheable")
+	}
+	// BY/GET forms read pattern-derived keys the reverse index cannot cover:
+	// their invalidations would be dropped, serving stale results forever.
+	if cmd := makeCmd("sort_ro", "mylist", "BY", "weight_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... BY must not be cacheable")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "get", "obj_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... GET must not be cacheable (case-insensitive)")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "By", "weight_*", "ALPHA"); isCacheable(cmd) {
+		t.Error("SORT_RO with BY among other options must not be cacheable")
 	}
 }

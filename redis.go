@@ -237,6 +237,18 @@ type baseClient struct {
 
 	// csc is the shared client-side cache; nil when CSC is disabled.
 	csc Cache
+
+	// cscBcastReady, non-nil only under CSCStrategyBroadcast, reports whether
+	// the BCAST invalidation sidecar is currently connected. While false the
+	// shared cache is bypassed: hits could be stale (no invalidations flow)
+	// and new entries would have no invalidate coverage.
+	cscBcastReady *atomic.Bool
+
+	// cscPerConnState, non-nil only under CSCStrategyPerConnection, maps conn
+	// IDs to their private caches. Shared (not owned) by derived clients —
+	// clone()/Conn() copy the pointer; only the owning client's Close tears
+	// the caches down (see cscPerConnOnClose).
+	cscPerConnState *perConnState
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -253,6 +265,12 @@ func (c *baseClient) clone() *baseClient {
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
 		csc:                         c.csc,
+		// CSC lifecycle pointers must travel with the cache: dropping
+		// cscBcastReady would disable the Broadcast sidecar-down bypass on
+		// clones, and dropping cscPerConnState would detach them from the
+		// per-connection dispatch table.
+		cscBcastReady:   c.cscBcastReady,
+		cscPerConnState: c.cscPerConnState,
 	}
 	return clone
 }
@@ -569,8 +587,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	//     (c.csc stays nil; the per-conn dispatch state is the signal).
 	//   - CSCStrategyBroadcast: the sidecar owns the tracking subscription;
 	//     pool conns must NOT track (cscShouldTrackOnPoolConn → false).
-	trackingEnabled := ((c.csc != nil && cscShouldTrackOnPoolConn(c)) || c.cscPerConnEnabled()) &&
-		c.opt.Protocol == 3
+	trackingEnabled := c.cscTrackingRequested()
 	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -739,6 +756,23 @@ func (c *baseClient) withConn(
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return c.opt.Dialer(ctx, network, addr)
+}
+
+// cscTrackingRequested reports whether initConn must issue CLIENT TRACKING ON
+// on new connections. Derived from the OPTIONS, not from c.csc: derived
+// clients (Conn's sticky pool, Tx/Watch) share the parent's ConnPool, and a
+// conn they dial is later reused by the parent — if it skipped tracking,
+// entries the parent caches from it would never receive invalidations. The
+// DB gate mirrors attachCSC/cscPerConnInit.
+func (c *baseClient) cscTrackingRequested() bool {
+	if c.opt.Protocol != 3 {
+		return false
+	}
+	if c.cscPerConnEnabled() {
+		return true
+	}
+	return (c.opt.ClientSideCache != nil || c.opt.ClientSideCacheConfig != nil) &&
+		c.opt.DB == 0 && cscShouldTrackOnPoolConn(c)
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
@@ -1363,18 +1397,24 @@ func NewClient(opt *Options) *Client {
 	if opt.Protocol == 3 {
 		c.baseClient.cscPerConnInit()
 
-		var cache Cache
-		if explicit := opt.ClientSideCache; explicit != nil {
-			cache = explicit
-		} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
-			cache = NewLocalCache(*cfg)
-		}
-		c.baseClient.attachCSC(context.Background(), cache)
+		// PerConnection owns the invalidate path; building (and immediately
+		// discarding) a shared cache would only log a spurious registration
+		// error. attachCSC has its own strategy gate as a second line of
+		// defense.
+		if opt.ClientSideCacheStrategy != CSCStrategyPerConnection {
+			var cache Cache
+			if explicit := opt.ClientSideCache; explicit != nil {
+				cache = explicit
+			} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
+				cache = NewLocalCache(*cfg)
+			}
+			c.baseClient.attachCSC(context.Background(), cache)
 
-		if err := cscAttachBroadcastSidecarIfNeeded(context.Background(), c.baseClient); err != nil {
-			internal.Logger.Printf(context.Background(),
-				"redis: csc sidecar failed to start (%v); disabling client-side caching for this client", err)
-			c.baseClient.csc = nil
+			if err := cscAttachBroadcastSidecarIfNeeded(context.Background(), c.baseClient); err != nil {
+				internal.Logger.Printf(context.Background(),
+					"redis: csc sidecar failed to start (%v); disabling client-side caching for this client", err)
+				c.baseClient.csc = nil
+			}
 		}
 	}
 
@@ -1431,6 +1471,8 @@ func (c *Client) Conn() *Conn {
 	// Derived single-connection clients share the parent's client-side cache
 	// so that invalidations observed on any connection evict the same entries.
 	conn.baseClient.attachCSC(context.Background(), c.csc)
+	// Broadcast: the sidecar-down bypass must guard derived clients too.
+	conn.baseClient.cscBcastReady = c.baseClient.cscBcastReady
 	// CSCStrategyPerConnection: propagate the parent's per-connection dispatch
 	// state so derived sticky clients route to the same per-conn caches.
 	c.baseClient.cscPerConnPropagateTo(&conn.baseClient)
@@ -1771,10 +1813,12 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 }
 
 // drainPushNotifications drains the push frames buffered on a connection the CSC
-// drainer has claimed, under a HARD read deadline. Returns a non-nil error only for
-// a FATAL connection error (drainer removes the conn); a benign read timeout returns
-// nil. The built-in processor surfaces read errors; a custom processor runs via its
-// own ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
+// drainer has claimed, under a HARD read deadline. Returns a non-nil error for a
+// FATAL connection error (drainer removes the conn) — including a read timeout:
+// the loop only blocks while consuming a frame, so a deadline hit means a
+// partially consumed frame and a desynced conn that must not be re-pooled. The
+// built-in processor surfaces read errors; a custom processor runs via its own
+// ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
 func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return nil
@@ -1799,7 +1843,11 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
 		}
 		return nil
 	})
-	if err != nil && isBadConn(err, true, c.opt.Addr) {
+	// allowTimeout=false: a hard-deadline timeout here fired mid-frame (the
+	// drain loop never blocks between frames), leaving consumed bytes behind
+	// and the frame tail on the socket — re-pooling would desync the next
+	// command's reply, so remove the conn instead.
+	if err != nil && isBadConn(err, false, c.opt.Addr) {
 		return err // fatal read/protocol/connection error — remove the conn
 	}
 	cn.SetLastPushDrainAtNs(pool.GetCachedTimeNs())
@@ -1819,6 +1867,16 @@ func (c *baseClient) drainPendingPushNotifications(cn *pool.Conn, rd *proto.Read
 		}
 		if typ != proto.RespPush {
 			// Not a push frame — do not consume a command reply.
+			return nil
+		}
+		// Peek the name BEFORE consuming: pub/sub-reserved frames belong to the
+		// pub/sub system and must stay in the buffer — the same guard the
+		// built-in processor applies (see push.WillHandleNotificationInClient).
+		name, err := rd.PeekPushNotificationName()
+		if err != nil {
+			return err
+		}
+		if push.WillHandleNotificationInClient(name) {
 			return nil
 		}
 		reply, err := rd.ReadReply()

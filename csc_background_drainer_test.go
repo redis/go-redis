@@ -22,20 +22,22 @@ func (fakeTimeout) Error() string   { return "i/o timeout" }
 func (fakeTimeout) Timeout() bool   { return true }
 func (fakeTimeout) Temporary() bool { return true }
 
-// TestDrainErrorClassificationContract pins isBadConn(allowTimeout=true): net
-// timeout is benign (re-pool), EOF/conn errors and context.DeadlineExceeded are
-// fatal — so the drain must use its own socket deadline, not the cycle ctx.
+// TestDrainErrorClassificationContract pins the drain-path classification
+// (isBadConn with allowTimeout=false): a net timeout is FATAL — the drain loop
+// only blocks mid-frame, so a timeout means a partially consumed frame and a
+// desynced conn that must be removed, never re-pooled. EOF/conn errors and
+// context.DeadlineExceeded are fatal as before.
 func TestDrainErrorClassificationContract(t *testing.T) {
 	const addr = "localhost:6379"
 
 	timeoutErr := &net.OpError{Op: "read", Net: "tcp", Err: fakeTimeout{}}
-	if isBadConn(timeoutErr, true, addr) {
-		t.Error("net i/o timeout must be benign (conn re-pooled)")
+	if !isBadConn(timeoutErr, false, addr) {
+		t.Error("net i/o timeout must be fatal on the drain path (conn removed)")
 	}
-	if !isBadConn(io.EOF, true, addr) {
+	if !isBadConn(io.EOF, false, addr) {
 		t.Error("io.EOF must be fatal (conn removed)")
 	}
-	if !isBadConn(context.DeadlineExceeded, true, addr) {
+	if !isBadConn(context.DeadlineExceeded, false, addr) {
 		t.Error("context.DeadlineExceeded must be fatal")
 	}
 }
@@ -170,4 +172,132 @@ func TestBackgroundDrainerLifecycle(t *testing.T) {
 
 	// Stop again: idempotent, no panic.
 	c.stopBackgroundDrainer()
+}
+
+// TestCscDrainIntervalClampsMinimum: sub-millisecond DrainInterval values are
+// clamped to cscMinDrainInterval (unreliable timers would silently loosen the
+// staleness bound); values at or above the floor pass through.
+func TestCscDrainIntervalClampsMinimum(t *testing.T) {
+	sub := &baseClient{opt: &Options{
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{DrainInterval: 100 * time.Microsecond},
+	}}
+	if got := sub.cscDrainInterval(); got != cscMinDrainInterval {
+		t.Fatalf("sub-ms DrainInterval must clamp to %v, got %v", cscMinDrainInterval, got)
+	}
+
+	above := &baseClient{opt: &Options{
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{DrainInterval: 10 * time.Millisecond},
+	}}
+	if got := above.cscDrainInterval(); got != 10*time.Millisecond {
+		t.Fatalf("above-floor DrainInterval must pass through, got %v", got)
+	}
+
+	unset := &baseClient{opt: &Options{Protocol: 3}}
+	if got := unset.cscDrainInterval(); got != cscDrainSkipWindow {
+		t.Fatalf("unset DrainInterval must default to %v, got %v", cscDrainSkipWindow, got)
+	}
+}
+
+// TestInvalidateHandlerCountsInvalidationBytes: the SharedTracking invalidate
+// handler must feed RESPInvalidationBytesRead like the Broadcast and
+// PerConnection handlers do, or the metric reads 0 under the default strategy.
+func TestInvalidateHandlerCountsInvalidationBytes(t *testing.T) {
+	h := &invalidateHandler{cache: NewLocalCache(CacheConfig{MaxEntries: 16}), db: 0}
+
+	before := RESPInvalidationBytesRead()
+	err := h.HandlePushNotification(context.Background(), push.NotificationHandlerContext{},
+		[]interface{}{"invalidate", []interface{}{"foo", []byte("quux")}})
+	if err != nil {
+		t.Fatalf("HandlePushNotification: %v", err)
+	}
+	want := int64(len("foo") + len("quux"))
+	if got := RESPInvalidationBytesRead() - before; got != want {
+		t.Fatalf("invalidation bytes delta: got %d want %d", got, want)
+	}
+}
+
+// drainablePooler is a non-*pool.ConnPool Pooler implementing idleConnDrainer.
+type drainablePooler struct {
+	pool.Pooler
+	mu     sync.Mutex
+	called int
+}
+
+func (d *drainablePooler) DrainIdleConns(_ context.Context, _ *pool.DrainState, _ func(cn *pool.Conn) error) {
+	d.mu.Lock()
+	d.called++
+	d.mu.Unlock()
+}
+
+func (d *drainablePooler) calls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.called
+}
+
+// pubsubMessageFrame builds a RESP3 `>` push frame: ["message", ch, payload].
+func pubsubMessageFrame(ch, payload string) []byte {
+	return []byte(fmt.Sprintf(">3\r\n$7\r\nmessage\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n",
+		len(ch), ch, len(payload), payload))
+}
+
+// TestDrainPushNotifications_LeavesPubSubFrames: the drain loop must not
+// consume pub/sub-reserved push frames — they belong to the pub/sub system
+// (same guard as the built-in processor, cf. PR #3842).
+func TestDrainPushNotifications_LeavesPubSubFrames(t *testing.T) {
+	proc := push.NewProcessor()
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+
+	cn, cleanup := newReaderBufferedPushConn(t, pubsubMessageFrame("ch", "hello"))
+	defer cleanup()
+
+	if err := c.drainPushNotifications(cn); err != nil {
+		t.Fatalf("drainPushNotifications returned error: %v", err)
+	}
+	if !cn.HasBufferedData() {
+		t.Fatal("pub/sub message frame was consumed by the drain loop; it must stay buffered")
+	}
+}
+
+// TestDrainPushNotifications_MidFrameTimeoutIsFatal: a hard-deadline timeout
+// while consuming a frame leaves the conn desynced (frame tail still on the
+// socket); the drain must surface it as fatal so the pool removes the conn.
+func TestDrainPushNotifications_MidFrameTimeoutIsFatal(t *testing.T) {
+	proc := push.NewProcessor()
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+
+	// Complete header + name, truncated key payload: ReadReply consumes the
+	// prefix then blocks for the tail that never arrives.
+	partial := []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nfo")
+	cn, cleanup := newReaderBufferedPushConn(t, partial)
+	defer cleanup()
+
+	if err := c.drainPushNotifications(cn); err == nil {
+		t.Fatal("mid-frame timeout must be fatal (non-nil) so the conn is removed, got nil")
+	}
+}
+
+// TestBackgroundDrainerUsesOptionalInterface: any Pooler implementing
+// idleConnDrainer gets background draining, not only *pool.ConnPool.
+func TestBackgroundDrainerUsesOptionalInterface(t *testing.T) {
+	dp := &drainablePooler{}
+	c := &baseClient{opt: &Options{
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{DrainInterval: time.Millisecond},
+	}, connPool: dp}
+
+	c.startBackgroundDrainer()
+	defer c.stopBackgroundDrainer()
+
+	deadline := time.After(2 * time.Second)
+	for dp.calls() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("drainer never called the pooler's DrainIdleConns")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
 }

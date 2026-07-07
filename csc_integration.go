@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,20 @@ func RESPInvalidationBytesRead() int64 {
 var (
 	commandHits   atomic.Uint64
 	commandMisses atomic.Uint64
+
+	// commandCacheRejects counts cache-admission rejections: Fulfill returned
+	// false (value larger than the per-shard byte cap, or the entry was
+	// invalidated/evicted mid-fetch). A persistently high rate alongside a
+	// low hit rate usually means MaxMemoryBytes is too small for the reply
+	// sizes being cached (each of the 16 shards admits at most its share).
+	commandCacheRejects atomic.Uint64
 )
+
+// CacheAdmissionRejects returns the cumulative count of cache-admission
+// rejections since process start. Process-wide, like CommandStats.
+func CacheAdmissionRejects() uint64 {
+	return commandCacheRejects.Load()
+}
 
 // CommandStats returns the cumulative count of CSC-served-command hits and
 // misses since process start.
@@ -42,10 +56,9 @@ type ClientSideCacheConfig = CacheConfig
 
 const (
 	invalidatePushName = "invalidate"
-	// cscNamespaceSep separates the DB-number prefix from the rest of a
-	// namespaced cache/redis key. NUL is technically a legal byte inside a
-	// Redis key (keys are binary-safe), so this prefix is not collision-proof
-	// against an adversarial key like "0\x00foo".
+	// cscNamespaceSep separates the DB-number prefix from the key. NUL is a
+	// legal byte in Redis keys, but CSC is restricted to DB 0 (see attachCSC),
+	// so a collision requires a key starting with "0\x00" — out of scope.
 	cscNamespaceSep = "\x00"
 )
 
@@ -76,6 +89,7 @@ func (h *invalidateHandler) HandlePushNotification(
 	case nil:
 		h.cache.Flush()
 	case []interface{}:
+		var bytesConsumed int64
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -86,7 +100,11 @@ func (h *invalidateHandler) HandlePushNotification(
 			default:
 				continue
 			}
+			bytesConsumed += int64(len(name))
 			h.cache.DeleteByRedisKey(dbNamespacedKey(h.db, name))
+		}
+		if bytesConsumed > 0 {
+			proto.InvalidationBytesRead.Add(bytesConsumed)
 		}
 	}
 	return nil
@@ -95,6 +113,17 @@ func (h *invalidateHandler) HandlePushNotification(
 func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int) error {
 	if p == nil || cache == nil {
 		return nil
+	}
+	// A derived client (Client.Conn) shares the parent's push processor,
+	// which already routes "invalidate" to this exact cache — treat that as
+	// success so the derived client shares the cache instead of silently
+	// losing CSC. A handler bound to a different cache (or a foreign handler)
+	// is still an error: piggybacking on it would leave this cache uninvalidated.
+	if existing := p.GetHandler(invalidatePushName); existing != nil {
+		if h, ok := existing.(*invalidateHandler); ok && h.cache == cache && h.db == db {
+			return nil
+		}
+		return errors.New("csc: a different \"invalidate\" push handler is already registered")
 	}
 	// VoidProcessor (RESP2) returns an error here; the caller treats it as
 	// "CSC not available" rather than fatal.
@@ -116,11 +145,27 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	if cache == nil || c.opt.Protocol != 3 {
 		return
 	}
+	// PerConnection owns the invalidate handler and keeps c.csc nil; wiring
+	// the shared cache here would activate two caching paths at once.
+	if c.opt.ClientSideCacheStrategy == CSCStrategyPerConnection {
+		return
+	}
 	if c.opt.DB != 0 {
 		internal.Logger.Printf(ctx,
 			"csc: client-side caching is restricted to DB 0; disabling CSC for client configured with DB=%d. "+
 				"Use one client per DB if you need caching against non-zero databases.", c.opt.DB)
 		return
+	}
+	// SharedTracking serves shared-cache hits only if SOMETHING applies the
+	// invalidations buffered on pool conns. Poolers without idle-conn
+	// draining (e.g. the StickyConnPool behind Client.Conn) get no drainer
+	// and no hit-path drain, so serving hits would be unboundedly stale:
+	// stay uncached. (Broadcast is exempt — its sidecar delivers
+	// invalidations independently of any pool conn.)
+	if c.opt.ClientSideCacheStrategy == CSCStrategySharedTracking {
+		if _, ok := c.connPool.(idleConnDrainer); !ok {
+			return
+		}
 	}
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.opt.DB); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
@@ -145,22 +190,39 @@ type cscDrainHandle struct {
 // The entry is removed (and the goroutine joined) on Close.
 var cscDrainHandles sync.Map
 
-// cscDrainInterval returns ClientSideCacheConfig.DrainInterval, or the default
-// (cscDrainSkipWindow, 5ms) when unset.
+// cscMinDrainInterval is the floor for user-supplied DrainInterval values:
+// sub-millisecond timers are unreliable on common platforms
+// (https://github.com/golang/go/issues/53824), which would silently loosen the
+// staleness bound the interval is meant to provide.
+const cscMinDrainInterval = time.Millisecond
+
+// cscDrainInterval returns ClientSideCacheConfig.DrainInterval clamped to
+// cscMinDrainInterval, or the default (cscDrainSkipWindow, 5ms) when unset.
 func (c *baseClient) cscDrainInterval() time.Duration {
 	if cfg := c.opt.ClientSideCacheConfig; cfg != nil && cfg.DrainInterval > 0 {
+		if cfg.DrainInterval < cscMinDrainInterval {
+			return cscMinDrainInterval
+		}
 		return cfg.DrainInterval
 	}
 	return cscDrainSkipWindow
+}
+
+// idleConnDrainer is the optional pooler capability the SharedTracking
+// background drainer needs; *pool.ConnPool implements it. Poolers without it
+// (e.g. the StickyConnPool behind Client.Conn) get no background draining, so
+// their cached reads are bounded only by CacheConfig.MaxStaleness.
+type idleConnDrainer interface {
+	DrainIdleConns(ctx context.Context, st *pool.DrainState, fn func(cn *pool.Conn) error)
 }
 
 // startBackgroundDrainer launches the per-client invalidation drainer. Each tick
 // (ClientSideCacheConfig.DrainInterval, default 5ms) runs one pass of
 // pool.DrainIdleConns — claiming one idle connection at a time, draining its
 // buffered push frames, and returning it via Put (so OnPut can queue a maintenance
-// handoff). Only the standard *pool.ConnPool is supported; other poolers no-op.
+// handoff). Poolers that do not implement idleConnDrainer no-op.
 func (c *baseClient) startBackgroundDrainer() {
-	cp, ok := c.connPool.(*pool.ConnPool)
+	cp, ok := c.connPool.(idleConnDrainer)
 	if !ok {
 		return
 	}
@@ -222,6 +284,14 @@ var cscDrainHardReadCap = 50 * time.Microsecond
 // Only invoked after process has verified that CSC is active and cmd is
 // eligible.
 func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
+	// Broadcast strategy: while the BCAST sidecar is down no invalidations
+	// flow, so a hit could be stale and anything fulfilled now has no
+	// invalidate coverage (the reconnect flush would drop it anyway). Bypass
+	// the cache entirely until the sidecar is back.
+	if r := c.cscBcastReady; r != nil && !r.Load() {
+		return c.processWithRetry(ctx, cmd, nil)
+	}
+
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
 		return c.processWithRetry(ctx, cmd, nil)
@@ -282,7 +352,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
 		if err == nil {
-			c.csc.Fulfill(key, token, raw)
+			if !c.csc.Fulfill(key, token, raw) {
+				commandCacheRejects.Add(1)
+			}
 		} else {
 			c.csc.Cancel(key, token)
 		}

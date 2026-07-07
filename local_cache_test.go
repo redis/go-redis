@@ -73,26 +73,30 @@ func TestLocalCache_Flush(t *testing.T) {
 		t.Fatal("Reserve should create in-progress entry")
 	}
 
-	// Flush preserves IN_PROGRESS placeholders: their pending reply, read
-	// from the same TCP stream as the invalidation, is post-invalidation.
+	// Flush removes IN_PROGRESS placeholders too: invalidations can arrive on
+	// a different TCP stream than the pending reply (BCAST sidecar, background
+	// drainer), so a fetch spanning the flush may hold a pre-flush value.
 	removed := cache.Flush()
-	if removed != 2 {
-		t.Fatalf("Flush removed mismatch: got %d want %d", removed, 2)
+	if removed != 3 {
+		t.Fatalf("Flush removed mismatch: got %d want %d", removed, 3)
 	}
-	if cache.Len() != 1 {
-		t.Fatalf("Len after Flush mismatch: got %d want %d", cache.Len(), 1)
+	if cache.Len() != 0 {
+		t.Fatalf("Len after Flush mismatch: got %d want %d", cache.Len(), 0)
 	}
 
-	if !cache.Fulfill("get:c", token, []byte("3")) {
-		t.Fatal("Fulfill should succeed on preserved placeholder")
+	if cache.Fulfill("get:c", token, []byte("3")) {
+		t.Fatal("Fulfill must fail after Flush removed the placeholder")
 	}
-	val, ok := cache.Get(context.Background(), "get:c")
-	if !ok || string(val) != "3" {
-		t.Fatalf("Get after Fulfill mismatch: got %q ok=%v", string(val), ok)
+	if _, ok := cache.Get(context.Background(), "get:c"); ok {
+		t.Fatal("value fulfilled across a flush must not be served")
 	}
 }
 
-func TestLocalCache_DeleteByRedisKey_PreservesInProgress(t *testing.T) {
+func TestLocalCache_DeleteByRedisKey_PoisonsInProgress(t *testing.T) {
+	// Invalidations can arrive on a different TCP stream than the in-flight
+	// reply (BCAST sidecar, background drainer), so a racing fetch may hold a
+	// PRE-invalidation value. The placeholder must be removed so Fulfill
+	// fails and the stale value is never published.
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
 	cache.Set("get:a", []string{"shared"}, []byte("1"))
 	token, shouldFetch := cache.Reserve("get:b", []string{"shared"})
@@ -101,19 +105,38 @@ func TestLocalCache_DeleteByRedisKey_PreservesInProgress(t *testing.T) {
 	}
 
 	removed := cache.DeleteByRedisKey("shared")
-	if removed != 1 {
-		t.Fatalf("DeleteByRedisKey removed mismatch: got %d want %d", removed, 1)
+	if removed != 2 {
+		t.Fatalf("DeleteByRedisKey removed mismatch: got %d want %d (valid entry + placeholder)", removed, 2)
 	}
 	if _, ok := cache.Get(context.Background(), "get:a"); ok {
 		t.Fatal("valid entry should be removed")
 	}
 
-	if !cache.Fulfill("get:b", token, []byte("2")) {
-		t.Fatal("Fulfill should succeed on preserved placeholder")
+	if cache.Fulfill("get:b", token, []byte("2")) {
+		t.Fatal("Fulfill must fail after the placeholder was invalidated")
 	}
-	val, ok := cache.Get(context.Background(), "get:b")
-	if !ok || string(val) != "2" {
-		t.Fatalf("Get after Fulfill mismatch: got %q ok=%v", string(val), ok)
+	if _, ok := cache.Get(context.Background(), "get:b"); ok {
+		t.Fatal("invalidated in-flight fetch must not be served")
+	}
+}
+
+func TestLocalCache_Flush_PoisonsInProgress(t *testing.T) {
+	// Same contract for Flush (FLUSHDB invalidation, sidecar outage
+	// teardown): a fetch spanning the flush must not publish its value.
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	token, shouldFetch := cache.Reserve("get:k", []string{"k"})
+	if !shouldFetch || token == 0 {
+		t.Fatal("Reserve should create in-progress entry")
+	}
+
+	if removed := cache.Flush(); removed != 1 {
+		t.Fatalf("Flush removed mismatch: got %d want 1 (the placeholder)", removed)
+	}
+	if cache.Fulfill("get:k", token, []byte("v")) {
+		t.Fatal("Fulfill must fail after Flush removed the placeholder")
+	}
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("value fulfilled across a flush must not be served")
 	}
 }
 
@@ -143,6 +166,60 @@ func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 	}
 	if _, ok := cache.Get(context.Background(), "k3"); !ok {
 		t.Fatal("k3 should remain")
+	}
+}
+
+func TestLocalCache_GetTouch_SecondChanceEviction(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 3})
+
+	for _, k := range []string{"a", "b", "c"} {
+		if !cache.Set(k, []string{k}, []byte(k)) {
+			t.Fatalf("failed to set %s", k)
+		}
+	}
+
+	// Reads record recency via an atomic token (no write lock); eviction must
+	// honor those touches and evict the untouched entry instead.
+	if _, ok := cache.Get(context.Background(), "a"); !ok {
+		t.Fatal("a should exist")
+	}
+	if _, ok := cache.Get(context.Background(), "b"); !ok {
+		t.Fatal("b should exist")
+	}
+
+	if !cache.Set("d", []string{"d"}, []byte("d")) {
+		t.Fatal("failed to set d")
+	}
+
+	if _, ok := cache.Get(context.Background(), "c"); ok {
+		t.Fatal("c should be evicted as least recently used")
+	}
+	for _, k := range []string{"a", "b", "d"} {
+		if _, ok := cache.Get(context.Background(), k); !ok {
+			t.Fatalf("%s should remain cached", k)
+		}
+	}
+}
+
+func TestLocalCache_ConcurrentGetsDuringEviction(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				key := fmt.Sprintf("k%d", i%16)
+				cache.Set(key, []string{key}, []byte("v"))
+				cache.Get(context.Background(), key)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if n := cache.Len(); n > 8 {
+		t.Fatalf("cache exceeded MaxEntries: %d", n)
 	}
 }
 
@@ -333,6 +410,23 @@ func TestLocalCache_Get_ReturnsOnContextCancel(t *testing.T) {
 	cache.Cancel("get:abandoned", token)
 }
 
+func TestLocalCache_Get_TimesOutOnAbandonedReservation(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 4, StaleTimeout: 50 * time.Millisecond})
+
+	if _, shouldFetch := cache.Reserve("k", []string{"k"}); !shouldFetch {
+		t.Fatal("Reserve should grant the fetch")
+	}
+	// Fetcher "dies" without Fulfill/Cancel; the waiter must unblock after
+	// the stale window even with an unbounded context.
+	start := time.Now()
+	if _, ok := cache.Get(context.Background(), "k"); ok {
+		t.Fatal("Get should miss on an abandoned reservation")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Get blocked for %v, want ~StaleTimeout (50ms)", elapsed)
+	}
+}
+
 func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 	// Use a very short stale timeout so the test triggers takeover quickly.
 	cache := NewLocalCache(CacheConfig{MaxEntries: 8, StaleTimeout: 10 * time.Millisecond})
@@ -507,5 +601,74 @@ func TestLocalCache_MaxStalenessBackstop(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if _, ok := c2.Get(ctx, "k"); !ok {
 		t.Fatal("MaxStaleness=0 must not expire entries by age")
+	}
+}
+
+func TestLocalCache_UnboundedConfigGetsDefaultLimit(t *testing.T) {
+	// Both MaxEntries and MaxMemoryBytes unlimited: the cache must still be
+	// bounded (MaxEntries defaults to defaultCacheMaxEntries).
+	cache := NewLocalCache(CacheConfig{})
+	for i := 0; i < defaultCacheMaxEntries+100; i++ {
+		cache.Set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
+	}
+	if n := cache.Len(); n > defaultCacheMaxEntries {
+		t.Fatalf("unbounded config must default to %d entries, got Len=%d",
+			defaultCacheMaxEntries, n)
+	}
+}
+
+func TestLocalCache_ShardedMaxEntriesIsGlobalCap(t *testing.T) {
+	// MaxEntries above the sharding threshold spreads over 16 shards; the
+	// per-shard caps must sum to exactly MaxEntries so total residency never
+	// exceeds the configured limit (ceil-per-shard allowed 112 for 100).
+	const maxEntries = 100
+	cache := NewLocalCache(CacheConfig{MaxEntries: maxEntries})
+
+	lc := cache.(*localCache)
+	if lc.shardCount == 1 {
+		t.Fatalf("test expects a sharded cache, got 1 shard")
+	}
+	sum := 0
+	for i := range lc.shards {
+		sum += lc.shards[i].maxEntries
+	}
+	if sum != maxEntries {
+		t.Fatalf("per-shard caps must sum to MaxEntries: got %d want %d", sum, maxEntries)
+	}
+
+	for i := 0; i < 20*maxEntries; i++ {
+		cache.Set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
+	}
+	if n := cache.Len(); n > maxEntries {
+		t.Fatalf("total entries exceed MaxEntries: got %d want <= %d", n, maxEntries)
+	}
+}
+
+func TestLocalCache_ShardedMaxMemoryIsGlobalCap(t *testing.T) {
+	// Per-shard byte caps must also sum to exactly MaxMemoryBytes.
+	const maxBytes = 1<<20 + 13 // not divisible by 16
+	cache := NewLocalCache(CacheConfig{MaxMemoryBytes: maxBytes})
+
+	lc := cache.(*localCache)
+	var sum int64
+	for i := range lc.shards {
+		sum += lc.shards[i].maxMemoryBytes
+	}
+	if sum != maxBytes {
+		t.Fatalf("per-shard byte caps must sum to MaxMemoryBytes: got %d want %d", sum, maxBytes)
+	}
+}
+
+func TestLocalCache_PerShardByteCeilingPinned(t *testing.T) {
+	// Pins the documented limitation: the cache is 16-way sharded and each
+	// shard admits at most MaxMemoryBytes/16, so a 100KiB entry is rejected
+	// under a 1MiB budget. If admission becomes global, update the
+	// MaxMemoryBytes doc comment and CacheAdmissionRejects guidance.
+	cache := NewLocalCache(CacheConfig{MaxMemoryBytes: 1 << 20})
+	if ok := cache.Set("get:big", []string{"big"}, make([]byte, 100<<10)); ok {
+		t.Fatal("per-shard byte cap should reject a 100KiB entry (1MiB/16 shards); docs now stale")
+	}
+	if ok := cache.Set("get:small", []string{"small"}, make([]byte, 4<<10)); !ok {
+		t.Fatal("a 4KiB entry must be admitted under the per-shard cap")
 	}
 }

@@ -52,16 +52,22 @@ type perConnState struct {
 	cfg    CacheConfig
 	db     int
 
+	// owner is the baseClient whose Close tears down the cache table.
+	// Derived clients (Conn's sticky client, WithTimeout clones) share the
+	// state pointer but must not wipe it when they close.
+	owner *baseClient
+
 	// metrics
 	hits   atomic.Uint64
 	misses atomic.Uint64
 }
 
-func newPerConnState(cfg CacheConfig, db int) *perConnState {
+func newPerConnState(cfg CacheConfig, db int, owner *baseClient) *perConnState {
 	return &perConnState{
 		caches: make(map[uint64]Cache),
 		cfg:    cfg,
 		db:     db,
+		owner:  owner,
 	}
 }
 
@@ -98,16 +104,17 @@ func (s *perConnState) len() int {
 	return n
 }
 
-// perConnStateField attaches per-client state without growing baseClient.
-// Key: *baseClient. Value: *perConnState.
-var perConnStateField sync.Map
-
+// perConnStateFor returns the client's per-connection dispatch state, nil
+// when PerConnection is not active. The state lives in a baseClient field
+// (copied by clone(), set by cscPerConnPropagateTo for Conn()) rather than a
+// package-global registry keyed by *baseClient: a global map pins every
+// WithTimeout clone forever (they are never Closed) and lets a derived
+// client's Close observe — and previously wipe — the parent's state.
 func perConnStateFor(c *baseClient) *perConnState {
-	v, ok := perConnStateField.Load(c)
-	if !ok {
+	if c == nil {
 		return nil
 	}
-	return v.(*perConnState)
+	return c.cscPerConnState
 }
 
 // cscPerConnEnabled reports whether the per-connection cache approach is
@@ -156,12 +163,12 @@ func (c *baseClient) cscPerConnInit() {
 		return
 	}
 
-	state := newPerConnState(cfg, c.opt.DB)
-	perConnStateField.Store(c, state)
+	state := newPerConnState(cfg, c.opt.DB, c)
+	c.cscPerConnState = state
 
-	// Register the per-conn dispatcher. This succeeds because attachCSC has
-	// not yet run; afterwards attachCSC will fail to register the shared-cache
-	// handler and leave baseClient.csc unset, which is exactly what we want.
+	// Register the per-conn dispatcher. NewClient gates attachCSC away from
+	// PerConnection (and attachCSC itself refuses the strategy), so this
+	// registration does not race the shared-cache handler for the slot.
 	if err := c.pushProcessor.RegisterHandler(
 		invalidatePushName,
 		&perConnInvalidateHandler{state: state},
@@ -172,13 +179,14 @@ func (c *baseClient) cscPerConnInit() {
 		// Either way, fall back to no caching for this client.
 		internal.Logger.Printf(context.Background(),
 			"csc per-connection: failed to register invalidate handler: %v", err)
-		perConnStateField.Delete(c)
+		c.cscPerConnState = nil
 	}
 }
 
 // cscPerConnOnInitConn runs from initConn after CLIENT TRACKING ON has
 // been issued on cn. It allocates a private *localCache for this conn and
-// hooks the conn's onClose to flush+detach the cache when the conn is closed.
+// hooks the conn's CSC close hook to flush+detach the cache when the conn is
+// closed.
 func (c *baseClient) cscPerConnOnInitConn(_ context.Context, cn *pool.Conn) {
 	state := perConnStateFor(c)
 	if state == nil || cn == nil {
@@ -188,7 +196,9 @@ func (c *baseClient) cscPerConnOnInitConn(_ context.Context, cn *pool.Conn) {
 	state.putCache(cn.GetID(), cache)
 
 	id := cn.GetID()
-	cn.SetOnClose(func() error {
+	// Dedicated CSC slot: SetOnClose would clobber the streaming-credentials
+	// unsubscribe installed earlier in the same initConn.
+	cn.SetOnCscClose(func() error {
 		if removed := state.removeCache(id); removed != nil {
 			removed.Flush()
 		}
@@ -294,15 +304,24 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 	// cache; otherwise a hit could race ahead of an in-flight server
 	// invalidation that has already been parsed but not yet delivered.
 	//
-	// if a successful drain or socket-peek ran on this
-	// conn very recently (cscPerConnDrainSkipWindow), trust that stamp and
-	// avoid the MaybeHasData() syscall. Invalidations that race into the
-	// skip window are picked up on the next op past it; the per-conn cache
-	// is still flushed on close.
+	// If a successful drain or socket-peek ran on this conn very recently
+	// (cscPerConnDrainSkipWindow), trust that stamp and avoid the
+	// MaybeHasData() syscall. Invalidations that race into the skip window
+	// are picked up on the next op past it; the per-conn cache is still
+	// flushed on close.
+	//
+	// drainPushNotifications (not peekAndProcessPushNotifications) so read
+	// errors SURFACE: a deadline mid-frame leaves a partially consumed push
+	// frame on the conn, and reusing it would parse the frame tail as this
+	// command's reply — served AND cached. Discard the conn instead;
+	// releaseConn removes it because drain errors satisfy isBadConn.
 	nowNs := pool.GetCachedTimeNs()
 	if nowNs-cn.LastPushDrainAtNs() >= int64(cscPerConnDrainSkipWindow) {
-		if drainErr := c.peekAndProcessPushNotifications(ctx, cn); drainErr != nil {
-			internal.Logger.Printf(ctx, "csc per-connection: drain pending invalidations failed: %v", drainErr)
+		if drainErr := c.drainPushNotifications(cn); drainErr != nil {
+			internal.Logger.Printf(ctx,
+				"csc per-connection: drain failed, discarding conn: %v", drainErr)
+			c.releaseConn(ctx, cn, drainErr)
+			return c.processWithRetry(ctx, cmd, nil)
 		}
 	}
 
@@ -366,7 +385,9 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 	if shouldFetch {
 		capture = nil // disarm deferred Cancel
 		if execErr == nil {
-			cache.Fulfill(key, token, raw)
+			if !cache.Fulfill(key, token, raw) {
+				commandCacheRejects.Add(1)
+			}
 		} else {
 			cache.Cancel(key, token)
 		}
@@ -438,15 +459,16 @@ func (c *baseClient) perConnStats() (uint64, uint64, int) {
 	return state.hits.Load(), state.misses.Load(), state.len()
 }
 
-// cscPerConnOnClose flushes every per-connection cache owned by c and
-// removes c's entry from the dispatch table. Idempotent and safe to call
-// from baseClient.Close even when PerConnection was never activated.
+// cscPerConnOnClose flushes every per-connection cache owned by c. Idempotent
+// and safe to call from baseClient.Close even when PerConnection was never
+// activated. Derived clients (Conn/WithTimeout) share the state pointer but do
+// NOT own it: closing them must not wipe the parent's cache table — the
+// caches belong to pool connections that remain live in the parent's pool.
 func (c *baseClient) cscPerConnOnClose() {
-	v, ok := perConnStateField.LoadAndDelete(c)
-	if !ok {
+	state := c.cscPerConnState
+	if state == nil || state.owner != c {
 		return
 	}
-	state := v.(*perConnState)
 	state.mu.Lock()
 	for id, cache := range state.caches {
 		if cache != nil {
@@ -457,19 +479,20 @@ func (c *baseClient) cscPerConnOnClose() {
 	state.mu.Unlock()
 }
 
-// cscPerConnPropagateTo registers target so that its hot-path lookups see
-// the same per-connection caches as c. It also wires target's (separate)
-// pushProcessor with the same invalidate dispatcher, so invalidations that
-// happen to be parsed via target still route to the shared dispatch table.
+// cscPerConnPropagateTo shares c's per-connection dispatch state with target
+// so that its hot-path lookups see the same per-connection caches. It also
+// wires target's pushProcessor with the same invalidate dispatcher (a no-op
+// when the processor is shared with the parent, which already has it), so
+// invalidations parsed via target still route to the shared dispatch table.
 //
-// This is invoked from Client.Conn() (sticky single-conn derived clients).
-// In the baseline build the stub version is a no-op.
+// target does NOT become an owner: its Close leaves the cache table intact.
+// Invoked from Client.Conn(); WithTimeout clones inherit the field via clone().
 func (c *baseClient) cscPerConnPropagateTo(target *baseClient) {
 	state := perConnStateFor(c)
 	if state == nil || target == nil {
 		return
 	}
-	perConnStateField.Store(target, state)
+	target.cscPerConnState = state
 	if target.pushProcessor != nil {
 		_ = target.pushProcessor.RegisterHandler(
 			invalidatePushName,

@@ -51,6 +51,9 @@ type broadcastSidecar struct {
 	conn   net.Conn
 	reader *proto.Reader
 	writer *proto.Writer
+	// bw is the bufio.Writer beneath writer; retained so the liveness probe
+	// can flush PING onto the socket.
+	bw *bufio.Writer
 
 	// done is closed by Shutdown(); the read loop watches it.
 	done     chan struct{}
@@ -66,26 +69,45 @@ type broadcastSidecar struct {
 	// Reconnect backoff parameters.
 	backoffInitial time.Duration
 	backoffMax     time.Duration
+
+	// healthCheckInterval bounds each blocking read: on expiry the loop probes
+	// the server with PING, and a second consecutive expiry (probe unanswered)
+	// tears the connection down. Detects silent server-side drops (no FIN/RST)
+	// without waiting for OS TCP keepalive.
+	healthCheckInterval time.Duration
 }
 
 func newBroadcastSidecar(opt *Options, cache Cache, db int) *broadcastSidecar {
 	return &broadcastSidecar{
-		opt:            opt,
-		cache:          cache,
-		db:             db,
-		done:           make(chan struct{}),
-		loopDone:       make(chan struct{}),
-		backoffInitial: 100 * time.Millisecond,
-		backoffMax:     30 * time.Second,
+		opt:                 opt,
+		cache:               cache,
+		db:                  db,
+		done:                make(chan struct{}),
+		loopDone:            make(chan struct{}),
+		backoffInitial:      100 * time.Millisecond,
+		backoffMax:          30 * time.Second,
+		healthCheckInterval: 30 * time.Second,
 	}
 }
 
-// Start performs the initial dial and BCAST handshake synchronously, then
-// spawns the read-loop goroutine. Returning nil from Start means the server
-// has acknowledged CLIENT TRACKING ON BCAST and the loop is live.
+// Start attempts the initial dial and BCAST handshake synchronously, then
+// spawns the read-loop goroutine. A failed first connect is NOT fatal: the
+// read loop owns reconnection with backoff, exactly as it would after a
+// mid-life disconnect, and the cache stays bypassed (ready=false) until the
+// subscription is live. Start returns an error only for configuration
+// problems that no amount of retrying can fix.
 func (s *broadcastSidecar) Start(ctx context.Context) error {
+	if s.opt.Dialer == nil {
+		return errors.New("csc sidecar: nil dialer")
+	}
 	if err := s.dialAndHandshake(ctx); err != nil {
-		return err
+		// Same handling as a runtime disconnect: keep ready=false (the data
+		// path bypasses the cache) and let readLoop's reconnect-with-backoff
+		// bring the subscription up when the server becomes reachable.
+		internal.Logger.Printf(ctx,
+			"csc sidecar: initial connect failed (retrying in background): %v", err)
+		go s.readLoop()
+		return nil
 	}
 	s.ready.Store(true)
 	go s.readLoop()
@@ -194,9 +216,18 @@ func (s *broadcastSidecar) dialAndHandshake(ctx context.Context) error {
 	_ = nc.SetDeadline(time.Time{})
 
 	s.connMu.Lock()
+	// Re-check shutdown under the mutex: Shutdown closes s.conn under connMu,
+	// but a dial in flight at that moment would otherwise publish a fresh conn
+	// afterwards that nothing ever closes.
+	if s.isShutdown() {
+		s.connMu.Unlock()
+		_ = nc.Close()
+		return errors.New("csc sidecar: shut down during handshake")
+	}
 	s.conn = nc
 	s.reader = rd
 	s.writer = wr
+	s.bw = bw
 	s.connMu.Unlock()
 
 	internal.Logger.Printf(ctx,
@@ -216,6 +247,7 @@ func (s *broadcastSidecar) readLoop() {
 	defer close(s.loopDone)
 
 	backoff := s.backoffInitial
+	pingOutstanding := false
 	for {
 		select {
 		case <-s.done:
@@ -225,6 +257,7 @@ func (s *broadcastSidecar) readLoop() {
 
 		s.connMu.Lock()
 		rd := s.reader
+		cn := s.conn
 		s.connMu.Unlock()
 		if rd == nil {
 			// Lost connection — reconnect.
@@ -249,31 +282,46 @@ func (s *broadcastSidecar) readLoop() {
 				s.cache.Flush()
 			}
 			backoff = s.backoffInitial
+			pingOutstanding = false
 			s.ready.Store(true)
 			continue
 		}
 
-		// Block on the next push frame. PeekReplyType blocks on the
-		// socket via the underlying bufio.Reader. If the server pushes
-		// nothing for a long stretch (a quiet DB) we just stay blocked
-		// here - we have no commands to send and no read timeouts to enforce.
+		// Block on the next push frame, bounded by the health-check window:
+		// a server that pushes nothing for that long gets probed with PING
+		// (below); a silently dead socket therefore surfaces within two
+		// windows instead of waiting for OS TCP keepalive.
+		_ = cn.SetReadDeadline(time.Now().Add(s.healthCheckInterval))
 		replyType, err := rd.PeekReplyType()
 		if err != nil {
 			if s.isShutdown() {
 				return
 			}
-			// Disconnect / timeout / EOF — invalidate the conn and let
-			// the next iteration reconnect.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() && !pingOutstanding {
+				// Quiet window, no probe in flight: PING the server. The
+				// PONG arrives as a non-push frame and is discarded below,
+				// resetting pingOutstanding.
+				if perr := s.writePing(); perr == nil {
+					pingOutstanding = true
+					continue
+				}
+			}
+			// Disconnect / EOF / unanswered probe / probe write failure —
+			// invalidate the conn and let the next iteration reconnect.
 			internal.Logger.Printf(context.Background(),
 				"csc sidecar: read error, will reconnect: %v", err)
 			s.tearDownConn()
+			pingOutstanding = false
 			continue
 		}
+		// Any inbound traffic proves liveness.
+		pingOutstanding = false
 
 		if replyType != proto.RespPush {
-			// Anything other than a push frame on this connection is a
-			// protocol violation by the server (we never issued a
-			// command after handshake). Drop the frame.
+			// A non-push frame is either the PONG from our liveness probe or
+			// a protocol violation by the server (we issue no other commands
+			// after handshake). Drop the frame either way.
 			if _, err := rd.ReadReply(); err != nil {
 				if !s.isShutdown() {
 					internal.Logger.Printf(context.Background(),
@@ -340,6 +388,22 @@ func (s *broadcastSidecar) handleInvalidate(notif []interface{}) {
 	}
 }
 
+// writePing writes a PING on the sidecar socket to probe liveness. The PONG
+// comes back as a normal (non-push) frame and is discarded by the read loop.
+func (s *broadcastSidecar) writePing() error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == nil || s.writer == nil || s.bw == nil {
+		return errors.New("csc sidecar: no connection")
+	}
+	_ = s.conn.SetWriteDeadline(time.Now().Add(s.opt.DialTimeout))
+	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
+	if err := writeCmd(s.writer, NewStatusCmd(context.Background(), "ping")); err != nil {
+		return err
+	}
+	return s.bw.Flush()
+}
+
 func (s *broadcastSidecar) isShutdown() bool {
 	select {
 	case <-s.done:
@@ -364,6 +428,7 @@ func (s *broadcastSidecar) tearDownConn() {
 		s.conn = nil
 		s.reader = nil
 		s.writer = nil
+		s.bw = nil
 	}
 	s.connMu.Unlock()
 	s.ready.Store(false)

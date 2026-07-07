@@ -134,14 +134,15 @@ var _ = Describe("Buffer Size Configuration", func() {
 // cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
 func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64       // First field in pool.Conn
-		usedAt        atomic.Int64 // Second field (atomic)
-		lastPutAt     atomic.Int64 // Third field (atomic)
-		checkoutAt    atomic.Int64 // Fourth field (atomic)
-		netConnAtomic atomic.Value // atomic.Value for net.Conn
-		rd            *proto.Reader
-		bw            *bufio.Writer
-		wr            *proto.Writer
+		id              uint64       // First field in pool.Conn
+		usedAt          atomic.Int64 // Second field (atomic)
+		lastPutAt       atomic.Int64 // Third field (atomic)
+		lastPushDrainAt atomic.Int64 // Fourth field (atomic)
+		dialStartNs     atomic.Int64 // Fifth field (atomic)
+		netConnAtomic   atomic.Value // atomic.Value for net.Conn
+		rd              *proto.Reader
+		bw              *bufio.Writer
+		wr              *proto.Writer
 		// We only need fields up to bw, so we can stop here
 	})(unsafe.Pointer(cn))
 
@@ -162,14 +163,15 @@ func getWriterBufSizeUnsafe(cn *pool.Conn) int {
 
 func getReaderBufSizeUnsafe(cn *pool.Conn) int {
 	cnPtr := (*struct {
-		id            uint64       // First field in pool.Conn
-		usedAt        atomic.Int64 // Second field (atomic)
-		lastPutAt     atomic.Int64 // Third field (atomic)
-		checkoutAt    atomic.Int64 // Fourth field (atomic)
-		netConnAtomic atomic.Value // atomic.Value for net.Conn
-		rd            *proto.Reader
-		bw            *bufio.Writer
-		wr            *proto.Writer
+		id              uint64       // First field in pool.Conn
+		usedAt          atomic.Int64 // Second field (atomic)
+		lastPutAt       atomic.Int64 // Third field (atomic)
+		lastPushDrainAt atomic.Int64 // Fourth field (atomic)
+		dialStartNs     atomic.Int64 // Fifth field (atomic)
+		netConnAtomic   atomic.Value // atomic.Value for net.Conn
+		rd              *proto.Reader
+		bw              *bufio.Writer
+		wr              *proto.Writer
 		// We only need fields up to rd, so we can stop here
 	})(unsafe.Pointer(cn))
 

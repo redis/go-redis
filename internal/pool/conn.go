@@ -124,6 +124,12 @@ type Conn struct {
 	initConnFunc func(context.Context, *Conn) error
 
 	onClose func() error
+
+	// onCscClose is the client-side-caching close hook. Kept separate from
+	// onClose (streaming-credentials cleanup) so neither owner clobbers the
+	// other; both slots keep overwrite semantics so re-running initConn on the
+	// same conn cannot accumulate callbacks.
+	onCscClose func() error
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -591,6 +597,12 @@ func (cn *Conn) SetOnClose(fn func() error) {
 	cn.onClose = fn
 }
 
+// SetOnCscClose sets the client-side-caching close hook, overwriting any
+// previous one. It runs on Close in addition to the SetOnClose callback.
+func (cn *Conn) SetOnCscClose(fn func() error) {
+	cn.onCscClose = fn
+}
+
 // SetInitConnFunc sets the connection initialization function to be called on reconnections.
 func (cn *Conn) SetInitConnFunc(fn func(context.Context, *Conn) error) {
 	cn.initConnFunc = fn
@@ -921,6 +933,10 @@ func (cn *Conn) Close() error {
 	if cn.onClose != nil {
 		// ignore error
 		_ = cn.onClose()
+	}
+	if cn.onCscClose != nil {
+		// ignore error
+		_ = cn.onCscClose()
 	}
 
 	// Lock-free netConn access for better performance

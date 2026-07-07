@@ -75,6 +75,10 @@ func cscAttachBroadcastSidecarIfNeeded(ctx context.Context, c *baseClient) error
 		return err
 	}
 	cscRegisterBroadcastSidecar(c, s)
+	// Expose sidecar readiness to the hot path (processCached bypasses the
+	// cache while the invalidation channel is down) without a registry lookup
+	// per command.
+	c.cscBcastReady = &s.ready
 	return nil
 }
 

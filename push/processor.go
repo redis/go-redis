@@ -182,6 +182,14 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 	return nil
 }
 
+// WillHandleNotificationInClient reports whether a push notification of this
+// name is reserved for a specialized system (pub/sub) and must be left in the
+// reader buffer rather than consumed by generic push-notification processing.
+// Exported so external drain loops apply the same guard as the processor.
+func WillHandleNotificationInClient(notificationType string) bool {
+	return willHandleNotificationInClient(notificationType)
+}
+
 // willHandleNotificationInClient checks if a notification type should be ignored by the push notification
 // processor and handled by other specialized systems instead (pub/sub, streams, keyspace, etc.).
 func willHandleNotificationInClient(notificationType string) bool {
