@@ -772,6 +772,11 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 			idx = -idx
 		}
 		s = ap.shards[idx%len(ap.shards)]
+	} else if len(ap.shards) == 1 {
+		// Single shard (the standalone default): skip the round-robin counter —
+		// it is a shared cache line bumped by every enqueue for a pick that is
+		// constant. Same guard the stripe pick already has.
+		s = ap.shards[0]
 	} else {
 		// Unsigned modulo: converting to int first goes negative after the
 		// uint32 counter passes 2^31 on 32-bit platforms and panics.
