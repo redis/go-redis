@@ -6620,6 +6620,9 @@ func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
 
 		for i := 0; i < 2; i++ {
 			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 			switch key {
 			case "libraries_count":
 				engine.LibrariesCount, err = rd.ReadInt()
