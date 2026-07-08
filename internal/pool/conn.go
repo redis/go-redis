@@ -774,8 +774,13 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 			// Already unusable - this is fine, keep the new handoff state
 			return nil
 		}
-		// Restore the original state if transition fails for other reasons
-		cn.handoffStateAtomic.Store(currentState)
+		// Restore the original handoff state only if nothing else changed it
+		// since our CAS above. A concurrent handoff worker may have completed
+		// the handoff and run ClearHandoffState in this window; a plain Store
+		// would clobber that, resurrecting ShouldHandoff=true and wedging the
+		// connection so it can never be acquired again. The CAS leaves the
+		// worker's state intact when it has taken over.
+		cn.handoffStateAtomic.CompareAndSwap(newState, currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
 	return nil
@@ -868,6 +873,18 @@ func (cn *Conn) PeekReplyTypeSafe() (byte, error) {
 	if cn.rd.Buffered() <= 0 {
 		return 0, fmt.Errorf("redis: can't peek reply type, no data available")
 	}
+	return cn.rd.PeekReplyType()
+}
+
+// PeekReplyTypeForCheck peeks at the reply type while holding readerMu, so it is
+// safe against a concurrent SetNetConn resetting the reader during handoff.
+// Unlike PeekReplyTypeSafe it does not require the data to already be buffered:
+// the pool health check calls it after connCheck reports unexpected socket data,
+// and connCheck only MSG_PEEKs, so the byte still has to be pulled from the
+// socket into the reader here.
+func (cn *Conn) PeekReplyTypeForCheck() (byte, error) {
+	cn.readerMu.RLock()
+	defer cn.readerMu.RUnlock()
 	return cn.rd.PeekReplyType()
 }
 
