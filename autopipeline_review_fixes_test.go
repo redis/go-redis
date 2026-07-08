@@ -103,22 +103,33 @@ func TestDoBypassesPipeline(t *testing.T) {
 	// pipeline conn inside an open transaction — every later command on it
 	// got +QUEUED instead of its reply. Now Do runs it on a normal conn
 	// (plain Client.Do semantics), so batched commands stay uncorrupted.
-	_ = ap.Do(ctx, "multi").Err() // stateful; effect confined to one normal conn
-	aapCheck, err := client.AsyncAutoPipeline()
+	_ = ap.Do(ctx, "multi").Err() // stateful; poisons one NORMAL-pool conn (Client.Do semantics)
+
+	// The dedicated pipeline pool isolates BATCHED commands (>=2 per flush) from
+	// that normal-pool poison. Force a real multi-command batch with an explicit
+	// flush delay so all 20 SETs coalesce into a single pipeline-pool dispatch.
+	// (A command that flushes ALONE legitimately takes the single-command fast
+	// path onto the normal pool and can see the poison — the documented Do
+	// footgun, orthogonal to what this test guards: MULTI-via-Do must not reach
+	// the pipeline-pool batch path.)
+	aapCheck, err := client.AsyncAutoPipeline(&AutoPipelineConfig{
+		MaxBatchSize:  300,
+		MaxFlushDelay: 100 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	defer aapCheck.Close()
 	cmds := make([]*StatusCmd, 20)
 	for i := range cmds {
-		cmds[i] = aapCheck.Set(ctx, "do-bypass-key", "v0", 0) // multi-command batches
+		cmds[i] = aapCheck.Set(ctx, "do-bypass-key", "v0", 0) // coalesce into one batch
 	}
 	for i, c := range cmds {
 		if err := c.Err(); err != nil {
-			t.Fatalf("batched set %d after Do(multi): %v (stateful command leaked into a batch?)", i, err)
+			t.Fatalf("batched set %d after Do(multi): %v (stateful command reached the pipeline pool?)", i, err)
 		}
 		if got := c.Val(); got != "OK" {
-			t.Fatalf("batched set %d after Do(multi): reply %q, want OK (QUEUED means MULTI entered the batch conn)", i, got)
+			t.Fatalf("batched set %d after Do(multi): reply %q, want OK (QUEUED means MULTI reached the pipeline-pool batch)", i, got)
 		}
 	}
 	// Verify with a fresh client: the MULTI above intentionally poisoned one
