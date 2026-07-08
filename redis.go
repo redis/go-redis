@@ -323,6 +323,11 @@ type baseClient struct {
 	// set so pipelines can use large buffers without bloating the main pool.
 	// nil means pipelines use connPool.
 	pipelinePool pool.Pooler
+	// pipelinePoolName is the pool name assigned to pipelinePool's connections
+	// (pool.Conn.PoolName()). It lets poolForConn route a connection back to the
+	// pool that owns it — e.g. so streaming-credentials re-auth closes/accounts a
+	// failed pipeline connection against pipelinePool, not connPool.
+	pipelinePoolName string
 	hooksMixin
 
 	// onClose holds named callbacks invoked when the client is closed.
@@ -439,6 +444,17 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	return cn, nil
 }
 
+// poolForConn returns the pool that owns cn — the dedicated pipeline pool when
+// cn was dialed there, otherwise the main pool. Re-auth close/accounting must
+// target the owning pool so a failed pipeline connection is removed from the
+// pipeline pool's books, not the main pool's.
+func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
+	if c.pipelinePool != nil && c.pipelinePoolName != "" && cn.PoolName() == c.pipelinePoolName {
+		return c.pipelinePool
+	}
+	return c.connPool
+}
+
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
 	return func(poolCn *pool.Conn, credentials auth.Credentials) error {
 		var err error
@@ -447,7 +463,7 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 		// Use background context - timeout is handled by ReadTimeout in WithReader/WithWriter
 		ctx := context.Background()
 
-		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
+		connPool := pool.NewSingleConnPool(c.poolForConn(poolCn), poolCn)
 
 		// Pass hooks so that reauth commands are recorded/traced
 		cn := newConn(c.opt, connPool, &c.hooksMixin)
@@ -471,7 +487,7 @@ func (c *baseClient) onAuthenticationErr() func(poolCn *pool.Conn, err error) {
 				// waits for IDLE state before transitioning to UNUSABLE for re-auth).
 				// From metrics perspective, the connection was never "used" by a client.
 				// Note: Using context.Background() as this callback doesn't have access to caller's context.
-				err := c.connPool.CloseConn(context.Background(), poolCn, pool.CloseReasonAuthError, pool.MetricStateIdle)
+				err := c.poolForConn(poolCn).CloseConn(context.Background(), poolCn, pool.CloseReasonAuthError, pool.MetricStateIdle)
 				if err != nil {
 					internal.Logger.Printf(context.Background(), "redis: failed to close connection: %v", err)
 					// try to close the network connection directly
@@ -1285,6 +1301,17 @@ func (c *baseClient) generalProcessPipeline(
 		}
 	}
 
+	// Retries exhausted on a retryable error: the loop fell through without the
+	// early-exit branch running, so the commands were never populated with the
+	// failure. Mirror that branch here so callers that observe results only
+	// per-command — notably AutoPipeline, which discards this function's returned
+	// error — see the error instead of a nil error and a zero value. Guard on
+	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
+	// reply rather than being overwritten.
+	if !isRedisError(lastErr) {
+		setCmdsErr(cmds, lastErr)
+	}
+
 	if pipelineOpDurationCallback != nil {
 		operationDuration := time.Since(operationStart)
 		pipelineOpDurationCallback(ctx, operationDuration, operationName, len(cmds), totalAttempts, lastErr, lastConn, c.opt.DB)
@@ -1497,6 +1524,7 @@ func NewClient(opt *Options) *Client {
 			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
 		}
 		pipelinePoolName := opt.Addr + "_" + uniqueID + "_pipeline"
+		c.pipelinePoolName = pipelinePoolName
 		c.pipelinePool, err = newConnPool(pipelineOpt, c.dialHook, pipelinePoolName)
 		if err != nil {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
