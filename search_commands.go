@@ -157,6 +157,12 @@ const (
 	SearchToList
 	SearchFirstValue
 	SearchRandomSample
+	// SearchCollect is the COLLECT reducer for FT.AGGREGATE. Within each
+	// GROUPBY group it projects a chosen set of fields from every row and
+	// emits them as an array of per-entry maps under the reducer alias.
+	// Requires Redis 8.8+ with unstable features enabled
+	// (CONFIG SET search-enable-unstable-features yes).
+	SearchCollect
 )
 
 func (a SearchAggregator) String() string {
@@ -187,6 +193,8 @@ func (a SearchAggregator) String() string {
 		return "FIRST_VALUE"
 	case SearchRandomSample:
 		return "RANDOM_SAMPLE"
+	case SearchCollect:
+		return "COLLECT"
 	default:
 		return ""
 	}
