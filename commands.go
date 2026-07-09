@@ -296,8 +296,8 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
-func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntCmd {
-	cmd := NewIntCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntSliceCmd {
+	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

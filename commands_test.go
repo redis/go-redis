@@ -108,13 +108,14 @@ var _ = Describe("Commands", func() {
 
 		It("should WaitAOF", func() {
 			const waitAOF = 3 * time.Second
-			Skip("flaky test")
 
-			// assuming that the redis instance doesn't have AOF enabled
+			// No replicas here, so WAITAOF blocks until timeout and returns
+			// the two counts [numlocal, numreplicas]. numLocal=0 skips AOF.
 			start := time.Now()
-			val, err := client.WaitAOF(ctx, 1, 1, waitAOF).Result()
+			val, err := client.WaitAOF(ctx, 0, 1, waitAOF).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
+			Expect(val).To(HaveLen(2))
+			Expect(val[1]).To(Equal(int64(0)))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
 		})
 
