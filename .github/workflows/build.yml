@@ -105,3 +105,27 @@ jobs:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  test-autopipeline-subjects:
+    name: test-autopipeline-subjects
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        redis-version:
+          - "8.8.x" # Redis CE 8.8
+        go-version:
+          - "stable"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Replay the command integration suite through the AutoPipeliner Cmdable
+      # faces (blocking + async) so every command is verified to behave the same
+      # batched as on a plain client.
+      - name: Run command suite through AutoPipeliner faces
+        uses: ./.github/actions/run-tests
+        with:
+          go-version: ${{ matrix.go-version }}
+          redis-version: ${{ matrix.redis-version }}
+          make-target: test.autopipeline-subjects
+

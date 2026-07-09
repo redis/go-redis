@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"reflect"
 	"strconv"
 	"time"
@@ -29,17 +30,51 @@ func (t *TimeValue) ScanRedis(s string) (err error) {
 	return
 }
 
+// newCommandSubject returns the Cmdable that the command specs run against,
+// selected by the GOREDIS_TEST_SUBJECT env var so the whole suite can be
+// replayed through the autopipeliner without touching each spec:
+//
+//	(unset)|client -> the *redis.Client itself (default; unchanged behavior)
+//	ap-blocking     -> client.AutoPipeline()      (synchronous drop-in face)
+//	ap-async        -> client.AsyncAutoPipeline()  (deferred face; result reads block)
+//
+// It returns the subject plus an optional closer for the autopipeliner.
+func newCommandSubject(c *redis.Client) (redis.Cmdable, func() error) {
+	switch os.Getenv("GOREDIS_TEST_SUBJECT") {
+	case "ap-blocking":
+		ap, err := c.AutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
+		Expect(err).NotTo(HaveOccurred())
+		return ap, ap.Close
+	case "ap-async":
+		ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
+		Expect(err).NotTo(HaveOccurred())
+		return ap, ap.Close
+	default:
+		return c, nil
+	}
+}
+
 var _ = Describe("Commands", func() {
 	ctx := context.TODO()
-	var client *redis.Client
+	// client is the Cmdable under test (may be the raw client or an
+	// autopipeliner, per GOREDIS_TEST_SUBJECT). rawClient is always the
+	// underlying *redis.Client, used for setup/teardown and the few
+	// client-only calls (PoolStats, Conn) that are not part of Cmdable.
+	var client redis.Cmdable
+	var rawClient *redis.Client
+	var apCloser func() error
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		client, apCloser = newCommandSubject(rawClient)
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		if apCloser != nil {
+			Expect(apCloser()).NotTo(HaveOccurred())
+		}
+		Expect(rawClient.Close()).NotTo(HaveOccurred())
 	})
 
 	Describe("server", func() {
@@ -54,7 +89,7 @@ var _ = Describe("Commands", func() {
 			Expect(cmds[0].Err().Error()).To(ContainSubstring("ERR AUTH"))
 			Expect(cmds[1].Err().Error()).To(ContainSubstring("ERR AUTH"))
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(1)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -84,13 +119,13 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Ping", func() {
-			ping := client.Ping(ctx)
+			ping := rawClient.Ping(ctx)
 			Expect(ping.Err()).NotTo(HaveOccurred())
 			Expect(ping.Val()).To(Equal("PONG"))
 		})
 
 		It("should Ping with Do method", func() {
-			result := client.Conn().Do(ctx, "PING")
+			result := rawClient.Conn().Do(ctx, "PING")
 			Expect(result.Err()).NotTo(HaveOccurred())
 			Expect(result.Val()).To(Equal("PONG"))
 		})
@@ -100,7 +135,7 @@ var _ = Describe("Commands", func() {
 
 			// assume testing on single redis instance
 			start := time.Now()
-			val, err := client.Wait(ctx, 1, wait).Result()
+			val, err := rawClient.Wait(ctx, 1, wait).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal(int64(0)))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(wait), 3*time.Second))
@@ -112,7 +147,7 @@ var _ = Describe("Commands", func() {
 
 			// assuming that the redis instance doesn't have AOF enabled
 			start := time.Now()
-			val, err := client.WaitAOF(ctx, 1, 1, waitAOF).Result()
+			val, err := rawClient.WaitAOF(ctx, 1, 1, waitAOF).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
@@ -141,7 +176,7 @@ var _ = Describe("Commands", func() {
 		It("should BgRewriteAOF", func() {
 			Skip("flaky test")
 
-			val, err := client.BgRewriteAOF(ctx).Result()
+			val, err := rawClient.BgRewriteAOF(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(ContainSubstring("Background append only file rewriting"))
 		})
@@ -151,30 +186,30 @@ var _ = Describe("Commands", func() {
 
 			// workaround for "ERR Can't BGSAVE while AOF log rewriting is in progress"
 			Eventually(func() string {
-				return client.BgSave(ctx).Val()
+				return rawClient.BgSave(ctx).Val()
 			}, "30s").Should(Equal("Background saving started"))
 		})
 
 		It("Should CommandGetKeys", func() {
-			keys, err := client.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f").Result()
+			keys, err := rawClient.CommandGetKeys(ctx, "MSET", "a", "b", "c", "d", "e", "f").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"a", "c", "e"}))
 
-			keys, err = client.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN").Result()
+			keys, err = rawClient.CommandGetKeys(ctx, "EVAL", "not consulted", "3", "key1", "key2", "key3", "arg1", "arg2", "arg3", "argN").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"key1", "key2", "key3"}))
 
-			keys, err = client.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
+			keys, err = rawClient.CommandGetKeys(ctx, "SORT", "mylist", "ALPHA", "STORE", "outlist").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keys).To(Equal([]string{"mylist", "outlist"}))
 
-			_, err = client.CommandGetKeys(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			_, err = rawClient.CommandGetKeys(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError("ERR Invalid command specified"))
 		})
 
 		It("should CommandGetKeysAndFlags", func() {
-			keysAndFlags, err := client.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
+			keysAndFlags, err := rawClient.CommandGetKeysAndFlags(ctx, "LMOVE", "mylist1", "mylist2", "left", "left").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(keysAndFlags).To(Equal([]redis.KeyFlags{
 				{
@@ -187,19 +222,19 @@ var _ = Describe("Commands", func() {
 				},
 			}))
 
-			_, err = client.CommandGetKeysAndFlags(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
+			_, err = rawClient.CommandGetKeysAndFlags(ctx, "FAKECOMMAND", "arg1", "arg2").Result()
 			Expect(err).To(HaveOccurred())
 			Expect(err).To(MatchError("ERR Invalid command specified"))
 		})
 
 		It("should ClientKill", func() {
-			r := client.ClientKill(ctx, "1.1.1.1:1111")
+			r := rawClient.ClientKill(ctx, "1.1.1.1:1111")
 			Expect(r.Err()).To(MatchError("ERR No such client"))
 			Expect(r.Val()).To(Equal(""))
 		})
 
 		It("should ClientKillByFilter", func() {
-			r := client.ClientKillByFilter(ctx, "TYPE", "test")
+			r := rawClient.ClientKillByFilter(ctx, "TYPE", "test")
 			Expect(r.Err()).To(MatchError("ERR Unknown client type 'test'"))
 			Expect(r.Val()).To(Equal(int64(0)))
 		})
@@ -213,16 +248,16 @@ var _ = Describe("Commands", func() {
 			defer func() {
 				Expect(db.Close()).NotTo(HaveOccurred())
 			}()
-			val, err := client.ClientList(ctx).Result()
+			val, err := rawClient.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).Should(ContainSubstring("name=killmyid"))
 
 			myid := db.ClientID(ctx).Val()
-			killed := client.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
+			killed := rawClient.ClientKillByFilter(ctx, "ID", strconv.FormatInt(myid, 10))
 			Expect(killed.Err()).NotTo(HaveOccurred())
 			Expect(killed.Val()).To(BeNumerically("==", 1))
 
-			val, err = client.ClientList(ctx).Result()
+			val, err = rawClient.ClientList(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).ShouldNot(ContainSubstring("name=killmyid"))
 		})
@@ -250,7 +285,7 @@ var _ = Describe("Commands", func() {
 				// ok
 			}
 
-			killed := client.ClientKillByFilter(ctx, "MAXAGE", "1")
+			killed := rawClient.ClientKillByFilter(ctx, "MAXAGE", "1")
 			Expect(killed.Err()).NotTo(HaveOccurred())
 			Expect(killed.Val()).To(BeNumerically(">=", 1))
 
@@ -263,37 +298,37 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientID", func() {
-			err := client.ClientID(ctx).Err()
+			err := rawClient.ClientID(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(client.ClientID(ctx).Val()).To(BeNumerically(">=", 0))
+			Expect(rawClient.ClientID(ctx).Val()).To(BeNumerically(">=", 0))
 		})
 
 		It("should ClientUnblock", func() {
-			id := client.ClientID(ctx).Val()
-			r, err := client.ClientUnblock(ctx, id).Result()
+			id := rawClient.ClientID(ctx).Val()
+			r, err := rawClient.ClientUnblock(ctx, id).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(r).To(Equal(int64(0)))
 		})
 
 		It("should ClientUnblockWithError", func() {
-			id := client.ClientID(ctx).Val()
-			r, err := client.ClientUnblockWithError(ctx, id).Result()
+			id := rawClient.ClientID(ctx).Val()
+			r, err := rawClient.ClientUnblockWithError(ctx, id).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(r).To(Equal(int64(0)))
 		})
 
 		It("should ClientInfo", func() {
-			info, err := client.ClientInfo(ctx).Result()
+			info, err := rawClient.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info).NotTo(BeNil())
 		})
 
 		It("should ClientPause", Label("NonRedisEnterprise"), func() {
-			err := client.ClientPause(ctx, time.Second).Err()
+			err := rawClient.ClientPause(ctx, time.Second).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			start := time.Now()
-			err = client.Ping(ctx).Err()
+			err = rawClient.Ping(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(time.Now()).To(BeTemporally("~", start.Add(time.Second), 800*time.Millisecond))
 		})
@@ -361,7 +396,7 @@ var _ = Describe("Commands", func() {
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
 			// Test setting the default options for libName, libName suffix and libVer
-			clientInfo := client.ClientInfo(ctx).Val()
+			clientInfo := rawClient.ClientInfo(ctx).Val()
 			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(go-redis,"))
 			// Test setting the libName suffix in options
 			opt := redisOptions()
@@ -373,7 +408,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigGet", func() {
-			val, err := client.ConfigGet(ctx, "*").Result()
+			val, err := rawClient.ConfigGet(ctx, "*").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).NotTo(BeEmpty())
 		})
@@ -388,7 +423,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			for prefix, lookup := range expected {
-				val, err := client.ConfigGet(ctx, prefix).Result()
+				val, err := rawClient.ConfigGet(ctx, prefix).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).NotTo(BeEmpty())
 				Expect(val[lookup]).NotTo(BeEmpty())
@@ -396,26 +431,26 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigResetStat", Label("NonRedisEnterprise"), func() {
-			r := client.ConfigResetStat(ctx)
+			r := rawClient.ConfigResetStat(ctx)
 			Expect(r.Err()).NotTo(HaveOccurred())
 			Expect(r.Val()).To(Equal("OK"))
 		})
 
 		It("should ConfigSet", Label("NonRedisEnterprise"), func() {
-			configGet := client.ConfigGet(ctx, "maxmemory")
+			configGet := rawClient.ConfigGet(ctx, "maxmemory")
 			Expect(configGet.Err()).NotTo(HaveOccurred())
 			Expect(configGet.Val()).To(HaveLen(1))
 			_, ok := configGet.Val()["maxmemory"]
 			Expect(ok).To(BeTrue())
 
-			configSet := client.ConfigSet(ctx, "maxmemory", configGet.Val()["maxmemory"])
+			configSet := rawClient.ConfigSet(ctx, "maxmemory", configGet.Val()["maxmemory"])
 			Expect(configSet.Err()).NotTo(HaveOccurred())
 			Expect(configSet.Val()).To(Equal("OK"))
 		})
 
 		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "config get won't return modules configs before redis 8")
-			configGet := client.ConfigGet(ctx, "*")
+			configGet := rawClient.ConfigGet(ctx, "*")
 			Expect(configGet.Err()).NotTo(HaveOccurred())
 			Expect(configGet.Val()).To(HaveKey("maxmemory"))
 			Expect(configGet.Val()).To(HaveKey("search-timeout"))
@@ -426,11 +461,11 @@ var _ = Describe("Commands", func() {
 
 		It("should ConfigSet FT DIALECT", func() {
 			SkipBeforeRedisVersion(8, "config doesn't include modules before Redis 8")
-			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			defaultState, err := rawClient.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			// set to 3
-			res, err := client.ConfigSet(ctx, "search-default-dialect", "3").Result()
+			res, err := rawClient.ConfigSet(ctx, "search-default-dialect", "3").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(BeEquivalentTo("OK"))
 
@@ -438,12 +473,12 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "3"}))
 
-			resGet, err := client.ConfigGet(ctx, "search-default-dialect").Result()
+			resGet, err := rawClient.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "3"}))
 
 			// set to 2
-			res, err = client.ConfigSet(ctx, "search-default-dialect", "2").Result()
+			res, err = rawClient.ConfigSet(ctx, "search-default-dialect", "2").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(BeEquivalentTo("OK"))
 
@@ -452,7 +487,7 @@ var _ = Describe("Commands", func() {
 			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "2"}))
 
 			// set to 1
-			res, err = client.ConfigSet(ctx, "search-default-dialect", "1").Result()
+			res, err = rawClient.ConfigSet(ctx, "search-default-dialect", "1").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(BeEquivalentTo("OK"))
 
@@ -460,19 +495,19 @@ var _ = Describe("Commands", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(defDialect).To(BeEquivalentTo(map[string]interface{}{"DEFAULT_DIALECT": "1"}))
 
-			resGet, err = client.ConfigGet(ctx, "search-default-dialect").Result()
+			resGet, err = rawClient.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resGet).To(BeEquivalentTo(map[string]string{"search-default-dialect": "1"}))
 
 			// set to default
-			res, err = client.ConfigSet(ctx, "search-default-dialect", defaultState["search-default-dialect"]).Result()
+			res, err = rawClient.ConfigSet(ctx, "search-default-dialect", defaultState["search-default-dialect"]).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(BeEquivalentTo("OK"))
 		})
 
 		It("should ConfigSet fail for ReadOnly", func() {
 			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
-			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
+			_, err := rawClient.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -488,21 +523,21 @@ var _ = Describe("Commands", func() {
 
 			// read the defaults to set them back later
 			for setting := range expected {
-				val, err := client.ConfigGet(ctx, setting).Result()
+				val, err := rawClient.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				defaults[setting] = val[setting]
 			}
 
 			// check if new values can be set
 			for setting, value := range expected {
-				val, err := client.ConfigSet(ctx, setting, value).Result()
+				val, err := rawClient.ConfigSet(ctx, setting, value).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).NotTo(BeEmpty())
 				Expect(val).To(Equal("OK"))
 			}
 
 			for setting, value := range expected {
-				val, err := client.ConfigGet(ctx, setting).Result()
+				val, err := rawClient.ConfigGet(ctx, setting).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).NotTo(BeEmpty())
 				Expect(val[setting]).To(Equal(value))
@@ -510,7 +545,7 @@ var _ = Describe("Commands", func() {
 
 			// set back to the defaults
 			for setting, value := range defaults {
-				val, err := client.ConfigSet(ctx, setting, value).Result()
+				val, err := rawClient.ConfigSet(ctx, setting, value).Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(val).NotTo(BeEmpty())
 				Expect(val).To(Equal("OK"))
@@ -527,7 +562,7 @@ var _ = Describe("Commands", func() {
 			}
 
 			for setting, value := range expected {
-				val, err := client.ConfigSet(ctx, setting, value).Result()
+				val, err := rawClient.ConfigSet(ctx, setting, value).Result()
 				Expect(err).To(HaveOccurred())
 				Expect(err).To(MatchError(ContainSubstring(setting)))
 				Expect(val).To(BeEmpty())
@@ -535,55 +570,55 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigRewrite", Label("NonRedisEnterprise"), func() {
-			configRewrite := client.ConfigRewrite(ctx)
+			configRewrite := rawClient.ConfigRewrite(ctx)
 			Expect(configRewrite.Err()).NotTo(HaveOccurred())
 			Expect(configRewrite.Val()).To(Equal("OK"))
 		})
 
 		It("should DBSize", func() {
-			size, err := client.DBSize(ctx).Result()
+			size, err := rawClient.DBSize(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(size).To(Equal(int64(0)))
 		})
 
 		It("should Info", func() {
-			info := client.Info(ctx)
+			info := rawClient.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(Equal(""))
 		})
 
 		It("should InfoMap", Label("redis.info"), func() {
-			info := client.InfoMap(ctx)
+			info := rawClient.InfoMap(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
 
-			info = client.InfoMap(ctx, "dummy")
+			info = rawClient.InfoMap(ctx, "dummy")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(BeNil())
 
-			info = client.InfoMap(ctx, "server")
+			info = rawClient.InfoMap(ctx, "server")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(HaveLen(1))
 		})
 
 		It("should Info Modules", Label("redis.info"), func() {
 			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
-			info := client.Info(ctx)
+			info := rawClient.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
 
-			info = client.Info(ctx, "search")
+			info = rawClient.Info(ctx, "search")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(ContainSubstring("search"))
 
-			info = client.Info(ctx, "modules")
+			info = rawClient.Info(ctx, "modules")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(ContainSubstring("search"))
 			Expect(info.Val()).To(ContainSubstring("ReJSON"))
 			Expect(info.Val()).To(ContainSubstring("timeseries"))
 			Expect(info.Val()).To(ContainSubstring("bf"))
 
-			info = client.Info(ctx, "everything")
+			info = rawClient.Info(ctx, "everything")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).To(ContainSubstring("search"))
 			Expect(info.Val()).To(ContainSubstring("ReJSON"))
@@ -593,16 +628,16 @@ var _ = Describe("Commands", func() {
 
 		It("should InfoMap Modules", Label("redis.info"), func() {
 			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
-			info := client.InfoMap(ctx)
+			info := rawClient.InfoMap(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
 
-			info = client.InfoMap(ctx, "search")
+			info = rawClient.InfoMap(ctx, "search")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(len(info.Val())).To(BeNumerically(">=", 2))
 			Expect(info.Val()["search_version"]).ToNot(BeNil())
 
-			info = client.InfoMap(ctx, "modules")
+			info = rawClient.InfoMap(ctx, "modules")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			val := info.Val()
 			modules, ok := val["Modules"]
@@ -614,20 +649,20 @@ var _ = Describe("Commands", func() {
 			Expect(modules["timeseries"]).ToNot(BeNil())
 			Expect(modules["bf"]).ToNot(BeNil())
 
-			info = client.InfoMap(ctx, "everything")
+			info = rawClient.InfoMap(ctx, "everything")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(len(info.Val())).To(BeNumerically(">=", 10))
 		})
 
 		It("should Info cpu", func() {
-			info := client.Info(ctx, "cpu")
+			info := rawClient.Info(ctx, "cpu")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(Equal(""))
 			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
 		})
 
 		It("should Info cpu and memory", func() {
-			info := client.Info(ctx, "cpu", "memory")
+			info := rawClient.Info(ctx, "cpu", "memory")
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(Equal(""))
 			Expect(info.Val()).To(ContainSubstring(`used_cpu_sys`))
@@ -635,7 +670,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should LastSave", Label("NonRedisEnterprise"), func() {
-			lastSave := client.LastSave(ctx)
+			lastSave := rawClient.LastSave(ctx)
 			Expect(lastSave.Err()).NotTo(HaveOccurred())
 			Expect(lastSave.Val()).NotTo(Equal(0))
 		})
@@ -643,38 +678,38 @@ var _ = Describe("Commands", func() {
 		It("should Save", Label("NonRedisEnterprise"), func() {
 			// workaround for "ERR Background save already in progress"
 			Eventually(func() string {
-				return client.Save(ctx).Val()
+				return rawClient.Save(ctx).Val()
 			}, "10s").Should(Equal("OK"))
 		})
 
 		It("should SlaveOf", Label("NonRedisEnterprise"), func() {
-			slaveOf := client.SlaveOf(ctx, "localhost", "8888")
+			slaveOf := rawClient.SlaveOf(ctx, "localhost", "8888")
 			Expect(slaveOf.Err()).NotTo(HaveOccurred())
 			Expect(slaveOf.Val()).To(Equal("OK"))
 
-			slaveOf = client.SlaveOf(ctx, "NO", "ONE")
+			slaveOf = rawClient.SlaveOf(ctx, "NO", "ONE")
 			Expect(slaveOf.Err()).NotTo(HaveOccurred())
 			Expect(slaveOf.Val()).To(Equal("OK"))
 		})
 
 		It("should ReplicaOf", Label("NonRedisEnterprise"), func() {
-			replicaOf := client.ReplicaOf(ctx, "localhost", "8888")
+			replicaOf := rawClient.ReplicaOf(ctx, "localhost", "8888")
 			Expect(replicaOf.Err()).NotTo(HaveOccurred())
 			Expect(replicaOf.Val()).To(Equal("OK"))
 
-			replicaOf = client.ReplicaOf(ctx, "NO", "ONE")
+			replicaOf = rawClient.ReplicaOf(ctx, "NO", "ONE")
 			Expect(replicaOf.Err()).NotTo(HaveOccurred())
 			Expect(replicaOf.Val()).To(Equal("OK"))
 		})
 
 		It("should Time", func() {
-			tm, err := client.Time(ctx).Result()
+			tm, err := rawClient.Time(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(tm).To(BeTemporally("~", time.Now(), 3*time.Second))
 		})
 
 		It("should Command", Label("NonRedisEnterprise"), func() {
-			cmds, err := client.Command(ctx).Result()
+			cmds, err := rawClient.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			cmd := cmds["mget"]
@@ -696,7 +731,7 @@ var _ = Describe("Commands", func() {
 
 		It("should Command Tips", Label("NonRedisEnterprise"), func() {
 			SkipAfterRedisVersion(7.9, "Redis 8 changed the COMMAND reply format")
-			cmds, err := client.Command(ctx).Result()
+			cmds, err := rawClient.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 
 			cmd := cmds["touch"]
@@ -711,7 +746,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should return all command names", func() {
-			cmdList := client.CommandList(ctx, nil)
+			cmdList := rawClient.CommandList(ctx, nil)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			cmdNames := cmdList.Val()
 
@@ -727,7 +762,7 @@ var _ = Describe("Commands", func() {
 			filter := &redis.FilterBy{
 				Module: "JSON",
 			}
-			cmdList := client.CommandList(ctx, filter)
+			cmdList := rawClient.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			Expect(cmdList.Val()).To(HaveLen(0))
 		})
@@ -737,7 +772,7 @@ var _ = Describe("Commands", func() {
 				ACLCat: "admin",
 			}
 
-			cmdList := client.CommandList(ctx, filter)
+			cmdList := rawClient.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			cmdNames := cmdList.Val()
 
@@ -749,7 +784,7 @@ var _ = Describe("Commands", func() {
 			filter := &redis.FilterBy{
 				Pattern: "*GET*",
 			}
-			cmdList := client.CommandList(ctx, filter)
+			cmdList := rawClient.CommandList(ctx, filter)
 			Expect(cmdList.Err()).NotTo(HaveOccurred())
 			cmdNames := cmdList.Val()
 
@@ -763,33 +798,33 @@ var _ = Describe("Commands", func() {
 
 	Describe("debugging", Label("NonRedisEnterprise"), func() {
 		It("should DebugObject", func() {
-			err := client.DebugObject(ctx, "foo").Err()
+			err := rawClient.DebugObject(ctx, "foo").Err()
 			Expect(err).To(MatchError("ERR no such key"))
 
 			err = client.Set(ctx, "foo", "bar", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			s, err := client.DebugObject(ctx, "foo").Result()
+			s, err := rawClient.DebugObject(ctx, "foo").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(s).To(ContainSubstring("serializedlength:4"))
 		})
 
 		It("should MemoryUsage", func() {
-			err := client.MemoryUsage(ctx, "foo").Err()
+			err := rawClient.MemoryUsage(ctx, "foo").Err()
 			Expect(err).To(Equal(redis.Nil))
 
 			err = client.Set(ctx, "foo", "bar", 0).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			n, err := client.MemoryUsage(ctx, "foo").Result()
+			n, err := rawClient.MemoryUsage(ctx, "foo").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).NotTo(BeZero())
 
-			n, err = client.MemoryUsage(ctx, "foo", 0).Result()
+			n, err = rawClient.MemoryUsage(ctx, "foo", 0).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).NotTo(BeZero())
 
-			_, err = client.MemoryUsage(ctx, "foo", 0, 1).Result()
+			_, err = rawClient.MemoryUsage(ctx, "foo", 0, 1).Result()
 			Expect(err).Should(MatchError("MemoryUsage expects single sample count"))
 		})
 	})
@@ -973,10 +1008,10 @@ var _ = Describe("Commands", func() {
 			Expect(refCount.Err()).NotTo(HaveOccurred())
 			Expect(refCount.Val()).To(Equal(int64(1)))
 
-			client.ConfigSet(ctx, "maxmemory-policy", "volatile-lfu")
+			rawClient.ConfigSet(ctx, "maxmemory-policy", "volatile-lfu")
 			freq := client.ObjectFreq(ctx, "key")
 			Expect(freq.Err()).NotTo(HaveOccurred())
-			client.ConfigSet(ctx, "maxmemory-policy", "noeviction") // default
+			rawClient.ConfigSet(ctx, "maxmemory-policy", "noeviction") // default
 
 			err := client.ObjectEncoding(ctx, "key").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -1884,7 +1919,7 @@ var _ = Describe("Commands", func() {
 			Expect(string(orig.Bytes())).To(Equal("value"))
 
 			clone := orig.Clone()
-			Expect(client.Process(ctx, clone)).To(MatchError(ContainSubstring("cannot be cloned")))
+			Expect(rawClient.Process(ctx, clone)).To(MatchError(ContainSubstring("cannot be cloned")))
 
 			// Follow-up call on the same client must work: the clone's
 			// readReply drained the network reply so the connection
@@ -3370,7 +3405,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should fail module loadex", Label("NonRedisEnterprise"), func() {
-			dryRun := client.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
+			dryRun := rawClient.ModuleLoadex(ctx, &redis.ModuleLoadexConfig{
 				Path: "/path/to/non-existent-library.so",
 				Conf: map[string]interface{}{
 					"param1": "value1",
@@ -4242,9 +4277,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(BeNil())
 
-			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			Expect(rawClient.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -4524,9 +4559,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(BeNil())
 
-			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			Expect(rawClient.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -5340,9 +5375,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(BeNil())
 
-			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			Expect(rawClient.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -5422,9 +5457,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(BeNil())
 
-			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			Expect(rawClient.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -6160,9 +6195,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 			Expect(val).To(BeNil())
 
-			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			Expect(rawClient.Ping(ctx).Err()).NotTo(HaveOccurred())
 
-			stats := client.PoolStats()
+			stats := rawClient.PoolStats()
 			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
@@ -9735,44 +9770,46 @@ var _ = Describe("Commands", func() {
 		It("returns slow query result", func() {
 			const key = "slowlog-log-slower-than"
 
-			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "0")
-			defer client.ConfigSet(ctx, key, old[key])
+			old := rawClient.ConfigGet(ctx, key).Val()
+			rawClient.ConfigSet(ctx, key, "0")
+			defer rawClient.ConfigSet(ctx, key, old[key])
 
-			err := client.Do(ctx, "slowlog", "reset").Err()
+			err := rawClient.Do(ctx, "slowlog", "reset").Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			client.Set(ctx, "test", "true", 0)
 
-			result, err := client.SlowLogGet(ctx, -1).Result()
+			result, err := rawClient.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
 		})
 
 		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
 			// Reset slowlog
-			err := client.SlowLogReset(ctx).Err()
+			err := rawClient.SlowLogReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			const key = "slowlog-log-slower-than"
 
-			old := client.ConfigGet(ctx, key).Val()
+			old := rawClient.ConfigGet(ctx, key).Val()
 			// first slowlog entry is the config set command itself
-			client.ConfigSet(ctx, key, "0")
-			defer client.ConfigSet(ctx, key, old[key])
+			rawClient.ConfigSet(ctx, key, "0")
+			defer rawClient.ConfigSet(ctx, key, old[key])
 
-			// Set a key to trigger a slow query, and this is the second slowlog entry
-			client.Set(ctx, "test", "true", 0)
-			result, err := client.SlowLogLen(ctx).Result()
+			// Set a key to trigger a slow query, and this is the second slowlog entry.
+			// Read the result so the command has actually executed before we count
+			// (required on the deferred autopipeline face, harmless otherwise).
+			Expect(client.Set(ctx, "test", "true", 0).Err()).NotTo(HaveOccurred())
+			result, err := rawClient.SlowLogLen(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).Should(Equal(int64(2)))
 
 			// Reset slowlog
-			err = client.SlowLogReset(ctx).Err()
+			err = rawClient.SlowLogReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Check if slowlog is empty, this is the first slowlog entry after reset
-			result, err = client.SlowLogLen(ctx).Result()
+			result, err = rawClient.SlowLogLen(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).Should(Equal(int64(1)))
 		})
@@ -9783,17 +9820,17 @@ var _ = Describe("Commands", func() {
 			const key = "latency-monitor-threshold"
 
 			// reset all latencies first to ensure clean state
-			err := client.LatencyReset(ctx).Err()
+			err := rawClient.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			old := client.ConfigGet(ctx, key).Val()
-			client.ConfigSet(ctx, key, "1")
-			defer client.ConfigSet(ctx, key, old[key])
+			old := rawClient.ConfigGet(ctx, key).Val()
+			rawClient.ConfigSet(ctx, key, "1")
+			defer rawClient.ConfigSet(ctx, key, old[key])
 
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
+			err = rawClient.Do(ctx, "DEBUG", "SLEEP", 0.01).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			result, err := client.Latency(ctx).Result()
+			result, err := rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).NotTo(BeZero())
 		})
@@ -9802,39 +9839,39 @@ var _ = Describe("Commands", func() {
 			const key = "latency-monitor-threshold"
 
 			// reset all latencies
-			err := client.LatencyReset(ctx).Err()
+			err := rawClient.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			old := client.ConfigGet(ctx, key).Val()
+			old := rawClient.ConfigGet(ctx, key).Val()
 			// Use a higher threshold (100ms) to avoid capturing normal operations
 			// that could cause flakiness due to timing variations on busy CI runners.
-			client.ConfigSet(ctx, key, "100")
-			defer client.ConfigSet(ctx, key, old[key])
+			rawClient.ConfigSet(ctx, key, "100")
+			defer rawClient.ConfigSet(ctx, key, old[key])
 
 			// get latency after reset
-			result, err := client.Latency(ctx).Result()
+			result, err := rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
 			// create a new latency event by sleeping past the threshold
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
+			err = rawClient.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// get latency after create a new latency
-			result, err = client.Latency(ctx).Result()
+			result, err = rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(BeNumerically(">=", 1))
 			triggered := result[0].Name
 
 			// reset all latencies again
-			err = client.LatencyReset(ctx).Err()
+			err = rawClient.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// get latency after reset again. Don't assert total length is 0:
 			// other operations on the connection may briefly land in the
 			// latency log on a slow CI runner. Instead verify the specific
 			// event we triggered is gone.
-			result, err = client.Latency(ctx).Result()
+			result, err = rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			for _, event := range result {
 				if event.Name == triggered {
@@ -9847,35 +9884,35 @@ var _ = Describe("Commands", func() {
 			const key = "latency-monitor-threshold"
 
 			// reset all latencies first to ensure clean state
-			err := client.LatencyReset(ctx).Err()
+			err := rawClient.LatencyReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			old := client.ConfigGet(ctx, key).Val()
+			old := rawClient.ConfigGet(ctx, key).Val()
 			// Use a higher threshold (100ms) to avoid capturing normal operations
 			// that could cause flakiness due to timing variations
-			client.ConfigSet(ctx, key, "100")
-			defer client.ConfigSet(ctx, key, old[key])
+			rawClient.ConfigSet(ctx, key, "100")
+			defer rawClient.ConfigSet(ctx, key, old[key])
 
-			result, err := client.Latency(ctx).Result()
+			result, err := rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(Equal(0))
 
 			// Use a longer sleep (150ms) to ensure it exceeds the 100ms threshold
-			err = client.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
+			err = rawClient.Do(ctx, "DEBUG", "SLEEP", 0.15).Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			result, err = client.Latency(ctx).Result()
+			result, err = rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(result)).Should(BeNumerically(">=", 1))
 
 			// reset latency by event name
 			eventName := result[0].Name
-			err = client.LatencyReset(ctx, eventName).Err()
+			err = rawClient.LatencyReset(ctx, eventName).Err()
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify the specific event was reset (not that all events are gone)
 			// This avoids flakiness from other operations triggering latency events
-			result, err = client.Latency(ctx).Result()
+			result, err = rawClient.Latency(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			for _, event := range result {
 				if event.Name == eventName {

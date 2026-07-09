@@ -71,6 +71,27 @@ test.ci.skip-vectorsets:
 	cd internal/customvet && go build .
 	go vet -vettool ./internal/customvet/customvet
 
+# Replay the command integration suite through the AutoPipeliner Cmdable faces
+# (blocking + async) to prove every command behaves identically when batched as
+# on a plain client. Selected via GOREDIS_TEST_SUBJECT (see newCommandSubject in
+# commands_test.go). Requires the docker env (make docker.start).
+test.autopipeline-subjects:
+	# RE_CLUSTER=true forces the lightweight BeforeSuite (no sentinel/ring/cluster
+	# setup): the command suite only needs the standalone Redis, and running the
+	# full stateful BeforeSuite twice (once per subject) against the same server
+	# corrupts replication state and fails the second run. Both faces then run
+	# cleanly against the same env.
+	set -e; for subj in ap-blocking ap-async; do \
+	  echo "=== command suite via GOREDIS_TEST_SUBJECT=$$subj ==="; \
+	  (export RE_CLUSTER=true && \
+	   export RCE_DOCKER=$(RCE_DOCKER) && \
+	   export REDIS_VERSION=$(REDIS_VERSION) && \
+	   export GOREDIS_TEST_SUBJECT=$$subj && \
+	   go test -v . -race -skip Example -run TestGinkgoSuite \
+	     -ginkgo.focus='Commands' \
+	     -ginkgo.skip='Array Commands|AutoPipeline Blocking Commands|DDL Commands|FT.HYBRID Commands|HotKeys Commands|JSON Commands'); \
+	done
+
 bench:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
 	export RCE_DOCKER=$(RCE_DOCKER) && \
@@ -101,7 +122,7 @@ test.e2e.logic:
 		go test -v -run "TestCreateTestFaultInjectorLogic|TestFaultInjectorClientCreation" ./maintnotifications/e2e/
 	@echo "Logic tests completed!"
 
-.PHONY: all test test.ci test.ci.skip-vectorsets bench fmt test.e2e test.e2e.logic docker.e2e.start docker.e2e.stop
+.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic docker.e2e.start docker.e2e.stop
 
 build:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
