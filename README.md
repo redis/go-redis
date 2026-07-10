@@ -412,7 +412,7 @@ for _, cmd := range cmds {
 }
 ```
 
-Each face has a no-arg form that uses `Options.AutoPipelineOptions` (or the
+Each face has a no-argument form that uses `Options.AutoPipelineOptions` (or the
 built-in default) and a `WithConfig` form that takes an explicit
 `*AutoPipelineOptions`; both return `(*AutoPipeliner, error)` — the error is
 non-nil only for an invalid config (e.g.
