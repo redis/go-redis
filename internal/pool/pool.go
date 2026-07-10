@@ -917,7 +917,8 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	// returned idle connection and then loop back here to re-check the idle pool
 	// before deciding to dial. Without rate limiting this loop runs exactly once.
 	var dialDeadline time.Time
-	hasParked := false
+	hasParked := false       // this Get() actually slept in waitForDialSlot
+	throttleCounted := false // RateLimitedDials incremented for this Get()
 	for {
 		// Use cached time for health checks (max 50ms staleness is acceptable)
 		nowNs := getCachedTimeNs()
@@ -977,8 +978,13 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 
 			atomic.AddUint32(&p.stats.Hits, 1)
 
-			// Record wait time (use cached callback from above)
+			// Record wait time (use cached callback from above). If this Get()
+			// was throttled and parked, waitDuration (captured after waitTurn)
+			// is stale — refresh it so the metric includes the park time.
 			if waitTimeCallback != nil {
+				if hasParked {
+					waitDuration = time.Since(waitStart)
+				}
 				waitTimeCallback(ctx, waitDuration, cn)
 			}
 
@@ -1000,17 +1006,18 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 		}
 
 		// Fairness: a fresh Get() must not steal a refilled token from callers
-		// already parked in the wait queue (they arrived earlier). Once this
-		// Get() has parked itself, it is queue-conditioned and may compete.
+		// already parked in the wait queue (they arrived earlier). Only a
+		// Get() that has genuinely parked (slept in waitForDialSlot) is
+		// queue-conditioned and may compete for tokens.
 		if (hasParked || p.dialWaitQueue.empty()) && p.dialLimiter.Allow() {
 			// A dial token was available: dial now.
 			break
 		}
 
 		// Throttled. Count this Get() once (not once per park cycle).
-		if !hasParked {
+		if !throttleCounted {
 			atomic.AddUint32(&p.stats.RateLimitedDials, 1)
-			hasParked = true
+			throttleCounted = true
 		}
 		if dialDeadline.IsZero() {
 			// Bound the total time this Get() may spend waiting — including the
@@ -1019,15 +1026,26 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 			dialDeadline = waitStart.Add(p.cfg.PoolTimeout)
 		}
 
-		escape, waitErr := p.waitForDialSlot(ctx, dialDeadline)
+		escape, parked, waitErr := p.waitForDialSlot(ctx, dialDeadline)
+		if parked {
+			hasParked = true
+		}
 		if waitErr != nil {
 			p.freeTurn()
 			return nil, waitErr
 		}
 		if escape {
 			// Waited past PoolTimeout without a reusable connection or a dial
-			// token: create a new connection anyway. The pool is not full (we
-			// hold a turn), so this is legitimate and remains bounded by
+			// token. Re-check the idle pool one final time: a connection may
+			// have been returned in the same instant the park timer fired (the
+			// select can win the timer race over the wakeup signal). If so,
+			// loop back to grab it — with the deadline passed, the next
+			// waitForDialSlot escapes immediately, so this cannot loop forever.
+			if p.hasAcquirableIdleConn() {
+				continue
+			}
+			// Create a new connection anyway. The pool is not full (we hold a
+			// turn), so this is legitimate and remains bounded by
 			// MaxActiveConns inside newConn.
 			break
 		}
@@ -1036,6 +1054,13 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	}
 
 	atomic.AddUint32(&p.stats.Misses, 1)
+
+	// If this Get() was throttled and parked, waitDuration (captured after
+	// waitTurn) is stale — refresh it before dialing so the wait metric
+	// includes the park time but not the dial itself.
+	if waitTimeCallback != nil && hasParked {
+		waitDuration = time.Since(waitStart)
+	}
 
 	var newcn *Conn
 	newcn, err = p.queuedNewConn(ctx)
@@ -1259,21 +1284,24 @@ func (p *ConnPool) hasAcquirableIdleConn() bool {
 // token is expected to be available, the caller's context is cancelled, or the
 // PoolTimeout deadline is reached.
 //
-// It returns (escape=true, nil) when the deadline has been reached, meaning the
-// caller should create a new connection anyway. It returns (false, nil) when
-// the caller should loop back and re-check the idle pool / rate limiter. It
-// returns (false, err) if the context is cancelled while waiting.
-func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (escape bool, err error) {
+// It returns (escape=true, ...) when the deadline has been reached, meaning the
+// caller should create a new connection anyway, and (false, ...) when the
+// caller should loop back and re-check the idle pool / rate limiter. parked
+// reports whether the caller genuinely slept in the wait queue: only then may
+// it compete with other parked waiters for dial tokens (fairness). err is
+// non-nil if the context was cancelled while waiting.
+func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (escape bool, parked bool, err error) {
 	now := time.Now()
 	if !now.Before(deadline) {
 		// Deadline already reached: create a new connection.
-		return true, nil
+		return true, false, nil
 	}
 
 	delay := p.dialLimiter.delayUntilNext()
 	if delay <= 0 {
 		// A token is (now) available: loop back and let Allow() consume it.
-		return false, nil
+		// Not a park: the caller gains no token priority from this.
+		return false, false, nil
 	}
 
 	remaining := deadline.Sub(now)
@@ -1301,7 +1329,7 @@ func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (esc
 			<-w.ready
 			p.dialWaitQueue.signalNext()
 		}
-		return false, nil
+		return false, false, nil
 	}
 
 	timer := time.NewTimer(delay)
@@ -1311,7 +1339,7 @@ func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (esc
 	case <-w.ready:
 		// A connection was returned to the pool (we were dequeued by
 		// signalNext); loop back to try to reuse it.
-		return false, nil
+		return false, true, nil
 	case <-timer.C:
 		if !p.dialWaitQueue.abandon(w) {
 			// A wakeup was delivered concurrently with the timer firing. Treat
@@ -1319,11 +1347,11 @@ func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (esc
 			// instead of escaping to dial (which would waste both the signal
 			// and a dial).
 			<-w.ready
-			return false, nil
+			return false, true, nil
 		}
 		// If we parked all the way to the deadline, escape and create.
 		// Otherwise a token should now be available: loop back to consume it.
-		return deadlinePark, nil
+		return deadlinePark, true, nil
 	case <-ctx.Done():
 		if !p.dialWaitQueue.abandon(w) {
 			// A wakeup was delivered concurrently with cancellation. We are
@@ -1331,7 +1359,7 @@ func (p *ConnPool) waitForDialSlot(ctx context.Context, deadline time.Time) (esc
 			<-w.ready
 			p.dialWaitQueue.signalNext()
 		}
-		return false, ctx.Err()
+		return false, true, ctx.Err()
 	}
 }
 
