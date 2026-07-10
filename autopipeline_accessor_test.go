@@ -66,10 +66,10 @@ func TestAutoPipelineSecondaryAccessors(t *testing.T) {
 			fail(err != nil || u != 1)
 
 			// Generic Cmd via Do() — the whole *Cmd type was missing await().
-			doCmd := ap.Do(ctx, "GET", sk).(*redis.Cmd)
+			doCmd := ap.Do(ctx, "GET", sk)
 			v, err := doCmd.Int()
 			fail(err != nil || v != 12345)
-			txt, err := ap.Do(ctx, "GET", sk).(*redis.Cmd).Text()
+			txt, err := ap.Do(ctx, "GET", sk).Text()
 			fail(err != nil || txt != "12345")
 
 			// SliceCmd.Val()/Result() — previously missing await().

@@ -131,11 +131,11 @@ var _ = Describe("AutoPipeline Cmdable Interface", func() {
 		getCmd := ap.Do(ctx, "GET", "custom_key")
 
 		// Get results
-		setVal, err := setCmd.(*redis.Cmd).Result()
+		setVal, err := setCmd.Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(setVal).To(Equal("OK"))
 
-		getVal, err := getCmd.(*redis.Cmd).Result()
+		getVal, err := getCmd.Result()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(getVal).To(Equal("custom_value"))
 	})
