@@ -20,7 +20,7 @@ func TestAPClusterMovedRedirectFollowed(t *testing.T) {
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestAPClusterMovedSurfacedWithoutRedirects(t *testing.T) {
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

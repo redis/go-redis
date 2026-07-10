@@ -14,7 +14,7 @@ func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	client := NewClient(&Options{Addr: ":6379"})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	}
 
 	// The async face accepts Submit.
-	aap, err := client.AsyncAutoPipeline()
+	aap, err := client.AsyncAutoPipeline(nil)
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 		t.Fatalf("flushall: %v", err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 	}
 
 	// Async face keeps the deferred shape.
-	aap, err := client.AsyncAutoPipeline()
+	aap, err := client.AsyncAutoPipeline(nil)
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}

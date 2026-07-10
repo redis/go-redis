@@ -18,7 +18,7 @@ func TestClientCloseClosesAutoPipeliner(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	c.FlushDB(ctx)
 
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

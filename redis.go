@@ -1711,7 +1711,7 @@ func (c *Client) Pipeline() Pipeliner {
 // engine batches concurrent callers' commands into pipelines, so throughput is
 // far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
 //
-// When called without a config, Options.AutoPipelineConfig is used if set,
+// When config is nil, Options.AutoPipelineConfig is used if set,
 // otherwise DefaultBlockingAutoPipelineConfig (a single ordered batch stream,
 // which maximizes throughput and minimizes latency for the blocking face — see
 // its doc). The instance is cached and shared; the first
@@ -1720,7 +1720,7 @@ func (c *Client) Pipeline() Pipeliner {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Client) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineConfig {
 			if c.opt.AutoPipelineConfig != nil {
@@ -1736,7 +1736,7 @@ func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, er
 // command has executed. Submit a window of commands, then read their results, to
 // keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
 //
-// When called without a config, Options.AutoPipelineConfig is used if set,
+// When config is nil, Options.AutoPipelineConfig is used if set,
 // otherwise DefaultAutoPipelineConfig (ordered, MaxConcurrentBatches: 1) — a
 // single goroutine's deferred commands execute in submit order. Pass a config
 // to override both (and, for parallel batches, set Unordered). The instance is
@@ -1745,7 +1745,7 @@ func (c *Client) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, er
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *Client) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Client) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineConfig {
 			if c.opt.AutoPipelineConfig != nil {

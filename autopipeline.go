@@ -277,7 +277,7 @@ func putQueueSlice(slice []Cmder) {
 // the pipeline on a normal connection (see Do).
 // AutoPipeline / AsyncAutoPipeline return an error for an invalid config, so check it once:
 //
-//	ap, err := client.AutoPipeline()
+//	ap, err := client.AutoPipeline(nil)
 //	if err != nil {
 //		return err
 //	}
@@ -428,7 +428,7 @@ func getOrCreateAutoPipeliner(
 	mu *sync.Mutex,
 	slot **AutoPipeliner,
 	closed *bool,
-	override []*AutoPipelineConfig,
+	override *AutoPipelineConfig,
 	fallback func() *AutoPipelineConfig,
 	build func(*AutoPipelineConfig) (*AutoPipeliner, error),
 ) (*AutoPipeliner, error) {
@@ -441,8 +441,8 @@ func getOrCreateAutoPipeliner(
 		return *slot, nil
 	}
 	cfg := fallback()
-	if len(override) > 0 && override[0] != nil {
-		cfg = override[0]
+	if override != nil {
+		cfg = override
 	}
 	ap, err := build(cfg)
 	if err != nil {
@@ -667,14 +667,14 @@ func (ap *AutoPipeliner) PoolStats() *PoolStats { return ap.pipeliner.PoolStats(
 // AutoPipeline delegates to the underlying client, which returns its cached
 // autopipeliner (typically this same instance). Present to satisfy the
 // UniversalClient surface.
-func (ap *AutoPipeliner) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
-	return ap.pipeliner.AutoPipeline(config...)
+func (ap *AutoPipeliner) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipeline(config)
 }
 
 // AsyncAutoPipeline delegates to the underlying client. Present to satisfy the
 // UniversalClient surface.
-func (ap *AutoPipeliner) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
-	return ap.pipeliner.AsyncAutoPipeline(config...)
+func (ap *AutoPipeliner) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipeline(config)
 }
 
 // validate AutoPipeliner implements UniversalClient (drop-in for the real

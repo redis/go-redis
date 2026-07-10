@@ -29,7 +29,7 @@ func TestAutoPipelineConcurrentFirstCall(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start // maximize the race on the first call
-			results[i], errs[i] = c.AutoPipeline()
+			results[i], errs[i] = c.AutoPipeline(nil)
 		}(g)
 	}
 	close(start)

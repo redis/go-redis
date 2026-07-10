@@ -355,8 +355,8 @@ type UniversalClient interface {
 	// AutoPipeline / AsyncAutoPipeline return an AutoPipeliner for the concrete
 	// client. Supported on *Client (including sentinel-backed failover clients)
 	// and *ClusterClient; *Ring returns an error (not supported).
-	AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error)
-	AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error)
+	AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error)
+	AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error)
 	Subscribe(ctx context.Context, channels ...string) *PubSub
 	PSubscribe(ctx context.Context, channels ...string) *PubSub
 	SSubscribe(ctx context.Context, channels ...string) *PubSub

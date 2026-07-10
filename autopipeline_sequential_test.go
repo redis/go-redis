@@ -27,7 +27,7 @@ func TestAutoPipelineSequential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}

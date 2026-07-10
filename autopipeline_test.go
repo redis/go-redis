@@ -32,7 +32,7 @@ var _ = Describe("AutoPipeline", func() {
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
-		ap, err = client.AutoPipeline()
+		ap, err = client.AutoPipeline(nil)
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -252,7 +252,7 @@ var _ = Describe("AutoPipeline", func() {
 		})
 		defer client2.Close()
 
-		ap2, err := client2.AutoPipeline()
+		ap2, err := client2.AutoPipeline(nil)
 		Expect(err).NotTo(HaveOccurred())
 		defer ap2.Close()
 
@@ -322,7 +322,7 @@ func TestAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

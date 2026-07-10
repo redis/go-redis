@@ -840,12 +840,12 @@ func (c *Ring) Pipeline() Pipeliner {
 var errRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
 
 // AutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
-func (c *Ring) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Ring) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return nil, errRingAutoPipelineUnsupported
 }
 
 // AsyncAutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
-func (c *Ring) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Ring) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return nil, errRingAutoPipelineUnsupported
 }
 

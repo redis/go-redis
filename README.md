@@ -370,7 +370,7 @@ rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 defer rdb.Close()
 
 // Blocking face: drop-in for a normal client, batched under the hood.
-ap, err := rdb.AutoPipeline()
+ap, err := rdb.AutoPipeline(nil)
 if err != nil { // only on an invalid AutoPipelineConfig
     log.Fatal(err)
 }
@@ -393,7 +393,7 @@ wg.Wait()
 For maximum throughput, submit a window on the async face and read later:
 
 ```go
-ap, err := rdb.AsyncAutoPipeline() // ordered by default
+ap, err := rdb.AsyncAutoPipeline(nil) // ordered by default
 if err != nil {
     log.Fatal(err)
 }

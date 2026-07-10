@@ -1617,13 +1617,13 @@ func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
 // command call blocks until executed (drop-in shape) while the engine batches
 // concurrent callers into pipelines. Commands keep per-goroutine order; across
 // nodes, ordering is per key (slot routing keeps a key on one shard and node
-// sub-pipelines execute concurrently). Pass an optional config to override
+// sub-pipelines execute concurrently). Pass a config (nil for the default) to override
 // DefaultBlockingAutoPipelineConfig. Cached/shared; first call's config wins.
 // Close it (or the client) to release its goroutines.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *ClusterClient) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *ClusterClient) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineConfig {
 			if c.opt.AutoPipelineConfig != nil {
@@ -1665,7 +1665,7 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 
 // AsyncAutoPipeline returns the deferred autopipeliner: command calls return
 // immediately and the result accessors block. Submit a window then read results
-// for the highest throughput. When called without a config,
+// for the highest throughput. When config is nil,
 // ClusterOptions.AutoPipelineConfig is used if set, otherwise
 // DefaultAutoPipelineConfig. Ordering across nodes is per key: slot routing
 // keeps a key on one shard, and node sub-pipelines execute concurrently. Pass
@@ -1673,7 +1673,7 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *ClusterClient) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *ClusterClient) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineConfig {
 			if c.opt.AutoPipelineConfig != nil {
