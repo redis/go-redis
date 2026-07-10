@@ -774,8 +774,14 @@ func (r *Reader) Discard(line []byte) (err error) {
 		}
 		return nil
 	case RespMap, RespAttr:
-		// Read key & value.
-		for i := 0; i < n*2; i++ {
+		// Iterate over the n key/value pairs rather than n*2 elements: a count
+		// above MaxInt/2 makes n*2 overflow to a negative loop bound, which
+		// would skip the body entirely and return nil, leaving the map bytes in
+		// the stream for the next reply to consume (a silent desync).
+		for i := 0; i < n; i++ {
+			if err = r.DiscardNext(); err != nil {
+				return err
+			}
 			if err = r.DiscardNext(); err != nil {
 				return err
 			}
@@ -868,10 +874,12 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		for i := 0; i < n*2; i++ {
-			buf, err = r.readRawReplyBuf(buf)
-			if err != nil {
-				return buf, err
+		for i := 0; i < n; i++ {
+			for pair := 0; pair < 2; pair++ {
+				buf, err = r.readRawReplyBuf(buf)
+				if err != nil {
+					return buf, err
+				}
 			}
 		}
 		return buf, nil
@@ -886,11 +894,15 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		// Read the attribute key-value pairs
-		for i := 0; i < n*2; i++ {
-			buf, err = r.readRawReplyBuf(buf)
-			if err != nil {
-				return buf, err
+		// Read the attribute key-value pairs. Iterate over pairs rather than
+		// n*2 elements so a count above MaxInt/2 can't overflow int to a
+		// negative loop bound and skip the body.
+		for i := 0; i < n; i++ {
+			for pair := 0; pair < 2; pair++ {
+				buf, err = r.readRawReplyBuf(buf)
+				if err != nil {
+					return buf, err
+				}
 			}
 		}
 		// Read the command reply that follows the attribute
@@ -967,11 +979,13 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 			}
 			return written, err
 		}
-		for i := 0; i < count*2; i++ {
-			n, err := r.readRawReplyWriteTo(w)
-			written += n
-			if err != nil {
-				return written, err
+		for i := 0; i < count; i++ {
+			for pair := 0; pair < 2; pair++ {
+				n, err := r.readRawReplyWriteTo(w)
+				written += n
+				if err != nil {
+					return written, err
+				}
 			}
 		}
 		return written, nil
@@ -986,12 +1000,16 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 			}
 			return written, err
 		}
-		// Read the attribute key-value pairs
-		for i := 0; i < count*2; i++ {
-			n, err := r.readRawReplyWriteTo(w)
-			written += n
-			if err != nil {
-				return written, err
+		// Read the attribute key-value pairs. Iterate over pairs rather than
+		// count*2 elements so a count above MaxInt/2 can't overflow int to a
+		// negative loop bound and skip the body.
+		for i := 0; i < count; i++ {
+			for pair := 0; pair < 2; pair++ {
+				n, err := r.readRawReplyWriteTo(w)
+				written += n
+				if err != nil {
+					return written, err
+				}
 			}
 		}
 		// Read the command reply that follows the attribute
