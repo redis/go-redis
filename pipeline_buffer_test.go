@@ -7,7 +7,9 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// TestPipelineBufferSizes verifies that pipeline pool is created with custom buffer sizes
+// TestPipelineBufferSizes verifies that enabling the pipeline buffer options keeps
+// pipelining working end-to-end. It does not assert the actual socket buffer sizes
+// (not observable here) - only that the configured client still runs pipelines.
 func TestPipelineBufferSizes(t *testing.T) {
 	ctx := context.Background()
 

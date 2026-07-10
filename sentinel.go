@@ -607,6 +607,13 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 				return cn.RemoteAddr().String() != addr
 			})
 		}
+		// Drop stale pipeline-pool connections dialed to the demoted master too;
+		// otherwise pipelined traffic keeps using the old address after failover.
+		if pipelinePool, ok := rdb.pipelinePool.(*pool.ConnPool); ok {
+			_ = pipelinePool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
 	}
 	failover.mu.Unlock()
 
