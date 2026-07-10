@@ -15,7 +15,7 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002"},
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         10,
 			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -30,7 +30,7 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002"},
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         50,
 			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 10,
@@ -85,7 +85,7 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 
 	client := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":7000", ":7001", ":7002"},
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         20,
 			MaxFlushDelay:        10 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -146,7 +146,7 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

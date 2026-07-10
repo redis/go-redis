@@ -14,13 +14,13 @@ import (
 func TestAPZeroCopyBufferCluster(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:              []string{":16600", ":16601", ":16602", ":16603", ":16604", ":16605"},
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
+		Addrs:               []string{":16600", ":16601", ":16602", ":16603", ":16604", ":16605"},
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
 	})
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error { return m.FlushAll(ctx).Err() })
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

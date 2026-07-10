@@ -130,7 +130,7 @@ func TestAutoPipelineHeterogeneousReplyDemux(t *testing.T) {
 	}
 	big, binary := seedReplyShapeData(t, ctx, c)
 
-	ap, err := c.AutoPipeline(nil) // blocking face: results ready on call
+	ap, err := c.AutoPipeline() // blocking face: results ready on call
 	if err != nil {
 		t.Fatal(err)
 	}

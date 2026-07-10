@@ -22,7 +22,7 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
-		ap, err = client.AutoPipeline(nil)
+		ap, err = client.AutoPipeline()
 		Expect(err).NotTo(HaveOccurred())
 	})
 

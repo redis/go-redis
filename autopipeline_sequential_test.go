@@ -14,7 +14,7 @@ func TestAutoPipelineSequential(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         10,
 			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -27,7 +27,7 @@ func TestAutoPipelineSequential(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         1000,                  // Large batch size
 			MaxFlushDelay:        20 * time.Millisecond, // Rely on timer
 			MaxConcurrentBatches: 5,
@@ -79,7 +79,7 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         5,
 			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -130,7 +130,7 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AsyncAutoPipeline(nil) // deferred face: submit-then-read (Do bypasses the engine)
+	ap, err := client.AsyncAutoPipeline() // deferred face: submit-then-read (Do bypasses the engine)
 	if err != nil {
 		t.Fatal(err)
 	}

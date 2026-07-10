@@ -24,7 +24,7 @@ func TestAutoPipelineBlockingCommandIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil) // blocking face
+	ap, err := client.AutoPipeline() // blocking face
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestAutoPipelineDoubleClose(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(nil)
+	ap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

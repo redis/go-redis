@@ -22,7 +22,7 @@ var _ = Describe("AutoPipeline", func() {
 	BeforeEach(func() {
 		client = redis.NewClient(&redis.Options{
 			Addr: redisAddr,
-			AutoPipelineConfig: &redis.AutoPipelineConfig{
+			AutoPipelineOptions: &redis.AutoPipelineOptions{
 				MaxBatchSize:         10,
 				MaxFlushDelay:        50 * time.Millisecond,
 				MaxConcurrentBatches: 5,
@@ -32,7 +32,7 @@ var _ = Describe("AutoPipeline", func() {
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
-		ap, err = client.AutoPipeline(nil)
+		ap, err = client.AutoPipeline()
 		Expect(err).NotTo(HaveOccurred())
 	})
 
@@ -243,7 +243,7 @@ var _ = Describe("AutoPipeline", func() {
 		// Create autopipeliner with low concurrency limit
 		client2 := redis.NewClient(&redis.Options{
 			Addr: redisAddr,
-			AutoPipelineConfig: &redis.AutoPipelineConfig{
+			AutoPipelineOptions: &redis.AutoPipelineOptions{
 				MaxBatchSize:         5,
 				MaxFlushDelay:        10 * time.Millisecond,
 				MaxConcurrentBatches: 2,
@@ -252,7 +252,7 @@ var _ = Describe("AutoPipeline", func() {
 		})
 		defer client2.Close()
 
-		ap2, err := client2.AutoPipeline(nil)
+		ap2, err := client2.AutoPipeline()
 		Expect(err).NotTo(HaveOccurred())
 		defer ap2.Close()
 
@@ -282,7 +282,7 @@ var _ = Describe("AutoPipeline", func() {
 	It("should report queue length", func() {
 		// Deferred face with a wide explicit window: queued commands stay
 		// queued until the window elapses, so Len is deterministic.
-		aap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+		aap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 			MaxBatchSize:  100,
 			MaxFlushDelay: time.Second,
 		})
@@ -309,7 +309,7 @@ func TestAutoPipelineBasic(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         10,
 			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -322,7 +322,7 @@ func TestAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +362,7 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 
 	client := redis.NewClient(&redis.Options{
 		Addr: ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize:         1000, // Large batch size so only timer triggers flush
 			MaxFlushDelay:        50 * time.Millisecond,
 			MaxConcurrentBatches: 5,
@@ -375,7 +375,7 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,8 +428,8 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 	ctx := context.Background()
 
 	client := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
+		Addr:                ":6379",
+		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
 	})
 	defer client.Close()
 
@@ -437,7 +437,7 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,12 +476,12 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
+		Addr:                ":6379",
+		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
 	})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,12 +511,12 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: redis.DefaultAutoPipelineConfig(),
+		Addr:                ":6379",
+		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
 	})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

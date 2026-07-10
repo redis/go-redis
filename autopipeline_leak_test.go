@@ -20,10 +20,10 @@ func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 		t.Skipf("no redis: %v", err)
 	}
 
-	cfgs := []*redis.AutoPipelineConfig{
-		{MaxBatchSize: 300},                                                // ordered, 1 permit, 1 stripe
-		{MaxBatchSize: 300, MaxConcurrentBatches: 8, Unordered: true},      // unordered, 8 permits, 8 stripes
-		{MaxBatchSize: 300, MaxConcurrentBatches: 50, Unordered: true},     // many permits -> many workers
+	cfgs := []*redis.AutoPipelineOptions{
+		{MaxBatchSize: 300}, // ordered, 1 permit, 1 stripe
+		{MaxBatchSize: 300, MaxConcurrentBatches: 8, Unordered: true},  // unordered, 8 permits, 8 stripes
+		{MaxBatchSize: 300, MaxConcurrentBatches: 50, Unordered: true}, // many permits -> many workers
 	}
 
 	cycle := func() {
@@ -32,9 +32,9 @@ func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 				var ap *redis.AutoPipeliner
 				var err error
 				if async {
-					ap, err = client.AsyncAutoPipeline(cfg)
+					ap, err = client.AsyncAutoPipelineWithOptions(cfg)
 				} else {
-					ap, err = client.AutoPipeline(cfg)
+					ap, err = client.AutoPipelineWithOptions(cfg)
 				}
 				if err != nil {
 					t.Fatal(err)

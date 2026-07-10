@@ -37,7 +37,7 @@ func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 	cn.SetNetConn(&badConn{writeErr: io.EOF})
 	client.Pool().Put(ctx, cn)
 
-	ap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize:  300,
 		MaxFlushDelay: 50 * time.Millisecond,
 	})
@@ -84,7 +84,7 @@ func TestAutoPipelineRetryExhaustionSurfacesError(t *testing.T) {
 	})
 	defer client.Close()
 
-	ap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize:  300,
 		MaxFlushDelay: 50 * time.Millisecond,
 	})
