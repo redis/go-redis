@@ -50,3 +50,39 @@ func TestUniversalClientAutoPipeline(t *testing.T) {
 		t.Fatal("Ring via UniversalClient.AutoPipeline should return an error")
 	}
 }
+
+// TestAutoPipelinerAsUniversalClient verifies an *AutoPipeliner is a drop-in
+// UniversalClient: data commands are batched through it, while the non-batched
+// surface (PoolStats, Do, ...) delegates to the underlying client.
+func TestAutoPipelinerAsUniversalClient(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: ":6379"})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	apc, err := client.AutoPipeline(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer apc.Close()
+
+	// Use the autopipeliner strictly through the UniversalClient interface.
+	var uc redis.UniversalClient = apc
+
+	// Data commands: batched by the autopipeliner.
+	if v := uc.Set(ctx, "ucap:k", "v", 0).Val(); v != "OK" {
+		t.Fatalf("Set = %q, want OK", v)
+	}
+	if v := uc.Get(ctx, "ucap:k").Val(); v != "v" {
+		t.Fatalf("Get = %q, want v", v)
+	}
+	// Non-batched surface delegates to the underlying client.
+	if uc.PoolStats() == nil {
+		t.Fatal("PoolStats() returned nil via UniversalClient")
+	}
+	if err := uc.Do(ctx, "PING").Err(); err != nil {
+		t.Fatalf("Do(PING): %v", err)
+	}
+	uc.Del(ctx, "ucap:k")
+}
