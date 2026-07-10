@@ -41,7 +41,7 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 		// ap.Do returns a generic *redis.Cmd; use its typed accessors.
 		start := time.Now()
 		result := ap.Do(ctx, "BLPOP", "list", "1")
-		val, err := result.(*redis.Cmd).StringSlice()
+		val, err := result.StringSlice()
 		elapsed := time.Since(start)
 
 		Expect(err).NotTo(HaveOccurred())
@@ -61,15 +61,15 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 		brpopCmd := ap.Do(ctx, "BRPOP", "list3", "1")
 
 		// Get results — ap.Do returns generic *redis.Cmd; use typed accessors.
-		blpopVal, err := blpopCmd.(*redis.Cmd).StringSlice()
+		blpopVal, err := blpopCmd.StringSlice()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(blpopVal).To(Equal([]string{"list3", "a"}))
 
-		getVal, err := getCmd.(*redis.Cmd).Text()
+		getVal, err := getCmd.Text()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(getVal).To(Equal("value1"))
 
-		brpopVal, err := brpopCmd.(*redis.Cmd).StringSlice()
+		brpopVal, err := brpopCmd.StringSlice()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(brpopVal).To(Equal([]string{"list3", "c"}))
 	})

@@ -202,10 +202,12 @@ func (cfg *AutoPipelineConfig) Validate() error {
 }
 
 // cmdableClient is an interface for clients that support pipelining.
-// Both Client and ClusterClient implement this interface.
+// Both Client and ClusterClient implement this interface. It embeds
+// UniversalClient (Cmdable + Process + Do + AddHook + Watch + Subscribe... +
+// Close + PoolStats) so the AutoPipeliner can delegate the non-batched surface
+// back to the underlying client and itself satisfy UniversalClient.
 type cmdableClient interface {
-	Cmdable
-	Process(ctx context.Context, cmd Cmder) error
+	UniversalClient
 	// processPipelineHook is the hook-wrapped []Cmder pipeline entry — the same
 	// method Pipeline.Exec is wired to (see Client.Pipeline). The flusher
 	// dispatches drained batches through it directly, skipping the per-batch
@@ -586,7 +588,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 // a blocking autopipeliner the call blocks until the command has executed; on a
 // deferred (async) one it returns immediately and the command's result
 // accessors (Err/Val/Result) block until it completes.
-func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
+func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	if len(args) == 0 {
 		cmd.SetErr(errDoNoArgs)
@@ -623,6 +625,61 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 	return ap.cmdable(ctx, cmd)
 }
+
+// The methods below complete the UniversalClient surface by delegating to the
+// underlying client. They are NOT autopipelined — pub/sub, transactions (Watch),
+// hooks, Do and pool stats cannot be batched — so an AutoPipeliner used as a
+// UniversalClient batches only the typed data commands; everything here runs on
+// the underlying client exactly as it would there.
+//
+// Note on lifecycle: Close() (defined elsewhere) closes the AUTOPIPELINER —
+// drains in-flight batches and stops flushers — but does NOT close the
+// underlying client, whose lifecycle is owned by whoever created it.
+
+// AddHook adds a hook to the underlying client. Autopipelined batches are hooked
+// too, since dispatch goes through the hook-wrapped pipeline entry.
+func (ap *AutoPipeliner) AddHook(hook Hook) { ap.pipeliner.AddHook(hook) }
+
+// Watch runs a transactional function on the underlying client (not batched).
+func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	return ap.pipeliner.Watch(ctx, fn, keys...)
+}
+
+// Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
+// needs a dedicated connection).
+func (ap *AutoPipeliner) Subscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.Subscribe(ctx, channels...)
+}
+
+// PSubscribe opens a pattern pub/sub on the underlying client (not batched).
+func (ap *AutoPipeliner) PSubscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.PSubscribe(ctx, channels...)
+}
+
+// SSubscribe opens a sharded pub/sub on the underlying client (not batched).
+func (ap *AutoPipeliner) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.SSubscribe(ctx, channels...)
+}
+
+// PoolStats returns the underlying client's connection pool statistics.
+func (ap *AutoPipeliner) PoolStats() *PoolStats { return ap.pipeliner.PoolStats() }
+
+// AutoPipeline delegates to the underlying client, which returns its cached
+// autopipeliner (typically this same instance). Present to satisfy the
+// UniversalClient surface.
+func (ap *AutoPipeliner) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipeline(config...)
+}
+
+// AsyncAutoPipeline delegates to the underlying client. Present to satisfy the
+// UniversalClient surface.
+func (ap *AutoPipeliner) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipeline(config...)
+}
+
+// validate AutoPipeliner implements UniversalClient (drop-in for the real
+// clients; non-data operations delegate to the underlying client).
+var _ UniversalClient = (*AutoPipeliner)(nil)
 
 // AutoFuture is the handle returned by Submit. Call Wait (or Result on the
 // command after Wait) once the result is needed; it blocks only until the
