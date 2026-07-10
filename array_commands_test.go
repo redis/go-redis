@@ -14,16 +14,19 @@ import (
 
 var _ = Describe("Array Commands", Label("array"), func() {
 	ctx := context.TODO()
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	BeforeEach(func() {
 		SkipBeforeRedisVersion(8.8, "Redis 8.8.0 introduces support for Array")
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		client, closeSubject = newUniversalSubject(rawClient)
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	Describe("ARSet and ARGet", func() {

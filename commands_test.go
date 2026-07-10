@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"os"
 	"reflect"
 	"strconv"
 	"time"
@@ -30,51 +29,25 @@ func (t *TimeValue) ScanRedis(s string) (err error) {
 	return
 }
 
-// newCommandSubject returns the Cmdable that the command specs run against,
-// selected by the GOREDIS_TEST_SUBJECT env var so the whole suite can be
-// replayed through the autopipeliner without touching each spec:
-//
-//	(unset)|client -> the *redis.Client itself (default; unchanged behavior)
-//	ap-blocking     -> client.AutoPipeline()      (synchronous drop-in face)
-//	ap-async        -> client.AsyncAutoPipeline()  (deferred face; result reads block)
-//
-// It returns the subject plus an optional closer for the autopipeliner.
-func newCommandSubject(c *redis.Client) (redis.Cmdable, func() error) {
-	switch os.Getenv("GOREDIS_TEST_SUBJECT") {
-	case "ap-blocking":
-		ap, err := c.AutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
-		Expect(err).NotTo(HaveOccurred())
-		return ap, ap.Close
-	case "ap-async":
-		ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
-		Expect(err).NotTo(HaveOccurred())
-		return ap, ap.Close
-	default:
-		return c, nil
-	}
-}
-
 var _ = Describe("Commands", func() {
 	ctx := context.TODO()
-	// client is the Cmdable under test (may be the raw client or an
-	// autopipeliner, per GOREDIS_TEST_SUBJECT). rawClient is always the
-	// underlying *redis.Client, used for setup/teardown and the few
-	// client-only calls (PoolStats, Conn) that are not part of Cmdable.
-	var client redis.Cmdable
+	// client is the UniversalClient under test (the raw client or an
+	// autopipeliner, per GOREDIS_TEST_SUBJECT — see newUniversalSubject).
+	// rawClient is always the underlying *redis.Client, used for setup/teardown
+	// and the admin/connection-only calls (FlushDB, Config*, Ping, PoolStats,
+	// Conn, ...) that are not part of the UniversalClient interface.
+	var client redis.UniversalClient
 	var rawClient *redis.Client
-	var apCloser func() error
+	var closeSubject func() error
 
 	BeforeEach(func() {
 		rawClient = redis.NewClient(redisOptions())
 		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
-		client, apCloser = newCommandSubject(rawClient)
+		client, closeSubject = newUniversalSubject(rawClient)
 	})
 
 	AfterEach(func() {
-		if apCloser != nil {
-			Expect(apCloser()).NotTo(HaveOccurred())
-		}
-		Expect(rawClient.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	Describe("server", func() {

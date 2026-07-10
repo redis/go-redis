@@ -490,3 +490,51 @@ func initializeTLSCluster(ctx context.Context) error {
 func cleanupTLSCluster() {
 	// TLS cluster is auto-managed by the container, no cleanup needed
 }
+
+// newUniversalSubject returns the redis.UniversalClient that a parametrized
+// command suite runs against, selected by the GOREDIS_TEST_SUBJECT env var so a
+// whole suite can be replayed through the autopipeliner without touching each
+// spec:
+//
+//	(unset)|client -> the *redis.Client itself (default; unchanged behavior)
+//	ap-blocking     -> client.AutoPipeline()      (synchronous drop-in face)
+//	ap-async        -> client.AsyncAutoPipeline()  (deferred face; result reads block)
+//
+// It returns the subject plus a single closer that closes the autopipeliner (if
+// any) and then the underlying *redis.Client — so callers just defer/AfterEach
+// one call. Admin/connection-only calls not on UniversalClient (FlushDB,
+// Config*, Ping, Info, Conn, ...) should use the underlying client directly.
+func newUniversalSubject(c *redis.Client) (redis.UniversalClient, func() error) {
+	// closeWith closes the optional autopipeliner then the underlying client,
+	// returning the first error.
+	closeWith := func(ap *redis.AutoPipeliner) func() error {
+		return func() error {
+			var firstErr error
+			if ap != nil {
+				if err := ap.Close(); err != nil {
+					firstErr = err
+				}
+			}
+			if err := c.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			return firstErr
+		}
+	}
+	switch os.Getenv("GOREDIS_TEST_SUBJECT") {
+	case "ap-blocking":
+		ap, err := c.AutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
+		if err != nil {
+			panic(err)
+		}
+		return ap, closeWith(ap)
+	case "ap-async":
+		ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300})
+		if err != nil {
+			panic(err)
+		}
+		return ap, closeWith(ap)
+	default:
+		return c, closeWith(nil)
+	}
+}
