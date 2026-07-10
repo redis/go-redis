@@ -440,6 +440,16 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// Reject unhashable keys (arrays/maps) before they are used as a map
+		// key, which would otherwise panic. This check must run before the
+		// value is read so it also guards the Nil and RedisError paths below,
+		// which write the key into the map and continue.
+		switch k.(type) {
+		case []interface{}, map[interface{}]interface{}:
+			return nil, fmt.Errorf("redis: RESP3 map key must be a scalar type, got %T", k)
+		}
+
 		v, err := r.ReadReply()
 		if err != nil {
 			if err == Nil {
@@ -452,6 +462,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 			}
 			return nil, err
 		}
+
 		m[k] = v
 	}
 	return m, nil
