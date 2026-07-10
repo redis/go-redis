@@ -414,6 +414,7 @@ comes in two faces:
 ```go
 rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 defer rdb.Close()
+ctx := context.Background()
 
 // Blocking face: drop-in for a normal client, batched under the hood.
 ap, err := rdb.AutoPipeline(nil)
@@ -439,6 +440,7 @@ wg.Wait()
 For maximum throughput, submit a window on the async face and read later:
 
 ```go
+ctx := context.Background()
 ap, err := rdb.AsyncAutoPipeline(nil) // ordered by default
 if err != nil {
     log.Fatal(err)

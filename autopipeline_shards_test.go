@@ -77,8 +77,14 @@ func TestClusterAutoPipelineConfigShardDefault(t *testing.T) {
 		t.Fatalf("cluster default-config NumShards = %d, want >= 2 (slot routing must not be dead code at defaults)", def.NumShards)
 	}
 
+	// An explicit NumShards is preserved, but the cluster still marks
+	// contentSharded so slot routing (which keeps per-key order) is not rejected
+	// on the deferred (async) face; the caller's config must not be mutated.
 	explicit := &AutoPipelineConfig{MaxConcurrentBatches: 8, Unordered: true, NumShards: 3}
-	if got := clusterAutoPipelineConfig(explicit); got != explicit || got.NumShards != 3 {
-		t.Fatalf("explicit NumShards must pass through unchanged, got %+v", got)
+	if got := clusterAutoPipelineConfig(explicit); got.NumShards != 3 || !got.contentSharded {
+		t.Fatalf("explicit NumShards must be preserved with contentSharded set, got %+v", got)
+	}
+	if explicit.contentSharded {
+		t.Fatalf("caller config mutated: contentSharded set on the original")
 	}
 }
