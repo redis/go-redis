@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -106,15 +107,15 @@ func TestDialLimiterDelayUntilNext(t *testing.T) {
 	}
 }
 
-func TestDialWaitQueueSignalAndRemove(t *testing.T) {
+func TestDialWaitQueueSignalAndAbandon(t *testing.T) {
 	q := newDialWaitQueue()
 	w1 := &dialWaiter{ready: make(chan struct{}, 1)}
 	w2 := &dialWaiter{ready: make(chan struct{}, 1)}
 	q.enqueue(w1)
 	q.enqueue(w2)
 
-	if q.len() != 2 {
-		t.Fatalf("queue len should be 2, got %d", q.len())
+	if q.len() != 2 || q.empty() {
+		t.Fatalf("queue should have 2 pending waiters, got %d", q.len())
 	}
 
 	// signalNext wakes the oldest waiter (FIFO) and dequeues it.
@@ -128,17 +129,85 @@ func TestDialWaitQueueSignalAndRemove(t *testing.T) {
 		t.Fatalf("queue len should be 1 after signalNext, got %d", q.len())
 	}
 
-	// w1 was already dequeued -> remove reports false; w2 still present -> true.
-	if q.remove(w1) {
-		t.Fatal("remove(w1) should report false: already dequeued by signalNext")
+	// w1 was already signaled -> abandon reports false; w2 still pending -> true.
+	if q.abandon(w1) {
+		t.Fatal("abandon(w1) should report false: already signaled by signalNext")
 	}
-	if !q.remove(w2) {
-		t.Fatal("remove(w2) should report true: still queued")
+	if !q.abandon(w2) {
+		t.Fatal("abandon(w2) should report true: still pending")
 	}
-	if q.len() != 0 {
-		t.Fatalf("queue should be empty, got %d", q.len())
+	if q.len() != 0 || !q.empty() {
+		t.Fatalf("queue should have no pending waiters, got %d", q.len())
 	}
 
-	// signalNext on an empty queue is a no-op and must not panic.
+	// signalNext must skip w2's abandoned tombstone and not panic on empty.
 	q.signalNext()
+	select {
+	case <-w2.ready:
+		t.Fatal("abandoned waiter must not be signaled")
+	default:
+	}
+}
+
+// TestHasAcquirableIdleConn verifies the throttled-waiter double-check only
+// treats IDLE/CREATED connections as reusable: UNUSABLE conns (handoff/re-auth)
+// sitting in idleConns must not count, otherwise waitForDialSlot would return
+// without parking and getConn would busy-spin.
+func TestHasAcquirableIdleConn(t *testing.T) {
+	p := &ConnPool{}
+
+	if p.hasAcquirableIdleConn() {
+		t.Fatal("empty idle list must not report an acquirable conn")
+	}
+
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+
+	unusable := NewConn(c1)
+	unusable.stateMachine.Transition(StateUnusable)
+	p.idleConns = []*Conn{unusable}
+	if p.hasAcquirableIdleConn() {
+		t.Fatal("UNUSABLE idle conn must not report as acquirable (busy-spin regression)")
+	}
+
+	created := NewConn(c2) // fresh conns start in StateCreated, which popIdle can acquire
+	p.idleConns = append(p.idleConns, created)
+	if !p.hasAcquirableIdleConn() {
+		t.Fatal("CREATED idle conn should report as acquirable")
+	}
+
+	created.stateMachine.Transition(StateIdle)
+	if !p.hasAcquirableIdleConn() {
+		t.Fatal("IDLE conn should report as acquirable")
+	}
+}
+
+func TestDialWaitQueueSignalAll(t *testing.T) {
+	q := newDialWaitQueue()
+	ws := make([]*dialWaiter, 3)
+	for i := range ws {
+		ws[i] = &dialWaiter{ready: make(chan struct{}, 1)}
+		q.enqueue(ws[i])
+	}
+	// One waiter departs before the drain.
+	q.abandon(ws[1])
+
+	q.signalAll()
+
+	for i, w := range ws {
+		select {
+		case <-w.ready:
+			if i == 1 {
+				t.Fatal("abandoned waiter must not be signaled by signalAll")
+			}
+		default:
+			if i != 1 {
+				t.Fatalf("waiter %d should have been signaled by signalAll", i)
+			}
+		}
+	}
+	if q.len() != 0 || !q.empty() {
+		t.Fatalf("queue should be empty after signalAll, got %d", q.len())
+	}
 }

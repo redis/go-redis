@@ -300,6 +300,120 @@ func TestDialRateLimitConcurrentEscape(t *testing.T) {
 	p.Put(ctx, c0)
 }
 
+// TestDialRateLimitMinIdleConnsPaced verifies the min-idle refill path respects
+// the dial rate limit: reconnecting after mass connection loss must not storm
+// the server with MinIdleConns concurrent dials.
+func TestDialRateLimitMinIdleConnsPaced(t *testing.T) {
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		Dialer:             countingDialer(&dials),
+		PoolSize:           10,
+		MaxConcurrentDials: 10,
+		MinIdleConns:       5,
+		DialRateLimit:      1,
+		DialRateBurst:      1,
+		PoolTimeout:        time.Second,
+	})
+	defer p.Close()
+
+	// The refill wants 5 connections but the bucket holds a single token
+	// (rate 1/s): within 300ms at most the burst token plus one refill can
+	// pass. Unpaced, all 5 dials fire immediately.
+	time.Sleep(300 * time.Millisecond)
+	if got := dials.Load(); got > 2 {
+		t.Fatalf("min-idle refill not paced: %d dials within 300ms at rate 1/s", got)
+	}
+}
+
+// TestDialRateLimitCloseWakesWaiters verifies pool Close() immediately wakes
+// Get() callers parked by the dial limiter instead of letting them sleep out
+// their park timer.
+func TestDialRateLimitCloseWakesWaiters(t *testing.T) {
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		Dialer:             countingDialer(&dials),
+		PoolSize:           10,
+		MaxConcurrentDials: 10,
+		DialRateLimit:      1,
+		DialRateBurst:      1,
+		PoolTimeout:        10 * time.Second, // park timer far in the future
+	})
+	ctx := context.Background()
+
+	if _, err := p.Get(ctx); err != nil { // consume the only token
+		t.Fatalf("seed Get failed: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.Get(ctx) // throttled -> parks
+		errCh <- err
+	}()
+	waitFor(t, time.Second, func() bool { return p.DialWaitQueueLen() == 1 })
+
+	start := time.Now()
+	_ = p.Close()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("parked Get should fail after pool Close")
+		}
+		if elapsed := time.Since(start); elapsed > time.Second {
+			t.Fatalf("parked Get took %v to observe Close (should be immediate)", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("parked Get still blocked after Close (waiter not woken)")
+	}
+}
+
+// TestDialRateLimitDeadlineIncludesTurnWait verifies the throttle deadline is
+// anchored at Get() entry, so time already spent waiting for a pool turn counts
+// against PoolTimeout and a throttled Get never waits ~2x PoolTimeout total.
+func TestDialRateLimitDeadlineIncludesTurnWait(t *testing.T) {
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		Dialer:             countingDialer(&dials),
+		PoolSize:           1, // single turn: second Get blocks in waitTurn
+		MaxConcurrentDials: 1,
+		DialRateLimit:      1,
+		DialRateBurst:      1,
+		PoolTimeout:        300 * time.Millisecond,
+	})
+	defer p.Close()
+	ctx := context.Background()
+
+	c1, err := p.Get(ctx) // dial #1: consumes the token and the only turn
+	if err != nil {
+		t.Fatalf("seed Get failed: %v", err)
+	}
+
+	// Free the turn (without returning an idle conn) halfway through the
+	// timeout budget: the second Get spends ~150ms in waitTurn, then parks
+	// only until the original deadline (~150ms more) before escaping.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		p.Remove(ctx, c1, nil)
+	}()
+
+	start := time.Now()
+	c2, err := p.Get(ctx)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("throttled Get should escape and succeed, got: %v", err)
+	}
+	p.Put(ctx, c2)
+
+	if got := dials.Load(); got != 2 {
+		t.Fatalf("expected 2 dials (seed + escape), got %d", got)
+	}
+	// With the deadline anchored at Get() entry, total wait ≈ PoolTimeout
+	// (300ms). The old bug re-anchored it after waitTurn: ~150ms + 300ms.
+	if elapsed > 400*time.Millisecond {
+		t.Fatalf("throttled Get waited %v; deadline not crediting waitTurn time (~2x PoolTimeout bug)", elapsed)
+	}
+}
+
 // TestDialRateLimitDisabled verifies zero behavioral change when the limiter is
 // not configured.
 func TestDialRateLimitDisabled(t *testing.T) {
