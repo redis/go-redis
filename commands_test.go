@@ -9750,7 +9750,7 @@ var _ = Describe("Commands", func() {
 			err := rawClient.Do(ctx, "slowlog", "reset").Err()
 			Expect(err).NotTo(HaveOccurred())
 
-			client.Set(ctx, "test", "true", 0)
+			Expect(client.Set(ctx, "test", "true", 0).Err()).NotTo(HaveOccurred())
 
 			result, err := rawClient.SlowLogGet(ctx, -1).Result()
 			Expect(err).NotTo(HaveOccurred())
