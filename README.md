@@ -371,8 +371,8 @@ defer rdb.Close()
 ctx := context.Background()
 
 // Blocking face: drop-in for a normal client, batched under the hood.
-ap, err := rdb.AutoPipeline(nil)
-if err != nil { // only on an invalid AutoPipelineConfig
+ap, err := rdb.AutoPipeline()
+if err != nil { // only on an invalid AutoPipelineOptions
     log.Fatal(err)
 }
 defer ap.Close()
@@ -395,7 +395,7 @@ For maximum throughput, submit a window on the async face and read later:
 
 ```go
 ctx := context.Background()
-ap, err := rdb.AsyncAutoPipeline(nil) // ordered by default
+ap, err := rdb.AsyncAutoPipeline() // ordered by default
 if err != nil {
     log.Fatal(err)
 }
@@ -412,9 +412,11 @@ for _, cmd := range cmds {
 }
 ```
 
-Both faces take an optional `*AutoPipelineConfig` and return `(*AutoPipeliner, error)`
-— the error is non-nil only for an invalid config (e.g.
-`ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 80, Unordered: true})`).
+Each face has a no-arg form that uses `Options.AutoPipelineOptions` (or the
+built-in default) and a `WithConfig` form that takes an explicit
+`*AutoPipelineOptions`; both return `(*AutoPipeliner, error)` — the error is
+non-nil only for an invalid config (e.g.
+`ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 80, Unordered: true})`).
 They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots; ordering across nodes is per key
 (same-key commands stay in order, different nodes' sub-pipelines run

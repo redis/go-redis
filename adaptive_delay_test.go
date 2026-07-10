@@ -194,7 +194,7 @@ func TestAdaptiveDelayCalculation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create autopipeliner with test config
 			ap := &AutoPipeliner{
-				config: &AutoPipelineConfig{
+				config: &AutoPipelineOptions{
 					MaxBatchSize:  tt.maxBatchSize,
 					MaxFlushDelay: tt.maxDelay,
 					AdaptiveDelay: tt.adaptive,
@@ -221,7 +221,7 @@ func TestAdaptiveDelayIntegerArithmetic(t *testing.T) {
 	maxDelay := 100 * time.Microsecond
 
 	ap := &AutoPipeliner{
-		config: &AutoPipelineConfig{
+		config: &AutoPipelineOptions{
 			MaxBatchSize:  maxBatch,
 			MaxFlushDelay: maxDelay,
 			AdaptiveDelay: true,
@@ -263,7 +263,7 @@ func TestAdaptiveDelayIntegerArithmetic(t *testing.T) {
 // BenchmarkCalculateDelay benchmarks the delay calculation
 func BenchmarkCalculateDelay(b *testing.B) {
 	ap := &AutoPipeliner{
-		config: &AutoPipelineConfig{
+		config: &AutoPipelineOptions{
 			MaxBatchSize:  100,
 			MaxFlushDelay: 100 * time.Microsecond,
 			AdaptiveDelay: true,
@@ -282,7 +282,7 @@ func BenchmarkCalculateDelay(b *testing.B) {
 // BenchmarkCalculateDelayDisabled benchmarks with adaptive delay disabled
 func BenchmarkCalculateDelayDisabled(b *testing.B) {
 	ap := &AutoPipeliner{
-		config: &AutoPipelineConfig{
+		config: &AutoPipelineOptions{
 			MaxBatchSize:  100,
 			MaxFlushDelay: 100 * time.Microsecond,
 			AdaptiveDelay: false,

@@ -14,12 +14,12 @@ import (
 func TestAPZeroCopyBuffer(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
+		Addr:                ":6379",
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

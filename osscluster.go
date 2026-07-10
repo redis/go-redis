@@ -150,9 +150,9 @@ type ClusterOptions struct {
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
 
-	// AutoPipelineConfig is the default config for AsyncAutoPipeline.
-	// See Options.AutoPipelineConfig.
-	AutoPipelineConfig *AutoPipelineConfig
+	// AutoPipelineOptions is the default config for AsyncAutoPipeline.
+	// See Options.AutoPipelineOptions.
+	AutoPipelineOptions *AutoPipelineOptions
 
 	TLSConfig *tls.Config
 
@@ -1595,12 +1595,12 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	return &pipe
 }
 
-// clusterAutoPipelineConfig applies the cluster shard-count default: commands
+// clusterAutoPipelineOptions applies the cluster shard-count default: commands
 // are routed to shards by slot (see installAutoPipelineSharding), so unlike a
 // standalone client — which defaults to a single deep queue — a cluster client
 // wants several shards to keep concurrent nodes' batches separate. The caller's
 // config is copied before the default is filled in, never mutated.
-func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
+func clusterAutoPipelineOptions(cfg *AutoPipelineOptions) *AutoPipelineOptions {
 	c2 := *cfg
 	if c2.NumShards == 0 {
 		c2.NumShards = numAutoPipelineShards()
@@ -1617,22 +1617,28 @@ func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
 // command call blocks until executed (drop-in shape) while the engine batches
 // concurrent callers into pipelines. Commands keep per-goroutine order; across
 // nodes, ordering is per key (slot routing keeps a key on one shard and node
-// sub-pipelines execute concurrently). Pass a config (nil for the default) to override
-// DefaultBlockingAutoPipelineConfig. Cached/shared; first call's config wins.
+// sub-pipelines execute concurrently). Use AutoPipelineWithOptions to override
+// DefaultBlockingAutoPipelineOptions. Cached/shared; first call's config wins.
 // Close it (or the client) to release its goroutines.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *ClusterClient) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *ClusterClient) AutoPipeline() (*AutoPipeliner, error) {
+	return c.AutoPipelineWithOptions(nil)
+}
+
+// AutoPipelineWithOptions is AutoPipeline with explicit options instead of
+// ClusterOptions.AutoPipelineOptions / the default. Cached/shared; first call wins.
+func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
-		func() *AutoPipelineConfig {
-			if c.opt.AutoPipelineConfig != nil {
-				return c.opt.AutoPipelineConfig
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
 			}
-			return DefaultBlockingAutoPipelineConfig()
+			return DefaultBlockingAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) {
-			ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), true)
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			ap, err := newAutoPipeliner(c, clusterAutoPipelineOptions(cfg), true)
 			if err != nil {
 				return nil, err
 			}
@@ -1665,24 +1671,30 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 
 // AsyncAutoPipeline returns the deferred autopipeliner: command calls return
 // immediately and the result accessors block. Submit a window then read results
-// for the highest throughput. When config is nil,
-// ClusterOptions.AutoPipelineConfig is used if set, otherwise
-// DefaultAutoPipelineConfig. Ordering across nodes is per key: slot routing
-// keeps a key on one shard, and node sub-pipelines execute concurrently. Pass
-// a config to override. Cached/shared; first call's config wins.
+// for the highest throughput. By default,
+// ClusterOptions.AutoPipelineOptions is used if set, otherwise
+// DefaultAutoPipelineOptions. Ordering across nodes is per key: slot routing
+// keeps a key on one shard, and node sub-pipelines execute concurrently. Use
+// AsyncAutoPipelineWithOptions to override. Cached/shared; first call's config wins.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *ClusterClient) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *ClusterClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return c.AsyncAutoPipelineWithOptions(nil)
+}
+
+// AsyncAutoPipelineWithOptions is AsyncAutoPipeline with an explicit config
+// instead of ClusterOptions.AutoPipelineOptions / the default. Cached/shared.
+func (c *ClusterClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
-		func() *AutoPipelineConfig {
-			if c.opt.AutoPipelineConfig != nil {
-				return c.opt.AutoPipelineConfig
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
 			}
-			return DefaultAutoPipelineConfig()
+			return DefaultAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) {
-			ap, err := newAutoPipeliner(c, clusterAutoPipelineConfig(cfg), false)
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			ap, err := newAutoPipeliner(c, clusterAutoPipelineOptions(cfg), false)
 			if err != nil {
 				return nil, err
 			}

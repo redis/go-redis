@@ -45,7 +45,7 @@ func TestPipelinePoolMaintNotifications(t *testing.T) {
 	}
 
 	// AutoPipeline (batched) on the pipeline pool.
-	ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300, MaxFlushDelay: 50 * time.Millisecond})
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxBatchSize: 300, MaxFlushDelay: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

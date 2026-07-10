@@ -22,7 +22,7 @@ func TestAutoPipelineWindowedNoDeadlock(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize: 300, MaxConcurrentBatches: 8, Unordered: true,
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestAutoPipelineSoak(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize: 200, MaxConcurrentBatches: 16, Unordered: true,
 	})
 	if err != nil {

@@ -1712,8 +1712,8 @@ func (c *Client) Pipeline() Pipeliner {
 // engine batches concurrent callers' commands into pipelines, so throughput is
 // far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
 //
-// When config is nil, Options.AutoPipelineConfig is used if set,
-// otherwise DefaultBlockingAutoPipelineConfig (a single ordered batch stream,
+// By default, Options.AutoPipelineOptions is used if set,
+// otherwise DefaultBlockingAutoPipelineOptions (a single ordered batch stream,
 // which maximizes throughput and minimizes latency for the blocking face — see
 // its doc). The instance is cached and shared; the first
 // call's config wins and later calls return the same instance until it is closed.
@@ -1721,15 +1721,22 @@ func (c *Client) Pipeline() Pipeliner {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *Client) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
+	return c.AutoPipelineWithOptions(nil)
+}
+
+// AutoPipelineWithOptions is AutoPipeline with explicit options instead of
+// Options.AutoPipelineOptions / the default. The instance is cached and shared;
+// the first call's config wins.
+func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
-		func() *AutoPipelineConfig {
-			if c.opt.AutoPipelineConfig != nil {
-				return c.opt.AutoPipelineConfig
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
 			}
-			return DefaultBlockingAutoPipelineConfig()
+			return DefaultBlockingAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
 }
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
@@ -1737,24 +1744,31 @@ func (c *Client) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error
 // command has executed. Submit a window of commands, then read their results, to
 // keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
 //
-// When config is nil, Options.AutoPipelineConfig is used if set,
-// otherwise DefaultAutoPipelineConfig (ordered, MaxConcurrentBatches: 1) — a
-// single goroutine's deferred commands execute in submit order. Pass a config
-// to override both (and, for parallel batches, set Unordered). The instance is
+// By default, Options.AutoPipelineOptions is used if set,
+// otherwise DefaultAutoPipelineOptions (ordered, MaxConcurrentBatches: 1) — a
+// single goroutine's deferred commands execute in submit order. Use AsyncAutoPipelineWithOptions
+// to override (and, for parallel batches, set Unordered). The instance is
 // cached and shared; the first call's config wins. Close it (or the client) to
 // release its goroutines.
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
-func (c *Client) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
+func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return c.AsyncAutoPipelineWithOptions(nil)
+}
+
+// AsyncAutoPipelineWithOptions is AsyncAutoPipeline with an explicit config
+// instead of Options.AutoPipelineOptions / the default. The instance is cached
+// and shared; the first call's config wins.
+func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
-		func() *AutoPipelineConfig {
-			if c.opt.AutoPipelineConfig != nil {
-				return c.opt.AutoPipelineConfig
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
 			}
-			return DefaultAutoPipelineConfig()
+			return DefaultAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineConfig) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

@@ -118,7 +118,7 @@ func usageTour(ctx context.Context) {
 	// client; the engine batches concurrent callers under the hood. Don't
 	// expect windowed-throughput wins here — each caller waits per command;
 	// the win is batching + far fewer connections at high concurrency.
-	ap, err := rdb.AutoPipeline(nil)
+	ap, err := rdb.AutoPipeline()
 	if err != nil {
 		fatalf("AutoPipeline: %v", err)
 	}
@@ -146,7 +146,7 @@ func usageTour(ctx context.Context) {
 	// Calls return immediately; the result accessors (Err/Val/Result) block
 	// until the command's batch executed. The window is what keeps pipelines
 	// deep — this is the throughput pattern.
-	aap, err := rdb.AsyncAutoPipeline(nil)
+	aap, err := rdb.AsyncAutoPipeline()
 	if err != nil {
 		fatalf("AsyncAutoPipeline: %v", err)
 	}
@@ -190,7 +190,7 @@ func usageTour(ctx context.Context) {
 	// --- e. Tuning notes (in code, so they stay honest) --------------------
 	// For peak throughput on the async face give up global ordering:
 	//
-	//	rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	//	rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 	//		MaxConcurrentBatches: 4, // small values suffice
 	//		Unordered:            true,
 	//	})
@@ -218,7 +218,7 @@ func clusterTour(ctx context.Context, addrs []string) {
 	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: addrs})
 	defer cc.Close()
 
-	ap, err := cc.AutoPipeline(nil)
+	ap, err := cc.AutoPipeline()
 	if err != nil {
 		fatalf("cluster AutoPipeline: %v", err)
 	}
@@ -288,7 +288,7 @@ func benchOrderedBlocking(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
-	ap, err := rdb.AutoPipeline(nil) // blocking face (default: single ordered batch stream)
+	ap, err := rdb.AutoPipeline() // blocking face (default: single ordered batch stream)
 	if err != nil {
 		fatalf("AutoPipeline: %v", err)
 	}
@@ -309,7 +309,7 @@ func benchOrderedReadLater(ctx context.Context) float64 {
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
 	// Default async config is ordered (MaxConcurrentBatches=1).
-	ap, err := rdb.AsyncAutoPipeline(nil)
+	ap, err := rdb.AsyncAutoPipeline()
 	if err != nil {
 		fatalf("AsyncAutoPipeline: %v", err)
 	}
@@ -326,7 +326,7 @@ func benchUnorderedReadLater(ctx context.Context) float64 {
 	rdb := redis.NewClient(&redis.Options{Addr: addr()})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
-	ap, err := rdb.AsyncAutoPipeline(&redis.AutoPipelineConfig{
+	ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize:         300,
 		MaxConcurrentBatches: 4,
 		Unordered:            true, // required for MaxConcurrentBatches > 1

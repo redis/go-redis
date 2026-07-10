@@ -24,7 +24,7 @@ func TestAutoPipelineSecondaryAccessors(t *testing.T) {
 	// The deferred face is where secondary accessors must block until the
 	// batch executes (the blocking face waits inside the call itself, so it
 	// could never catch a missing await barrier).
-	ap, err := c.AsyncAutoPipeline(nil)
+	ap, err := c.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

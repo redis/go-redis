@@ -22,7 +22,7 @@ func TestUniversalClientAutoPipeline(t *testing.T) {
 		t.Skipf("no redis: %v", err)
 	}
 
-	ap, err := uc.AutoPipeline(nil)
+	ap, err := uc.AutoPipeline()
 	if err != nil {
 		t.Fatalf("UniversalClient.AutoPipeline: %v", err)
 	}
@@ -39,14 +39,14 @@ func TestUniversalClientAutoPipeline(t *testing.T) {
 	// through the UniversalClient interface).
 	ring := redis.NewRing(&redis.RingOptions{Addrs: map[string]string{"s1": ":6379"}})
 	defer ring.Close()
-	if _, err := ring.AutoPipeline(nil); err == nil {
+	if _, err := ring.AutoPipeline(); err == nil {
 		t.Fatal("Ring.AutoPipeline should return an error (unsupported)")
 	}
-	if _, err := ring.AsyncAutoPipeline(nil); err == nil {
+	if _, err := ring.AsyncAutoPipeline(); err == nil {
 		t.Fatal("Ring.AsyncAutoPipeline should return an error (unsupported)")
 	}
 	var ru redis.UniversalClient = ring
-	if _, err := ru.AutoPipeline(nil); err == nil {
+	if _, err := ru.AutoPipeline(); err == nil {
 		t.Fatal("Ring via UniversalClient.AutoPipeline should return an error")
 	}
 }
@@ -61,7 +61,7 @@ func TestAutoPipelinerAsUniversalClient(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	apc, err := client.AutoPipeline(nil)
+	apc, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

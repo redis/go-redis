@@ -20,7 +20,7 @@ func TestAPClusterMovedRedirectFollowed(t *testing.T) {
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,14 +55,14 @@ func TestAPClusterMovedSurfacedWithoutRedirects(t *testing.T) {
 	c := redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs:        []string{":16600", ":16601", ":16602", ":16603", ":16604", ":16605"},
 		MaxRedirects: -1, // normalized to 0: a single attempt, no follow-through
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true,
 		},
 	})
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

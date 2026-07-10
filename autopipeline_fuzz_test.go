@@ -37,7 +37,7 @@ func TestAutoPipelineDifferentialFuzz(t *testing.T) {
 		if err := client.FlushDB(ctx).Err(); err != nil {
 			t.Fatal(err)
 		}
-		ap, err := client.AutoPipeline(nil)
+		ap, err := client.AutoPipeline()
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -6,16 +6,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// TestAutoPipelineConfigNotMutated guards a regression where the autopipeliner
+// TestAutoPipelineOptionsNotMutated guards a regression where the autopipeliner
 // filled zero-value defaults (MaxBatchSize, MaxConcurrentBatches) directly into
-// the caller's *AutoPipelineConfig. A config shared across clients (or inspected
+// the caller's *AutoPipelineOptions. A config shared across clients (or inspected
 // later by the caller) must not be mutated by creating an AutoPipeliner.
-func TestAutoPipelineConfigNotMutated(t *testing.T) {
-	cfg := &redis.AutoPipelineConfig{} // all zero -> defaults applied internally
+func TestAutoPipelineOptionsNotMutated(t *testing.T) {
+	cfg := &redis.AutoPipelineOptions{} // all zero -> defaults applied internally
 
-	c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
+	c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineOptions: cfg})
 	defer c.Close()
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,9 +30,9 @@ func TestAutoPipelineConfigNotMutated(t *testing.T) {
 
 	// The same config reused for a second client must still be pristine and
 	// usable (defaults applied to an internal copy, not the shared struct).
-	c2 := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
+	c2 := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineOptions: cfg})
 	defer c2.Close()
-	ap2, err := c2.AutoPipeline(nil)
+	ap2, err := c2.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

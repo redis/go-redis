@@ -17,12 +17,12 @@ import (
 func TestAPNoCrossTalk(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true},
+		Addr:                ":6379",
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true},
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +80,12 @@ func TestAPNoCrossTalk(t *testing.T) {
 func TestAPPerGoroutineOrder(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
+		Addr:                ":6379",
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,12 +119,12 @@ func TestAPPerGoroutineOrder(t *testing.T) {
 func TestAPNoLostCommands(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 256, MaxConcurrentBatches: 64, Unordered: true},
+		Addr:                ":6379",
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 256, MaxConcurrentBatches: 64, Unordered: true},
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,14 +159,14 @@ func TestAPNoLostCommands(t *testing.T) {
 func TestAPErrorIsolation(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:               ":6379",
-		AutoPipelineConfig: &redis.AutoPipelineConfig{MaxBatchSize: 64, MaxConcurrentBatches: 16, Unordered: true},
+		Addr:                ":6379",
+		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 64, MaxConcurrentBatches: 16, Unordered: true},
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
 	// Seed a list key so INCR on it errors with WRONGTYPE.
 	c.RPush(ctx, "alist", "x")
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

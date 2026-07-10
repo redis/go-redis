@@ -21,7 +21,7 @@ func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
-	ap, err := newAutoPipeliner(client, &AutoPipelineConfig{
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{
 		MaxBatchSize:         300,
 		MaxFlushDelay:        0, // default: no coalescing wait when idle
 		AdaptiveDelay:        false,
@@ -73,7 +73,7 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
-	ap, err := newAutoPipeliner(client, &AutoPipelineConfig{
+	ap, err := newAutoPipeliner(client, &AutoPipelineOptions{
 		MaxBatchSize:         10000, // large: only the timer flushes
 		MaxFlushDelay:        delay,
 		AdaptiveDelay:        false,

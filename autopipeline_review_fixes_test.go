@@ -14,7 +14,7 @@ func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	client := NewClient(&Options{Addr: ":6379"})
 	defer client.Close()
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	}
 
 	// The async face accepts Submit.
-	aap, err := client.AsyncAutoPipeline(nil)
+	aap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
@@ -45,19 +45,19 @@ func TestNumShardsRequiresUnorderedOnAsyncFace(t *testing.T) {
 	client := NewClient(&Options{Addr: ":6379"})
 	defer client.Close()
 
-	if _, err := client.AsyncAutoPipeline(&AutoPipelineConfig{NumShards: 4}); err == nil ||
+	if _, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{NumShards: 4}); err == nil ||
 		!strings.Contains(err.Error(), "Unordered") {
 		t.Fatalf("async ordered NumShards=4: got err %v, want Unordered requirement", err)
 	}
 
-	aap, err := client.AsyncAutoPipeline(&AutoPipelineConfig{NumShards: 4, MaxConcurrentBatches: 4, Unordered: true})
+	aap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{NumShards: 4, MaxConcurrentBatches: 4, Unordered: true})
 	if err != nil {
 		t.Fatalf("async unordered NumShards=4: %v", err)
 	}
 	_ = aap.Close()
 
 	// Blocking face is exempt: callers wait per command and Submit is rejected.
-	ap, err := client.AutoPipeline(&AutoPipelineConfig{NumShards: 4})
+	ap, err := client.AutoPipelineWithOptions(&AutoPipelineOptions{NumShards: 4})
 	if err != nil {
 		t.Fatalf("blocking NumShards=4: %v", err)
 	}
@@ -67,11 +67,11 @@ func TestNumShardsRequiresUnorderedOnAsyncFace(t *testing.T) {
 // TestAdaptiveDelayRequiresMaxFlushDelay verifies the silent-no-op combination
 // is rejected at construction.
 func TestAdaptiveDelayRequiresMaxFlushDelay(t *testing.T) {
-	cfg := &AutoPipelineConfig{AdaptiveDelay: true}
+	cfg := &AutoPipelineOptions{AdaptiveDelay: true}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "MaxFlushDelay") {
 		t.Fatalf("AdaptiveDelay without MaxFlushDelay: got %v, want validation error", err)
 	}
-	ok := &AutoPipelineConfig{AdaptiveDelay: true, MaxFlushDelay: time.Millisecond}
+	ok := &AutoPipelineOptions{AdaptiveDelay: true, MaxFlushDelay: time.Millisecond}
 	if err := ok.Validate(); err != nil {
 		t.Fatalf("AdaptiveDelay with MaxFlushDelay: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 		t.Fatalf("flushall: %v", err)
 	}
 
-	ap, err := client.AutoPipeline(nil)
+	ap, err := client.AutoPipeline()
 	if err != nil {
 		t.Fatalf("AutoPipeline: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 	// path onto the normal pool and can see the poison — the documented Do
 	// footgun, orthogonal to what this test guards: MULTI-via-Do must not reach
 	// the pipeline-pool batch path.)
-	aapCheck, err := client.AsyncAutoPipeline(&AutoPipelineConfig{
+	aapCheck, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
 		MaxBatchSize:  300,
 		MaxFlushDelay: 100 * time.Millisecond,
 	})
@@ -147,7 +147,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 	}
 
 	// Async face keeps the deferred shape.
-	aap, err := client.AsyncAutoPipeline(nil)
+	aap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}

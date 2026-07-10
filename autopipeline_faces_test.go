@@ -18,7 +18,7 @@ func TestFutureFaceTyped(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap, err := c.AsyncAutoPipeline(nil)
+	fap, err := c.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestOrderedModeWindowed(t *testing.T) {
 	c.FlushDB(ctx)
 	// Deferred face: submits genuinely don't block, so the windowed claim is
 	// real (on the blocking face every Incr would wait, proving nothing).
-	fap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 500, MaxConcurrentBatches: 1})
+	fap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxBatchSize: 500, MaxConcurrentBatches: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,37 +95,37 @@ func TestOrderedModeWindowed(t *testing.T) {
 	}
 }
 
-// TestAutoPipelineConfigValidate verifies the ordering-safety rule: parallel
+// TestAutoPipelineOptionsValidate verifies the ordering-safety rule: parallel
 // batches (MaxConcurrentBatches>1) require an explicit Unordered:true opt-out.
-func TestAutoPipelineConfigValidate(t *testing.T) {
+func TestAutoPipelineOptionsValidate(t *testing.T) {
 	// conc>1 without Unordered -> error.
-	if err := (&redis.AutoPipelineConfig{MaxConcurrentBatches: 8}).Validate(); err == nil {
+	if err := (&redis.AutoPipelineOptions{MaxConcurrentBatches: 8}).Validate(); err == nil {
 		t.Fatal("expected error for MaxConcurrentBatches>1 without Unordered")
 	}
 	// conc>1 with Unordered -> ok.
-	if err := (&redis.AutoPipelineConfig{MaxConcurrentBatches: 8, Unordered: true}).Validate(); err != nil {
+	if err := (&redis.AutoPipelineOptions{MaxConcurrentBatches: 8, Unordered: true}).Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// ordered single stream -> ok.
-	if err := (&redis.AutoPipelineConfig{MaxConcurrentBatches: 1}).Validate(); err != nil {
+	if err := (&redis.AutoPipelineOptions{MaxConcurrentBatches: 1}).Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// default is ordered and valid.
-	if err := redis.DefaultAutoPipelineConfig().Validate(); err != nil {
+	if err := redis.DefaultAutoPipelineOptions().Validate(); err != nil {
 		t.Fatalf("default config invalid: %v", err)
 	}
 	// negative values are rejected so a typo surfaces at construction.
-	if err := (&redis.AutoPipelineConfig{MaxBatchSize: -1}).Validate(); err == nil {
+	if err := (&redis.AutoPipelineOptions{MaxBatchSize: -1}).Validate(); err == nil {
 		t.Fatal("expected error for negative MaxBatchSize")
 	}
-	if err := (&redis.AutoPipelineConfig{MaxConcurrentBatches: -1}).Validate(); err == nil {
+	if err := (&redis.AutoPipelineOptions{MaxConcurrentBatches: -1}).Validate(); err == nil {
 		t.Fatal("expected error for negative MaxConcurrentBatches")
 	}
-	if err := (&redis.AutoPipelineConfig{MaxFlushDelay: -1}).Validate(); err == nil {
+	if err := (&redis.AutoPipelineOptions{MaxFlushDelay: -1}).Validate(); err == nil {
 		t.Fatal("expected error for negative MaxFlushDelay")
 	}
 	// zero values are allowed (mean "use default" / "no delay").
-	if err := (&redis.AutoPipelineConfig{}).Validate(); err != nil {
+	if err := (&redis.AutoPipelineOptions{}).Validate(); err != nil {
 		t.Fatalf("zero-value config should be valid: %v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestAutoPipelineConfigValidate(t *testing.T) {
 func TestAutoPipelineErrorsOnUnsafeConfig(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
-	ap, err := c.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxConcurrentBatches: 8})
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 8})
 	if err == nil {
 		t.Fatal("expected error for MaxConcurrentBatches>1 without Unordered")
 	}

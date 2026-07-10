@@ -252,14 +252,14 @@ type Options struct {
 	// default: 10
 	PipelinePoolSize int
 
-	// AutoPipelineConfig is the default config for BOTH autopipeliner faces:
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
 	// AutoPipeline and AsyncAutoPipeline use it when called without an
 	// explicit config, falling back to their per-face defaults
-	// (DefaultBlockingAutoPipelineConfig / DefaultAutoPipelineConfig) when it
+	// (DefaultBlockingAutoPipelineOptions / DefaultAutoPipelineOptions) when it
 	// is nil. Pass a config to either method to override. Commands issued
 	// through an autopipeliner are batched into pipelines to cut round-trips
 	// and raise throughput.
-	AutoPipelineConfig *AutoPipelineConfig
+	AutoPipelineOptions *AutoPipelineOptions
 
 	// PoolFIFO type of connection pool.
 	//

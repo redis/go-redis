@@ -14,7 +14,7 @@ import (
 func newTestCluster() *redis.ClusterClient {
 	return redis.NewClusterClient(&redis.ClusterOptions{
 		Addrs: []string{":16600", ":16601", ":16602", ":16603", ":16604", ":16605"},
-		AutoPipelineConfig: &redis.AutoPipelineConfig{
+		AutoPipelineOptions: &redis.AutoPipelineOptions{
 			MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true,
 		},
 	})
@@ -53,7 +53,7 @@ func TestAPClusterCrossSlotRouting(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestAPClusterPerGoroutineOrder(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap, err := c.AutoPipeline(nil)
+	ap, err := c.AutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}

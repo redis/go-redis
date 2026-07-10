@@ -14,8 +14,8 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 )
 
-// AutoPipelineConfig configures the autopipelining behavior.
-type AutoPipelineConfig struct {
+// AutoPipelineOptions configures the autopipelining behavior.
+type AutoPipelineOptions struct {
 	// MaxBatchSize is the target batch size: the accumulator stops waiting for
 	// more commands once the shard queue reaches it, so a batch flushes promptly
 	// instead of lingering. It is a soft threshold, not a hard cap — under heavy
@@ -134,22 +134,22 @@ func numAutoPipelineShards() int {
 	return n
 }
 
-// DefaultAutoPipelineConfig returns the default autopipelining configuration.
+// DefaultAutoPipelineOptions returns the default autopipelining configuration.
 //
 // The default is ordered: MaxConcurrentBatches is 1, so batches execute
 // serially in submit order (a single ordered command stream) while still
 // reaching high throughput via deep pipelines when callers submit in windows.
 // To trade ordering for parallel-batch throughput, set MaxConcurrentBatches > 1
 // together with Unordered: true.
-func DefaultAutoPipelineConfig() *AutoPipelineConfig {
-	return &AutoPipelineConfig{
+func DefaultAutoPipelineOptions() *AutoPipelineOptions {
+	return &AutoPipelineOptions{
 		MaxBatchSize:         200,
 		MaxConcurrentBatches: 1, // ordered by default
 		MaxFlushDelay:        0, // lowest latency; no coalescing wait (batch via in-flight backpressure)
 	}
 }
 
-// DefaultBlockingAutoPipelineConfig returns the default config for the
+// DefaultBlockingAutoPipelineOptions returns the default config for the
 // blocking face (Client.AutoPipeline). It uses a single ordered batch stream
 // (MaxConcurrentBatches: 1). Counterintuitively this maximizes throughput AND
 // minimizes latency for the blocking face: with one batch in flight, callers whose
@@ -162,8 +162,8 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 // per round-trip while latency rises. For maximum throughput use the async face
 // (AsyncAutoPipeline) with a window of in-flight commands (inflight>1); it keeps
 // MaxConcurrentBatches: 1 as well.
-func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
-	return &AutoPipelineConfig{
+func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
+	return &AutoPipelineOptions{
 		MaxBatchSize:         300,
 		MaxConcurrentBatches: 1,
 	}
@@ -172,9 +172,9 @@ func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
 // Validate reports whether the configuration is self-consistent. It returns an
 // error if MaxConcurrentBatches > 1 without Unordered: true — raising
 // concurrency gives up command ordering, so the caller must opt in explicitly.
-func (cfg *AutoPipelineConfig) Validate() error {
+func (cfg *AutoPipelineOptions) Validate() error {
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxConcurrentBatches=%d requires Unordered:true "+
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+
 			"(parallel batches do not preserve command ordering); set Unordered:true to allow it, "+
 			"or keep MaxConcurrentBatches=1 for an ordered stream", cfg.MaxConcurrentBatches)
 	}
@@ -182,19 +182,19 @@ func (cfg *AutoPipelineConfig) Validate() error {
 	// than being silently coerced to a default. Zero is allowed and means "use
 	// the default" (MaxBatchSize) or "no delay" (MaxFlushDelay).
 	if cfg.MaxBatchSize < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxBatchSize=%d must be >= 0", cfg.MaxBatchSize)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxBatchSize=%d must be >= 0", cfg.MaxBatchSize)
 	}
 	if cfg.MaxConcurrentBatches < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxConcurrentBatches=%d must be >= 0", cfg.MaxConcurrentBatches)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d must be >= 0", cfg.MaxConcurrentBatches)
 	}
 	if cfg.MaxFlushDelay < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
 	}
 	if cfg.NumShards < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.NumShards=%d must be >= 0", cfg.NumShards)
+		return fmt.Errorf("redis: AutoPipelineOptions.NumShards=%d must be >= 0", cfg.NumShards)
 	}
 	if cfg.AdaptiveDelay && cfg.MaxFlushDelay <= 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.AdaptiveDelay requires MaxFlushDelay > 0 " +
+		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
 			"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would " +
 			"silently disable batch accumulation entirely)")
 	}
@@ -277,7 +277,7 @@ func putQueueSlice(slice []Cmder) {
 // the pipeline on a normal connection (see Do).
 // AutoPipeline / AsyncAutoPipeline return an error for an invalid config, so check it once:
 //
-//	ap, err := client.AutoPipeline(nil)
+//	ap, err := client.AutoPipeline()
 //	if err != nil {
 //		return err
 //	}
@@ -307,7 +307,7 @@ type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 
 	pipeliner cmdableClient
-	config    *AutoPipelineConfig
+	config    *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -423,14 +423,14 @@ func (s *apShard) stripe() *apStripe {
 // and cache a new one. The caller supplies its cached-slot pointer, its
 // closed flag (both guarded by the mutex), the explicit-config override, the
 // fallback config, and a build closure (the cluster one wraps
-// clusterAutoPipelineConfig and installs slot sharding).
+// clusterAutoPipelineOptions and installs slot sharding).
 func getOrCreateAutoPipeliner(
 	mu *sync.Mutex,
 	slot **AutoPipeliner,
 	closed *bool,
-	override *AutoPipelineConfig,
-	fallback func() *AutoPipelineConfig,
-	build func(*AutoPipelineConfig) (*AutoPipeliner, error),
+	override *AutoPipelineOptions,
+	fallback func() *AutoPipelineOptions,
+	build func(*AutoPipelineOptions) (*AutoPipeliner, error),
 ) (*AutoPipeliner, error) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -457,13 +457,13 @@ func getOrCreateAutoPipeliner(
 // Client/ClusterClient.AutoPipeline and AsyncAutoPipeline, which also install
 // cluster slot-sharding. Constructing one directly would skip that wiring and
 // give a *ClusterClient degraded (cross-node) batching.
-func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, blocking bool) (*AutoPipeliner, error) {
+func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, blocking bool) (*AutoPipeliner, error) {
 	if config == nil {
-		config = DefaultAutoPipelineConfig()
+		config = DefaultAutoPipelineOptions()
 	} else {
 		// Copy so default-filling below doesn't mutate the caller's struct — the
-		// same *AutoPipelineConfig may be shared across clients (e.g. a reused
-		// Options.AutoPipelineConfig), and callers may inspect it afterward.
+		// same *AutoPipelineOptions may be shared across clients (e.g. a reused
+		// Options.AutoPipelineOptions), and callers may inspect it afterward.
 		cfgCopy := *config
 		config = &cfgCopy
 	}
@@ -495,7 +495,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 	// per-key order holds).
 	if config.NumShards > 1 && !config.Unordered && !blocking && !config.contentSharded {
 		return nil, fmt.Errorf(
-			"redis: AutoPipelineConfig.NumShards=%d requires Unordered:true on the deferred (async) face "+
+			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
 			config.NumShards)
 	}
@@ -667,14 +667,24 @@ func (ap *AutoPipeliner) PoolStats() *PoolStats { return ap.pipeliner.PoolStats(
 // AutoPipeline delegates to the underlying client, which returns its cached
 // autopipeliner (typically this same instance). Present to satisfy the
 // UniversalClient surface.
-func (ap *AutoPipeliner) AutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
-	return ap.pipeliner.AutoPipeline(config)
+func (ap *AutoPipeliner) AutoPipeline() (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipeline()
+}
+
+// AutoPipelineWithOptions delegates to the underlying client.
+func (ap *AutoPipeliner) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipelineWithOptions(config)
 }
 
 // AsyncAutoPipeline delegates to the underlying client. Present to satisfy the
 // UniversalClient surface.
-func (ap *AutoPipeliner) AsyncAutoPipeline(config *AutoPipelineConfig) (*AutoPipeliner, error) {
-	return ap.pipeliner.AsyncAutoPipeline(config)
+func (ap *AutoPipeliner) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipeline()
+}
+
+// AsyncAutoPipelineWithOptions delegates to the underlying client.
+func (ap *AutoPipeliner) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipelineWithOptions(config)
 }
 
 // validate AutoPipeliner implements UniversalClient (drop-in for the real
@@ -879,7 +889,7 @@ func (s *apShard) wake() {
 func (ap *AutoPipeliner) IsBlocking() bool { return ap.blocking }
 
 // Config returns a copy of the effective configuration (defaults filled in).
-func (ap *AutoPipeliner) Config() AutoPipelineConfig { return *ap.config }
+func (ap *AutoPipeliner) Config() AutoPipelineOptions { return *ap.config }
 
 // IsClosed reports whether the AutoPipeliner has been closed, either by an
 // explicit Close or by closing the owning client. A closed AutoPipeliner

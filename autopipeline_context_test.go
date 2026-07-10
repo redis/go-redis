@@ -26,7 +26,7 @@ func TestAPContextCancelDoesNotCancelExecution(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(nil)
+	ap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestAPWaitContextAbandonsWaitOnly(t *testing.T) {
 		t.Skipf("no redis: %v", err)
 	}
 	// Hold the batch open long enough that the WaitContext deadline fires first.
-	ap, err := client.AsyncAutoPipeline(&redis.AutoPipelineConfig{MaxBatchSize: 300, MaxFlushDelay: 500 * time.Millisecond})
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxBatchSize: 300, MaxFlushDelay: 500 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestAPWaitContextReturnsResult(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(nil)
+	ap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestAPBlockingCommandHonorsContext(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AutoPipeline(nil) // blocking face
+	ap, err := client.AutoPipeline() // blocking face
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestAPSubmitAfterCloseErrClosed(t *testing.T) {
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	ap, err := client.AsyncAutoPipeline(nil)
+	ap, err := client.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)
 	}
