@@ -53,7 +53,7 @@ func TestAPClusterCrossSlotRouting(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestAPClusterPerGoroutineOrder(t *testing.T) {
 		return m.FlushAll(ctx).Err()
 	})
 
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

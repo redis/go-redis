@@ -30,7 +30,7 @@ func TestClusterAutoPipelineBasic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestClusterAutoPipelineConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestClusterAutoPipelineCrossSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ap, err := client.AutoPipeline()
+	ap, err := client.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

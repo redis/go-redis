@@ -26,7 +26,7 @@ func TestAutoPipelineCloseRace(t *testing.T) {
 	for iter := 0; iter < 50; iter++ {
 		ctx := context.Background()
 		c := redis.NewClient(&redis.Options{Addr: ":6379"})
-		ap, err := c.AutoPipeline()
+		ap, err := c.AutoPipeline(nil)
 		if err != nil {
 			t.Fatal(err)
 		}

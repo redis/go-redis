@@ -15,7 +15,7 @@ func TestBlockingFaceExecutesOnCall(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline() // blocking face
+	ap, err := c.AutoPipeline(nil) // blocking face
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestAsyncFaceDeferred(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AsyncAutoPipeline() // deferred face, ordered default
+	ap, err := c.AsyncAutoPipeline(nil) // deferred face, ordered default
 	if err != nil {
 		t.Fatal(err)
 	}

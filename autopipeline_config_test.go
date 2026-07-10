@@ -15,7 +15,7 @@ func TestAutoPipelineConfigNotMutated(t *testing.T) {
 
 	c := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
 	defer c.Close()
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +32,7 @@ func TestAutoPipelineConfigNotMutated(t *testing.T) {
 	// usable (defaults applied to an internal copy, not the shared struct).
 	c2 := redis.NewClient(&redis.Options{Addr: ":6379", AutoPipelineConfig: cfg})
 	defer c2.Close()
-	ap2, err := c2.AutoPipeline()
+	ap2, err := c2.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ func TestAPZeroCopyBuffer(t *testing.T) {
 	})
 	defer c.Close()
 	c.FlushDB(ctx)
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,7 +20,7 @@ func TestAPZeroCopyBufferCluster(t *testing.T) {
 	defer c.Close()
 	skipIfClusterUnhealthy(t, c)
 	_ = c.ForEachMaster(ctx, func(ctx context.Context, m *redis.Client) error { return m.FlushAll(ctx).Err() })
-	ap, err := c.AutoPipeline()
+	ap, err := c.AutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
