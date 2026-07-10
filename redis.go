@@ -358,6 +358,7 @@ func (c *baseClient) clone() *baseClient {
 		opt:                         c.opt,
 		connPool:                    c.connPool,
 		pipelinePool:                c.pipelinePool,
+		pipelinePoolName:            c.pipelinePoolName,
 		pubSubPool:                  c.pubSubPool,
 		onClose:                     c.onClose,
 		pushProcessor:               c.pushProcessor,

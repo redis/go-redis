@@ -146,7 +146,7 @@ type RingOptions struct {
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
 	// configure an optional separate connection pool used for pipelining on
 	// each shard, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. Zero values disable the separate pool.
+	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int

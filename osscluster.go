@@ -145,7 +145,7 @@ type ClusterOptions struct {
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
 	// configure an optional separate connection pool used for pipelining on
 	// each node, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. Zero values disable the separate pool.
+	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
@@ -1601,14 +1601,14 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 // wants several shards to keep concurrent nodes' batches separate. The caller's
 // config is copied before the default is filled in, never mutated.
 func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
-	if cfg.NumShards != 0 {
-		return cfg
-	}
 	c2 := *cfg
-	c2.NumShards = numAutoPipelineShards()
-	// Slot routing keeps every key on one shard, so per-key order holds with
-	// several shards; mark it so construction's NumShards ordering check
-	// (which targets round-robin sharding) does not reject the cluster default.
+	if c2.NumShards == 0 {
+		c2.NumShards = numAutoPipelineShards()
+	}
+	// A cluster always routes by slot, so per-key order holds regardless of shard
+	// count; mark it so construction's NumShards ordering check (which targets
+	// round-robin sharding) does not reject the cluster default or an explicit
+	// NumShards on the deferred (async) face.
 	c2.contentSharded = true
 	return &c2
 }

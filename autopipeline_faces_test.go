@@ -18,7 +18,7 @@ func TestFutureFaceTyped(t *testing.T) {
 	c := redis.NewClient(&redis.Options{Addr: ":6379"})
 	defer c.Close()
 	c.FlushDB(ctx)
-	fap, err := c.AutoPipeline(nil)
+	fap, err := c.AsyncAutoPipeline(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
