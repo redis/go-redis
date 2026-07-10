@@ -11,6 +11,27 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
+// Real-world impact of DialRateLimit, measured against a live Redis (RESP3,
+// localhost, Apple M4 Max): 200 goroutines x 100 PINGs arriving as a single
+// burst, PoolSize=50, PoolTimeout=3s — sustained saturation, the worst case
+// for the limiter since idle connections are never sufficient for everyone.
+//
+//	config     | conns | throttled | timeouts | ops/s  | avg    | p50    | p99    | max
+//	disabled   |  50   |     0     |    0     | 51,267 |  3.9ms |  3.8ms |  5.6ms |  13ms
+//	rate=50/s  |  50   |     0     |    0     | 45,570 |  4.4ms |  4.2ms |  8.6ms |  19ms
+//	rate=20/s  |  33   |   8,147   |    0     | 30,616 |  6.4ms |  6.2ms | 12.8ms |  24ms
+//	rate=5/s   |  13   |   5,923   |    0     | 12,386 | 15.8ms | 13.9ms | 53.6ms | 260ms
+//
+// Reading it: disabled dials the pool straight to 50 (the dial storm of issue
+// #3890); rate >= burst demand behaves like disabled; lower rates trade
+// throughput and tail latency for fewer connections (rate=5/s: 74% fewer
+// conns), with zero pool timeouts and zero errors — every request is served
+// via reuse or the PoolTimeout escape hatch. Under a short burst (the target
+// scenario) the latency cost disappears with the burst, while the pool avoids
+// inflating to PoolSize; idle-hit fast paths never consult the limiter, and
+// with the feature disabled hot-path benchmarks match master (interleaved
+// benchstat: no significant delta, allocations byte-identical).
+
 // countingDialer returns a dialer that increments dials on every call.
 func countingDialer(dials *atomic.Int32) func(context.Context) (net.Conn, error) {
 	return func(context.Context) (net.Conn, error) {

@@ -105,11 +105,6 @@ func (q *dialWaitQueue) signalAll() {
 	}
 }
 
-// len returns the number of pending (live) waiters.
-func (q *dialWaitQueue) len() int {
-	return int(q.pending.Load())
-}
-
 // empty reports whether there are no pending waiters. Cheap check for the Get()
 // slow path: fresh callers defer dial tokens to already-parked waiters, and the
 // common case (no waiters) must cost a single atomic load.

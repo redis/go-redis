@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// len returns the number of pending (live) waiters. Test-only helper: kept out
+// of dial_waiter.go because production code only needs empty().
+func (q *dialWaitQueue) len() int {
+	return int(q.pending.Load())
+}
+
 // newTestLimiter builds a dial limiter driven by a controllable clock so the
 // token-bucket math can be asserted deterministically without real sleeps.
 func newTestLimiter(rate, burst int) (*dialLimiter, *time.Time) {
