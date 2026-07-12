@@ -1435,7 +1435,11 @@ func NewClient(opt *Options) *Client {
 			if err := cscAttachBroadcastSidecarIfNeeded(context.Background(), c.baseClient); err != nil {
 				internal.Logger.Printf(context.Background(),
 					"redis: csc sidecar failed to start (%v); disabling client-side caching for this client", err)
+				// Disable CSC and drop ownership so the client can't later flush a
+				// cache it no longer uses. (The dial-failure case is non-fatal and
+				// retries in the background; this branch is a defensive fallback.)
 				c.baseClient.csc = nil
+				c.baseClient.cscOwnsCache = false
 			}
 			// Safety net for a client dropped without Close: the goroutines hold
 			// *baseClient (never *Client), so dropping *Client (returned as &c)
