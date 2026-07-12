@@ -672,3 +672,41 @@ func TestLocalCache_PerShardByteCeilingPinned(t *testing.T) {
 		t.Fatal("a 4KiB entry must be admitted under the per-shard cap")
 	}
 }
+
+func TestLocalCache_ReserveHonorsCapWithoutEvictingPeers(t *testing.T) {
+	// A shard full of IN_PROGRESS placeholders must stay within MaxEntries, but
+	// a new Reserve must NOT abort a peer's in-flight fetch: the overflow
+	// reservation is rejected (token 0, shouldFetch true) while every earlier
+	// placeholder survives and can still be fulfilled.
+	const maxEntries = 4 // below the sharding threshold: single shard
+	cache := NewLocalCache(CacheConfig{MaxEntries: maxEntries})
+
+	tokens := make([]uint64, maxEntries+1)
+	for i := 0; i <= maxEntries; i++ {
+		key := fmt.Sprintf("get:k%d", i)
+		token, shouldFetch := cache.Reserve(key, []string{fmt.Sprintf("k%d", i)})
+		if !shouldFetch {
+			t.Fatalf("Reserve(%s) should fetch", key)
+		}
+		tokens[i] = token
+	}
+
+	if n := cache.Len(); n > maxEntries {
+		t.Fatalf("placeholders exceeded MaxEntries: Len=%d cap=%d", n, maxEntries)
+	}
+	// The overflow (maxEntries-th) reservation was rejected: token 0, not cacheable.
+	overflow := fmt.Sprintf("get:k%d", maxEntries)
+	if tokens[maxEntries] != 0 {
+		t.Fatalf("overflow Reserve should return token 0, got %d", tokens[maxEntries])
+	}
+	if cache.Fulfill(overflow, tokens[maxEntries], []byte("v")) {
+		t.Fatal("Fulfill must fail for the rejected overflow reservation")
+	}
+	// Every earlier in-flight placeholder survived and can complete.
+	for i := 0; i < maxEntries; i++ {
+		key := fmt.Sprintf("get:k%d", i)
+		if !cache.Fulfill(key, tokens[i], []byte("v")) {
+			t.Fatalf("Fulfill(%s) must succeed: peer placeholder was wrongly evicted", key)
+		}
+	}
+}

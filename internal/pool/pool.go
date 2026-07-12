@@ -366,9 +366,11 @@ type ConnPool struct {
 
 	_closed uint32 // atomic
 
-	// Pool hooks manager for flexible connection processing
-	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
+	// Pool hooks manager. atomic.Pointer keeps hot-path reads (Get/Put)
+	// lock-free; hookMu serializes Add/RemovePoolHook's read-clone-store so
+	// concurrent mutators (e.g. maintnotifications and CSC) can't lose an update.
 	hookManager atomic.Pointer[PoolHookManager]
+	hookMu      sync.Mutex
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -403,7 +405,10 @@ func (p *ConnPool) initializeHooks() {
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
-	// Lock-free read of current manager
+	// Serialize so a concurrent Add/Remove can't clobber this change.
+	p.hookMu.Lock()
+	defer p.hookMu.Unlock()
+
 	manager := p.hookManager.Load()
 	if manager == nil {
 		p.initializeHooks()
@@ -414,12 +419,15 @@ func (p *ConnPool) AddPoolHook(hook PoolHook) {
 	newManager := manager.Clone()
 	newManager.AddHook(hook)
 
-	// Atomically swap to new manager
+	// Atomically swap to new manager (hot-path readers load lock-free)
 	p.hookManager.Store(newManager)
 }
 
 // RemovePoolHook removes a pool hook from the pool.
 func (p *ConnPool) RemovePoolHook(hook PoolHook) {
+	p.hookMu.Lock()
+	defer p.hookMu.Unlock()
+
 	manager := p.hookManager.Load()
 	if manager != nil {
 		// Create new manager with removed hook

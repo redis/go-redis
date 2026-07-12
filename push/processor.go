@@ -80,11 +80,13 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 			break
 		}
 
-		// Read the push notification
+		// Surface a ReadReply error (unlike the boundary peek errors above,
+		// which consumed nothing): it happens mid-frame after bytes are
+		// consumed, so the conn is desynced and the CSC drainer must remove it.
+		// Normal reply-read callers log-and-ignore this and let their own read fail.
 		reply, err := rd.ReadReply()
 		if err != nil {
-			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
-			break
+			return err
 		}
 
 		// Convert to slice of interfaces

@@ -1,10 +1,7 @@
 package pool_test
 
 import (
-	"bufio"
 	"context"
-	"sync/atomic"
-	"unsafe"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -36,8 +33,8 @@ var _ = Describe("Buffer Size Configuration", func() {
 		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that default buffer sizes are used (32KiB)
-		writerBufSize := getWriterBufSizeUnsafe(cn)
-		readerBufSize := getReaderBufSizeUnsafe(cn)
+		writerBufSize := cn.WriterBufSize()
+		readerBufSize := cn.ReaderBufSize()
 
 		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
 		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
@@ -61,8 +58,8 @@ var _ = Describe("Buffer Size Configuration", func() {
 		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that custom buffer sizes are used
-		writerBufSize := getWriterBufSizeUnsafe(cn)
-		readerBufSize := getReaderBufSizeUnsafe(cn)
+		writerBufSize := cn.WriterBufSize()
+		readerBufSize := cn.ReaderBufSize()
 
 		Expect(writerBufSize).To(Equal(customWriteSize))
 		Expect(readerBufSize).To(Equal(customReadSize))
@@ -83,8 +80,8 @@ var _ = Describe("Buffer Size Configuration", func() {
 		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Check that default buffer sizes are used (32KiB)
-		writerBufSize := getWriterBufSizeUnsafe(cn)
-		readerBufSize := getReaderBufSizeUnsafe(cn)
+		writerBufSize := cn.WriterBufSize()
+		readerBufSize := cn.ReaderBufSize()
 
 		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
 		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
@@ -96,8 +93,8 @@ var _ = Describe("Buffer Size Configuration", func() {
 		cn := pool.NewConn(netConn)
 		defer cn.Close()
 
-		writerBufSize := getWriterBufSizeUnsafe(cn)
-		readerBufSize := getReaderBufSizeUnsafe(cn)
+		writerBufSize := cn.WriterBufSize()
+		readerBufSize := cn.ReaderBufSize()
 
 		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
 		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
@@ -119,84 +116,10 @@ var _ = Describe("Buffer Size Configuration", func() {
 		defer connPool.CloseConn(ctx, cn, pool.CloseReasonTest, pool.MetricStateIdle)
 
 		// Should still get 32KiB defaults because NewConnPool sets them
-		writerBufSize := getWriterBufSizeUnsafe(cn)
-		readerBufSize := getReaderBufSizeUnsafe(cn)
+		writerBufSize := cn.WriterBufSize()
+		readerBufSize := cn.ReaderBufSize()
 
 		Expect(writerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
 		Expect(readerBufSize).To(Equal(proto.DefaultBufferSize)) // Default 32KiB buffer size
 	})
 })
-
-// Helper functions to extract buffer sizes using unsafe pointers
-// The struct layout must match pool.Conn exactly to avoid checkptr violations.
-// checkptr is Go's pointer safety checker, which ensures that unsafe pointer
-// conversions are valid. If the struct layouts do not match exactly, this can
-// cause runtime panics or incorrect memory access due to invalid pointer dereferencing.
-func getWriterBufSizeUnsafe(cn *pool.Conn) int {
-	cnPtr := (*struct {
-		id              uint64       // First field in pool.Conn
-		usedAt          atomic.Int64 // Second field (atomic)
-		lastPutAt       atomic.Int64 // Third field (atomic)
-		lastPushDrainAt atomic.Int64 // Fourth field (atomic)
-		dialStartNs     atomic.Int64 // Fifth field (atomic)
-		netConnAtomic   atomic.Value // atomic.Value for net.Conn
-		rd              *proto.Reader
-		bw              *bufio.Writer
-		wr              *proto.Writer
-		// We only need fields up to bw, so we can stop here
-	})(unsafe.Pointer(cn))
-
-	if cnPtr.bw == nil {
-		return -1
-	}
-
-	// bufio.Writer internal structure
-	bwPtr := (*struct {
-		err error
-		buf []byte
-		n   int
-		wr  interface{}
-	})(unsafe.Pointer(cnPtr.bw))
-
-	return len(bwPtr.buf)
-}
-
-func getReaderBufSizeUnsafe(cn *pool.Conn) int {
-	cnPtr := (*struct {
-		id              uint64       // First field in pool.Conn
-		usedAt          atomic.Int64 // Second field (atomic)
-		lastPutAt       atomic.Int64 // Third field (atomic)
-		lastPushDrainAt atomic.Int64 // Fourth field (atomic)
-		dialStartNs     atomic.Int64 // Fifth field (atomic)
-		netConnAtomic   atomic.Value // atomic.Value for net.Conn
-		rd              *proto.Reader
-		bw              *bufio.Writer
-		wr              *proto.Writer
-		// We only need fields up to rd, so we can stop here
-	})(unsafe.Pointer(cn))
-
-	if cnPtr.rd == nil {
-		return -1
-	}
-
-	// proto.Reader internal structure
-	rdPtr := (*struct {
-		rd *bufio.Reader
-	})(unsafe.Pointer(cnPtr.rd))
-
-	if rdPtr.rd == nil {
-		return -1
-	}
-
-	// bufio.Reader internal structure
-	bufReaderPtr := (*struct {
-		buf          []byte
-		rd           interface{}
-		r, w         int
-		err          error
-		lastByte     int
-		lastRuneSize int
-	})(unsafe.Pointer(rdPtr.rd))
-
-	return len(bufReaderPtr.buf)
-}

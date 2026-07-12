@@ -60,6 +60,10 @@ type perConnState struct {
 	// metrics
 	hits   atomic.Uint64
 	misses atomic.Uint64
+
+	// badCtxWarn ensures the "unusable push-handler Conn" warning is logged at
+	// most once per client (see perConnInvalidateHandler.HandlePushNotification).
+	badCtxWarn sync.Once
 }
 
 func newPerConnState(cfg CacheConfig, db int, owner *baseClient) *perConnState {
@@ -221,10 +225,18 @@ func (h *perConnInvalidateHandler) HandlePushNotification(
 		return nil
 	}
 
-	// Locate the cache for this connection. handlerCtx.Conn is set by the
-	// hot path that read the push frame — we type-assert to *pool.Conn.
+	// Locate this connection's cache; hctx.Conn is set by the reading hot path.
 	cn, _ := hctx.Conn.(*pool.Conn)
 	if cn == nil {
+		// A custom push processor with no usable *pool.Conn can't be routed to a
+		// per-conn cache, so invalidations would be dropped while hits keep
+		// being served (stale). Warn once: PerConnection needs the built-in
+		// processor.
+		h.state.badCtxWarn.Do(func() {
+			internal.Logger.Printf(context.Background(),
+				"csc per-connection: push handler context has no *pool.Conn; "+
+					"invalidations cannot be routed — PerConnection caching requires the built-in push processor")
+		})
 		return nil
 	}
 	cache := h.state.getCache(cn.GetID())
@@ -236,7 +248,6 @@ func (h *perConnInvalidateHandler) HandlePushNotification(
 	case nil:
 		cache.Flush()
 	case []interface{}:
-		var bytesConsumed int64
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -247,11 +258,7 @@ func (h *perConnInvalidateHandler) HandlePushNotification(
 			default:
 				continue
 			}
-			bytesConsumed += int64(len(name))
 			cache.DeleteByRedisKey(dbNamespacedKey(h.state.db, name))
-		}
-		if bytesConsumed > 0 {
-			proto.InvalidationBytesRead.Add(bytesConsumed)
 		}
 	}
 	return nil
@@ -277,11 +284,11 @@ func (c *baseClient) cscPerConnTryProcess(ctx context.Context, cmd Cmder) (bool,
 func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perConnState) error {
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
 	db := state.db
@@ -291,37 +298,37 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 		nsRedisKeys[i] = dbNamespacedKey(db, k)
 	}
 
-	// PerConnection binds the lookup to a specific connection. We borrow one
-	// from the pool via getConn.
-	// We must NOT release+re-borrow because a hit cached on conn X is
-	// invisible to conn Y.
+	// Bind the lookup to one connection (a hit cached on conn X is invisible to
+	// conn Y, so we must not release+re-borrow).
 	cn, err := c.getConn(ctx)
 	if err != nil {
 		return err
 	}
+	// Release the conn exactly once. The deferred call is a panic backstop
+	// (the shared-cache path gets this from withConn's defer; PerConnection
+	// must do it explicitly) so a panic can't leak the conn or its pool turn.
+	released := false
+	release := func(e error) {
+		if !released {
+			released = true
+			c.releaseConn(ctx, cn, e)
+		}
+	}
+	defer func() { release(nil) }()
 
-	// Drain any pending invalidations on this conn before consulting its
-	// cache; otherwise a hit could race ahead of an in-flight server
-	// invalidation that has already been parsed but not yet delivered.
-	//
-	// If a successful drain or socket-peek ran on this conn very recently
-	// (cscPerConnDrainSkipWindow), trust that stamp and avoid the
-	// MaybeHasData() syscall. Invalidations that race into the skip window
-	// are picked up on the next op past it; the per-conn cache is still
-	// flushed on close.
-	//
-	// drainPushNotifications (not peekAndProcessPushNotifications) so read
-	// errors SURFACE: a deadline mid-frame leaves a partially consumed push
-	// frame on the conn, and reusing it would parse the frame tail as this
-	// command's reply — served AND cached. Discard the conn instead;
-	// releaseConn removes it because drain errors satisfy isBadConn.
+	// Drain pending invalidations on this conn before consulting its cache, so
+	// a hit can't race ahead of an already-parsed invalidation. Skip the
+	// MaybeHasData() syscall if a drain ran within cscPerConnDrainSkipWindow.
+	// Use drainPushNotifications (not the peek variant) so read errors surface:
+	// a mid-frame deadline desyncs the conn, so discard it rather than reuse it
+	// (releaseConn removes it — drain errors satisfy isBadConn).
 	nowNs := pool.GetCachedTimeNs()
 	if nowNs-cn.LastPushDrainAtNs() >= int64(cscPerConnDrainSkipWindow) {
 		if drainErr := c.drainPushNotifications(cn); drainErr != nil {
 			internal.Logger.Printf(ctx,
 				"csc per-connection: drain failed, discarding conn: %v", drainErr)
-			c.releaseConn(ctx, cn, drainErr)
-			return c.processWithRetry(ctx, cmd, nil)
+			release(drainErr)
+			return c.processWithRetry(ctx, cmd, nil, nil)
 		}
 	}
 
@@ -330,8 +337,8 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 		// Conn was set up before PerConnection claimed it (e.g. initConn ran
 		// for a non-tracking-enabled client). Release the conn and fall
 		// back to a plain command path.
-		c.releaseConn(ctx, cn, nil)
-		return c.processWithRetry(ctx, cmd, nil)
+		release(nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
 	// Fast-path hit. Only return early on a successful replay; on any
@@ -340,7 +347,7 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 		if applyErr := applyCachedReply(cmd, data); applyErr == nil {
 			state.hits.Add(1)
 			commandHits.Add(1)
-			c.releaseConn(ctx, cn, nil)
+			release(nil)
 			return nil
 		}
 		cache.DeleteByCacheKey(key)
@@ -359,7 +366,7 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 			if applyErr := applyCachedReply(cmd, data); applyErr == nil {
 				state.hits.Add(1)
 				commandHits.Add(1)
-				c.releaseConn(ctx, cn, nil)
+				release(nil)
 				return nil
 			}
 			cache.DeleteByCacheKey(key)
@@ -380,7 +387,7 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 	}
 
 	execErr := c.executeOnConn(ctx, cn, cmd, capture)
-	c.releaseConn(ctx, cn, execErr)
+	release(execErr)
 
 	if shouldFetch {
 		capture = nil // disarm deferred Cancel

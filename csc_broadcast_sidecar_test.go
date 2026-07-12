@@ -23,7 +23,9 @@ type fakeSidecarServer struct {
 	addr       string
 	answerPing bool
 
-	pingCh chan struct{} // one send per PING received
+	pingCh    chan struct{}  // one send per PING received
+	helloAuth chan [2]string // {username, password} recorded per HELLO AUTH
+	authCmd   chan [2]string // {username, password} recorded per standalone AUTH
 
 	mu          sync.Mutex
 	conns       int
@@ -35,13 +37,17 @@ func startFakeSidecarServer(t *testing.T, answerPing bool) *fakeSidecarServer {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		// Sandboxed/restricted CI may forbid binding a local listener; skip
+		// rather than report a spurious failure unrelated to the code.
+		t.Skipf("cannot bind local listener (restricted environment): %v", err)
 	}
 	s := &fakeSidecarServer{
 		ln:          ln,
 		addr:        ln.Addr().String(),
 		answerPing:  answerPing,
 		pingCh:      make(chan struct{}, 8),
+		helloAuth:   make(chan [2]string, 16),
+		authCmd:     make(chan [2]string, 16),
 		firstClosed: make(chan struct{}),
 	}
 	t.Cleanup(func() { _ = ln.Close() })
@@ -85,7 +91,32 @@ func (s *fakeSidecarServer) serveConn(conn net.Conn, first bool) {
 		}
 		switch strings.ToLower(fmt.Sprint(args[0])) {
 		case "hello":
+			// Record the AUTH username/password if present:
+			// HELLO 3 [AUTH <user> <pass>] [SETNAME ...].
+			for i := 1; i+2 < len(args); i++ {
+				if strings.EqualFold(fmt.Sprint(args[i]), "auth") {
+					select {
+					case s.helloAuth <- [2]string{fmt.Sprint(args[i+1]), fmt.Sprint(args[i+2])}:
+					default:
+					}
+					break
+				}
+			}
 			_, _ = conn.Write([]byte("%0\r\n"))
+		case "auth":
+			// Standalone AUTH (in-place re-auth on credential rotation):
+			// AUTH <pass> or AUTH <user> <pass>.
+			var pair [2]string
+			if len(args) >= 3 {
+				pair = [2]string{fmt.Sprint(args[1]), fmt.Sprint(args[2])}
+			} else if len(args) == 2 {
+				pair = [2]string{"", fmt.Sprint(args[1])}
+			}
+			select {
+			case s.authCmd <- pair:
+			default:
+			}
+			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "client":
 			_, _ = conn.Write([]byte("+OK\r\n"))
 		case "ping":
@@ -243,5 +274,25 @@ func TestProcessCached_BypassesCacheWhileSidecarDown(t *testing.T) {
 	}
 	if got := cmd2.Val(); got != "bar" {
 		t.Fatalf("cached value mismatch: got %q want %q", got, "bar")
+	}
+}
+
+// TestBroadcastSidecar_ShutdownClearsReady: after Shutdown no invalidations
+// will ever flow again, so the readiness gate must read false; otherwise
+// commands racing a client Close could keep serving cache hits that nothing
+// can evict.
+func TestBroadcastSidecar_ShutdownClearsReady(t *testing.T) {
+	srv := startFakeSidecarServer(t, true)
+	s := newBroadcastSidecar(fakeSidecarOptions(srv.addr), NewLocalCache(CacheConfig{MaxEntries: 16}), 0)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !s.ready.Load() {
+		t.Fatal("sidecar should be ready after a successful Start")
+	}
+
+	s.Shutdown()
+	if s.ready.Load() {
+		t.Fatal("Shutdown must leave ready=false")
 	}
 }

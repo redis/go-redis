@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"sync"
 )
 
 // This file implements the hooks consulted by redis.go for the Broadcast
@@ -20,28 +19,6 @@ import (
 //
 // The shared Cache (localCache) is reused verbatim. Only the path that
 // delivers invalidations to it changes.
-
-// broadcastSidecarReg maps a *baseClient to its sidecar. We keep this state
-// out of the baseClient struct itself so a client using a different strategy
-// carries no layout dependency on Broadcast.
-var (
-	broadcastSidecarRegMu sync.Mutex
-	broadcastSidecarReg   = make(map[*baseClient]*broadcastSidecar)
-)
-
-func cscRegisterBroadcastSidecar(c *baseClient, s *broadcastSidecar) {
-	broadcastSidecarRegMu.Lock()
-	broadcastSidecarReg[c] = s
-	broadcastSidecarRegMu.Unlock()
-}
-
-func cscDeregisterBroadcastSidecar(c *baseClient) *broadcastSidecar {
-	broadcastSidecarRegMu.Lock()
-	s := broadcastSidecarReg[c]
-	delete(broadcastSidecarReg, c)
-	broadcastSidecarRegMu.Unlock()
-	return s
-}
 
 // cscShouldTrackOnPoolConn returns false when the client is configured for
 // the BCAST sidecar strategy: pool connections must not issue CLIENT
@@ -74,21 +51,20 @@ func cscAttachBroadcastSidecarIfNeeded(ctx context.Context, c *baseClient) error
 	if err := s.Start(ctx); err != nil {
 		return err
 	}
-	cscRegisterBroadcastSidecar(c, s)
-	// Expose sidecar readiness to the hot path (processCached bypasses the
-	// cache while the invalidation channel is down) without a registry lookup
-	// per command.
+	c.cscSidecar = s
+	// Expose readiness to the hot path (processCached bypasses the cache while
+	// the sidecar is down) without a per-command lookup.
 	c.cscBcastReady = &s.ready
 	return nil
 }
 
-// cscShutdownBroadcastSidecar tears down a previously-started sidecar. Safe to call
-// when no sidecar is attached.
+// cscShutdownBroadcastSidecar tears down a started sidecar (no-op if none).
+// Owner-only: clone() doesn't copy cscSidecar, so a derived Close is a no-op.
 func cscShutdownBroadcastSidecar(c *baseClient) {
-	if c == nil {
+	if c == nil || c.cscSidecar == nil {
 		return
 	}
-	if s := cscDeregisterBroadcastSidecar(c); s != nil {
-		s.Shutdown()
-	}
+	s := c.cscSidecar
+	c.cscSidecar = nil
+	s.Shutdown()
 }

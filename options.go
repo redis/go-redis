@@ -362,9 +362,8 @@ func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
 	}
-	// An unknown strategy value would thread the per-strategy gates
-	// inconsistently (e.g. CLIENT TRACKING ON with no invalidation drainer),
-	// silently serving stale data. Clamp to the default instead.
+	// An unknown strategy would thread the per-strategy gates inconsistently
+	// (e.g. tracking on with no drainer), serving stale data. Clamp to default.
 	switch opt.ClientSideCacheStrategy {
 	case CSCStrategySharedTracking, CSCStrategyBroadcast, CSCStrategyPerConnection:
 	default:

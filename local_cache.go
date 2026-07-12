@@ -39,6 +39,11 @@ type CacheEntry struct {
 	// validAtNs is the wall-clock UnixNano when the entry became Valid, used by the
 	// MaxStaleness backstop. Written under Lock (Set/Fulfill), read under RLock (get).
 	validAtNs int64
+
+	// ownerConnID is the conn that fetched this entry (set by FulfillOwned; 0 =
+	// none). Default CLIENT TRACKING sends a key's invalidation only to that
+	// conn, so the entry must be evicted when it goes away (see EvictByConn).
+	ownerConnID uint64
 }
 
 // lruSequence is the global monotonic counter feeding lastAccessNs. It totally
@@ -59,14 +64,11 @@ type CacheConfig struct {
 	MaxEntries int
 	// MaxMemoryBytes limits estimated memory usage in bytes. Zero or negative means unlimited.
 	//
-	// If MaxEntries and MaxMemoryBytes are both unlimited, MaxEntries defaults
-	// to defaultCacheMaxEntries so the cache cannot grow without bound.
-	//
-	// The cache is sharded (16 ways above small thresholds) and each shard
-	// enforces its 1/16 share of MaxMemoryBytes, so a single entry larger
-	// than MaxMemoryBytes/16 is never admitted. Rejections are counted by
-	// CacheAdmissionRejects. Size MaxMemoryBytes to at least 16× the largest
-	// reply you want cached.
+	// If both MaxEntries and MaxMemoryBytes are unlimited, MaxEntries defaults to
+	// defaultCacheMaxEntries so the cache cannot grow without bound. The cache is
+	// sharded 16 ways (above small thresholds) and each shard enforces its 1/16
+	// share, so an entry larger than MaxMemoryBytes/16 is never admitted (counted
+	// by CacheAdmissionRejects) — size it to at least 16× your largest reply.
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
 	//
@@ -79,13 +81,10 @@ type CacheConfig struct {
 	// If zero, defaults to defaultStaleTimeout (5s).
 	StaleTimeout time.Duration
 
-	// DrainInterval is the CSCStrategySharedTracking background-drainer period
-	// (default 5ms; zero uses the default): how often idle pool connections are swept
-	// for buffered "invalidate" frames. Cache-hit staleness is bounded by roughly one
-	// drain pass; MaxStaleness is the hard backstop. Shorter intervals tighten the
-	// bound at the cost of more frequent sweeps; values below 1ms are clamped to
-	// 1ms (sub-millisecond timers are unreliable). Ignored by Broadcast and
-	// PerConnection.
+	// DrainInterval is the SharedTracking background-drainer period (default 5ms;
+	// zero uses the default): how often idle pool conns are swept for buffered
+	// "invalidate" frames, roughly bounding cache-hit staleness. Values below 1ms
+	// are clamped to 1ms. Ignored by Broadcast and PerConnection.
 	DrainInterval time.Duration
 
 	// MaxStaleness caps how long a cached entry is served after it became valid,
@@ -109,6 +108,15 @@ type Cache interface {
 	Flush() int
 	Len() int
 	MemoryUsage() int64
+}
+
+// connCacheOwner is an optional Cache capability (like cacheStatsReporter):
+// attribute entries to the conn that fetched them and evict a conn's entries in
+// one shot. localCache implements it; SharedTracking uses it to close Window 2.
+// Caches without it fall back to plain Fulfill.
+type connCacheOwner interface {
+	FulfillOwned(cacheKey string, token, ownerConnID uint64, value []byte) bool
+	EvictByConn(connID uint64) int
 }
 
 const (
@@ -167,6 +175,7 @@ func NewLocalCache(cfg CacheConfig) Cache {
 		s := &c.shards[i]
 		s.entries = make(map[string]*CacheEntry)
 		s.byRedisKey = make(map[string]map[string]struct{})
+		s.byConnID = make(map[uint64]map[string]struct{})
 		// Distribute capacity so the per-shard caps sum to exactly the
 		// configured limits; a ceil-per-shard split would let total residency
 		// exceed MaxEntries/MaxMemoryBytes.
@@ -202,12 +211,16 @@ type localCache struct {
 }
 
 // cacheShard holds the state for one shard of localCache. The mutex
-// protects entries, byRedisKey, and usedBytes.
+// protects entries, byRedisKey, byConnID, and usedBytes.
 type cacheShard struct {
 	mu         sync.RWMutex
 	entries    map[string]*CacheEntry
 	byRedisKey map[string]map[string]struct{}
-	usedBytes  int64
+	// byConnID is the owning-conn reverse index (twin of byRedisKey): conn id ->
+	// its cache keys. Populated by FulfillOwned, cleaned in removeEntryLocked,
+	// consumed by EvictByConn.
+	byConnID  map[uint64]map[string]struct{}
+	usedBytes int64
 
 	maxEntries     int
 	maxMemoryBytes int64
@@ -417,10 +430,16 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 		sizeBytes:  sizeBytes,
 	}
 	entry.lastAccessNs.Store(nextLRUToken())
-	_ = reservedAt
 
 	s.setEntryLocked(entry)
-	s.evictIfNeededLocked()
+	// Evict only Valid victims. If still over capacity the shard holds only
+	// in-flight placeholders: rather than abort a peer's fetch, drop this
+	// reservation (the caller fetches uncached). The hard cap holds either way.
+	s.evictValidLocked()
+	if s.overCapacityLocked() {
+		s.removeEntryLocked(cacheKey)
+		return 0, true
+	}
 	if s.entries[cacheKey] != entry {
 		return 0, true
 	}
@@ -428,6 +447,16 @@ func (c *localCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 }
 
 func (c *localCache) Fulfill(cacheKey string, token uint64, value []byte) bool {
+	return c.fulfill(cacheKey, token, 0, value)
+}
+
+// FulfillOwned is Fulfill that also records ownerConnID so EvictByConn can drop
+// the entry when that conn is removed. ownerConnID == 0 behaves like Fulfill.
+func (c *localCache) FulfillOwned(cacheKey string, token, ownerConnID uint64, value []byte) bool {
+	return c.fulfill(cacheKey, token, ownerConnID, value)
+}
+
+func (c *localCache) fulfill(cacheKey string, token, ownerConnID uint64, value []byte) bool {
 	valueCopy := cloneBytes(value)
 
 	s := c.shardFor(cacheKey)
@@ -455,11 +484,60 @@ func (c *localCache) Fulfill(cacheKey string, token uint64, value []byte) bool {
 	entry.validAtNs = time.Now().UnixNano()
 	entry.token = 0
 	entry.lastAccessNs.Store(nextLRUToken())
+	if ownerConnID != 0 {
+		entry.ownerConnID = ownerConnID
+		s.indexConnLocked(ownerConnID, cacheKey)
+	}
 	s.closeWaitersLocked(entry)
 
 	s.evictIfNeededLocked()
 	current, stillExists := s.entries[cacheKey]
 	return stillExists && current == entry && entry.State == CacheEntryValid
+}
+
+// EvictByConn removes every entry fetched by connID and returns the count.
+// Called when a conn is removed/swapped: the server stops delivering those
+// keys' invalidations, so keeping them risks stale serves. Errs toward a miss.
+func (c *localCache) EvictByConn(connID uint64) int {
+	if connID == 0 {
+		return 0
+	}
+	removed := 0
+	for i := range c.shards {
+		removed += c.shards[i].evictByConn(connID)
+	}
+	return removed
+}
+
+func (s *cacheShard) evictByConn(connID uint64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cacheKeys, ok := s.byConnID[connID]
+	if !ok {
+		return 0
+	}
+	toRemove := make([]string, 0, len(cacheKeys))
+	for cacheKey := range cacheKeys {
+		toRemove = append(toRemove, cacheKey)
+	}
+	removed := 0
+	for _, cacheKey := range toRemove {
+		if s.removeEntryLocked(cacheKey) {
+			removed++
+		}
+	}
+	return removed
+}
+
+// indexConnLocked records cacheKey under connID in the owning-connection index.
+func (s *cacheShard) indexConnLocked(connID uint64, cacheKey string) {
+	cacheKeys := s.byConnID[connID]
+	if cacheKeys == nil {
+		cacheKeys = make(map[string]struct{})
+		s.byConnID[connID] = cacheKeys
+	}
+	cacheKeys[cacheKey] = struct{}{}
 }
 
 func (c *localCache) Cancel(cacheKey string, token uint64) bool {
@@ -493,12 +571,10 @@ func (s *cacheShard) deleteByRedisKey(redisKey string) int {
 		return 0
 	}
 
-	// IN_PROGRESS placeholders are removed too: invalidations can arrive on
-	// a different TCP stream than the in-flight reply (BCAST sidecar, the
-	// background drainer's goroutine), so the pending fetch may predate the
-	// invalidating write. Removing the placeholder makes the racing Fulfill
-	// fail (stale token/entry), waiters wake and refetch — the value that
-	// raced an invalidation is never published.
+	// Remove IN_PROGRESS placeholders too: an invalidation can arrive on a
+	// different stream than the in-flight reply (BCAST sidecar, drainer), so the
+	// fetch may predate the write. Removing makes the racing Fulfill fail and
+	// waiters refetch, so a raced-invalidation value is never published.
 	toRemove := make([]string, 0, len(cacheKeys))
 	for cacheKey := range cacheKeys {
 		toRemove = append(toRemove, cacheKey)
@@ -563,9 +639,8 @@ func (s *cacheShard) flush() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Placeholders are flushed too (see deleteByRedisKey): a flush signals
-	// that everything the cache holds — including values currently being
-	// fetched — may be stale (FLUSHDB invalidation, sidecar outage teardown).
+	// Flush placeholders too (see deleteByRedisKey): a flush (FLUSHDB, sidecar
+	// teardown) means everything, including in-flight fetches, may be stale.
 	removed := 0
 	for cacheKey := range s.entries {
 		if s.removeEntryLocked(cacheKey) {
@@ -638,6 +713,15 @@ func (s *cacheShard) removeEntryLocked(cacheKey string) bool {
 		}
 	}
 
+	if entry.ownerConnID != 0 {
+		if cacheKeys := s.byConnID[entry.ownerConnID]; cacheKeys != nil {
+			delete(cacheKeys, cacheKey)
+			if len(cacheKeys) == 0 {
+				delete(s.byConnID, entry.ownerConnID)
+			}
+		}
+	}
+
 	s.closeWaitersLocked(entry)
 	return true
 }
@@ -659,32 +743,51 @@ func (s *cacheShard) overCapacityLocked() bool {
 	return false
 }
 
-// evictIfNeededLocked is an approximate-LRU eviction: it scans the shard's
-// entries for the one with the oldest lastAccessNs and removes it. This is
-// O(N) per eviction, but evictions are rare in production caches that
-// allocate enough capacity.
-// IN_PROGRESS entries are not evictable — the in-flight reply may complete
-// and rely on the slot.
+// evictIfNeededLocked evicts by approximate LRU (O(N) scan; rare in
+// well-sized caches) until under capacity. Used by Set/Fulfill: it prefers a
+// Valid victim but falls back to the oldest IN_PROGRESS placeholder to keep the
+// hard cap (that placeholder's Fulfill then fails and its waiters refetch).
 func (s *cacheShard) evictIfNeededLocked() {
 	for s.overCapacityLocked() {
-		var victim *CacheEntry
-		var oldestNs int64 = math.MaxInt64
-		for _, e := range s.entries {
-			if e.State != CacheEntryValid {
-				continue
-			}
-			ns := e.lastAccessNs.Load()
-			if ns < oldestNs {
-				oldestNs = ns
-				victim = e
-			}
+		victim := s.oldestLocked(CacheEntryValid)
+		if victim == nil {
+			victim = s.oldestLocked(CacheEntryInProgress)
 		}
 		if victim == nil {
-			// Only IN_PROGRESS entries left; can't evict any.
 			return
 		}
 		s.removeEntryLocked(victim.CacheKey)
 	}
+}
+
+// evictValidLocked evicts only Valid entries until under capacity. Unlike
+// evictIfNeededLocked it never evicts a placeholder, so Reserve can't abort a
+// peer's in-flight fetch.
+func (s *cacheShard) evictValidLocked() {
+	for s.overCapacityLocked() {
+		victim := s.oldestLocked(CacheEntryValid)
+		if victim == nil {
+			return
+		}
+		s.removeEntryLocked(victim.CacheKey)
+	}
+}
+
+// oldestLocked returns the entry in the given state with the smallest
+// lastAccessNs (the least-recently-used), or nil when none exists.
+func (s *cacheShard) oldestLocked(state CacheEntryState) *CacheEntry {
+	var victim *CacheEntry
+	var oldestNs int64 = math.MaxInt64
+	for _, e := range s.entries {
+		if e.State != state {
+			continue
+		}
+		if ns := e.lastAccessNs.Load(); ns < oldestNs {
+			oldestNs = ns
+			victim = e
+		}
+	}
+	return victim
 }
 
 func cloneBytes(src []byte) []byte {

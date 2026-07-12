@@ -36,6 +36,12 @@ func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 		cscBcastReady:   &ready,
 		cscPerConnState: state,
 	}
+	// Owner-only fields must NOT be carried: a derived client's Close must not
+	// stop the owner's drainer/sidecar or flush its cache.
+	c.cscOwnsCache = true
+	c.cscDrainHandle = &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	c.cscSidecar = &broadcastSidecar{}
+
 	cl := c.clone()
 	if cl.cscBcastReady != &ready {
 		t.Fatal("clone dropped cscBcastReady")
@@ -45,6 +51,15 @@ func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 	}
 	if cl.csc == nil {
 		t.Fatal("clone dropped csc")
+	}
+	if cl.cscOwnsCache {
+		t.Fatal("clone must not copy cscOwnsCache (owner-only)")
+	}
+	if cl.cscDrainHandle != nil {
+		t.Fatal("clone must not copy cscDrainHandle (owner-only)")
+	}
+	if cl.cscSidecar != nil {
+		t.Fatal("clone must not copy cscSidecar (owner-only)")
 	}
 }
 
@@ -120,8 +135,8 @@ func TestAttachCSC_StrategyGates(t *testing.T) {
 	if sticky.csc != nil {
 		t.Fatal("SharedTracking without a drainable pooler must stay uncached")
 	}
-	if _, registered := cscDrainHandles.Load(sticky); registered {
-		t.Fatal("no drainer may be registered when attachCSC refused the pooler")
+	if sticky.cscDrainHandle != nil {
+		t.Fatal("no drainer may be started when attachCSC refused the pooler")
 	}
 }
 

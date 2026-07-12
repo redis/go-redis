@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -15,25 +16,29 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// RESPInvalidationBytesRead returns the cumulative byte count of key names
-// received in "invalidate" push frames since process start. This counter is
-// shared across all clients in the process and is never reset by the library.
-func RESPInvalidationBytesRead() int64 {
-	return proto.InvalidationBytesRead.Load()
+// cscRegisterCleanups arranges for a client dropped without Close to still stop
+// its background CSC goroutines. The cleanups capture only the handle/sidecar
+// (never *Client, which the goroutines don't reference) so the wrapper can be
+// collected, and only signal stop (a GC cleanup must not block); both signals
+// are idempotent, so a later explicit Close is safe.
+func cscRegisterCleanups(c *Client) {
+	if h := c.baseClient.cscDrainHandle; h != nil {
+		runtime.AddCleanup(c, func(h *cscDrainHandle) { h.signalStop() }, h)
+	}
+	if s := c.baseClient.cscSidecar; s != nil {
+		runtime.AddCleanup(c, func(s *broadcastSidecar) { s.signalShutdown() }, s)
+	}
 }
 
-// commandHits / commandMisses count cache outcomes at the SERVED-COMMAND
-// boundary — exactly one increment per `processCached` invocation,
+// commandHits / commandMisses count cache outcomes once per processCached call,
 // regardless of how many internal cache.Get probes it issues.
 var (
 	commandHits   atomic.Uint64
 	commandMisses atomic.Uint64
 
-	// commandCacheRejects counts cache-admission rejections: Fulfill returned
-	// false (value larger than the per-shard byte cap, or the entry was
-	// invalidated/evicted mid-fetch). A persistently high rate alongside a
-	// low hit rate usually means MaxMemoryBytes is too small for the reply
-	// sizes being cached (each of the 16 shards admits at most its share).
+	// commandCacheRejects counts admission rejections (Fulfill returned false).
+	// A high rate with a low hit rate usually means MaxMemoryBytes is too small
+	// for the reply sizes (each shard admits at most its 1/16 share).
 	commandCacheRejects atomic.Uint64
 )
 
@@ -89,7 +94,6 @@ func (h *invalidateHandler) HandlePushNotification(
 	case nil:
 		h.cache.Flush()
 	case []interface{}:
-		var bytesConsumed int64
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -100,11 +104,7 @@ func (h *invalidateHandler) HandlePushNotification(
 			default:
 				continue
 			}
-			bytesConsumed += int64(len(name))
 			h.cache.DeleteByRedisKey(dbNamespacedKey(h.db, name))
-		}
-		if bytesConsumed > 0 {
-			proto.InvalidationBytesRead.Add(bytesConsumed)
 		}
 	}
 	return nil
@@ -114,11 +114,10 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int
 	if p == nil || cache == nil {
 		return nil
 	}
-	// A derived client (Client.Conn) shares the parent's push processor,
-	// which already routes "invalidate" to this exact cache — treat that as
-	// success so the derived client shares the cache instead of silently
-	// losing CSC. A handler bound to a different cache (or a foreign handler)
-	// is still an error: piggybacking on it would leave this cache uninvalidated.
+	// A derived client (Client.Conn) shares the parent's processor, which
+	// already routes "invalidate" to this exact cache: treat that as success so
+	// the derived client shares the cache. A handler bound to a different cache
+	// is an error (piggybacking would leave this cache uninvalidated).
 	if existing := p.GetHandler(invalidatePushName); existing != nil {
 		if h, ok := existing.(*invalidateHandler); ok && h.cache == cache && h.db == db {
 			return nil
@@ -130,23 +129,19 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int
 	return p.RegisterHandler(invalidatePushName, &invalidateHandler{cache: cache, db: db}, true)
 }
 
-// attachCSC wires a client-side cache to this baseClient and registers the
-// invalidate handler. Safe to call with a nil cache. On registration failure
-// the cache reference is left unset so cacheable commands fall back to normal
-// round-trips.
+// attachCSC wires the cache and invalidate handler onto this baseClient. Safe
+// with a nil cache; on registration failure c.csc stays nil (commands fall back
+// to normal round-trips).
 //
-// CSC is only enabled when Options.DB == 0. Redis CLIENT TRACKING is
-// per-connection and bound to the database the connection was on when tracking
-// was enabled; a runtime SELECT mid-session changes the active DB but does not
-// re-key the server's tracking table. Cache entries written under one DB would
-// then be invalidated by writes against a different DB, silently serving stale
-// data. Users that need multi-DB caching must run one client per DB.
+// CSC is DB-0 only: CLIENT TRACKING is bound to the connection's DB at tracking
+// time and a runtime SELECT does not re-key the server's tracking table, so
+// multi-DB use would serve stale data. Run one client per DB instead.
 func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	if cache == nil || c.opt.Protocol != 3 {
 		return
 	}
-	// PerConnection owns the invalidate handler and keeps c.csc nil; wiring
-	// the shared cache here would activate two caching paths at once.
+	// PerConnection owns the invalidate handler and keeps c.csc nil; wiring the
+	// shared cache here would run two caching paths at once.
 	if c.opt.ClientSideCacheStrategy == CSCStrategyPerConnection {
 		return
 	}
@@ -156,12 +151,10 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 				"Use one client per DB if you need caching against non-zero databases.", c.opt.DB)
 		return
 	}
-	// SharedTracking serves shared-cache hits only if SOMETHING applies the
-	// invalidations buffered on pool conns. Poolers without idle-conn
-	// draining (e.g. the StickyConnPool behind Client.Conn) get no drainer
-	// and no hit-path drain, so serving hits would be unboundedly stale:
-	// stay uncached. (Broadcast is exempt — its sidecar delivers
-	// invalidations independently of any pool conn.)
+	// SharedTracking hits are only safe if something applies the invalidations
+	// buffered on pool conns. A pooler without idle-conn draining (e.g. the
+	// StickyConnPool behind Client.Conn) has no drainer, so stay uncached.
+	// Broadcast is exempt: its sidecar delivers invalidations independently.
 	if c.opt.ClientSideCacheStrategy == CSCStrategySharedTracking {
 		if _, ok := c.connPool.(idleConnDrainer); !ok {
 			return
@@ -172,32 +165,124 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 		return
 	}
 	c.csc = cache
-	// Only SharedTracking delivers invalidations to pool connections, so only it
-	// runs the drainer (Broadcast uses the sidecar; PerConnection never gets here).
+	// Only SharedTracking drains pool conns (Broadcast uses the sidecar;
+	// PerConnection never reaches here).
 	if c.opt.ClientSideCacheStrategy == CSCStrategySharedTracking {
 		c.startBackgroundDrainer()
+		c.registerConnEvictHook(cache)
 	}
 }
 
-// cscDrainHandle holds a drainer goroutine's lifecycle channels: stop signals
-// shutdown; done is closed on exit so stopBackgroundDrainer can JOIN before teardown.
-type cscDrainHandle struct {
-	stop chan struct{}
-	done chan struct{}
+// poolHookRegistrar is the subset of *pool.ConnPool used to (de)register the
+// evict-on-remove hook. Without it a pooler gets no per-conn eviction
+// (bounded by MaxStaleness instead).
+type poolHookRegistrar interface {
+	AddPoolHook(hook pool.PoolHook)
+	RemovePoolHook(hook pool.PoolHook)
 }
 
-// cscDrainHandles maps *baseClient -> *cscDrainHandle for its background drainer.
-// The entry is removed (and the goroutine joined) on Close.
-var cscDrainHandles sync.Map
+// cscRecentRemovedRing bounds the recently-removed conn-id window that closes
+// the fulfill-vs-removal race (see fulfillCached); only a handful of removals
+// can fall in that microsecond window.
+const cscRecentRemovedRing = 64
 
-// cscMinDrainInterval is the floor for user-supplied DrainInterval values:
-// sub-millisecond timers are unreliable on common platforms
-// (https://github.com/golang/go/issues/53824), which would silently loosen the
-// staleness bound the interval is meant to provide.
+// cscEvictOnRemoveHook evicts a connection's owned entries when the pool removes
+// it (the server stops delivering their invalidations — Window 2), and records
+// recently-removed conn ids so fulfillCached can catch a value whose owning conn
+// was removed mid-fetch.
+type cscEvictOnRemoveHook struct {
+	evictor connCacheOwner
+
+	mu     sync.Mutex
+	recent [cscRecentRemovedRing]uint64
+	ridx   int
+}
+
+func (h *cscEvictOnRemoveHook) OnGet(_ context.Context, _ *pool.Conn, _ bool) (bool, error) {
+	return true, nil
+}
+
+func (h *cscEvictOnRemoveHook) OnPut(_ context.Context, _ *pool.Conn) (shouldPool, shouldRemove bool, err error) {
+	return true, false, nil
+}
+
+func (h *cscEvictOnRemoveHook) OnRemove(_ context.Context, cn *pool.Conn, _ error) {
+	if cn == nil {
+		return
+	}
+	id := cn.GetID()
+	// Record BEFORE evicting: if we evicted first, a concurrent fulfill could
+	// create the entry after the eviction yet read the ring before the record,
+	// leaving it orphaned. Recording first guarantees fulfillCached sees the
+	// removal and drops the entry.
+	h.mu.Lock()
+	h.recent[h.ridx%cscRecentRemovedRing] = id
+	h.ridx++
+	h.mu.Unlock()
+	h.evictor.EvictByConn(id)
+}
+
+// wasRecentlyRemoved reports whether connID is in the recently-removed ring.
+func (h *cscEvictOnRemoveHook) wasRecentlyRemoved(connID uint64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, v := range h.recent {
+		if v == connID {
+			return true
+		}
+	}
+	return false
+}
+
+// registerConnEvictHook wires cscEvictOnRemoveHook when the cache supports
+// owning-connection attribution and the pool supports hooks. No-op otherwise
+// (custom caches / poolers fall back to the MaxStaleness backstop).
+func (c *baseClient) registerConnEvictHook(cache Cache) {
+	owner, ok := cache.(connCacheOwner)
+	if !ok {
+		return
+	}
+	reg, ok := c.connPool.(poolHookRegistrar)
+	if !ok {
+		return
+	}
+	h := &cscEvictOnRemoveHook{evictor: owner}
+	reg.AddPoolHook(h)
+	c.cscPoolHook = h
+}
+
+// cscEvictOwnedEntries drops the shared-cache entries owned by connID, when the
+// cache supports owning-connection attribution. Called from initConn on
+// (re)init/handoff; no-op for caches/strategies without attribution.
+func (c *baseClient) cscEvictOwnedEntries(connID uint64) {
+	if c.csc == nil {
+		return
+	}
+	if owner, ok := c.csc.(connCacheOwner); ok {
+		owner.EvictByConn(connID)
+	}
+}
+
+// cscDrainHandle holds the drainer goroutine's lifecycle channels: stop signals
+// shutdown; done is closed on exit so stopBackgroundDrainer can join.
+type cscDrainHandle struct {
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+// signalStop closes stop at most once (so Close and the AddCleanup safety net
+// can't double-close) and does not join — a GC cleanup must not block.
+func (h *cscDrainHandle) signalStop() {
+	h.stopOnce.Do(func() { close(h.stop) })
+}
+
+// cscMinDrainInterval floors a user-supplied DrainInterval: sub-millisecond
+// timers are unreliable (https://github.com/golang/go/issues/53824).
 const cscMinDrainInterval = time.Millisecond
 
-// cscDrainInterval returns ClientSideCacheConfig.DrainInterval clamped to
-// cscMinDrainInterval, or the default (cscDrainSkipWindow, 5ms) when unset.
+// cscDrainInterval returns DrainInterval clamped to cscMinDrainInterval, or the
+// default (cscDrainSkipWindow) when unset.
 func (c *baseClient) cscDrainInterval() time.Duration {
 	if cfg := c.opt.ClientSideCacheConfig; cfg != nil && cfg.DrainInterval > 0 {
 		if cfg.DrainInterval < cscMinDrainInterval {
@@ -208,28 +293,26 @@ func (c *baseClient) cscDrainInterval() time.Duration {
 	return cscDrainSkipWindow
 }
 
-// idleConnDrainer is the optional pooler capability the SharedTracking
-// background drainer needs; *pool.ConnPool implements it. Poolers without it
-// (e.g. the StickyConnPool behind Client.Conn) get no background draining, so
+// idleConnDrainer is the optional pooler capability the SharedTracking drainer
+// needs; *pool.ConnPool implements it. Poolers without it get no draining, so
 // their cached reads are bounded only by CacheConfig.MaxStaleness.
 type idleConnDrainer interface {
 	DrainIdleConns(ctx context.Context, st *pool.DrainState, fn func(cn *pool.Conn) error)
 }
 
-// startBackgroundDrainer launches the per-client invalidation drainer. Each tick
-// (ClientSideCacheConfig.DrainInterval, default 5ms) runs one pass of
-// pool.DrainIdleConns — claiming one idle connection at a time, draining its
-// buffered push frames, and returning it via Put (so OnPut can queue a maintenance
-// handoff). Poolers that do not implement idleConnDrainer no-op.
+// startBackgroundDrainer launches the per-client invalidation drainer: each tick
+// runs one pool.DrainIdleConns pass, draining idle conns' buffered push frames.
+// No-op for poolers that don't implement idleConnDrainer.
 func (c *baseClient) startBackgroundDrainer() {
 	cp, ok := c.connPool.(idleConnDrainer)
 	if !ok {
 		return
 	}
-	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
-	if _, loaded := cscDrainHandles.LoadOrStore(c, h); loaded {
-		return // already running
+	if c.cscDrainHandle != nil {
+		return // already running (startBackgroundDrainer runs once, in NewClient)
 	}
+	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	c.cscDrainHandle = h
 	interval := c.cscDrainInterval()
 	go func() {
 		defer close(h.done)
@@ -252,14 +335,30 @@ func (c *baseClient) startBackgroundDrainer() {
 	}()
 }
 
-// stopBackgroundDrainer halts the client's drainer goroutine and JOINS it before
-// returning, so a pass in progress cannot touch the pool after baseClient.Close
-// tears it down. Idempotent; called from baseClient.Close.
+// stopBackgroundDrainer stops the drainer goroutine and joins it (so no pass
+// touches the pool after Close), then flushes the cache if this client solely
+// owns it — with the drainer gone nothing would apply invalidations, so an
+// emptied cache can't serve stale. Idempotent; injected/shared caches are left
+// intact for other clients.
 func (c *baseClient) stopBackgroundDrainer() {
-	if v, ok := cscDrainHandles.LoadAndDelete(c); ok {
-		h := v.(*cscDrainHandle)
-		close(h.stop)
-		<-h.done
+	// Deregister the hook first so pool teardown can't call back into the cache.
+	// Independent of the handle: a cache without connCacheOwner has a drainer
+	// but no hook, and vice versa.
+	if c.cscPoolHook != nil {
+		if reg, ok := c.connPool.(poolHookRegistrar); ok {
+			reg.RemovePoolHook(c.cscPoolHook)
+		}
+		c.cscPoolHook = nil
+	}
+	h := c.cscDrainHandle
+	if h == nil {
+		return
+	}
+	c.cscDrainHandle = nil
+	h.signalStop()
+	<-h.done
+	if c.cscOwnsCache && c.csc != nil {
+		c.csc.Flush()
 	}
 }
 
@@ -274,33 +373,31 @@ func applyCachedReply(cmd Cmder, raw []byte) error {
 // roughly one round; MaxStaleness is the hard backstop.
 const cscDrainSkipWindow = 5 * time.Millisecond
 
-// cscDrainHardReadCap is the HARD socket read deadline the drainer applies via
-// Conn.WithReaderHardDeadline (a relaxed maintenance timeout can't extend it). The
-// drain reads only buffered frames and stops when empty, so this bounds only a rare
-// partial-frame mid-read. A var (not const) so the tuning harness can sweep it.
+// cscDrainHardReadCap is the hard socket read deadline the drainer applies via
+// Conn.WithReaderHardDeadline. It bounds only a rare partial-frame mid-read. A
+// var (not const) so the tuning harness can sweep it.
 var cscDrainHardReadCap = 50 * time.Microsecond
 
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
 // Only invoked after process has verified that CSC is active and cmd is
 // eligible.
 func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
-	// Broadcast strategy: while the BCAST sidecar is down no invalidations
-	// flow, so a hit could be stale and anything fulfilled now has no
-	// invalidate coverage (the reconnect flush would drop it anyway). Bypass
-	// the cache entirely until the sidecar is back.
+	// Broadcast: while the sidecar is down no invalidations flow, so bypass the
+	// cache entirely until it reconnects (hits could be stale, and new entries
+	// would have no invalidate coverage).
 	if r := c.cscBcastReady; r != nil && !r.Load() {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
 	db := c.opt.DB
@@ -336,8 +433,15 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 
 	var raw []byte
 	var capture *[]byte
+	var connID uint64
+	var connIDOut *uint64
 	if shouldFetch {
 		capture = &raw
+		// Capture the serving conn id only when an evict-on-remove hook is
+		// active; without it the attribution is unactionable.
+		if c.cscPoolHook != nil {
+			connIDOut = &connID
+		}
 		// Release the placeholder if processWithRetry panics; Cancel on a
 		// stale token is a no-op.
 		defer func() {
@@ -347,20 +451,41 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		}()
 	}
 
-	err := c.processWithRetry(ctx, cmd, capture)
+	err := c.processWithRetry(ctx, cmd, capture, connIDOut)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
 		if err == nil {
-			if !c.csc.Fulfill(key, token, raw) {
+			if !c.fulfillCached(key, token, connID, raw) {
 				commandCacheRejects.Add(1)
 			}
 		} else {
 			c.csc.Cancel(key, token)
 		}
 	}
-	// Reaching here means the command's reply came from Redis (the miss
-	// path). Count as a command-level miss.
-	commandMisses.Add(1)
+	// Count a miss only when the command completed; a network/command error is
+	// a failure, not a miss, and would skew the hit-rate metric.
+	if err == nil {
+		commandMisses.Add(1)
+	}
 	return err
+}
+
+// fulfillCached stores a fetched value, attributing it to its serving conn when
+// an evict-on-remove hook is active so EvictByConn can drop it if that conn is
+// removed. It also closes the attribute-vs-removal race: the conn is released
+// before this runs, so its OnRemove eviction may fire before the entry exists —
+// after attributing we re-check and drop the entry if the conn was just removed.
+func (c *baseClient) fulfillCached(key string, token, connID uint64, raw []byte) bool {
+	if connID != 0 {
+		if hook, ok := c.cscPoolHook.(*cscEvictOnRemoveHook); ok {
+			owner := hook.evictor
+			done := owner.FulfillOwned(key, token, connID, raw)
+			if done && hook.wasRecentlyRemoved(connID) {
+				owner.EvictByConn(connID)
+			}
+			return done
+		}
+	}
+	return c.csc.Fulfill(key, token, raw)
 }

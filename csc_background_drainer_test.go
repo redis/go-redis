@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -136,8 +137,8 @@ func TestDrainPushNotifications_CustomProcessorErrorNotFatal(t *testing.T) {
 	}
 }
 
-// TestBackgroundDrainerLifecycle verifies start registers a handle, double-start
-// is a no-op, and stop removes the registration and joins the goroutine.
+// TestBackgroundDrainerLifecycle verifies start stores a handle on the client,
+// double-start is a no-op, and stop clears the handle and joins the goroutine.
 func TestBackgroundDrainerLifecycle(t *testing.T) {
 	cp := pool.NewConnPool(&pool.Options{
 		Dialer:   func(context.Context) (net.Conn, error) { return nil, errors.New("no dial in lifecycle test") },
@@ -147,21 +148,20 @@ func TestBackgroundDrainerLifecycle(t *testing.T) {
 	c := &baseClient{opt: &Options{Protocol: 3}, connPool: cp}
 
 	c.startBackgroundDrainer()
-	v, ok := cscDrainHandles.Load(c)
-	if !ok {
-		t.Fatal("startBackgroundDrainer did not register a drain handle")
+	h := c.cscDrainHandle
+	if h == nil {
+		t.Fatal("startBackgroundDrainer did not store a drain handle")
 	}
-	h := v.(*cscDrainHandle)
 
 	// Double-start must not replace the handle.
 	c.startBackgroundDrainer()
-	if v2, _ := cscDrainHandles.Load(c); v2.(*cscDrainHandle) != h {
+	if c.cscDrainHandle != h {
 		t.Fatal("double start replaced the drain handle")
 	}
 
 	c.stopBackgroundDrainer()
-	if _, still := cscDrainHandles.Load(c); still {
-		t.Fatal("stopBackgroundDrainer did not remove the registration")
+	if c.cscDrainHandle != nil {
+		t.Fatal("stopBackgroundDrainer did not clear the handle")
 	}
 	// stop joins the goroutine, so done must already be closed.
 	select {
@@ -200,21 +200,21 @@ func TestCscDrainIntervalClampsMinimum(t *testing.T) {
 	}
 }
 
-// TestInvalidateHandlerCountsInvalidationBytes: the SharedTracking invalidate
-// handler must feed RESPInvalidationBytesRead like the Broadcast and
-// PerConnection handlers do, or the metric reads 0 under the default strategy.
-func TestInvalidateHandlerCountsInvalidationBytes(t *testing.T) {
-	h := &invalidateHandler{cache: NewLocalCache(CacheConfig{MaxEntries: 16}), db: 0}
+// TestInvalidateHandlerDecodesPayloads: the SharedTracking invalidate handler
+// must evict for both string and []byte key names in the push payload.
+func TestInvalidateHandlerDecodesPayloads(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache.Set("get:foo", []string{dbNamespacedKey(0, "foo")}, []byte("1"))
+	cache.Set("get:quux", []string{dbNamespacedKey(0, "quux")}, []byte("2"))
+	h := &invalidateHandler{cache: cache, db: 0}
 
-	before := RESPInvalidationBytesRead()
 	err := h.HandlePushNotification(context.Background(), push.NotificationHandlerContext{},
 		[]interface{}{"invalidate", []interface{}{"foo", []byte("quux")}})
 	if err != nil {
 		t.Fatalf("HandlePushNotification: %v", err)
 	}
-	want := int64(len("foo") + len("quux"))
-	if got := RESPInvalidationBytesRead() - before; got != want {
-		t.Fatalf("invalidation bytes delta: got %d want %d", got, want)
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("both entries should be invalidated, Len=%d", n)
 	}
 }
 
@@ -298,6 +298,45 @@ func TestBackgroundDrainerUsesOptionalInterface(t *testing.T) {
 			t.Fatal("drainer never called the pooler's DrainIdleConns")
 		default:
 			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+// TestBackgroundDrainerCleanupOnGC verifies the runtime.AddCleanup safety net:
+// a client that starts a drainer and is then dropped WITHOUT Close must have its
+// drainer goroutine stopped once the *Client wrapper is garbage-collected.
+func TestBackgroundDrainerCleanupOnGC(t *testing.T) {
+	cp := pool.NewConnPool(&pool.Options{
+		Dialer:   func(context.Context) (net.Conn, error) { return nil, errors.New("no dial in cleanup test") },
+		PoolSize: 1,
+	})
+	defer cp.Close()
+
+	// Build a *Client with a running drainer, register the cleanup, and return
+	// ONLY its done channel so the *Client becomes unreachable when this returns.
+	done := func() <-chan struct{} {
+		c := &Client{baseClient: &baseClient{opt: &Options{Protocol: 3}, connPool: cp}}
+		c.baseClient.startBackgroundDrainer()
+		h := c.baseClient.cscDrainHandle
+		if h == nil {
+			t.Fatal("drainer did not start")
+		}
+		cscRegisterCleanups(c)
+		return h.done
+	}()
+
+	deadline := time.After(10 * time.Second)
+	for {
+		runtime.GC()
+		select {
+		case <-done:
+			return // cleanup fired and the goroutine exited
+		case <-time.After(50 * time.Millisecond):
+		}
+		select {
+		case <-deadline:
+			t.Fatal("drainer goroutine did not stop after the client was GC'd")
+		default:
 		}
 	}
 }

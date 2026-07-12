@@ -125,10 +125,9 @@ type Conn struct {
 
 	onClose func() error
 
-	// onCscClose is the client-side-caching close hook. Kept separate from
-	// onClose (streaming-credentials cleanup) so neither owner clobbers the
-	// other; both slots keep overwrite semantics so re-running initConn on the
-	// same conn cannot accumulate callbacks.
+	// onCscClose is the client-side-caching close hook, kept separate from
+	// onClose (streaming-credentials cleanup) so neither clobbers the other.
+	// Both keep overwrite semantics, so re-running initConn can't accumulate them.
 	onCscClose func() error
 }
 

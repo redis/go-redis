@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -31,18 +32,36 @@ import (
 // dispatch, never reserves a cache slot, never reads command replies.
 // The only frames it ever consumes are RESP3 push frames (`>`).
 //
-// Authentication: the sidecar authenticates once at HELLO using the
-// non-streaming credential sources (Options.resolveCredentials:
-// CredentialsProviderContext → CredentialsProvider → static Username/Password).
-// The StreamingCredentialsProvider (rotating-token) path is intentionally not
-// wired here — it requires the per-connection reauth/listener plumbing this
-// push-only connection deliberately avoids. Deployments relying solely on
-// rotating tokens are therefore unsupported for Broadcast CSC; a sidecar auth
-// failure is logged and retried with backoff by the read loop.
+// Authentication: the sidecar authenticates at HELLO using the non-streaming
+// credential sources (Options.resolveCredentials: CredentialsProviderContext →
+// CredentialsProvider → static Username/Password). It ALSO supports
+// Options.StreamingCredentialsProvider (rotating tokens): it subscribes for
+// updates, uses the latest credentials for each HELLO, and on a rotation issues
+// AUTH in place on the live connection (see sidecarCredsListener) so the new
+// token takes effect WITHOUT dropping the BCAST subscription or flushing the
+// cache. It falls back to a reconnect only when no live connection exists or
+// the AUTH write fails.
+//
+// Not yet wired: maintnotifications (cluster maintenance push events). The
+// sidecar reads push frames but only acts on `invalidate`; participating in
+// MOVING/MIGRATING handoffs is a follow-up.
 type broadcastSidecar struct {
 	opt   *Options
 	cache Cache
 	db    int
+
+	// credsMu guards latestCreds and unsubscribe.
+	credsMu sync.Mutex
+	// latestCreds is the most recent credential from a StreamingCredentialsProvider
+	// (nil when none is configured, falling back to opt.resolveCredentials).
+	latestCreds auth.Credentials
+	// unsubscribe cancels the streaming-credentials subscription; called on
+	// Shutdown to avoid leaking a listener in the provider.
+	unsubscribe auth.UnsubscribeFunc
+	// credsGen is bumped on every credential rotation (atomic so the handshake
+	// can capture-and-recheck without nesting credsMu under connMu). A dial that
+	// authenticated with a superseded token is detected at publish and redialed.
+	credsGen atomic.Uint64
 
 	// connMu protects conn/reader/writer during reconnects. The read loop
 	// goroutine reads its own snapshot of these under the mutex; outside
@@ -79,27 +98,106 @@ type broadcastSidecar struct {
 
 func newBroadcastSidecar(opt *Options, cache Cache, db int) *broadcastSidecar {
 	return &broadcastSidecar{
-		opt:                 opt,
-		cache:               cache,
-		db:                  db,
-		done:                make(chan struct{}),
-		loopDone:            make(chan struct{}),
-		backoffInitial:      100 * time.Millisecond,
-		backoffMax:          30 * time.Second,
-		healthCheckInterval: 30 * time.Second,
+		opt:            opt,
+		cache:          cache,
+		db:             db,
+		done:           make(chan struct{}),
+		loopDone:       make(chan struct{}),
+		backoffInitial: 100 * time.Millisecond,
+		backoffMax:     30 * time.Second,
+		// A silent (no FIN/RST) drop is detected within ~2 of these windows
+		// (probe, then unanswered probe), during which stale hits are served;
+		// kept short to bound that. PING on a quiet sidecar is negligible.
+		healthCheckInterval: 10 * time.Second,
 	}
 }
 
-// Start attempts the initial dial and BCAST handshake synchronously, then
-// spawns the read-loop goroutine. A failed first connect is NOT fatal: the
-// read loop owns reconnection with backoff, exactly as it would after a
-// mid-life disconnect, and the cache stays bypassed (ready=false) until the
-// subscription is live. Start returns an error only for configuration
-// problems that no amount of retrying can fix.
+// subscribeCredentials subscribes to Options.StreamingCredentialsProvider (if
+// set), storing the current credentials and the unsubscribe func. On failure it
+// logs and falls back to the static credential sources.
+func (s *broadcastSidecar) subscribeCredentials() {
+	if s.opt.StreamingCredentialsProvider == nil {
+		return
+	}
+	creds, unsub, err := s.opt.StreamingCredentialsProvider.Subscribe(&sidecarCredsListener{s: s})
+	if err != nil {
+		internal.Logger.Printf(context.Background(),
+			"csc sidecar: streaming credentials subscribe failed (falling back to static credentials): %v", err)
+		return
+	}
+	s.credsMu.Lock()
+	// Some providers deliver the first credential via a synchronous OnNext
+	// inside Subscribe; if that already ran, don't clobber it with the older
+	// return value.
+	if s.latestCreds == nil {
+		s.latestCreds = creds
+	}
+	s.unsubscribe = unsub
+	s.credsMu.Unlock()
+}
+
+// handshakeCredentials returns the HELLO AUTH credentials (latest streaming
+// credential, else static sources) plus the rotation generation observed, which
+// lets dialAndHandshake detect a rotation that lands mid-handshake and redial.
+func (s *broadcastSidecar) handshakeCredentials(ctx context.Context) (username, password string, gen uint64, err error) {
+	gen = s.credsGen.Load()
+	s.credsMu.Lock()
+	creds := s.latestCreds
+	s.credsMu.Unlock()
+	if creds != nil {
+		username, password = creds.BasicAuth()
+		return username, password, gen, nil
+	}
+	username, password, err = s.opt.resolveCredentials(ctx)
+	return username, password, gen, err
+}
+
+// sidecarCredsListener bridges a StreamingCredentialsProvider to the sidecar:
+// a new credential is applied via in-place re-AUTH (see OnNext).
+type sidecarCredsListener struct {
+	s *broadcastSidecar
+}
+
+func (l *sidecarCredsListener) OnNext(creds auth.Credentials) {
+	if creds == nil {
+		// A nil credential can't authenticate; reconnect to re-resolve rather
+		// than store a nil that would panic in BasicAuth.
+		l.s.tearDownConn()
+		return
+	}
+	l.s.credsMu.Lock()
+	l.s.latestCreds = creds
+	l.s.credsMu.Unlock()
+	// Bump the generation so an in-flight handshake (which captured the old gen)
+	// redials instead of publishing a conn on the old token.
+	l.s.credsGen.Add(1)
+	// Prefer in-place re-AUTH so the new token takes effect without dropping the
+	// BCAST subscription (which would flush the cache). Fall back to a reconnect
+	// when there's no live conn (mid-handshake; the gen bump handles it) or the
+	// AUTH write fails.
+	if username, password := creds.BasicAuth(); password != "" {
+		if err := l.s.reauthConn(username, password); err == nil {
+			return
+		}
+	}
+	l.s.tearDownConn()
+}
+
+func (l *sidecarCredsListener) OnError(err error) {
+	internal.Logger.Printf(context.Background(), "csc sidecar: streaming credentials error: %v", err)
+}
+
+// Start attempts the initial dial and BCAST handshake, then spawns the read
+// loop. A failed first connect is not fatal: the read loop reconnects with
+// backoff (cache stays bypassed via ready=false until live). Returns an error
+// only for unrecoverable configuration problems.
 func (s *broadcastSidecar) Start(ctx context.Context) error {
 	if s.opt.Dialer == nil {
 		return errors.New("csc sidecar: nil dialer")
 	}
+	// Subscribe BEFORE the first handshake so it authenticates with the current
+	// token; later rotations are handled by sidecarCredsListener.OnNext.
+	s.subscribeCredentials()
 	if err := s.dialAndHandshake(ctx); err != nil {
 		// Same handling as a runtime disconnect: keep ready=false (the data
 		// path bypasses the cache) and let readLoop's reconnect-with-backoff
@@ -114,16 +212,38 @@ func (s *broadcastSidecar) Start(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown signals the read loop to exit and closes the underlying socket.
-// Bounded to 5s to satisfy the spec's no-block guarantee.
-func (s *broadcastSidecar) Shutdown() {
+// signalShutdown requests the read loop to exit WITHOUT joining it, so it is
+// safe from a runtime.AddCleanup finalizer (which must not block): unsubscribe,
+// close done (the loop exits on its own), flip ready=false, close the socket.
+// Idempotent.
+func (s *broadcastSidecar) signalShutdown() {
+	// Unsubscribe first so no rotation triggers a reconnect during teardown and
+	// the listener is released.
+	s.credsMu.Lock()
+	unsub := s.unsubscribe
+	s.unsubscribe = nil
+	s.credsMu.Unlock()
+	if unsub != nil {
+		_ = unsub()
+	}
+
 	s.doneOnce.Do(func() { close(s.done) })
+	// Stop serving hits now: after shutdown no invalidations flow, so a stale
+	// ready flag would let a closing client keep serving un-evictable hits.
+	s.ready.Store(false)
 
 	s.connMu.Lock()
 	if s.conn != nil {
 		_ = s.conn.Close()
 	}
 	s.connMu.Unlock()
+}
+
+// Shutdown signals the read loop to exit and JOINS it (bounded to 5s) so the
+// caller knows the goroutine is gone. Used on explicit client Close; the GC
+// safety net uses signalShutdown instead (must not block).
+func (s *broadcastSidecar) Shutdown() {
+	s.signalShutdown()
 
 	select {
 	case <-s.loopDone:
@@ -131,17 +251,15 @@ func (s *broadcastSidecar) Shutdown() {
 		internal.Logger.Printf(context.Background(),
 			"csc sidecar: shutdown timed out waiting for read loop to exit")
 	}
+	// A reconnect racing the first Store(false) could set ready=true; re-clear
+	// after the loop exits so the terminal state is always false.
+	s.ready.Store(false)
 }
 
-// dialAndHandshake opens a fresh TCP connection, completes the RESP3 HELLO
-// handshake (authenticating if credentials are configured) and issues
-// CLIENT TRACKING ON BCAST. On success it publishes the new conn/reader/
-// writer atomically under connMu and returns nil.
-//
-// The handshake commands are built with the same Cmder constructors and
-// argument builders the normal client uses (writeCmd + appendClientTrackingOptions),
-// so RESP3 framing, auth, and tracking-option encoding live in one place; only
-// the dedicated socket and the push-frame read loop are bespoke.
+// dialAndHandshake dials a fresh connection, runs the RESP3 HELLO handshake and
+// CLIENT TRACKING ON BCAST, and on success publishes conn/reader/writer under
+// connMu. Handshake commands reuse the normal client's Cmder constructors so
+// framing/auth/tracking-option encoding live in one place.
 func (s *broadcastSidecar) dialAndHandshake(ctx context.Context) error {
 	if s.opt.Dialer == nil {
 		return errors.New("csc sidecar: nil dialer")
@@ -176,7 +294,7 @@ func (s *broadcastSidecar) dialAndHandshake(ctx context.Context) error {
 
 	// --- HELLO 3 [AUTH ...] [SETNAME ...] ---
 	// CSC requires RESP3, so HELLO 3 is mandatory (no RESP2/legacy-AUTH fallback).
-	username, password, err := s.opt.resolveCredentials(ctx)
+	username, password, credsGen, err := s.handshakeCredentials(ctx)
 	if err != nil {
 		_ = nc.Close()
 		return fmt.Errorf("resolve credentials: %w", err)
@@ -216,13 +334,20 @@ func (s *broadcastSidecar) dialAndHandshake(ctx context.Context) error {
 	_ = nc.SetDeadline(time.Time{})
 
 	s.connMu.Lock()
-	// Re-check shutdown under the mutex: Shutdown closes s.conn under connMu,
-	// but a dial in flight at that moment would otherwise publish a fresh conn
-	// afterwards that nothing ever closes.
+	// Re-check shutdown under the mutex: a dial racing Shutdown would otherwise
+	// publish a conn nothing ever closes.
 	if s.isShutdown() {
 		s.connMu.Unlock()
 		_ = nc.Close()
 		return errors.New("csc sidecar: shut down during handshake")
+	}
+	// Re-check the credential generation: a rotation that landed after we read
+	// the credentials would leave this conn on the superseded token. Abandon it;
+	// the read loop redials with the current one.
+	if s.credsGen.Load() != credsGen {
+		s.connMu.Unlock()
+		_ = nc.Close()
+		return errors.New("csc sidecar: credentials rotated during handshake")
 	}
 	s.conn = nc
 	s.reader = rd
@@ -318,6 +443,10 @@ func (s *broadcastSidecar) readLoop() {
 		// Any inbound traffic proves liveness.
 		pingOutstanding = false
 
+		// Give the frame body a fresh read window rather than the leftover
+		// pre-peek deadline, so a slow body isn't mistaken for a dead conn.
+		_ = cn.SetReadDeadline(time.Now().Add(s.healthCheckInterval))
+
 		if replyType != proto.RespPush {
 			// A non-push frame is either the PONG from our liveness probe or
 			// a protocol violation by the server (we issue no other commands
@@ -368,7 +497,6 @@ func (s *broadcastSidecar) handleInvalidate(notif []interface{}) {
 	case nil:
 		s.cache.Flush()
 	case []interface{}:
-		var bytesConsumed int64
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -379,11 +507,7 @@ func (s *broadcastSidecar) handleInvalidate(notif []interface{}) {
 			default:
 				continue
 			}
-			bytesConsumed += int64(len(name))
 			s.cache.DeleteByRedisKey(dbNamespacedKey(s.db, name))
-		}
-		if bytesConsumed > 0 {
-			proto.InvalidationBytesRead.Add(bytesConsumed)
 		}
 	}
 }
@@ -399,6 +523,31 @@ func (s *broadcastSidecar) writePing() error {
 	_ = s.conn.SetWriteDeadline(time.Now().Add(s.opt.DialTimeout))
 	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
 	if err := writeCmd(s.writer, NewStatusCmd(context.Background(), "ping")); err != nil {
+		return err
+	}
+	return s.bw.Flush()
+}
+
+// reauthConn issues AUTH on the live connection so a rotated token applies
+// without dropping the BCAST subscription (which would flush the cache). The
+// +OK reply is discarded by the read loop's non-push branch, like the PING
+// probe. Returns an error (no live conn / write failed) so the caller can
+// fall back to a reconnect.
+func (s *broadcastSidecar) reauthConn(username, password string) error {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.conn == nil || s.writer == nil || s.bw == nil {
+		return errors.New("csc sidecar: no connection")
+	}
+	var cmd Cmder
+	if username != "" {
+		cmd = NewStatusCmd(context.Background(), "auth", username, password)
+	} else {
+		cmd = NewStatusCmd(context.Background(), "auth", password)
+	}
+	_ = s.conn.SetWriteDeadline(time.Now().Add(s.opt.DialTimeout))
+	defer func() { _ = s.conn.SetWriteDeadline(time.Time{}) }()
+	if err := writeCmd(s.writer, cmd); err != nil {
 		return err
 	}
 	return s.bw.Flush()

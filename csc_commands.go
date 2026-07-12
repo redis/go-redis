@@ -54,19 +54,17 @@ func isCacheable(cmd Cmder) bool {
 	if _, ok := defaultCacheableCommands[cmd.Name()]; !ok {
 		return false
 	}
-	// SORT_RO's BY/GET forms read pattern-derived keys (weight_*, obj_*)
-	// that key extraction cannot enumerate: the server sends invalidations
-	// for them, but the reverse index has no entry, so a cached result
-	// would go stale with no eviction. Plain SORT_RO (no BY/GET) is fine.
+	// SORT_RO ... BY/GET reads pattern keys that extractRedisKeys can't
+	// enumerate, so its invalidations would be dropped and the result go stale.
+	// Plain SORT_RO is fine.
 	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd.Args()) {
 		return false
 	}
 	return cmdFirstKeyPos(cmd) != 0
 }
 
-// sortROHasByGet reports whether a SORT_RO invocation uses the BY or GET
-// options. Scans past the command name and key; comparison is
-// case-insensitive to match Redis option parsing.
+// sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
+// (case-insensitive), scanning past the command name and key.
 func sortROHasByGet(args []interface{}) bool {
 	if len(args) < 3 {
 		return false
