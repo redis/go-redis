@@ -258,7 +258,9 @@ type baseClient struct {
 
 	// cscDrainHandle is the SharedTracking drainer handle (nil when none). Held
 	// on the client, not a global registry, so an un-Closed client stays
-	// GC-collectible and a runtime.AddCleanup net can stop the goroutine.
+	// GC-collectible and a runtime.AddCleanup net can stop the goroutine. Its
+	// presence also identifies the owner (the only client that runs the drainer
+	// and thus the one that deregisters cscPoolHook).
 	cscDrainHandle *cscDrainHandle
 
 	// cscSidecar is the Broadcast sidecar (nil otherwise), held for the same
@@ -266,7 +268,9 @@ type baseClient struct {
 	cscSidecar *broadcastSidecar
 
 	// cscPoolHook is the evict-on-remove pool hook (SharedTracking; nil
-	// otherwise). Registered in attachCSC, removed in stopBackgroundDrainer.
+	// otherwise). Unlike the fields above it IS copied by clone(): a clone reads
+	// it in processCached to attribute fetches to the shared hook. Only the
+	// owner (the one with cscDrainHandle) deregisters it, in stopBackgroundDrainer.
 	cscPoolHook pool.PoolHook
 }
 
@@ -284,10 +288,13 @@ func (c *baseClient) clone() *baseClient {
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
 		csc:                         c.csc,
-		// These travel with the cache; the owner-only fields (cscDrainHandle,
-		// cscSidecar, cscPoolHook, cscOwnsCache) deliberately do not.
+		// These travel with the cache (cscPoolHook is a read-only handle a clone
+		// needs to attribute fetches to the shared eviction hook). The truly
+		// owner-only fields — cscDrainHandle, cscSidecar, cscOwnsCache — do not,
+		// so a clone's Close never tears down the owner's resources.
 		cscBcastReady:   c.cscBcastReady,
 		cscPerConnState: c.cscPerConnState,
+		cscPoolHook:     c.cscPoolHook,
 	}
 	return clone
 }

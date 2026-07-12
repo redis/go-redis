@@ -36,8 +36,11 @@ func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 		cscBcastReady:   &ready,
 		cscPerConnState: state,
 	}
-	// Owner-only fields must NOT be carried: a derived client's Close must not
-	// stop the owner's drainer/sidecar or flush its cache.
+	// cscPoolHook IS carried: a clone reads it to attribute fetches to the
+	// shared eviction hook. The owner-only fields are NOT carried, so a derived
+	// client's Close can't stop the owner's drainer/sidecar or flush its cache.
+	hook := &cscEvictOnRemoveHook{}
+	c.cscPoolHook = hook
 	c.cscOwnsCache = true
 	c.cscDrainHandle = &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
 	c.cscSidecar = &broadcastSidecar{}
@@ -51,6 +54,9 @@ func TestBaseClientClone_CarriesCSCPointers(t *testing.T) {
 	}
 	if cl.csc == nil {
 		t.Fatal("clone dropped csc")
+	}
+	if cl.cscPoolHook != hook {
+		t.Fatal("clone must copy cscPoolHook (needed for attribution)")
 	}
 	if cl.cscOwnsCache {
 		t.Fatal("clone must not copy cscOwnsCache (owner-only)")
@@ -241,5 +247,48 @@ func TestBroadcastSidecar_StartRetriesInBackground(t *testing.T) {
 		default:
 			time.Sleep(5 * time.Millisecond)
 		}
+	}
+}
+
+// recordingHookPool is a poolHookRegistrar that counts RemovePoolHook calls.
+type recordingHookPool struct {
+	pool.Pooler
+	removed int
+}
+
+func (p *recordingHookPool) AddPoolHook(pool.PoolHook)    {}
+func (p *recordingHookPool) RemovePoolHook(pool.PoolHook) { p.removed++ }
+
+// TestClone_SharesHookButOnlyOwnerDeregisters: a clone copies cscPoolHook (so it
+// can attribute fetches to the shared eviction hook) but must not deregister it
+// on Close; only the owner (the client holding the drain handle) does.
+func TestClone_SharesHookButOnlyOwnerDeregisters(t *testing.T) {
+	rp := &recordingHookPool{}
+	owner := &baseClient{
+		opt:            &Options{},
+		connPool:       rp,
+		cscPoolHook:    &cscEvictOnRemoveHook{},
+		cscDrainHandle: &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})},
+	}
+	close(owner.cscDrainHandle.done) // so the owner's join doesn't block
+
+	cl := owner.clone()
+	if cl.cscPoolHook != owner.cscPoolHook {
+		t.Fatal("clone should share the eviction hook for attribution")
+	}
+	if cl.cscDrainHandle != nil {
+		t.Fatal("clone must not own the drain handle")
+	}
+
+	// Clone Close: no drain handle -> early return, must not touch the hook.
+	cl.stopBackgroundDrainer()
+	if rp.removed != 0 {
+		t.Fatalf("clone must not deregister the shared hook, got %d removals", rp.removed)
+	}
+
+	// Owner Close: deregisters the hook exactly once.
+	owner.stopBackgroundDrainer()
+	if rp.removed != 1 {
+		t.Fatalf("owner must deregister the hook once, got %d", rp.removed)
 	}
 }

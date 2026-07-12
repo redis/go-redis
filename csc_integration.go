@@ -336,23 +336,23 @@ func (c *baseClient) startBackgroundDrainer() {
 }
 
 // stopBackgroundDrainer stops the drainer goroutine and joins it (so no pass
-// touches the pool after Close), then flushes the cache if this client solely
-// owns it — with the drainer gone nothing would apply invalidations, so an
-// emptied cache can't serve stale. Idempotent; injected/shared caches are left
-// intact for other clients.
+// touches the pool after Close), deregisters the evict-on-remove hook, and
+// flushes the cache if this client solely owns it. Only the owner does this:
+// the drain handle is set only on the client that ran attachCSC, so clones
+// (which share the hook for attribution but have no handle) return early and
+// never tear down the owner's shared hook/drainer/cache. Idempotent.
 func (c *baseClient) stopBackgroundDrainer() {
-	// Deregister the hook first so pool teardown can't call back into the cache.
-	// Independent of the handle: a cache without connCacheOwner has a drainer
-	// but no hook, and vice versa.
+	h := c.cscDrainHandle
+	if h == nil {
+		return
+	}
+	// Owner only. The hook (when present) is always registered alongside the
+	// drainer, so removing it here — before the pool is closed — can't strand it.
 	if c.cscPoolHook != nil {
 		if reg, ok := c.connPool.(poolHookRegistrar); ok {
 			reg.RemovePoolHook(c.cscPoolHook)
 		}
 		c.cscPoolHook = nil
-	}
-	h := c.cscDrainHandle
-	if h == nil {
-		return
 	}
 	c.cscDrainHandle = nil
 	h.signalStop()
