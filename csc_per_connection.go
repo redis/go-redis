@@ -341,38 +341,45 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 		return c.processWithRetry(ctx, cmd, nil, nil)
 	}
 
-	// Fast-path hit. Only return early on a successful replay; on any
-	// replay failure we evict and execute fresh on the same conn.
-	if data, ok := cache.Get(ctx, key); ok {
-		if applyErr := applyCachedReply(cmd, data); applyErr == nil {
-			state.hits.Add(1)
-			commandHits.Add(1)
-			release(nil)
-			return nil
+	// serveHit replays a cached value into cmd if present, returning true when
+	// it served the command. A corrupt entry is evicted and treated as a miss.
+	serveHit := func() bool {
+		data, ok := cache.Get(ctx, key)
+		if !ok {
+			return false
 		}
-		cache.DeleteByCacheKey(key)
+		if applyCachedReply(cmd, data) != nil {
+			cache.DeleteByCacheKey(key)
+			return false
+		}
+		state.hits.Add(1)
+		commandHits.Add(1)
+		return true
+	}
+
+	if serveHit() {
+		release(nil)
+		return nil
 	}
 
 	// Reserve a slot and execute on the same conn. We don't call
-	// processWithRetry here because retries borrow new connections from
-	// the pool, breaking the conn->cache binding. PerConnection trades retry
-	// affinity for cache-locality; a single attempt is acceptable because
-	// the caller (process) and outer hooks already provide their own
-	// error semantics.
+	// processWithRetry here because retries borrow new connections from the
+	// pool, breaking the conn->cache binding. PerConnection trades retry
+	// affinity for cache-locality; a single attempt is acceptable.
 	token, shouldFetch := cache.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
-		// Another goroutine on this same conn is fetching; wait.
-		if data, ok := cache.Get(ctx, key); ok {
-			if applyErr := applyCachedReply(cmd, data); applyErr == nil {
-				state.hits.Add(1)
-				commandHits.Add(1)
-				release(nil)
-				return nil
-			}
-			cache.DeleteByCacheKey(key)
+		// Another goroutine on this conn is fetching; wait via Get, then try to
+		// take over. If takeover also fails (entry became Valid, or a third
+		// goroutine now owns the fetch), read once more before falling through
+		// to a single uncached round-trip.
+		if serveHit() {
+			release(nil)
+			return nil
 		}
-		// Try to take over.
-		token, shouldFetch = cache.Reserve(key, nsRedisKeys)
+		if token, shouldFetch = cache.Reserve(key, nsRedisKeys); !shouldFetch && serveHit() {
+			release(nil)
+			return nil
+		}
 	}
 
 	var raw []byte
@@ -399,12 +406,12 @@ func (c *baseClient) processPerConn(ctx context.Context, cmd Cmder, state *perCo
 			cache.Cancel(key, token)
 		}
 	}
-	// Reaching here means we executed against Redis (the miss path). Both the
-	// per-state and command-level miss counters are bumped at this exit
-	// boundary: a Reserve-takeover that ended up serving from cache returns via
-	// an early hit path above, so it can never be double-counted as miss+hit.
-	state.misses.Add(1)
-	commandMisses.Add(1)
+	// Count a miss only when the command completed (mirrors processCached); a
+	// network/command failure is not a miss and would skew the hit rate.
+	if execErr == nil {
+		state.misses.Add(1)
+		commandMisses.Add(1)
+	}
 	return execErr
 }
 
