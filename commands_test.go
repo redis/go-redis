@@ -7789,6 +7789,75 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "s2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// MAXCOUNT is cumulative across all streams. Streams are served in
+			// caller order, so s1 contributes its 3 entries and s2 contributes 1,
+			// reaching the total cap of 4.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:  []string{"s1", "s2", "0", "0"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
+		})
+
+		It("should XRead with MAXSIZE returning at least the first available entry", func() {
+			SkipBeforeRedisVersion(8.10, "XREAD MAXSIZE requires Redis 8.10+")
+
+			// MAXSIZE is a soft cap; even a value smaller than a single entry must
+			// still return the first available entry (never suppress all output).
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "0"},
+				MaxSize: 1,
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1))
+			Expect(res[0].Stream).To(Equal("stream"))
+			Expect(len(res[0].Messages)).To(BeNumerically(">=", 1))
+		})
+
+		It("should XReadGroup with MAXCOUNT capping cumulative entries across streams", func() {
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "g1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "g2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(client.XGroupCreate(ctx, "g1", "grp", "0").Err()).NotTo(HaveOccurred())
+			Expect(client.XGroupCreate(ctx, "g2", "grp", "0").Err()).NotTo(HaveOccurred())
+
+			res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "grp",
+				Consumer: "consumer",
+				Streams:  []string{"g1", "g2", ">", ">"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
+		})
+
 		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
 			res, err := client.XRead(ctx, &redis.XReadArgs{
