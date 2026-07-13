@@ -213,6 +213,16 @@ type cmdableClient interface {
 	// dispatches drained batches through it directly, skipping the per-batch
 	// Pipeline construction; hooks/OTel see the identical call.
 	processPipelineHook(ctx context.Context, cmds []Cmder) error
+	// The async faces additionally dispatch through withProcessPipelineHook /
+	// withProcessHook with the base processors as the innermost, so the batch
+	// can be completed UNDER the user hooks (results ready the moment exec
+	// returns, before hooks unwind). Both *Client and *ClusterClient satisfy
+	// these via hooksMixin and their base processors.
+	withProcessPipelineHook(ctx context.Context, cmds []Cmder, hook ProcessPipelineHook) error
+	hookCount() int
+	withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error
+	processPipeline(ctx context.Context, cmds []Cmder) error
+	process(ctx context.Context, cmd Cmder) error
 }
 
 // apBatch is the completion signal shared by every command flushed together.
@@ -223,9 +233,46 @@ type cmdableClient interface {
 // one goroutine wake-up apiece).
 type apBatch struct {
 	done chan struct{}
+	// closed makes close() idempotent: on the async faces the dispatch closes
+	// the batch at the innermost exec seam (under the user hooks, so a hook
+	// reading a result after next() does not block on a channel its own
+	// goroutine closes — the #3867 deadlock), while the flusher keeps its
+	// deferred close as a panic backstop. Whichever runs first wins.
+	closed atomic.Bool
+	// dispGid is the goroutine id of the dispatcher while the batch is inside
+	// the hook chain (0 otherwise). await() consults it before blocking so a
+	// hook on the dispatch goroutine reading a result BEFORE next() gets the
+	// not-yet-executed view — what a plain pipeline hook sees — instead of a
+	// self-deadlock.
+	dispGid atomic.Int64
 }
 
 func newAPBatch() *apBatch { return &apBatch{done: make(chan struct{})} }
+
+// close completes the batch exactly once, waking every waiter.
+func (b *apBatch) close() {
+	if b.closed.CompareAndSwap(false, true) {
+		close(b.done)
+	}
+}
+
+// curGoroutineID parses the goroutine id from runtime.Stack's header
+// ("goroutine 123 ["). Called only on paths already paying a dispatch or an
+// about-to-block round-trip wait — never on await()'s fast path — so the
+// microsecond-scale stack read is noise against the batch RTT.
+func curGoroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	const skip = len("goroutine ")
+	var id int64
+	for _, c := range buf[skip:n] {
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + int64(c-'0')
+	}
+	return id
+}
 
 // The shard queue stores bare Cmders. The batch a command waits on is the
 // shard's curBatch at enqueue time — read once to wire the command's ready
@@ -604,15 +651,27 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 		return cmd
 	}
 	// Deferred face: keep the returns-immediately shape. Run on a normal
-	// connection in the background; the ready channel makes the command's
+	// connection in the background; the ready batch makes the command's
 	// result accessors block until it completes. Not tracked by batchWg — a
 	// Do racing Close simply fails with a closed-pool error like any other
-	// in-flight command on a closing client.
-	done := make(chan struct{})
-	cmd.setReady(done)
+	// in-flight command on a closing client. The batch completes at the
+	// innermost seam (under the user hooks) so a ProcessHook reading the
+	// result cannot self-deadlock; the deferred close is the panic backstop.
+	b := newAPBatch()
+	cmd.setReady(b)
 	go func() {
-		defer close(done)
-		_ = ap.pipeliner.Process(ctx, cmd)
+		defer b.close()
+		if ap.pipeliner.hookCount() > 0 {
+			b.dispGid.Store(curGoroutineID())
+		}
+		_ = ap.pipeliner.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+			err := ap.pipeliner.process(ctx, cmd)
+			// Mirror Client.Process's belt-and-braces SetErr for the base
+			// call. It must run before close: waiters may read immediately.
+			cmd.SetErr(err)
+			b.close()
+			return err
+		})
 	}()
 	return cmd
 }
@@ -794,7 +853,12 @@ func (ap *AutoPipeliner) Submit(ctx context.Context, cmd Cmder) AutoFuture {
 // result is read.
 func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	f := ap.submit(ctx, cmd)
-	cmd.setReady(f.batch.done)
+	// The atomic ready store keeps the dispatch race benign: a hook that
+	// reads the command before this lands sees a nil ready - the
+	// non-blocking not-yet-executed view - while this goroutine always
+	// sees its own store before any await. Nothing runs under the hot
+	// stripe lock.
+	cmd.setReady(f.batch)
 	return nil
 }
 
@@ -816,7 +880,7 @@ func (ap *AutoPipeliner) processBlocking(ctx context.Context, cmd Cmder) error {
 // immediately and the command's own error tells the story.
 var completedBatch = func() *apBatch {
 	b := newAPBatch()
-	close(b.done)
+	b.close()
 	return b
 }()
 
@@ -1207,17 +1271,31 @@ func (s *apShard) awaitExpectedArrivals(batchSize int) {
 // A single-stripe drain (every ordered shard, and any drain that found one
 // non-empty stripe) passes its queue zero-copy; multi-stripe drains merge into
 // one pooled slice.
-func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, total int) {
-	if len(queues) == 1 {
-		_ = ap.pipeliner.processPipelineHook(ctx, queues[0])
-		return
+// When onExecuted is non-nil (the async faces), the user-hook chain runs
+// around an innermost that calls the base pipeline exec and then onExecuted —
+// completing the batches while still INSIDE the chain, so hooks reading
+// results after next() don't self-deadlock. nil (the blocking face) keeps the
+// prebuilt hook chain exactly as before.
+func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, total int, onExecuted func()) {
+	cmds := queues[0]
+	if len(queues) > 1 {
+		cmds = getQueueSlice(total)
+		for i := range queues {
+			cmds = append(cmds, queues[i]...)
+		}
 	}
-	merged := getQueueSlice(total)
-	for i := range queues {
-		merged = append(merged, queues[i]...)
+	if onExecuted == nil {
+		_ = ap.pipeliner.processPipelineHook(ctx, cmds)
+	} else {
+		_ = ap.pipeliner.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+			err := ap.pipeliner.processPipeline(ctx, cmds)
+			onExecuted()
+			return err
+		})
 	}
-	_ = ap.pipeliner.processPipelineHook(ctx, merged)
-	putQueueSlice(merged)
+	if len(queues) > 1 {
+		putQueueSlice(cmds)
+	}
 }
 
 // flushBatchSlice takes the shard's currently-queued commands as one batch,
@@ -1285,7 +1363,7 @@ func (s *apShard) flushBatchSlice() {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
 				}
-				close(batches[i].done)
+				batches[i].close()
 				putQueueSlice(queues[i])
 			}
 			return
@@ -1339,11 +1417,30 @@ func (s *apShard) flushBatchSlice() {
 			defer s.inFlight.Add(-1)
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
-			defer close(batches[0].done)
+			defer batches[0].close()
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
-			_ = ap.pipeliner.Process(context.Background(), queues[0][0])
+			if ap.blocking {
+				_ = ap.pipeliner.Process(context.Background(), queues[0][0])
+			} else {
+				// Async face: complete the batch at the innermost seam, under
+				// the user hooks, so a ProcessHook reading the command's
+				// result does not block on this goroutine's own close (the
+				// #3867 hook deadlock). SetErr mirrors Client.Process and must
+				// precede close — waiters may read the instant it happens.
+				b := batches[0]
+				if ap.pipeliner.hookCount() > 0 {
+					b.dispGid.Store(curGoroutineID())
+				}
+				solo := queues[0][0]
+				_ = ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
+					err := ap.pipeliner.process(ctx, cmd)
+					cmd.SetErr(err)
+					b.close()
+					return err
+				})
+			}
 			ap.observeBatchExec(time.Since(execStart))
 		}()
 		return
@@ -1364,7 +1461,7 @@ func (s *apShard) flushBatchSlice() {
 		// populated first.
 		defer func() {
 			for i := range queues {
-				close(batches[i].done)
+				batches[i].close()
 				putQueueSlice(queues[i])
 			}
 		}()
@@ -1378,14 +1475,48 @@ func (s *apShard) flushBatchSlice() {
 		// execution; no per-batch timer is allocated.
 		ctx := context.Background()
 
+		// Async face: complete the batches at the innermost exec seam, while
+		// still inside the user-hook chain — a hook that reads a command's
+		// result after next() (redisotel's span-status pattern) finds it
+		// ready instead of blocking on a channel this goroutine closes only
+		// after the hook returns (the #3867 deadlock). The announce stays
+		// ordered BEFORE the closes wake any waiter, so the flusher knows the
+		// wave size the moment the first re-submitted command lands (see
+		// expectedArrivals). The blocking face keeps the deferred-close flow:
+		// its waiters sit on other goroutines, and its measured wave behavior
+		// stays byte-identical.
+		var onExecuted func()
+		if !ap.blocking {
+			// Arm the await() self-deadlock guard only when user hooks exist:
+			// without hooks nothing can read a command inside the chain, and
+			// an unstamped batch keeps the guard to one atomic load for every
+			// blocked reader. (A hook added concurrently with an in-flight
+			// dispatch misses the guard for that one batch; after-next reads
+			// are still safe via the innermost close.)
+			if ap.pipeliner.hookCount() > 0 {
+				gid := curGoroutineID()
+				for i := range batches {
+					batches[i].dispGid.Store(gid)
+				}
+			}
+			onExecuted = func() {
+				ap.expectedArrivals.Add(int64(total))
+				for i := range batches {
+					batches[i].close()
+				}
+			}
+		}
+
 		execStart := time.Now()
-		ap.dispatchCmds(ctx, queues, total)
+		ap.dispatchCmds(ctx, queues, total, onExecuted)
 		ap.observeBatchExec(time.Since(execStart))
 
-		// Announce the expected arrivals BEFORE the deferred closes wake this
-		// batch's waiters, so the flusher knows the wave size the moment its
-		// first command lands (see expectedArrivals).
-		ap.expectedArrivals.Add(int64(total))
+		if ap.blocking {
+			// Announce the expected arrivals BEFORE the deferred closes wake
+			// this batch's waiters, so the flusher knows the wave size the
+			// moment its first command lands (see expectedArrivals).
+			ap.expectedArrivals.Add(int64(total))
+		}
 	}()
 }
 
@@ -1452,7 +1583,7 @@ func (s *apShard) flushBatchSliceShutdown() {
 			}
 			defer func() {
 				for i := range queues {
-					close(batches[i].done)
+					batches[i].close()
 					putQueueSlice(queues[i])
 				}
 			}()
@@ -1466,7 +1597,21 @@ func (s *apShard) flushBatchSliceShutdown() {
 			// here would cap that relaxed window and time out in-flight commands the
 			// relaxation was meant to protect. (A user who wants shutdown bounded
 			// sets ReadTimeout/WriteTimeout on the client, as for any command.)
-			ap.dispatchCmds(context.Background(), queues, total)
+			var onExecuted func()
+			if !ap.blocking {
+				if ap.pipeliner.hookCount() > 0 {
+					gid := curGoroutineID()
+					for i := range batches {
+						batches[i].dispGid.Store(gid)
+					}
+				}
+				onExecuted = func() {
+					for i := range batches {
+						batches[i].close()
+					}
+				}
+			}
+			ap.dispatchCmds(context.Background(), queues, total, onExecuted)
 		}()
 	}
 }
