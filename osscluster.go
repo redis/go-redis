@@ -1892,23 +1892,24 @@ func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+		// Acquire through the node's dedicated pipeline pool when one is
+		// configured (Pipeline*BufferSize propagate to node clients via
+		// clientOptions); withPipelineConn falls back to the main pool
+		// otherwise, preserving the previous behavior. entered distinguishes
+		// an acquisition failure (fn never ran) from an execution error.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			return c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		})
+		if err != nil && !entered {
 			if !isContextError(err) {
 				node.MarkAsFailing()
 			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
-			return err
 		}
-
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
+		return err
 	})
 }
 
@@ -2304,26 +2305,33 @@ func (c *ClusterClient) processTxPipelineNode(
 
 	var outcome *txOutcome
 	_ = node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+		// Acquire through the node's dedicated pipeline pool when configured
+		// (same routing as processPipelineNode); withPipelineConn falls back
+		// to the main pool otherwise. The inner fn's return value drives the
+		// connection release exactly like the explicit releaseConn did:
+		// redis errors keep the conn poolable, unread replies poison it.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
+			connErr := outcome.err
+			if isRedisError(outcome.err) {
+				connErr = nil
+			}
+			if outcome.unreadReplies {
+				connErr = errTxDirtyConn
+			}
+			return connErr
+		})
+		if !entered && err != nil {
+			// Connection acquisition failed — fn never ran.
 			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				outcome = &txOutcome{kind: txRetryConn, err: err}
 			} else {
 				outcome = &txOutcome{kind: txFatal, err: err}
 			}
-			return err
 		}
-
-		outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
-		connErr := outcome.err
-		if isRedisError(outcome.err) {
-			connErr = nil
-		}
-		if outcome.unreadReplies {
-			connErr = errTxDirtyConn
-		}
-		node.Client.releaseConn(ctx, cn, connErr)
-		return connErr
+		return err
 	})
 
 	if outcome == nil {
