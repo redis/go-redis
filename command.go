@@ -237,7 +237,7 @@ type Cmder interface {
 	// setReady marks a command as asynchronously pending (autopipeline async
 	// faces); await blocks the public accessors until it has executed; rawErr
 	// reads the error without awaiting (internal execution path).
-	setReady(<-chan struct{})
+	setReady(*apBatch)
 	await()
 	rawErr() error
 
@@ -378,20 +378,40 @@ type baseCmd struct {
 	// transparently block until execution; internal execution-path reads use
 	// rawErr to avoid awaiting the very batch they are producing. ready stays
 	// nil for ordinary synchronous commands, whose accessors never block.
-	ready <-chan struct{}
+	ready atomic.Pointer[apBatch]
 }
 
 // setReady marks the command as asynchronously pending; ch is closed when its
 // batch executes. Used by the async autopipeline faces.
-func (cmd *baseCmd) setReady(ch <-chan struct{}) { cmd.ready = ch }
+// setReady publishes the batch gating this command's result accessors. The
+// field is atomic, NOT lock-ordered with the enqueue: a dispatch-side hook
+// racing this store simply reads nil and takes the non-blocking path — the
+// correct "not executed yet" view — while the setting goroutine always sees
+// its own store before it awaits.
+func (cmd *baseCmd) setReady(b *apBatch) { cmd.ready.Store(b) }
 
 // await blocks until an asynchronously-submitted command has executed. It is a
 // single nil-channel check for synchronous commands, so the common path stays
 // allocation- and contention-free.
 func (cmd *baseCmd) await() {
-	if cmd.ready != nil {
-		<-cmd.ready
+	b := cmd.ready.Load()
+	if b == nil {
+		return
 	}
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+	if gid := b.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
+		// A hook on the batch's own dispatch goroutine is reading this
+		// command's result BEFORE next() has executed it. Blocking would
+		// self-deadlock (only this goroutine completes the batch); return the
+		// not-yet-executed state instead — the same view a plain pipeline
+		// hook has before next().
+		return
+	}
+	<-b.done
 }
 
 // rawErr returns the command error WITHOUT awaiting. The internal

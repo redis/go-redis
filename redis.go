@@ -209,6 +209,16 @@ func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.C
 	return current.dial(ctx, network, addr)
 }
 
+// hookCount reports how many user hooks are installed. The autopipeliner
+// arms its await() self-deadlock guard only when hooks exist, keeping the
+// guard a single atomic load on hook-free clients.
+func (hs *hooksMixin) hookCount() int {
+	hs.hooksMu.RLock()
+	n := len(hs.slice)
+	hs.hooksMu.RUnlock()
+	return n
+}
+
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
 	return hs.current.process(ctx, cmd)
 }
