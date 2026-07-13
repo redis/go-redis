@@ -142,6 +142,14 @@ type ClusterOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining on
+	// each node, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. Zero values disable the separate pool.
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
 	TLSConfig *tls.Config
 
 	// DisableRoutingPolicies disables the request/response policy routing system.
@@ -455,11 +463,15 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
-		DisableIdentity:       opt.DisableIdentity,
-		DisableIndentity:      opt.DisableIdentity,
-		IdentitySuffix:        opt.IdentitySuffix,
-		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
-		TLSConfig:             opt.TLSConfig,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+		DisableIdentity:         opt.DisableIdentity,
+		DisableIndentity:        opt.DisableIdentity,
+		IdentitySuffix:          opt.IdentitySuffix,
+		FailingTimeoutSeconds:   opt.FailingTimeoutSeconds,
+		TLSConfig:               opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
