@@ -18,7 +18,7 @@ import (
 func TestPipelinePoolMaintNotifications(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClient(&redis.Options{
-		Addr:                     ":6379",
+		Addr:                     apTestAddr(),
 		Protocol:                 3, // maintnotifications requires RESP3
 		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeAuto},
 		PipelineReadBufferSize:   64 << 10,

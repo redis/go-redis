@@ -371,9 +371,9 @@ type baseCmd struct {
 	// distinguishable from unset.
 	slotCache uint16
 
-	// ready, when non-nil, is closed once the command has executed. It is set
-	// only by the deferred (async) autopipeliner, which hands the command
-	// back to the caller before it
+	// ready, when non-nil, is the batch whose done channel closes once the
+	// command has executed. It is set only by the deferred (async)
+	// autopipeliner, which hands the command back to the caller before it
 	// runs. The public result accessors (Err/Val/Result) call await so they
 	// transparently block until execution; internal execution-path reads use
 	// rawErr to avoid awaiting the very batch they are producing. ready stays
@@ -381,8 +381,6 @@ type baseCmd struct {
 	ready atomic.Pointer[apBatch]
 }
 
-// setReady marks the command as asynchronously pending; ch is closed when its
-// batch executes. Used by the async autopipeline faces.
 // setReady publishes the batch gating this command's result accessors. The
 // field is atomic, NOT lock-ordered with the enqueue: a dispatch-side hook
 // racing this store simply reads nil and takes the non-blocking path — the
@@ -391,7 +389,7 @@ type baseCmd struct {
 func (cmd *baseCmd) setReady(b *apBatch) { cmd.ready.Store(b) }
 
 // await blocks until an asynchronously-submitted command has executed. It is a
-// single nil-channel check for synchronous commands, so the common path stays
+// single nil-pointer load for synchronous commands, so the common path stays
 // allocation- and contention-free.
 func (cmd *baseCmd) await() {
 	b := cmd.ready.Load()

@@ -832,31 +832,32 @@ func (c *Ring) Pipeline() Pipeliner {
 	return &pipe
 }
 
-// errRingAutoPipelineUnsupported is returned by Ring.AutoPipeline /
-// AsyncAutoPipeline. Autopipelining is not implemented for Ring; use the
-// per-shard clients or a ClusterClient. Ring is part of the UniversalClient
+// ErrRingAutoPipelineUnsupported is returned by Ring's AutoPipeline /
+// AsyncAutoPipeline (and their WithOptions forms); check for it with
+// errors.Is. Autopipelining is not implemented for Ring; use the per-shard
+// clients or a ClusterClient. Ring is part of the UniversalClient
 // interface, so these methods exist to satisfy it and fail explicitly rather
 // than being silently absent.
-var errRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
+var ErrRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
 
-// AutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+// AutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
 func (c *Ring) AutoPipeline() (*AutoPipeliner, error) {
 	return c.AutoPipelineWithOptions(nil)
 }
 
-// AutoPipelineWithOptions is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+// AutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
 func (c *Ring) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return nil, errRingAutoPipelineUnsupported
+	return nil, ErrRingAutoPipelineUnsupported
 }
 
-// AsyncAutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+// AsyncAutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
 func (c *Ring) AsyncAutoPipeline() (*AutoPipeliner, error) {
 	return c.AsyncAutoPipelineWithOptions(nil)
 }
 
-// AsyncAutoPipelineWithOptions is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+// AsyncAutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
 func (c *Ring) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return nil, errRingAutoPipelineUnsupported
+	return nil, ErrRingAutoPipelineUnsupported
 }
 
 func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

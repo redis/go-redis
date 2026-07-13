@@ -150,7 +150,9 @@ type ClusterOptions struct {
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
 
-	// AutoPipelineOptions is the default config for AsyncAutoPipeline.
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces
+	// (AutoPipeline and AsyncAutoPipeline), applied when they are called
+	// without explicit options. See Options.AutoPipelineOptions.
 	// See Options.AutoPipelineOptions.
 	AutoPipelineOptions *AutoPipelineOptions
 
@@ -1244,7 +1246,7 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	// Stop the shared AutoPipeliner (if AutoPipeline() created one) before
+	// Stop both cached autopipeliners (blocking and async faces) before
 	// closing nodes, so its background flusher goroutines don't outlive the
 	// client. AutoPipeliner.Close is idempotent and nil-safe here.
 	c.autopipelinerMu.Lock()

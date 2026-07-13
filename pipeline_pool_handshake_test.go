@@ -16,7 +16,7 @@ import (
 // wrong DB.
 func TestPipelinePoolHandshakeACLAndSelect(t *testing.T) {
 	ctx := context.Background()
-	admin := redis.NewClient(&redis.Options{Addr: ":6379"})
+	admin := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer admin.Close()
 	if err := admin.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -30,7 +30,7 @@ func TestPipelinePoolHandshakeACLAndSelect(t *testing.T) {
 	defer admin.Do(ctx, "ACL", "DELUSER", user)
 
 	c := redis.NewClient(&redis.Options{
-		Addr:                    ":6379",
+		Addr:                    apTestAddr(),
 		Username:                user,
 		Password:                pw,
 		DB:                      db,
@@ -71,14 +71,14 @@ func TestPipelinePoolHandshakeACLAndSelect(t *testing.T) {
 
 	// SELECT DB really took effect on the pipeline conns: keys exist in `db`,
 	// not in DB 0.
-	verify := redis.NewClient(&redis.Options{Addr: ":6379", Username: user, Password: pw, DB: db})
+	verify := redis.NewClient(&redis.Options{Addr: apTestAddr(), Username: user, Password: pw, DB: db})
 	defer verify.Close()
 	for _, k := range []string{"hs:pipe", "hs:ap1", "hs:ap2"} {
 		if n, _ := verify.Exists(ctx, k).Result(); n != 1 {
 			t.Fatalf("key %q not found in DB %d (SELECT not applied on pipeline conn)", k, db)
 		}
 	}
-	db0 := redis.NewClient(&redis.Options{Addr: ":6379", DB: 0})
+	db0 := redis.NewClient(&redis.Options{Addr: apTestAddr(), DB: 0})
 	defer db0.Close()
 	if n, _ := db0.Exists(ctx, "hs:pipe").Result(); n != 0 {
 		t.Fatalf("hs:pipe leaked into DB 0 (wrong SELECT on pipeline conn)")

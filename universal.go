@@ -149,6 +149,11 @@ type UniversalOptions struct {
 	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
 	IsClusterMode bool
 
+	// AutoPipelineOptions is the default config for the client's
+	// autopipeliner faces (AutoPipeline / AsyncAutoPipeline), applied when
+	// they are called without explicit options. See Options.AutoPipelineOptions.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
 }
@@ -208,6 +213,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		FailingTimeoutSeconds:     o.FailingTimeoutSeconds,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
@@ -276,6 +282,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		// Note: MaintNotificationsConfig not supported for FailoverOptions
@@ -334,6 +341,7 @@ func (o *UniversalOptions) Simple() *Options {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,

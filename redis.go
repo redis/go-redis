@@ -136,7 +136,12 @@ func (h *hooks) setDefaults() {
 // Please note: "next(ctx, cmd)" is very important, it will call the next hook,
 // if "next(ctx, cmd)" is not executed, the redis command will not be executed.
 func (hs *hooksMixin) AddHook(hook Hook) {
+	// Mutate the slice under the lock: the autopipeline dispatch iterates
+	// hs.slice concurrently from background flusher goroutines
+	// (withProcessPipelineHook / withProcessHook / hookCount).
+	hs.hooksMu.Lock()
 	hs.slice = append(hs.slice, hook)
+	hs.hooksMu.Unlock()
 	hs.chain()
 }
 
@@ -179,8 +184,11 @@ func (hs *hooksMixin) clone() hooksMixin {
 }
 
 func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error {
-	for i := len(hs.slice) - 1; i >= 0; i-- {
-		if wrapped := hs.slice[i].ProcessHook(hook); wrapped != nil {
+	hs.hooksMu.RLock()
+	slice := hs.slice
+	hs.hooksMu.RUnlock()
+	for i := len(slice) - 1; i >= 0; i-- {
+		if wrapped := slice[i].ProcessHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
@@ -190,8 +198,11 @@ func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook Proce
 func (hs *hooksMixin) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
-	for i := len(hs.slice) - 1; i >= 0; i-- {
-		if wrapped := hs.slice[i].ProcessPipelineHook(hook); wrapped != nil {
+	hs.hooksMu.RLock()
+	slice := hs.slice
+	hs.hooksMu.RUnlock()
+	for i := len(slice) - 1; i >= 0; i-- {
+		if wrapped := slice[i].ProcessPipelineHook(hook); wrapped != nil {
 			hook = wrapped
 		}
 	}
@@ -1600,10 +1611,11 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	return &clone
 }
 
-// Close closes the client, stopping the shared AutoPipeliner (if one was
-// created via AutoPipeline()) before releasing the underlying resources, so its
-// background flusher goroutines don't outlive the client. AutoPipeliner.Close is
-// idempotent and safe to call here even if AutoPipeline() was never used.
+// Close closes the client, stopping both cached autopipeliners (the blocking
+// AutoPipeline instance and the async AsyncAutoPipeline instance, if created)
+// before releasing the underlying resources, so their background flusher
+// goroutines don't outlive the client. AutoPipeliner.Close is idempotent and
+// safe to call here even if autopipelining was never used.
 func (c *Client) Close() error {
 	c.autopipelinerMu.Lock()
 	ap, async := c.autopipeliner, c.asyncAutopipeliner
@@ -1720,7 +1732,7 @@ func (c *Client) Pipeline() Pipeliner {
 // replacement for the normal command surface where each command call (ap.Set,
 // ap.Get, ...) blocks until executed, exactly like a plain client — but the
 // engine batches concurrent callers' commands into pipelines, so throughput is
-// far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
+// far higher (measured locally over loopback: ~1M+ SET/sec vs ~100k; indicative, not a guarantee). Commands keep per-goroutine order.
 //
 // By default, Options.AutoPipelineOptions is used if set,
 // otherwise DefaultBlockingAutoPipelineOptions (a single ordered batch stream,
@@ -1752,7 +1764,7 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
 // return immediately and the result accessors (Val/Result/Err) block until the
 // command has executed. Submit a window of commands, then read their results, to
-// keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
+// keep each pipeline deep and reach the highest throughput (measured locally over loopback: ~2-3M SET/sec; indicative).
 //
 // By default, Options.AutoPipelineOptions is used if set,
 // otherwise DefaultAutoPipelineOptions (ordered, MaxConcurrentBatches: 1) — a

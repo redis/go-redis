@@ -413,10 +413,12 @@ for _, cmd := range cmds {
 ```
 
 Each face has a no-argument form that uses `Options.AutoPipelineOptions` (or the
-built-in default) and a `WithConfig` form that takes an explicit
+built-in default) and a `WithOptions` form that takes an explicit
 `*AutoPipelineOptions`; both return `(*AutoPipeliner, error)` — the error is
 non-nil only for an invalid config (e.g.
-`ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 80, Unordered: true})`).
+`ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 8, Unordered: true})`);
+a handful of parallel batches saturates the link — more permits only add
+overlapping batches without deepening them.
 They work on `ClusterClient` too: commands are routed to the correct shard per
 key, so a single batch may span many slots; ordering across nodes is per key
 (same-key commands stay in order, different nodes' sub-pipelines run

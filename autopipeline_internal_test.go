@@ -3,10 +3,20 @@ package redis
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+// internalTestRedisAddr mirrors main_test.go's redisAddr for the internal
+// (package redis) tests, which cannot see the redis_test harness variables.
+func internalTestRedisAddr() string {
+	if p := os.Getenv("REDIS_PORT"); p != "" {
+		return ":" + p
+	}
+	return ":6379"
+}
 
 // ===== from autopipeline_coalesce_test.go =====
 // TestAutoPipelineLoneCallerFlushesImmediately verifies that with the default
@@ -18,7 +28,7 @@ import (
 // lone caller ~5x slower than a plain client.
 func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -70,7 +80,7 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	const delay = 100 * time.Millisecond
 
 	ctx := context.Background()
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -162,7 +172,7 @@ func TestSilenceGap(t *testing.T) {
 // in-flight wait machinery under a closed-loop wave.)
 func TestAutoPipelineWaveCoalesces(t *testing.T) {
 	ctx := context.Background()
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -210,7 +220,7 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 // Submit does not wait, which defeats the ordering invariant the blocking
 // face's enqueue striping relies on.
 func TestSubmitRejectedOnBlockingFace(t *testing.T) {
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	ap, err := client.AutoPipeline()
@@ -241,7 +251,7 @@ func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 // and do not preserve submit order), while the blocking face and Unordered
 // configs are accepted.
 func TestNumShardsRequiresUnorderedOnAsyncFace(t *testing.T) {
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	if _, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{NumShards: 4}); err == nil ||
@@ -285,7 +295,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 	// batches then run on pipeline conns, isolated from the normal conns Do
 	// uses. (Without a pipeline pool, Do shares the main pool and carries the
 	// same stateful-command caveats as plain Client.Do — no worse.)
-	client := NewClient(&Options{Addr: ":6379", PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
 	defer client.Close()
 
 	if err := client.FlushAll(ctx).Err(); err != nil {
@@ -334,7 +344,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 	// Verify with a fresh client: the MULTI above intentionally poisoned one
 	// main-pool conn (plain Client.Do semantics — pre-existing footgun), so
 	// this client's pool may hand back QUEUED for plain commands.
-	verify := NewClient(&Options{Addr: ":6379"})
+	verify := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer verify.Close()
 	if v, err := verify.Get(ctx, "do-bypass-key").Result(); err != nil || v != "v0" {
 		t.Fatalf("get = %q, %v; want \"v0\"", v, err)
@@ -362,7 +372,7 @@ func TestDoBypassesPipeline(t *testing.T) {
 // follows MaxConcurrentBatches: a standalone autopipeliner defaults to a single
 // deep queue regardless of the permit budget, and NumShards overrides it.
 func TestAutoPipelineShardCountDecoupled(t *testing.T) {
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	ap, err := client.AutoPipelineWithOptions(&AutoPipelineOptions{
@@ -394,7 +404,7 @@ func TestAutoPipelineShardCountDecoupled(t *testing.T) {
 // TestAutoPipelineNumShardsValidation verifies a negative NumShards is rejected
 // at construction instead of being silently coerced.
 func TestAutoPipelineNumShardsValidation(t *testing.T) {
-	client := NewClient(&Options{Addr: ":6379"})
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
 	_, err := client.AutoPipelineWithOptions(&AutoPipelineOptions{NumShards: -1})
