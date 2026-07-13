@@ -6,6 +6,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
@@ -1815,6 +1816,101 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(redis.Avg.String()).To(Equal("AVG"))
 				Expect(redis.Sum.String()).To(Equal("SUM"))
 				Expect(redis.Count.String()).To(Equal("COUNT"))
+			})
+
+			It("should TSRead and TSReadWithArgs", Label("timeseries", "tsread", "tsreadWithArgs", "NonRedisEnterprise"), func() {
+				// Skip unless the server knows TS.READ (added in 8.10, which can't be
+				// expressed as a float64 for SkipBeforeRedisVersion).
+				if err := client.TSRead(ctx, "tsread-probe", 0).Err(); err != nil &&
+					strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+					Skip("TS.READ is not supported by this server")
+				}
+
+				_, err := client.TSCreate(ctx, "tsread:1").Result()
+				Expect(err).NotTo(HaveOccurred())
+				for _, s := range []redis.TSTimestampValue{
+					{Timestamp: 100, Value: 1.0},
+					{Timestamp: 200, Value: 2.0},
+					{Timestamp: 300, Value: 3.0},
+				} {
+					_, err := client.TSAdd(ctx, "tsread:1", s.Timestamp, s.Value).Result()
+					Expect(err).NotTo(HaveOccurred())
+				}
+
+				// Read everything at or after the cursor.
+				samples, err := client.TSRead(ctx, "tsread:1", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(samples).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 100, Value: 1.0},
+					{Timestamp: 200, Value: 2.0},
+					{Timestamp: 300, Value: 3.0},
+				}))
+
+				// Page in bounded batches, advancing the cursor to lastTimestamp + 1.
+				page, err := client.TSReadWithArgs(ctx, "tsread:1", redis.TSReadEarliest, &redis.TSReadOptions{MaxCount: 2}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(page).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 100, Value: 1.0},
+					{Timestamp: 200, Value: 2.0},
+				}))
+				next := page[len(page)-1].Timestamp + 1
+				page, err = client.TSReadWithArgs(ctx, "tsread:1", next, &redis.TSReadOptions{MaxCount: 2}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(page).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 300, Value: 3.0},
+				}))
+
+				// Past the newest sample, or a missing key, returns empty.
+				empty, err := client.TSRead(ctx, "tsread:1", 301).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(empty).To(BeEmpty())
+				empty, err = client.TSRead(ctx, "tsread-missing", 0).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(empty).To(BeEmpty())
+
+				// "+" returns the latest sample, inclusive, even without BLOCK.
+				latest, err := client.TSRead(ctx, "tsread:1", redis.TSReadLatest).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(latest).To(Equal([]redis.TSTimestampValue{{Timestamp: 300, Value: 3.0}}))
+
+				// "$" without BLOCK always returns empty.
+				fresh, err := client.TSRead(ctx, "tsread:1", redis.TSReadNew).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fresh).To(BeEmpty())
+
+				// Timeout flush: MinCount can't be reached, so the samples >= 101
+				// are returned after the timeout.
+				flush, err := client.TSReadWithArgs(ctx, "tsread:1", 101, &redis.TSReadOptions{
+					Block:    true,
+					Timeout:  500 * time.Millisecond,
+					MinCount: 10,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(flush).To(Equal([]redis.TSTimestampValue{
+					{Timestamp: 200, Value: 2.0},
+					{Timestamp: 300, Value: 3.0},
+				}))
+
+				// Wake-up: a concurrent append unblocks a "$" tail read.
+				producer := setupRedisClient(protocol)
+				done := make(chan struct{})
+				// Defers run LIFO: join the producer before closing its client.
+				defer producer.Close()
+				defer func() { <-done }()
+				go func() {
+					defer GinkgoRecover()
+					defer close(done)
+					time.Sleep(200 * time.Millisecond)
+					_, addErr := producer.TSAdd(ctx, "tsread:1", 400, 4.0).Result()
+					Expect(addErr).NotTo(HaveOccurred())
+				}()
+				tail, err := client.TSReadWithArgs(ctx, "tsread:1", redis.TSReadNew, &redis.TSReadOptions{
+					Block:    true,
+					Timeout:  5 * time.Second,
+					MinCount: 1,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(tail).To(Equal([]redis.TSTimestampValue{{Timestamp: 400, Value: 4.0}}))
 			})
 		})
 	}
