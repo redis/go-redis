@@ -243,10 +243,7 @@ func (hs *hooksMixin) dialHook(ctx context.Context, network, addr string) (net.C
 // arms its await() self-deadlock guard only when hooks exist, keeping the
 // guard a single atomic load on hook-free clients.
 func (hs *hooksMixin) hookCount() int {
-	hs.hooksMu.RLock()
-	n := len(hs.slice)
-	hs.hooksMu.RUnlock()
-	return n
+	return len(hs.state.Load().slice)
 }
 
 func (hs *hooksMixin) processHook(ctx context.Context, cmd Cmder) error {
@@ -2025,10 +2022,11 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	return &clone
 }
 
-// Close closes the client, stopping the shared AutoPipeliner (if one was
-// created via AutoPipeline()) before releasing the underlying resources, so its
-// background flusher goroutines don't outlive the client. AutoPipeliner.Close is
-// idempotent and safe to call here even if AutoPipeline() was never used.
+// Close closes the client, stopping both cached autopipeliners (the blocking
+// AutoPipeline instance and the async AsyncAutoPipeline instance, if created)
+// before releasing the underlying resources, so their background flusher
+// goroutines don't outlive the client. AutoPipeliner.Close is idempotent and
+// safe to call here even if autopipelining was never used.
 // A WithTimeout clone delegates CSC teardown to the canonical wrapper that
 // owns the background drainer.
 func (c *Client) Close() error {
@@ -2170,7 +2168,7 @@ func (c *Client) Pipeline() Pipeliner {
 // replacement for the normal command surface where each command call (ap.Set,
 // ap.Get, ...) blocks until executed, exactly like a plain client — but the
 // engine batches concurrent callers' commands into pipelines, so throughput is
-// far higher (~1M+ SET/sec vs ~100k). Commands keep per-goroutine order.
+// far higher (measured locally over loopback: ~1M+ SET/sec vs ~100k; indicative, not a guarantee). Commands keep per-goroutine order.
 //
 // By default, Options.AutoPipelineOptions is used if set,
 // otherwise DefaultBlockingAutoPipelineOptions (a single ordered batch stream,
@@ -2202,7 +2200,7 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
 // return immediately and the result accessors (Val/Result/Err) block until the
 // command has executed. Submit a window of commands, then read their results, to
-// keep each pipeline deep and reach the highest throughput (~2-3M SET/sec).
+// keep each pipeline deep and reach the highest throughput (measured locally over loopback: ~2-3M SET/sec; indicative).
 //
 // By default, Options.AutoPipelineOptions is used if set,
 // otherwise DefaultAutoPipelineOptions (ordered, MaxConcurrentBatches: 1) — a

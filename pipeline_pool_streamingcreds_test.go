@@ -27,12 +27,12 @@ func TestPipelinePoolStreamingCredsReauth(t *testing.T) {
 	updates := make(chan auth.Credentials, 1)
 
 	opt := &redis.Options{
-		Addr:                    ":6379",
+		Addr:                         apTestAddr(),
 		StreamingCredentialsProvider: &mockStreamingProvider{credentials: initialCreds, updates: updates},
-		PipelineReadBufferSize:  64 << 10,
-		PipelineWriteBufferSize: 64 << 10,
-		PipelinePoolSize:        1,
-		PoolSize:                1,
+		PipelineReadBufferSize:       64 << 10,
+		PipelineWriteBufferSize:      64 << 10,
+		PipelinePoolSize:             1,
+		PoolSize:                     1,
 	}
 	c := redis.NewClient(opt)
 	defer c.Close()

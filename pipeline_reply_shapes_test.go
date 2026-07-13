@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -18,8 +19,8 @@ import (
 
 func seedReplyShapeData(t *testing.T, ctx context.Context, c *redis.Client) (big, binary string) {
 	t.Helper()
-	big = strings.Repeat("A", 100_000)     // > bufio buffer -> multi-read
-	binary = "x\x00y\r\nz\x01\xffend"      // embedded NUL, CRLF, high bytes
+	big = strings.Repeat("A", 100_000) // > bufio buffer -> multi-read
+	binary = "x\x00y\r\nz\x01\xffend"  // embedded NUL, CRLF, high bytes
 	c.Del(ctx, "rs:list", "rs:hash", "rs:big", "rs:bin", "rs:s", "rs:n", "rs:f")
 	if err := c.RPush(ctx, "rs:list", "a", "b", "c").Err(); err != nil {
 		t.Fatal(err)
@@ -72,7 +73,7 @@ func assertReplyShapes(t *testing.T, cSet *redis.StatusCmd, cGet *redis.StringCm
 
 func TestPipelineHeterogeneousReplyDemux(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: ":6379"})
+	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -99,7 +100,7 @@ func TestPipelineHeterogeneousReplyDemux(t *testing.T) {
 // stay aligned across the mixed batch.
 func TestPipelineHeterogeneousReplyDemuxRESP2(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+	c := redis.NewClient(&redis.Options{Addr: apTestAddr(), Protocol: 2})
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -123,14 +124,21 @@ func TestPipelineHeterogeneousReplyDemuxRESP2(t *testing.T) {
 
 func TestAutoPipelineHeterogeneousReplyDemux(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: ":6379"})
+	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
 	big, binary := seedReplyShapeData(t, ctx, c)
 
-	ap, err := c.AutoPipeline() // blocking face: results ready on call
+	// Async face with a wide flush window: the 9 heterogeneous commands are
+	// submitted without blocking and land in ONE pipeline batch, so this
+	// actually exercises batch reply demux (the blocking face submits them
+	// one at a time through the lone-command fast path, which never demuxes).
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 50 * time.Millisecond,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
