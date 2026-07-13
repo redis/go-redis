@@ -121,6 +121,12 @@ var _ = BeforeSuite(func() {
 
 	redisPort = redisStackPort
 	redisAddr = redisStackAddr
+	if RECluster && os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") != "" {
+		reConn, err = loadREConnection()
+		Expect(err).NotTo(HaveOccurred())
+		redisAddr = reConn.Addr
+		fmt.Printf("RE endpoint: %s (tls=%v)\n", reConn.Addr, reConn.TLS)
+	}
 	if !RECluster {
 		ringShard1, err = connectTo(ringShard1Port)
 		Expect(err).NotTo(HaveOccurred())
@@ -179,7 +185,7 @@ func TestGinkgoSuite(t *testing.T) {
 
 func redisOptions() *redis.Options {
 	if RECluster {
-		return &redis.Options{
+		opt := &redis.Options{
 			Addr: redisAddr,
 			DB:   0,
 
@@ -194,6 +200,8 @@ func redisOptions() *redis.Options {
 			PoolTimeout:     30 * time.Second,
 			ConnMaxIdleTime: time.Minute,
 		}
+		applyREConnection(opt)
+		return opt
 	}
 	return &redis.Options{
 		Addr: redisAddr,

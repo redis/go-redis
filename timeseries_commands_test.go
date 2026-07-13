@@ -17,12 +17,14 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 	ctx := context.TODO()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	protocols := []int{2, 3}
@@ -324,7 +326,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 					{Timestamp: 1013, Value: 10.0}}))
 			})
 
-			It("should TSCreateRule and TSDeleteRule", Label("timeseries", "tscreaterule", "tsdeleterule"), func() {
+			// NonRedisEnterprise: TS.CREATERULE targets two keys that hash to different slots,
+			// which a sharded Redis Enterprise database rejects with CROSSSLOT.
+			It("should TSCreateRule and TSDeleteRule", Label("timeseries", "tscreaterule", "tsdeleterule", "NonRedisEnterprise"), func() {
 				result, err := client.TSCreate(ctx, "1").Result()
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(BeEquivalentTo("OK"))

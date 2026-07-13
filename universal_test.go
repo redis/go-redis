@@ -37,9 +37,11 @@ var _ = Describe("UniversalClient", Serial, func() {
 	})
 
 	It("should connect to simple servers", func() {
-		client = redis.NewUniversalClient(&redis.UniversalOptions{
+		opt := &redis.UniversalOptions{
 			Addrs: []string{redisAddr},
-		})
+		}
+		applyREConnectionUniversal(opt)
+		client = redis.NewUniversalClient(opt)
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
 	})
 

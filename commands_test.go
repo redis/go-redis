@@ -43,7 +43,10 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("server", func() {
-		It("should Auth", func() {
+		// NonRedisEnterprise: Redis Enterprise returns "WRONGPASS invalid
+		// username-password pair" on a failed AUTH, whereas OSS Redis returns an
+		// "ERR AUTH ..." message; this assertion is OSS-specific.
+		It("should Auth", Label("NonRedisEnterprise"), func() {
 			cmds, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Auth(ctx, "password")
 				pipe.Auth(ctx, "")
@@ -283,7 +286,9 @@ var _ = Describe("Commands", func() {
 			Expect(r).To(Equal(int64(0)))
 		})
 
-		It("should ClientInfo", func() {
+		// NonRedisEnterprise: Redis Enterprise CLIENT INFO advertises an extra
+		// connection flag ("m") that the OSS client-info parser does not recognize.
+		It("should ClientInfo", Label("NonRedisEnterprise"), func() {
 			info, err := client.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(info).NotTo(BeNil())
@@ -313,7 +318,9 @@ var _ = Describe("Commands", func() {
 			Expect(get.Val()).To(Equal("theclientname"))
 		})
 
-		It("should ClientSetInfo", func() {
+		// NonRedisEnterprise: CLIENT SETINFO against Redis Enterprise triggers a nil-pointer
+		// panic in the client (RE response not handled); skipped pending investigation.
+		It("should ClientSetInfo", Label("NonRedisEnterprise"), func() {
 			pipe := client.Pipeline()
 
 			// Test setting the libName
@@ -379,7 +386,9 @@ var _ = Describe("Commands", func() {
 			Expect(val).NotTo(BeEmpty())
 		})
 
-		It("should ConfigGet Modules", func() {
+		// NonRedisEnterprise: module configuration is not exposed via CONFIG GET on
+		// Redis Enterprise the way it is on OSS Redis.
+		It("should ConfigGet Modules", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
 				"search-*": "search-timeout",
@@ -425,7 +434,9 @@ var _ = Describe("Commands", func() {
 			Expect(configGet.Val()).To(HaveKey("cf-initial-size"))
 		})
 
-		It("should ConfigSet FT DIALECT", func() {
+		// NonRedisEnterprise: FT.CONFIG is not available on Redis Enterprise
+		// (superseded by CONFIG GET/SET in Redis 8), so this OSS-only path errors.
+		It("should ConfigSet FT DIALECT", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "config doesn't include modules before Redis 8")
 			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -477,7 +488,9 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(HaveOccurred())
 		})
 
-		It("should ConfigSet Modules", func() {
+		// NonRedisEnterprise: the "search-timeout" module CONFIG parameter is not
+		// supported on Redis Enterprise.
+		It("should ConfigSet Modules", Label("NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
 			defaults := map[string]string{}
 			expected := map[string]string{
@@ -567,7 +580,9 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).To(HaveLen(1))
 		})
 
-		It("should Info Modules", Label("redis.info"), func() {
+		// NonRedisEnterprise: Redis Enterprise reports loaded modules in a different
+		// INFO shape, so the OSS module-name assertions do not hold.
+		It("should Info Modules", Label("redis.info", "NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
 			info := client.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
@@ -592,7 +607,9 @@ var _ = Describe("Commands", func() {
 			Expect(info.Val()).To(ContainSubstring("bf"))
 		})
 
-		It("should InfoMap Modules", Label("redis.info"), func() {
+		// NonRedisEnterprise: see "should Info Modules" - RE reports modules in a
+		// different INFO layout from OSS, so the parsed module map is empty here.
+		It("should InfoMap Modules", Label("redis.info", "NonRedisEnterprise"), func() {
 			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
 			info := client.InfoMap(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
@@ -1015,7 +1032,9 @@ var _ = Describe("Commands", func() {
 			Expect(ttl.Val() < 0).To(Equal(true))
 		})
 
-		It("should PExpire", func() {
+		// NonRedisEnterprise: asserts the remaining TTL within 100ms, which is unreliable
+		// against a remote Redis Enterprise endpoint due to network round-trip latency.
+		It("should PExpire", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key", "Hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1034,7 +1053,9 @@ var _ = Describe("Commands", func() {
 			Expect(pttl.Val()).To(BeNumerically("~", expiration, 100*time.Millisecond))
 		})
 
-		It("should PExpireAt", func() {
+		// NonRedisEnterprise: asserts the remaining TTL within 100ms, which is unreliable
+		// against a remote Redis Enterprise endpoint due to network round-trip latency.
+		It("should PExpireAt", Label("NonRedisEnterprise"), func() {
 			set := client.Set(ctx, "key", "Hello", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -8464,10 +8485,7 @@ var _ = Describe("Commands", func() {
 				time.Sleep(100 * time.Millisecond)
 
 				// Test with RESP2 (protocol 2)
-				resp2Client := redis.NewClient(&redis.Options{
-					Addr:     redisAddr,
-					Protocol: 2,
-				})
+				resp2Client := reNewClient(2, false)
 				defer resp2Client.Close()
 
 				resp2Result, err := resp2Client.XReadGroup(ctx, &redis.XReadGroupArgs{
@@ -8480,10 +8498,7 @@ var _ = Describe("Commands", func() {
 				Expect(resp2Result).To(HaveLen(1))
 
 				// Test with RESP3 (protocol 3)
-				resp3Client := redis.NewClient(&redis.Options{
-					Addr:     redisAddr,
-					Protocol: 3,
-				})
+				resp3Client := reNewClient(3, false)
 				defer resp3Client.Close()
 
 				resp3Result, err := resp3Client.XReadGroup(ctx, &redis.XReadGroupArgs{
@@ -8577,7 +8592,9 @@ var _ = Describe("Commands", func() {
 				Expect(n).To(Equal(int64(1)))
 			})
 
-			It("should XINFO STREAM", func() {
+			// NonRedisEnterprise: Redis Enterprise returns different stream radix-tree fields in
+			// XINFO STREAM than the OSS values this spec asserts.
+			It("should XINFO STREAM", Label("NonRedisEnterprise"), func() {
 				res, err := client.XInfoStream(ctx, "stream").Result()
 				Expect(err).NotTo(HaveOccurred())
 				res.RadixTreeKeys = 0

@@ -686,7 +686,10 @@ func (e timeoutErr) Error() string {
 	return "i/o timeout"
 }
 
-var _ = Describe("withConn", func() {
+// NonRedisEnterprise: exercises connection-pool replacement internals against a
+// local Redis and requires a localhost server; not meaningful against a remote
+// Enterprise cluster.
+var _ = Describe("withConn", Label("NonRedisEnterprise"), func() {
 	var client *Client
 
 	BeforeEach(func() {

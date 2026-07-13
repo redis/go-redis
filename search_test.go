@@ -59,7 +59,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		client = reNewClient(2, false)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -2721,7 +2721,10 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 		}
 	})
 
-	It("should stop processing and return an error when a timeout occurs", Label("search", "ftaggregate"), func() {
+	// NonRedisEnterprise: relies on the "search-timeout" module CONFIG parameter,
+	// which Redis Enterprise does not support; without it the heavy FT.AGGREGATE
+	// query never times out and the spec hangs until the suite timeout.
+	It("should stop processing and return an error when a timeout occurs", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
 		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTimeoutHeavy", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
@@ -3609,7 +3612,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		client = reNewClient(2, false)
 		// Create index with text, numeric, tag fields and vector fields
 		err := client.FTCreate(ctx, "hybrid_idx", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText},
@@ -4341,8 +4344,8 @@ var _ = Describe("RediSearch FT.Config with Resp2 and Resp3", Label("search", "N
 	var clientResp2 *redis.Client
 	var clientResp3 *redis.Client
 	BeforeEach(func() {
-		clientResp2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
-		clientResp3 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
+		clientResp2 = reNewClient(2, false)
+		clientResp3 = reNewClient(3, true)
 		Expect(clientResp3.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
@@ -4382,8 +4385,8 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 	var client2 *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3, UnstableResp3: true})
-		client2 = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 3})
+		client = reNewClient(3, true)
+		client2 = reNewClient(3, false)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
