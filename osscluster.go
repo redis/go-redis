@@ -1875,23 +1875,24 @@ func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+		// Acquire through the node's dedicated pipeline pool when one is
+		// configured (Pipeline*BufferSize propagate to node clients via
+		// clientOptions); withPipelineConn falls back to the main pool
+		// otherwise, preserving the previous behavior. entered distinguishes
+		// an acquisition failure (fn never ran) from an execution error.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			return c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		})
+		if err != nil && !entered {
 			if !isContextError(err) {
 				node.MarkAsFailing()
 			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
-			return err
 		}
-
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
+		return err
 	})
 }
 
@@ -2150,20 +2151,17 @@ func (c *ClusterClient) processTxPipelineNode(
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
 	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+		// Same dedicated-pipeline-pool routing as processPipelineNode.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			return c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		})
+		if err != nil && !entered {
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
-			return err
 		}
-
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
+		return err
 	})
 }
 

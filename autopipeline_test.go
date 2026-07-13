@@ -3475,3 +3475,63 @@ func TestAdaptiveDelayEndToEnd(t *testing.T) {
 		}
 	})
 }
+
+// TestClusterPipelineUsesDedicatedPool pins the fix for the review finding
+// that cluster pipelines acquired connections via getConn (main pool),
+// bypassing the dedicated pipeline pool entirely: node clients inherit the
+// Pipeline* options, and processPipelineNode now routes through
+// withPipelineConn. Covers the manual pipeline and the autopipeline batch
+// path (both converge on processPipelineNode).
+func TestClusterPipelineUsesDedicatedPool(t *testing.T) {
+	ctx := context.Background()
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs:                  []string{":16600", ":16601", ":16602"},
+		PipelineReadBufferSize: 64 * 1024,
+	})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+
+	runWithWatchdog(t, 60*time.Second, func() {
+		// Manual pipeline spanning many slots.
+		pipe := c.Pipeline()
+		for i := 0; i < 50; i++ {
+			pipe.Set(ctx, fmt.Sprintf("cpp:%d", i), i, 0)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			t.Fatalf("pipeline exec: %v", err)
+		}
+
+		// Autopipeline batch (same node dispatch seam underneath).
+		ap, err := c.AsyncAutoPipeline()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ap.Close()
+		cmds := make([]*redis.StringCmd, 0, 50)
+		for i := 0; i < 50; i++ {
+			cmds = append(cmds, ap.Get(ctx, fmt.Sprintf("cpp:%d", i)))
+		}
+		for i, cmd := range cmds {
+			if v, err := cmd.Result(); err != nil || v != fmt.Sprint(i) {
+				t.Fatalf("get %d: v=%q err=%v", i, v, err)
+			}
+		}
+
+		// The dedicated pipeline pool on the nodes must have carried traffic.
+		var pipelineConns atomic.Uint64 // ForEachMaster runs callbacks concurrently
+		err = c.ForEachMaster(ctx, func(ctx context.Context, cl *redis.Client) error {
+			if ps := cl.PoolStats().PipelineStats; ps != nil {
+				pipelineConns.Add(uint64(ps.TotalConns) + uint64(ps.Hits))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pipelineConns.Load() == 0 {
+			t.Fatal("dedicated pipeline pool unused: cluster pipelines still bypass it")
+		}
+	})
+}
