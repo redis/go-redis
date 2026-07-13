@@ -27,17 +27,20 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 		protocol := protocol // capture loop variable for each context
 
 		Context(fmt.Sprintf("with protocol version %d", protocol), func() {
-			var client *redis.Client
+			var client redis.UniversalClient
+			var rawClient *redis.Client
+			var closeSubject func() error
 
 			BeforeEach(func() {
-				client = setupRedisClient(protocol)
-				Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+				rawClient = setupRedisClient(protocol)
+				client, closeSubject = newUniversalSubject(rawClient)
+				Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 			})
 
 			AfterEach(func() {
 				if client != nil {
-					client.FlushDB(ctx)
-					client.Close()
+					rawClient.FlushDB(ctx)
+					closeSubject()
 				}
 			})
 

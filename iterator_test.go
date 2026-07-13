@@ -10,7 +10,9 @@ import (
 )
 
 var _ = Describe("ScanIterator", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	seed := func(n int) error {
 		pipe := client.Pipeline()
@@ -44,12 +46,13 @@ var _ = Describe("ScanIterator", func() {
 	}
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		client, closeSubject = newUniversalSubject(rawClient)
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	It("should scan across empty DBs", func() {
