@@ -8088,6 +8088,13 @@ func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) 
 		if len(pk) != 0 && cmd.getStatus() == monitorStatusStart {
 			line, err := rd.ReadString()
 			if err != nil {
+				if cmd.getStatus() == monitorStatusStop {
+					// Stop closed the connection while a line was being
+					// read: shut down cleanly instead of reporting the
+					// read error.
+					cancel()
+					return nil
+				}
 				return err
 			}
 			cmd.ch <- line
