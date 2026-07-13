@@ -811,6 +811,8 @@ Notes:
 - Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
 - The user should create a channel of type string
 - This runs concurrently in the background. Trigger via the Start and Stop functions
+- If reading from the connection fails (e.g. the ReadTimeout of the client expires
+  because no traffic arrived), the channel is closed and the error is available via Err()
 See further: Redis MONITOR command: https://redis.io/commands/monitor
 */
 func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {

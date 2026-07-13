@@ -8044,6 +8044,10 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 				err := cmd.readMonitor(rd, cancel)
 				if err != nil {
 					cmd.err = err
+					cancel()
+					// Close the channel so a listener blocked on it is unblocked
+					// and can pick up the error with cmd.Err().
+					close(cmd.ch)
 					return
 				}
 			}
@@ -8056,8 +8060,18 @@ func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) 
 	for {
 		cmd.mu.Lock()
 		st := cmd.status
-		pk, _ := rd.Peek(1)
+		pk, err := rd.Peek(1)
 		cmd.mu.Unlock()
+		if st == monitorStatusStop {
+			cancel()
+			return nil
+		}
+		if err != nil {
+			// The connection is no longer usable (e.g. a read timeout when
+			// ReadTimeout is set); without this the loop would spin forever
+			// re-peeking a dead connection.
+			return err
+		}
 		if len(pk) != 0 && st == monitorStatusStart {
 			cmd.mu.Lock()
 			line, err := rd.ReadString()
@@ -8067,12 +8081,7 @@ func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) 
 			}
 			cmd.ch <- line
 		}
-		if st == monitorStatusStop {
-			cancel()
-			break
-		}
 	}
-	return nil
 }
 
 func (cmd *MonitorCmd) Start() {
