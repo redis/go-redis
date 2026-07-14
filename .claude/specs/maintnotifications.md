@@ -99,7 +99,7 @@ If the handoff queue is full, the worker manager waits 100ms for space; if still
 
 ### Retries
 
-A failed handoff retries up to `MaxHandoffRetries` (default 3) with exponential backoff (`HandoffTimeout/3` initial). Some errors are non-retryable (e.g., `initConn` failure — the new endpoint is unreachable or rejecting auth). After max retries, the conn is permanently removed.
+A failed handoff retries up to `MaxHandoffRetries` (default 3). The retry delay is flat, not exponential: the remainder of the handoff deadline, falling back to `HandoffTimeout/3` when no deadline is set, with a 500ms floor. Some errors are non-retryable (e.g., `initConn` failure — the new endpoint is unreachable or rejecting auth). After max retries, the conn is permanently removed.
 
 ### Post-handoff relaxed duration
 

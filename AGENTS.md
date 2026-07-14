@@ -37,7 +37,7 @@ make docker.stop
 make test                        # docker.start -> test.ci -> docker.stop
 make test.ci                     # run tests assuming containers are already up
 make test.ci.skip-vectorsets     # when REDIS_VERSION < 8
-make bench                       # go test -bench=. across all modules
+make bench                       # go test -bench=. (root module only)
 make fmt                         # gofumpt + goimports -local github.com/redis/go-redis
 make build
 make go_mod_tidy                 # go mod tidy across every module
@@ -56,15 +56,15 @@ forks), so `go test -run` matches the Go-level wrapper and you focus a spec with
 the Ginkgo flag:
 
 ```sh
-go test -run TestGinkgoSuite ./... -ginkgo.focus="ZAdd"
-go test -run TestGinkgoSuite .   -ginkgo.focus="cluster"
+go test -run TestGinkgoSuite . -ginkgo.focus="ZAdd"
+go test -run TestGinkgoSuite . -ginkgo.focus="cluster"
 ```
 
 Plain `go test` tests (most files outside the Ginkgo suite, e.g. `internal/...`,
 `maintnotifications/...`) work the usual way:
 
 ```sh
-go test -run TestPoolNew ./internal/pool/...
+go test -run TestConnStateMachine ./internal/pool/...
 go test -race -run TestCircuitBreaker ./maintnotifications/...
 ```
 
@@ -127,8 +127,9 @@ here.
 
 RESP2/RESP3 reader and writer. Push notifications (RESP3 `>`-prefixed frames) are
 peeked here and dispatched via the `push/` package. The `push.Registry` lets
-callers register handlers for specific notification names; `pushnotif_handler.go`
--style code is also how `maintnotifications` plugs in.
+callers register handlers for specific notification names;
+`maintnotifications/push_notification_handler.go` is how `maintnotifications`
+plugs in.
 
 ### Maintenance notifications (`maintnotifications/`)
 

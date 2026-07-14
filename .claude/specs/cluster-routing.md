@@ -15,7 +15,7 @@ Two non-obvious edge cases:
 - **Byte-slice keys** (#3049): the cluster client used to cast args via `fmt.Sprintf("%s", v)` which doesn't handle `[]byte` consistently. `stringArg` in `command.go` now type-switches to handle `[]byte` keys passed through `client.Do(ctx, "GET", []byte("k"))`. If you add a generic-args path, route it through `stringArg`.
 - **Commands whose key is *not* the first arg, or which take the slot directly** — `COUNTKEYSINSLOT` is the canonical example: its argument is the slot integer, not a key (#3327). When you add such a command, register the correct key-spec in `command.go` or its slot will be computed from the wrong arg and the routing will land on the wrong shard.
 
-`keylessCommands` in `command.go` is the override list for commands with no key at all (`PING`, `TIME`, `INFO`, `WAIT`, …). Routing them by "first arg" would either error or pick a random shard; instead, the router uses the configured `ShardPicker` (round-robin / random / static). Adding `WAIT` (#3615) and `TIME` (#3722) here fixed real bugs where pipelines and txpipelines mis-routed.
+`keylessCommands` in `command.go` is the override list for commands with no key at all (`PING`, `TIME`, `CONFIG`, `WAIT`, …). Routing them by "first arg" would either error or pick a random shard; instead, the router uses the configured `ShardPicker` (round-robin / random / static). Adding `WAIT` (#3615) and `TIME` (#3722) here fixed real bugs where pipelines and txpipelines mis-routed.
 
 ---
 
@@ -110,7 +110,7 @@ Two history points:
 
 ## Topology reload
 
-`clusterState` carries `Masters`, `Slaves`, and slot→node mappings, built from `CLUSTER SLOTS` (or `CLUSTER SHARDS` on newer servers). It's stored under `clusterStateHolder` (an `atomic.Value`) so reads are lock-free. Reloads run in the background, triggered by:
+`clusterState` carries `Masters`, `Slaves`, and slot→node mappings, built from `CLUSTER SLOTS`. It's stored under `clusterStateHolder` (an `atomic.Value`) so reads are lock-free. Reloads run in the background, triggered by:
 
 - `MOVED` errors (canonical case).
 - Periodic refresh.

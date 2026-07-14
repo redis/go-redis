@@ -1,6 +1,6 @@
 # Core command pattern
 
-The 7-step Go pattern for adding a command to the root `redis` package. Worked example: **LCS** (`string_commands.go:377`, `LCSCmd` in `command.go:6738`) — it uses a `cmdable` receiver, a query struct, a custom Cmder, and a registered `CmdType`. Copy its shape exactly.
+The 7-step Go pattern for adding a command to the root `redis` package. Worked example: **LCS** (grep `func (c cmdable) LCS` in `string_commands.go` and `type LCSCmd struct` in `command.go`) — it uses a `cmdable` receiver, a query struct, a custom Cmder, and a registered `CmdType`. Copy its shape exactly.
 
 ## 1. Method on the `cmdable` interface
 
@@ -19,7 +19,7 @@ For commands with many optional flags, expose `Foo(...)` for the common path plu
 Conventions:
 - Lowercase the command name in the args slice (`"lcs"`, not `"LCS"`); subcommand flags are uppercase (`"LEN"`, `"IDX"`, `"MINMATCHLEN"`).
 - Pre-size the args slice (`make([]interface{}, 3, 7)`).
-- Convert `time.Duration` to whatever the server expects — never pass it raw (server gets nanoseconds). Use `formatMs` / `formatSec` in `command.go`.
+- Convert `time.Duration` to whatever the server expects — never pass it raw (server gets nanoseconds). Use `formatMs` / `formatSec` in `commands.go`.
 - Doc comment: state `Redis X.Y+` (from the spec `since`) and link the redis.io command page.
 
 ## 2. New `XxxCmdable` interface goes into `Cmdable`

@@ -13,7 +13,7 @@ If Step 0's redis/redis fetch 404s, the command is a module command — get the 
 
 ## 2. Where the Cmder type lives
 
-Module Cmd types are defined in the **module's** `*_commands.go` file, not `command.go`. `FTHybridCmd` lives in `search_commands.go:2905`, registered on the `SearchCmdable` interface (`search_commands.go:15`), which is embedded in `Cmdable` (`commands.go:242`). TimeSeries → `timeseries_commands.go`, VectorSet → `vectorset_commands.go`. The required-method set is identical to core (SetVal/Val/Result/String/readReply/Clone).
+Module Cmd types are defined in the **module's** `*_commands.go` file, not `command.go`. `FTHybridCmd` lives in `search_commands.go` (grep `type FTHybridCmd`), registered on the `SearchCmdable` interface at the top of that file, which is embedded in `Cmdable` (`commands.go`). TimeSeries → `timeseries_commands.go`, VectorSet → `vectorset_commands.go`. The required-method set is identical to core (SetVal/Val/Result/String/readReply/Clone).
 
 ## 3. RESP2 vs RESP3 reply shapes
 

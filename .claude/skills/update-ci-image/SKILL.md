@@ -60,7 +60,7 @@ After editing, search for any stale tag references:
 # Pattern: literal old tag, e.g. "8.8-rc1" or "client-libs-test:8.8"
 ```
 
-Expected matches: zero in `Makefile`, `docker-compose.yml`, `.github/**`. A reference in `CLAUDE.md` documentation (e.g. "e.g. `redislabs/client-libs-test:8.8-m03`") is illustrative — leave it unless the doc is misleading after the change.
+Expected matches: zero in `Makefile`, `docker-compose.yml`, `.github/**`. A reference in `AGENTS.md` or the `testing` skill documentation (e.g. "e.g. `redislabs/client-libs-test:8.8-m03`") is illustrative — leave it unless the doc is misleading after the change.
 
 ## Gotchas
 

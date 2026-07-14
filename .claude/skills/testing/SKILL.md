@@ -15,7 +15,7 @@ make docker.stop
 make test                  # docker.start -> test.ci -> docker.stop
 make test.ci               # run tests assuming containers are already up
 make test.ci.skip-vectorsets   # used when REDIS_VERSION < 8
-make bench                 # go test -bench=. across all modules
+make bench                 # go test -bench=. (root module only)
 make fmt                   # gofumpt + goimports (-local github.com/redis/go-redis)
 make build
 make go_mod_tidy           # go mod tidy across every module
@@ -46,14 +46,14 @@ make test.e2e.logic        # logic-only tests, no proxy required
 The root suite is Ginkgo-based (`bsm/ginkgo` + `bsm/gomega` forks). `go test -run` matches the Go-level wrapper, so to focus a Ginkgo spec use the Ginkgo focus flag:
 
 ```sh
-go test -run TestGinkgoSuite ./... -ginkgo.focus="ZAdd"
+go test -run TestGinkgoSuite . -ginkgo.focus="ZAdd"
 go test -run TestGinkgoSuite . -ginkgo.focus="cluster"
 ```
 
 Plain `go test`-style tests (most files outside the Ginkgo suite, e.g. `internal/...`, `maintnotifications/...`) work the usual way:
 
 ```sh
-go test -run TestPoolNew ./internal/pool/...
+go test -run TestConnStateMachine ./internal/pool/...
 go test -race -run TestCircuitBreaker ./maintnotifications/...
 ```
 
