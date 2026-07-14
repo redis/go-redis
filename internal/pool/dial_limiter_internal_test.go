@@ -91,6 +91,35 @@ func TestDialLimiterRefillCap(t *testing.T) {
 	}
 }
 
+func TestDialLimiterRefund(t *testing.T) {
+	l, _ := newTestLimiter(10, 2)
+
+	// Drain the bucket, then refund one token: Allow must succeed again.
+	if !l.Allow() || !l.Allow() {
+		t.Fatal("burst tokens should be available")
+	}
+	if l.Allow() {
+		t.Fatal("bucket should be empty")
+	}
+	l.refund()
+	if !l.Allow() {
+		t.Fatal("Allow should succeed after refund")
+	}
+
+	// Refund never exceeds burst: refund 5x on a full bucket, still only
+	// burst tokens available.
+	l.refund()
+	for i := 0; i < 5; i++ {
+		l.refund()
+	}
+	if !l.Allow() || !l.Allow() {
+		t.Fatal("burst tokens should be available after refunds")
+	}
+	if l.Allow() {
+		t.Fatal("refund must be capped at burst")
+	}
+}
+
 func TestDialLimiterDelayUntilNext(t *testing.T) {
 	l, clock := newTestLimiter(10, 1) // 1 token / 100ms
 

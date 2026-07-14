@@ -77,6 +77,18 @@ func (l *dialLimiter) Allow() bool {
 	return false
 }
 
+// refund returns a token to the bucket, capped at burst. Used when a caller
+// acquired a token but could not proceed (e.g. a min-idle refill that found no
+// free pool turn), so the unused token isn't lost to other dialers.
+func (l *dialLimiter) refund() {
+	l.mu.Lock()
+	l.tokens++
+	if l.tokens > l.burst {
+		l.tokens = l.burst
+	}
+	l.mu.Unlock()
+}
+
 // delayUntilNext returns the duration until at least one token is available.
 // It returns 0 if a token is available right now.
 func (l *dialLimiter) delayUntilNext() time.Duration {

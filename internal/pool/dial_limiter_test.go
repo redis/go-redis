@@ -435,6 +435,51 @@ func TestDialRateLimitDeadlineIncludesTurnWait(t *testing.T) {
 	}
 }
 
+// TestDialRateLimitRefillDoesNotStarveGets reproduces the review finding that
+// a min-idle refill worker must acquire its dial token BEFORE taking a pool
+// turn: a worker sleeping for a token while sitting on a turn starves
+// foreground Get() calls of turns and they fail with ErrPoolTimeout even
+// though the pool has capacity.
+func TestDialRateLimitRefillDoesNotStarveGets(t *testing.T) {
+	var dials atomic.Int32
+	p := pool.NewConnPool(&pool.Options{
+		Dialer:             countingDialer(&dials),
+		PoolSize:           1, // single turn: a turn-holding refill blocks all Gets
+		MaxConcurrentDials: 1,
+		MinIdleConns:       1,
+		DialRateLimit:      1, // 1 token/s: refill after the burst token waits ~1s
+		DialRateBurst:      1,
+		PoolTimeout:        300 * time.Millisecond,
+	})
+	defer p.Close()
+	ctx := context.Background()
+
+	// Initial refill consumes the burst token to create the idle conn.
+	waitFor(t, 2*time.Second, func() bool { return p.IdleLen() == 1 })
+
+	// Take the conn and Remove it: frees the turn, drops below MinIdleConns,
+	// and triggers a refill with an empty token bucket — that refill worker
+	// now waits ~1s for the next token.
+	cn, err := p.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	p.Remove(ctx, cn, nil)
+
+	// A foreground Get must not be starved of the turn by the waiting refill:
+	// it parks (no token), escapes at PoolTimeout, and dials.
+	start := time.Now()
+	cn2, err := p.Get(ctx)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("foreground Get starved by token-waiting refill worker: %v (after %v)", err, elapsed)
+	}
+	p.Put(ctx, cn2)
+	if elapsed > 600*time.Millisecond {
+		t.Fatalf("foreground Get took %v; expected ~PoolTimeout escape (300ms)", elapsed)
+	}
+}
+
 // TestDialRateLimitDisabled verifies zero behavioral change when the limiter is
 // not configured.
 func TestDialRateLimitDisabled(t *testing.T) {

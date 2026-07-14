@@ -1485,6 +1485,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 		acc.WaitCount += s.WaitCount
 		acc.WaitDurationNs += s.WaitDurationNs
+		acc.RateLimitedDials += s.RateLimitedDials
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
@@ -1498,6 +1499,7 @@ func (c *ClusterClient) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 		acc.WaitCount += s.WaitCount
 		acc.WaitDurationNs += s.WaitDurationNs
+		acc.RateLimitedDials += s.RateLimitedDials
 
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
