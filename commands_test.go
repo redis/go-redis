@@ -7751,6 +7751,7 @@ var _ = Describe("Commands", func() {
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream", "stream2"},
 				IDs:     []string{"2-0", "0"},
+				Block:   -1,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]redis.XStream{
@@ -7785,6 +7786,7 @@ var _ = Describe("Commands", func() {
 				Streams: []string{"stream", "stream3"},
 				ID:      "$",
 				IDs:     []string{"2-0", "0"},
+				Block:   -1,
 			}).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res).To(Equal([]redis.XStream{

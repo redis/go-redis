@@ -205,13 +205,13 @@ func (c cmdable) XRevRangeN(ctx context.Context, stream, start, stop string, cou
 //     (one ID per stream). When IDs is non-empty it takes precedence
 //     over ID.
 //
-//   - Legacy keys+ids inline: Streams holds the stream names followed
+//   - Keys+ids inline: Streams holds the stream names followed
 //     by one ID per stream, e.g. []string{"stream1", "stream2", "id1", "id2"}.
 //     In this shape ID and IDs must both be left empty; XRead will
 //     forward Streams to the server as-is.
 type XReadArgs struct {
 	// Streams is either the list of stream keys, or the list of
-	// stream keys followed by one ID per stream (legacy inline form).
+	// stream keys followed by one ID per stream (inline form).
 	// See the XReadArgs doc comment for the supported shapes.
 	Streams []string
 	Count   int64
@@ -219,13 +219,13 @@ type XReadArgs struct {
 	// ID is a single ID applied to every stream in Streams.
 	// When reading from multiple streams that require different IDs,
 	// use IDs instead so each stream can be resumed from its own last ID.
-	// Ignored when IDs is non-empty, or when Streams already contains
-	// the IDs inline (legacy form).
+	// Ignored when IDs is non-empty. Must be left empty when Streams
+	// already contains the IDs inline (inline form).
 	ID string
 	// IDs is the per-stream list of IDs and, when non-empty, must
 	// contain exactly one ID per entry in Streams. When set, IDs takes
 	// precedence over ID. Must be empty when Streams already contains
-	// the IDs inline (legacy form).
+	// the IDs inline (inline form).
 	IDs []string
 }
 
