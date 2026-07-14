@@ -89,6 +89,13 @@ func (l *dialLimiter) refund() {
 	l.mu.Unlock()
 }
 
+// tokenInterval returns how long the bucket takes to accrue one token at the
+// configured refill rate. rate is immutable after construction, so no lock is
+// needed.
+func (l *dialLimiter) tokenInterval() time.Duration {
+	return time.Duration(float64(time.Second) / l.rate)
+}
+
 // delayUntilNext returns the duration until at least one token is available.
 // It returns 0 if a token is available right now.
 func (l *dialLimiter) delayUntilNext() time.Duration {

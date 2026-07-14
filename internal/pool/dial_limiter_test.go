@@ -399,7 +399,7 @@ func TestDialRateLimitDeadlineIncludesTurnWait(t *testing.T) {
 		MaxConcurrentDials: 1,
 		DialRateLimit:      1,
 		DialRateBurst:      1,
-		PoolTimeout:        300 * time.Millisecond,
+		PoolTimeout:        800 * time.Millisecond,
 	})
 	defer p.Close()
 	ctx := context.Background()
@@ -410,10 +410,10 @@ func TestDialRateLimitDeadlineIncludesTurnWait(t *testing.T) {
 	}
 
 	// Free the turn (without returning an idle conn) halfway through the
-	// timeout budget: the second Get spends ~150ms in waitTurn, then parks
-	// only until the original deadline (~150ms more) before escaping.
+	// timeout budget: the second Get spends ~400ms in waitTurn, then parks
+	// only until the original deadline (~400ms more) before escaping.
 	go func() {
-		time.Sleep(150 * time.Millisecond)
+		time.Sleep(400 * time.Millisecond)
 		p.Remove(ctx, c1, nil)
 	}()
 
@@ -429,8 +429,10 @@ func TestDialRateLimitDeadlineIncludesTurnWait(t *testing.T) {
 		t.Fatalf("expected 2 dials (seed + escape), got %d", got)
 	}
 	// With the deadline anchored at Get() entry, total wait ≈ PoolTimeout
-	// (300ms). The old bug re-anchored it after waitTurn: ~150ms + 300ms.
-	if elapsed > 400*time.Millisecond {
+	// (800ms). The old bug re-anchored it after waitTurn: ~400ms + 800ms =
+	// ~1200ms. The 1100ms bound leaves 300ms of scheduling slack for loaded
+	// CI while still failing if the deadline stops crediting waitTurn time.
+	if elapsed > 1100*time.Millisecond {
 		t.Fatalf("throttled Get waited %v; deadline not crediting waitTurn time (~2x PoolTimeout bug)", elapsed)
 	}
 }

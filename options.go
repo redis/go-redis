@@ -231,6 +231,16 @@ type Options struct {
 	// the pool is not full. Set DialRateLimit only when smoothing creation spikes
 	// is worth this added tail latency.
 	//
+	// Scope: the limiter paces connections created through the pool — Get()
+	// dials and the MinIdleConns refill. Connections dialed outside the pool's
+	// dial path, such as dedicated pub/sub connections and maintenance-
+	// notification handoff redials, are not paced.
+	//
+	// The limit is soft under sustained overload: a throttled request that has
+	// waited a full PoolTimeout without obtaining a connection or a token stops
+	// waiting and dials unpaced, so the effective dial rate can exceed
+	// DialRateLimit when demand outstrips the pool for longer than PoolTimeout.
+	//
 	// default: 0 (disabled)
 	DialRateLimit int
 
