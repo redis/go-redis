@@ -150,6 +150,8 @@ func TestSpecialAggregator(t *testing.T) {
 	RegisterSpecialAggregator("CUSTOMCMD", func(results []interface{}, _ []error) (interface{}, error) {
 		return len(results), nil
 	})
+	// The registry stores the command name as given (no lowercasing).
+	t.Cleanup(func() { delete(SpecialAggregatorRegistry, "CUSTOMCMD") })
 	agg := NewResponseAggregator(RespSpecial, "CUSTOMCMD")
 	_ = agg.Add("a", nil)
 	_ = agg.Add("b", nil)

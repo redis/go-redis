@@ -3,6 +3,9 @@ package proto_test
 import (
 	"bytes"
 	"io"
+	"math"
+	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,30 +17,46 @@ func newReader(s string) *proto.Reader {
 }
 
 func TestReader_ReadReplyTypes(t *testing.T) {
+	bigVal, ok := new(big.Int).SetString("3492890328409238509324850943850943825024385", 10)
+	if !ok {
+		t.Fatal("failed to build expected big.Int value")
+	}
 	tests := []struct {
 		name  string
 		input string
+		want  interface{}
 	}{
-		{"status", "+OK\r\n"},
-		{"int", ":42\r\n"},
-		{"float", ",3.14\r\n"},
-		{"float-inf", ",inf\r\n"},
-		{"float-neg-inf", ",-inf\r\n"},
-		{"float-nan", ",nan\r\n"},
-		{"bool-true", "#t\r\n"},
-		{"bool-false", "#f\r\n"},
-		{"bigint", "(3492890328409238509324850943850943825024385\r\n"},
-		{"string", "$5\r\nhello\r\n"},
-		{"verbatim", "=9\r\ntxt:hello\r\n"},
-		{"array", "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n"},
-		{"set", "~2\r\n+a\r\n+b\r\n"},
-		{"push", ">2\r\n+a\r\n+b\r\n"},
-		{"map", "%1\r\n+key\r\n+value\r\n"},
+		{"status", "+OK\r\n", "OK"},
+		{"int", ":42\r\n", int64(42)},
+		{"float", ",3.14\r\n", 3.14},
+		{"float-inf", ",inf\r\n", math.Inf(1)},
+		{"float-neg-inf", ",-inf\r\n", math.Inf(-1)},
+		{"float-nan", ",nan\r\n", math.NaN()},
+		{"bool-true", "#t\r\n", true},
+		{"bool-false", "#f\r\n", false},
+		{"bigint", "(3492890328409238509324850943850943825024385\r\n", bigVal},
+		{"string", "$5\r\nhello\r\n", "hello"},
+		{"verbatim", "=9\r\ntxt:hello\r\n", "hello"},
+		{"array", "*2\r\n$5\r\nhello\r\n$5\r\nworld\r\n", []interface{}{"hello", "world"}},
+		{"set", "~2\r\n+a\r\n+b\r\n", []interface{}{"a", "b"}},
+		{"push", ">2\r\n+a\r\n+b\r\n", []interface{}{"a", "b"}},
+		{"map", "%1\r\n+key\r\n+value\r\n", map[interface{}]interface{}{"key": "value"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := newReader(tt.input).ReadReply(); err != nil {
+			got, err := newReader(tt.input).ReadReply()
+			if err != nil {
 				t.Fatalf("ReadReply(%q) unexpected error: %v", tt.input, err)
+			}
+			// NaN never compares equal to itself; check it explicitly.
+			if want, ok := tt.want.(float64); ok && math.IsNaN(want) {
+				if f, ok := got.(float64); !ok || !math.IsNaN(f) {
+					t.Fatalf("ReadReply(%q) = %v (%T), want NaN", tt.input, got, got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ReadReply(%q) = %#v (%T), want %#v (%T)", tt.input, got, got, tt.want, tt.want)
 			}
 		})
 	}
@@ -321,7 +340,7 @@ func TestReader_ResetAndNewReaderSize(t *testing.T) {
 }
 
 func TestParseErrorReply(t *testing.T) {
-	err := proto.ParseErrorReply([]byte("-ERR something went wrong\r"[:len("-ERR something went wrong")]))
+	err := proto.ParseErrorReply([]byte("-ERR something went wrong"))
 	if err == nil {
 		t.Fatal("expected error from ParseErrorReply")
 	}

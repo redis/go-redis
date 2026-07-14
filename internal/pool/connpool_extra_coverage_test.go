@@ -12,7 +12,7 @@ func newTestConnPool(t *testing.T) *ConnPool {
 	t.Helper()
 	return NewConnPool(&Options{
 		Dialer: func(context.Context) (net.Conn, error) {
-			return psFakeConn{}, nil
+			return fakeNetConn{}, nil
 		},
 		PoolSize:           1,
 		MaxConcurrentDials: 1,

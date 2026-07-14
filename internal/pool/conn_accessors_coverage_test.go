@@ -124,7 +124,7 @@ func TestConn_NetConnAndInit(t *testing.T) {
 	}
 
 	// SetNetConn / GetNetConn round-trip.
-	fc := psFakeConn{}
+	fc := fakeNetConn{}
 	cn.SetNetConn(fc)
 	if cn.GetNetConn() != fc {
 		t.Error("GetNetConn did not return the set conn")
@@ -137,7 +137,7 @@ func TestConn_NetConnAndInit(t *testing.T) {
 	if cn.RemoteAddr() == nil {
 		t.Error("RemoteAddr should not be nil")
 	}
-	// psFakeConn does not implement syscall.Conn, so MaybeHasData is false.
+	// fakeNetConn does not implement syscall.Conn, so MaybeHasData is false.
 	if cn.MaybeHasData() {
 		t.Error("MaybeHasData should be false for non-syscall conn")
 	}
@@ -145,7 +145,7 @@ func TestConn_NetConnAndInit(t *testing.T) {
 	// SetNetConnAndInitConn runs the init func.
 	fresh := NewConn(nil)
 	fresh.SetInitConnFunc(func(context.Context, *Conn) error { return nil })
-	if err := fresh.SetNetConnAndInitConn(context.Background(), psFakeConn{}); err != nil {
+	if err := fresh.SetNetConnAndInitConn(context.Background(), fakeNetConn{}); err != nil {
 		t.Fatalf("SetNetConnAndInitConn: %v", err)
 	}
 }

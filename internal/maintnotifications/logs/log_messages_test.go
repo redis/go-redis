@@ -108,6 +108,48 @@ func TestLogMessages_AllBuilders(t *testing.T) {
 	}
 }
 
+// TestLogMessages_RepresentativeFormats pins the exact human-readable output of
+// a few representative builders. At error level the message is returned as-is;
+// at debug level the JSON payload is appended after the same prefix.
+func TestLogMessages_RepresentativeFormats(t *testing.T) {
+	tests := []struct {
+		name    string
+		builder func() string
+		want    string
+	}{
+		{
+			name:    "HandoffStarted",
+			builder: func() string { return logs.HandoffStarted(1, "ep") },
+			want:    "conn[1] handoff started to ep",
+		},
+		{
+			name:    "UnrelaxedTimeout",
+			builder: func() string { return logs.UnrelaxedTimeout(1) },
+			want:    "conn[1] clearing relaxed timeout",
+		},
+		{
+			name:    "HandoffQueueFull",
+			builder: func() string { return logs.HandoffQueueFull(5, 10) },
+			want:    "handoff queue is full (5/10), cannot queue new handoff requests - consider increasing HandoffQueueSize or MaxWorkers in configuration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withLogLevel(internal.LogLevelError, func() {
+				if got := tt.builder(); got != tt.want {
+					t.Errorf("at error level got %q, want %q", got, tt.want)
+				}
+			})
+			withLogLevel(internal.LogLevelDebug, func() {
+				if got := tt.builder(); !strings.HasPrefix(got, tt.want+" {") {
+					t.Errorf("at debug level got %q, want prefix %q", got, tt.want+" {")
+				}
+			})
+		})
+	}
+}
+
 func TestExtractDataFromLogMessage(t *testing.T) {
 	withLogLevel(internal.LogLevelDebug, func() {
 		msg := logs.HandoffStarted(42, "localhost:6379")

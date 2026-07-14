@@ -32,18 +32,20 @@ func (m *mockPooler) Get(context.Context) (*Conn, error) {
 	}
 	return NewConn(nil), nil
 }
-func (m *mockPooler) Put(context.Context, *Conn)            { m.putCount++ }
-func (m *mockPooler) Remove(_ context.Context, _ *Conn, e error) { m.removeErr = append(m.removeErr, e) }
+func (m *mockPooler) Put(context.Context, *Conn) { m.putCount++ }
+func (m *mockPooler) Remove(_ context.Context, _ *Conn, e error) {
+	m.removeErr = append(m.removeErr, e)
+}
 func (m *mockPooler) RemoveWithoutTurn(c context.Context, cn *Conn, e error) {
 	m.Remove(c, cn, e)
 }
-func (m *mockPooler) Len() int             { return 0 }
-func (m *mockPooler) IdleLen() int         { return 0 }
-func (m *mockPooler) Stats() *Stats        { return &Stats{} }
-func (m *mockPooler) Size() int            { return 1 }
-func (m *mockPooler) AddPoolHook(PoolHook) {}
+func (m *mockPooler) Len() int                { return 0 }
+func (m *mockPooler) IdleLen() int            { return 0 }
+func (m *mockPooler) Stats() *Stats           { return &Stats{} }
+func (m *mockPooler) Size() int               { return 1 }
+func (m *mockPooler) AddPoolHook(PoolHook)    {}
 func (m *mockPooler) RemovePoolHook(PoolHook) {}
-func (m *mockPooler) Close() error         { return m.closeErr }
+func (m *mockPooler) Close() error            { return m.closeErr }
 
 func TestSingleConnPool_Lifecycle(t *testing.T) {
 	ctx := context.Background()

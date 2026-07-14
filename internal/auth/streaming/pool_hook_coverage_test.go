@@ -33,16 +33,19 @@ func TestReAuthPoolHook_OnGet(t *testing.T) {
 		t.Error("OnGet(marked) should reject")
 	}
 
-	// Scheduled reauth: reject.
-	hook.shouldReAuthLock.Lock()
-	delete(hook.shouldReAuth, cn.GetID())
-	hook.shouldReAuthLock.Unlock()
-	hook.scheduledLock.Lock()
-	hook.scheduledReAuth[cn.GetID()] = true
-	hook.scheduledLock.Unlock()
+	// Scheduled reauth: reject. Reach the scheduled state through the public
+	// path: OnPut moves a marked connection to the scheduled set before
+	// re-authenticating it in the background. Block the re-auth callback so
+	// the connection stays scheduled while OnGet is probed.
+	release := make(chan struct{})
+	hook.MarkForReAuth(cn.GetID(), func(error) { <-release })
+	if pooled, removed, err := hook.OnPut(ctx, cn); !pooled || removed || err != nil {
+		t.Fatalf("OnPut(marked) = %v, %v, %v", pooled, removed, err)
+	}
 	if accept, _ := hook.OnGet(ctx, cn, false); accept {
 		t.Error("OnGet(scheduled) should reject")
 	}
+	close(release)
 }
 
 func TestReAuthPoolHook_OnPut(t *testing.T) {

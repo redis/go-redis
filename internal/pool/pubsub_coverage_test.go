@@ -8,22 +8,22 @@ import (
 	"time"
 )
 
-// psFakeConn is a no-op net.Conn for PubSubPool tests.
-type psFakeConn struct{}
+// fakeNetConn is a no-op net.Conn for pool tests.
+type fakeNetConn struct{}
 
-func (psFakeConn) Read([]byte) (int, error)         { return 0, nil }
-func (psFakeConn) Write(b []byte) (int, error)      { return len(b), nil }
-func (psFakeConn) Close() error                     { return nil }
-func (psFakeConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
-func (psFakeConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
-func (psFakeConn) SetDeadline(time.Time) error      { return nil }
-func (psFakeConn) SetReadDeadline(time.Time) error  { return nil }
-func (psFakeConn) SetWriteDeadline(time.Time) error { return nil }
+func (fakeNetConn) Read([]byte) (int, error)         { return 0, nil }
+func (fakeNetConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (fakeNetConn) Close() error                     { return nil }
+func (fakeNetConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (fakeNetConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (fakeNetConn) SetDeadline(time.Time) error      { return nil }
+func (fakeNetConn) SetReadDeadline(time.Time) error  { return nil }
+func (fakeNetConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestPubSubPool_NewConnAndTracking(t *testing.T) {
 	ctx := context.Background()
 	dialer := func(context.Context, string, string) (net.Conn, error) {
-		return psFakeConn{}, nil
+		return fakeNetConn{}, nil
 	}
 	p := NewPubSubPool(&Options{Name: "ps"}, dialer)
 
@@ -69,7 +69,7 @@ func TestPubSubPool_DialErrorAndClosed(t *testing.T) {
 	}
 
 	p := NewPubSubPool(&Options{}, func(context.Context, string, string) (net.Conn, error) {
-		return psFakeConn{}, nil
+		return fakeNetConn{}, nil
 	})
 	if err := p.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -82,7 +82,7 @@ func TestPubSubPool_DialErrorAndClosed(t *testing.T) {
 func TestPubSubPool_CloseUntracksActive(t *testing.T) {
 	ctx := context.Background()
 	p := NewPubSubPool(&Options{}, func(context.Context, string, string) (net.Conn, error) {
-		return psFakeConn{}, nil
+		return fakeNetConn{}, nil
 	})
 	cn, err := p.NewConn(ctx, "tcp", "addr", nil)
 	if err != nil {

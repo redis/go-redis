@@ -63,4 +63,4 @@ type countingHook struct{}
 
 func (h *countingHook) OnGet(context.Context, *Conn, bool) (bool, error) { return true, nil }
 func (h *countingHook) OnPut(context.Context, *Conn) (bool, bool, error) { return true, false, nil }
-func (h *countingHook) OnRemove(context.Context, *Conn, error) {}
+func (h *countingHook) OnRemove(context.Context, *Conn, error)           {}

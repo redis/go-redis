@@ -39,7 +39,7 @@ func (f *fakeRecorder) RecordPipelineOperationDuration(context.Context, time.Dur
 func (f *fakeRecorder) RegisterPool(poolName string, _ pool.Pooler) {
 	f.registered = append(f.registered, poolName)
 }
-func (f *fakeRecorder) UnregisterPool(pool.Pooler)             { f.unregistered++ }
+func (f *fakeRecorder) UnregisterPool(pool.Pooler)              { f.unregistered++ }
 func (f *fakeRecorder) RegisterPubSubPool(string, PubSubPooler) {}
 func (f *fakeRecorder) UnregisterPubSubPool(PubSubPooler)       { f.unregistered++ }
 

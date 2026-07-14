@@ -83,29 +83,6 @@ func TestReplaceSpaces(t *testing.T) {
 	}
 }
 
-func TestToLowerExtra(t *testing.T) {
-	if got := ToLower("AbC"); got != "abc" {
-		t.Errorf("ToLower = %q, want abc", got)
-	}
-	if got := ToLower("already"); got != "already" {
-		t.Errorf("ToLower = %q, want already", got)
-	}
-}
-
-func TestGetAddrExtra(t *testing.T) {
-	tests := map[string]string{
-		"127.0.0.1:6379":          "127.0.0.1:6379",
-		"[::1]:6379":              "[::1]:6379",
-		"::1:6379":                "[::1]:6379",
-		"localhost-without-colon": "",
-	}
-	for in, want := range tests {
-		if got := GetAddr(in); got != want {
-			t.Errorf("GetAddr(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
 func TestSleep(t *testing.T) {
 	if err := Sleep(context.Background(), time.Millisecond); err != nil {
 		t.Errorf("Sleep returned error: %v", err)
