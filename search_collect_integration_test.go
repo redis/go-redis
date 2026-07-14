@@ -2,8 +2,10 @@ package redis_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,32 +36,58 @@ func collectTestAddr() string {
 func TestFTAggregateCollect_Integration(t *testing.T) {
 	// COLLECT reducer ships in Redis 8.8. Older search builds accept the
 	// search-enable-unstable-features config but still reject the reducer
-	// ("No such reducer: COLLECT"), so gate on version rather than on the
-	// config toggle. RedisVersion is populated from REDIS_VERSION (see
-	// main_test.go / digest_test.go).
-	if RedisVersion < 8.8 {
-		t.Skipf("COLLECT requires Redis 8.8+ (REDIS_VERSION=%.1f)", RedisVersion)
+	// ("No such reducer: COLLECT"), so gate on the live server's version
+	// (INFO server redis_version) rather than on the config toggle or the
+	// REDIS_VERSION env variable (whose float form cannot tell 8.10 from 8.1
+	// and defaults when unset).
+	probeCtx := context.Background()
+	probe := redis.NewClient(&redis.Options{Addr: collectTestAddr()})
+	t.Cleanup(func() { _ = probe.Close() })
+	if err := probe.Ping(probeCtx).Err(); err != nil {
+		t.Skipf("redis not reachable at %s: %v", collectTestAddr(), err)
+	}
+	major, minor, err := collectServerVersion(probeCtx, probe)
+	if err != nil {
+		t.Fatalf("cannot determine server version: %v", err)
+	}
+	if major < 8 || (major == 8 && minor < 8) {
+		t.Skipf("COLLECT requires Redis 8.8+ (server is %d.%d)", major, minor)
 	}
 	for _, proto := range []int{2, 3} {
 		proto := proto
-		t.Run("RESP"+itoa(proto), func(t *testing.T) {
+		t.Run(fmt.Sprintf("RESP%d", proto), func(t *testing.T) {
 			ctx := context.Background()
 			opt := &redis.Options{Addr: collectTestAddr(), Protocol: proto}
 			if proto == 3 {
 				opt.UnstableResp3 = true
 			}
 			client := redis.NewClient(opt)
-			defer client.Close()
+			t.Cleanup(func() { _ = client.Close() })
 
 			if err := client.Ping(ctx).Err(); err != nil {
 				t.Skipf("redis not reachable at %s: %v", collectTestAddr(), err)
 			}
-			// COLLECT is gated behind unstable features; skip if we cannot enable it.
-			if err := client.ConfigSet(ctx, "search-enable-unstable-features", "yes").Err(); err != nil {
+			// COLLECT is gated behind unstable features; skip if we cannot
+			// enable it. Remember the prior value and restore it on cleanup so
+			// the test does not leak config changes into the shared server.
+			const unstableCfg = "search-enable-unstable-features"
+			prevCfg, err := client.ConfigGet(ctx, unstableCfg).Result()
+			if err != nil {
+				t.Skipf("cannot read %s (need Redis 8.8+ with search): %v", unstableCfg, err)
+			}
+			if err := client.ConfigSet(ctx, unstableCfg, "yes").Err(); err != nil {
 				t.Skipf("cannot enable search unstable features (need Redis 8.8+ with search): %v", err)
 			}
-			if err := client.FlushDB(ctx).Err(); err != nil {
-				t.Fatalf("FlushDB: %v", err)
+			t.Cleanup(func() {
+				if prev, ok := prevCfg[unstableCfg]; ok {
+					_ = client.ConfigSet(ctx, unstableCfg, prev).Err()
+				}
+			})
+
+			// Clear only this test's keys (never FlushDB: the server is shared).
+			docKeys := []string{"fruit:1", "fruit:2", "fruit:3", "fruit:4"}
+			if err := client.Del(ctx, docKeys...).Err(); err != nil {
+				t.Fatalf("Del %v: %v", docKeys, err)
 			}
 
 			const idx = "idx_collect_it"
@@ -72,6 +100,11 @@ func TestFTAggregateCollect_Integration(t *testing.T) {
 				}
 				t.Fatalf("FT.CREATE: %v", err)
 			}
+			// Drop the index and its documents (DD) on cleanup.
+			t.Cleanup(func() {
+				_ = client.FTDropIndexWithArgs(ctx, idx,
+					&redis.FTDropIndexOptions{DeleteDocs: true}).Err()
+			})
 
 			docs := []struct {
 				key, color, name string
@@ -190,6 +223,34 @@ func assertCollectGroups(t *testing.T, res *redis.FTAggregateResult) {
 	}
 }
 
-func itoa(i int) string {
-	return string(rune('0' + i))
+// collectServerVersion returns the major and minor components of the live
+// server's redis_version, taken from INFO server. Unlike the float-typed
+// RedisVersion (parsed from the REDIS_VERSION env variable), integer
+// major/minor comparison keeps 8.10 > 8.8 and reflects the server actually
+// answering, not the environment.
+func collectServerVersion(ctx context.Context, client *redis.Client) (major, minor int, err error) {
+	info, err := client.Info(ctx, "server").Result()
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.Split(info, "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), "redis_version:")
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(v, ".", 3)
+		if len(parts) < 2 {
+			return 0, 0, fmt.Errorf("unexpected redis_version %q in INFO server", v)
+		}
+		major, err = strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, 0, fmt.Errorf("unexpected redis_version %q in INFO server: %w", v, err)
+		}
+		minor, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("unexpected redis_version %q in INFO server: %w", v, err)
+		}
+		return major, minor, nil
+	}
+	return 0, 0, fmt.Errorf("redis_version not found in INFO server reply")
 }

@@ -90,6 +90,9 @@ func buildCollectArgs(o FTAggregateCollect) ([]interface{}, error) {
 	case len(o.Fields) > 0:
 		args = append(args, "FIELDS", len(o.Fields))
 		for _, f := range o.Fields {
+			if strings.TrimLeft(f, "@") == "" {
+				return nil, fmt.Errorf("redis: FT.AGGREGATE COLLECT: empty field name in Fields")
+			}
 			args = append(args, ensureAtPrefix(f))
 		}
 	default:
@@ -106,6 +109,12 @@ func buildCollectArgs(o FTAggregateCollect) ([]interface{}, error) {
 	if len(o.SortBy) > 0 {
 		sortTokens := make([]interface{}, 0, len(o.SortBy)*2)
 		for _, s := range o.SortBy {
+			if strings.TrimLeft(s.FieldName, "@") == "" {
+				return nil, fmt.Errorf("redis: FT.AGGREGATE COLLECT: empty field name in SortBy")
+			}
+			if s.Asc && s.Desc {
+				return nil, fmt.Errorf("redis: FT.AGGREGATE COLLECT: ASC and DESC are mutually exclusive")
+			}
 			sortTokens = append(sortTokens, ensureAtPrefix(s.FieldName))
 			switch {
 			case s.Desc:
@@ -131,9 +140,10 @@ func buildCollectArgs(o FTAggregateCollect) ([]interface{}, error) {
 // FTAggregateOptions.GroupBy[i].Reduce. It normalizes field/sort names and
 // computes the argument count automatically.
 //
-// It returns an error only for local API misuse (a missing FIELDS selector).
-// Numeric bounds and the unstable-features gate are enforced by the server and
-// surface unchanged through the command reply.
+// It returns an error only for local API misuse: a missing FIELDS selector, an
+// empty field name (in Fields or SortBy), or a SortBy entry with both Asc and
+// Desc set. Numeric bounds and the unstable-features gate are enforced by the
+// server and surface unchanged through the command reply.
 func NewCollectReducer(o FTAggregateCollect) (FTAggregateReducer, error) {
 	args, err := buildCollectArgs(o)
 	if err != nil {
