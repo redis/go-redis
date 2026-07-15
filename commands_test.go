@@ -43,22 +43,36 @@ var _ = Describe("Commands", func() {
 	})
 
 	Describe("server", func() {
-		// NonRedisEnterprise: Redis Enterprise returns "WRONGPASS invalid
-		// username-password pair" on a failed AUTH, whereas OSS Redis returns an
-		// "ERR AUTH ..." message; this assertion is OSS-specific.
-		It("should Auth", Label("NonRedisEnterprise"), func() {
+		It("should Auth", func() {
+			// A failed AUTH is reported as "ERR AUTH ..." by a passwordless OSS
+			// Redis and as "WRONGPASS invalid username-password pair" by a
+			// password-protected server (e.g. Redis Enterprise); accept both.
+			//
+			// The two failing AUTH commands are deliberately issued in separate
+			// pipelines: on a password-protected server a second failed AUTH in
+			// the same pipeline is throttled by the server's brute-force
+			// protection and never answered, stalling the read until the client
+			// times out.
+			authErr := SatisfyAny(ContainSubstring("ERR AUTH"), ContainSubstring("WRONGPASS"))
+
 			cmds, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Auth(ctx, "password")
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(authErr)
+			Expect(cmds[0].Err().Error()).To(authErr)
+
+			cmds, err = client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.Auth(ctx, "")
 				return nil
 			})
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("ERR AUTH"))
-			Expect(cmds[0].Err().Error()).To(ContainSubstring("ERR AUTH"))
-			Expect(cmds[1].Err().Error()).To(ContainSubstring("ERR AUTH"))
+			Expect(err.Error()).To(authErr)
+			Expect(cmds[0].Err().Error()).To(authErr)
 
 			stats := client.PoolStats()
-			Expect(stats.Hits).To(Equal(uint32(1)))
+			Expect(stats.Hits).To(Equal(uint32(2)))
 			Expect(stats.Misses).To(Equal(uint32(1)))
 			Expect(stats.Timeouts).To(Equal(uint32(0)))
 			Expect(stats.TotalConns).To(Equal(uint32(1)))
