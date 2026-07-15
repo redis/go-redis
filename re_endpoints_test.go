@@ -102,8 +102,11 @@ func loadREConnection() (*reConnection, error) {
 func resolveREEndpoint(db reDatabaseConfig) (string, int, bool, error) {
 	tlsEnabled := db.TLS
 	if len(db.RawEndpoints) > 0 {
-		ep := db.RawEndpoints[0]
-		return ep.DNSName, ep.Port, tlsEnabled, nil
+		// Fall through to the endpoint URLs when the raw endpoint carries no
+		// DNS name, so a sparse config fails loudly instead of dialing ":port".
+		if ep := db.RawEndpoints[0]; ep.DNSName != "" {
+			return ep.DNSName, ep.Port, tlsEnabled, nil
+		}
 	}
 	if len(db.Endpoints) > 0 {
 		u, err := url.Parse(db.Endpoints[0])
@@ -131,6 +134,16 @@ func resolveREEndpoint(db reDatabaseConfig) (string, int, bool, error) {
 	return "", 0, false, fmt.Errorf("no endpoints found in database configuration")
 }
 
+// A remote Redis Enterprise endpoint has higher latency than a local server, so
+// the overlays below use the same relaxed timeouts as redisOptions() instead of
+// the ~3s defaults; otherwise module/search/timeseries helpers can flake on
+// slower commands.
+const (
+	reDialTimeout  = 10 * time.Second
+	reReadTimeout  = 30 * time.Second
+	reWriteTimeout = 30 * time.Second
+)
+
 // applyREConnection overlays the resolved Redis Enterprise credentials and TLS
 // settings onto opt. It is a no-op when reConn has not been populated.
 func applyREConnection(opt *redis.Options) {
@@ -143,12 +156,9 @@ func applyREConnection(opt *redis.Options) {
 	if reConn.TLS {
 		opt.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	// A remote Redis Enterprise endpoint has higher latency than a local server, so
-	// use the same relaxed timeouts as redisOptions() instead of the ~3s defaults;
-	// otherwise module/search/timeseries helpers can flake on slower commands.
-	opt.DialTimeout = 10 * time.Second
-	opt.ReadTimeout = 30 * time.Second
-	opt.WriteTimeout = 30 * time.Second
+	opt.DialTimeout = reDialTimeout
+	opt.ReadTimeout = reReadTimeout
+	opt.WriteTimeout = reWriteTimeout
 	opt.ContextTimeoutEnabled = true
 }
 
@@ -165,9 +175,9 @@ func applyREConnectionUniversal(opt *redis.UniversalOptions) {
 	if reConn.TLS {
 		opt.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 	}
-	opt.DialTimeout = 10 * time.Second
-	opt.ReadTimeout = 30 * time.Second
-	opt.WriteTimeout = 30 * time.Second
+	opt.DialTimeout = reDialTimeout
+	opt.ReadTimeout = reReadTimeout
+	opt.WriteTimeout = reWriteTimeout
 	opt.ContextTimeoutEnabled = true
 }
 
