@@ -158,6 +158,9 @@ const (
 	CmdTypeHotKeys
 	CmdTypeIncrEXInt
 	CmdTypeIncrEXFloat
+	CmdTypeUint
+	CmdTypeUintSlice
+	CmdTypeAREntrySlice
 )
 
 type (
@@ -276,10 +279,10 @@ func writeCmd(wr *proto.Writer, cmd Cmder) error {
 	return wr.WriteArgs(cmd.Args())
 }
 
-// cmdFirstKeyPos returns the position of the first key in the command's arguments.
-// If the command does not have a key, it returns 0.
-// TODO: Use the data in CommandInfo to determine the first key position.
-func cmdFirstKeyPos(cmd Cmder) int {
+// cmdFirstKeyPosWithInfo returns the first key position in a command's args (0 if none).
+// Uses CommandInfo.FirstKeyPos when available (via cache peek, no network call), falling
+// back to a hardcoded table. eval/evalsha variants are resolved from the runtime numkeys arg.
+func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 	if pos := cmd.firstKeyPos(); pos != 0 {
 		return int(pos)
 	}
@@ -298,14 +301,20 @@ func cmdFirstKeyPos(cmd Cmder) int {
 		}
 
 		return 0
-	case "publish":
-		return 1
 	case "memory":
 		// https://github.com/redis/redis/issues/7493
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
+		// CommandInfo (if available) gives the correct answer
+		// otherwise the hardcoded fallback applies.
 	}
+
+	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
+	if info != nil {
+		return int(info.FirstKeyPos)
+	}
+
 	return 1
 }
 
@@ -871,6 +880,115 @@ func (cmd *RawWriteToCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// ZeroCopyStringCmd reads a bulk string response directly into a user-provided
+// buffer, avoiding intermediate allocations. The RESP header is parsed through
+// the buffered reader, then bulk data is read straight into the caller's buffer
+// via proto.Reader.ReadStringInto — for values larger than the bufio buffer,
+// this is effectively zero-copy from the socket to the user buffer.
+//
+// The buffer must be sized to fit the value; if it is too small an error is
+// returned and the payload plus trailing CRLF are drained from the reader so
+// the connection stays aligned for subsequent commands.
+type ZeroCopyStringCmd struct {
+	baseCmd
+	buf    []byte // user-provided buffer to read into
+	n      int    // number of bytes read into buf
+	cloned bool   // set by Clone(); causes readReply to drain + error
+}
+
+var _ Cmder = (*ZeroCopyStringCmd)(nil)
+
+func NewZeroCopyStringCmd(ctx context.Context, buf []byte, args ...interface{}) *ZeroCopyStringCmd {
+	return &ZeroCopyStringCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeString,
+		},
+		buf: buf,
+	}
+}
+
+func (cmd *ZeroCopyStringCmd) SetVal(n int) {
+	cmd.n = n
+}
+
+func (cmd *ZeroCopyStringCmd) Val() int {
+	return cmd.n
+}
+
+// Result returns the number of bytes read and any error.
+func (cmd *ZeroCopyStringCmd) Result() (int, error) {
+	return cmd.n, cmd.err
+}
+
+// Bytes returns the slice of the user-provided buffer containing the read data.
+func (cmd *ZeroCopyStringCmd) Bytes() []byte {
+	return cmd.buf[:cmd.n]
+}
+
+func (cmd *ZeroCopyStringCmd) String() string {
+	return cmdString(cmd, cmd.n)
+}
+
+func (cmd *ZeroCopyStringCmd) readReply(rd *proto.Reader) error {
+	// Reset the byte count before reading so a previous successful run
+	// can't leak its data through Bytes() if this call errors out before
+	// updating cmd.n.
+	cmd.n = 0
+	if cmd.cloned {
+		// A cloned ZeroCopyStringCmd has no usable destination buffer
+		// (see Clone for the rationale). Drain the network reply so the
+		// connection stays aligned for the next command, then surface a
+		// clear error rather than silently producing a wrong result.
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+		return fmt.Errorf("redis: ZeroCopyStringCmd cannot be cloned (cmd writes into caller-owned memory)")
+	}
+	n, err := rd.ReadStringInto(cmd.buf)
+	if err != nil {
+		return err
+	}
+	cmd.n = n
+	return nil
+}
+
+// NoRetry returns true because the response is written directly into the
+// caller's buffer. A retry could leave partial data from a failed attempt in
+// the buffer, so the caller must handle retries explicitly if needed.
+func (cmd *ZeroCopyStringCmd) NoRetry() bool {
+	return true
+}
+
+// Clone returns a clone that is intentionally non-functional. Cloning a
+// ZeroCopyStringCmd has no well-defined semantics: the cmd writes into
+// caller-owned memory (the buf passed to GetToBuffer), and a clone can
+// neither safely share that buf (concurrent writes from sibling clones
+// would race, last-writer wins) nor allocate its own buf (the result
+// would be invisible to whoever asked for the original cmd's reply).
+//
+// The Cmder interface requires Clone, so we return a clone marked so
+// that its readReply drains the network reply (keeping the connection
+// aligned) and fails the cmd with a clear error. Whoever processes the
+// clone gets an explicit error instead of silently-wrong bytes.
+//
+// In practice this path is unreachable through normal client flows:
+// Clone is only called from cluster fan-out routing
+// (osscluster_router.go) for multi-shard commands like DBSIZE / KEYS /
+// FLUSHDB, and ZeroCopyStringCmd is only produced by GetToBuffer which
+// issues GET — a single-key command routed to one shard, never fanned
+// out. Combined with NoRetry() returning true, the retry path also will
+// not clone this cmd.
+func (cmd *ZeroCopyStringCmd) Clone() Cmder {
+	return &ZeroCopyStringCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		cloned:  true,
+	}
+}
+
+//------------------------------------------------------------------------------
+
 type SliceCmd struct {
 	baseCmd
 
@@ -1046,6 +1164,52 @@ func (cmd *IntCmd) Clone() Cmder {
 	}
 }
 
+type UintCmd struct {
+	baseCmd
+
+	val uint64
+}
+
+var _ Cmder = (*UintCmd)(nil)
+
+func NewUintCmd(ctx context.Context, args ...any) *UintCmd {
+	return &UintCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeUint,
+		},
+	}
+}
+
+func (cmd *UintCmd) SetVal(val uint64) {
+	cmd.val = val
+}
+
+func (cmd *UintCmd) Val() uint64 {
+	return cmd.val
+}
+
+func (cmd *UintCmd) Result() (uint64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *UintCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *UintCmd) readReply(rd *proto.Reader) (err error) {
+	cmd.val, err = rd.ReadUint()
+	return err
+}
+
+func (cmd *UintCmd) Clone() Cmder {
+	return &UintCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     cmd.val,
+	}
+}
+
 //------------------------------------------------------------------------------
 
 // DigestCmd is a command that returns a uint64 xxh3 hash digest.
@@ -1172,6 +1336,66 @@ func (cmd *IntSliceCmd) Clone() Cmder {
 		copy(val, cmd.val)
 	}
 	return &IntSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+type UintSliceCmd struct {
+	baseCmd
+
+	val []uint64
+}
+
+var _ Cmder = (*UintSliceCmd)(nil)
+
+func NewUintSliceCmd(ctx context.Context, args ...any) *UintSliceCmd {
+	return &UintSliceCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeUintSlice,
+		},
+	}
+}
+
+func (cmd *UintSliceCmd) SetVal(val []uint64) {
+	cmd.val = val
+}
+
+func (cmd *UintSliceCmd) Val() []uint64 {
+	return cmd.val
+}
+
+func (cmd *UintSliceCmd) Result() ([]uint64, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *UintSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([]uint64, n)
+	for i := range cmd.val {
+		if cmd.val[i], err = rd.ReadUint(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cmd *UintSliceCmd) Clone() Cmder {
+	var val []uint64
+	if cmd.val != nil {
+		val = make([]uint64, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &UintSliceCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     val,
 	}
@@ -1654,6 +1878,87 @@ func (cmd *StringSliceCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// StringSliceSliceCmd returns a slice of string slices ([][]string).
+// This is used for commands like VLINKS that return an array of arrays.
+type StringSliceSliceCmd struct {
+	baseCmd
+
+	val [][]string
+}
+
+var _ Cmder = (*StringSliceSliceCmd)(nil)
+
+func NewStringSliceSliceCmd(ctx context.Context, args ...any) *StringSliceSliceCmd {
+	return &StringSliceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *StringSliceSliceCmd) SetVal(val [][]string) {
+	cmd.val = val
+}
+
+func (cmd *StringSliceSliceCmd) Val() [][]string {
+	return cmd.val
+}
+
+func (cmd *StringSliceSliceCmd) Result() ([][]string, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *StringSliceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *StringSliceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmd.val = make([][]string, n)
+	for i := range n {
+		// Read inner array
+		innerN, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		cmd.val[i] = make([]string, innerN)
+		for j := range innerN {
+			switch s, err := rd.ReadString(); {
+			case err == Nil:
+				cmd.val[i][j] = ""
+			case err != nil:
+				return err
+			default:
+				cmd.val[i][j] = s
+			}
+		}
+	}
+	return nil
+}
+
+func (cmd *StringSliceSliceCmd) Clone() Cmder {
+	var val [][]string
+	if cmd.val != nil {
+		val = make([][]string, len(cmd.val))
+		for i, slice := range cmd.val {
+			if slice != nil {
+				val[i] = make([]string, len(slice))
+				copy(val[i], slice)
+			}
+		}
+	}
+	return &StringSliceSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
 type KeyValue struct {
 	Key   string
 	Value string
@@ -1725,6 +2030,9 @@ func (cmd *KeyValueSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]KeyValue, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the key-value array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]KeyValue, n/2)
 	}
 
@@ -2079,6 +2387,11 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 				cmd.val[key] = append(cmd.val[key], data)
 			}
 		}
+	default:
+		// Any other reply type leaves the peeked frame unread. Returning nil
+		// here would put the connection back in the pool with those bytes
+		// buffered, so the next command reads them as its own reply.
+		return fmt.Errorf("redis: can't parse map-string-slice-interface reply: unexpected type %c", readType)
 	}
 
 	return nil
@@ -3827,6 +4140,9 @@ func (cmd *ZSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -4898,7 +5214,7 @@ type cmdsInfoCache struct {
 	fn func(ctx context.Context) (map[string]*CommandInfo, error)
 
 	once        internal.Once
-	refreshLock sync.Mutex
+	refreshLock sync.RWMutex
 	cmds        map[string]*CommandInfo
 }
 
@@ -4936,6 +5252,20 @@ func (c *cmdsInfoCache) Refresh() {
 	defer c.refreshLock.Unlock()
 
 	c.once = internal.Once{}
+}
+
+// Peek returns the cached CommandInfo map without triggering a Redis round-trip.
+// Returns nil when the cache is cold; callers should fall back to other heuristics.
+// Note: during the very first Get() (initial population) this call will block on
+// the writer lock. After that, concurrent Peek() calls do not block each other.
+// The returned map and its entries MUST NOT be mutated by the caller.
+func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
+	if c == nil {
+		return nil
+	}
+	c.refreshLock.RLock()
+	defer c.refreshLock.RUnlock()
+	return c.cmds
 }
 
 // ------------------------------------------------------------------------------
@@ -5911,6 +6241,9 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -6296,11 +6629,18 @@ func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
 
 		for i := 0; i < 2; i++ {
 			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 			switch key {
 			case "libraries_count":
 				engine.LibrariesCount, err = rd.ReadInt()
 			case "functions_count":
 				engine.FunctionsCount, err = rd.ReadInt()
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				err = rd.DiscardNext()
 			}
 			if err != nil {
 				return nil, err
@@ -6506,6 +6846,12 @@ func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
 			case "len":
 				// read match length
 				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				if err = rd.DiscardNext(); err != nil {
 					return err
 				}
 			}
@@ -6915,7 +7261,9 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 						case "health":
 							cmd.val[i].Nodes[k].Health, err = rd.ReadString()
 						default:
-							return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS node reply", nodeKey)
+							if err = rd.DiscardNext(); err != nil {
+								return err
+							}
 						}
 
 						if err != nil {
@@ -6924,7 +7272,9 @@ func (cmd *ClusterShardsCmd) readReply(rd *proto.Reader) error {
 					}
 				}
 			default:
-				return fmt.Errorf("redis: unexpected key %q in CLUSTER SHARDS reply", key)
+				if err = rd.DiscardNext(); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -7833,6 +8183,120 @@ func (cmd *VectorScoreSliceCmd) Clone() Cmder {
 	}
 }
 
+// VectorScoreSliceSliceCmd is used for VLINKS WITHSCORES which returns an array of arrays.
+// In RESP3, each inner array contains maps of element -> score.
+type VectorScoreSliceSliceCmd struct {
+	baseCmd
+
+	val [][]VectorScore
+}
+
+var _ Cmder = (*VectorScoreSliceSliceCmd)(nil)
+
+func NewVectorScoreSliceSliceCmd(ctx context.Context, args ...any) *VectorScoreSliceSliceCmd {
+	return &VectorScoreSliceSliceCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+	}
+}
+
+func (cmd *VectorScoreSliceSliceCmd) SetVal(val [][]VectorScore) {
+	cmd.val = val
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Val() [][]VectorScore {
+	return cmd.val
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Result() ([][]VectorScore, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *VectorScoreSliceSliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *VectorScoreSliceSliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	cmd.val = make([][]VectorScore, n)
+	for i := range n {
+		// Each level can be either a map (RESP3) or an array (RESP2)
+		levelTyp, err := rd.PeekReplyType()
+		if err != nil {
+			return err
+		}
+
+		if levelTyp == proto.RespMap {
+			// RESP3 format: each level is a map {element: score, element: score, ...}
+			mapLen, err := rd.ReadMapLen()
+			if err != nil {
+				return err
+			}
+
+			cmd.val[i] = make([]VectorScore, mapLen)
+			for j := range mapLen {
+				name, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				score, err := rd.ReadFloat()
+				if err != nil {
+					return err
+				}
+				cmd.val[i][j] = VectorScore{Name: name, Score: score}
+			}
+		} else {
+			// RESP2 format: each level is an array of [element, score, element, score, ...] pairs
+			innerLen, err := rd.ReadArrayLen()
+			if err != nil {
+				return err
+			}
+
+			if innerLen%2 != 0 {
+				return fmt.Errorf("redis: got %d elements in the VLINKS array, wanted a multiple of 2", innerLen)
+			}
+
+			cmd.val[i] = make([]VectorScore, innerLen/2)
+			for j := 0; j < innerLen; j += 2 {
+				name, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				score, err := rd.ReadFloat()
+				if err != nil {
+					return err
+				}
+				cmd.val[i][j/2] = VectorScore{Name: name, Score: score}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (cmd *VectorScoreSliceSliceCmd) Clone() Cmder {
+	var val [][]VectorScore
+	if cmd.val != nil {
+		val = make([][]VectorScore, len(cmd.val))
+		for i, slice := range cmd.val {
+			if slice != nil {
+				val[i] = make([]VectorScore, len(slice))
+				copy(val[i], slice)
+			}
+		}
+	}
+	return &VectorScoreSliceSliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
+	}
+}
+
 func readVectorAttribStringOrNil(rd *proto.Reader) (*string, error) {
 	v, err := rd.ReadReply()
 	if err != nil {
@@ -8069,6 +8533,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return intCmd.Val(), intCmd.Err()
+			}
+		case CmdTypeUint:
+			if uintCmd, ok := cmd.(interface {
+				Val() uint64
+				Err() error
+			}); ok {
+				return uintCmd.Val(), uintCmd.Err()
 			}
 		case CmdTypeBool:
 			if boolCmd, ok := cmd.(interface {
@@ -8496,6 +8967,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 			}); ok {
 				return intSliceCmd.Val(), intSliceCmd.Err()
 			}
+		case CmdTypeUintSlice:
+			if uintSliceCmd, ok := cmd.(interface {
+				Val() []uint64
+				Err() error
+			}); ok {
+				return uintSliceCmd.Val(), uintSliceCmd.Err()
+			}
 		case CmdTypeBoolSlice:
 			if boolSliceCmd, ok := cmd.(interface {
 				Val() []bool
@@ -8523,6 +9001,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return keyValueSliceCmd.Val(), keyValueSliceCmd.Err()
+			}
+		case CmdTypeAREntrySlice:
+			if arEntrySliceCmd, ok := cmd.(interface {
+				Val() []AREntry
+				Err() error
+			}); ok {
+				return arEntrySliceCmd.Val(), arEntrySliceCmd.Err()
 			}
 		case CmdTypeMapStringString:
 			if mapCmd, ok := cmd.(interface {
@@ -8686,5 +9171,82 @@ func (cmd *IncrEXFloatCmd) Clone() Cmder {
 	return &IncrEXFloatCmd{
 		baseCmd: cmd.cloneBaseCmd(),
 		val:     cmd.val,
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// AREntrySliceCmd is a command that returns index-value pairs from ARSCAN or ARGREP.
+type AREntrySliceCmd struct {
+	baseCmd
+	val []AREntry
+}
+
+var _ Cmder = (*AREntrySliceCmd)(nil)
+
+func NewAREntrySliceCmd(ctx context.Context, args ...any) *AREntrySliceCmd {
+	return &AREntrySliceCmd{
+		baseCmd: baseCmd{
+			ctx:     ctx,
+			args:    args,
+			cmdType: CmdTypeAREntrySlice,
+		},
+	}
+}
+
+func (cmd *AREntrySliceCmd) SetVal(val []AREntry) {
+	cmd.val = val
+}
+
+func (cmd *AREntrySliceCmd) Val() []AREntry {
+	return cmd.val
+}
+
+func (cmd *AREntrySliceCmd) Result() ([]AREntry, error) {
+	return cmd.val, cmd.err
+}
+
+func (cmd *AREntrySliceCmd) String() string {
+	return cmdString(cmd, cmd.val)
+}
+
+func (cmd *AREntrySliceCmd) readReply(rd *proto.Reader) error {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		cmd.val = make([]AREntry, 0)
+		return nil
+	}
+
+	cmd.val = make([]AREntry, n)
+	for i := range n {
+		if err = rd.ReadFixedArrayLen(2); err != nil {
+			return err
+		}
+
+		cmd.val[i].Index, err = rd.ReadUint()
+		if err != nil {
+			return err
+		}
+
+		cmd.val[i].Value, err = rd.ReadString()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cmd *AREntrySliceCmd) Clone() Cmder {
+	var val []AREntry
+	if cmd.val != nil {
+		val = make([]AREntry, len(cmd.val))
+		copy(val, cmd.val)
+	}
+	return &AREntrySliceCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		val:     val,
 	}
 }

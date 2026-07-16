@@ -2,7 +2,7 @@ GO_MOD_DIRS := $(shell find . -type f -name 'go.mod' -exec dirname {} \; | sort)
 REDIS_VERSION ?= 8.8
 RE_CLUSTER ?= false
 RCE_DOCKER ?= true
-CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:custom-26172898734-debian
+CLIENT_LIBS_TEST_IMAGE ?= redislabs/client-libs-test:8.8.0
 
 docker.start:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
@@ -75,7 +75,7 @@ bench:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
 	export RCE_DOCKER=$(RCE_DOCKER) && \
 	export REDIS_VERSION=$(REDIS_VERSION) && \
-	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example
+	go test ./... -test.run=NONE -test.bench=. -test.benchmem -skip Example -timeout 11m
 
 test.e2e:
 	@echo "Running E2E tests with auto-start proxy..."

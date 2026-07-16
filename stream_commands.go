@@ -10,6 +10,33 @@ import (
 	"github.com/redis/go-redis/v9/internal/otel"
 )
 
+// XTrimLimitDisabled is a sentinel value for the LIMIT argument of stream
+// trimming (XAddArgs.Limit and the XTrim*Approx* commands). Passing it emits
+// an explicit "LIMIT 0", which tells Redis to disable the trimming effort cap
+// entirely. This differs from passing 0, which keeps the historical behavior:
+// no LIMIT clause is sent and Redis applies its implicit default
+// (100 * stream-node-max-entries examined entries).
+//
+// LIMIT is only valid together with the "~" (approximate) trimming flag;
+// Redis rejects LIMIT used with exact ("=") trimming.
+const XTrimLimitDisabled = -1
+
+// appendXTrimLimit appends the LIMIT clause used by XADD and XTRIM trimming:
+//   - limit > 0 emits "LIMIT <limit>";
+//   - limit < 0 (see XTrimLimitDisabled) emits "LIMIT 0", disabling the
+//     trimming effort cap;
+//   - limit == 0 omits the clause, so Redis applies its implicit default.
+func appendXTrimLimit(args []interface{}, limit int64) []interface{} {
+	switch {
+	case limit > 0:
+		return append(args, "limit", limit)
+	case limit < 0:
+		return append(args, "limit", int64(0))
+	default:
+		return args
+	}
+}
+
 type StreamCmdable interface {
 	XAdd(ctx context.Context, a *XAddArgs) *StringCmd
 	XAckDel(ctx context.Context, stream string, group string, mode string, ids ...string) *SliceCmd
@@ -74,7 +101,14 @@ type XAddArgs struct {
 	MaxLen     int64 // MAXLEN N
 	MinID      string
 	// Approx causes MaxLen and MinID to use "~" matcher (instead of "=").
-	Approx         bool
+	Approx bool
+	// Limit caps the trimming effort:
+	//   - 0 omits the LIMIT clause (Redis applies its implicit default);
+	//   - a positive value emits "LIMIT <n>";
+	//   - a negative value (see XTrimLimitDisabled) emits "LIMIT 0",
+	//     disabling the effort cap entirely.
+	// LIMIT requires Approx to be true; Redis rejects LIMIT together with
+	// exact ("=") trimming.
 	Limit          int64
 	Mode           string
 	ID             string
@@ -119,9 +153,7 @@ func (c cmdable) XAdd(ctx context.Context, a *XAddArgs) *StringCmd {
 			args = append(args, "minid", "=", a.MinID)
 		}
 	}
-	if a.Limit > 0 {
-		args = append(args, "limit", a.Limit)
-	}
+	args = appendXTrimLimit(args, a.Limit)
 
 	if a.ID != "" {
 		args = append(args, a.ID)
@@ -581,6 +613,10 @@ func xClaimArgs(a *XClaimArgs) []interface{} {
 //	XTRIM key MAXLEN/MINID ~ threshold LIMIT limit.
 //
 // The redis-server version is lower than 6.2, please set limit to 0.
+//
+// limit == 0 omits the LIMIT clause, a positive limit emits "LIMIT <limit>",
+// and a negative limit (see XTrimLimitDisabled) emits "LIMIT 0" to disable
+// the trimming effort cap. LIMIT requires approx; Redis rejects it otherwise.
 func (c cmdable) xTrim(
 	ctx context.Context, key, strategy string,
 	approx bool, threshold interface{}, limit int64,
@@ -593,9 +629,7 @@ func (c cmdable) xTrim(
 		args = append(args, "=")
 	}
 	args = append(args, threshold)
-	if limit > 0 {
-		args = append(args, "limit", limit)
-	}
+	args = appendXTrimLimit(args, limit)
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
@@ -607,6 +641,12 @@ func (c cmdable) XTrimMaxLen(ctx context.Context, key string, maxLen int64) *Int
 	return c.xTrim(ctx, key, "maxlen", false, maxLen, 0)
 }
 
+// XTrimMaxLenApprox trims the stream using the `~` rule.
+// cmd: XTRIM key MAXLEN ~ maxLen [LIMIT limit]
+//
+// limit == 0 omits the LIMIT clause, limit > 0 emits "LIMIT <limit>", and a
+// negative limit (see XTrimLimitDisabled) emits "LIMIT 0" to disable the
+// trimming effort cap.
 func (c cmdable) XTrimMaxLenApprox(ctx context.Context, key string, maxLen, limit int64) *IntCmd {
 	return c.xTrim(ctx, key, "maxlen", true, maxLen, limit)
 }
@@ -615,10 +655,18 @@ func (c cmdable) XTrimMinID(ctx context.Context, key string, minID string) *IntC
 	return c.xTrim(ctx, key, "minid", false, minID, 0)
 }
 
+// XTrimMinIDApprox trims the stream using the `~` rule.
+// cmd: XTRIM key MINID ~ minID [LIMIT limit]
+//
+// limit == 0 omits the LIMIT clause, limit > 0 emits "LIMIT <limit>", and a
+// negative limit (see XTrimLimitDisabled) emits "LIMIT 0" to disable the
+// trimming effort cap.
 func (c cmdable) XTrimMinIDApprox(ctx context.Context, key string, minID string, limit int64) *IntCmd {
 	return c.xTrim(ctx, key, "minid", true, minID, limit)
 }
 
+// xTrimMode is xTrim with a trailing trimming mode argument (e.g. KEEPREF).
+// The limit semantics are the same as xTrim's.
 func (c cmdable) xTrimMode(
 	ctx context.Context, key, strategy string,
 	approx bool, threshold interface{}, limit int64,
@@ -632,9 +680,7 @@ func (c cmdable) xTrimMode(
 		args = append(args, "=")
 	}
 	args = append(args, threshold)
-	if limit > 0 {
-		args = append(args, "limit", limit)
-	}
+	args = appendXTrimLimit(args, limit)
 	args = append(args, mode)
 	cmd := NewIntCmd(ctx, args...)
 	_ = c(ctx, cmd)

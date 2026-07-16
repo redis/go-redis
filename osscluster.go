@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"net"
 	"net/url"
 	"runtime"
@@ -23,7 +24,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 	"github.com/redis/go-redis/v9/internal/routing"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
@@ -163,8 +163,6 @@ type ClusterOptions struct {
 
 	IdentitySuffix string // Add suffix to client name. Default is empty.
 
-	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
-	//
 	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.
@@ -479,13 +477,13 @@ func (opt *ClusterOptions) clientOptions() *Options {
 type clusterNode struct {
 	Client *Client
 
-	latency    uint32 // atomic
-	generation uint32 // atomic
-	failing    uint32 // atomic
-	loaded     uint32 // atomic
+	latency    atomic.Uint32
+	generation atomic.Uint32
+	failing    atomic.Uint32
+	loaded     atomic.Uint32
 
 	// last time the latency measurement was performed for the node, stored in nanoseconds from epoch
-	lastLatencyMeasurement int64 // atomic
+	lastLatencyMeasurement atomic.Int64
 }
 
 func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress string) *clusterNode {
@@ -496,7 +494,7 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 		Client: clOpt.NewClient(opt),
 	}
 
-	node.latency = math.MaxUint32
+	node.latency.Store(math.MaxUint32)
 	if clOpt.RouteByLatency {
 		go node.updateLatency()
 	}
@@ -534,50 +532,50 @@ func (n *clusterNode) updateLatency() {
 	if successes == 0 {
 		// If none of the pings worked, set latency to some arbitrarily high value so this node gets
 		// least priority.
-		latency = float64((maximumNodeLatency) / time.Microsecond)
+		latency = float64(maximumNodeLatency / time.Microsecond)
 	} else {
 		latency = float64(dur) / float64(successes)
 	}
-	atomic.StoreUint32(&n.latency, uint32(latency+0.5))
+	n.latency.Store(uint32(latency + 0.5))
 	n.SetLastLatencyMeasurement(time.Now())
 }
 
 func (n *clusterNode) Latency() time.Duration {
-	latency := atomic.LoadUint32(&n.latency)
+	latency := n.latency.Load()
 	return time.Duration(latency) * time.Microsecond
 }
 
 func (n *clusterNode) MarkAsFailing() {
-	atomic.StoreUint32(&n.failing, uint32(time.Now().Unix()))
-	atomic.StoreUint32(&n.loaded, 0)
+	n.failing.Store(uint32(time.Now().Unix()))
+	n.loaded.Store(0)
 }
 
 func (n *clusterNode) Failing() bool {
 	timeout := int64(n.Client.opt.FailingTimeoutSeconds)
 
-	failing := atomic.LoadUint32(&n.failing)
+	failing := n.failing.Load()
 	if failing == 0 {
 		return false
 	}
 	if time.Now().Unix()-int64(failing) < timeout {
 		return true
 	}
-	atomic.StoreUint32(&n.failing, 0)
+	n.failing.Store(0)
 	return false
 }
 
 func (n *clusterNode) Generation() uint32 {
-	return atomic.LoadUint32(&n.generation)
+	return n.generation.Load()
 }
 
 func (n *clusterNode) LastLatencyMeasurement() int64 {
-	return atomic.LoadInt64(&n.lastLatencyMeasurement)
+	return n.lastLatencyMeasurement.Load()
 }
 
 func (n *clusterNode) SetGeneration(gen uint32) {
 	for {
-		v := atomic.LoadUint32(&n.generation)
-		if gen < v || atomic.CompareAndSwapUint32(&n.generation, v, gen) {
+		v := n.generation.Load()
+		if gen < v || n.generation.CompareAndSwap(v, gen) {
 			break
 		}
 	}
@@ -585,15 +583,15 @@ func (n *clusterNode) SetGeneration(gen uint32) {
 
 func (n *clusterNode) SetLastLatencyMeasurement(t time.Time) {
 	for {
-		v := atomic.LoadInt64(&n.lastLatencyMeasurement)
-		if t.UnixNano() < v || atomic.CompareAndSwapInt64(&n.lastLatencyMeasurement, v, t.UnixNano()) {
+		v := n.lastLatencyMeasurement.Load()
+		if t.UnixNano() < v || n.lastLatencyMeasurement.CompareAndSwap(v, t.UnixNano()) {
 			break
 		}
 	}
 }
 
 func (n *clusterNode) Loading() bool {
-	loaded := atomic.LoadUint32(&n.loaded)
+	loaded := n.loaded.Load()
 	if loaded == 1 {
 		return false
 	}
@@ -605,7 +603,7 @@ func (n *clusterNode) Loading() bool {
 	err := n.Client.Ping(ctx).Err()
 	loading := err != nil && isLoadingError(err)
 	if !loading {
-		atomic.StoreUint32(&n.loaded, 1)
+		n.loaded.Store(1)
 	}
 	return loading
 }
@@ -622,7 +620,7 @@ type clusterNodes struct {
 	closed      bool
 	onNewNode   []func(rdb *Client)
 
-	generation uint32 // atomic
+	generation atomic.Uint32
 }
 
 func newClusterNodes(opt *ClusterOptions) *clusterNodes {
@@ -687,7 +685,7 @@ func (c *clusterNodes) Addrs() ([]string, error) {
 }
 
 func (c *clusterNodes) NextGeneration() uint32 {
-	return atomic.AddUint32(&c.generation, 1)
+	return c.generation.Add(1)
 }
 
 // GC removes unused nodes.
@@ -820,7 +818,7 @@ func newClusterState(
 		createdAt:  time.Now(),
 	}
 
-	originHost, _, _ := net.SplitHostPort(origin)
+	originHost, originPort, _ := net.SplitHostPort(origin)
 	isLoopbackOrigin := isLoopback(originHost)
 
 	for _, slot := range slots {
@@ -832,6 +830,11 @@ func newClusterState(
 			if !isLoopbackOrigin {
 				addr = replaceLoopbackHost(addr, originHost)
 			}
+			// TLS-only clusters (`--port 0 --tls-port 6379`) report port 0
+			// in CLUSTER SLOTS. Fall back to the origin port — by definition
+			// reachable, since it is the port that returned this slot map.
+			// See https://github.com/redis/go-redis/issues/3726.
+			addr = replaceZeroPort(addr, originPort)
 
 			node, err := c.nodes.GetOrCreateWithNodeAddress(addr, nodeAddress)
 			if err != nil {
@@ -883,6 +886,21 @@ func replaceLoopbackHost(nodeAddr, originHost string) string {
 
 	// Use origin host which is not loopback and node port.
 	return net.JoinHostPort(originHost, nodePort)
+}
+
+// replaceZeroPort substitutes originPort for a node port of "0", which is
+// what CLUSTER SLOTS reports for TLS-only clusters started with
+// `--port 0 --tls-port <port>`. Non-zero ports and addresses without a
+// recoverable origin port are returned unchanged.
+func replaceZeroPort(nodeAddr, originPort string) string {
+	if originPort == "" || originPort == "0" {
+		return nodeAddr
+	}
+	nodeHost, nodePort, err := net.SplitHostPort(nodeAddr)
+	if err != nil || nodePort != "0" {
+		return nodeAddr
+	}
+	return net.JoinHostPort(nodeHost, originPort)
 }
 
 // isLoopback returns true if the host is a loopback address.
@@ -948,7 +966,7 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 		return c.nodes.Random()
 	}
 
-	var allNodesFailing = true
+	allNodesFailing := true
 	var (
 		closestNonFailingNode *clusterNode
 		closestNode           *clusterNode
@@ -1046,8 +1064,8 @@ type clusterStateHolder struct {
 
 	reloadInterval time.Duration
 	state          atomic.Value
-	reloading      uint32 // atomic
-	reloadPending  uint32 // atomic - set to 1 when reload is requested during active reload
+	reloading      atomic.Uint32
+	reloadPending  atomic.Uint32 // set to 1 when reload is requested during active reload
 }
 
 func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error), reloadInterval time.Duration) *clusterStateHolder {
@@ -1068,8 +1086,8 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 
 func (c *clusterStateHolder) LazyReload() {
 	// If already reloading, mark that another reload is pending
-	if !atomic.CompareAndSwapUint32(&c.reloading, 0, 1) {
-		atomic.StoreUint32(&c.reloadPending, 1)
+	if !c.reloading.CompareAndSwap(0, 1) {
+		c.reloadPending.Store(1)
 		return
 	}
 
@@ -1077,22 +1095,22 @@ func (c *clusterStateHolder) LazyReload() {
 		for {
 			_, err := c.Reload(context.Background())
 			if err != nil {
-				atomic.StoreUint32(&c.reloadPending, 0)
-				atomic.StoreUint32(&c.reloading, 0)
+				c.reloadPending.Store(0)
+				c.reloading.Store(0)
 				return
 			}
 
 			// Clear pending flag after reload completes, before cooldown
 			// This captures notifications that arrived during the reload
-			atomic.StoreUint32(&c.reloadPending, 0)
+			c.reloadPending.Store(0)
 
 			// Wait cooldown period
 			time.Sleep(200 * time.Millisecond)
 
 			// Check if another reload was requested during cooldown
-			if atomic.LoadUint32(&c.reloadPending) == 0 {
+			if c.reloadPending.Load() == 0 {
 				// No pending reload, we're done
-				atomic.StoreUint32(&c.reloading, 0)
+				c.reloading.Store(0)
 				return
 			}
 
@@ -1631,10 +1649,15 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				if len(state.Masters) == 0 {
 					return errClusterNoNodes
 				}
-				// For read-only keyless commands, pick from all nodes (masters + slaves)
-				allNodes := append(state.Masters, state.Slaves...)
-				idx := c.opt.ShardPicker.Next(len(allNodes))
-				node = allNodes[idx]
+				// For read-only keyless commands, pick from all nodes (masters + slaves).
+				// Index directly instead of building a combined slice, which would
+				// append into the shared snapshot's spare capacity and race.
+				idx := c.opt.ShardPicker.Next(len(state.Masters) + len(state.Slaves))
+				if idx < len(state.Masters) {
+					node = state.Masters[idx]
+				} else {
+					node = state.Slaves[idx-len(state.Masters)]
+				}
 			} else {
 				node, err = c.slotReadOnlyNode(state, slot)
 				if err != nil {
@@ -1921,13 +1944,23 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsSlots := map[int][]Cmder{}
 
+	// Peek once outside the loop, one RLock for the whole batch instead of
+	// two per command (one for the keyless check, one inside cmdSlot).
+	cachedInfo := c.cmdsInfoCache.Peek()
+
 	prefferedRandomSlot := -1
 	for _, cmd := range cmds {
-		if cmdFirstKeyPos(cmd) == 0 {
+		var info *CommandInfo
+		if cachedInfo != nil {
+			info = cachedInfo[cmd.Name()]
+		}
+
+		pos := cmdFirstKeyPosWithInfo(cmd, info)
+		if pos == 0 {
 			continue
 		}
 
-		slot := c.cmdSlot(cmd, prefferedRandomSlot)
+		slot := c.cmdSlotWithPos(cmd, pos, prefferedRandomSlot)
 		if prefferedRandomSlot == -1 {
 			prefferedRandomSlot = slot
 		}
@@ -2110,9 +2143,17 @@ func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			}
 		}
 
-		err = node.Client.Watch(ctx, fn, keys...)
+		// Track callback errors separately to avoid retrying user failures through cluster retry classification.
+		var fnErr error
+		err = node.Client.Watch(ctx, func(tx *Tx) error {
+			fnErr = fn(tx)
+			return fnErr
+		}, keys...)
 		if err == nil {
 			break
+		}
+		if fnErr != nil {
+			return fnErr
 		}
 
 		moved, ask, addr := isMovedError(err)
@@ -2313,13 +2354,29 @@ func (c *ClusterClient) cmdInfo(ctx context.Context, name string) *CommandInfo {
 	return info
 }
 
+// cmdInfoPeek returns the cached CommandInfo for the named command without
+// triggering a round-trip to Redis. It returns nil when the cache is cold.
+func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
+	if cmds := c.cmdsInfoCache.Peek(); cmds != nil {
+		return cmds[name]
+	}
+	return nil
+}
+
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
+	info := c.cmdInfoPeek(cmd.Name())
+	return c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+}
+
+// cmdSlotWithPos computes the cluster slot for cmd given a pre-resolved first key
+// position. Separating pos resolution from slot computation lets callers that
+// already know pos avoid a redundant Peek() call.
+func (c *ClusterClient) cmdSlotWithPos(cmd Cmder, pos int, prefferedSlot int) int {
 	args := cmd.Args()
 	if args[0] == "cluster" && (args[1] == "getkeysinslot" || args[1] == "countkeysinslot") {
 		return args[2].(int)
 	}
-
-	return cmdSlot(cmd, cmdFirstKeyPos(cmd), prefferedSlot)
+	return cmdSlot(cmd, pos, prefferedSlot)
 }
 
 func cmdSlot(cmd Cmder, pos int, prefferedRandomSlot int) int {
@@ -2468,10 +2525,8 @@ func (c *ClusterClient) NewDynamicResolver() *commandInfoResolver {
 }
 
 func appendIfNotExist[T comparable](vals []T, newVal T) []T {
-	for _, v := range vals {
-		if v == newVal {
-			return vals
-		}
+	if slices.Contains(vals, newVal) {
+		return vals
 	}
 	return append(vals, newVal)
 }

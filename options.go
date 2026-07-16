@@ -290,9 +290,6 @@ type Options struct {
 	// IdentitySuffix - add suffix to client name.
 	IdentitySuffix string
 
-	// UnstableResp3 enables Unstable mode for Redis Search module with RESP3.
-	// When unstable mode is enabled, the client will use RESP3 protocol and only be able to use RawResult
-	//
 	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
 	// flag is a no-op. It is kept for backwards compatibility and will be removed
 	// in a future release.
@@ -550,10 +547,12 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 // a host and a port. If the host is missing, it defaults to localhost
 // and if the port is missing, it defaults to 6379.
 func getHostPortWithDefaults(u *url.URL) (string, string) {
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		host = u.Host
-	}
+	// u.Hostname and u.Port strip the surrounding brackets from IPv6 literals
+	// (e.g. "[::1]" -> "::1") and handle the missing-port case, which
+	// net.SplitHostPort instead reports as an error. Relying on them avoids
+	// leaving the brackets on the host, which the caller's net.JoinHostPort
+	// would wrap again and turn "redis://[::1]" into "[[::1]]:6379".
+	host, port := u.Hostname(), u.Port()
 	if host == "" {
 		host = "localhost"
 	}
@@ -630,6 +629,10 @@ func (o *queryOptions) duration(name string) time.Duration {
 	}
 	dur, err := time.ParseDuration(s)
 	if err == nil {
+		if dur <= 0 {
+			// disable timeouts
+			return -1
+		}
 		return dur
 	}
 	if o.err == nil {

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"sync"
@@ -12,12 +13,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
-
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
-	"github.com/redis/go-redis/v9/internal/rand"
 )
 
 var errRingShardsDown = errors.New("redis: all ring shards are down")
@@ -159,7 +158,11 @@ type RingOptions struct {
 	// default: false
 	DisableIdentity bool
 	IdentitySuffix  string
-	UnstableResp3   bool
+
+	// Deprecated: All RediSearch commands now have stable RESP3 parsing and this
+	// flag is a no-op. It is kept for backwards compatibility and will be removed
+	// in a future release.
+	UnstableResp3 bool
 }
 
 func (opt *RingOptions) init() {
@@ -259,7 +262,7 @@ func (opt *RingOptions) clientOptions() *Options {
 
 type ringShard struct {
 	Client *Client
-	down   int32
+	down   atomic.Int32
 	addr   string
 }
 
@@ -285,7 +288,7 @@ func (shard *ringShard) String() string {
 
 func (shard *ringShard) IsDown() bool {
 	const threshold = 3
-	return atomic.LoadInt32(&shard.down) >= threshold
+	return shard.down.Load() >= threshold
 }
 
 func (shard *ringShard) IsUp() bool {
@@ -296,7 +299,7 @@ func (shard *ringShard) IsUp() bool {
 func (shard *ringShard) Vote(up bool) bool {
 	if up {
 		changed := shard.IsDown()
-		atomic.StoreInt32(&shard.down, 0)
+		shard.down.Store(0)
 		return changed
 	}
 
@@ -304,7 +307,7 @@ func (shard *ringShard) Vote(up bool) bool {
 		return false
 	}
 
-	atomic.AddInt32(&shard.down, 1)
+	shard.down.Add(1)
 	return shard.IsDown()
 }
 
@@ -366,9 +369,10 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 		return
 	}
 	existing := c.shards
+	onNewNode := c.onNewNode
 	c.mu.RUnlock()
 
-	shards, created, unused := c.newRingShards(addrs, existing)
+	shards, created, unused := c.newRingShards(addrs, existing, onNewNode)
 
 	c.mu.Lock()
 	if c.closed {
@@ -384,7 +388,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 }
 
 func (c *ringSharding) newRingShards(
-	addrs map[string]string, existing *ringShards,
+	addrs map[string]string, existing *ringShards, onNewNode []func(rdb *Client),
 ) (shards *ringShards, created, unused map[string]*ringShard) {
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
 	created = make(map[string]*ringShard) // indexed by addr
@@ -405,7 +409,7 @@ func (c *ringSharding) newRingShards(
 			shards.m[name] = shard
 			created[addr] = shard
 
-			for _, fn := range c.onNewNode {
+			for _, fn := range onNewNode {
 				fn(shard.Client)
 			}
 		}
@@ -711,6 +715,17 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	return shard.Client.SSubscribe(ctx, channels...)
 }
 
+// Publish posts the message to the channel
+func (c *Ring) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	shard, err := c.sharding.GetByKey(channel)
+	if err != nil {
+		cmd := NewIntCmd(ctx, "publish", channel, message)
+		cmd.SetErr(err)
+		return cmd
+	}
+	return shard.Client.Publish(ctx, channel, message)
+}
+
 func (c *Ring) OnNewNode(fn func(rdb *Client)) {
 	c.sharding.OnNewNode(fn)
 }
@@ -772,7 +787,10 @@ func (c *Ring) cmdsInfo(ctx context.Context) (map[string]*CommandInfo, error) {
 }
 
 func (c *Ring) cmdShard(cmd Cmder) (*ringShard, error) {
-	pos := cmdFirstKeyPos(cmd)
+	// TODO: populate cmdsInfoCache lazily (via cmdsInfoCache.Get) so that
+	// the warm-cache branch in cmdFirstKeyPosWithInfo is reachable for Ring,
+	// mirroring how ClusterClient.cmdInfo works. For now pass nil
+	pos := cmdFirstKeyPosWithInfo(cmd, nil)
 	if pos == 0 {
 		return c.sharding.Random()
 	}
@@ -840,7 +858,7 @@ func (c *Ring) generalProcessPipeline(
 	cmdsMap := make(map[string][]Cmder)
 
 	for _, cmd := range cmds {
-		hash := cmd.stringArg(cmdFirstKeyPos(cmd))
+		hash := cmd.stringArg(cmdFirstKeyPosWithInfo(cmd, nil))
 		if hash != "" {
 			hash = c.sharding.Hash(hash)
 		}

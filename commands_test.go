@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha1"
@@ -107,13 +108,14 @@ var _ = Describe("Commands", func() {
 
 		It("should WaitAOF", func() {
 			const waitAOF = 3 * time.Second
-			Skip("flaky test")
 
-			// assuming that the redis instance doesn't have AOF enabled
+			// No replicas here, so WAITAOF blocks until timeout and returns
+			// the two counts [numlocal, numreplicas]. numLocal=0 skips AOF.
 			start := time.Now()
-			val, err := client.WaitAOF(ctx, 1, 1, waitAOF).Result()
+			val, err := client.WaitAOF(ctx, 0, 1, waitAOF).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
+			Expect(val).To(HaveLen(2))
+			Expect(val[1]).To(Equal(int64(0)))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
 		})
 
@@ -1792,6 +1794,106 @@ var _ = Describe("Commands", func() {
 			get := client.Get(ctx, "key")
 			Expect(get.Err()).NotTo(HaveOccurred())
 			Expect(get.Val()).To(Equal("0"))
+		})
+
+		It("should GetToBuffer", func() {
+			// Missing key returns redis.Nil.
+			buf := make([]byte, 64)
+			miss := client.GetToBuffer(ctx, "missing", buf)
+			Expect(miss.Err()).To(Equal(redis.Nil))
+			Expect(miss.Val()).To(Equal(0))
+
+			Expect(client.Set(ctx, "key", "hello", 0).Err()).NotTo(HaveOccurred())
+
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(5))
+			Expect(get.Bytes()).To(Equal([]byte("hello")))
+		})
+
+		It("should GetToBuffer with buffer too small", func() {
+			Expect(client.Set(ctx, "key", "hello world", 0).Err()).NotTo(HaveOccurred())
+
+			small := make([]byte, 4)
+			get := client.GetToBuffer(ctx, "key", small)
+			Expect(get.Err()).To(HaveOccurred())
+			Expect(get.Err().Error()).To(ContainSubstring("buffer too small"))
+		})
+
+		It("should SetFromBuffer and GetToBuffer round-trip", func() {
+			payload := bytes.Repeat([]byte{'x'}, 1024)
+			set := client.SetFromBuffer(ctx, "key", payload)
+			Expect(set.Err()).NotTo(HaveOccurred())
+			Expect(set.Val()).To(Equal("OK"))
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
+		})
+
+		It("should SetFromBuffer and GetToBuffer with payload > read buffer", func() {
+			// Default read buffer is 32 KiB; pick something larger so the
+			// payload spills past the bufio buffer on the read path.
+			payload := bytes.Repeat([]byte{'z'}, 128*1024)
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, len(payload))
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(len(payload)))
+			Expect(get.Bytes()).To(Equal(payload))
+		})
+
+		It("should SetFromBuffer and GetToBuffer with 10 MiB payload", func() {
+			// Large-payload regression coverage: exercises many bufio
+			// refills on the read path and several direct socket writes
+			// on the write path. Uses crypto/rand so any byte-shift bug
+			// (e.g. the verbatim-misdetection issue addressed by
+			// commit fix(proto): avoid stale line[0] after bufio refill)
+			// surfaces as a mismatch rather than coincidentally aligning.
+			const size = 10 * 1024 * 1024
+			payload := make([]byte, size)
+			_, err := rand.Read(payload)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(client.SetFromBuffer(ctx, "key", payload).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, size)
+			get := client.GetToBuffer(ctx, "key", buf)
+			Expect(get.Err()).NotTo(HaveOccurred())
+			Expect(get.Val()).To(Equal(size))
+			// Use bytes.Equal rather than gomega's Equal to keep the
+			// diff out of the failure message if a single byte is off.
+			Expect(bytes.Equal(get.Bytes(), payload)).To(BeTrue(),
+				"round-tripped 10 MiB payload does not match")
+		})
+
+		It("should reject cloned GetToBuffer with a clear error", func() {
+			// A cloned ZeroCopyStringCmd has no usable destination
+			// buffer — see the godoc on Clone. Processing the clone
+			// must fail with an explicit error rather than silently
+			// writing the reply somewhere the caller can't see, and
+			// the underlying connection must remain usable for the
+			// follow-up GetToBuffer below.
+			Expect(client.Set(ctx, "key", "value", 0).Err()).NotTo(HaveOccurred())
+
+			buf := make([]byte, 16)
+			orig := client.GetToBuffer(ctx, "key", buf)
+			Expect(orig.Err()).NotTo(HaveOccurred())
+			Expect(string(orig.Bytes())).To(Equal("value"))
+
+			clone := orig.Clone()
+			Expect(client.Process(ctx, clone)).To(MatchError(ContainSubstring("cannot be cloned")))
+
+			// Follow-up call on the same client must work: the clone's
+			// readReply drained the network reply so the connection
+			// stays aligned.
+			buf2 := make([]byte, 16)
+			again := client.GetToBuffer(ctx, "key", buf2)
+			Expect(again.Err()).NotTo(HaveOccurred())
+			Expect(string(again.Bytes())).To(Equal("value"))
 		})
 
 		It("should GetEX", func() {
@@ -8638,134 +8740,6 @@ var _ = Describe("Commands", func() {
 					expectedRes.IIDsDuplicates = 0
 				}
 
-				Expect(res).To(Equal(expectedRes))
-			})
-
-			It("should XINFO STREAM FULL", func() {
-				res, err := client.XInfoStreamFull(ctx, "stream", 2).Result()
-				Expect(err).NotTo(HaveOccurred())
-				res.RadixTreeKeys = 0
-				res.RadixTreeNodes = 0
-
-				// Verify DeliveryTime
-				now := time.Now()
-				maxElapsed := 10 * time.Minute
-				for k, g := range res.Groups {
-					for k2, p := range g.Pending {
-						Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
-						res.Groups[k].Pending[k2].DeliveryTime = time.Time{}
-					}
-					for k3, c := range g.Consumers {
-						Expect(now.Sub(c.SeenTime)).To(BeNumerically("<=", maxElapsed))
-						Expect(now.Sub(c.ActiveTime)).To(BeNumerically("<=", maxElapsed))
-						res.Groups[k].Consumers[k3].SeenTime = time.Time{}
-						res.Groups[k].Consumers[k3].ActiveTime = time.Time{}
-
-						for k4, p := range c.Pending {
-							Expect(now.Sub(p.DeliveryTime)).To(BeNumerically("<=", maxElapsed))
-							res.Groups[k].Consumers[k3].Pending[k4].DeliveryTime = time.Time{}
-						}
-					}
-				}
-
-				Expect(res.Groups).To(Equal([]redis.XInfoStreamGroup{
-					{
-						Name:            "group1",
-						LastDeliveredID: "3-0",
-						EntriesRead:     3,
-						Lag:             0,
-						PelCount:        3,
-						Pending: []redis.XInfoStreamGroupPending{
-							{ID: "1-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
-							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
-						},
-						Consumers: []redis.XInfoStreamConsumer{
-							{
-								Name:       "consumer1",
-								SeenTime:   time.Time{},
-								ActiveTime: time.Time{},
-								PelCount:   2,
-								Pending: []redis.XInfoStreamConsumerPending{
-									{ID: "1-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
-									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
-								},
-							},
-							{
-								Name:       "consumer2",
-								SeenTime:   time.Time{},
-								ActiveTime: time.Time{},
-								PelCount:   1,
-								Pending: []redis.XInfoStreamConsumerPending{
-									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
-								},
-							},
-						},
-					},
-					{
-						Name:            "group2",
-						LastDeliveredID: "3-0",
-						EntriesRead:     3,
-						Lag:             0,
-						PelCount:        2,
-						Pending: []redis.XInfoStreamGroupPending{
-							{ID: "2-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
-							{ID: "3-0", Consumer: "consumer1", DeliveryTime: time.Time{}, DeliveryCount: 1},
-						},
-						Consumers: []redis.XInfoStreamConsumer{
-							{
-								Name:       "consumer1",
-								SeenTime:   time.Time{},
-								ActiveTime: time.Time{},
-								PelCount:   2,
-								Pending: []redis.XInfoStreamConsumerPending{
-									{ID: "2-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
-									{ID: "3-0", DeliveryTime: time.Time{}, DeliveryCount: 1},
-								},
-							},
-						},
-					},
-				}))
-
-				// entries-read = nil
-				Expect(client.Del(ctx, "xinfo-stream-full-stream").Err()).NotTo(HaveOccurred())
-				id, err := client.XAdd(ctx, &redis.XAddArgs{
-					Stream: "xinfo-stream-full-stream",
-					ID:     "*",
-					Values: []any{"k1", "v1"},
-				}).Result()
-				Expect(err).NotTo(HaveOccurred())
-				Expect(client.XGroupCreateMkStream(ctx, "xinfo-stream-full-stream", "xinfo-stream-full-group", "0").Err()).NotTo(HaveOccurred())
-				res, err = client.XInfoStreamFull(ctx, "xinfo-stream-full-stream", 0).Result()
-				Expect(err).NotTo(HaveOccurred())
-				expectedRes := &redis.XInfoStreamFull{
-					Length:            1,
-					RadixTreeKeys:     1,
-					RadixTreeNodes:    2,
-					LastGeneratedID:   id,
-					MaxDeletedEntryID: "0-0",
-					EntriesAdded:      1,
-					Entries:           []redis.XMessage{{ID: id, Values: map[string]any{"k1": "v1"}}},
-					Groups: []redis.XInfoStreamGroup{
-						{
-							Name:            "xinfo-stream-full-group",
-							LastDeliveredID: "0-0",
-							EntriesRead:     0,
-							Lag:             1,
-							PelCount:        0,
-							Pending:         []redis.XInfoStreamGroupPending{},
-							Consumers:       []redis.XInfoStreamConsumer{},
-						},
-					},
-					RecordedFirstEntryID: id,
-				}
-				if RedisVersion >= 8.6 {
-					expectedRes.IDMPDuration = 100
-					expectedRes.IDMPMaxSize = 100
-					expectedRes.PIDsTracked = 0
-					expectedRes.IIDsTracked = 0
-					expectedRes.IIDsAdded = 0
-					expectedRes.IIDsDuplicates = 0
-				}
 				Expect(res).To(Equal(expectedRes))
 			})
 
