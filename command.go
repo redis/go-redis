@@ -2030,6 +2030,9 @@ func (cmd *KeyValueSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]KeyValue, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the key-value array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]KeyValue, n/2)
 	}
 
@@ -2384,6 +2387,11 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 				cmd.val[key] = append(cmd.val[key], data)
 			}
 		}
+	default:
+		// Any other reply type leaves the peeked frame unread. Returning nil
+		// here would put the connection back in the pool with those bytes
+		// buffered, so the next command reads them as its own reply.
+		return fmt.Errorf("redis: can't parse map-string-slice-interface reply: unexpected type %c", readType)
 	}
 
 	return nil
@@ -4132,6 +4140,9 @@ func (cmd *ZSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -6230,6 +6241,9 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -6615,11 +6629,18 @@ func (cmd *FunctionStatsCmd) readEngines(rd *proto.Reader) ([]Engine, error) {
 
 		for i := 0; i < 2; i++ {
 			key, err := rd.ReadString()
+			if err != nil {
+				return nil, err
+			}
 			switch key {
 			case "libraries_count":
 				engine.LibrariesCount, err = rd.ReadInt()
 			case "functions_count":
 				engine.FunctionsCount, err = rd.ReadInt()
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				err = rd.DiscardNext()
 			}
 			if err != nil {
 				return nil, err
@@ -6825,6 +6846,12 @@ func (cmd *LCSCmd) readReply(rd *proto.Reader) (err error) {
 			case "len":
 				// read match length
 				if lcs.Len, err = rd.ReadInt(); err != nil {
+					return err
+				}
+			default:
+				// Unknown field: drain its value so the reader stays aligned
+				// with the rest of the reply.
+				if err = rd.DiscardNext(); err != nil {
 					return err
 				}
 			}
