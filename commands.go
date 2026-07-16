@@ -209,6 +209,7 @@ type Cmdable interface {
 	FlushDB(ctx context.Context) *StatusCmd
 	FlushDBAsync(ctx context.Context) *StatusCmd
 	Info(ctx context.Context, section ...string) *StringCmd
+	InfoMap(ctx context.Context, section ...string) *InfoCmd
 	LastSave(ctx context.Context) *IntCmd
 	Save(ctx context.Context) *StatusCmd
 	Shutdown(ctx context.Context) *StatusCmd
