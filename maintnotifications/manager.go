@@ -86,8 +86,11 @@ type Manager struct {
 	// retired before the pool-level listeners are removed.
 	maintNotificationsConns sync.Map // connID -> *pool.Conn
 
-	// Cluster state reload callback for SMIGRATED notifications
-	clusterStateReloadCallback ClusterStateReloadCallback
+	// Cluster state reload callback for SMIGRATED notifications.
+	// Stored atomically because it is set from the OnNewNode hook while a node
+	// client is being created and read from the SMIGRATED push handler on that
+	// node's connections, which can overlap during connection init.
+	clusterStateReloadCallback atomic.Pointer[ClusterStateReloadCallback]
 }
 
 // MovingOperation tracks an active MOVING operation.
@@ -401,13 +404,13 @@ func (hm *Manager) AddNotificationHook(notificationHook NotificationHook) {
 // SetClusterStateReloadCallback sets the callback function that will be called when a SMIGRATED notification is received.
 // This allows node clients to notify their parent ClusterClient to reload cluster state.
 func (hm *Manager) SetClusterStateReloadCallback(callback ClusterStateReloadCallback) {
-	hm.clusterStateReloadCallback = callback
+	hm.clusterStateReloadCallback.Store(&callback)
 }
 
 // TriggerClusterStateReload calls the cluster state reload callback if it's set.
 // This is called when a SMIGRATED notification is received.
 func (hm *Manager) TriggerClusterStateReload(ctx context.Context, hostPort string, slotRanges []string) {
-	if hm.clusterStateReloadCallback != nil {
-		hm.clusterStateReloadCallback(ctx, hostPort, slotRanges)
+	if cb := hm.clusterStateReloadCallback.Load(); cb != nil {
+		(*cb)(ctx, hostPort, slotRanges)
 	}
 }
