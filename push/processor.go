@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"errors"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -73,10 +74,12 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			break
-		}
-
-		if willHandleNotificationInClient(notificationName) {
+			// Name too long to peek: consume & dispatch below rather than leave the
+			// frame at the buffer head (which would stall and desync the next reply).
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+				break
+			}
+		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
 
@@ -167,10 +170,12 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			break
-		}
-
-		if willHandleNotificationInClient(notificationName) {
+			// Name too long to peek: still consume the frame below so it isn't
+			// misread as a reply.
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+				break
+			}
+		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
 

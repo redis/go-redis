@@ -36,10 +36,10 @@ var _ = Describe("Client-side cache strategies", func() {
 		}
 	})
 
-	// roundTrip exercises the full CSC lifecycle for one strategy: seed → first
-	// GET (miss, populates the cache) → repeat GET (hit) → external write →
-	// invalidation propagates → re-fetch observes the new value. Each strategy
-	// reaches the same observable end state via a different invalidation path.
+	// roundTrip exercises the full CSC lifecycle: seed → first GET (miss, populates
+	// the cache) → repeat GET (hit) → external write → invalidation propagates →
+	// re-fetch observes the new value. Parameterized by strategy so the check
+	// naturally extends if more strategies are added.
 	roundTrip := func(strategy redis.CSCStrategy) {
 		opt := redisOptions()
 		opt.Protocol = 3
@@ -52,8 +52,7 @@ var _ = Describe("Client-side cache strategies", func() {
 		Expect(mutator.Set(ctx, key, "v1", 0).Err()).NotTo(HaveOccurred())
 
 		// Repeated GETs: the first is a miss that populates the cache, a
-		// subsequent one is served from it. Eventually also absorbs Broadcast's
-		// asynchronous sidecar warm-up and PerConnection's per-conn warm-up.
+		// subsequent one is served from it.
 		Eventually(func() (uint64, error) {
 			if err := csc.Get(ctx, key).Err(); err != nil {
 				return 0, err
@@ -76,14 +75,6 @@ var _ = Describe("Client-side cache strategies", func() {
 		}, 2*time.Second, 10*time.Millisecond).Should(Equal("v2"),
 			"strategy %d still serving a stale value after the external write", strategy)
 	}
-
-	It("Broadcast serves cache hits and observes invalidations", func() {
-		roundTrip(redis.CSCStrategyBroadcast)
-	})
-
-	It("PerConnection serves cache hits and observes invalidations", func() {
-		roundTrip(redis.CSCStrategyPerConnection)
-	})
 
 	It("SharedTracking serves cache hits and observes invalidations", func() {
 		roundTrip(redis.CSCStrategySharedTracking)

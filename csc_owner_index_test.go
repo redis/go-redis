@@ -107,6 +107,116 @@ func TestCSCEvictOnRemoveHook(t *testing.T) {
 	}
 }
 
+// TestCSCConnCloseHook_EvictsOnAnyClose: the per-conn onCscClose hook installed
+// by initConn must evict a conn's owned entries when the conn is closed for ANY
+// reason — including ConnMaxLifetime / idle-timeout retirement via
+// ConnPool.CloseConn, which bypasses the OnRemove pool hook. Without it the
+// server drops the conn's tracking table on close while its cached entries
+// linger uninvalidated (Window-2 staleness on normal connection retirement).
+func TestCSCConnCloseHook_EvictsOnAnyClose(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
+	owner := cache.(connCacheOwner)
+	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache}
+
+	server, client := net.Pipe()
+	defer server.Close()
+	cn := pool.NewConn(client)
+	id := cn.GetID()
+
+	tok, _ := cache.Reserve("get:k", []string{"k"})
+	if !owner.FulfillOwned("get:k", tok, id, []byte("v")) {
+		t.Fatal("FulfillOwned failed")
+	}
+	if cache.Len() != 1 {
+		t.Fatalf("setup: want 1 entry, got %d", cache.Len())
+	}
+
+	// Install the hook exactly as initConn does, then close the conn directly:
+	// no pool OnRemove fires, modelling the CloseConn/ConnMaxLifetime path.
+	c.cscInstallConnCloseHook(cn)
+	if err := cn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("conn close must evict the conn's owned entries")
+	}
+}
+
+// TestCSCEvictOwnedEntries_UsesSharedHookWhenCscNil: the handoff/reinit eviction
+// path must reach the parent's shared cache through the carried eviction hook
+// even when the client's own csc is nil (the Client.Conn / Tx shape), and must
+// NOT record the recently-removed ring (the same conn keeps serving on the fresh
+// socket, so post-handoff fulfills are legitimate).
+func TestCSCEvictOwnedEntries_UsesSharedHookWhenCscNil(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	hook := &cscEvictOnRemoveHook{evictor: cache.(connCacheOwner)}
+	derived := &baseClient{opt: &Options{Protocol: 3}, csc: nil, cscPoolHook: hook}
+
+	const connID = uint64(9)
+	tok, _ := cache.Reserve("get:k", []string{"k"})
+	if !cache.(connCacheOwner).FulfillOwned("get:k", tok, connID, []byte("v")) {
+		t.Fatal("FulfillOwned failed")
+	}
+
+	derived.cscEvictOwnedEntries(connID)
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("handoff eviction must evict via the shared hook when csc is nil")
+	}
+	if hook.wasRecentlyRemoved(connID) {
+		t.Fatal("handoff eviction must not record the removed-ring (conn keeps serving)")
+	}
+}
+
+// TestNewTx_CarriesSharedEvictionHook: a Tx must carry the parent's shared
+// eviction hook (so close/reinit hooks installed on a Watch-initialized
+// connection evict from the parent cache) but must not serve cached reads itself.
+func TestNewTx_CarriesSharedEvictionHook(t *testing.T) {
+	client := NewClient(&Options{
+		Addr:                  "127.0.0.1:0", // never dialed in this unit test
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+	})
+	defer client.Close()
+	if client.cscPoolHook == nil {
+		t.Fatal("precondition: parent must have a shared eviction hook")
+	}
+
+	tx := client.newTx()
+	defer func() { _ = tx.Close(context.Background()) }()
+	if tx.cscPoolHook != client.cscPoolHook {
+		t.Fatal("newTx must carry the parent's shared eviction hook")
+	}
+	if tx.csc != nil {
+		t.Fatal("Tx must not serve cached reads (csc must stay nil)")
+	}
+}
+
+// TestCSCConnCloseHook_NoOrphanWhenCloseRacesFulfill: the close-hook path
+// (cscOnConnClose, used by ConnPool.CloseConn / ConnMaxLifetime retirement) must
+// record the recently-removed ring BEFORE evicting, so a fulfill that lands after
+// the conn closed (reply released → conn closed → fulfillCached) does not leave an
+// orphaned entry with no invalidation coverage.
+func TestCSCConnCloseHook_NoOrphanWhenCloseRacesFulfill(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
+	hook := &cscEvictOnRemoveHook{evictor: cache.(connCacheOwner)}
+	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cscPoolHook: hook}
+
+	const connID = uint64(7)
+	// Conn closes before the entry exists (fulfill has not run yet).
+	c.cscOnConnClose(connID)
+
+	tok, sf := cache.Reserve("get:k", []string{"k"})
+	if !sf {
+		t.Fatal("Reserve should fetch")
+	}
+	// Fulfill attributes to the just-closed conn; the ring guard must drop it.
+	c.fulfillCached("get:k", tok, connID, []byte("v"))
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("entry owned by a conn closed before fulfill must not survive")
+	}
+}
+
 // TestFulfillCached_RaceWithConnRemoval: if the owning connection is removed
 // around the fulfill (its OnRemove eviction ran before the entry existed),
 // fulfillCached must drop the orphaned entry rather than leave it resident with
@@ -140,8 +250,8 @@ func TestFulfillCached_RaceWithConnRemoval(t *testing.T) {
 }
 
 // TestFulfillCached_NoHookUsesPlainFulfill: without an evict-on-remove hook
-// (e.g. Broadcast, or a pooler without hooks), fulfillCached must fall back to
-// plain Fulfill and still cache the value.
+// (e.g. a pooler without hooks), fulfillCached must fall back to plain Fulfill
+// and still cache the value.
 func TestFulfillCached_NoHookUsesPlainFulfill(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
 	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache} // cscPoolHook nil

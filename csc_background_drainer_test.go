@@ -138,7 +138,10 @@ func TestDrainPushNotifications_CustomProcessorErrorNotFatal(t *testing.T) {
 }
 
 // TestBackgroundDrainerLifecycle verifies start stores a handle on the client,
-// double-start is a no-op, and stop clears the handle and joins the goroutine.
+// double-start is a no-op, and stop joins the goroutine. The handle is
+// intentionally RETAINED (not cleared) after stop: cscPoolHook is read on the
+// command hot path, so niling the CSC fields under a concurrent Close would race;
+// repeat stops are made idempotent by teardownOnce instead.
 func TestBackgroundDrainerLifecycle(t *testing.T) {
 	cp := pool.NewConnPool(&pool.Options{
 		Dialer:   func(context.Context) (net.Conn, error) { return nil, errors.New("no dial in lifecycle test") },
@@ -160,17 +163,17 @@ func TestBackgroundDrainerLifecycle(t *testing.T) {
 	}
 
 	c.stopBackgroundDrainer()
-	if c.cscDrainHandle != nil {
-		t.Fatal("stopBackgroundDrainer did not clear the handle")
+	// The handle is retained (see doc above), but the goroutine must have exited.
+	if c.cscDrainHandle != h {
+		t.Fatal("stopBackgroundDrainer must retain the drain handle")
 	}
-	// stop joins the goroutine, so done must already be closed.
 	select {
 	case <-h.done:
 	default:
 		t.Fatal("stopBackgroundDrainer returned before the drainer goroutine exited")
 	}
 
-	// Stop again: idempotent, no panic.
+	// Stop again: idempotent, no panic, no double-close of the stop channel.
 	c.stopBackgroundDrainer()
 }
 

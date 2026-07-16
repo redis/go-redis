@@ -1,7 +1,9 @@
 # Client-Side Caching strategy guide
 
-go-redis ships three client-side caching (CSC) architectures behind one
-option. Pick a strategy at client construction:
+go-redis implements client-side caching (CSC) with a shared, sharded cache kept
+fresh by standard `CLIENT TRACKING` plus a background invalidation drainer. The
+architecture is selected by `Options.ClientSideCacheStrategy`, whose only
+currently-implemented value is the default, `CSCStrategySharedTracking`:
 
 ```go
 client := redis.NewClient(&redis.Options{
@@ -9,15 +11,17 @@ client := redis.NewClient(&redis.Options{
     Protocol:              3, // CSC requires RESP3
     ClientSideCacheConfig: &redis.ClientSideCacheConfig{MaxEntries: 100_000},
 
-    // Optional — the zero value is CSCStrategySharedTracking (the default).
+    // Optional — the zero value is CSCStrategySharedTracking (the default and,
+    // today, the only implemented strategy).
     ClientSideCacheStrategy: redis.CSCStrategySharedTracking,
 })
 ```
 
-All strategies share the same `Cache` interface, the same cacheable-command
-allow-list, the same DB-0 restriction, and the same RESP3 requirement.
-They differ in **who receives invalidation push frames and how those frames
-reach the cache**.
+The `CSCStrategy` type is an extension point: the strategy field and the
+`attachCSC` dispatch exist so an alternative invalidation architecture (e.g. a
+`CLIENT TRACKING ON BCAST` sidecar) can be added later without a breaking API
+change. Until such a strategy lands, any non-default value falls back to
+`CSCStrategySharedTracking` with a log warning.
 
 ## Enabling and disabling CSC
 
@@ -26,35 +30,27 @@ CSC is turned on by **providing a cache config**: set `ClientSideCacheConfig`
 nil to disable it. `ClientSideCacheStrategy` only selects the architecture
 once CSC is enabled; on its own it does nothing.
 
-## TL;DR
+## `CSCStrategySharedTracking` — standard CLIENT TRACKING, shared cache
 
-| | `CSCStrategyBroadcast` | `CSCStrategyPerConnection` | `CSCStrategySharedTracking` (default) |
-|---|---|---|---|
-| Cache | one shared, sharded | one private per pool conn | one shared, sharded |
-| Tracking | sidecar conn, `CLIENT TRACKING ON BCAST` | every pool conn, `CLIENT TRACKING ON` | every pool conn, `CLIENT TRACKING ON` |
-| Invalidate delivery | sidecar read loop → shared cache | per-conn push → that conn's cache | background drainer scans idle conns one-at-a-time every 5 ms |
-| Cache-hit cost | in-memory lookup | in-memory lookup (+ rare conn peek) | in-memory lookup |
-| Staleness bound | push latency (~RTT) | 5 ms drain-skip window per conn | 5 ms drain period |
-| Conn-churn behaviour | unaffected (cache outlives conns) | per-conn cache dies with its conn (clean) | server drops tracking state on conn close; churned entries persist until overwrite+drain |
-| Extra cost | one extra connection; receives invalidates for ALL DB writes | memory × conns; per-conn warm-up | background goroutine; scans idle conns every 5 ms |
+One shared cache; every pool connection issues plain `CLIENT TRACKING ON` (no
+BCAST), and a background drainer applies buffered invalidations to the shared
+cache.
 
-## When to choose each
-
-### `CSCStrategySharedTracking` — the default; standard CLIENT TRACKING, shared cache
-
-The default (the zero value of `ClientSideCacheStrategy`). One shared cache; every
-pool connection issues plain `CLIENT TRACKING ON` (no BCAST), and a background
-drainer applies buffered invalidations to the shared cache.
-
-Why it's the default:
+Why this is the model go-redis ships:
 - Plain `CLIENT TRACKING` works wherever RESP3 does — including managed or proxied
   environments where BCAST is restricted — and needs no extra connection.
 - It matches the CSC model used by the other Redis clients (shared cache +
   per-connection tracking), so behaviour is consistent across languages.
 
-Trade-off: heavier tail latency than Broadcast under high concurrency, because
-invalidation frames arrive spread across the pool connections (and are applied by
-the background drainer) instead of on one dedicated connection.
+| | `CSCStrategySharedTracking` |
+|---|---|
+| Cache | one shared, sharded |
+| Tracking | every pool conn, `CLIENT TRACKING ON` |
+| Invalidate delivery | background drainer scans idle conns one-at-a-time every 5 ms |
+| Cache-hit cost | in-memory lookup |
+| Staleness bound | ~5 ms drain period (`MaxStaleness`, if set, is the hard cap) |
+| Conn-churn behaviour | server drops tracking state on conn close; the owning-conn eviction hook evicts that conn's entries |
+| Extra cost | background goroutine; scans idle conns every 5 ms |
 
 **How the background drainer works.** With per-connection tracking, an
 invalidation arrives as a push message on the connection that read the key and
@@ -71,53 +67,24 @@ goroutine takes care of it:
   under heavy load or very large pools). `MaxStaleness`, if set, is the hard upper
   bound on how long a stale entry can be served.
 
-### `CSCStrategyBroadcast` — highest throughput; opt in where BCAST is available
-
-A dedicated out-of-pool "sidecar" connection subscribes with `CLIENT TRACKING ON
-BCAST` and owns all invalidation traffic; pool connections never track, so cache
-hits are pure in-memory lookups.
-
-Choose when BCAST is available and you want maximum performance:
-- Best throughput and tail latency at every tested concurrency (10–500
-  goroutines); cache hits never touch the connection pool.
-- Robust to invalidation noise from other applications (±3 % throughput under
-  2 000 irrelevant SETs/s in the noise stress test); lowest stale-read rate under
-  connection churn.
-- Self-heals: on sidecar disconnect the cache is flushed at teardown AND after
-  re-subscribe, so an outage can't leave permanently-stale entries.
-
-Costs to be aware of:
-- One extra connection per client (outside the pool).
-- The sidecar receives invalidates for **every write in the DB**, including
-  keys this client never reads. The CPU cost is the sidecar parsing frames;
-  measured impact on serving throughput: none at 2 000 noise-writes/s.
-- BCAST mode is all-keys (no PREFIX configured today). For very write-heavy
-  multi-tenant DBs the sidecar's invalidate stream scales with total DB write
-  rate, not this client's working set.
-
-### `CSCStrategyPerConnection` — few, long-lived connections
-
-Each pool connection owns a private cache and its own tracking
-subscription, the way a single-connection client does.
-
-Choose when:
-- The client runs a small pool (≲10 conns) with low churn — e.g. a
-  helper process, CLI tooling, or a low-QPS service.
-- You want hard isolation: an invalidate lost on one conn can never
-  poison another conn's cache, and a closed conn takes exactly its own
-  entries with it.
-
-Avoid when:
-- Concurrency is high: hit rate caps at roughly (1 / active conns) of the
-  shared-cache equivalent because every conn must warm independently.
-- Memory matters: cache memory multiplies by pool size.
-
-
+**Connection-lifecycle staleness.** When a pool connection closes, the server
+drops its tracking state, so invalidations for keys that connection read would go
+nowhere. go-redis attributes each cached entry to the connection that fetched it
+and evicts that connection's entries when it closes for **any** reason — pool
+removal, `ConnMaxLifetime`/idle-timeout retirement, or a maintnotifications socket
+swap. `MaxStaleness` (off by default) is an additional time-based backstop when
+configured.
 
 ## Operational notes
 
-- **RESP2**: all strategies silently no-op (no cache, no errors).
-- **DB ≠ 0**: CSC is disabled with a log warning, all strategies.
-- **`Options.ClientSideCache` (explicit cache instance)**: honoured by
-  Broadcast and SharedTracking. PerConnection ignores it (per-conn caches
-  are built from `ClientSideCacheConfig`) and logs a warning.
+- **RESP2**: CSC silently no-ops (no cache, no errors).
+- **DB ≠ 0**: CSC is disabled with a log warning. `CLIENT TRACKING` is bound to a
+  connection's DB and a runtime `SELECT` does not re-key the server's tracking
+  table, so use one client per DB if you need caching against a non-zero database.
+- **`Options.ClientSideCache` (explicit cache instance)**: honoured — takes
+  precedence over `ClientSideCacheConfig`. A shared `Cache` is only safe across
+  clients on the same server and DB.
+- **Derived clients**: `Client.WithTimeout` shares the parent's cache. `Client.Conn`
+  returns a single-connection client backed by a sticky pool, which has no
+  background drainer, so CSC is **not** active on it (its reads go straight to the
+  server) — use the parent client for cached reads.

@@ -333,12 +333,17 @@ type Options struct {
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
 	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
-	// CSCStrategySharedTracking (the default). See docs/csc-strategy-guide.md.
+	// CSCStrategySharedTracking, currently the only implemented strategy. See
+	// docs/csc-strategy-guide.md.
 	ClientSideCacheStrategy CSCStrategy
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via
 // Options.ClientSideCacheStrategy; fixed for the client's lifetime.
+//
+// CSCStrategySharedTracking is currently the only implemented strategy; the type
+// exists as an extension point for additional architectures (e.g. a BCAST sidecar)
+// without a breaking API change.
 type CSCStrategy int
 
 const (
@@ -346,26 +351,16 @@ const (
 	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
 	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
 	CSCStrategySharedTracking CSCStrategy = iota
-
-	// CSCStrategyBroadcast: one shared cache fed by a dedicated out-of-pool sidecar on
-	// CLIENT TRACKING ON BCAST; pool connections never track. Highest throughput in
-	// go-redis benchmarks — opt in where BCAST is available.
-	CSCStrategyBroadcast
-
-	// CSCStrategyPerConnection: each pool connection keeps its own private cache and
-	// CLIENT TRACKING ON subscription. No cross-connection staleness, at the cost of
-	// duplicated memory and per-conn warm-up; suited to few, long-lived connections.
-	CSCStrategyPerConnection
 )
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
 	}
-	// An unknown strategy would thread the per-strategy gates inconsistently
-	// (e.g. tracking on with no drainer), serving stale data. Clamp to default.
+	// An unknown strategy would thread the CSC gates inconsistently (e.g. tracking
+	// on with no drainer), serving stale data. Clamp to the only supported value.
 	switch opt.ClientSideCacheStrategy {
-	case CSCStrategySharedTracking, CSCStrategyBroadcast, CSCStrategyPerConnection:
+	case CSCStrategySharedTracking:
 	default:
 		internal.Logger.Printf(context.Background(),
 			"redis: unknown ClientSideCacheStrategy %d; falling back to CSCStrategySharedTracking",

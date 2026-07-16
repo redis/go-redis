@@ -8,20 +8,13 @@ type cacheStatsReporter interface {
 }
 
 // CSCStats returns cumulative (hits, misses) for this client's client-side
-// cache, regardless of the configured CSCStrategy:
-//
-//   - CSCStrategyPerConnection: aggregated across the per-connection caches.
-//   - CSCStrategyBroadcast / CSCStrategySharedTracking: from the shared cache,
-//     when its implementation exposes stats (the built-in localCache does).
+// cache, read from the shared cache when its implementation exposes stats (the
+// built-in localCache does).
 //
 // Returns (0,0) when CSC is not configured or stats are unavailable.
 func (c *Client) CSCStats() (hits, misses uint64) {
 	if c == nil {
 		return 0, 0
-	}
-	if c.baseClient.cscPerConnEnabled() {
-		h, m, _ := c.baseClient.perConnStats()
-		return h, m
 	}
 	if c.baseClient.csc == nil {
 		return 0, 0

@@ -105,8 +105,18 @@ func (r *Reader) PeekReplyType() (byte, error) {
 	return b[0], nil
 }
 
+// pushHeaderMaxPeek bounds the read-ahead when peeking a push-notification name
+// (generous for real names; also caps a corrupt/long frame). Further capped by
+// the reader's buffer size so Peek never overflows it.
+const pushHeaderMaxPeek = 512
+
+// ErrPushNotificationNameTooLong is returned when the header doesn't fit the peek
+// window/buffer, so the name can't be read without consuming the frame; callers
+// should ReadReply rather than leave it at the buffer head.
+var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
+
 func (r *Reader) PeekPushNotificationName() (string, error) {
-	// "prime" the buffer by peeking at the next byte
+	// "prime" the buffer and confirm the next reply is a push frame.
 	c, err := r.Peek(1)
 	if err != nil {
 		return "", err
@@ -115,80 +125,110 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		return "", fmt.Errorf("redis: can't peek push notification name, next reply is not a push notification")
 	}
 
-	// peek 36 bytes at most, should be enough to read the push notification name
-	toPeek := 36
-	buffered := r.Buffered()
-	if buffered == 0 {
-		return "", fmt.Errorf("redis: can't peek push notification name, no data available")
+	// Cap by buffer size so Peek never returns bufio.ErrBufferFull.
+	maxPeek := pushHeaderMaxPeek
+	if sz := r.Size(); sz > 0 && sz < maxPeek {
+		maxPeek = sz
 	}
-	if buffered < toPeek {
-		toPeek = buffered
+
+	// Grow the window (refilling from the socket, bounded by the caller's read
+	// deadline) so a header split across reads completes instead of stalling
+	// repeated drain passes on the same partial bytes.
+	toPeek := r.Buffered()
+	if toPeek < 1 {
+		toPeek = 1
 	}
-	buf, err := r.rd.Peek(toPeek)
-	if err != nil {
-		return "", err
+	for {
+		if toPeek > maxPeek {
+			toPeek = maxPeek
+		}
+		buf, peekErr := r.rd.Peek(toPeek)
+		name, complete, malformed := parsePushNotificationName(buf)
+		if malformed != nil {
+			return "", malformed
+		}
+		if complete {
+			return name, nil
+		}
+		if peekErr != nil {
+			return "", peekErr // can't get more yet (deadline/EOF); caller retries
+		}
+		if len(buf) >= maxPeek {
+			return "", ErrPushNotificationNameTooLong // doesn't fit; caller consumes
+		}
+		toPeek = len(buf) + 1 // force one more fill on the next Peek
+	}
+}
+
+// parsePushNotificationName reads the notification name from the head of a RESP3
+// push frame. complete=true returns the name; complete=false with a nil err means
+// buf lacks the full name line yet (caller supplies more); a non-nil err means
+// buf is not a valid push head.
+func parsePushNotificationName(buf []byte) (name string, complete bool, err error) {
+	if len(buf) < 1 {
+		return "", false, nil
 	}
 	if buf[0] != RespPush {
-		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+		return "", false, fmt.Errorf("redis: can't parse push notification: %q", buf)
 	}
-
-	if len(buf) < 3 {
-		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
+	// Skip the push type byte, then the "<count>\r\n" array-length line.
+	rest, ok, perr := pushSkipUintLine(buf[1:])
+	if perr != nil {
+		return "", false, perr
 	}
+	if !ok {
+		return "", false, nil
+	}
+	// The first array element is the name: bulk "$<len>\r\n<name>\r\n" or simple
+	// "+<name>\r\n".
+	if len(rest) < 1 {
+		return "", false, nil
+	}
+	switch rest[0] {
+	case RespString:
+		rest, ok, perr = pushSkipUintLine(rest[1:])
+		if perr != nil {
+			return "", false, perr
+		}
+		if !ok {
+			return "", false, nil
+		}
+	case RespStatus:
+		rest = rest[1:]
+	default:
+		return "", false, fmt.Errorf("redis: can't parse push notification name: %q", buf)
+	}
+	// The name runs up to the next CRLF.
+	nameBytes, ok := pushLineUpToCRLF(rest)
+	if !ok {
+		return "", false, nil
+	}
+	return util.BytesToString(nameBytes), true, nil
+}
 
-	// remove push notification type
-	buf = buf[1:]
-	// remove first line - e.g. >2\r\n
-	for i := 0; i < len(buf)-1; i++ {
+// pushSkipUintLine consumes a "<digits>\r\n" line. ok=false (nil err) means it's
+// not fully present yet; a non-nil err means a non-digit appeared before the CRLF.
+func pushSkipUintLine(buf []byte) (rest []byte, ok bool, err error) {
+	for i := 0; i+1 < len(buf); i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
-			buf = buf[i+2:]
-			break
-		} else {
-			if buf[i] < '0' || buf[i] > '9' {
-				return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
-			}
+			return buf[i+2:], true, nil
+		}
+		if buf[i] < '0' || buf[i] > '9' {
+			return nil, false, fmt.Errorf("redis: can't parse push notification: %q", buf)
 		}
 	}
-	if len(buf) < 2 {
-		return "", fmt.Errorf("redis: can't parse push notification: %q", buf)
-	}
-	// next line should be $<length><string>\r\n or +<length><string>\r\n
-	// should have the type of the push notification name and it's length
-	if buf[0] != RespString && buf[0] != RespStatus {
-		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
-	}
-	typeOfName := buf[0]
-	// remove the type of the push notification name
-	buf = buf[1:]
-	if typeOfName == RespString {
-		// remove the length of the string
-		if len(buf) < 2 {
-			return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
-		}
-		for i := 0; i < len(buf)-1; i++ {
-			if buf[i] == '\r' && buf[i+1] == '\n' {
-				buf = buf[i+2:]
-				break
-			} else {
-				if buf[i] < '0' || buf[i] > '9' {
-					return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
-				}
-			}
-		}
-	}
+	return nil, false, nil
+}
 
-	if len(buf) < 2 {
-		return "", fmt.Errorf("redis: can't parse push notification name: %q", buf)
-	}
-	// keep only the notification name
-	for i := 0; i < len(buf)-1; i++ {
+// pushLineUpToCRLF returns the bytes preceding the next CRLF. ok=false means no
+// CRLF is present in buf yet.
+func pushLineUpToCRLF(buf []byte) (line []byte, ok bool) {
+	for i := 0; i+1 < len(buf); i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
-			buf = buf[:i]
-			break
+			return buf[:i], true
 		}
 	}
-
-	return util.BytesToString(buf), nil
+	return nil, false
 }
 
 // ReadLine Return a valid reply, it will check the protocol or redis error,

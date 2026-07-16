@@ -81,10 +81,10 @@ type CacheConfig struct {
 	// If zero, defaults to defaultStaleTimeout (5s).
 	StaleTimeout time.Duration
 
-	// DrainInterval is the SharedTracking background-drainer period (default 5ms;
-	// zero uses the default): how often idle pool conns are swept for buffered
-	// "invalidate" frames, roughly bounding cache-hit staleness. Values below 1ms
-	// are clamped to 1ms. Ignored by Broadcast and PerConnection.
+	// DrainInterval is the background-drainer period (default 5ms; zero uses the
+	// default): how often idle pool conns are swept for buffered "invalidate"
+	// frames, roughly bounding cache-hit staleness. Values below 1ms are clamped
+	// to 1ms.
 	DrainInterval time.Duration
 
 	// MaxStaleness caps how long a cached entry is served after it became valid,
@@ -572,7 +572,7 @@ func (s *cacheShard) deleteByRedisKey(redisKey string) int {
 	}
 
 	// Remove IN_PROGRESS placeholders too: an invalidation can arrive on a
-	// different stream than the in-flight reply (BCAST sidecar, drainer), so the
+	// different stream than the in-flight reply (the background drainer), so the
 	// fetch may predate the write. Removing makes the racing Fulfill fail and
 	// waiters refetch, so a raced-invalidation value is never published.
 	toRemove := make([]string, 0, len(cacheKeys))
@@ -639,8 +639,9 @@ func (s *cacheShard) flush() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Flush placeholders too (see deleteByRedisKey): a flush (FLUSHDB, sidecar
-	// teardown) means everything, including in-flight fetches, may be stale.
+	// Flush placeholders too (see deleteByRedisKey): a flush (FLUSHDB, or the
+	// owned-cache flush on Close) means everything, including in-flight fetches,
+	// may be stale.
 	removed := 0
 	for cacheKey := range s.entries {
 		if s.removeEntryLocked(cacheKey) {

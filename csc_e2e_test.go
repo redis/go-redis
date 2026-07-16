@@ -23,15 +23,18 @@ var _ = Describe("Client-side cache (standalone)", func() {
 
 		cache = redis.NewLocalCache(redis.CacheConfig{MaxEntries: 128})
 
+		// Flush BEFORE the tracked client exists: a FLUSHDB after construction
+		// would push a nil-payload invalidate to the tracked connection and race
+		// the first GET's fill, making cache-population assertions flaky.
+		mutator = redis.NewClient(redisOptions())
+		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
+		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
 		opt := redisOptions()
 		opt.Protocol = 3
 		opt.ClientSideCache = cache
 		client = redis.NewClient(opt)
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
-
-		mutator = redis.NewClient(redisOptions())
-		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
-		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
