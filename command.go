@@ -4823,9 +4823,22 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]GeoLocation, n)
+	// Each element is an array of [name, ...] whose length is fixed by the
+	// requested WITH flags. Validate it (like GeoLocationCmd) instead of
+	// discarding it, so a server declaring extra elements can't leave frames
+	// on the wire and desync the connection.
+	withLen := 1
+	if cmd.opt.WithDist {
+		withLen++
+	}
+	if cmd.opt.WithHash {
+		withLen++
+	}
+	if cmd.opt.WithCoord {
+		withLen++
+	}
 	for i := 0; i < n; i++ {
-		_, err = rd.ReadArrayLen()
-		if err != nil {
+		if err = rd.ReadFixedArrayLen(withLen); err != nil {
 			return err
 		}
 
@@ -5407,6 +5420,14 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
+
+		// Drain any elements past the 6 this parser knows about so a server
+		// that declares a longer entry array doesn't leave frames on the wire.
+		for j := 6; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -5488,8 +5509,8 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		if nn < 3 {
-			return fmt.Errorf("redis: got %d elements in latency get, expected at least 3", nn)
+		if nn < 4 {
+			return fmt.Errorf("redis: got %d elements in latency get, expected at least 4", nn)
 		}
 		if cmd.val[i].Name, err = rd.ReadString(); err != nil {
 			return err
@@ -5509,6 +5530,13 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 		cmd.val[i].Max = time.Duration(maximum) * time.Millisecond
+		// Drain any elements beyond the 4 this parser reads so a server that
+		// declares a longer entry array can't leave frames on the wire.
+		for j := 4; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -5699,6 +5727,14 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 
 	if v, ok := data["by-net-bytes"].([]interface{}); ok {
 		result.ByNetBytes = parseHotKeysKeyEntries(v)
+	}
+
+	// Only the first element of the outer array is parsed; drain the rest so a
+	// server that wraps more than one element doesn't leave frames on the wire.
+	for i := 1; i < arrayLen; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
 	}
 
 	cmd.val = result
