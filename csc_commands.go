@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"strconv"
+	"strings"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -53,7 +54,31 @@ func isCacheable(cmd Cmder) bool {
 	if _, ok := defaultCacheableCommands[cmd.Name()]; !ok {
 		return false
 	}
+	// SORT_RO ... BY/GET reads pattern keys that extractRedisKeys can't
+	// enumerate, so its invalidations would be dropped and the result go stale.
+	// Plain SORT_RO is fine.
+	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd.Args()) {
+		return false
+	}
 	return cmdFirstKeyPos(cmd) != 0
+}
+
+// sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
+// (case-insensitive), scanning past the command name and key.
+func sortROHasByGet(args []interface{}) bool {
+	if len(args) < 3 {
+		return false
+	}
+	for _, a := range args[2:] {
+		s, ok := a.(string)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCacheKey returns the RESP-encoded form of the command's argument list,

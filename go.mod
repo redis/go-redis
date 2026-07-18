@@ -12,6 +12,7 @@ require (
 
 require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/stretchr/testify v1.7.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 )
 

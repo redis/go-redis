@@ -237,6 +237,32 @@ type baseClient struct {
 
 	// csc is the shared client-side cache; nil when CSC is disabled.
 	csc Cache
+
+	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
+	// (Conn/WithTimeout) share the cache but must not stop the owner's
+	// goroutines or flush its cache on their own Close.
+
+	// cscOwnsCache is true only when this client constructed its localCache (not
+	// an injected/shared one); it gates the defensive flush on drainer stop.
+	cscOwnsCache bool
+
+	// cscDrainHandle is the background drainer handle (nil when none). Held
+	// on the client, not a global registry, so an un-Closed client stays
+	// GC-collectible and a runtime.AddCleanup net can stop the goroutine. Its
+	// presence also identifies the owner (the only client that runs the drainer
+	// and thus the one that deregisters cscPoolHook).
+	cscDrainHandle *cscDrainHandle
+
+	// cscPoolHook is the evict-on-remove pool hook (nil when CSC is off). Unlike
+	// the owner-only fields above it IS copied by clone(): a clone reads it in
+	// processCached to attribute fetches to the shared hook. Only the owner (the
+	// one with cscDrainHandle) deregisters it, in stopBackgroundDrainer.
+	cscPoolHook pool.PoolHook
+
+	// cscActive is false once the drainer stops (owner Close, or the GC cleanup
+	// firing when the owner is dropped), so cache-serving clones (WithTimeout) stop
+	// serving hits nothing is invalidating. Shared with clones.
+	cscActive *atomic.Bool
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -253,6 +279,11 @@ func (c *baseClient) clone() *baseClient {
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
 		csc:                         c.csc,
+		// cscPoolHook and cscActive travel with the cache (read in processCached);
+		// the owner-only fields — cscDrainHandle, cscOwnsCache — do not, so a clone's
+		// Close never tears down the owner's resources.
+		cscPoolHook: c.cscPoolHook,
+		cscActive:   c.cscActive,
 	}
 	return clone
 }
@@ -402,6 +433,25 @@ func (c *baseClient) wrappedOnClose(newOnClose func() error) func() error {
 	}
 }
 
+// resolveCredentials returns the username/password to authenticate with, using
+// the non-streaming credential sources in precedence order:
+// CredentialsProviderContext, then CredentialsProvider, then the static
+// Username/Password fields. The StreamingCredentialsProvider path is handled
+// separately by initConn (it requires per-connection listener wiring) and is
+// intentionally not covered here. Returns empty strings when no credentials
+// are configured.
+func (opt *Options) resolveCredentials(ctx context.Context) (username, password string, err error) {
+	switch {
+	case opt.CredentialsProviderContext != nil:
+		return opt.CredentialsProviderContext(ctx)
+	case opt.CredentialsProvider != nil:
+		username, password = opt.CredentialsProvider()
+	case opt.Username != "" || opt.Password != "":
+		username, password = opt.Username, opt.Password
+	}
+	return username, password, nil
+}
+
 func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// This function is called in two scenarios:
 	// 1. First-time init: Connection is in CREATED state (from pool.Get())
@@ -505,16 +555,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		cn.SetOnClose(unsubscribeFromCredentialsProvider)
 
 		username, password = credentials.BasicAuth()
-	} else if c.opt.CredentialsProviderContext != nil {
-		username, password, initErr = c.opt.CredentialsProviderContext(ctx)
+	} else {
+		username, password, initErr = c.opt.resolveCredentials(ctx)
 		if initErr != nil {
 			cn.GetStateMachine().Transition(pool.StateClosed)
-			return fmt.Errorf("failed to get credentials from context provider: %w", initErr)
+			return fmt.Errorf("failed to resolve credentials: %w", initErr)
 		}
-	} else if c.opt.CredentialsProvider != nil {
-		username, password = c.opt.CredentialsProvider()
-	} else if c.opt.Username != "" || c.opt.Password != "" {
-		username, password = c.opt.Username, c.opt.Password
 	}
 
 	// for redis-server versions that do not support the HELLO command,
@@ -544,7 +590,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	trackingEnabled := c.csc != nil && c.opt.Protocol == 3
+	// trackingEnabled reports whether THIS pool connection must issue
+	// CLIENT TRACKING ON during init. True when CSC (SharedTracking) is enabled:
+	// the shared cache is fed by per-connection tracking + the background drainer.
+	trackingEnabled := c.cscTrackingRequested()
+	if trackingEnabled {
+		// initConn also runs on a handoff, which swaps the socket (dropping the
+		// server's tracking table) without a pool removal. Drop this conn's
+		// previously-owned entries before re-enabling tracking so uncovered
+		// entries can't linger. No-op on first init.
+		c.cscEvictOwnedEntries(cn.GetID())
+	}
 	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
@@ -568,6 +624,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	if initErr != nil {
 		cn.GetStateMachine().Transition(pool.StateClosed)
 		return fmt.Errorf("failed to initialize connection options: %w", initErr)
+	}
+
+	if trackingEnabled {
+		// Evict this conn's entries on any close (incl. the ConnMaxLifetime/idle
+		// path that bypasses the OnRemove hook), since the server drops its
+		// tracking table on close.
+		c.cscInstallConnCloseHook(cn)
 	}
 
 	// Enable maintnotifications if maintnotifications are configured
@@ -707,17 +770,33 @@ func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, 
 	return c.opt.Dialer(ctx, network, addr)
 }
 
+// cscTrackingRequested reports whether initConn must issue CLIENT TRACKING ON.
+// Derived from OPTIONS, not c.csc: a conn dialed by a derived client (Conn/Tx)
+// is later reused by the parent, so it must track or the parent's cached
+// entries from it would never be invalidated. The DB gate mirrors attachCSC.
+func (c *baseClient) cscTrackingRequested() bool {
+	if c.opt.Protocol != 3 {
+		return false
+	}
+	cscConfigured := c.opt.ClientSideCache != nil || c.opt.ClientSideCacheConfig != nil
+	// Match attachCSC: don't track (or install close hooks) for a cache CSC will
+	// refuse for lacking ConnOwnedCache.
+	return cscConfigured && c.opt.DB == 0 && c.cscStrategyTracksPoolConns() &&
+		c.opt.cscCacheOwnerAware()
+}
+
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	if c.csc != nil && isCacheable(cmd) {
 		return c.processCached(ctx, cmd)
 	}
-	return c.processWithRetry(ctx, cmd, nil)
+	return c.processWithRetry(ctx, cmd, nil, nil)
 }
 
-// processWithRetry runs cmd through the normal retry loop. When
-// rawReplyCapture is non-nil, the raw RESP bytes of a successful reply are
-// written into *rawReplyCapture so the CSC path can store them.
-func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCapture *[]byte) error {
+// processWithRetry runs cmd through the retry loop. rawReplyCapture (optional)
+// receives the successful reply's raw bytes for the CSC fetch path; connIDOut
+// (optional) receives the serving connection's id so that path can attribute
+// the cached entry to its owner (see FulfillOwned).
+func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCapture *[]byte, connIDOut *uint64) error {
 	// Start measuring total operation duration (includes all retries)
 	// Only call time.Now() if operation duration callback is set to avoid overhead
 	var operationStart time.Time
@@ -740,6 +819,9 @@ func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCa
 		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
 		// which writes directly to an io.Writer and cannot undo partial writes)
 		if err == nil || !retry || cmd.NoRetry() {
+			if connIDOut != nil && lastConn != nil {
+				*connIDOut = lastConn.GetID()
+			}
 			// Record total operation duration
 			if opDurationCallback != nil {
 				operationDuration := time.Since(operationStart)
@@ -996,6 +1078,10 @@ func (c *baseClient) disableMaintNotificationsUpgrades() error {
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
 	var firstErr error
+
+	// CSC teardown (no-op when CSC is not active): stop the background
+	// invalidation drainer before the pool it walks is torn down.
+	c.stopBackgroundDrainer()
 
 	// Close maintnotifications manager first
 	if err := c.disableMaintNotificationsUpgrades(); err != nil {
@@ -1298,16 +1384,23 @@ func NewClient(opt *Options) *Client {
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 	}
 
-	// Initialize client-side caching for RESP3 clients. Invalidations are
-	// delivered as push notifications, so RESP2 clients cannot use CSC.
+	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
+	// background drainer. attachCSC is the strategy dispatch entry.
 	if opt.Protocol == 3 {
 		var cache Cache
 		if explicit := opt.ClientSideCache; explicit != nil {
 			cache = explicit
 		} else if cfg := opt.ClientSideCacheConfig; cfg != nil {
 			cache = NewLocalCache(*cfg)
+			// We constructed it, so we own it (may flush on drainer stop).
+			c.baseClient.cscOwnsCache = true
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
+
+		// Safety net for a client dropped without Close: the goroutines hold
+		// *baseClient (never *Client), so dropping *Client (returned as &c)
+		// triggers these cleanups, which stop them. See cscRegisterCleanups.
+		cscRegisterCleanups(&c)
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
@@ -1357,9 +1450,14 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 
 func (c *Client) Conn() *Conn {
 	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
-	// Derived single-connection clients share the parent's client-side cache
-	// so that invalidations observed on any connection evict the same entries.
+	// No-op today: the strategy needs an idle-conn drainer and a StickyConnPool
+	// has none, so CSC isn't active on a Conn() (its reads hit the server). Kept
+	// so a future sticky-pool-capable strategy attaches here.
 	conn.baseClient.attachCSC(context.Background(), c.csc)
+	// Carry the parent's shared eviction hook so that if this derived client
+	// initializes a pool conn, the close hook it installs still evicts from the
+	// parent cache (its own csc is nil).
+	conn.baseClient.cscPoolHook = c.baseClient.cscPoolHook
 	return conn
 }
 
@@ -1686,6 +1784,46 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
+}
+
+// drainPushNotifications drains the push frames buffered on a connection the CSC
+// drainer has claimed, under a HARD read deadline. Returns a non-nil error for a
+// FATAL connection error (drainer removes the conn) — including a read timeout:
+// the loop only blocks while consuming a frame, so a deadline hit means a
+// partially consumed frame and a desynced conn that must not be re-pooled. The
+// built-in processor surfaces read errors; a custom processor runs via its own
+// ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
+func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return nil
+	}
+	// Skip only when nothing is buffered (reader) AND nothing on the socket:
+	// MaybeHasData peeks only the socket, but an invalidate can sit in cn.rd.
+	if !cn.HasBufferedData() && !cn.MaybeHasData() {
+		return nil
+	}
+
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	err := cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
+	})
+	if err != nil {
+		// The built-in processor surfaces mid-frame ReadReply errors (a benign
+		// boundary peek timeout returns nil). allowTimeout=false: such an error
+		// means bytes were consumed mid-frame, leaving the conn desynced —
+		// re-pooling would corrupt the next command's reply, so remove it.
+		//
+		// A CUSTOM processor's error contract is unknown, so it is not treated
+		// as connection-fatal: log and re-pool.
+		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+			if isBadConn(err, false, c.opt.Addr) {
+				return err // fatal read/protocol/connection error — remove the conn
+			}
+		} else {
+			internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (re-pooling): %v", err)
+		}
+	}
+	return nil
 }
 
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection

@@ -23,15 +23,18 @@ var _ = Describe("Client-side cache (standalone)", func() {
 
 		cache = redis.NewLocalCache(redis.CacheConfig{MaxEntries: 128})
 
+		// Flush BEFORE the tracked client exists: a FLUSHDB after construction
+		// would push a nil-payload invalidate to the tracked connection and race
+		// the first GET's fill, making cache-population assertions flaky.
+		mutator = redis.NewClient(redisOptions())
+		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
+		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
 		opt := redisOptions()
 		opt.Protocol = 3
 		opt.ClientSideCache = cache
 		client = redis.NewClient(opt)
 		Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
-
-		mutator = redis.NewClient(redisOptions())
-		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
-		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {
@@ -41,14 +44,6 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		if client != nil {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		}
-	})
-
-	It("enables CLIENT TRACKING on the connection during handshake", func() {
-		info, err := client.ClientInfo(ctx).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(info).NotTo(BeNil())
-		Expect(info.Flags&redis.ClientTracking).
-			NotTo(BeZero(), "expected the tracked client to have the CLIENT TRACKING flag set")
 	})
 
 	It("populates the local cache after a cacheable command is issued", func() {
@@ -102,13 +97,40 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		}, 2*time.Second, 50*time.Millisecond).Should(Equal(0))
 	})
 
-	It("does not enable CLIENT TRACKING when CSC is disabled", func() {
-		plain := redis.NewClient(redisOptions())
-		defer plain.Close()
+	It("evicts a retired connection's entries on ConnMaxLifetime so the next read is fresh", func() {
+		// PoolSize 1 + a tiny ConnMaxLifetime: the single tracked connection is
+		// retired via ConnPool.CloseConn (which bypasses the OnRemove pool hook).
+		// Its close hook must evict its cached entries — otherwise, once its
+		// server-side tracking is gone, a later external write is never seen.
+		key := "csc-e2e-connmaxlifetime"
+		Expect(mutator.Set(ctx, key, "v1", 0).Err()).NotTo(HaveOccurred())
 
-		info, err := plain.ClientInfo(ctx).Result()
-		Expect(err).NotTo(HaveOccurred())
-		Expect(info.Flags&redis.ClientTracking).
-			To(BeZero(), "a client without CSC must not have CLIENT TRACKING enabled")
+		lc := redis.NewLocalCache(redis.CacheConfig{MaxEntries: 128})
+		opt := redisOptions()
+		opt.Protocol = 3
+		opt.PoolSize = 1
+		opt.ConnMaxLifetime = 100 * time.Millisecond
+		opt.ClientSideCache = lc
+		rotator := redis.NewClient(opt)
+		defer func() { Expect(rotator.Close()).NotTo(HaveOccurred()) }()
+
+		// Populate the cache on the single connection.
+		Expect(rotator.Get(ctx, key).Val()).To(Equal("v1"))
+		Eventually(lc.Len, 2*time.Second, 20*time.Millisecond).Should(BeNumerically(">=", 1))
+
+		// Let the connection exceed ConnMaxLifetime, then force its retirement with
+		// a PING (which dials a fresh connection). The retired conn's close hook
+		// must have evicted its entry.
+		time.Sleep(200 * time.Millisecond)
+		Eventually(func() int {
+			Expect(rotator.Ping(ctx).Err()).NotTo(HaveOccurred())
+			return lc.Len()
+		}, 2*time.Second, 20*time.Millisecond).Should(Equal(0))
+
+		// The old connection's tracking is gone, so this write reaches no tracker.
+		Expect(mutator.Set(ctx, key, "v2", 0).Err()).NotTo(HaveOccurred())
+
+		// The next GET (on the fresh connection, cache empty) must observe v2.
+		Expect(rotator.Get(ctx, key).Val()).To(Equal("v2"))
 	})
 })

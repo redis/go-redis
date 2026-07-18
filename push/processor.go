@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"errors"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -73,18 +74,22 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
+			// Name too long to peek: consume & dispatch below rather than leave the
+			// frame at the buffer head (which would stall and desync the next reply).
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+				break
+			}
+		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
 
-		if willHandleNotificationInClient(notificationName) {
-			break
-		}
-
-		// Read the push notification
+		// Surface a ReadReply error (unlike the boundary peek errors above,
+		// which consumed nothing): it happens mid-frame after bytes are
+		// consumed, so the conn is desynced and the CSC drainer must remove it.
+		// Normal reply-read callers log-and-ignore this and let their own read fail.
 		reply, err := rd.ReadReply()
 		if err != nil {
-			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
-			break
+			return err
 		}
 
 		// Convert to slice of interfaces
@@ -165,10 +170,12 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		// see if we should skip this notification
 		notificationName, err := rd.PeekPushNotificationName()
 		if err != nil {
-			break
-		}
-
-		if willHandleNotificationInClient(notificationName) {
+			// Name too long to peek: still consume the frame below so it isn't
+			// misread as a reply.
+			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+				break
+			}
+		} else if willHandleNotificationInClient(notificationName) {
 			break
 		}
 
@@ -180,6 +187,14 @@ func (v *VoidProcessor) ProcessPendingNotifications(_ context.Context, handlerCt
 		}
 	}
 	return nil
+}
+
+// WillHandleNotificationInClient reports whether a push notification of this
+// name is reserved for a specialized system (pub/sub) and must be left in the
+// reader buffer rather than consumed by generic push-notification processing.
+// Exported so external drain loops apply the same guard as the processor.
+func WillHandleNotificationInClient(notificationType string) bool {
+	return willHandleNotificationInClient(notificationType)
 }
 
 // willHandleNotificationInClient checks if a notification type should be ignored by the push notification

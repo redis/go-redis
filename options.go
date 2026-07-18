@@ -314,9 +314,9 @@ type Options struct {
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
 
-	// ClientSideCacheConfig enables client-side caching when non-nil.
-	// Requires Protocol: 3 (RESP3) so that invalidation messages are delivered
-	// as out-of-band push notifications. If ClientSideCache is also set, it
+	// ClientSideCacheConfig enables client-side caching when non-nil. Together
+	// with ClientSideCache it is the on/off switch for the feature: leave both
+	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
 	// takes precedence over this config.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
@@ -329,11 +329,54 @@ type Options struct {
 	// Client-side caching is restricted to DB 0 and disabled with a warning
 	// otherwise.
 	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the invalidation architecture used when
+	// client-side caching is enabled (via ClientSideCacheConfig or
+	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
+	// CSCStrategySharedTracking, currently the only implemented strategy. See
+	// docs/csc-strategy-guide.md.
+	ClientSideCacheStrategy CSCStrategy
+}
+
+// CSCStrategy selects the client-side caching invalidation architecture. Set via
+// Options.ClientSideCacheStrategy; fixed for the client's lifetime.
+//
+// CSCStrategySharedTracking is currently the only implemented strategy; the type
+// exists as an extension point for additional architectures (e.g. a BCAST sidecar)
+// without a breaking API change.
+type CSCStrategy int
+
+const (
+	// CSCStrategySharedTracking (default, the zero value): one shared cache; every
+	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
+	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
+	CSCStrategySharedTracking CSCStrategy = iota
+)
+
+// cscCacheOwnerAware reports whether the configured cache supports per-connection
+// eviction (ConnOwnedCache), which SharedTracking requires. A localCache built
+// from ClientSideCacheConfig does; an explicit ClientSideCache must too.
+func (opt *Options) cscCacheOwnerAware() bool {
+	if opt.ClientSideCache != nil {
+		_, ok := opt.ClientSideCache.(ConnOwnedCache)
+		return ok
+	}
+	return opt.ClientSideCacheConfig != nil
 }
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
+	}
+	// An unknown strategy would thread the CSC gates inconsistently (e.g. tracking
+	// on with no drainer), serving stale data. Clamp to the only supported value.
+	switch opt.ClientSideCacheStrategy {
+	case CSCStrategySharedTracking:
+	default:
+		internal.Logger.Printf(context.Background(),
+			"redis: unknown ClientSideCacheStrategy %d; falling back to CSCStrategySharedTracking",
+			opt.ClientSideCacheStrategy)
+		opt.ClientSideCacheStrategy = CSCStrategySharedTracking
 	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {
@@ -373,6 +416,13 @@ func (opt *Options) init() {
 	}
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
+	} else if opt.Protocol == 3 && opt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+		// Too small to hold a push header, the processor would consume frames before
+		// knowing their name and could swallow a Pub/Sub frame. Clamp to the minimum.
+		internal.Logger.Printf(context.Background(),
+			"redis: ReadBufferSize=%d is below the RESP3 minimum %d; clamping.",
+			opt.ReadBufferSize, proto.MinRESP3ReadBufferSize)
+		opt.ReadBufferSize = proto.MinRESP3ReadBufferSize
 	}
 	if opt.WriteBufferSize == 0 {
 		opt.WriteBufferSize = proto.DefaultBufferSize

@@ -124,10 +124,16 @@ func TestCSCReadYourWrites(t *testing.T) {
 	if got := c.Get(ctx, key).Val(); got != "v1" {
 		t.Fatalf("first GET: got %q want v1", got)
 	}
-	// Cache must hold the entry after Fulfill.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	// Cache must hold the entry after Fulfill. The FLUSHDB above sends a
+	// nil-payload invalidate to the tracked conn; if it races the first GET's
+	// in-flight fetch, that fill is (correctly) suppressed — re-drive the GET
+	// until the fill lands.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && cache.Len() < 1 {
 		time.Sleep(20 * time.Millisecond)
+		if got := c.Get(ctx, key).Val(); got != "v1" {
+			t.Fatalf("re-driven GET: got %q want v1", got)
+		}
 	}
 	if cache.Len() < 1 {
 		t.Fatalf("cache should hold the entry after first GET, len=%d", cache.Len())
