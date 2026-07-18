@@ -83,8 +83,13 @@ configured.
   table, so use one client per DB if you need caching against a non-zero database.
 - **`Options.ClientSideCache` (explicit cache instance)**: honoured — takes
   precedence over `ClientSideCacheConfig`. A shared `Cache` is only safe across
-  clients on the same server and DB.
+  clients on the same server and DB. It **must implement `ConnOwnedCache`**
+  (`FulfillOwned`/`EvictByConn`); SharedTracking needs per-connection eviction to
+  drop a connection's entries when it closes. A cache without it disables CSC with
+  a warning. `NewLocalCache` implements it.
 - **Derived clients**: `Client.WithTimeout` shares the parent's cache. `Client.Conn`
   returns a single-connection client backed by a sticky pool, which has no
   background drainer, so CSC is **not** active on it (its reads go straight to the
   server) — use the parent client for cached reads.
+- **RESP3 read buffer**: `ReadBufferSize` is clamped up to a small minimum on
+  RESP3 clients so push-notification headers always fit the peek window.

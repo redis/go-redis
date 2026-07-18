@@ -110,12 +110,16 @@ type Cache interface {
 	MemoryUsage() int64
 }
 
-// connCacheOwner is an optional Cache capability (like cacheStatsReporter):
-// attribute entries to the conn that fetched them and evict a conn's entries in
-// one shot. localCache implements it; SharedTracking uses it to close Window 2.
-// Caches without it fall back to plain Fulfill.
-type connCacheOwner interface {
+// ConnOwnedCache is an optional Cache capability that attributes entries to the
+// connection that fetched them and evicts a connection's entries in one shot.
+// SharedTracking requires it (to evict a connection's entries when it closes and
+// the server drops its tracking); NewLocalCache implements it, and a Cache
+// lacking it disables CSC with a warning.
+type ConnOwnedCache interface {
+	// FulfillOwned is Fulfill plus the fetching connection's id, so EvictByConn
+	// can later drop the entry.
 	FulfillOwned(cacheKey string, token, ownerConnID uint64, value []byte) bool
+	// EvictByConn removes every entry owned by connID and returns the count.
 	EvictByConn(connID uint64) int
 }
 

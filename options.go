@@ -353,6 +353,17 @@ const (
 	CSCStrategySharedTracking CSCStrategy = iota
 )
 
+// cscCacheOwnerAware reports whether the configured cache supports per-connection
+// eviction (ConnOwnedCache), which SharedTracking requires. A localCache built
+// from ClientSideCacheConfig does; an explicit ClientSideCache must too.
+func (opt *Options) cscCacheOwnerAware() bool {
+	if opt.ClientSideCache != nil {
+		_, ok := opt.ClientSideCache.(ConnOwnedCache)
+		return ok
+	}
+	return opt.ClientSideCacheConfig != nil
+}
+
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
@@ -405,6 +416,13 @@ func (opt *Options) init() {
 	}
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
+	} else if opt.Protocol == 3 && opt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+		// Too small to hold a push header, the processor would consume frames before
+		// knowing their name and could swallow a Pub/Sub frame. Clamp to the minimum.
+		internal.Logger.Printf(context.Background(),
+			"redis: ReadBufferSize=%d is below the RESP3 minimum %d; clamping.",
+			opt.ReadBufferSize, proto.MinRESP3ReadBufferSize)
+		opt.ReadBufferSize = proto.MinRESP3ReadBufferSize
 	}
 	if opt.WriteBufferSize == 0 {
 		opt.WriteBufferSize = proto.DefaultBufferSize

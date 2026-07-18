@@ -10,9 +10,9 @@ import (
 
 func TestLocalCache_FulfillOwned_EvictByConn(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	owner, ok := cache.(connCacheOwner)
+	owner, ok := cache.(ConnOwnedCache)
 	if !ok {
-		t.Fatal("localCache must implement connCacheOwner")
+		t.Fatal("localCache must implement ConnOwnedCache")
 	}
 
 	// Two entries owned by conn 1, one by conn 2.
@@ -52,7 +52,7 @@ func TestLocalCache_OwnerIndexCleanedOnInvalidation(t *testing.T) {
 	// reasons (invalidation, LRU) so a later EvictByConn can't touch a re-used
 	// cache key and the index cannot leak.
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	owner := cache.(connCacheOwner)
+	owner := cache.(ConnOwnedCache)
 	lc := cache.(*localCache)
 
 	tok, _ := cache.Reserve("get:k", []string{"rk"})
@@ -79,7 +79,7 @@ func TestLocalCache_OwnerIndexCleanedOnInvalidation(t *testing.T) {
 // removed connection's owned entries and leave others intact.
 func TestCSCEvictOnRemoveHook(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	owner := cache.(connCacheOwner)
+	owner := cache.(ConnOwnedCache)
 
 	server, client := net.Pipe()
 	defer server.Close()
@@ -115,7 +115,7 @@ func TestCSCEvictOnRemoveHook(t *testing.T) {
 // linger uninvalidated (Window-2 staleness on normal connection retirement).
 func TestCSCConnCloseHook_EvictsOnAnyClose(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	owner := cache.(connCacheOwner)
+	owner := cache.(ConnOwnedCache)
 	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache}
 
 	server, client := net.Pipe()
@@ -150,12 +150,12 @@ func TestCSCConnCloseHook_EvictsOnAnyClose(t *testing.T) {
 // socket, so post-handoff fulfills are legitimate).
 func TestCSCEvictOwnedEntries_UsesSharedHookWhenCscNil(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	hook := &cscEvictOnRemoveHook{evictor: cache.(connCacheOwner)}
+	hook := &cscEvictOnRemoveHook{evictor: cache.(ConnOwnedCache)}
 	derived := &baseClient{opt: &Options{Protocol: 3}, csc: nil, cscPoolHook: hook}
 
 	const connID = uint64(9)
 	tok, _ := cache.Reserve("get:k", []string{"k"})
-	if !cache.(connCacheOwner).FulfillOwned("get:k", tok, connID, []byte("v")) {
+	if !cache.(ConnOwnedCache).FulfillOwned("get:k", tok, connID, []byte("v")) {
 		t.Fatal("FulfillOwned failed")
 	}
 
@@ -199,7 +199,7 @@ func TestNewTx_CarriesSharedEvictionHook(t *testing.T) {
 // orphaned entry with no invalidation coverage.
 func TestCSCConnCloseHook_NoOrphanWhenCloseRacesFulfill(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	hook := &cscEvictOnRemoveHook{evictor: cache.(connCacheOwner)}
+	hook := &cscEvictOnRemoveHook{evictor: cache.(ConnOwnedCache)}
 	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cscPoolHook: hook}
 
 	const connID = uint64(7)
@@ -223,7 +223,7 @@ func TestCSCConnCloseHook_NoOrphanWhenCloseRacesFulfill(t *testing.T) {
 // no invalidation coverage (the Window-2 TOCTOU).
 func TestFulfillCached_RaceWithConnRemoval(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
-	hook := &cscEvictOnRemoveHook{evictor: cache.(connCacheOwner)}
+	hook := &cscEvictOnRemoveHook{evictor: cache.(ConnOwnedCache)}
 	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cscPoolHook: hook}
 
 	const connID = uint64(42)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -13,6 +14,64 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// chunkedReader delivers its payload one configured chunk per Read, so a bufio
+// reader over it sees exact partial-buffer boundaries (e.g. a push header split
+// across socket reads).
+type chunkedReader struct{ chunks [][]byte }
+
+func (c *chunkedReader) Read(p []byte) (int, error) {
+	for len(c.chunks) > 0 && len(c.chunks[0]) == 0 {
+		c.chunks = c.chunks[1:]
+	}
+	if len(c.chunks) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.chunks[0])
+	c.chunks[0] = c.chunks[0][n:]
+	return n, nil
+}
+
+// TestProcessor_ConsumesFragmentedPushFrame: a push frame whose header is split
+// across reads must still be consumed and dispatched (not left at the buffer head
+// stalling the drain loop). Fails on the old clamped-peek reader.
+func TestProcessor_ConsumesFragmentedPushFrame(t *testing.T) {
+	full := []byte(">2\r\n$10\r\ninvalidate\r\n$1\r\nk\r\n")
+	for _, split := range []int{1, 9, 14} {
+		rd := proto.NewReader(&chunkedReader{chunks: [][]byte{full[:split], full[split:]}})
+		p := NewProcessor()
+		h := NewTestHandler("invalidate")
+		if err := p.RegisterHandler("invalidate", h, false); err != nil {
+			t.Fatalf("split=%d RegisterHandler: %v", split, err)
+		}
+		if err := p.ProcessPendingNotifications(context.Background(), NotificationHandlerContext{}, rd); err != nil {
+			t.Fatalf("split=%d ProcessPendingNotifications: %v", split, err)
+		}
+		if len(h.GetHandledNotifications()) != 1 {
+			t.Fatalf("split=%d: handler called %d times, want 1", split, len(h.GetHandledNotifications()))
+		}
+	}
+}
+
+// TestProcessor_LeavesClientReservedPush: a client-reserved (Pub/Sub) push whose
+// header fits the buffer must be left in the reader for the specialized reader,
+// not consumed by generic processing.
+func TestProcessor_LeavesClientReservedPush(t *testing.T) {
+	full := ">2\r\n$7\r\nmessage\r\n$2\r\nhi\r\n"
+	rd := proto.NewReader(strings.NewReader(full))
+	p := NewProcessor()
+	if err := p.ProcessPendingNotifications(context.Background(), NotificationHandlerContext{}, rd); err != nil {
+		t.Fatalf("ProcessPendingNotifications: %v", err)
+	}
+	// Not consumed: the frame is still readable.
+	reply, err := rd.ReadReply()
+	if err != nil {
+		t.Fatalf("client-reserved frame must remain readable: %v", err)
+	}
+	if arr, ok := reply.([]interface{}); !ok || len(arr) != 2 || arr[0] != "message" {
+		t.Fatalf("unexpected reply: %#v", reply)
+	}
+}
 
 // TestHandler implements NotificationHandler interface for testing
 type TestHandler struct {

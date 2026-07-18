@@ -96,4 +96,41 @@ var _ = Describe("Client-side cache (standalone)", func() {
 			return cache.Len()
 		}, 2*time.Second, 50*time.Millisecond).Should(Equal(0))
 	})
+
+	It("evicts a retired connection's entries on ConnMaxLifetime so the next read is fresh", func() {
+		// PoolSize 1 + a tiny ConnMaxLifetime: the single tracked connection is
+		// retired via ConnPool.CloseConn (which bypasses the OnRemove pool hook).
+		// Its close hook must evict its cached entries — otherwise, once its
+		// server-side tracking is gone, a later external write is never seen.
+		key := "csc-e2e-connmaxlifetime"
+		Expect(mutator.Set(ctx, key, "v1", 0).Err()).NotTo(HaveOccurred())
+
+		lc := redis.NewLocalCache(redis.CacheConfig{MaxEntries: 128})
+		opt := redisOptions()
+		opt.Protocol = 3
+		opt.PoolSize = 1
+		opt.ConnMaxLifetime = 100 * time.Millisecond
+		opt.ClientSideCache = lc
+		rotator := redis.NewClient(opt)
+		defer func() { Expect(rotator.Close()).NotTo(HaveOccurred()) }()
+
+		// Populate the cache on the single connection.
+		Expect(rotator.Get(ctx, key).Val()).To(Equal("v1"))
+		Eventually(lc.Len, 2*time.Second, 20*time.Millisecond).Should(BeNumerically(">=", 1))
+
+		// Let the connection exceed ConnMaxLifetime, then force its retirement with
+		// a PING (which dials a fresh connection). The retired conn's close hook
+		// must have evicted its entry.
+		time.Sleep(200 * time.Millisecond)
+		Eventually(func() int {
+			Expect(rotator.Ping(ctx).Err()).NotTo(HaveOccurred())
+			return lc.Len()
+		}, 2*time.Second, 20*time.Millisecond).Should(Equal(0))
+
+		// The old connection's tracking is gone, so this write reaches no tracker.
+		Expect(mutator.Set(ctx, key, "v2", 0).Err()).NotTo(HaveOccurred())
+
+		// The next GET (on the fresh connection, cache empty) must observe v2.
+		Expect(rotator.Get(ctx, key).Val()).To(Equal("v2"))
+	})
 })

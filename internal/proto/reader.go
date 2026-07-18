@@ -110,6 +110,11 @@ func (r *Reader) PeekReplyType() (byte, error) {
 // the reader's buffer size so Peek never overflows it.
 const pushHeaderMaxPeek = 512
 
+// MinRESP3ReadBufferSize is the smallest read buffer that keeps any
+// client-reserved push header within the peek window, so such a frame is never
+// consumed by generic push processing (see PeekPushNotificationName).
+const MinRESP3ReadBufferSize = pushHeaderMaxPeek
+
 // ErrPushNotificationNameTooLong is returned when the header doesn't fit the peek
 // window/buffer, so the name can't be read without consuming the frame; callers
 // should ReadReply rather than leave it at the buffer head.

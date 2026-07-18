@@ -258,6 +258,11 @@ type baseClient struct {
 	// processCached to attribute fetches to the shared hook. Only the owner (the
 	// one with cscDrainHandle) deregisters it, in stopBackgroundDrainer.
 	cscPoolHook pool.PoolHook
+
+	// cscActive is false once the drainer stops (owner Close, or the GC cleanup
+	// firing when the owner is dropped), so cache-serving clones (WithTimeout) stop
+	// serving hits nothing is invalidating. Shared with clones.
+	cscActive *atomic.Bool
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -274,11 +279,11 @@ func (c *baseClient) clone() *baseClient {
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
 		csc:                         c.csc,
-		// cscPoolHook travels with the cache: a clone reads it to attribute fetches
-		// to the shared eviction hook. The owner-only fields — cscDrainHandle,
-		// cscOwnsCache — do not, so a clone's Close never tears down the owner's
-		// resources.
+		// cscPoolHook and cscActive travel with the cache (read in processCached);
+		// the owner-only fields — cscDrainHandle, cscOwnsCache — do not, so a clone's
+		// Close never tears down the owner's resources.
 		cscPoolHook: c.cscPoolHook,
+		cscActive:   c.cscActive,
 	}
 	return clone
 }
@@ -774,7 +779,10 @@ func (c *baseClient) cscTrackingRequested() bool {
 		return false
 	}
 	cscConfigured := c.opt.ClientSideCache != nil || c.opt.ClientSideCacheConfig != nil
-	return cscConfigured && c.opt.DB == 0 && c.cscStrategyTracksPoolConns()
+	// Match attachCSC: don't track (or install close hooks) for a cache CSC will
+	// refuse for lacking ConnOwnedCache.
+	return cscConfigured && c.opt.DB == 0 && c.cscStrategyTracksPoolConns() &&
+		c.opt.cscCacheOwnerAware()
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {

@@ -22,9 +22,19 @@ import (
 // collected, and only signals stop (a GC cleanup must not block); the signal is
 // idempotent, so a later explicit Close is safe.
 func cscRegisterCleanups(c *Client) {
-	if h := c.baseClient.cscDrainHandle; h != nil {
-		runtime.AddCleanup(c, func(h *cscDrainHandle) { h.signalStop() }, h)
+	h := c.baseClient.cscDrainHandle
+	if h == nil {
+		return
 	}
+	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
+	// also stops clones from serving once the drainer is gone.
+	active := c.baseClient.cscActive
+	runtime.AddCleanup(c, func(h *cscDrainHandle) {
+		h.signalStop()
+		if active != nil {
+			active.Store(false)
+		}
+	}, h)
 }
 
 // commandHits / commandMisses count cache outcomes once per processCached call,
@@ -159,6 +169,15 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if _, ok := c.connPool.(idleConnDrainer); !ok {
 		return
 	}
+	// SharedTracking needs per-conn attribution to evict a connection's entries on
+	// close; disable CSC for a cache that lacks it rather than serve un-evictable
+	// entries.
+	if _, ok := cache.(ConnOwnedCache); !ok {
+		internal.Logger.Printf(ctx,
+			"csc: disabling client-side caching: ClientSideCache must implement redis.ConnOwnedCache "+
+				"(FulfillOwned/EvictByConn); use redis.NewLocalCache or implement it.")
+		return
+	}
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.opt.DB); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
@@ -192,21 +211,16 @@ func (c *baseClient) cscInstallConnCloseHook(cn *pool.Conn) {
 
 // cscOnConnClose evicts a closing conn's entries: via the shared hook (which
 // records the removed-ring, closing the close-before-fulfill race), else scoped
-// EvictByConn on an owning cache, else a full Flush of a custom cache (can't
-// scope), else no-op.
+// EvictByConn on the owning cache. CSC only attaches for ConnOwnedCache caches,
+// so no full-flush fallback is needed.
 func (c *baseClient) cscOnConnClose(connID uint64) {
 	if h, ok := c.cscPoolHook.(*cscEvictOnRemoveHook); ok {
 		h.markRemoved(connID)
 		return
 	}
-	if c.csc == nil {
-		return
-	}
-	if owner, ok := c.csc.(connCacheOwner); ok {
+	if owner, ok := c.csc.(ConnOwnedCache); ok {
 		owner.EvictByConn(connID)
-		return
 	}
-	c.csc.Flush()
 }
 
 // poolHookRegistrar is the *pool.ConnPool subset used to (de)register the
@@ -227,7 +241,7 @@ const cscRecentRemovedRing = 64
 // recently-removed conn ids so fulfillCached can catch a value whose owning conn
 // was removed mid-fetch.
 type cscEvictOnRemoveHook struct {
-	evictor connCacheOwner
+	evictor ConnOwnedCache
 
 	mu     sync.Mutex
 	recent [cscRecentRemovedRing]uint64
@@ -276,7 +290,7 @@ func (h *cscEvictOnRemoveHook) wasRecentlyRemoved(connID uint64) bool {
 // owning-conn attribution and the pool supports hooks. No-op otherwise; close-time
 // eviction still runs via cscOnConnClose.
 func (c *baseClient) registerConnEvictHook(cache Cache) {
-	owner, ok := cache.(connCacheOwner)
+	owner, ok := cache.(ConnOwnedCache)
 	if !ok {
 		return
 	}
@@ -302,7 +316,7 @@ func (c *baseClient) cscEvictOwnedEntries(connID uint64) {
 	if c.csc == nil {
 		return
 	}
-	if owner, ok := c.csc.(connCacheOwner); ok {
+	if owner, ok := c.csc.(ConnOwnedCache); ok {
 		owner.EvictByConn(connID)
 	}
 }
@@ -358,6 +372,9 @@ func (c *baseClient) startBackgroundDrainer() {
 	}
 	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
 	c.cscDrainHandle = h
+	active := &atomic.Bool{}
+	active.Store(true)
+	c.cscActive = active
 	interval := c.cscDrainInterval()
 	go func() {
 		defer close(h.done)
@@ -391,6 +408,10 @@ func (c *baseClient) stopBackgroundDrainer() {
 		return
 	}
 	h.teardownOnce.Do(func() {
+		// Stop serving cache hits on any clone before the drainer is gone.
+		if c.cscActive != nil {
+			c.cscActive.Store(false)
+		}
 		// Owner only. The hook (when present) is always registered alongside the
 		// drainer, so removing it here — before the pool is closed — can't strand it.
 		if c.cscPoolHook != nil {
@@ -426,6 +447,12 @@ var cscDrainHardReadCap = 50 * time.Microsecond
 // Only invoked after process has verified that CSC is active and cmd is
 // eligible.
 func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
+	// Once the drainer has stopped (owner Close, or the owner dropped without
+	// Close), no invalidations flow — a surviving clone must not serve stale hits.
+	if a := c.cscActive; a != nil && !a.Load() {
+		return c.processWithRetry(ctx, cmd, nil, nil)
+	}
+
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
 		return c.processWithRetry(ctx, cmd, nil, nil)
@@ -514,15 +541,19 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 // before this runs, so its OnRemove eviction may fire before the entry exists —
 // after attributing we re-check and drop the entry if the conn was just removed.
 func (c *baseClient) fulfillCached(key string, token, connID uint64, raw []byte) bool {
-	if connID != 0 {
-		if hook, ok := c.cscPoolHook.(*cscEvictOnRemoveHook); ok {
-			owner := hook.evictor
-			done := owner.FulfillOwned(key, token, connID, raw)
-			if done && hook.wasRecentlyRemoved(connID) {
-				owner.EvictByConn(connID)
-			}
-			return done
+	if hook, ok := c.cscPoolHook.(*cscEvictOnRemoveHook); ok {
+		if connID == 0 {
+			// Invariant: an active hook always gets a real conn id (>=1). A zero id
+			// would leave the entry unattributed and un-evictable, so fail closed.
+			c.csc.Cancel(key, token)
+			return false
 		}
+		owner := hook.evictor
+		done := owner.FulfillOwned(key, token, connID, raw)
+		if done && hook.wasRecentlyRemoved(connID) {
+			owner.EvictByConn(connID)
+		}
+		return done
 	}
 	return c.csc.Fulfill(key, token, raw)
 }
