@@ -1837,18 +1837,108 @@ func (c *ClusterClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 	return c.TxPipeline().Pipelined(ctx, fn)
 }
 
-func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
+// A cluster tx pipeline sends MULTI, c1..cN, EXEC — N+2 commands, or N+3 with a
+// leading ASKING — and always receives exactly that many replies, so every
+// redirect/abort path leaves the connection clean.
+//
+// Possible reply sequences:
+//	1. Slot owned here, no migration:
+//	     +OK,  +QUEUED x N,  *N (array of N results)   -> success
+//	2. Slot already migrated away:
+//	     +OK,  -MOVED x N,  -EXECABORT                 -> re-route whole tx
+//	3. Slot in migrating state (still owned here, keys draining out). Per
+//	   cmd, the queue reply is +QUEUED / -ASK / -TRYAGAIN (keys present /
+//	   all gone / some gone); any -ASK or -TRYAGAIN dirties the tx, so
+//	   EXEC is -EXECABORT. Still N+2 replies, like the cases above:
+//	     +OK,  (+QUEUED|-ASK|-TRYAGAIN) x N,  -EXECABORT  -> follow first redirect
+//	4. Narrow race (all +QUEUED, slot moves before EXEC):
+//	     +OK,  +QUEUED x N,  -MOVED <slot> <addr>         -> re-route whole tx
+//	5. Non-cluster command error (arity / ACL / unknown):
+//	     +OK,  +QUEUED..., -ERR...,  -EXECABORT           -> surface, not retryable
+//	6. Narrow race (all +QUEUED, slot still migrating, keys drain before EXEC):
+//	     +OK,  +QUEUED x N,  -ASK / -TRYAGAIN             -> re-route on -ASK, back off on -TRYAGAIN
+//
+// EXEC reply — the reply that decides the outcome:
+//
+//	*N                    success; read N per-command results
+//	-EXECABORT            a queue-stage command failed; follow the first queue
+//	                      redirect (MOVED/ASK/TRYAGAIN), else surface the trigger
+//	-MOVED <slot> <addr>  case 4; re-route whole tx to addr, reload topology
+//	-ASK <slot> <addr>    race: slot entered migrating state; re-route to addr
+//	                      with a top-level ASKING before MULTI
+//	-TRYAGAIN             race: migrating with split keys, or slot being trimmed
+//	                      (CLUSTER_REDIR_TRIMMING on a write); back off and retry
+//	                      the whole tx (same node still owns it)
+//	-CLUSTERDOWN          cluster degraded; back off and retry whole tx
+//
+// ASK retry: the ASKING flag is NOT cleared between commands inside a MULTI
+// so one top-level ASKING before MULTI covers the whole tx and lets the importing
+// slot serve at EXEC. ASKING placed inside the MULTI would be queued and leave
+// the flag unset during queueing, so the keyed commands would still get MOVED.
+//
+// Out of scope: WATCH's null-array EXEC and -CROSSSLOT;
+// cluster TxPipeline is not used with WATCH and cross-slot is rejected client-side.
+
+type txOutcomeKind int
+
+const (
+	txSuccess       txOutcomeKind = iota // transaction executed; per-command results are set
+	txRetryMoved                         // MOVED: reload topology and re-route the whole tx
+	txRetryAsk                           // ASK: re-route to the target with a top-level ASKING
+	txRetryTryAgain                      // TRYAGAIN: back off and re-route the whole tx
+	txRetryConn                          // connection/write/read failure: re-route the whole tx
+	txFatal                              // non-retryable error; surface to the caller
+)
+
+// txOutcome is the result of a single tx attempt. err is the error to report
+// when the redirect/retry loop is exhausted (or the fatal error to surface);
+// addr is the ASK target; execErr is the EXEC reply error used to mark
+// aborted commands; unreadReplies forces the connection to be discarded
+// when the read loop exited before consuming all N+2 replies, leaving bytes
+// on the wire.
+type txOutcome struct {
+	kind          txOutcomeKind
+	err           error
+	addr          string
+	execErr       error
+	unreadReplies bool
+}
+
+// txRedirect records the first queue-stage redirect (MOVED/ASK/TRYAGAIN) seen
+// while reading +QUEUED replies. Redis dirties and aborts the transaction on
+// any such reply, so the EXEC reply will be EXECABORT and the client must
+// follow the recorded redirect with the whole transaction.
+type txRedirect struct {
+	moved    bool
+	ask      bool
+	tryAgain bool
+	addr     string
+	err      error
+}
+
+// errTxDirtyConn forces releaseConn to discard a connection that may still have
+// unread transaction replies on it (an early exit before consuming all N+2).
+var errTxDirtyConn = errors.New("redis: connection has unread transaction replies")
+
+func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (retErr error) {
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
 	if pipelineOpDurationCallback != nil {
 		operationStart = time.Now()
 	}
 	totalAttempts := 0
+	var lastErr error
+
+	defer func() {
+		if pipelineOpDurationCallback == nil {
+			return
+		}
+		finalErr := cmp.Or(retErr, cmdsFirstErr(cmds), lastErr)
+		pipelineOpDurationCallback(ctx, time.Since(operationStart), "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
+	}()
 
 	// Trim multi .. exec.
 	cmds = cmds[1 : len(cmds)-1]
-
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -1856,10 +1946,6 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	state, err := c.state.Get(ctx)
 	if err != nil {
 		setCmdsErr(cmds, err)
-		if pipelineOpDurationCallback != nil {
-			operationDuration := time.Since(operationStart)
-			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
-		}
 		return err
 	}
 
@@ -1871,77 +1957,85 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) err
 	case 1:
 		for sl := range keyedCmdsBySlot {
 			slot = sl
-			break
 		}
 	default:
 		// TxPipeline does not support cross slot transaction.
 		setCmdsErr(cmds, ErrCrossSlot)
-		if pipelineOpDurationCallback != nil {
-			operationDuration := time.Since(operationStart)
-			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, ErrCrossSlot, nil, 0)
-		}
 		return ErrCrossSlot
 	}
 
 	node, err := state.slotMasterNode(slot)
 	if err != nil {
 		setCmdsErr(cmds, err)
-		if pipelineOpDurationCallback != nil {
-			operationDuration := time.Since(operationStart)
-			pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), 1, err, nil, 0)
-		}
 		return err
 	}
 
-	var lastErr error
-	cmdsMap := map[*clusterNode][]Cmder{node: cmds}
+	asking := false
+	// MOVED/ASK are routing changes, not transient failures: follow them immediately.
+	redirected := false
 	for attempt := 0; attempt <= c.opt.MaxRedirects; attempt++ {
 		totalAttempts++
-		if attempt > 0 {
+		if attempt > 0 && !redirected {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 				setCmdsErr(cmds, err)
-				if pipelineOpDurationCallback != nil {
-					operationDuration := time.Since(operationStart)
-					pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, err, nil, 0)
-				}
 				return err
 			}
 		}
 
-		failedCmds := newCmdsMap()
-		var wg sync.WaitGroup
-
-		for node, cmds := range cmdsMap {
-			wg.Add(1)
-			go func(node *clusterNode, cmds []Cmder) {
-				defer wg.Done()
-				c.processTxPipelineNode(ctx, node, cmds, failedCmds)
-			}(node, cmds)
+		outcome := c.processTxPipelineNode(ctx, node, cmds, asking)
+		lastErr = outcome.err
+		redirected = false
+		switch outcome.kind {
+		case txSuccess:
+			return cmdsFirstErr(cmds)
+		case txRetryMoved:
+			// Route directly to the authoritative addr from the MOVED; the
+			// cached slot state may be stale until LazyReload lands.
+			redirected = true
+			asking = false
+			c.state.LazyReload()
+			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+		case txRetryAsk:
+			redirected = true
+			asking = true
+			if node, err = c.nodes.GetOrCreate(outcome.addr); err != nil {
+				setCmdsErr(cmds, err)
+				return err
+			}
+		case txRetryTryAgain, txRetryConn:
+			// Same node, fresh connection: TRYAGAIN comes from the migrating
+			// source (still the owner), and a conn failure only needs a new
+			// connection. Preserve a prior ASKING flag: if we followed an ASK
+			// to the importing target, the retry must still send ASKING (the
+			// slot is still importing). ASKING is harmless if the migration
+			// has since completed, since the flag is only consulted for
+			// importing slots.
+		case txFatal:
+			// Mark every queued-but-never-executed command with the abort
+			// error; the command that triggered EXECABORT already has its
+			// own error and keeps it, so callers can tell what went wrong.
+			abortErr := cmp.Or(outcome.execErr, outcome.err)
+			for _, cmd := range cmds {
+				if cmd.Err() == nil {
+					cmd.SetErr(abortErr)
+				}
+			}
+			return lastErr
 		}
-
-		wg.Wait()
-		if len(failedCmds.m) == 0 {
-			break
-		}
-		cmdsMap = failedCmds.m
-		lastErr = cmdsFirstErr(cmds)
 	}
 
-	if pipelineOpDurationCallback != nil {
-		operationDuration := time.Since(operationStart)
-		finalErr := cmdsFirstErr(cmds)
-		if finalErr == nil {
-			finalErr = lastErr
-		}
-		pipelineOpDurationCallback(ctx, operationDuration, "MULTI", len(cmds), totalAttempts, finalErr, nil, 0)
+	if lastErr != nil {
+		setCmdsErr(cmds, lastErr)
 	}
-
 	return cmdsFirstErr(cmds)
 }
 
 // slottedKeyedCommands returns a map of slot to commands taking into account
 // only commands that have keys.
-func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) map[int][]Cmder {
+func (c *ClusterClient) slottedKeyedCommands(_ context.Context, cmds []Cmder) map[int][]Cmder {
 	cmdsSlots := map[int][]Cmder{}
 
 	// Peek once outside the loop, one RLock for the whole batch instead of
@@ -1972,151 +2066,217 @@ func (c *ClusterClient) slottedKeyedCommands(ctx context.Context, cmds []Cmder) 
 }
 
 func (c *ClusterClient) processTxPipelineNode(
-	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
-) {
-	cmds = wrapMultiExec(ctx, cmds)
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	ctx context.Context, node *clusterNode, cmds []Cmder, asking bool,
+) *txOutcome {
+	wire := wrapMultiExec(ctx, cmds)
+	if asking {
+		// ASKING must precede MULTI so the flag stays set for the whole tx.
+		wire = append([]Cmder{NewCmd(ctx, "asking")}, wire...)
+	}
+
+	var outcome *txOutcome
+	_ = node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
 		cn, err := node.Client.getConn(ctx)
 		if err != nil {
-			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
-			setCmdsErr(cmds, err)
+			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+				outcome = &txOutcome{kind: txRetryConn, err: err}
+			} else {
+				outcome = &txOutcome{kind: txFatal, err: err}
+			}
 			return err
 		}
 
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processTxPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
+		outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
+		connErr := outcome.err
+		if isRedisError(outcome.err) {
+			connErr = nil
+		}
+		if outcome.unreadReplies {
+			connErr = errTxDirtyConn
+		}
+		node.Client.releaseConn(ctx, cn, connErr)
+		return connErr
 	})
+
+	if outcome == nil {
+		outcome = &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx pipeline produced no outcome")}
+	}
+	return outcome
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(
-	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
-) error {
+	ctx context.Context, node *clusterNode, cn *pool.Conn, wire []Cmder, cmds []Cmder, asking bool,
+) *txOutcome {
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		return writeCmds(wr, cmds)
+		return writeCmds(wr, wire)
 	}); err != nil {
+		// Write failure: re-route the whole tx on a fresh connection.
 		if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
-			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			return &txOutcome{kind: txRetryConn, err: err}
 		}
-		setCmdsErr(cmds, err)
-		return err
+		return &txOutcome{kind: txFatal, err: err}
 	}
 
-	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		statusCmd := cmds[0].(*StatusCmd)
-		// Trim multi and exec.
-		trimmedCmds := cmds[1 : len(cmds)-1]
-
-		if err := c.txPipelineReadQueued(
-			ctx, node, cn, rd, statusCmd, trimmedCmds, failedCmds,
-		); err != nil {
-			setCmdsErr(cmds, err)
-
-			moved, ask, addr := isMovedError(err)
-			if moved || ask {
-				return c.cmdsMoved(ctx, trimmedCmds, moved, ask, addr, failedCmds)
-			}
-
-			return err
-		}
-
-		return node.Client.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
+	var outcome *txOutcome
+	readErr := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
+		return nil
 	})
+
+	if readErr != nil {
+		// Reader-level failure (deadline setup, nil conn) around the read loop.
+		// The batch was already written, so the server may have committed;
+		// surface the error as fatal and discard the suspect connection rather
+		// than re-executing the transaction.
+		return c.txReadFatal(readErr)
+	}
+	return outcome
 }
 
-func (c *ClusterClient) txPipelineReadQueued(
-	ctx context.Context,
-	node *clusterNode,
-	cn *pool.Conn,
-	rd *proto.Reader,
-	statusCmd *StatusCmd,
-	cmds []Cmder,
-	failedCmds *cmdsMap,
-) error {
-	// Parse queued replies.
-	// To be sure there are no buffered push notifications, we process them before reading the reply
-	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		// Log the error but don't fail the command execution
-		// Push notification processing errors shouldn't break normal Redis operations
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
-	}
-	if err := statusCmd.readReply(rd); err != nil {
-		return err
+// readTxPipelineReplies reads the replies of one MULTI..EXEC unit and
+// classifies the outcome. The reply count always matches the number of sent
+// commands, so success/redirect paths leave the connection clean; only an early
+// MULTI read failure can leave unread replies.
+func (c *ClusterClient) readTxPipelineReplies(
+	ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader, cmds []Cmder, asking bool,
+) *txOutcome {
+	scratch := NewStatusCmd(ctx)
+
+	readStatus := func() error {
+		c.txProcessPush(ctx, node, cn, rd)
+		return scratch.readReply(rd)
 	}
 
+	// Optional top-level ASKING reply (+OK).
+	if asking {
+		if err := readStatus(); err != nil {
+			return c.txReadFatal(err)
+		}
+	}
+
+	// MULTI reply (+OK, or an error such as -LOADING during failover).
+	if err := readStatus(); err != nil {
+		return c.txMultiErrorOutcome(err, cmds)
+	}
+
+	// Queue replies: +QUEUED, or a redirect / command error that dirties the tx.
+	var firstRedirect *txRedirect
+	var firstFatal error
 	for _, cmd := range cmds {
-		// To be sure there are no buffered push notifications, we process them before reading the reply
-		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			// Log the error but don't fail the command execution
-			// Push notification processing errors shouldn't break normal Redis operations
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		err := readStatus()
+		if err == nil {
+			continue // +QUEUED
 		}
-		err := statusCmd.readReply(rd)
-		if err != nil {
-			if c.checkMovedErr(ctx, cmd, err, failedCmds) {
-				// will be processed later
-				continue
+		if !isRedisError(err) {
+			return c.txReadFatal(err) // IO error
+		}
+		if moved, ask, addr := isMovedError(err); moved || ask {
+			if firstRedirect == nil {
+				firstRedirect = &txRedirect{moved: moved, ask: ask, addr: addr, err: err}
 			}
-			cmd.SetErr(err)
-			if !isRedisError(err) {
-				return err
+			continue
+		}
+		if proto.IsTryAgainError(err) {
+			if firstRedirect == nil {
+				firstRedirect = &txRedirect{tryAgain: true, err: err}
 			}
+			continue
+		}
+		// Non-redirect command error (e.g. wrong arity) dirties the tx.
+		cmd.SetErr(err)
+		if firstFatal == nil {
+			firstFatal = err
 		}
 	}
 
-	// To be sure there are no buffered push notifications, we process them before reading the reply
-	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		// Log the error but don't fail the command execution
-		// Push notification processing errors shouldn't break normal Redis operations
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
-	}
-	// Parse number of replies.
+	// EXEC reply. ReadLine parses error lines into typed errors, so a non-nil
+	// err means EXEC returned an error rather than the result array.
+	c.txProcessPush(ctx, node, cn, rd)
 	line, err := rd.ReadLine()
 	if err != nil {
-		if err == Nil {
-			err = TxFailedErr
+		if !isRedisError(err) {
+			return c.txReadFatal(err) // IO error
 		}
-		return err
+		return c.classifyExecError(err, firstRedirect, firstFatal)
 	}
 
 	if line[0] != proto.RespArray {
-		return fmt.Errorf("redis: expected '*', but got line %q", line)
+		err := fmt.Errorf("redis: unexpected EXEC reply %q", line)
+		setCmdsErr(cmds, err)
+		// A non-array aggregate reply may carry an unread payload.
+		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 	}
 
-	return nil
+	// Success: read the N command results.
+	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
+		return c.txReadFatal(err) // IO error mid-results
+	}
+	return &txOutcome{kind: txSuccess}
 }
 
-func (c *ClusterClient) cmdsMoved(
-	ctx context.Context, cmds []Cmder,
-	moved, ask bool,
-	addr string,
-	failedCmds *cmdsMap,
-) error {
-	node, err := c.nodes.GetOrCreate(addr)
-	if err != nil {
-		return err
+func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {
+	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
+}
 
-	if moved {
-		c.state.LazyReload()
-		for _, cmd := range cmds {
-			failedCmds.Add(node, cmd)
+// txReadFatal classifies a read-phase IO error. The MULTI..EXEC batch was
+// already written, so the server may have committed the transaction; retrying
+// would re-execute it, double-applying non-idempotent commands (INCR/APPEND,
+// which are not NoRetry). Surface the error as fatal and discard the
+// connection, since replies may still be unread on the wire.
+func (c *ClusterClient) txReadFatal(err error) *txOutcome {
+	return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+}
+
+// txMultiErrorOutcome classifies a MULTI reply error (e.g. -LOADING). A failed
+// MULTI still leaves the N+1 subsequent replies on the wire -- the server
+// replies to each following command and to EXEC regardless -- so the
+// connection must always be discarded.
+func (c *ClusterClient) txMultiErrorOutcome(err error, cmds []Cmder) *txOutcome {
+	if !isRedisError(err) {
+		return c.txReadFatal(err)
+	}
+	if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+		return &txOutcome{kind: txRetryConn, err: err, unreadReplies: true}
+	}
+	return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+}
+
+// classifyExecError turns an EXEC reply error into a retry/fatal outcome. If a
+// queue-stage redirect dirtied the tx (EXECABORT), follow that redirect with
+// the whole transaction; otherwise surface the triggering command error.
+func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error) *txOutcome {
+	if moved, ask, addr := isMovedError(execErr); moved || ask {
+		// Narrow race: the slot moved after every command was queued.
+		if ask {
+			return &txOutcome{kind: txRetryAsk, err: execErr, addr: addr}
 		}
-		return nil
+		return &txOutcome{kind: txRetryMoved, err: execErr, addr: addr}
 	}
-
-	if ask {
-		for _, cmd := range cmds {
-			failedCmds.Add(node, NewCmd(ctx, "asking"), cmd)
+	if proto.IsTryAgainError(execErr) {
+		return &txOutcome{kind: txRetryTryAgain, err: execErr}
+	}
+	if proto.IsClusterDownError(execErr) {
+		// Cluster degraded: back off and retry. Replies were fully consumed.
+		return &txOutcome{kind: txRetryConn, err: execErr}
+	}
+	if proto.IsExecAbortError(execErr) {
+		if firstRedirect != nil {
+			switch {
+			case firstRedirect.moved:
+				return &txOutcome{kind: txRetryMoved, err: firstRedirect.err, addr: firstRedirect.addr}
+			case firstRedirect.ask:
+				return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr}
+			case firstRedirect.tryAgain:
+				return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
+			}
 		}
-		return nil
+		// Non-redirect abort: surface the triggering command error.
+		ferr := cmp.Or(firstFatal, execErr)
+		return &txOutcome{kind: txFatal, err: ferr, execErr: execErr}
 	}
-
-	return nil
+	return &txOutcome{kind: txFatal, err: execErr}
 }
 
 func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
