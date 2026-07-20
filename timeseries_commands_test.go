@@ -1819,12 +1819,8 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 			})
 
 			It("should TSRead and TSReadWithArgs", Label("timeseries", "tsread", "tsreadWithArgs", "NonRedisEnterprise"), func() {
-				// Skip unless the server knows TS.READ (added in 8.10, which can't be
-				// expressed as a float64 for SkipBeforeRedisVersion).
-				if err := client.TSRead(ctx, "tsread-probe", 0).Err(); err != nil &&
-					strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-					Skip("TS.READ is not supported by this server")
-				}
+				// TS.READ was added in Redis 8.10.
+				SkipBeforeRedisVersion("8.10", "TS.READ was added in Redis 8.10")
 
 				_, err := client.TSCreate(ctx, "tsread:1").Result()
 				Expect(err).NotTo(HaveOccurred())
