@@ -2147,16 +2147,16 @@ func (c *ClusterClient) readTxPipelineReplies(
 		return scratch.readReply(rd)
 	}
 
-	// Optional top-level ASKING reply (+OK).
+	// Optional top-level ASKING reply (+OK, or a retryable error such as -LOADING).
 	if asking {
 		if err := readStatus(); err != nil {
-			return c.txReadFatal(err)
+			return c.txPreQueueErrorOutcome(err, cmds)
 		}
 	}
 
 	// MULTI reply (+OK, or an error such as -LOADING during failover).
 	if err := readStatus(); err != nil {
-		return c.txMultiErrorOutcome(err, cmds)
+		return c.txPreQueueErrorOutcome(err, cmds)
 	}
 
 	// Queue replies: +QUEUED, or a redirect / command error that dirties the tx.
@@ -2229,11 +2229,13 @@ func (c *ClusterClient) txReadFatal(err error) *txOutcome {
 	return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 }
 
-// txMultiErrorOutcome classifies a MULTI reply error (e.g. -LOADING). A failed
-// MULTI still leaves the N+1 subsequent replies on the wire -- the server
-// replies to each following command and to EXEC regardless -- so the
-// connection must always be discarded.
-func (c *ClusterClient) txMultiErrorOutcome(err error, cmds []Cmder) *txOutcome {
+// txPreQueueErrorOutcome classifies a setup-phase reply error: the top-level
+// ASKING reply or the MULTI reply. The transaction body never executes (EXEC
+// returns -EXECABORT), so retryable errors such as -LOADING are safe to retry
+// on a fresh connection. A failed setup reply still leaves the remaining
+// replies on the wire -- the server replies to each following command and to
+// EXEC regardless -- so the connection is always discarded.
+func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutcome {
 	if !isRedisError(err) {
 		return c.txReadFatal(err)
 	}
