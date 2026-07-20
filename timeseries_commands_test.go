@@ -1400,6 +1400,79 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(cmd.Err()).To(MatchError("redis: GROUPBY is not allowed when multiple aggregators are specified"))
 			})
 
+			It("should TSMRange and TSMRevRange with ExcludeEmpty", Label("timeseries", "tsmrange", "tsmrevrange", "excludeempty", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "EXCLUDEEMPTY requires Redis 8.10+")
+
+				for _, key := range []string{"s", "t", "u"} {
+					opt := &redis.TSOptions{Labels: map[string]string{"sensor": "1", "type": "demo"}}
+					_, err := client.TSCreateWithArgs(ctx, key, opt).Result()
+					Expect(err).NotTo(HaveOccurred())
+				}
+				_, err := client.TSMAdd(ctx, [][]interface{}{
+					{"s", 100, 100}, {"t", 100, 100},
+					{"s", 200, 200}, {"t", 300, 300},
+					{"s", 400, 400}, {"t", 400, 400},
+					{"u", 2000, 2000},
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+
+				// Without ExcludeEmpty, "u" is returned with an empty samples array.
+				result, err := client.TSMRange(ctx, 0, 500, []string{"sensor=1"}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(3))
+				Expect(result).To(HaveKey("u"))
+
+				// With ExcludeEmpty, "u" is omitted because it has no samples in range.
+				result, err = client.TSMRangeWithArgs(ctx, 0, 500, []string{"sensor=1"}, &redis.TSMRangeOptions{
+					WithLabels:   true,
+					ExcludeEmpty: true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(2))
+				Expect(result).To(HaveKey("s"))
+				Expect(result).To(HaveKey("t"))
+				Expect(result).NotTo(HaveKey("u"))
+
+				// ExcludeEmpty composes with AGGREGATION.
+				result, err = client.TSMRangeWithArgs(ctx, 0, 500, []string{"sensor=1"}, &redis.TSMRangeOptions{
+					Aggregator:     redis.Min,
+					BucketDuration: 100,
+					ExcludeEmpty:   true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(2))
+				Expect(result).NotTo(HaveKey("u"))
+
+				// TSMRevRange with ExcludeEmpty behaves the same.
+				result, err = client.TSMRevRangeWithArgs(ctx, 0, 500, []string{"sensor=1"}, &redis.TSMRevRangeOptions{
+					ExcludeEmpty: true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(HaveLen(2))
+				Expect(result).NotTo(HaveKey("u"))
+
+				// When every matching series is empty, the reply is empty.
+				result, err = client.TSMRangeWithArgs(ctx, 1, 50, []string{"sensor=1"}, &redis.TSMRangeOptions{
+					ExcludeEmpty: true,
+				}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(BeEmpty())
+			})
+			It("should reject ExcludeEmpty combined with GroupBy", Label("timeseries", "tsmrange", "tsmrevrange", "excludeempty"), func() {
+				mrangeCmd := client.TSMRangeWithArgs(ctx, 0, 500, []string{"sensor=1"}, &redis.TSMRangeOptions{
+					ExcludeEmpty: true,
+					GroupByLabel: "sensor",
+					Reducer:      "max",
+				})
+				Expect(mrangeCmd.Err()).To(MatchError("redis: EXCLUDEEMPTY is not allowed with GROUPBY"))
+
+				mrevrangeCmd := client.TSMRevRangeWithArgs(ctx, 0, 500, []string{"sensor=1"}, &redis.TSMRevRangeOptions{
+					ExcludeEmpty: true,
+					GroupByLabel: "sensor",
+					Reducer:      "max",
+				})
+				Expect(mrevrangeCmd.Err()).To(MatchError("redis: EXCLUDEEMPTY is not allowed with GROUPBY"))
+			})
 			It("should TSMRevRangeWithArgs Latest", Label("timeseries", "tsmrevrangeWithArgs", "tsmrevrangelatest", "NonRedisEnterprise"), func() {
 				resultCreate, err := client.TSCreate(ctx, "a").Result()
 				Expect(err).NotTo(HaveOccurred())
