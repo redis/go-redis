@@ -7790,6 +7790,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
 
 			for _, id := range []string{"1-0", "2-0", "3-0"} {
 				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
@@ -7816,7 +7817,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead with MAXSIZE returning at least the first available entry", func() {
-			SkipBeforeRedisVersion(8.10, "XREAD MAXSIZE requires Redis 8.10+")
+			SkipBeforeRedisVersion("8.10", "XREAD MAXSIZE requires Redis 8.10+")
 
 			// MAXSIZE is a soft cap; even a value smaller than a single entry must
 			// still return the first available entry (never suppress all output).
@@ -7832,6 +7833,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XReadGroup with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREADGROUP MAXCOUNT requires Redis 8.10+")
 
 			for _, id := range []string{"1-0", "2-0", "3-0"} {
 				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "g1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
