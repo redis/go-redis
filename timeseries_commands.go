@@ -280,7 +280,7 @@ type TSMGetOptions struct {
 type TSNRangeOptions struct {
 	Latest          bool
 	FilterByTS      []int
-	FilterByValue   []int
+	FilterByValue   []float64 // exactly two elements: [min, max]
 	Count           int
 	Align           interface{}
 	Aggregators     []Aggregator
@@ -292,7 +292,7 @@ type TSNRangeOptions struct {
 type TSNRevRangeOptions struct {
 	Latest          bool
 	FilterByTS      []int
-	FilterByValue   []int
+	FilterByValue   []float64 // exactly two elements: [min, max]
 	Count           int
 	Align           interface{}
 	Aggregators     []Aggregator
@@ -1313,7 +1313,7 @@ func appendNRangeOptions(
 	keys []string,
 	latest bool,
 	filterByTS []int,
-	filterByValue []int,
+	filterByValue []float64,
 	count int,
 	align interface{},
 	aggregators []Aggregator,
@@ -1331,10 +1331,10 @@ func appendNRangeOptions(
 		}
 	}
 	if len(filterByValue) > 0 {
-		args = append(args, "FILTER_BY_VALUE")
-		for _, v := range filterByValue {
-			args = append(args, v)
+		if len(filterByValue) != 2 {
+			return args, fmt.Errorf("redis: FILTER_BY_VALUE requires exactly 2 elements [min, max], got %d", len(filterByValue))
 		}
+		args = append(args, "FILTER_BY_VALUE", filterByValue[0], filterByValue[1])
 	}
 	if count != 0 {
 		args = append(args, "COUNT", count)
