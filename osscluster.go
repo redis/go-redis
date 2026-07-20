@@ -2245,9 +2245,7 @@ func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutco
 	return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 }
 
-// classifyExecError turns an EXEC reply error into a retry/fatal outcome. If a
-// queue-stage redirect dirtied the tx (EXECABORT), follow that redirect with
-// the whole transaction; otherwise surface the triggering command error.
+// classifyExecError turns an EXEC reply error into a retry/fatal outcome.
 func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error) *txOutcome {
 	if moved, ask, addr := isMovedError(execErr); moved || ask {
 		// Narrow race: the slot moved after every command was queued.
@@ -2264,6 +2262,9 @@ func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedire
 		return &txOutcome{kind: txRetryConn, err: execErr}
 	}
 	if proto.IsExecAbortError(execErr) {
+		if firstFatal != nil {
+			return &txOutcome{kind: txFatal, err: firstFatal, execErr: execErr}
+		}
 		if firstRedirect != nil {
 			switch {
 			case firstRedirect.moved:
@@ -2274,9 +2275,7 @@ func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedire
 				return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
 			}
 		}
-		// Non-redirect abort: surface the triggering command error.
-		ferr := cmp.Or(firstFatal, execErr)
-		return &txOutcome{kind: txFatal, err: ferr, execErr: execErr}
+		return &txOutcome{kind: txFatal, err: execErr, execErr: execErr}
 	}
 	return &txOutcome{kind: txFatal, err: execErr}
 }
