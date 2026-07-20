@@ -1568,7 +1568,7 @@ func (c *Client) TxPipeline() Pipeliner {
 
 func (c *Client) pubSub() *PubSub {
 	pubsub := &PubSub{
-		opt: c.opt,
+		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 			if err != nil {
