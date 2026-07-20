@@ -163,6 +163,7 @@ func (a Aggregator) String() string {
 var (
 	errTSMultiAggregationGroupBy = errors.New("redis: GROUPBY is not allowed when multiple aggregators are specified")
 	errTSAggregationConflict     = errors.New("redis: setting both Aggregator and Aggregators is not allowed; use Aggregators instead because Aggregator is deprecated")
+	errTSExcludeEmptyGroupBy     = errors.New("redis: EXCLUDEEMPTY is not allowed with GROUPBY")
 )
 
 func formatAggregationArgs(aggregator Aggregator, aggregators []Aggregator) (string, int, error) {
@@ -245,8 +246,10 @@ type TSMRangeOptions struct {
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
-	GroupByLabel    interface{}
-	Reducer         interface{}
+	// ExcludeEmpty omits matching series that have no samples. Not allowed with GroupByLabel/Reducer. Redis 8.10+.
+	ExcludeEmpty bool
+	GroupByLabel interface{}
+	Reducer      interface{}
 }
 
 type TSMRevRangeOptions struct {
@@ -263,8 +266,10 @@ type TSMRevRangeOptions struct {
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
-	GroupByLabel    interface{}
-	Reducer         interface{}
+	// ExcludeEmpty omits matching series that have no samples. Not allowed with GroupByLabel/Reducer. Redis 8.10+.
+	ExcludeEmpty bool
+	GroupByLabel interface{}
+	Reducer      interface{}
 }
 
 type TSMGetOptions struct {
@@ -955,11 +960,8 @@ func (c cmdable) TSMRange(ctx context.Context, fromTimestamp int, toTimestamp in
 	return cmd
 }
 
-// TSMRangeWithArgs - Returns a range of samples from multiple time-series keys with additional options.
-// This function allows for specifying additional options such as:
-// Latest, FilterByTS, FilterByValue, WithLabels, SelectedLabels,
-// Count, Align, Aggregator, BucketDuration, BucketTimestamp,
-// Empty, GroupByLabel and Reducer.
+// TSMRangeWithArgs - Returns a range of samples from multiple time-series keys.
+// Options are set via TSMRangeOptions.
 // For more information - https://redis.io/commands/ts.mrange/
 func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MRANGE", fromTimestamp, toTimestamp}
@@ -1012,12 +1014,20 @@ func (c cmdable) TSMRangeWithArgs(ctx context.Context, fromTimestamp int, toTime
 		if options.Empty {
 			args = append(args, "EMPTY")
 		}
+		if options.ExcludeEmpty {
+			args = append(args, "EXCLUDEEMPTY")
+		}
 	}
 	args = append(args, "FILTER")
 	for _, f := range filterExpr {
 		args = append(args, f)
 	}
 	if options != nil {
+		if options.ExcludeEmpty && (options.GroupByLabel != nil || options.Reducer != nil) {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(errTSExcludeEmptyGroupBy)
+			return cmd
+		}
 		if multiAggregationCount > 1 && (options.GroupByLabel != nil || options.Reducer != nil) {
 			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
 			cmd.SetErr(errTSMultiAggregationGroupBy)
@@ -1047,11 +1057,8 @@ func (c cmdable) TSMRevRange(ctx context.Context, fromTimestamp int, toTimestamp
 	return cmd
 }
 
-// TSMRevRangeWithArgs - Returns a range of samples from multiple time-series keys in reverse order with additional options.
-// This function allows for specifying additional options such as:
-// Latest, FilterByTS, FilterByValue, WithLabels, SelectedLabels,
-// Count, Align, Aggregator, BucketDuration, BucketTimestamp,
-// Empty, GroupByLabel and Reducer.
+// TSMRevRangeWithArgs - Returns a range of samples from multiple time-series keys in reverse order.
+// Options are set via TSMRevRangeOptions.
 // For more information - https://redis.io/commands/ts.mrevrange/
 func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toTimestamp int, filterExpr []string, options *TSMRevRangeOptions) *MapStringSliceInterfaceCmd {
 	args := []interface{}{"TS.MREVRANGE", fromTimestamp, toTimestamp}
@@ -1104,12 +1111,20 @@ func (c cmdable) TSMRevRangeWithArgs(ctx context.Context, fromTimestamp int, toT
 		if options.Empty {
 			args = append(args, "EMPTY")
 		}
+		if options.ExcludeEmpty {
+			args = append(args, "EXCLUDEEMPTY")
+		}
 	}
 	args = append(args, "FILTER")
 	for _, f := range filterExpr {
 		args = append(args, f)
 	}
 	if options != nil {
+		if options.ExcludeEmpty && (options.GroupByLabel != nil || options.Reducer != nil) {
+			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
+			cmd.SetErr(errTSExcludeEmptyGroupBy)
+			return cmd
+		}
 		if multiAggregationCount > 1 && (options.GroupByLabel != nil || options.Reducer != nil) {
 			cmd := NewMapStringSliceInterfaceCmd(ctx, args...)
 			cmd.SetErr(errTSMultiAggregationGroupBy)
