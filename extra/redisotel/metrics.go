@@ -128,7 +128,13 @@ func registerClient(rdb *redis.Client, conf *config, state *metricsState) error 
 }
 
 func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set) {
-	poolAttrs = attribute.NewSet(conf.attrs...)
+	// attribute.NewSet sorts and de-duplicates its input slice in place.
+	// conf.attrs is shared with every metricsHook.attrs, which is read
+	// concurrently while MinIdleConns pre-warms connections in the background,
+	// so pass a copy to avoid mutating the shared backing array (issue #3880).
+	attrs := make([]attribute.KeyValue, len(conf.attrs))
+	copy(attrs, conf.attrs)
+	poolAttrs = attribute.NewSet(attrs...)
 	idleAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "idle"))...)
 	usedAttrs = attribute.NewSet(append(poolAttrs.ToSlice(), attribute.String("state", "used"))...)
 	return

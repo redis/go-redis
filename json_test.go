@@ -264,7 +264,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			})
 
 			It("should JSONSetWithArgs with FPHA", Label("json.set", "json"), func() {
-				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "FPHA argument requires Redis 8.8+")
 
 				fpArray := `[1.1, 2.2, 3.3, 4.4]`
 				for _, fpha := range []redis.FPHAType{
@@ -285,7 +285,7 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 			})
 
 			It("should JSONSetWithArgs with FPHA and NX/XX", Label("json.set", "json"), func() {
-				SkipBeforeRedisVersion(8.8, "FPHA argument requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "FPHA argument requires Redis 8.8+")
 
 				key := "fpha_nx"
 				fpArray := `[1.5, 2.5, 3.5]`
