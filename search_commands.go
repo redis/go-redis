@@ -494,8 +494,10 @@ type FTSynDumpCmd struct {
 // FTAggregateResult represents the result of an aggregate operation
 // NOTE: For RESP3 Total is not reliable (before Redis 8.8)
 type FTAggregateResult struct {
-	Total    int
-	Rows     []AggregateRow
+	Total int
+	Rows  []AggregateRow
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -626,8 +628,10 @@ type SpellCheckSuggestion struct {
 }
 
 type FTSearchResult struct {
-	Total    int
-	Docs     []Document
+	Total int
+	Docs  []Document
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -2897,8 +2901,10 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 
 // FTHybridResult represents the result of a hybrid search operation
 type FTHybridResult struct {
-	TotalResults  int
-	Results       []map[string]interface{}
+	TotalResults int
+	Results      []map[string]interface{}
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict), on RESP2 and RESP3; the fail policy returns an error.
 	Warnings      []string
 	ExecutionTime float64
 }
@@ -3041,9 +3047,13 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 		results = append(results, itemMap)
 	}
 
-	// Parse warnings (optional field)
+	// Optional warnings; accept both "warning" (as FT.SEARCH/FT.AGGREGATE) and "warnings".
 	var warnings []string
-	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+	warningsData, ok := resultMap["warning"].([]interface{})
+	if !ok {
+		warningsData, ok = resultMap["warnings"].([]interface{})
+	}
+	if ok {
 		warnings = make([]string, 0, len(warningsData))
 		for _, w := range warningsData {
 			if ws, ok := w.(string); ok {
