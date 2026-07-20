@@ -5045,6 +5045,66 @@ var _ = Describe("Commands", func() {
 			Expect(sInterCard.Val()).To(Equal(int64(2)))
 		})
 
+		It("should SUnionCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SUNIONCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set1", "a", "b", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "c", "d")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// exact union {a, b, c, d}
+			sUnionCard := client.SUnionCard(ctx, nil, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+
+			// exact with LIMIT capped at 3
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Limit: 3}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// missing key is treated as an empty set
+			sUnionCard = client.SUnionCard(ctx, nil, "set1", "missing")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// APPROX: for small sets the approximate result matches the exact value
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Approx: true}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+		})
+
+		It("should SDiffCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SDIFFCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set0", "a", "b", "c", "d", "e")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "c", "d", "x")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "e", "y")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// s0 \ (s1 ∪ s2) = {a, b}
+			sDiffCard := client.SDiffCard(ctx, nil, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(2)))
+
+			// exact with LIMIT capped at 1
+			sDiffCard = client.SDiffCard(ctx, &redis.SDiffCardOptions{Limit: 1}, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(1)))
+
+			// missing subtrahend key does not affect the result
+			sDiffCard = client.SDiffCard(ctx, nil, "set0", "missing")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(5)))
+
+			// missing first key yields an empty base set
+			sDiffCard = client.SDiffCard(ctx, nil, "missing", "set0")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(0)))
+		})
+
 		It("should SInterStore", Label("NonRedisEnterprise"), func() {
 			sAdd := client.SAdd(ctx, "set1", "a")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
