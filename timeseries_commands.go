@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -44,6 +45,23 @@ type TimeseriesCmdable interface {
 	TSNRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRangeOptions) *TSNRangePivotRowSliceCmd
 	TSNRevRange(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}) *TSNRangePivotRowSliceCmd
 	TSNRevRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRevRangeOptions) *TSNRangePivotRowSliceCmd
+	TSRead(ctx context.Context, key string, timestamp interface{}) *TSTimestampValueSliceCmd
+	TSReadWithArgs(ctx context.Context, key string, timestamp interface{}, options *TSReadOptions) *TSTimestampValueSliceCmd
+}
+
+// TS.READ timestamp cursor sentinels.
+const (
+	TSReadEarliest = "-" // read from the earliest sample
+	TSReadLatest   = "+" // latest sample, inclusive
+	TSReadNew      = "$" // only samples added after the call
+)
+
+// TSReadOptions holds the optional TS.READ arguments.
+type TSReadOptions struct {
+	Block    bool          // wait for samples (emits the BLOCK group)
+	Timeout  time.Duration // max wait; 0 blocks indefinitely
+	MinCount int           // unblock threshold; defaults to 1
+	MaxCount int           // reply cap; 0 is unlimited
 }
 
 type TSOptions struct {
@@ -818,6 +836,47 @@ func (c cmdable) TSRangeWithArgs(ctx context.Context, key string, fromTimestamp 
 	return cmd
 }
 
+// TSRead - Returns samples at or after timestamp, in ascending order.
+// timestamp is a non-negative Unix-ms integer or a sentinel (TSReadEarliest,
+// TSReadLatest, TSReadNew).
+// For more information - https://redis.io/commands/ts.read/
+func (c cmdable) TSRead(ctx context.Context, key string, timestamp interface{}) *TSTimestampValueSliceCmd {
+	args := []interface{}{"TS.READ", key, timestamp}
+	cmd := newTSTimestampValueSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSReadWithArgs - TS.READ with the optional BLOCK and MAX_COUNT groups.
+// When options.Block is set it waits for options.MinCount samples or until
+// options.Timeout elapses. Blocking calls must not be used in a pipeline or MULTI.
+// For more information - https://redis.io/commands/ts.read/
+func (c cmdable) TSReadWithArgs(ctx context.Context, key string, timestamp interface{}, options *TSReadOptions) *TSTimestampValueSliceCmd {
+	args := []interface{}{"TS.READ", key, timestamp}
+	blocking := false
+	var blockTimeout time.Duration
+	if options != nil {
+		if options.Block {
+			blocking = true
+			blockTimeout = options.Timeout
+			minCount := options.MinCount
+			if minCount <= 0 {
+				minCount = 1
+			}
+			args = append(args, "BLOCK", formatMs(ctx, options.Timeout), minCount)
+		}
+		if options.MaxCount != 0 {
+			args = append(args, "MAX_COUNT", options.MaxCount)
+		}
+	}
+	cmd := newTSTimestampValueSliceCmd(ctx, args...)
+	if blocking {
+		cmd.setReadTimeout(blockTimeout)
+	}
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 type TSTimestampValueSliceCmd struct {
 	baseCmd
 	val []TSTimestampValue
@@ -1315,6 +1374,7 @@ func (c cmdable) TSNRange(ctx context.Context, keys []string, fromTimestamp inte
 	}
 	args = append(args, fromTimestamp, toTimestamp)
 	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1344,6 +1404,7 @@ func (c cmdable) TSNRangeWithArgs(ctx context.Context, keys []string, fromTimest
 		}
 	}
 	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1358,6 +1419,7 @@ func (c cmdable) TSNRevRange(ctx context.Context, keys []string, fromTimestamp i
 	}
 	args = append(args, fromTimestamp, toTimestamp)
 	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -1387,6 +1449,7 @@ func (c cmdable) TSNRevRangeWithArgs(ctx context.Context, keys []string, fromTim
 		}
 	}
 	cmd := newTSNRangePivotRowSliceCmd(ctx, args...)
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }

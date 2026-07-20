@@ -108,13 +108,14 @@ var _ = Describe("Commands", func() {
 
 		It("should WaitAOF", func() {
 			const waitAOF = 3 * time.Second
-			Skip("flaky test")
 
-			// assuming that the redis instance doesn't have AOF enabled
+			// No replicas here, so WAITAOF blocks until timeout and returns
+			// the two counts [numlocal, numreplicas]. numLocal=0 skips AOF.
 			start := time.Now()
-			val, err := client.WaitAOF(ctx, 1, 1, waitAOF).Result()
+			val, err := client.WaitAOF(ctx, 0, 1, waitAOF).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(val).NotTo(ContainSubstring("ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled"))
+			Expect(val).To(HaveLen(2))
+			Expect(val[1]).To(Equal(int64(0)))
 			Expect(time.Now()).To(BeTemporally("~", start.Add(waitAOF), 3*time.Second))
 		})
 
@@ -9647,6 +9648,57 @@ var _ = Describe("Commands", func() {
 			result, err = client.SlowLogLen(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).Should(Equal(int64(1)))
+		})
+
+		It("returns the command argument count", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SLOWLOG GET reports the command argument count since Redis 8.10")
+
+			const key = "slowlog-log-slower-than"
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// A short command: CommandArgc matches the number of stored Args.
+			Expect(client.Do(ctx, "slowlog", "reset").Err()).NotTo(HaveOccurred())
+			client.Set(ctx, "test", "true", 0)
+
+			result, err := client.SlowLogGet(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			var setEntry *redis.SlowLog
+			for i := range result {
+				if len(result[i].Args) > 0 && result[i].Args[0] == "set" {
+					setEntry = &result[i]
+				}
+			}
+			Expect(setEntry).NotTo(BeNil())
+			Expect(setEntry.CommandArgc).To(Equal(int64(3))) // SET test true
+
+			// A long command: Redis truncates the stored Args at slowlog-max-argc,
+			// but CommandArgc still reports the full original argument count.
+			maxArgc := client.ConfigGet(ctx, "slowlog-max-argc").Val()["slowlog-max-argc"]
+			client.ConfigSet(ctx, "slowlog-max-argc", "32")
+			defer client.ConfigSet(ctx, "slowlog-max-argc", maxArgc)
+			Expect(client.Do(ctx, "slowlog", "reset").Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"rpush", "slowlog-big-list"}
+			for i := 0; i < 50; i++ {
+				args = append(args, fmt.Sprintf("v%d", i))
+			}
+			Expect(client.Do(ctx, args...).Err()).NotTo(HaveOccurred())
+
+			result, err = client.SlowLogGet(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			var pushEntry *redis.SlowLog
+			for i := range result {
+				if len(result[i].Args) > 0 && result[i].Args[0] == "rpush" {
+					pushEntry = &result[i]
+				}
+			}
+			Expect(pushEntry).NotTo(BeNil())
+			// "rpush" + key + 50 values = 52 arguments.
+			Expect(pushEntry.CommandArgc).To(Equal(int64(52)))
+			// Stored Args are truncated, so the full count is only available via CommandArgc.
+			Expect(int64(len(pushEntry.Args))).To(BeNumerically("<", pushEntry.CommandArgc))
 		})
 	})
 

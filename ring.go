@@ -715,6 +715,17 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	return shard.Client.SSubscribe(ctx, channels...)
 }
 
+// Publish posts the message to the channel
+func (c *Ring) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	shard, err := c.sharding.GetByKey(channel)
+	if err != nil {
+		cmd := NewIntCmd(ctx, "publish", channel, message)
+		cmd.SetErr(err)
+		return cmd
+	}
+	return shard.Client.Publish(ctx, channel, message)
+}
+
 func (c *Ring) OnNewNode(fn func(rdb *Client)) {
 	c.sharding.OnNewNode(fn)
 }

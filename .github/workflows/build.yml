@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -48,7 +48,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.10.x"]="8.10-m01-int"
+            ["8.10.x"]="custom-29557896054-debian"
             ["8.8.x"]="8.8.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
