@@ -127,6 +127,8 @@ func (c cmdable) SDiffCard(ctx context.Context, opts *SDiffCardOptions, keys ...
 	}
 	args = append(args, "limit", opts.Limit)
 	cmd := NewIntCmd(ctx, args...)
+	// Keys start after the numkeys arg: ["sdiffcard", numKeys, key1, ...].
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
@@ -384,6 +386,8 @@ func (c cmdable) SUnionCard(ctx context.Context, opts *SUnionCardOptions, keys .
 	}
 	args = append(args, "limit", opts.Limit)
 	cmd := NewIntCmd(ctx, args...)
+	// Keys start after the numkeys arg: ["sunioncard", numKeys, key1, ...].
+	cmd.SetFirstKeyPos(2)
 	_ = c(ctx, cmd)
 	return cmd
 }
