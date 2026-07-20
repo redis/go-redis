@@ -5046,6 +5046,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SUnionCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SUNIONCARD is available since Redis 8.10")
+
 			sAdd := client.SAdd(ctx, "set1", "a", "b", "c")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set2", "c", "d")
@@ -5073,6 +5075,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SDiffCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SDIFFCARD is available since Redis 8.10")
+
 			sAdd := client.SAdd(ctx, "set0", "a", "b", "c", "d", "e")
 			Expect(sAdd.Err()).NotTo(HaveOccurred())
 			sAdd = client.SAdd(ctx, "set1", "c", "d", "x")
