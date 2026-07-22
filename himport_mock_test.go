@@ -1,0 +1,285 @@
+package redis_test
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// himportMockServer is a minimal RESP2 server implementing the HIMPORT
+// session semantics: fieldsets live per connection, RESET wipes them, and a
+// BOOM command drops the connection. It lets the lazy-replay logic be
+// exercised end to end without a Redis 8.10 server.
+type himportMockServer struct {
+	ln net.Listener
+
+	mu           sync.Mutex
+	hashes       map[string]map[string]string
+	prepareCount int
+}
+
+func newHImportMockServer(t *testing.T) *himportMockServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &himportMockServer{
+		ln:     ln,
+		hashes: make(map[string]map[string]string),
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go srv.serve(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return srv
+}
+
+func (s *himportMockServer) addr() string { return s.ln.Addr().String() }
+
+func (s *himportMockServer) prepares() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prepareCount
+}
+
+func (s *himportMockServer) hash(key string) map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hashes[key]
+}
+
+// readCommand parses one RESP2 array-of-bulk-strings request.
+func readCommand(rd *bufio.Reader) ([]string, error) {
+	line, err := rd.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if len(line) == 0 || line[0] != '*' {
+		return nil, fmt.Errorf("unexpected request line %q", line)
+	}
+	n, err := strconv.Atoi(line[1:])
+	if err != nil {
+		return nil, err
+	}
+	args := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		sizeLine, err := rd.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		sizeLine = strings.TrimSuffix(strings.TrimSuffix(sizeLine, "\n"), "\r")
+		if len(sizeLine) == 0 || sizeLine[0] != '$' {
+			return nil, fmt.Errorf("unexpected bulk header %q", sizeLine)
+		}
+		size, err := strconv.Atoi(sizeLine[1:])
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, size+2)
+		if _, err := io.ReadFull(rd, buf); err != nil {
+			return nil, err
+		}
+		args = append(args, string(buf[:size]))
+	}
+	return args, nil
+}
+
+func (s *himportMockServer) serve(conn net.Conn) {
+	defer conn.Close()
+	rd := bufio.NewReader(conn)
+	fieldsets := make(map[string][]string) // per-connection session state
+
+	reply := func(msg string) bool {
+		_, err := conn.Write([]byte(msg))
+		return err == nil
+	}
+
+	for {
+		args, err := readCommand(rd)
+		if err != nil {
+			return
+		}
+		switch strings.ToUpper(args[0]) {
+		case "HELLO":
+			// Pre-RESP3 server: the client falls back to RESP2.
+			if !reply("-ERR unknown command 'HELLO'\r\n") {
+				return
+			}
+		case "RESET":
+			fieldsets = make(map[string][]string)
+			if !reply("+RESET\r\n") {
+				return
+			}
+		case "BOOM":
+			// Simulate a dropped connection: close without replying.
+			return
+		case "HIMPORT":
+			if !s.handleHImport(args, fieldsets, reply) {
+				return
+			}
+		default:
+			if !reply("+OK\r\n") {
+				return
+			}
+		}
+	}
+}
+
+func (s *himportMockServer) handleHImport(args []string, fieldsets map[string][]string, reply func(string) bool) bool {
+	switch strings.ToUpper(args[1]) {
+	case "PREPARE":
+		name, fields := args[2], args[3:]
+		seen := make(map[string]struct{}, len(fields))
+		for _, f := range fields {
+			if _, dup := seen[f]; dup {
+				return reply("-ERR duplicate field name in fieldset\r\n")
+			}
+			seen[f] = struct{}{}
+		}
+		fieldsets[name] = append([]string(nil), fields...)
+		s.mu.Lock()
+		s.prepareCount++
+		s.mu.Unlock()
+		return reply("+OK\r\n")
+	case "SET":
+		key, name, values := args[2], args[3], args[4:]
+		fields, ok := fieldsets[name]
+		if !ok {
+			return reply("-ERR no such fieldset\r\n")
+		}
+		if len(values) != len(fields) {
+			return reply("-ERR value count does not match fieldset field count\r\n")
+		}
+		hash := make(map[string]string, len(fields))
+		for i, f := range fields {
+			hash[f] = values[i]
+		}
+		s.mu.Lock()
+		s.hashes[key] = hash
+		s.mu.Unlock()
+		return reply("+OK\r\n")
+	case "DISCARD":
+		if _, ok := fieldsets[args[2]]; ok {
+			delete(fieldsets, args[2])
+			return reply(":1\r\n")
+		}
+		return reply(":0\r\n")
+	case "DISCARDALL":
+		n := len(fieldsets)
+		for name := range fieldsets {
+			delete(fieldsets, name)
+		}
+		return reply(":" + strconv.Itoa(n) + "\r\n")
+	}
+	return reply("-ERR Unknown subcommand\r\n")
+}
+
+// TestHImportLazyReplay drives the client against the mock server and pins
+// the lazy-replay contract: PREPARE runs at most once per connection session
+// (NF.2), a session that lost its fieldsets ("no such fieldset" after RESET)
+// is transparently re-prepared and retried once, and a brand-new connection
+// is prepared on first use.
+func TestHImportLazyReplay(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        2,
+		PoolSize:        1, // deterministic: every command runs on the same connection
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a", "b").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k1", "fs", "1", "2").Err(); err != nil {
+		t.Fatalf("set k1: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k2", "fs", "3", "4").Err(); err != nil {
+		t.Fatalf("set k2: %v", err)
+	}
+	if got := srv.prepares(); got != 1 {
+		t.Errorf("prepares after two sets on one session = %d, want 1 (NF.2: replay at most once)", got)
+	}
+	if h := srv.hash("k1"); h["a"] != "1" || h["b"] != "2" {
+		t.Errorf("k1 = %v, want a=1 b=2", h)
+	}
+
+	// RESET wipes the server session behind the client's back; the next SET
+	// gets "no such fieldset", which must trigger one re-prepare + retry.
+	if err := client.Do(ctx, "reset").Err(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k3", "fs", "5", "6").Err(); err != nil {
+		t.Fatalf("set k3 after reset: %v", err)
+	}
+	if got := srv.prepares(); got != 2 {
+		t.Errorf("prepares after reset recovery = %d, want 2", got)
+	}
+	if h := srv.hash("k3"); h["a"] != "5" || h["b"] != "6" {
+		t.Errorf("k3 = %v, want a=5 b=6", h)
+	}
+
+	// BOOM drops the connection; the pool dials a fresh one whose empty
+	// session must be prepared before its first SET.
+	if err := client.Do(ctx, "boom").Err(); err == nil {
+		t.Fatal("boom should surface a connection error")
+	}
+	prepBefore := srv.prepares()
+	if err := client.HImportSet(ctx, "k4", "fs", "7", "8").Err(); err != nil {
+		t.Fatalf("set k4 on fresh connection: %v", err)
+	}
+	if got := srv.prepares(); got != prepBefore+1 {
+		t.Errorf("prepares after fresh connection = %d, want %d", got, prepBefore+1)
+	}
+
+	// Pipeline on another fresh connection: one injected PREPARE covers all
+	// SETs of the same fieldset in the batch.
+	if err := client.Do(ctx, "boom").Err(); err == nil {
+		t.Fatal("boom should surface a connection error")
+	}
+	prepBefore = srv.prepares()
+	pipe := client.Pipeline()
+	set5 := pipe.HImportSet(ctx, "k5", "fs", "9", "10")
+	set6 := pipe.HImportSet(ctx, "k6", "fs", "11", "12")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("pipeline: %v", err)
+	}
+	if set5.Err() != nil || set6.Err() != nil {
+		t.Fatalf("pipeline sets: %v, %v", set5.Err(), set6.Err())
+	}
+	if got := srv.prepares(); got != prepBefore+1 {
+		t.Errorf("prepares after pipeline on fresh connection = %d, want %d", got, prepBefore+1)
+	}
+	if h := srv.hash("k6"); h["a"] != "11" || h["b"] != "12" {
+		t.Errorf("k6 = %v, want a=11 b=12", h)
+	}
+
+	// Discard drops the client-side registry entry: the next SET is a raw
+	// pass-through and surfaces the server error unchanged.
+	if err := client.HImportDiscard(ctx, "fs").Err(); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	err := client.HImportSet(ctx, "k7", "fs", "13", "14").Err()
+	if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Errorf("set after discard = %v, want no-such-fieldset pass-through", err)
+	}
+}

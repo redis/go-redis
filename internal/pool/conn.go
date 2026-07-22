@@ -109,6 +109,14 @@ type Conn struct {
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
 
+	// preparedFieldsets tracks HIMPORT fieldsets prepared on this
+	// connection's current server session: fieldset name -> client-side
+	// registry version. The server drops fieldsets when the session ends,
+	// so the map is cleared whenever the underlying network connection is
+	// replaced. Guarded by preparedFieldsetsMu; nil until first use.
+	preparedFieldsetsMu sync.Mutex
+	preparedFieldsets   map[string]uint64
+
 	// When a goroutine closes a connection, it usually knows the reason, so closeReason is not needed.
 	// closeReason is only used when an in-use connection is closed by another goroutine,
 	// to inform the goroutine using the connection why the connection was closed.
@@ -661,6 +669,46 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.readerMu.Unlock()
 
 	cn.bw.Reset(netConn)
+
+	// A new socket is a new server session with no HIMPORT fieldsets.
+	cn.ClearPreparedFieldsets()
+}
+
+// FieldsetPreparedVersion returns the client-side registry version at which
+// the named HIMPORT fieldset was prepared on this connection's current server
+// session, or 0 if it was not prepared on it (registry versions start at 1).
+func (cn *Conn) FieldsetPreparedVersion(name string) uint64 {
+	cn.preparedFieldsetsMu.Lock()
+	version := cn.preparedFieldsets[name]
+	cn.preparedFieldsetsMu.Unlock()
+	return version
+}
+
+// MarkFieldsetPrepared records that the named HIMPORT fieldset was prepared
+// on this connection's current server session at the given registry version.
+func (cn *Conn) MarkFieldsetPrepared(name string, version uint64) {
+	cn.preparedFieldsetsMu.Lock()
+	if cn.preparedFieldsets == nil {
+		cn.preparedFieldsets = make(map[string]uint64)
+	}
+	cn.preparedFieldsets[name] = version
+	cn.preparedFieldsetsMu.Unlock()
+}
+
+// UnmarkFieldsetPrepared forgets that the named HIMPORT fieldset was prepared
+// on this connection, forcing a replay before the next HIMPORT SET using it.
+func (cn *Conn) UnmarkFieldsetPrepared(name string) {
+	cn.preparedFieldsetsMu.Lock()
+	delete(cn.preparedFieldsets, name)
+	cn.preparedFieldsetsMu.Unlock()
+}
+
+// ClearPreparedFieldsets forgets all HIMPORT fieldsets prepared on this
+// connection.
+func (cn *Conn) ClearPreparedFieldsets() {
+	cn.preparedFieldsetsMu.Lock()
+	cn.preparedFieldsets = nil
+	cn.preparedFieldsetsMu.Unlock()
 }
 
 // GetNetConn safely returns the current network connection using atomic load (lock-free).

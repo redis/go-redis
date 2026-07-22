@@ -366,6 +366,11 @@ type baseClient struct {
 
 	// streamingCredentialsManager is used to manage streaming credentials
 	streamingCredentialsManager *streaming.Manager
+
+	// himport is the client-side registry of HIMPORT fieldsets, used to
+	// lazily replay HIMPORT PREPARE onto pooled connections (see himport.go).
+	// Shared by clones and by Conn instances derived from the same pool.
+	himport *himportRegistry
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -381,6 +386,7 @@ func (c *baseClient) clone() *baseClient {
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
+		himport:                     c.himport,
 	}
 	return clone
 }
@@ -874,13 +880,29 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 
 	var lastErr error
 	totalAttempts := 0
-	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+	maxRetries := c.opt.MaxRetries
+	himportRetried := false
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		attempt := attempt
 
 		retry, cn, err := c._process(ctx, cmd, attempt)
 		if cn != nil {
 			lastConn = cn
+		}
+		// A "no such fieldset" reply for a registered fieldset means the
+		// connection lost its server session state (e.g. RESET, concurrent
+		// discard). himportRecover invalidates the connection's prepared
+		// flag; grant a single extra attempt so the retry re-prepares
+		// lazily on whichever connection it lands.
+		if err != nil && !retry && !himportRetried && !cmd.NoRetry() &&
+			c.himportRecover(cmd, err, cn) {
+			himportRetried = true
+			if attempt == maxRetries {
+				maxRetries++
+			}
+			lastErr = err
+			continue
 		}
 		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
 		// which writes directly to an io.Writer and cannot undo partial writes)
@@ -1000,7 +1022,17 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
 
+		// An HIMPORT SET whose fieldset is registered client-side but not
+		// prepared on this connection's session gets the PREPARE written in
+		// the same round trip, right before it.
+		prepCmd := c.himportEnsureCmd(ctx, cn, cmd)
+
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			if prepCmd != nil {
+				if err := writeCmd(wr, prepCmd); err != nil {
+					return err
+				}
+			}
 			return writeCmd(wr, cmd)
 		}); err != nil {
 			retryTimeout.Store(1)
@@ -1022,7 +1054,18 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
-			return readReplyFunc(rd)
+			if prepCmd != nil {
+				if err := c.himportReadPrepareReplies(ctx, cn, rd, []*HImportPrepareCmd{prepCmd}); err != nil {
+					return err
+				}
+			}
+			err := readReplyFunc(rd)
+			if prepCmd != nil && prepCmd.Err() != nil && (err == nil || isRedisError(err)) {
+				// The injected PREPARE failed; its error is the root cause of
+				// the command's "no such fieldset" reply (drained above).
+				err = prepCmd.Err()
+			}
+			return err
 		}); err != nil {
 			if cmd.readTimeout() == nil {
 				retryTimeout.Store(1)
@@ -1032,6 +1075,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return err
 		}
 
+		if hc, ok := cmd.(himportCmder); ok {
+			c.himportAfterCmd(cn, hc)
+		}
 		return nil
 	}); err != nil {
 		retry := shouldRetry(err, retryTimeout.Load() == 1)
@@ -1246,7 +1292,17 @@ func (c *baseClient) pipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
 	}
 
+	// Registered HIMPORT fieldsets the batch references but this
+	// connection's session lacks get their PREPAREs written ahead of the
+	// batch.
+	prepCmds := c.himportPrepareCmdsForBatch(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, prep := range prepCmds {
+			if err := writeCmd(wr, prep); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		setCmdsErr(cmds, err)
@@ -1254,8 +1310,15 @@ func (c *baseClient) pipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := c.himportReadPrepareReplies(ctx, cn, rd, prepCmds); err != nil {
+			return err
+		}
 		// read all replies
-		return c.pipelineReadCmds(ctx, cn, rd, cmds)
+		err := c.pipelineReadCmds(ctx, cn, rd, cmds)
+		if err == nil || isRedisError(err) {
+			c.himportAfterBatch(cn, prepCmds, cmds)
+		}
+		return err
 	}); err != nil {
 		return true, err
 	}
@@ -1288,7 +1351,17 @@ func (c *baseClient) txPipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
 	}
 
+	// Registered HIMPORT fieldsets the transaction references but this
+	// connection's session lacks get their PREPAREs written ahead of MULTI;
+	// the session state is visible inside the transaction.
+	prepCmds := c.himportPrepareCmdsForBatch(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, prep := range prepCmds {
+			if err := writeCmd(wr, prep); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		setCmdsErr(cmds, err)
@@ -1296,6 +1369,10 @@ func (c *baseClient) txPipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := c.himportReadPrepareReplies(ctx, cn, rd, prepCmds); err != nil {
+			return err
+		}
+
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
@@ -1306,7 +1383,11 @@ func (c *baseClient) txPipelineProcessCmds(
 		}
 
 		// Read replies.
-		return c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
+		err := c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
+		if err == nil || isRedisError(err) {
+			c.himportAfterBatch(cn, prepCmds, trimmedCmds)
+		}
+		return err
 	}); err != nil {
 		return false, err
 	}
@@ -1388,6 +1469,7 @@ func NewClient(opt *Options) *Client {
 		baseClient: &baseClient{
 			opt:     opt,
 			onClose: &onCloseHooks{},
+			himport: newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -1465,7 +1547,12 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
+	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
+	// Share the HIMPORT fieldset registry: the sticky pool borrows
+	// connections from this client's pool, so fieldsets prepared on them
+	// stay valid after the connections are returned.
+	conn.himport = c.himport
+	return conn
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
@@ -1671,6 +1758,7 @@ func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn 
 			opt:      opt,
 			connPool: connPool,
 			onClose:  &onCloseHooks{},
+			himport:  newHImportRegistry(),
 		},
 	}
 
