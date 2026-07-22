@@ -48,7 +48,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.10.x"]="custom-29557896054-debian"
+            ["8.10.x"]="8.10-rc2"
             ["8.8.x"]="8.8.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
