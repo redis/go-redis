@@ -1058,6 +1058,12 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				if err := c.himportReadPrepareReplies(ctx, cn, rd, []*HImportPrepareCmd{prepCmd}); err != nil {
 					return err
 				}
+				// A push notification can arrive between the PREPARE reply
+				// and the command reply; drain again so readReplyFunc does
+				// not consume it as the command's reply.
+				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+				}
 			}
 			err := readReplyFunc(rd)
 			if prepCmd != nil && prepCmd.Err() != nil && (err == nil || isRedisError(err)) {

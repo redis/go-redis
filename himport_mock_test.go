@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // himportMockServer is a minimal RESP2 server implementing the HIMPORT
@@ -21,9 +22,15 @@ import (
 type himportMockServer struct {
 	ln net.Listener
 
+	// resp3 makes HELLO succeed so the client negotiates RESP3.
+	resp3 bool
+
 	mu           sync.Mutex
 	hashes       map[string]map[string]string
 	prepareCount int
+	// pushBeforeSetReply, when armed, makes the next HIMPORT SET reply be
+	// preceded by an out-of-band RESP3 push frame.
+	pushBeforeSetReply bool
 }
 
 func newHImportMockServer(t *testing.T) *himportMockServer {
@@ -61,6 +68,20 @@ func (s *himportMockServer) hash(key string) map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hashes[key]
+}
+
+func (s *himportMockServer) armPushBeforeSetReply() {
+	s.mu.Lock()
+	s.pushBeforeSetReply = true
+	s.mu.Unlock()
+}
+
+func (s *himportMockServer) consumePushBeforeSetReply() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	armed := s.pushBeforeSetReply
+	s.pushBeforeSetReply = false
+	return armed
 }
 
 // readCommand parses one RESP2 array-of-bulk-strings request.
@@ -117,6 +138,12 @@ func (s *himportMockServer) serve(conn net.Conn) {
 		}
 		switch strings.ToUpper(args[0]) {
 		case "HELLO":
+			if s.resp3 {
+				if !reply("%3\r\n$6\r\nserver\r\n$5\r\nredis\r\n$7\r\nversion\r\n$6\r\n8.10.0\r\n$5\r\nproto\r\n:3\r\n") {
+					return
+				}
+				continue
+			}
 			// Pre-RESP3 server: the client falls back to RESP2.
 			if !reply("-ERR unknown command 'HELLO'\r\n") {
 				return
@@ -173,6 +200,16 @@ func (s *himportMockServer) handleHImport(args []string, fieldsets map[string][]
 		s.mu.Lock()
 		s.hashes[key] = hash
 		s.mu.Unlock()
+		if s.consumePushBeforeSetReply() {
+			// Out-of-band push frame squeezed in right before the SET reply
+			// (after the injected PREPARE's reply): the client must drain it
+			// instead of consuming it as the SET reply. The payload is sized
+			// like a real notification so PeekPushNotificationName's initial
+			// peek window (36 bytes) is satisfied without waiting for the
+			// read deadline.
+			payload := strings.Repeat("x", 32)
+			return reply(">2\r\n$8\r\ntestpush\r\n$32\r\n" + payload + "\r\n+OK\r\n")
+		}
 		return reply("+OK\r\n")
 	case "DISCARD":
 		if _, ok := fieldsets[args[2]]; ok {
@@ -281,5 +318,57 @@ func TestHImportLazyReplay(t *testing.T) {
 	err := client.HImportSet(ctx, "k7", "fs", "13", "14").Err()
 	if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
 		t.Errorf("set after discard = %v, want no-such-fieldset pass-through", err)
+	}
+}
+
+// TestHImportInjectedPrepareWithPushNotification pins the RESP3 read
+// sequence: a push frame arriving between the injected PREPARE's reply and
+// the SET's reply must be drained as a notification, not consumed as the
+// SET's reply.
+func TestHImportInjectedPrepareWithPushNotification(t *testing.T) {
+	srv := newHImportMockServer(t)
+	srv.resp3 = true
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        3,
+		PoolSize:        1,
+		MaxRetries:      -1, // fail BOOM fast; the injected PREPARE needs no retries
+		DisableIdentity: true,
+		// The mock is not a real cluster; keep maintenance-notification
+		// machinery out of the connection lifecycle.
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a", "b").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+
+	// Drop the connection so the next SET runs on a fresh session and gets
+	// the PREPARE injected in front of it.
+	if err := client.Do(ctx, "boom").Err(); err == nil {
+		t.Fatal("boom should surface a connection error")
+	}
+
+	prepBefore := srv.prepares()
+	srv.armPushBeforeSetReply()
+	if err := client.HImportSet(ctx, "k1", "fs", "1", "2").Err(); err != nil {
+		t.Fatalf("set with interleaved push notification: %v", err)
+	}
+	if got := srv.prepares(); got != prepBefore+1 {
+		t.Errorf("prepares = %d, want %d (PREPARE must be injected on the fresh connection)", got, prepBefore+1)
+	}
+	if h := srv.hash("k1"); h["a"] != "1" || h["b"] != "2" {
+		t.Errorf("k1 = %v, want a=1 b=2", h)
+	}
+
+	// The connection must stay aligned for subsequent commands.
+	if err := client.HImportSet(ctx, "k2", "fs", "3", "4").Err(); err != nil {
+		t.Fatalf("follow-up set: %v", err)
+	}
+	if h := srv.hash("k2"); h["a"] != "3" || h["b"] != "4" {
+		t.Errorf("k2 = %v, want a=3 b=4", h)
 	}
 }
