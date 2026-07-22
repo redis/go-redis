@@ -347,6 +347,69 @@ func TestReader_ReadStringInto_BufferTooSmall(t *testing.T) {
 	}
 }
 
+func TestReader_Discard_NilReplies(t *testing.T) {
+	// Discard must consume only the header line of a nil reply, leaving the
+	// following reply byte-aligned. A nil bulk string ($-1), verbatim (=-1)
+	// and blob error (!-1) each have no payload; discarding an extra 2 bytes
+	// (the phantom payload CRLF) eats into the next reply and desyncs a
+	// pooled connection so one command's data bleeds into another's.
+	nilHeaders := []string{"$-1", "=-1", "!-1", "*-1", "%-1"}
+	for _, h := range nilHeaders {
+		src := h + "\r\n$5\r\nhello\r\n"
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if err := r.DiscardNext(); err != nil {
+			t.Fatalf("%s: DiscardNext: %v", h, err)
+		}
+		s, err := r.ReadString()
+		if err != nil {
+			t.Fatalf("%s: follow-up ReadString: %v (stream left misaligned by Discard)", h, err)
+		}
+		if s != "hello" {
+			t.Fatalf("%s: follow-up got %q, want \"hello\"", h, s)
+		}
+	}
+}
+
+func TestReader_Discard_AttributeWithNilValue(t *testing.T) {
+	// A RESP3 attribute carrying a nil bulk value is skipped via Discard on
+	// the read path (ReadLine -> RespAttr -> Discard). The real reply that
+	// follows the attribute must parse unchanged.
+	src := "|1\r\n$3\r\nttl\r\n$-1\r\n$6\r\nsecond\r\n"
+	r := proto.NewReader(bytes.NewReader([]byte(src)))
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString after nil-valued attribute: %v", err)
+	}
+	if s != "second" {
+		t.Fatalf("got %q, want \"second\"", s)
+	}
+}
+
+func TestReader_Discard_MapCountOverflow(t *testing.T) {
+	// A valid map is discarded pair-by-pair and leaves the next reply aligned.
+	src := "%2\r\n+a\r\n+1\r\n+b\r\n+2\r\n$5\r\nhello\r\n"
+	r := proto.NewReader(bytes.NewReader([]byte(src)))
+	if err := r.DiscardNext(); err != nil {
+		t.Fatalf("DiscardNext on valid map: %v", err)
+	}
+	if s, err := r.ReadString(); err != nil || s != "hello" {
+		t.Fatalf("follow-up ReadString = %q, %v; want \"hello\", nil", s, err)
+	}
+
+	// A map (and an attribute) advertising a count above MaxInt/2 used to make
+	// the n*2 element loop overflow int to a negative bound, skip the body and
+	// return nil, leaving the map bytes to be read as the next reply. Iterating
+	// over pairs instead means the oversized frame is rejected with an error
+	// rather than silently desyncing a pooled connection.
+	for _, h := range []string{"%4611686018427387904", "|4611686018427387904"} {
+		src := h + "\r\n+k\r\n+v\r\n:42\r\n"
+		r := proto.NewReader(bytes.NewReader([]byte(src)))
+		if err := r.DiscardNext(); err == nil {
+			t.Fatalf("%s: DiscardNext returned nil; oversized count was silently skipped", h)
+		}
+	}
+}
+
 func TestReader_ReadStringInto_Large(t *testing.T) {
 	// Payload deliberately larger than the default bufio buffer (32 KiB)
 	// so we exercise the path where bufio.Reader drains its internal

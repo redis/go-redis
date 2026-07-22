@@ -75,6 +75,25 @@ var _ = Describe("ConnPool", func() {
 		}))
 	})
 
+	It("should retire idle conns and mark in-use conns for close on put", func() {
+		idleConn, err := connPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		inUseConn, err := connPool.Get(ctx)
+		Expect(err).NotTo(HaveOccurred())
+
+		connPool.Put(ctx, idleConn)
+
+		connPool.RetireConns(ctx, []*pool.Conn{idleConn, inUseConn}, pool.CloseReasonMaintNotificationsDisabled)
+		Expect(idleConn.IsClosed()).To(BeTrue())
+		Expect(inUseConn.IsClosed()).To(BeFalse())
+		Expect(inUseConn.CloseOnPutReason()).To(Equal(pool.CloseReasonMaintNotificationsDisabled))
+
+		connPool.Put(ctx, inUseConn)
+		Expect(inUseConn.IsClosed()).To(BeTrue())
+		Expect(connPool.Len()).To(Equal(0))
+		Expect(connPool.IdleLen()).To(Equal(0))
+	})
+
 	It("should unblock client when conn is removed", func() {
 		// Reserve one connection.
 		cn, err := connPool.Get(ctx)
@@ -452,9 +471,9 @@ func TestDialerRetryConfiguration(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CustomDialerRetries", func(t *testing.T) {
-		var attempts int64
+		var attempts atomic.Int64
 		failingDialer := func(ctx context.Context) (net.Conn, error) {
-			atomic.AddInt64(&attempts, 1)
+			attempts.Add(1)
 			return nil, errors.New("dial failed")
 		}
 
@@ -476,7 +495,7 @@ func TestDialerRetryConfiguration(t *testing.T) {
 
 		// Should have attempted at least 3 times (DialerRetries = 3)
 		// There might be additional attempts due to pool logic
-		finalAttempts := atomic.LoadInt64(&attempts)
+		finalAttempts := attempts.Load()
 		if finalAttempts < 3 {
 			t.Errorf("Expected at least 3 dial attempts, got %d", finalAttempts)
 		}
@@ -486,9 +505,9 @@ func TestDialerRetryConfiguration(t *testing.T) {
 	})
 
 	t.Run("DefaultDialerRetries", func(t *testing.T) {
-		var attempts int64
+		var attempts atomic.Int64
 		failingDialer := func(ctx context.Context) (net.Conn, error) {
-			atomic.AddInt64(&attempts, 1)
+			attempts.Add(1)
 			return nil, errors.New("dial failed")
 		}
 
@@ -510,7 +529,7 @@ func TestDialerRetryConfiguration(t *testing.T) {
 		// Should have attempted 5 times (default DialerRetries = 5)
 		// Note: There may be one additional attempt from tryDial() goroutine
 		// which is launched when dialErrorsNum reaches PoolSize
-		finalAttempts := atomic.LoadInt64(&attempts)
+		finalAttempts := attempts.Load()
 		if finalAttempts < 5 {
 			t.Errorf("Expected at least 5 dial attempts (default), got %d", finalAttempts)
 		}
@@ -1029,10 +1048,10 @@ var _ = Describe("queuedNewConn", func() {
 		// 7. queuedNewConn must call freeTurn()
 		// 8. Check: QueueLen should be 1 (only B holding turn), not 2 (A's turn leaked)
 
-		callCount := int32(0)
+		var callCount atomic.Int32
 
 		controlledDialer := func(ctx context.Context) (net.Conn, error) {
-			count := atomic.AddInt32(&callCount, 1)
+			count := callCount.Add(1)
 			if count == 1 {
 				// Request A's connection: takes 200ms
 				time.Sleep(200 * time.Millisecond)
@@ -1299,10 +1318,10 @@ var _ = Describe("queuedNewConn", func() {
 	})
 
 	It("should handle intermittent dial failures without queue accumulation", func() {
-		callCount := int64(0)
+		var callCount atomic.Int64
 
 		intermittentDialer := func(ctx context.Context) (net.Conn, error) {
-			count := atomic.AddInt64(&callCount, 1)
+			count := callCount.Add(1)
 			if count%2 == 0 {
 				return nil, fmt.Errorf("network timeout")
 			}
@@ -1366,7 +1385,7 @@ var _ = Describe("queuedNewConn", func() {
 		maxExpectedQueueLen := int(testPool.Size()) * 2 // Reasonable upper bound
 
 		var wg sync.WaitGroup
-		maxObservedQueueLen := int32(0)
+		var maxObservedQueueLen atomic.Int32
 
 		// Send many failed requests concurrently
 		for i := 0; i < numRequests; i++ {
@@ -1379,8 +1398,8 @@ var _ = Describe("queuedNewConn", func() {
 			// Check queue length periodically
 			if i%50 == 0 {
 				queueLen := testPool.DialsQueueLen()
-				if queueLen > int(atomic.LoadInt32(&maxObservedQueueLen)) {
-					atomic.StoreInt32(&maxObservedQueueLen, int32(queueLen))
+				if queueLen > int(maxObservedQueueLen.Load()) {
+					maxObservedQueueLen.Store(int32(queueLen))
 				}
 				Expect(queueLen).To(BeNumerically("<=", maxExpectedQueueLen),
 					fmt.Sprintf("Queue length (%d) should not exceed limit (%d)",

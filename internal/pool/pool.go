@@ -33,6 +33,11 @@ const (
 
 	// CloseReasonFailover indicates the connection was closed due to a failover event.
 	CloseReasonFailover = "failover"
+
+	// CloseReasonMaintNotificationsDisabled indicates the connection enabled
+	// maintenance notifications, but the client later downgraded and disabled
+	// maintenance notification handling for the pool.
+	CloseReasonMaintNotificationsDisabled = "maintnotifications_disabled"
 )
 
 // Metric state constants for connection state tracking.
@@ -299,6 +304,9 @@ func getMetricPendingRequestsCallback() func(ctx context.Context, delta int, cn 
 }
 
 // Stats contains pool state information and accumulated stats.
+//
+// TODO(cxl): the uint32/int64 fields below will be changed to atomic value
+// types (atomic.Uint32/atomic.Int64) in v10, which is a breaking API change.
 type Stats struct {
 	Hits           uint32 // number of times free connection was found in the pool
 	Misses         uint32 // number of times free connection was NOT found in the pool
@@ -313,6 +321,10 @@ type Stats struct {
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
 	PubSubStats PubSubStats
+}
+
+type ConnRetirer interface {
+	RetireConns(ctx context.Context, conns []*Conn, reason string)
 }
 
 type Pooler interface {
@@ -385,7 +397,7 @@ type lastDialErrorWrap struct {
 type ConnPool struct {
 	cfg *Options
 
-	dialErrorsNum uint32 // atomic
+	dialErrorsNum atomic.Uint32
 	lastDialError atomic.Value
 
 	dialsInProgress chan struct{}
@@ -406,7 +418,7 @@ type ConnPool struct {
 	stats          Stats
 	waitDurationNs atomic.Int64
 
-	_closed uint32 // atomic
+	_closed atomic.Uint32
 
 	// Pool hooks manager for flexible connection processing
 	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
@@ -642,7 +654,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 		return nil, ErrClosed
 	}
 
-	if atomic.LoadUint32(&p.dialErrorsNum) >= uint32(p.cfg.PoolSize) {
+	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
 		return nil, p.getLastDialError()
 	}
 
@@ -715,7 +727,7 @@ func (p *ConnPool) dialConn(ctx context.Context, pooled bool) (*Conn, error) {
 	internal.Logger.Printf(ctx, "redis: connection pool: failed to dial after %d attempts: %v", attempt, lastErr)
 	// All retries failed - handle error tracking
 	p.setLastDialError(lastErr)
-	if atomic.AddUint32(&p.dialErrorsNum, 1) == uint32(p.cfg.PoolSize) {
+	if p.dialErrorsNum.Add(1) == uint32(p.cfg.PoolSize) {
 		go p.tryDial()
 	}
 	return nil, lastErr
@@ -780,7 +792,7 @@ func (p *ConnPool) tryDial() {
 			continue
 		}
 
-		atomic.StoreUint32(&p.dialErrorsNum, 0)
+		p.dialErrorsNum.Store(0)
 		_ = conn.Close()
 		return
 	}
@@ -1217,6 +1229,11 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 	shouldRemove := false
 	var err error
 
+	if reason := cn.CloseOnPutReason(); reason != "" {
+		p.removeConnInternal(ctx, cn, errors.New(reason), freeTurn)
+		return
+	}
+
 	if cn.HasBufferedData() {
 		// Peek at the reply type to check if it's a push notification
 		if replyType, err := cn.PeekReplyTypeSafe(); err != nil || replyType != proto.RespPush {
@@ -1559,7 +1576,48 @@ func (p *ConnPool) Stats() *Stats {
 }
 
 func (p *ConnPool) closed() bool {
-	return atomic.LoadUint32(&p._closed) == 1
+	return p._closed.Load() == 1
+}
+
+func (p *ConnPool) RetireConns(ctx context.Context, conns []*Conn, reason string) {
+	if len(conns) == 0 {
+		return
+	}
+
+	idleConnSet := make(map[*Conn]struct{})
+	toClose := make([]*Conn, 0, len(conns))
+
+	p.connsMu.Lock()
+	for _, ic := range p.idleConns {
+		idleConnSet[ic] = struct{}{}
+	}
+	for _, cn := range conns {
+		if cn == nil {
+			continue
+		}
+		if _, ok := p.conns[cn.GetID()]; !ok {
+			continue
+		}
+		if _, isIdle := idleConnSet[cn]; isIdle {
+			if p.removeConn(cn) {
+				toClose = append(toClose, cn)
+			}
+			continue
+		}
+		cn.MarkCloseOnPut(reason)
+	}
+	p.connsMu.Unlock()
+
+	if hookManager := p.hookManager.Load(); hookManager != nil {
+		for _, cn := range toClose {
+			hookManager.ProcessOnRemove(ctx, cn, errors.New(reason))
+		}
+	}
+	for _, cn := range toClose {
+		p.recordConnectionMetrics(ctx, cn, reason, MetricStateIdle)
+		_ = p.closeConn(cn)
+	}
+	p.checkMinIdleConns()
 }
 
 func (p *ConnPool) Filter(fn func(*Conn) bool) error {
@@ -1598,7 +1656,7 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 }
 
 func (p *ConnPool) Close() error {
-	if !atomic.CompareAndSwapUint32(&p._closed, 0, 1) {
+	if !p._closed.CompareAndSwap(0, 1) {
 		return ErrClosed
 	}
 
@@ -1680,8 +1738,11 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	if err := connCheck(cn.getNetConn()); err != nil {
 		// If there's unexpected data, it might be push notifications (RESP3)
 		if p.cfg.PushNotificationsEnabled && err == errUnexpectedRead {
-			// Peek at the reply type to check if it's a push notification
-			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
+			// Peek at the reply type to check if it's a push notification.
+			// Use the readerMu-guarded peek: a concurrent handoff may be
+			// resetting cn.rd via SetNetConn on a connection popped by Get
+			// before the OnGet state check rejects it.
+			if replyType, err := cn.PeekReplyTypeForCheck(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
 				internal.Logger.Printf(

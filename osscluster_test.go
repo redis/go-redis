@@ -1823,7 +1823,7 @@ var _ = Describe("Command Tips tests", func() {
 	})
 
 	It("should verify COMMAND tips match router policy types", func() {
-		SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+		SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 		expectedPolicies := map[string]struct {
 			RequestPolicy  string
 			ResponsePolicy string
@@ -1858,7 +1858,7 @@ var _ = Describe("Command Tips tests", func() {
 
 	Describe("Explicit Routing Policy Tests", func() {
 		It("should test explicit routing policy for TOUCH", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify TOUCH command has multi_shard policy
 			cmds, err := client.Command(ctx).Result()
@@ -1882,7 +1882,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for FLUSHALL", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FLUSHALL command has all_shards policy
 			cmds, err := client.Command(ctx).Result()
@@ -1910,7 +1910,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for PING", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify PING command has all_shards policy
 			cmds, err := client.Command(ctx).Result()
@@ -1927,7 +1927,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for DBSIZE", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify DBSIZE command has all_shards policy with agg_sum response
 			cmds, err := client.Command(ctx).Result()
@@ -1959,7 +1959,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test DDL commands routing policy for FT.CREATE", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FT.CREATE command routing policy
 			cmds, err := client.Command(ctx).Result()
@@ -1998,7 +1998,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test DDL commands routing policy for FT.ALTER", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FT.ALTER command routing policy
 			cmds, err := client.Command(ctx).Result()
@@ -2036,7 +2036,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should route keyed commands to correct shard based on hash slot", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2112,7 +2112,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should aggregate responses according to explicit aggregation policies", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2273,7 +2273,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should verify command aggregation policies", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -2303,7 +2303,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should properly aggregate responses from keyless commands executed on multiple shards", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2379,7 +2379,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should properly aggregate responses from keyed commands executed on multiple shards", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 			type masterNode struct {
 				client *redis.Client
 				addr   string
@@ -2475,7 +2475,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should propagate coordinator errors to client without modification", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2602,7 +2602,7 @@ var _ = Describe("Command Tips tests", func() {
 
 		Describe("Routing Policies Comprehensive Test Suite", func() {
 			It("should test MGET command with multi-slot routing and key order preservation", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up test data across multiple shards
 				testData := map[string]string{
@@ -2647,7 +2647,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET with non-existent keys across multiple shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up some keys
 				Expect(client.Set(ctx, "mget_exists_1111", "value1", 0).Err()).NotTo(HaveOccurred())
@@ -2675,7 +2675,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test TOUCH command with multi-slot routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up keys across multiple shards
 				keys := []string{
@@ -2705,7 +2705,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DEL command with multi-slot routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up keys across multiple shards
 				keys := []string{
@@ -2740,7 +2740,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set keys across multiple shards
 				keys := []string{
@@ -2766,7 +2766,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test PING command with all_shards routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// PING should be sent to all shards and return one successful response
 				result := client.Ping(ctx)
@@ -2775,7 +2775,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET with single shard optimization", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Use hash tags to ensure all keys are on the same shard
 				keys := []string{
@@ -2807,7 +2807,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test empty MGET command returns error", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// MGET with no keys should return an error
 				result := client.MGet(ctx)
@@ -2816,7 +2816,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET integration with MSET across multiple shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create test data
 				testData := map[string]string{
@@ -2858,7 +2858,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test multi-shard commands cannot be used in pipeline", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create keys across multiple shards
 				keys := []string{
@@ -2884,7 +2884,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DisableRoutingPolicies option disables routing policies", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Test 1: With routing policies enabled (default), MGET should work across slots
 				testData := map[string]string{
@@ -2929,7 +2929,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test large MGET with many keys across all shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create many keys to ensure coverage across all shards
 				numKeys := 100
@@ -2966,7 +2966,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should route keyless commands to arbitrary shards using round robin", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			var numMasters int
 			var numMastersMu sync.Mutex
@@ -3227,7 +3227,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should distribute keyless commands randomly across shards using random shard picker", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Create a cluster client with random shard picker
 			opt := redisClusterOptions()

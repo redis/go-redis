@@ -209,6 +209,7 @@ type Cmdable interface {
 	FlushDB(ctx context.Context) *StatusCmd
 	FlushDBAsync(ctx context.Context) *StatusCmd
 	Info(ctx context.Context, section ...string) *StringCmd
+	InfoMap(ctx context.Context, section ...string) *InfoCmd
 	LastSave(ctx context.Context) *IntCmd
 	Save(ctx context.Context) *StatusCmd
 	Shutdown(ctx context.Context) *StatusCmd
@@ -296,8 +297,8 @@ func (c cmdable) Wait(ctx context.Context, numSlaves int, timeout time.Duration)
 	return cmd
 }
 
-func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntCmd {
-	cmd := NewIntCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
+func (c cmdable) WaitAOF(ctx context.Context, numLocal, numSlaves int, timeout time.Duration) *IntSliceCmd {
+	cmd := NewIntSliceCmd(ctx, "waitAOF", numLocal, numSlaves, int(timeout/time.Millisecond))
 	cmd.setReadTimeout(timeout)
 	_ = c(ctx, cmd)
 	return cmd

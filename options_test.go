@@ -31,6 +31,18 @@ func TestParseURL(t *testing.T) {
 			url: "redis://12345",
 			o:   &Options{Addr: "12345:6379"},
 		}, {
+			// IPv6 literal without a port keeps a single pair of brackets
+			url: "redis://[::1]",
+			o:   &Options{Addr: "[::1]:6379"},
+		}, {
+			// IPv6 literal with a port
+			url: "redis://[::1]:6380",
+			o:   &Options{Addr: "[::1]:6380"},
+		}, {
+			// IPv6 literal without a port, with a db number
+			url: "redis://[2001:db8::1]/2",
+			o:   &Options{Addr: "[2001:db8::1]:6379", DB: 2},
+		}, {
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
@@ -56,6 +68,14 @@ func TestParseURL(t *testing.T) {
 		}, {
 			// negative values disable timeouts as well
 			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			// a zero or negative duration written with a unit disables the timeout,
+			// the same as the plain "0" / "-1" forms above
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0s",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1s",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// absent timeout values will use defaults
@@ -154,6 +174,25 @@ func TestParseURL(t *testing.T) {
 			}
 			comprareOptions(t, actual, tc.o)
 		})
+	}
+}
+
+func TestParseURLIPv6TLSServerName(t *testing.T) {
+	// For rediss:// the TLS SNI ServerName must be the bare IPv6 host, not the
+	// bracketed form, otherwise the handshake is attempted with an invalid
+	// server name.
+	o, err := ParseURL("rediss://[2001:db8::1]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if o.Addr != "[2001:db8::1]:6379" {
+		t.Errorf("Addr: got %q, want %q", o.Addr, "[2001:db8::1]:6379")
+	}
+	if o.TLSConfig == nil {
+		t.Fatal("expected a TLSConfig for the rediss scheme")
+	}
+	if got, want := o.TLSConfig.ServerName, "2001:db8::1"; got != want {
+		t.Errorf("TLSConfig.ServerName: got %q, want %q", got, want)
 	}
 }
 
