@@ -4905,6 +4905,156 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})
+
+		It("should LMoveM", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			// OBO: order reversed at destination.
+			Expect(client.RPush(ctx, "lmovem_l", "1", "2", "3", "4", "5").Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_m", "6", "7", "8", "9", "10").Err()).NotTo(HaveOccurred())
+
+			res, err := client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "LEFT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 3, Order: redis.LMoveMOBO}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"3", "2", "1"}))
+			Expect(client.LRange(ctx, "lmovem_m", 0, -1).Val()).To(Equal([]string{"3", "2", "1", "6", "7", "8", "9", "10"}))
+			Expect(client.LRange(ctx, "lmovem_l", 0, -1).Val()).To(Equal([]string{"4", "5"}))
+
+			// BULK: order preserved.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_l", "1", "2", "3", "4", "5").Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_m", "6", "7", "8", "9", "10").Err()).NotTo(HaveOccurred())
+
+			res, err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "LEFT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 3, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"1", "2", "3"}))
+			Expect(client.LRange(ctx, "lmovem_m", 0, -1).Val()).To(Equal([]string{"1", "2", "3", "6", "7", "8", "9", "10"}))
+			Expect(client.LRange(ctx, "lmovem_l", 0, -1).Val()).To(Equal([]string{"4", "5"}))
+
+			// COUNT moves fewer when the source has fewer.
+			res, err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 10, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"4", "5"}))
+
+			// Empty source -> nil reply.
+			err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Err()
+			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should LMoveM single element", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "lmovem1_l", "1", "2", "3").Err()).NotTo(HaveOccurred())
+
+			// Count 0 omits the group: moves one element, still an array reply.
+			res, err := client.LMoveM(ctx, "lmovem1_l", "lmovem1_m", "LEFT", "RIGHT", redis.LMoveMArgs{}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"1"}))
+			Expect(client.LRange(ctx, "lmovem1_l", 0, -1).Val()).To(Equal([]string{"2", "3"}))
+			Expect(client.LRange(ctx, "lmovem1_m", 0, -1).Val()).To(Equal([]string{"1"}))
+		})
+
+		It("should LMoveM EXACTLY", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			// Enough elements: moves exactly Count.
+			Expect(client.RPush(ctx, "lmovem_names", "john", "doe").Err()).NotTo(HaveOccurred())
+			res, err := client.LMoveM(ctx, "lmovem_names", "lmovem_processed", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMExactly, Count: 2, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"john", "doe"}))
+			Expect(client.LRange(ctx, "lmovem_processed", 0, -1).Val()).To(Equal([]string{"john", "doe"}))
+
+			// Too few: nothing moved. The 8.10 server returns redis.Nil here, though
+			// the spec also allows an error; both satisfy HaveOccurred() and the
+			// source stays unchanged.
+			Expect(client.RPush(ctx, "lmovem_names", "john").Err()).NotTo(HaveOccurred())
+			err = client.LMoveM(ctx, "lmovem_names", "lmovem_processed2", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMExactly, Count: 2, Order: redis.LMoveMBulk}).Err()
+			Expect(err).To(HaveOccurred())
+			Expect(client.LRange(ctx, "lmovem_names", 0, -1).Val()).To(Equal([]string{"john"}))
+			Expect(client.Exists(ctx, "lmovem_processed2").Val()).To(Equal(int64(0)))
+		})
+
+		It("should LMoveM WRONGTYPE", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "lmovem_src", "a", "b").Err()).NotTo(HaveOccurred())
+			Expect(client.Set(ctx, "lmovem_str", "1024", 0).Err()).NotTo(HaveOccurred())
+
+			err := client.LMoveM(ctx, "lmovem_src", "lmovem_str", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Err()
+			Expect(err.Error()).To(Equal("WRONGTYPE Operation against a key holding the wrong kind of value"))
+			// Source is untouched.
+			Expect(client.LRange(ctx, "lmovem_src", 0, -1).Val()).To(Equal([]string{"a", "b"}))
+		})
+
+		It("should BLMoveM", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "blmovem1", "ichi", "ni", "san").Err()).NotTo(HaveOccurred())
+
+			res, err := client.BLMoveM(ctx, "blmovem1", "blmovem2", "RIGHT", "LEFT", time.Second,
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 2, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"ni", "san"}))
+			Expect(client.LRange(ctx, "blmovem2", 0, -1).Val()).To(Equal([]string{"ni", "san"}))
+			Expect(client.LRange(ctx, "blmovem1", 0, -1).Val()).To(Equal([]string{"ichi"}))
+		})
+
+		It("should BLMoveM blocks", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			started := make(chan bool)
+			done := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				res, err := client.BLMoveM(ctx, "blmovem_src", "blmovem_dst", "LEFT", "LEFT", 0,
+					redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]string{"a"}))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BLMoveM is not blocked")
+			case <-time.After(time.Second):
+				// ok
+			}
+
+			_, err := client.RPush(ctx, "blmovem_src", "a").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			select {
+			case <-done:
+				// ok
+			case <-time.After(time.Second):
+				Fail("BLMoveM is still blocked")
+			}
+		})
+
+		It("should BLMoveM timeout", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			val, err := client.BLMoveM(ctx, "blmovem_empty", "blmovem_dst", "LEFT", "LEFT", time.Second,
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(BeNil())
+
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			stats := client.PoolStats()
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
+			Expect(stats.Timeouts).To(Equal(uint32(0)))
+		})
 	})
 
 	Describe("sets", func() {
@@ -5043,6 +5193,66 @@ var _ = Describe("Commands", func() {
 			sInterCard = client.SInterCard(ctx, 3, "set1", "set2")
 			Expect(sInterCard.Err()).NotTo(HaveOccurred())
 			Expect(sInterCard.Val()).To(Equal(int64(2)))
+		})
+
+		It("should SUnionCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SUNIONCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set1", "a", "b", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "c", "d")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// exact union {a, b, c, d}
+			sUnionCard := client.SUnionCard(ctx, nil, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+
+			// exact with LIMIT capped at 3
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Limit: 3}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// missing key is treated as an empty set
+			sUnionCard = client.SUnionCard(ctx, nil, "set1", "missing")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// APPROX: for small sets the approximate result matches the exact value
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Approx: true}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+		})
+
+		It("should SDiffCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SDIFFCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set0", "a", "b", "c", "d", "e")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "c", "d", "x")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "e", "y")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// s0 \ (s1 ∪ s2) = {a, b}
+			sDiffCard := client.SDiffCard(ctx, nil, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(2)))
+
+			// exact with LIMIT capped at 1
+			sDiffCard = client.SDiffCard(ctx, &redis.SDiffCardOptions{Limit: 1}, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(1)))
+
+			// missing subtrahend key does not affect the result
+			sDiffCard = client.SDiffCard(ctx, nil, "set0", "missing")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(5)))
+
+			// missing first key yields an empty base set
+			sDiffCard = client.SDiffCard(ctx, nil, "missing", "set0")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(0)))
 		})
 
 		It("should SInterStore", Label("NonRedisEnterprise"), func() {
@@ -7787,6 +7997,77 @@ var _ = Describe("Commands", func() {
 				Block:   100 * time.Millisecond,
 			}).Result()
 			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "s2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// MAXCOUNT is cumulative across all streams. Streams are served in
+			// caller order, so s1 contributes its 3 entries and s2 contributes 1,
+			// reaching the total cap of 4.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:  []string{"s1", "s2", "0", "0"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
+		})
+
+		It("should XRead with MAXSIZE returning at least the first available entry", func() {
+			SkipBeforeRedisVersion("8.10", "XREAD MAXSIZE requires Redis 8.10+")
+
+			// MAXSIZE is a soft cap; even a value smaller than a single entry must
+			// still return the first available entry (never suppress all output).
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "0"},
+				MaxSize: 1,
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1))
+			Expect(res[0].Stream).To(Equal("stream"))
+			Expect(len(res[0].Messages)).To(BeNumerically(">=", 1))
+		})
+
+		It("should XReadGroup with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREADGROUP MAXCOUNT requires Redis 8.10+")
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "g1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "g2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(client.XGroupCreate(ctx, "g1", "grp", "0").Err()).NotTo(HaveOccurred())
+			Expect(client.XGroupCreate(ctx, "g2", "grp", "0").Err()).NotTo(HaveOccurred())
+
+			res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "grp",
+				Consumer: "consumer",
+				Streams:  []string{"g1", "g2", ">", ">"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
 		})
 
 		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
