@@ -442,21 +442,24 @@ func (opt *Options) NewDialer() func(context.Context, string, string) (net.Conn,
 	return NewDialer(opt)
 }
 
+// defaultKeepAliveConfig is the TCP keep-alive policy of the default dialers
+// here and in sentinel.go: start probing after 30s idle (below typical LB/NAT
+// idle timeouts), then declare the peer dead after 3 unanswered probes 5s
+// apart.
+var defaultKeepAliveConfig = net.KeepAliveConfig{
+	Enable:   true,
+	Idle:     30 * time.Second,
+	Interval: 5 * time.Second,
+	Count:    3,
+}
+
 // NewDialer returns a function that will be used as the default dialer
 // when none is specified in Options.Dialer.
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		netDialer := &net.Dialer{
-			Timeout: opt.DialTimeout,
-			// Start probing after 30s idle (below typical LB/NAT idle
-			// timeouts), then declare the peer dead after 3 unanswered
-			// probes 5s apart.
-			KeepAliveConfig: net.KeepAliveConfig{
-				Enable:   true,
-				Idle:     30 * time.Second,
-				Interval: 5 * time.Second,
-				Count:    3,
-			},
+			Timeout:         opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)

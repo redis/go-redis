@@ -599,14 +599,8 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout: failover.opt.DialTimeout,
-			// Same keep-alive policy as the default dialer in options.go.
-			KeepAliveConfig: net.KeepAliveConfig{
-				Enable:   true,
-				Idle:     30 * time.Second,
-				Interval: 5 * time.Second,
-				Count:    3,
-			},
+			Timeout:         failover.opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)

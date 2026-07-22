@@ -1,10 +1,9 @@
-//go:build go1.7
-
 package redis
 
 import (
 	"crypto/tls"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -285,6 +284,70 @@ func TestReadTimeoutOptions(t *testing.T) {
 		if o.WriteTimeout != o.ReadTimeout {
 			t.Errorf("got %d instead of %d as WriteTimeout option", o.WriteTimeout, o.ReadTimeout)
 		}
+	}
+}
+
+// Pin the retry backoff defaults shared by Options, ClusterOptions and
+// RingOptions, including the -1 escape hatch.
+func TestRetryBackoffOptions(t *testing.T) {
+	check := func(t *testing.T, kind string, min, max time.Duration) {
+		t.Helper()
+		if min != 10*time.Millisecond {
+			t.Errorf("%s: got %s as default MinRetryBackoff, want 10ms", kind, min)
+		}
+		if max != time.Second {
+			t.Errorf("%s: got %s as default MaxRetryBackoff, want 1s", kind, max)
+		}
+	}
+
+	o := &Options{}
+	o.init()
+	check(t, "Options", o.MinRetryBackoff, o.MaxRetryBackoff)
+
+	co := &ClusterOptions{}
+	co.init()
+	check(t, "ClusterOptions", co.MinRetryBackoff, co.MaxRetryBackoff)
+
+	ro := &RingOptions{}
+	ro.init()
+	check(t, "RingOptions", ro.MinRetryBackoff, ro.MaxRetryBackoff)
+
+	disabled := &Options{MinRetryBackoff: -1, MaxRetryBackoff: -1}
+	disabled.init()
+	if disabled.MinRetryBackoff != 0 || disabled.MaxRetryBackoff != 0 {
+		t.Errorf("-1 must disable backoff, got min=%s max=%s",
+			disabled.MinRetryBackoff, disabled.MaxRetryBackoff)
+	}
+}
+
+func TestClusterStateReloadIntervalOption(t *testing.T) {
+	o := &ClusterOptions{}
+	o.init()
+	if o.ClusterStateReloadInterval != 60*time.Second {
+		t.Errorf("got %s as default ClusterStateReloadInterval, want 60s",
+			o.ClusterStateReloadInterval)
+	}
+
+	o = &ClusterOptions{ClusterStateReloadInterval: 5 * time.Minute}
+	o.init()
+	if o.ClusterStateReloadInterval != 5*time.Minute {
+		t.Errorf("explicit ClusterStateReloadInterval overridden: got %s",
+			o.ClusterStateReloadInterval)
+	}
+}
+
+// The keep-alive policy is shared by the default dialer (options.go) and the
+// sentinel master/replica dialer (sentinel.go); pin it so a change shows up
+// in review instead of drifting silently.
+func TestDefaultKeepAliveConfig(t *testing.T) {
+	want := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     30 * time.Second,
+		Interval: 5 * time.Second,
+		Count:    3,
+	}
+	if defaultKeepAliveConfig != want {
+		t.Errorf("defaultKeepAliveConfig = %+v, want %+v", defaultKeepAliveConfig, want)
 	}
 }
 
