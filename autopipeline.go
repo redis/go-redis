@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -667,13 +668,25 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return cmd
 	}
-	// Deferred face: keep the returns-immediately shape. Run on a normal
-	// connection in the background; the ready batch makes the command's
-	// result accessors block until it completes. Not tracked by batchWg — a
-	// Do racing Close simply fails with a closed-pool error like any other
-	// in-flight command on a closing client. The batch completes at the
-	// innermost seam (under the user hooks) so a ProcessHook reading the
-	// result cannot self-deadlock; the deferred close is the panic backstop.
+	ap.runOutsidePipeline(ctx, cmd)
+	return cmd
+}
+
+// runOutsidePipeline executes an escape-hatch command (Do, DoRaw,
+// DoRawWriteTo) on a normal pooled connection, outside the batching engine,
+// following the face's call shape. Blocking face: synchronous Process.
+// Deferred face: returns-immediately — the command runs on a background
+// goroutine and a ready batch makes its result accessors block until it
+// completes. The batch completes at the innermost seam (under the user
+// hooks) so a ProcessHook reading the result cannot self-deadlock; the
+// deferred close is the panic backstop. Not tracked by batchWg — a call
+// racing Close simply fails with a closed-pool error like any other
+// in-flight command on a closing client.
+func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) {
+	if ap.blocking {
+		_ = ap.pipeliner.Process(ctx, cmd)
+		return
+	}
 	b := newAPBatch()
 	cmd.setReady(b)
 	go func() {
@@ -700,6 +713,41 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 			cmd.SetErr(err)
 		}
 	}()
+}
+
+// DoRaw mirrors Do for raw RESP access: AutoPipeliner embeds cmdable, so
+// without this override DoRaw would ride the batching engine — but raw
+// commands carry Do's caveats and DoRawWriteTo-style streaming must not run
+// inside a shared batch's reply loop. Runs outside the pipeline, following
+// the face's call shape (see Do).
+func (ap *AutoPipeliner) DoRaw(ctx context.Context, args ...interface{}) *RawCmd {
+	cmd := NewRawCmd(ctx, args...)
+	if len(args) == 0 {
+		cmd.SetErr(errDoNoArgs)
+		return cmd
+	}
+	if ap.closed.Load() {
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
+	ap.runOutsidePipeline(ctx, cmd)
+	return cmd
+}
+
+// DoRawWriteTo mirrors Do for streamed raw RESP access (see DoRaw). On the
+// deferred face the write to w happens when the command executes; use the
+// result accessors (Err/Written) to wait before reading w.
+func (ap *AutoPipeliner) DoRawWriteTo(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	cmd := NewRawWriteToCmd(ctx, w, args...)
+	if len(args) == 0 {
+		cmd.SetErr(errDoNoArgs)
+		return cmd
+	}
+	if ap.closed.Load() {
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
+	ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
 

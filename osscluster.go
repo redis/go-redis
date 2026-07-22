@@ -1891,7 +1891,13 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	// executed guards against a node-level hook short-circuiting (returning
+	// without calling next): the inner callback then never runs, and without
+	// surfacing the chain's error the cluster pipeline would report success
+	// for commands that were never sent.
+	executed := false
+	err := node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		executed = true
 		// Acquire through the node's dedicated pipeline pool when one is
 		// configured (Pipeline*BufferSize propagate to node clients via
 		// clientOptions); withPipelineConn falls back to the main pool
@@ -1911,6 +1917,14 @@ func (c *ClusterClient) processPipelineNode(
 		}
 		return err
 	})
+	if !executed {
+		// Deliberate abort by a hook: set the error, do not remap for retry
+		// (a retry would re-run the same hook).
+		if err == nil {
+			err = errHookShortCircuit
+		}
+		setCmdsErr(cmds, err)
+	}
 }
 
 func (c *ClusterClient) processPipelineNodeConn(
@@ -2304,7 +2318,11 @@ func (c *ClusterClient) processTxPipelineNode(
 	}
 
 	var outcome *txOutcome
-	_ = node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
+	// executed guards against a node-level hook short-circuiting (returning
+	// without calling next) — same treatment as processPipelineNode.
+	executed := false
+	chainErr := node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
+		executed = true
 		// Acquire through the node's dedicated pipeline pool when configured
 		// (same routing as processPipelineNode); withPipelineConn falls back
 		// to the main pool otherwise. The inner fn's return value drives the
@@ -2334,6 +2352,14 @@ func (c *ClusterClient) processTxPipelineNode(
 		return err
 	})
 
+	if !executed {
+		// A node-level hook returned without calling next: surface its
+		// verdict instead of a generic no-outcome failure.
+		if chainErr == nil {
+			chainErr = errHookShortCircuit
+		}
+		outcome = &txOutcome{kind: txFatal, err: chainErr}
+	}
 	if outcome == nil {
 		outcome = &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx pipeline produced no outcome")}
 	}
