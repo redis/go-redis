@@ -409,7 +409,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
 	// this test expect redis major version >= 8
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(7.9, "default scorer is not BM25STD")
+		SkipBeforeRedisVersion("7.9", "default scorer is not BM25STD")
 
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
@@ -452,7 +452,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// up until redis 8 the default scorer was TFIDF, in redis 8 it is BM25
 	// this test expect redis version < 8.0
 	It("should FTSearch WithScores", Label("search", "ftsearch"), func() {
-		SkipAfterRedisVersion(7.9, "default scorer is not TFIDF")
+		SkipAfterRedisVersion("7.9", "default scorer is not TFIDF")
 		text1 := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, text1).Result()
 		Expect(err).NotTo(HaveOccurred())
@@ -695,7 +695,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTAggregate with scorer and addscores", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "no addscores support")
+		SkipBeforeRedisVersion("7.4", "no addscores support")
 		title := &redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		description := &redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText, Sortable: false}
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{OnHash: true, Prefix: []interface{}{"product:"}}, title, description).Result()
@@ -1508,7 +1508,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test dialect 4", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{
 			Prefix: []interface{}{"resource:"},
 		}, &redis.FieldSchema{
@@ -1641,7 +1641,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should create search index with FLOAT16 and BFLOAT16 vectors", Label("search", "ftcreate", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		val, err := client.FTCreate(ctx, "index", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "float16", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{FlatOptions: &redis.FTFlatOptions{Type: "FLOAT16", Dim: 768, DistanceMetric: "COSINE"}}},
 			&redis.FieldSchema{FieldName: "bfloat16", FieldType: redis.SearchFieldTypeVector, VectorArgs: &redis.FTVectorArgs{FlatOptions: &redis.FTFlatOptions{Type: "BFLOAT16", Dim: 768, DistanceMetric: "COSINE"}}},
@@ -1652,7 +1652,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test geoshapes query intersects and disjoint", Label("NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		_, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName:         "g",
 			FieldType:         redis.SearchFieldTypeGeoShape,
@@ -1721,7 +1721,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should search missing fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
 			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexMissing: true},
@@ -1766,7 +1766,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should search empty fields", Label("search", "ftcreate", "ftsearch", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{Prefix: []interface{}{"property:"}},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
 			&redis.FieldSchema{FieldName: "features", FieldType: redis.SearchFieldTypeTag, IndexEmpty: true},
@@ -1813,7 +1813,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate VECTOR with int8 and uint8 types", Label("search", "ftcreate"), func() {
-		SkipBeforeRedisVersion(7.9, "doesn't work with older redis")
+		SkipBeforeRedisVersion("7.9", "doesn't work with older redis")
 		// Define INT8 vector field
 		hnswOptionsInt8 := &redis.FTHNSWOptions{
 			Type:           "INT8",
@@ -1869,7 +1869,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return special float scores in FT.SEARCH vecsim", Label("search", "ftsearch", "vecsim"), func() {
-		SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+		SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 
 		vecField := &redis.FTFlatOptions{
 			Type:           "FLOAT32",
@@ -1919,7 +1919,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate VECTOR with VAMANA algorithm - basic", Label("search", "ftcreate"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            2,
@@ -1949,7 +1949,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate VECTOR with VAMANA algorithm - with compression", Label("search", "ftcreate"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT16",
 			Dim:               256,
@@ -1966,7 +1966,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should FTCreate VECTOR with VAMANA algorithm - advanced parameters", Label("search", "ftcreate"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:                   "FLOAT32",
 			Dim:                    512,
@@ -2041,7 +2041,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA L2 distance metric", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            3,
@@ -2080,7 +2080,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA COSINE distance metric", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            3,
@@ -2118,7 +2118,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA IP distance metric", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            3,
@@ -2156,7 +2156,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA basic functionality", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            4,
@@ -2194,7 +2194,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA FLOAT16 type", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT16",
 			Dim:            4,
@@ -2229,7 +2229,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA FLOAT32 type", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            4,
@@ -2264,7 +2264,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with default dialect", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            2,
@@ -2292,7 +2292,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with LVQ8 compression", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -2329,7 +2329,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression with both vector types", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		// Test FLOAT16 with LVQ8
 		vamanaOptions16 := &redis.FTVamanaOptions{
@@ -2395,7 +2395,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA construction window size", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:                   "FLOAT32",
 			Dim:                    6,
@@ -2431,7 +2431,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA graph max degree", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:           "FLOAT32",
 			Dim:            6,
@@ -2467,7 +2467,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA search window size", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:             "FLOAT32",
 			Dim:              6,
@@ -2503,7 +2503,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA all advanced parameters", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:                   "FLOAT32",
 			Dim:                    8,
@@ -2544,7 +2544,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should fail when using a non-zero offset with a zero limit", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "testIdx", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName: "txt",
 			FieldType: redis.SearchFieldTypeText,
@@ -2564,7 +2564,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should evaluate exponentiation precedence in APPLY expressions correctly", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "txns", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName: "dummy",
 			FieldType: redis.SearchFieldTypeText,
@@ -2588,7 +2588,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return a syntax error when empty strings are used for numeric parameters", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "idx", &redis.FTCreateOptions{}, &redis.FieldSchema{
 			FieldName: "n",
 			FieldType: redis.SearchFieldTypeNumeric,
@@ -2611,7 +2611,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return NaN as default for AVG reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestAvg", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -2637,7 +2637,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return 1 as default for COUNT reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestCount", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -2663,7 +2663,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return NaN as default for SUM reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestSum", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -2689,7 +2689,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return the full requested number of results by re-running the query when some results expire", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggExpired", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "order", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
 		).Result()
@@ -2725,7 +2725,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	// which Redis Enterprise does not support; without it the heavy FT.AGGREGATE
 	// query never times out and the spec hangs until the suite timeout.
 	It("should stop processing and return an error when a timeout occurs", Label("search", "ftaggregate", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTimeoutHeavy", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric, Sortable: true},
 		).Result()
@@ -2755,7 +2755,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return 0 as default for COUNT_DISTINCT reducer when no values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestCountDistinct", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "x", FieldType: redis.SearchFieldTypeText},
@@ -2781,7 +2781,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return 0 as default for COUNT_DISTINCTISH reducer when no values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestCountDistinctIsh", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "y", FieldType: redis.SearchFieldTypeText},
@@ -2807,7 +2807,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should use BM25 as the default scorer", Label("search", "ftsearch"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "scoringTest", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "description", FieldType: redis.SearchFieldTypeText},
 		).Result()
@@ -2833,7 +2833,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return 0 as default for STDDEV reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestStddev", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -2860,7 +2860,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return NaN as default for QUANTILE reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestQuantile", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -2886,7 +2886,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return nil as default for FIRST_VALUE reducer when no values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestFirstValue", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "t", FieldType: redis.SearchFieldTypeText},
@@ -2912,7 +2912,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should fail to add an alias that is an existing index name", Label("search", "ftalias"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "idx1", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "name", FieldType: redis.SearchFieldTypeText},
 		).Result()
@@ -2971,7 +2971,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should reject deprecated configuration keys", Label("search", "ftconfig"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		// List of deprecated configuration keys.
 		deprecatedKeys := []string{
 			"_FREE_RESOURCE_ON_THREAD",
@@ -3035,7 +3035,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should return INF for MIN reducer and -INF for MAX reducer when no numeric values are present", Label("search", "ftaggregate"), func() {
-		SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+		SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 		val, err := client.FTCreate(ctx, "aggTestMinMax", &redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "grp", FieldType: redis.SearchFieldTypeText},
 			&redis.FieldSchema{FieldName: "n", FieldType: redis.SearchFieldTypeNumeric},
@@ -3064,7 +3064,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with LVQ4 compression", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -3102,7 +3102,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with LeanVec4x8 compression and reduce parameter", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -3141,7 +3141,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression algorithms with FLOAT16 type", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
 
@@ -3188,7 +3188,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression algorithms with FLOAT32 type", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
 
@@ -3235,7 +3235,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression with different distance metrics", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
 		distanceMetrics := []string{"L2", "COSINE", "IP"}
@@ -3285,7 +3285,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression with all advanced parameters", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
 
@@ -3336,7 +3336,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should fail when using reduce parameter with non-LeanVec compression", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -3352,7 +3352,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with LVQ4 compression in RESP3", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -3390,7 +3390,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA with LeanVec4x8 compression and reduce parameter in RESP3", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 		vamanaOptions := &redis.FTVamanaOptions{
 			Type:              "FLOAT32",
 			Dim:               8,
@@ -3429,7 +3429,7 @@ var _ = Describe("RediSearch commands Resp 2", Label("search"), func() {
 	})
 
 	It("should test VAMANA compression algorithms with FLOAT16 type in RESP3", Label("search", "ftcreate", "vamana"), func() {
-		SkipBeforeRedisVersion(8.2, "VAMANA requires Redis 8.2+")
+		SkipBeforeRedisVersion("8.2", "VAMANA requires Redis 8.2+")
 
 		compressionAlgorithms := []string{"LVQ4", "LVQ4x4", "LVQ4x8", "LeanVec4x8", "LeanVec8x8"}
 
@@ -3681,7 +3681,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform basic hybrid search", Label("search", "fthybrid"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		// Basic hybrid search combining text and vector search
 		searchQuery := "@color:{red}"
 		vectorData := encodeFloat32Vector([]float32{-100, -200, -200, -300})
@@ -3701,7 +3701,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with scorer", Label("search", "fthybrid", "scorer"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		// Test with TFIDF scorer
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3737,7 +3737,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with vector filter", Label("search", "fthybrid", "filter"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		// This query won't have results from search, so we can validate vector filter
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -3780,7 +3780,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with KNN method", Label("search", "fthybrid", "knn"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3805,7 +3805,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with RANGE method", Label("search", "fthybrid", "range"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3832,7 +3832,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LINEAR combine method", Label("search", "fthybrid", "combine"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3862,7 +3862,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with RRF combine method", Label("search", "fthybrid", "rrf"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3890,7 +3890,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LOAD and APPLY", Label("search", "fthybrid", "load", "apply"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3932,7 +3932,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LIMIT", Label("search", "fthybrid", "limit"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -3956,7 +3956,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with SORTBY", Label("search", "fthybrid", "sortby"), func() {
-		SkipBeforeRedisVersion(8.4, "no support")
+		SkipBeforeRedisVersion("8.4", "no support")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4005,7 +4005,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 
 	// Redis 8.6+ tests using PARAMS-based vector approach
 	It("should perform basic hybrid search (8.6+ PARAMS)", Label("search", "fthybrid", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		// Basic hybrid search combining text and vector search
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -4034,7 +4034,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with scorer (8.6+ PARAMS)", Label("search", "fthybrid", "scorer", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		// Test with TFIDF scorer
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -4069,7 +4069,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with vector filter (8.6+ PARAMS)", Label("search", "fthybrid", "filter", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		// This query won't have results from search, so we can validate vector filter
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
@@ -4111,7 +4111,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with KNN method (8.6+ PARAMS)", Label("search", "fthybrid", "knn", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4135,7 +4135,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with RANGE method (8.6+ PARAMS)", Label("search", "fthybrid", "range", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4161,7 +4161,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LINEAR combine method (8.6+ PARAMS)", Label("search", "fthybrid", "combine", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4190,7 +4190,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with RRF combine method (8.6+ PARAMS)", Label("search", "fthybrid", "rrf", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4219,7 +4219,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LOAD and APPLY (8.6+ PARAMS)", Label("search", "fthybrid", "load", "apply", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4260,7 +4260,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with LIMIT (8.6+ PARAMS)", Label("search", "fthybrid", "limit", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{
@@ -4283,7 +4283,7 @@ var _ = Describe("FT.HYBRID Commands", func() {
 	})
 
 	It("should perform hybrid search with SORTBY (8.6+ PARAMS)", Label("search", "fthybrid", "sortby", "params"), func() {
-		SkipBeforeRedisVersion(8.6, "PARAMS-based vector support requires Redis 8.6+")
+		SkipBeforeRedisVersion("8.6", "PARAMS-based vector support requires Redis 8.6+")
 		options := &redis.FTHybridOptions{
 			CountExpressions: 2,
 			SearchExpressions: []redis.FTHybridSearchExpression{

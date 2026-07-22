@@ -246,7 +246,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientKillByFilter with MAXAGE", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			var s []string
 			started := make(chan bool)
 			done := make(chan bool)
@@ -403,7 +403,7 @@ var _ = Describe("Commands", func() {
 		// NonRedisEnterprise: module configuration is not exposed via CONFIG GET on
 		// Redis Enterprise the way it is on OSS Redis.
 		It("should ConfigGet Modules", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion("8", "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
 				"search-*": "search-timeout",
 				"ts-*":     "ts-retention-policy",
@@ -438,7 +438,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigGet with Modules", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "config get won't return modules configs before redis 8")
+			SkipBeforeRedisVersion("8", "config get won't return modules configs before redis 8")
 			configGet := client.ConfigGet(ctx, "*")
 			Expect(configGet.Err()).NotTo(HaveOccurred())
 			Expect(configGet.Val()).To(HaveKey("maxmemory"))
@@ -451,7 +451,7 @@ var _ = Describe("Commands", func() {
 		// NonRedisEnterprise: FT.CONFIG is not available on Redis Enterprise
 		// (superseded by CONFIG GET/SET in Redis 8), so this OSS-only path errors.
 		It("should ConfigSet FT DIALECT", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion("8", "config doesn't include modules before Redis 8")
 			defaultState, err := client.ConfigGet(ctx, "search-default-dialect").Result()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -497,7 +497,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ConfigSet fail for ReadOnly", func() {
-			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion("8", "Config doesn't include modules before Redis 8")
 			_, err := client.ConfigSet(ctx, "search-max-doctablesize", "100000").Result()
 			Expect(err).To(HaveOccurred())
 		})
@@ -505,7 +505,7 @@ var _ = Describe("Commands", func() {
 		// NonRedisEnterprise: the "search-timeout" module CONFIG parameter is not
 		// supported on Redis Enterprise.
 		It("should ConfigSet Modules", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion("8", "Config doesn't include modules before Redis 8")
 			defaults := map[string]string{}
 			expected := map[string]string{
 				"search-timeout":      "100",
@@ -546,7 +546,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Fail ConfigSet Modules", func() {
-			SkipBeforeRedisVersion(8, "Config doesn't include modules before Redis 8")
+			SkipBeforeRedisVersion("8", "Config doesn't include modules before Redis 8")
 			expected := map[string]string{
 				"search-timeout":      "-100",
 				"ts-retention-policy": "-10",
@@ -597,7 +597,7 @@ var _ = Describe("Commands", func() {
 		// NonRedisEnterprise: Redis Enterprise reports loaded modules in a different
 		// INFO shape, so the OSS module-name assertions do not hold.
 		It("should Info Modules", Label("redis.info", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
+			SkipBeforeRedisVersion("8", "modules are included in info for Redis Version >= 8")
 			info := client.Info(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
@@ -624,7 +624,7 @@ var _ = Describe("Commands", func() {
 		// NonRedisEnterprise: see "should Info Modules" - RE reports modules in a
 		// different INFO layout from OSS, so the parsed module map is empty here.
 		It("should InfoMap Modules", Label("redis.info", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8, "modules are included in info for Redis Version >= 8")
+			SkipBeforeRedisVersion("8", "modules are included in info for Redis Version >= 8")
 			info := client.InfoMap(ctx)
 			Expect(info.Err()).NotTo(HaveOccurred())
 			Expect(info.Val()).NotTo(BeNil())
@@ -727,7 +727,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Command Tips", Label("NonRedisEnterprise"), func() {
-			SkipAfterRedisVersion(7.9, "Redis 8 changed the COMMAND reply format")
+			SkipAfterRedisVersion("7.9", "Redis 8 changed the COMMAND reply format")
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1431,7 +1431,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HScan without values", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			for i := 0; i < 1000; i++ {
 				sadd := client.HSet(ctx, "myhash", fmt.Sprintf("key%d", i), "hello")
 				Expect(sadd.Err()).NotTo(HaveOccurred())
@@ -1562,7 +1562,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpDiff", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			SkipBeforeRedisVersion("8.2", "BITOP DIFF is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1581,7 +1581,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpDiff1", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8.2, "BITOP DIFF is available since Redis 8.2")
+			SkipBeforeRedisVersion("8.2", "BITOP DIFF is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1600,7 +1600,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpAndOr", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8.2, "BITOP ANDOR is available since Redis 8.2")
+			SkipBeforeRedisVersion("8.2", "BITOP ANDOR is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1619,7 +1619,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should BitOpOne", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8.2, "BITOP ONE is available since Redis 8.2")
+			SkipBeforeRedisVersion("8.2", "BITOP ONE is available since Redis 8.2")
 			set := client.Set(ctx, "key1", "\xff", 0)
 			Expect(set.Err()).NotTo(HaveOccurred())
 			Expect(set.Val()).To(Equal("OK"))
@@ -1963,7 +1963,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs when value matches", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "lock", "token-123", 0).Err()
@@ -1983,7 +1983,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs fail when value does not match", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "lock", "token-123", 0).Err()
@@ -2004,7 +2004,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs on non-existent key", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Try to delete non-existent key
 			deleted := client.DelExArgs(ctx, "nonexistent", redis.DelExArgs{
@@ -2016,7 +2016,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs with IFEQ", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "temp-key", "temp-value", 0).Err()
@@ -2037,7 +2037,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs with IFNE", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "temporary", 0).Err()
@@ -2058,7 +2058,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should DelExArgs with IFNE fail when value matches", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "permanent", 0).Err()
@@ -2080,7 +2080,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Digest", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set a value
 			err := client.Set(ctx, "my-key", "my-value", 0).Err()
@@ -2098,7 +2098,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should Digest on non-existent key", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Get digest of non-existent key
 			digest := client.Digest(ctx, "nonexistent")
@@ -2106,7 +2106,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should use Digest with SetArgs IFDEQ", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -2132,7 +2132,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should use Digest with DelExArgs IFDEQ", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value", 0).Err()
@@ -2205,7 +2205,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt default", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
 
@@ -2218,7 +2218,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt BYINT", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "20", 0).Err()).NotTo(HaveOccurred())
 
@@ -2229,7 +2229,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXFloat with bounds", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "1.5", 0).Err()).NotTo(HaveOccurred())
 
@@ -2246,7 +2246,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXFloat saturating overflow", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "1.8", 0).Err()).NotTo(HaveOccurred())
 
@@ -2262,7 +2262,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt out-of-bounds default rejects", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "10", 0).Err()).NotTo(HaveOccurred())
 
@@ -2278,7 +2278,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt out-of-bounds with LBOUND default rejects", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "5", 0).Err()).NotTo(HaveOccurred())
 
@@ -2294,7 +2294,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt with EX expiration and ENX", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "40", 0).Err()).NotTo(HaveOccurred())
 			Expect(client.TTL(ctx, "key").Val()).To(Equal(time.Duration(-1)))
@@ -2327,7 +2327,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt SATURATE clamps to LBOUND with negative increment", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "credits", "50", 0).Err()).NotTo(HaveOccurred())
 
@@ -2342,7 +2342,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt PERSIST removes TTL", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "1", 60*time.Second).Err()).NotTo(HaveOccurred())
 			Expect(client.TTL(ctx, "key").Val()).To(BeNumerically(">", 0))
@@ -2356,7 +2356,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt SATURATE without bounds clamps to LLONG_MAX", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			// Start near LLONG_MAX; with no UBOUND the server should clamp to LLONG_MAX.
 			Expect(client.Set(ctx, "key", "9223372036854775800", 0).Err()).NotTo(HaveOccurred())
@@ -2371,7 +2371,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt default reject leaves TTL untouched", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "10", 60*time.Second).Err()).NotTo(HaveOccurred())
 			ttlBefore := client.TTL(ctx, "key").Val()
@@ -2396,7 +2396,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should IncrEXInt on non-numeric key returns error", func() {
-			SkipBeforeRedisVersion(8.8, "IncrEX is available since Redis 8.8")
+			SkipBeforeRedisVersion("8.8", "IncrEX is available since Redis 8.8")
 
 			Expect(client.Set(ctx, "key", "not-a-number", 0).Err()).NotTo(HaveOccurred())
 
@@ -2499,7 +2499,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should MSetEX", func() {
-			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
 			args := redis.MSetEXArgs{
 				Expiration: &redis.ExpirationOption{
 					Mode:  redis.EX,
@@ -2532,7 +2532,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should MSetEX with NX mode", func() {
-			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
 
 			client.Set(ctx, "key1", "existing", 0)
 
@@ -2572,7 +2572,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should MSetEX with XX mode", func() {
-			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
 
 			args := redis.MSetEXArgs{
 				Condition: redis.XX,
@@ -2606,7 +2606,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should MSetEX with map", func() {
-			SkipBeforeRedisVersion(8.3, "MSetEX is available since redis 8.4")
+			SkipBeforeRedisVersion("8.3", "MSetEX is available since redis 8.4")
 			args := redis.MSetEXArgs{
 				Expiration: &redis.ExpirationOption{
 					Mode:  redis.EX,
@@ -3038,7 +3038,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQ when value matches", func() {
-			if RedisVersion < 8.4 {
+			if !redisVersionAtLeast("8.4") {
 				Skip("CAS/CAD commands require Redis >= 8.4")
 			}
 
@@ -3058,7 +3058,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQ fail when value does not match", func() {
-			if RedisVersion < 8.4 {
+			if !redisVersionAtLeast("8.4") {
 				Skip("CAS/CAD commands require Redis >= 8.4")
 			}
 
@@ -3077,7 +3077,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQ with expiration", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "token-123", 0).Err()
@@ -3100,7 +3100,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFNE when value does not match", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "pending", 0).Err()
@@ -3118,7 +3118,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFNE fail when value matches", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "completed", 0).Err()
@@ -3135,7 +3135,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetArgs with IFEQ", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "counter", "100", 0).Err()
@@ -3158,7 +3158,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetArgs with IFEQ and GET", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "old", 0).Err()
@@ -3181,7 +3181,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetArgs with IFNE", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "status", "pending", 0).Err()
@@ -3204,7 +3204,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFEQGet return previous value", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "old-value", 0).Err()
@@ -3222,7 +3222,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFNEGet return previous value", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "pending", 0).Err()
@@ -3240,7 +3240,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFDEQ when digest matches", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -3262,7 +3262,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFDEQ fail when digest does not match", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -3285,7 +3285,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFDEQGet return previous value", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -3307,7 +3307,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFDNE when digest does not match", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -3331,7 +3331,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should SetIFDNE fail when digest matches", func() {
-			SkipBeforeRedisVersion(8.4, "CAS/CAD commands require Redis >= 8.4")
+			SkipBeforeRedisVersion("8.4", "CAS/CAD commands require Redis >= 8.4")
 
 			// Set initial value
 			err := client.Set(ctx, "key", "value1", 0).Err()
@@ -3894,7 +3894,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			res, err := client.HExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -3910,7 +3910,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpire", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			res, err := client.HPExpire(ctx, "no_such_key", 10*time.Second, "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(res).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -3926,7 +3926,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -3942,7 +3942,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpireAt", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HPExpireAt(ctx, "no_such_key", time.Now().Add(10*time.Second), "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -3958,7 +3958,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPersist", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HPersist(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -3982,7 +3982,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -4002,7 +4002,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPExpireTime", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HPExpireTime(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -4023,7 +4023,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -4043,7 +4043,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HPTTL", Label("hash-expiration", "NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			resEmpty, err := client.HPTTL(ctx, "no_such_key", "field1", "field2", "field3").Result()
 			Expect(err).To(BeNil())
 			Expect(resEmpty).To(BeEquivalentTo([]int64{-2, -2, -2}))
@@ -4064,7 +4064,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HGETDEL", Label("hash", "HGETDEL"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2", "f3", "val3").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4084,7 +4084,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should return nil responses for HGETDEL on non-existent key", Label("hash", "HGETDEL"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 			// HGETDEL on a key that does not exist.
 			res, err := client.HGetDel(ctx, "nonexistent", "f1", "f2").Result()
 			Expect(err).To(BeNil())
@@ -4095,7 +4095,7 @@ var _ = Describe("Commands", func() {
 		// HGETEX with various TTL options
 		// -----------------------------
 		It("should HGETEX with EX option", Label("hash", "HGETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4111,7 +4111,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HGETEX with PERSIST option", Label("hash", "HGETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4124,7 +4124,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HGETEX with EXAT option", Label("hash", "HGETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			err := client.HSet(ctx, "myhash", "f1", "val1", "f2", "val2").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4144,7 +4144,7 @@ var _ = Describe("Commands", func() {
 		// HSETEX with FNX/FXX options
 		// -----------------------------
 		It("should HSETEX with FNX condition", Label("hash", "HSETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			opt := redis.HSetEXOptions{
 				Condition:      redis.HSetEXFNX,
@@ -4166,7 +4166,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HSETEX with FXX condition", Label("hash", "HSETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			err := client.HSet(ctx, "myhash", "f2", "val1").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -4190,7 +4190,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should HSETEX with multiple field operations", Label("hash", "HSETEX"), func() {
-			SkipBeforeRedisVersion(7.9, "requires Redis 8.x")
+			SkipBeforeRedisVersion("7.9", "requires Redis 8.x")
 
 			opt := redis.HSetEXOptions{
 				ExpirationType: redis.HSetEXExpirationEX,
@@ -4940,6 +4940,156 @@ var _ = Describe("Commands", func() {
 			Expect(lRange.Err()).NotTo(HaveOccurred())
 			Expect(lRange.Val()).To(Equal([]string{"san"}))
 		})
+
+		It("should LMoveM", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			// OBO: order reversed at destination.
+			Expect(client.RPush(ctx, "lmovem_l", "1", "2", "3", "4", "5").Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_m", "6", "7", "8", "9", "10").Err()).NotTo(HaveOccurred())
+
+			res, err := client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "LEFT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 3, Order: redis.LMoveMOBO}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"3", "2", "1"}))
+			Expect(client.LRange(ctx, "lmovem_m", 0, -1).Val()).To(Equal([]string{"3", "2", "1", "6", "7", "8", "9", "10"}))
+			Expect(client.LRange(ctx, "lmovem_l", 0, -1).Val()).To(Equal([]string{"4", "5"}))
+
+			// BULK: order preserved.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_l", "1", "2", "3", "4", "5").Err()).NotTo(HaveOccurred())
+			Expect(client.RPush(ctx, "lmovem_m", "6", "7", "8", "9", "10").Err()).NotTo(HaveOccurred())
+
+			res, err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "LEFT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 3, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"1", "2", "3"}))
+			Expect(client.LRange(ctx, "lmovem_m", 0, -1).Val()).To(Equal([]string{"1", "2", "3", "6", "7", "8", "9", "10"}))
+			Expect(client.LRange(ctx, "lmovem_l", 0, -1).Val()).To(Equal([]string{"4", "5"}))
+
+			// COUNT moves fewer when the source has fewer.
+			res, err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 10, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"4", "5"}))
+
+			// Empty source -> nil reply.
+			err = client.LMoveM(ctx, "lmovem_l", "lmovem_m", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Err()
+			Expect(err).To(Equal(redis.Nil))
+		})
+
+		It("should LMoveM single element", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "lmovem1_l", "1", "2", "3").Err()).NotTo(HaveOccurred())
+
+			// Count 0 omits the group: moves one element, still an array reply.
+			res, err := client.LMoveM(ctx, "lmovem1_l", "lmovem1_m", "LEFT", "RIGHT", redis.LMoveMArgs{}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"1"}))
+			Expect(client.LRange(ctx, "lmovem1_l", 0, -1).Val()).To(Equal([]string{"2", "3"}))
+			Expect(client.LRange(ctx, "lmovem1_m", 0, -1).Val()).To(Equal([]string{"1"}))
+		})
+
+		It("should LMoveM EXACTLY", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			// Enough elements: moves exactly Count.
+			Expect(client.RPush(ctx, "lmovem_names", "john", "doe").Err()).NotTo(HaveOccurred())
+			res, err := client.LMoveM(ctx, "lmovem_names", "lmovem_processed", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMExactly, Count: 2, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"john", "doe"}))
+			Expect(client.LRange(ctx, "lmovem_processed", 0, -1).Val()).To(Equal([]string{"john", "doe"}))
+
+			// Too few: nothing moved. The 8.10 server returns redis.Nil here, though
+			// the spec also allows an error; both satisfy HaveOccurred() and the
+			// source stays unchanged.
+			Expect(client.RPush(ctx, "lmovem_names", "john").Err()).NotTo(HaveOccurred())
+			err = client.LMoveM(ctx, "lmovem_names", "lmovem_processed2", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMExactly, Count: 2, Order: redis.LMoveMBulk}).Err()
+			Expect(err).To(HaveOccurred())
+			Expect(client.LRange(ctx, "lmovem_names", 0, -1).Val()).To(Equal([]string{"john"}))
+			Expect(client.Exists(ctx, "lmovem_processed2").Val()).To(Equal(int64(0)))
+		})
+
+		It("should LMoveM WRONGTYPE", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "lmovem_src", "a", "b").Err()).NotTo(HaveOccurred())
+			Expect(client.Set(ctx, "lmovem_str", "1024", 0).Err()).NotTo(HaveOccurred())
+
+			err := client.LMoveM(ctx, "lmovem_src", "lmovem_str", "LEFT", "RIGHT",
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Err()
+			Expect(err.Error()).To(Equal("WRONGTYPE Operation against a key holding the wrong kind of value"))
+			// Source is untouched.
+			Expect(client.LRange(ctx, "lmovem_src", 0, -1).Val()).To(Equal([]string{"a", "b"}))
+		})
+
+		It("should BLMoveM", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			Expect(client.RPush(ctx, "blmovem1", "ichi", "ni", "san").Err()).NotTo(HaveOccurred())
+
+			res, err := client.BLMoveM(ctx, "blmovem1", "blmovem2", "RIGHT", "LEFT", time.Second,
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 2, Order: redis.LMoveMBulk}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(Equal([]string{"ni", "san"}))
+			Expect(client.LRange(ctx, "blmovem2", 0, -1).Val()).To(Equal([]string{"ni", "san"}))
+			Expect(client.LRange(ctx, "blmovem1", 0, -1).Val()).To(Equal([]string{"ichi"}))
+		})
+
+		It("should BLMoveM blocks", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			started := make(chan bool)
+			done := make(chan bool)
+			go func() {
+				defer GinkgoRecover()
+
+				started <- true
+				res, err := client.BLMoveM(ctx, "blmovem_src", "blmovem_dst", "LEFT", "LEFT", 0,
+					redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(res).To(Equal([]string{"a"}))
+				done <- true
+			}()
+			<-started
+
+			select {
+			case <-done:
+				Fail("BLMoveM is not blocked")
+			case <-time.After(time.Second):
+				// ok
+			}
+
+			_, err := client.RPush(ctx, "blmovem_src", "a").Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			select {
+			case <-done:
+				// ok
+			case <-time.After(time.Second):
+				Fail("BLMoveM is still blocked")
+			}
+		})
+
+		It("should BLMoveM timeout", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "LMOVEM/BLMOVEM require Redis >= 8.10")
+
+			val, err := client.BLMoveM(ctx, "blmovem_empty", "blmovem_dst", "LEFT", "LEFT", time.Second,
+				redis.LMoveMArgs{Mode: redis.LMoveMCount, Count: 1, Order: redis.LMoveMBulk}).Result()
+			Expect(err).To(Equal(redis.Nil))
+			Expect(val).To(BeNil())
+
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+
+			stats := client.PoolStats()
+			Expect(stats.Hits).To(Equal(uint32(2)))
+			Expect(stats.Misses).To(Equal(uint32(1)))
+			Expect(stats.Timeouts).To(Equal(uint32(0)))
+		})
 	})
 
 	Describe("sets", func() {
@@ -5078,6 +5228,66 @@ var _ = Describe("Commands", func() {
 			sInterCard = client.SInterCard(ctx, 3, "set1", "set2")
 			Expect(sInterCard.Err()).NotTo(HaveOccurred())
 			Expect(sInterCard.Val()).To(Equal(int64(2)))
+		})
+
+		It("should SUnionCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SUNIONCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set1", "a", "b", "c")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "c", "d")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// exact union {a, b, c, d}
+			sUnionCard := client.SUnionCard(ctx, nil, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+
+			// exact with LIMIT capped at 3
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Limit: 3}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// missing key is treated as an empty set
+			sUnionCard = client.SUnionCard(ctx, nil, "set1", "missing")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(3)))
+
+			// APPROX: for small sets the approximate result matches the exact value
+			sUnionCard = client.SUnionCard(ctx, &redis.SUnionCardOptions{Approx: true}, "set1", "set2")
+			Expect(sUnionCard.Err()).NotTo(HaveOccurred())
+			Expect(sUnionCard.Val()).To(Equal(int64(4)))
+		})
+
+		It("should SDiffCard", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SDIFFCARD is available since Redis 8.10")
+
+			sAdd := client.SAdd(ctx, "set0", "a", "b", "c", "d", "e")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set1", "c", "d", "x")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+			sAdd = client.SAdd(ctx, "set2", "e", "y")
+			Expect(sAdd.Err()).NotTo(HaveOccurred())
+
+			// s0 \ (s1 ∪ s2) = {a, b}
+			sDiffCard := client.SDiffCard(ctx, nil, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(2)))
+
+			// exact with LIMIT capped at 1
+			sDiffCard = client.SDiffCard(ctx, &redis.SDiffCardOptions{Limit: 1}, "set0", "set1", "set2")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(1)))
+
+			// missing subtrahend key does not affect the result
+			sDiffCard = client.SDiffCard(ctx, nil, "set0", "missing")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(5)))
+
+			// missing first key yields an empty base set
+			sDiffCard = client.SDiffCard(ctx, nil, "missing", "set0")
+			Expect(sDiffCard.Err()).NotTo(HaveOccurred())
+			Expect(sDiffCard.Val()).To(Equal(int64(0)))
 		})
 
 		It("should SInterStore", Label("NonRedisEnterprise"), func() {
@@ -7111,7 +7321,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should support COUNT aggregate for ZUnion and ZInter", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(8.8, "COUNT aggregate requires Redis 8.8+")
+			SkipBeforeRedisVersion("8.8", "COUNT aggregate requires Redis 8.8+")
 
 			err := client.ZAddArgs(ctx, "zset1", redis.ZAddArgs{
 				Members: []redis.Z{
@@ -7431,28 +7641,28 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XTrimMaxLenMode", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			n, err := client.XTrimMaxLenMode(ctx, "stream", 0, "KEEPREF").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(BeNumerically(">=", 0))
 		})
 
 		It("should XTrimMaxLenApproxMode", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			n, err := client.XTrimMaxLenApproxMode(ctx, "stream", 0, 0, "KEEPREF").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(BeNumerically(">=", 0))
 		})
 
 		It("should XTrimMinIDMode", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			n, err := client.XTrimMinIDMode(ctx, "stream", "4-0", "KEEPREF").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(BeNumerically(">=", 0))
 		})
 
 		It("should XTrimMinIDApproxMode", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			n, err := client.XTrimMinIDApproxMode(ctx, "stream", "4-0", 0, "KEEPREF").Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(n).To(BeNumerically(">=", 0))
@@ -7506,7 +7716,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XAdd with IDMP (idempotent production)", func() {
-			SkipBeforeRedisVersion(8.6, "IDMP requires Redis 8.6+")
+			SkipBeforeRedisVersion("8.6", "IDMP requires Redis 8.6+")
 			streamName := "idmp-stream"
 			defer client.Del(ctx, streamName)
 
@@ -7561,7 +7771,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XAdd with IDMPAUTO (auto-generated idempotent ID)", func() {
-			SkipBeforeRedisVersion(8.6, "IDMPAUTO requires Redis 8.6+")
+			SkipBeforeRedisVersion("8.6", "IDMPAUTO requires Redis 8.6+")
 			streamName := "idmpauto-stream"
 			defer client.Del(ctx, streamName)
 
@@ -7613,7 +7823,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XCfgSet configure idempotent production settings", func() {
-			SkipBeforeRedisVersion(8.6, "XCFGSET requires Redis 8.6+")
+			SkipBeforeRedisVersion("8.6", "XCFGSET requires Redis 8.6+")
 			streamName := "xcfgset-stream"
 			defer client.Del(ctx, streamName)
 
@@ -7668,7 +7878,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XAckDel", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			// First, create a consumer group
 			err := client.XGroupCreate(ctx, "stream", "testgroup", "0").Err()
 			Expect(err).NotTo(HaveOccurred())
@@ -7691,7 +7901,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XDelEx", func() {
-			SkipBeforeRedisVersion(8.2, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("8.2", "doesn't work with older redis stack images")
 			// Test XDelEx with KEEPREF mode
 			n, err := client.XDelEx(ctx, "stream", "KEEPREF", "1-0", "2-0").Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -7824,8 +8034,79 @@ var _ = Describe("Commands", func() {
 			Expect(err).To(Equal(redis.Nil))
 		})
 
+		It("should XRead with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREAD MAXCOUNT requires Redis 8.10+")
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "s1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "s2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// MAXCOUNT is cumulative across all streams. Streams are served in
+			// caller order, so s1 contributes its 3 entries and s2 contributes 1,
+			// reaching the total cap of 4.
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams:  []string{"s1", "s2", "0", "0"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
+		})
+
+		It("should XRead with MAXSIZE returning at least the first available entry", func() {
+			SkipBeforeRedisVersion("8.10", "XREAD MAXSIZE requires Redis 8.10+")
+
+			// MAXSIZE is a soft cap; even a value smaller than a single entry must
+			// still return the first available entry (never suppress all output).
+			res, err := client.XRead(ctx, &redis.XReadArgs{
+				Streams: []string{"stream", "0"},
+				MaxSize: 1,
+				Block:   -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(res).To(HaveLen(1))
+			Expect(res[0].Stream).To(Equal("stream"))
+			Expect(len(res[0].Messages)).To(BeNumerically(">=", 1))
+		})
+
+		It("should XReadGroup with MAXCOUNT capping cumulative entries across streams", func() {
+			SkipBeforeRedisVersion("8.10", "XREADGROUP MAXCOUNT requires Redis 8.10+")
+
+			for _, id := range []string{"1-0", "2-0", "3-0"} {
+				_, err := client.XAdd(ctx, &redis.XAddArgs{Stream: "g1", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+				_, err = client.XAdd(ctx, &redis.XAddArgs{Stream: "g2", ID: id, Values: map[string]interface{}{"f": "v"}}).Result()
+				Expect(err).NotTo(HaveOccurred())
+			}
+			Expect(client.XGroupCreate(ctx, "g1", "grp", "0").Err()).NotTo(HaveOccurred())
+			Expect(client.XGroupCreate(ctx, "g2", "grp", "0").Err()).NotTo(HaveOccurred())
+
+			res, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+				Group:    "grp",
+				Consumer: "consumer",
+				Streams:  []string{"g1", "g2", ">", ">"},
+				MaxCount: 4,
+				Block:    -1,
+			}).Result()
+			Expect(err).NotTo(HaveOccurred())
+
+			total := 0
+			for _, s := range res {
+				total += len(s.Messages)
+			}
+			Expect(total).To(Equal(4))
+		})
+
 		It("should XRead LastEntry", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream"},
 				Count:   2, // we expect 1 message
@@ -7843,7 +8124,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead LastEntry from two streams", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			res, err := client.XRead(ctx, &redis.XReadArgs{
 				Streams: []string{"stream", "stream"},
 				ID:      "+",
@@ -7866,7 +8147,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should XRead LastEntry blocks", Label("NonRedisEnterprise"), func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			start := time.Now()
 			// Wait for the goroutine to finish before the spec returns so it
 			// can't outlive AfterEach's client.Close() and trip "use of closed
@@ -8111,7 +8392,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should not XNack with no mode", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// Mode is required by Redis; omitting it should return a server-side error.
 				_, err := client.XNack(ctx, &redis.XNackArgs{
@@ -8123,7 +8404,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack with SILENT mode", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// All 3 messages are pending (delivered by BeforeEach), each with delivery_count=1.
 				// SILENT: consumer shutting down; delivery counter decremented by 1 (1 → 0).
@@ -8160,7 +8441,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack with FAIL mode", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// FAIL: delivery counter stays the same (1 → 1).
 				n, err := client.XNack(ctx, &redis.XNackArgs{
@@ -8196,7 +8477,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack with FATAL mode", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// FATAL: delivery counter set to MAXINT (for invalid/malicious messages).
 				n, err := client.XNack(ctx, &redis.XNackArgs{
@@ -8231,7 +8512,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack nacked-count reflected in XINFO STREAM FULL", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// NACK two messages.
 				n, err := client.XNack(ctx, &redis.XNackArgs{
@@ -8251,7 +8532,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack with RetryCount", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				retryCount := uint64(5)
 				n, err := client.XNack(ctx, &redis.XNackArgs{
@@ -8287,7 +8568,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XNack with Force", func() {
-				SkipBeforeRedisVersion(8.8, "XNACK requires Redis 8.8+")
+				SkipBeforeRedisVersion("8.8", "XNACK requires Redis 8.8+")
 
 				// Force creates a new NACKed PEL entry for an ID that was never
 				// delivered to a consumer via XREADGROUP. Without Force this would
@@ -8310,7 +8591,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup with CLAIM argument", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				time.Sleep(100 * time.Millisecond)
 
@@ -8336,7 +8617,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup with CLAIM and COUNT", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				time.Sleep(100 * time.Millisecond)
 
@@ -8355,7 +8636,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup with CLAIM and NOACK", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				time.Sleep(100 * time.Millisecond)
 
@@ -8374,7 +8655,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup CLAIM empties PEL after acknowledgment", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				time.Sleep(100 * time.Millisecond)
 
@@ -8419,7 +8700,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup CLAIM with multiple streams", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				id, err := client.XAdd(ctx, &redis.XAddArgs{
 					Stream: "stream2",
@@ -8470,7 +8751,7 @@ var _ = Describe("Commands", func() {
 			})
 
 			It("should XReadGroup CLAIM work consistently on RESP2 and RESP3", func() {
-				SkipBeforeRedisVersion(8.3, "XREADGROUP CLAIM requires Redis 8.3+")
+				SkipBeforeRedisVersion("8.3", "XREADGROUP CLAIM requires Redis 8.3+")
 
 				streamName := "stream-resp-test"
 				err := client.XAdd(ctx, &redis.XAddArgs{
@@ -8637,7 +8918,7 @@ var _ = Describe("Commands", func() {
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
 				}
-				if RedisVersion < 8.6 {
+				if !redisVersionAtLeast("8.6") {
 					expectedRes.IDMPDuration = 0
 					expectedRes.IDMPMaxSize = 0
 					expectedRes.PIDsTracked = 0
@@ -8674,7 +8955,7 @@ var _ = Describe("Commands", func() {
 					IIDsAdded:            0,
 					IIDsDuplicates:       0,
 				}
-				if RedisVersion < 8.6 {
+				if !redisVersionAtLeast("8.6") {
 					expectedRes.IDMPDuration = 0
 					expectedRes.IDMPMaxSize = 0
 					expectedRes.PIDsTracked = 0
@@ -9568,7 +9849,7 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("Shows function stats", func() {
-			SkipBeforeRedisVersion(7.4, "doesn't work with older redis stack images")
+			SkipBeforeRedisVersion("7.4", "doesn't work with older redis stack images")
 			defer client.FunctionKill(ctx)
 
 			// We can not run blocking commands in Redis functions, so we're using an infinite loop,
@@ -9679,6 +9960,57 @@ var _ = Describe("Commands", func() {
 			result, err = client.SlowLogLen(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).Should(Equal(int64(1)))
+		})
+
+		It("returns the command argument count", Label("NonRedisEnterprise"), func() {
+			SkipBeforeRedisVersion("8.10", "SLOWLOG GET reports the command argument count since Redis 8.10")
+
+			const key = "slowlog-log-slower-than"
+			old := client.ConfigGet(ctx, key).Val()
+			client.ConfigSet(ctx, key, "0")
+			defer client.ConfigSet(ctx, key, old[key])
+
+			// A short command: CommandArgc matches the number of stored Args.
+			Expect(client.Do(ctx, "slowlog", "reset").Err()).NotTo(HaveOccurred())
+			client.Set(ctx, "test", "true", 0)
+
+			result, err := client.SlowLogGet(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			var setEntry *redis.SlowLog
+			for i := range result {
+				if len(result[i].Args) > 0 && result[i].Args[0] == "set" {
+					setEntry = &result[i]
+				}
+			}
+			Expect(setEntry).NotTo(BeNil())
+			Expect(setEntry.CommandArgc).To(Equal(int64(3))) // SET test true
+
+			// A long command: Redis truncates the stored Args at slowlog-max-argc,
+			// but CommandArgc still reports the full original argument count.
+			maxArgc := client.ConfigGet(ctx, "slowlog-max-argc").Val()["slowlog-max-argc"]
+			client.ConfigSet(ctx, "slowlog-max-argc", "32")
+			defer client.ConfigSet(ctx, "slowlog-max-argc", maxArgc)
+			Expect(client.Do(ctx, "slowlog", "reset").Err()).NotTo(HaveOccurred())
+
+			args := []interface{}{"rpush", "slowlog-big-list"}
+			for i := 0; i < 50; i++ {
+				args = append(args, fmt.Sprintf("v%d", i))
+			}
+			Expect(client.Do(ctx, args...).Err()).NotTo(HaveOccurred())
+
+			result, err = client.SlowLogGet(ctx, -1).Result()
+			Expect(err).NotTo(HaveOccurred())
+			var pushEntry *redis.SlowLog
+			for i := range result {
+				if len(result[i].Args) > 0 && result[i].Args[0] == "rpush" {
+					pushEntry = &result[i]
+				}
+			}
+			Expect(pushEntry).NotTo(BeNil())
+			// "rpush" + key + 50 values = 52 arguments.
+			Expect(pushEntry.CommandArgc).To(Equal(int64(52)))
+			// Stored Args are truncated, so the full count is only available via CommandArgc.
+			Expect(int64(len(pushEntry.Args))).To(BeNumerically("<", pushEntry.CommandArgc))
 		})
 	})
 

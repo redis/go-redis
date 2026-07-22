@@ -798,6 +798,11 @@ func (c *ModuleLoadexConfig) toArgs() []interface{} {
 
 // ModuleLoadex Redis `MODULE LOADEX path [CONFIG name value [CONFIG name value ...]] [ARGS args [args ...]]` command.
 func (c cmdable) ModuleLoadex(ctx context.Context, conf *ModuleLoadexConfig) *StringCmd {
+	if conf == nil {
+		cmd := NewStringCmd(ctx)
+		cmd.SetErr(errors.New("redis: ModuleLoadex nil config"))
+		return cmd
+	}
 	cmd := NewStringCmd(ctx, conf.toArgs()...)
 	_ = c(ctx, cmd)
 	return cmd
