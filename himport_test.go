@@ -290,6 +290,39 @@ func TestHImportAfterBatch(t *testing.T) {
 	}
 }
 
+// Every pooled client constructor must wire the HIMPORT registry: without it,
+// HImportPrepare silently skips registration and pooled HImportSet replay
+// never engages.
+func TestHImportRegistryWiring(t *testing.T) {
+	client := NewClient(&Options{Addr: "127.0.0.1:0"})
+	defer client.Close()
+	if client.himport == nil {
+		t.Error("NewClient must initialize the HIMPORT registry")
+	}
+
+	// Conn and Tx borrow connections from the client's pool and return them:
+	// they must share the parent registry so prepared flags stay coherent.
+	conn := client.Conn()
+	defer conn.Close()
+	if conn.himport != client.himport {
+		t.Error("Client.Conn() must share the parent HIMPORT registry")
+	}
+	tx := client.newTx()
+	defer tx.Close(context.Background())
+	if tx.himport != client.himport {
+		t.Error("newTx must share the parent HIMPORT registry")
+	}
+
+	failover := NewFailoverClient(&FailoverOptions{
+		MasterName:    "mymaster",
+		SentinelAddrs: []string{"127.0.0.1:0"},
+	})
+	defer failover.Close()
+	if failover.himport == nil {
+		t.Error("NewFailoverClient must initialize the HIMPORT registry")
+	}
+}
+
 func TestHImportRecover(t *testing.T) {
 	ctx := context.Background()
 	c := &baseClient{himport: newHImportRegistry()}

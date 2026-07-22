@@ -207,6 +207,17 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, prepCmds []*HImportPrepare
 		if set, ok := hc.(*HImportSetCmd); ok {
 			if rootCause, ok := failed[set.fieldsetName]; ok && himportNoSuchFieldset(set.Err()) {
 				set.SetErr(rootCause)
+				continue
+			}
+			// The session lost a fieldset the flags claim is prepared (e.g.
+			// RESET): invalidate the flag so a caller-initiated retry of the
+			// pipeline replays the PREPARE. Pipelines are not auto-retried:
+			// re-running the whole batch would repeat the side effects of
+			// commands that already succeeded.
+			if himportNoSuchFieldset(set.Err()) {
+				if _, registered := c.himport.lookup(set.fieldsetName); registered {
+					cn.UnmarkFieldsetPrepared(set.fieldsetName)
+				}
 			}
 			continue
 		}

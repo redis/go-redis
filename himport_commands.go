@@ -177,6 +177,13 @@ func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields
 // otherwise the fieldset must have been prepared on the executing connection
 // or the server replies "ERR no such fieldset".
 //
+// A single-command HImportSet that fails with "no such fieldset" for a
+// registered fieldset (the connection lost its session state, e.g. RESET) is
+// transparently re-prepared and retried once. Pipelined sets are not
+// auto-retried — re-running the batch would repeat side effects of commands
+// that already succeeded — but the connection's prepared flags are
+// invalidated, so retrying the pipeline replays the PREPARE and succeeds.
+//
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, values ...interface{}) *StatusCmd {
 	cmd := NewHImportSetCmd(ctx, key, fieldsetName, values...)

@@ -321,6 +321,67 @@ func TestHImportLazyReplay(t *testing.T) {
 	}
 }
 
+// TestHImportPipelineRetryAfterSessionLoss pins the pipeline recovery
+// contract: a pipeline whose HIMPORT SETs fail with "no such fieldset" after
+// the session was wiped (RESET) is not auto-retried, but it invalidates the
+// connection's prepared flags, so the caller's retry of the pipeline replays
+// the PREPARE and succeeds.
+func TestHImportPipelineRetryAfterSessionLoss(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        2,
+		PoolSize:        1,
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a", "b").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k1", "fs", "1", "2").Err(); err != nil {
+		t.Fatalf("set k1: %v", err)
+	}
+
+	// Wipe the server session behind the client's back; the connection's
+	// prepared flag is now stale.
+	if err := client.Do(ctx, "reset").Err(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	pipe := client.Pipeline()
+	set2 := pipe.HImportSet(ctx, "k2", "fs", "3", "4")
+	set3 := pipe.HImportSet(ctx, "k3", "fs", "5", "6")
+	_, _ = pipe.Exec(ctx)
+	if err := set2.Err(); err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Fatalf("first pipeline exec = %v, want no-such-fieldset (pipelines are not auto-retried)", err)
+	}
+	if err := set3.Err(); err == nil {
+		t.Fatal("first pipeline exec: set3 should fail alongside set2")
+	}
+
+	// The failed exec must have invalidated the stale flag: retrying the
+	// pipeline on the same connection replays the PREPARE and succeeds.
+	prepBefore := srv.prepares()
+	pipe = client.Pipeline()
+	set2 = pipe.HImportSet(ctx, "k2", "fs", "3", "4")
+	set3 = pipe.HImportSet(ctx, "k3", "fs", "5", "6")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("pipeline retry: %v", err)
+	}
+	if set2.Err() != nil || set3.Err() != nil {
+		t.Fatalf("pipeline retry sets: %v, %v", set2.Err(), set3.Err())
+	}
+	if got := srv.prepares(); got != prepBefore+1 {
+		t.Errorf("prepares after pipeline retry = %d, want %d (single replay)", got, prepBefore+1)
+	}
+	if h := srv.hash("k3"); h["a"] != "5" || h["b"] != "6" {
+		t.Errorf("k3 = %v, want a=5 b=6", h)
+	}
+}
+
 // TestHImportInjectedPrepareWithPushNotification pins the RESP3 read
 // sequence: a push frame arriving between the injected PREPARE's reply and
 // the SET's reply must be drained as a notification, not consumed as the
