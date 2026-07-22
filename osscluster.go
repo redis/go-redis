@@ -190,7 +190,9 @@ type ClusterOptions struct {
 	ShardPicker routing.ShardPicker
 
 	// ClusterStateReloadInterval is the interval for reloading the cluster state.
-	// Default is 10 seconds.
+	// MOVED/ASK redirects still trigger an immediate reactive reload, so this
+	// only bounds how stale a topology can get without traffic errors.
+	// Default is 60 seconds.
 	ClusterStateReloadInterval time.Duration
 }
 
@@ -235,7 +237,7 @@ func (opt *ClusterOptions) init() {
 	case -1:
 		opt.ReadTimeout = 0
 	case 0:
-		opt.ReadTimeout = 3 * time.Second
+		opt.ReadTimeout = 5 * time.Second
 	}
 	switch opt.WriteTimeout {
 	case -1:
@@ -251,13 +253,13 @@ func (opt *ClusterOptions) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.NewClient == nil {
@@ -273,7 +275,7 @@ func (opt *ClusterOptions) init() {
 	}
 
 	if opt.ClusterStateReloadInterval == 0 {
-		opt.ClusterStateReloadInterval = 10 * time.Second
+		opt.ClusterStateReloadInterval = 60 * time.Second
 	}
 }
 

@@ -121,12 +121,12 @@ type Options struct {
 	// MinRetryBackoff is the minimum backoff between each retry.
 	// -1 disables backoff.
 	//
-	// default: 8 milliseconds
+	// default: 10 milliseconds
 	MinRetryBackoff time.Duration
 
 	// MaxRetryBackoff is the maximum backoff between each retry.
 	// -1 disables backoff.
-	// default: 512 milliseconds;
+	// default: 1 second;
 	MaxRetryBackoff time.Duration
 
 	// DialTimeout for establishing new connections.
@@ -157,7 +157,7 @@ type Options struct {
 	//	- `-1` - no timeout (block indefinitely).
 	//	- `-2` - disables SetReadDeadline calls completely.
 	//
-	// default: 3 seconds
+	// default: 5 seconds
 	ReadTimeout time.Duration
 
 	// WriteTimeout for socket writes. If reached, commands will fail
@@ -166,7 +166,7 @@ type Options struct {
 	//	- `-1` - no timeout (block indefinitely).
 	//	- `-2` - disables SetWriteDeadline calls completely.
 	//
-	// default: 3 seconds
+	// default: 5 seconds (same as ReadTimeout, which it follows when unset)
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
@@ -367,7 +367,7 @@ func (opt *Options) init() {
 	case -1:
 		opt.ReadTimeout = 0
 	case 0:
-		opt.ReadTimeout = 3 * time.Second
+		opt.ReadTimeout = 5 * time.Second
 	}
 	switch opt.WriteTimeout {
 	case -2:
@@ -400,13 +400,13 @@ func (opt *Options) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.FailingTimeoutSeconds == 0 {
@@ -447,8 +447,16 @@ func (opt *Options) NewDialer() func(context.Context, string, string) (net.Conn,
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		netDialer := &net.Dialer{
-			Timeout:   opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
+			Timeout: opt.DialTimeout,
+			// Start probing after 30s idle (below typical LB/NAT idle
+			// timeouts), then declare the peer dead after 3 unanswered
+			// probes 5s apart.
+			KeepAliveConfig: net.KeepAliveConfig{
+				Enable:   true,
+				Idle:     30 * time.Second,
+				Interval: 5 * time.Second,
+				Count:    3,
+			},
 		}
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)

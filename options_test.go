@@ -270,7 +270,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 func TestReadTimeoutOptions(t *testing.T) {
 	testDataInputOutputMap := map[time.Duration]time.Duration{
 		-1: 0 * time.Second,
-		0:  3 * time.Second,
+		0:  5 * time.Second,
 		1:  1 * time.Nanosecond,
 		3:  3 * time.Nanosecond,
 	}
