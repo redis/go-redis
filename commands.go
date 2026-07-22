@@ -707,7 +707,7 @@ func (c cmdable) ReplicaOf(ctx context.Context, host, port string) *StatusCmd {
 }
 
 func (c cmdable) SlowLogGet(ctx context.Context, num int64) *SlowLogCmd {
-	cmd := NewSlowLogCmd(context.Background(), "slowlog", "get", num)
+	cmd := NewSlowLogCmd(ctx, "slowlog", "get", num)
 	_ = c(ctx, cmd)
 	return cmd
 }
