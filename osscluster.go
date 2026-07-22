@@ -1874,7 +1874,13 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	// executed guards against a node-level hook short-circuiting (returning
+	// without calling next): the inner callback then never runs, and without
+	// surfacing the chain's error the cluster pipeline would report success
+	// for commands that were never sent.
+	executed := false
+	err := node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		executed = true
 		// Acquire through the node's dedicated pipeline pool when one is
 		// configured (Pipeline*BufferSize propagate to node clients via
 		// clientOptions); withPipelineConn falls back to the main pool
@@ -1894,6 +1900,14 @@ func (c *ClusterClient) processPipelineNode(
 		}
 		return err
 	})
+	if !executed {
+		// Deliberate abort by a hook: set the error, do not remap for retry
+		// (a retry would re-run the same hook).
+		if err == nil {
+			err = errHookShortCircuit
+		}
+		setCmdsErr(cmds, err)
+	}
 }
 
 func (c *ClusterClient) processPipelineNodeConn(
@@ -2150,7 +2164,10 @@ func (c *ClusterClient) processTxPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
 	cmds = wrapMultiExec(ctx, cmds)
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+	// Same short-circuit guard as processPipelineNode.
+	executed := false
+	err := node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		executed = true
 		// Same dedicated-pipeline-pool routing as processPipelineNode.
 		entered := false
 		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
@@ -2163,6 +2180,12 @@ func (c *ClusterClient) processTxPipelineNode(
 		}
 		return err
 	})
+	if !executed {
+		if err == nil {
+			err = errHookShortCircuit
+		}
+		setCmdsErr(cmds, err)
+	}
 }
 
 func (c *ClusterClient) processTxPipelineNodeConn(

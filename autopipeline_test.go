@@ -2,6 +2,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -3221,6 +3222,28 @@ func (h shortCircuitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) re
 	return func(ctx context.Context, cmds []redis.Cmder) error { return h.err }
 }
 
+// pipelineBreakerHook short-circuits the pipeline chain once armed. It stays
+// open until then because connection init itself runs a handshake pipeline
+// through the hook chain (initConn -> Pipeline.Exec), and plain commands
+// (Ping skip-gates, topology discovery) always pass through.
+type pipelineBreakerHook struct {
+	err   error
+	armed *atomic.Bool
+}
+
+func (h pipelineBreakerHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h pipelineBreakerHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error { return next(ctx, cmd) }
+}
+func (h pipelineBreakerHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if !h.armed.Load() {
+			return next(ctx, cmds)
+		}
+		return h.err
+	}
+}
+
 func TestAutoPipelineHookShortCircuit(t *testing.T) {
 	errBreaker := errors.New("breaker open")
 	for _, tc := range []struct {
@@ -3532,6 +3555,112 @@ func TestClusterPipelineUsesDedicatedPool(t *testing.T) {
 		}
 		if pipelineConns.Load() == 0 {
 			t.Fatal("dedicated pipeline pool unused: cluster pipelines still bypass it")
+		}
+	})
+}
+
+// TestAutoPipelineDoRawOutsidePipeline pins that DoRaw/DoRawWriteTo do NOT
+// ride the batching engine (AutoPipeliner embeds cmdable, so without the
+// overrides they would): they follow Do's escape-hatch shape on both faces,
+// and hooks reading their results cannot deadlock.
+func TestAutoPipelineDoRawOutsidePipeline(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		async bool
+	}{{"blocking", false}, {"async", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			defer c.Close()
+			if err := c.Ping(ctx).Err(); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			c.AddHook(resultPeekHook{before: false}) // reads results in hooks
+
+			var ap *redis.AutoPipeliner
+			var err error
+			if tc.async {
+				ap, err = c.AsyncAutoPipeline()
+			} else {
+				ap, err = c.AutoPipeline()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+
+			runWithWatchdog(t, 30*time.Second, func() {
+				raw := ap.DoRaw(ctx, "PING")
+				if err := raw.Err(); err != nil {
+					t.Fatalf("DoRaw: %v", err)
+				}
+				if v, _ := raw.Result(); !strings.Contains(string(v), "PONG") {
+					t.Fatalf("DoRaw PING raw = %q, want PONG in RESP", v)
+				}
+
+				var buf bytes.Buffer
+				wcmd := ap.DoRawWriteTo(ctx, &buf, "PING")
+				if err := wcmd.Err(); err != nil { // async face: blocks until executed
+					t.Fatalf("DoRawWriteTo: %v", err)
+				}
+				if !strings.Contains(buf.String(), "PONG") {
+					t.Fatalf("DoRawWriteTo buffer = %q, want PONG in RESP", buf.String())
+				}
+
+				// no-args guard mirrors Do
+				if err := ap.DoRaw(ctx).Err(); err == nil {
+					t.Fatal("DoRaw() with no args: want error")
+				}
+			})
+		})
+	}
+}
+
+// TestClusterNodeHookShortCircuit pins that a NODE-level hook returning
+// without calling next (circuit-breaker shape, installed via OnNewNode) is
+// surfaced on every command instead of the cluster pipeline reporting silent
+// success for commands that were never sent.
+func TestClusterNodeHookShortCircuit(t *testing.T) {
+	ctx := context.Background()
+	errBreaker := errors.New("node breaker open")
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{":16600", ":16601", ":16602"},
+	})
+	defer c.Close()
+	// Install BEFORE any command: OnNewNode only fires for newly created node
+	// clients. The breaker is disarmed during warmup (conn-init handshakes
+	// are pipelines too) and armed just before the asserted round.
+	var armed atomic.Bool
+	c.OnNewNode(func(cl *redis.Client) { cl.AddHook(pipelineBreakerHook{err: errBreaker, armed: &armed}) })
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+
+	runWithWatchdog(t, 60*time.Second, func() {
+		// Warm pooled connections on every node so the asserted round doesn't
+		// dial fresh ones (whose handshake the armed breaker would kill first).
+		warm := c.Pipeline()
+		for i := 0; i < 12; i++ {
+			warm.Set(ctx, fmt.Sprintf("nsc:%d", i), i, 0)
+		}
+		if _, err := warm.Exec(ctx); err != nil {
+			t.Fatalf("warmup: %v", err)
+		}
+		armed.Store(true)
+
+		pipe := c.Pipeline()
+		cmds := make([]*redis.StatusCmd, 0, 12)
+		for i := 0; i < 12; i++ {
+			cmds = append(cmds, pipe.Set(ctx, fmt.Sprintf("nsc:%d", i), i, 0))
+		}
+		_, execErr := pipe.Exec(ctx)
+		if execErr == nil {
+			t.Fatal("cluster pipeline reported success though node hooks short-circuited")
+		}
+		for i, cmd := range cmds {
+			if cmd.Err() == nil {
+				t.Fatalf("cmd %d: err = nil, want the node hook's error surfaced", i)
+			}
 		}
 	})
 }
