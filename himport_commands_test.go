@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	. "github.com/bsm/ginkgo/v2"
@@ -18,6 +19,14 @@ var _ = Describe("HIMPORT commands", func() {
 	BeforeEach(func() {
 		SkipBeforeRedisVersion("8.10", "HIMPORT requires Redis 8.10")
 		client = redis.NewClient(redisOptions())
+		// Version alone is not enough: 8.10 pre-release builds may lack the
+		// HIMPORT command family. Probe for it and skip when absent.
+		if err := client.HImportDiscardAll(ctx).Err(); err != nil &&
+			strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+			Expect(client.Close()).NotTo(HaveOccurred())
+			client = nil
+			Skip("server does not support HIMPORT")
+		}
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
