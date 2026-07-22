@@ -60,6 +60,12 @@ former; autopipelining reaches the latter automatically.
 
 What the numbers say:
 
+- **`Normal` is round-trip-bound; a bigger pool would not close the gap.** The
+  2000 goroutines share a `PoolSize: 100` pool and each connection carries one
+  blocking SET per round-trip, so throughput tops out near connections × 1/RTT.
+  The autopipeline variants win by putting hundreds of commands on the wire per
+  round-trip, not by opening more connections — the blocking face below runs on
+  a default-sized pool.
 - **`AutoPipeline()` (blocking) clears ~1.1M executed SET/sec** even though each
   caller blocks on every command — the flusher coalesces the 2000 concurrent
   callers into deep, back-to-back batches (its default,

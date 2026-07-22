@@ -36,7 +36,12 @@ func BenchmarkIndividualCommands(b *testing.B) {
 	})
 }
 
-// BenchmarkManualPipeline benchmarks using manual pipelining
+// BenchmarkManualPipeline benchmarks using manual pipelining. Deliberately
+// sequential (one goroutine, one pipeline at a time): it isolates the
+// per-batch cost of an explicit Pipeline().Exec() round-trip, so its numbers
+// are not directly comparable to the parallel BenchmarkIndividualCommands
+// above. For a like-for-like concurrent comparison of the client faces see
+// BenchmarkAutoPipelineThroughput, whose variants all share one harness.
 func BenchmarkManualPipeline(b *testing.B) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{
@@ -836,12 +841,12 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 	b.Run("Normal", func(b *testing.B) {
 		c := redis.NewClient(&redis.Options{Addr: ":6379", PoolSize: 100})
 		defer c.Close()
-		i := 0
 		drive(b, func(id int) int {
+			// k is only the SET payload; a counter shared across drive's
+			// goroutines would race.
 			const run = 50 // amortize the harness per-step cost; each Set still blocks
 			for k := 0; k < run; k++ {
-				i++
-				if err := c.Set(ctx, fmt.Sprintf("n:%d", id), i, 0).Err(); err != nil {
+				if err := c.Set(ctx, fmt.Sprintf("n:%d", id), k, 0).Err(); err != nil {
 					b.Error(err)
 				}
 			}
@@ -852,21 +857,20 @@ func BenchmarkAutoPipelineThroughput(b *testing.B) {
 	b.Run("AutoPipelineBlocking", func(b *testing.B) {
 		c := redis.NewClient(&redis.Options{Addr: ":6379"})
 		defer c.Close()
-		ap, err := c.AutoPipeline() // blocking face: ap.Set blocks until executed (parallel-batch default)
+		ap, err := c.AutoPipeline() // blocking face: ap.Set blocks until executed (default: single ordered batch stream)
 		if err != nil {
 			b.Fatal(err)
 		}
 		defer ap.Close()
-		i := 0
 		drive(b, func(id int) int {
 			// Each command call blocks until executed (drop-in shape, no .Result()
 			// needed). We issue a small run per drive() step so the harness's
 			// per-step atomic/closure cost is amortized and doesn't understate the
 			// command rate — every command here still fully executes and is counted.
+			// k is only the SET payload; a shared counter would race.
 			const run = 50
 			for k := 0; k < run; k++ {
-				i++
-				if err := ap.Set(ctx, fmt.Sprintf("b:%d", id), i, 0).Err(); err != nil {
+				if err := ap.Set(ctx, fmt.Sprintf("b:%d", id), k, 0).Err(); err != nil {
 					b.Error(err)
 				}
 			}
