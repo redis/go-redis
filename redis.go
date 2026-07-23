@@ -1022,14 +1022,17 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
 
-		// An HIMPORT SET whose fieldset is registered client-side but not
-		// prepared on this connection's session gets the PREPARE written in
-		// the same round trip, right before it.
-		prepCmd := c.himportEnsureCmd(ctx, cn, cmd)
+		// HIMPORT bookkeeping: pending discards for this session and the
+		// PREPARE for an HIMPORT SET's registered fieldset are written in
+		// the same round trip, right before the command.
+		var injected []Cmder
+		if _, ok := cmd.(himportCmder); ok {
+			injected = c.himportInjectedCmds(ctx, cn, []Cmder{cmd})
+		}
 
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-			if prepCmd != nil {
-				if err := writeCmd(wr, prepCmd); err != nil {
+			for _, ic := range injected {
+				if err := writeCmd(wr, ic); err != nil {
 					return err
 				}
 			}
@@ -1054,22 +1057,30 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
-			if prepCmd != nil {
-				if err := c.himportReadPrepareReplies(ctx, cn, rd, []*HImportPrepareCmd{prepCmd}); err != nil {
+			if len(injected) > 0 {
+				if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 					return err
 				}
-				// A push notification can arrive between the PREPARE reply
-				// and the command reply; drain again so readReplyFunc does
-				// not consume it as the command's reply.
+				// A push notification can arrive between the injected
+				// replies and the command reply; drain again so
+				// readReplyFunc does not consume it as the command's reply.
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 				}
 			}
 			err := readReplyFunc(rd)
-			if prepCmd != nil && prepCmd.Err() != nil && (err == nil || isRedisError(err)) {
-				// The injected PREPARE failed; its error is the root cause of
-				// the command's "no such fieldset" reply (drained above).
-				err = prepCmd.Err()
+			if err == nil || isRedisError(err) {
+				// A failed injected PREPARE is the root cause of the
+				// command's "no such fieldset" reply (drained above).
+				if set, ok := cmd.(*HImportSetCmd); ok {
+					for _, ic := range injected {
+						if prep, ok := ic.(*HImportPrepareCmd); ok &&
+							prep.fieldsetName == set.fieldsetName && prep.Err() != nil {
+							err = prep.Err()
+							break
+						}
+					}
+				}
 			}
 			return err
 		}); err != nil {
@@ -1298,14 +1309,14 @@ func (c *baseClient) pipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
 	}
 
-	// Registered HIMPORT fieldsets the batch references but this
-	// connection's session lacks get their PREPAREs written ahead of the
-	// batch.
-	prepCmds := c.himportPrepareCmdsForBatch(ctx, cn, cmds)
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the batch references get written ahead of
+	// the batch.
+	injected := c.himportInjectedCmds(ctx, cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		for _, prep := range prepCmds {
-			if err := writeCmd(wr, prep); err != nil {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
 				return err
 			}
 		}
@@ -1316,13 +1327,13 @@ func (c *baseClient) pipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		if err := c.himportReadPrepareReplies(ctx, cn, rd, prepCmds); err != nil {
+		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 			return err
 		}
 		// read all replies
 		err := c.pipelineReadCmds(ctx, cn, rd, cmds)
 		if err == nil || isRedisError(err) {
-			c.himportAfterBatch(cn, prepCmds, cmds)
+			c.himportAfterBatch(cn, injected, cmds)
 		}
 		return err
 	}); err != nil {
@@ -1357,14 +1368,14 @@ func (c *baseClient) txPipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
 	}
 
-	// Registered HIMPORT fieldsets the transaction references but this
-	// connection's session lacks get their PREPAREs written ahead of MULTI;
-	// the session state is visible inside the transaction.
-	prepCmds := c.himportPrepareCmdsForBatch(ctx, cn, cmds)
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the transaction references get written ahead
+	// of MULTI; the session state is visible inside the transaction.
+	injected := c.himportInjectedCmds(ctx, cn, cmds)
 
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		for _, prep := range prepCmds {
-			if err := writeCmd(wr, prep); err != nil {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
 				return err
 			}
 		}
@@ -1375,7 +1386,7 @@ func (c *baseClient) txPipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		if err := c.himportReadPrepareReplies(ctx, cn, rd, prepCmds); err != nil {
+		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 			return err
 		}
 
@@ -1391,7 +1402,7 @@ func (c *baseClient) txPipelineProcessCmds(
 		// Read replies.
 		err := c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
 		if err == nil || isRedisError(err) {
-			c.himportAfterBatch(cn, prepCmds, trimmedCmds)
+			c.himportAfterBatch(cn, injected, trimmedCmds)
 		}
 		return err
 	}); err != nil {

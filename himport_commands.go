@@ -36,10 +36,12 @@ type HImportPrepareCmd struct {
 	fieldsetName string
 	fields       []string
 
-	// registryVersion is non-zero only on commands injected by the client to
-	// replay a registered fieldset onto a connection; on success the
-	// connection is marked as prepared at this version.
+	// registryVersion and registryEpoch are set only on commands injected by
+	// the client to replay a registered fieldset onto a connection; on
+	// success the connection is marked as prepared at this version under
+	// this discard-all epoch.
 	registryVersion uint64
+	registryEpoch   uint64
 }
 
 func (cmd *HImportPrepareCmd) himportCmd() {}
@@ -123,6 +125,11 @@ func NewHImportDiscardCmd(ctx context.Context, fieldsetName string) *HImportDisc
 // HImportDiscardAllCmd represents an HIMPORT DISCARDALL command.
 type HImportDiscardAllCmd struct {
 	IntCmd
+
+	// registryEpoch is set only on commands injected by the client to wipe a
+	// session that predates the registry's discard-all epoch; on success the
+	// connection adopts this epoch.
+	registryEpoch uint64
 }
 
 func (cmd *HImportDiscardAllCmd) himportCmd() {}
@@ -198,8 +205,10 @@ func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, value
 //
 // It returns 1 if the fieldset was removed from the executing connection's
 // session and 0 if that connection had no fieldset with this name. Other
-// pooled connections may retain the fieldset server-side until they close;
-// hashes already created through the fieldset are not affected.
+// pooled connections whose sessions still hold the fieldset replay the
+// DISCARD before their next HIMPORT command, so a subsequent HImportSet
+// fails with "no such fieldset" on every connection, exactly as on a single
+// connection. Hashes already created through the fieldset are not affected.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
@@ -214,7 +223,8 @@ func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCm
 //	HIMPORT DISCARDALL
 //
 // It returns the number of fieldsets removed from the executing connection's
-// session.
+// session. Other pooled connections whose sessions were prepared earlier
+// replay HIMPORT DISCARDALL before their next HIMPORT command.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportDiscardAll(ctx context.Context) *IntCmd {

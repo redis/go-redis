@@ -113,9 +113,13 @@ type Conn struct {
 	// connection's current server session: fieldset name -> client-side
 	// registry version. The server drops fieldsets when the session ends,
 	// so the map is cleared whenever the underlying network connection is
-	// replaced. Guarded by preparedFieldsetsMu; nil until first use.
-	preparedFieldsetsMu sync.Mutex
-	preparedFieldsets   map[string]uint64
+	// replaced. preparedFieldsetsEpoch records the registry's discard-all
+	// epoch the session was prepared under; a session behind the current
+	// epoch replays HIMPORT DISCARDALL before its next HIMPORT command.
+	// Guarded by preparedFieldsetsMu; the map is nil until first use.
+	preparedFieldsetsMu    sync.Mutex
+	preparedFieldsets      map[string]uint64
+	preparedFieldsetsEpoch uint64
 
 	// When a goroutine closes a connection, it usually knows the reason, so closeReason is not needed.
 	// closeReason is only used when an in-use connection is closed by another goroutine,
@@ -670,8 +674,9 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 
 	cn.bw.Reset(netConn)
 
-	// A new socket is a new server session with no HIMPORT fieldsets.
-	cn.ClearPreparedFieldsets()
+	// A new socket is a new server session with no HIMPORT fieldsets and
+	// nothing left to discard.
+	cn.ClearPreparedFieldsets(0)
 }
 
 // FieldsetPreparedVersion returns the client-side registry version at which
@@ -686,10 +691,13 @@ func (cn *Conn) FieldsetPreparedVersion(name string) uint64 {
 
 // MarkFieldsetPrepared records that the named HIMPORT fieldset was prepared
 // on this connection's current server session at the given registry version.
-func (cn *Conn) MarkFieldsetPrepared(name string, version uint64) {
+// A session acquiring its first fieldset adopts the given discard-all epoch:
+// fieldsets prepared after an HIMPORT DISCARDALL are not subject to it.
+func (cn *Conn) MarkFieldsetPrepared(name string, version, epoch uint64) {
 	cn.preparedFieldsetsMu.Lock()
-	if cn.preparedFieldsets == nil {
+	if len(cn.preparedFieldsets) == 0 {
 		cn.preparedFieldsets = make(map[string]uint64)
+		cn.preparedFieldsetsEpoch = epoch
 	}
 	cn.preparedFieldsets[name] = version
 	cn.preparedFieldsetsMu.Unlock()
@@ -703,11 +711,42 @@ func (cn *Conn) UnmarkFieldsetPrepared(name string) {
 	cn.preparedFieldsetsMu.Unlock()
 }
 
+// HasPreparedFieldsets reports whether any HIMPORT fieldset is prepared on
+// this connection's current server session.
+func (cn *Conn) HasPreparedFieldsets() bool {
+	cn.preparedFieldsetsMu.Lock()
+	n := len(cn.preparedFieldsets)
+	cn.preparedFieldsetsMu.Unlock()
+	return n > 0
+}
+
+// PreparedFieldsetNames returns the names of the HIMPORT fieldsets prepared
+// on this connection's current server session.
+func (cn *Conn) PreparedFieldsetNames() []string {
+	cn.preparedFieldsetsMu.Lock()
+	names := make([]string, 0, len(cn.preparedFieldsets))
+	for name := range cn.preparedFieldsets {
+		names = append(names, name)
+	}
+	cn.preparedFieldsetsMu.Unlock()
+	return names
+}
+
+// FieldsetEpoch returns the discard-all epoch this connection's prepared
+// fieldsets belong to (0 when none were ever prepared on the session).
+func (cn *Conn) FieldsetEpoch() uint64 {
+	cn.preparedFieldsetsMu.Lock()
+	epoch := cn.preparedFieldsetsEpoch
+	cn.preparedFieldsetsMu.Unlock()
+	return epoch
+}
+
 // ClearPreparedFieldsets forgets all HIMPORT fieldsets prepared on this
-// connection.
-func (cn *Conn) ClearPreparedFieldsets() {
+// connection and records the discard-all epoch the wipe corresponds to.
+func (cn *Conn) ClearPreparedFieldsets(epoch uint64) {
 	cn.preparedFieldsetsMu.Lock()
 	cn.preparedFieldsets = nil
+	cn.preparedFieldsetsEpoch = epoch
 	cn.preparedFieldsetsMu.Unlock()
 }
 

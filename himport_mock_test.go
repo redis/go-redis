@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
@@ -28,9 +29,19 @@ type himportMockServer struct {
 	mu           sync.Mutex
 	hashes       map[string]map[string]string
 	prepareCount int
+	// sessions tracks the per-connection fieldset maps of live connections,
+	// so tests can observe fieldsets surviving on sessions the client is not
+	// currently using.
+	sessions map[*himportMockSession]struct{}
 	// pushBeforeSetReply, when armed, makes the next HIMPORT SET reply be
 	// preceded by an out-of-band RESP3 push frame.
 	pushBeforeSetReply bool
+}
+
+// himportMockSession is one connection's fieldset state; guarded by the
+// server mutex.
+type himportMockSession struct {
+	fieldsets map[string][]string
 }
 
 func newHImportMockServer(t *testing.T) *himportMockServer {
@@ -40,8 +51,9 @@ func newHImportMockServer(t *testing.T) *himportMockServer {
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &himportMockServer{
-		ln:     ln,
-		hashes: make(map[string]map[string]string),
+		ln:       ln,
+		hashes:   make(map[string]map[string]string),
+		sessions: make(map[*himportMockSession]struct{}),
 	}
 	go func() {
 		for {
@@ -68,6 +80,18 @@ func (s *himportMockServer) hash(key string) map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.hashes[key]
+}
+
+// totalSessionFieldsets counts fieldsets across all live connection
+// sessions — the server-side footprint the lazy discard replay must clean up.
+func (s *himportMockServer) totalSessionFieldsets() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for session := range s.sessions {
+		n += len(session.fieldsets)
+	}
+	return n
 }
 
 func (s *himportMockServer) armPushBeforeSetReply() {
@@ -124,7 +148,17 @@ func readCommand(rd *bufio.Reader) ([]string, error) {
 func (s *himportMockServer) serve(conn net.Conn) {
 	defer conn.Close()
 	rd := bufio.NewReader(conn)
-	fieldsets := make(map[string][]string) // per-connection session state
+
+	// Per-connection session state, visible to tests through the server.
+	session := &himportMockSession{fieldsets: make(map[string][]string)}
+	s.mu.Lock()
+	s.sessions[session] = struct{}{}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.sessions, session)
+		s.mu.Unlock()
+	}()
 
 	reply := func(msg string) bool {
 		_, err := conn.Write([]byte(msg))
@@ -149,15 +183,24 @@ func (s *himportMockServer) serve(conn net.Conn) {
 				return
 			}
 		case "RESET":
-			fieldsets = make(map[string][]string)
+			s.mu.Lock()
+			session.fieldsets = make(map[string][]string)
+			s.mu.Unlock()
 			if !reply("+RESET\r\n") {
 				return
 			}
 		case "BOOM":
 			// Simulate a dropped connection: close without replying.
 			return
+		case "HOLD":
+			// Occupy this connection long enough for a concurrent caller to
+			// be forced onto another pooled connection.
+			time.Sleep(150 * time.Millisecond)
+			if !reply("+OK\r\n") {
+				return
+			}
 		case "HIMPORT":
-			if !s.handleHImport(args, fieldsets, reply) {
+			if !s.handleHImport(args, session, reply) {
 				return
 			}
 		default:
@@ -168,7 +211,7 @@ func (s *himportMockServer) serve(conn net.Conn) {
 	}
 }
 
-func (s *himportMockServer) handleHImport(args []string, fieldsets map[string][]string, reply func(string) bool) bool {
+func (s *himportMockServer) handleHImport(args []string, session *himportMockSession, reply func(string) bool) bool {
 	switch strings.ToUpper(args[1]) {
 	case "PREPARE":
 		name, fields := args[2], args[3:]
@@ -179,14 +222,16 @@ func (s *himportMockServer) handleHImport(args []string, fieldsets map[string][]
 			}
 			seen[f] = struct{}{}
 		}
-		fieldsets[name] = append([]string(nil), fields...)
 		s.mu.Lock()
+		session.fieldsets[name] = append([]string(nil), fields...)
 		s.prepareCount++
 		s.mu.Unlock()
 		return reply("+OK\r\n")
 	case "SET":
 		key, name, values := args[2], args[3], args[4:]
-		fields, ok := fieldsets[name]
+		s.mu.Lock()
+		fields, ok := session.fieldsets[name]
+		s.mu.Unlock()
 		if !ok {
 			return reply("-ERR no such fieldset\r\n")
 		}
@@ -212,16 +257,19 @@ func (s *himportMockServer) handleHImport(args []string, fieldsets map[string][]
 		}
 		return reply("+OK\r\n")
 	case "DISCARD":
-		if _, ok := fieldsets[args[2]]; ok {
-			delete(fieldsets, args[2])
+		s.mu.Lock()
+		_, ok := session.fieldsets[args[2]]
+		delete(session.fieldsets, args[2])
+		s.mu.Unlock()
+		if ok {
 			return reply(":1\r\n")
 		}
 		return reply(":0\r\n")
 	case "DISCARDALL":
-		n := len(fieldsets)
-		for name := range fieldsets {
-			delete(fieldsets, name)
-		}
+		s.mu.Lock()
+		n := len(session.fieldsets)
+		session.fieldsets = make(map[string][]string)
+		s.mu.Unlock()
 		return reply(":" + strconv.Itoa(n) + "\r\n")
 	}
 	return reply("-ERR Unknown subcommand\r\n")
@@ -379,6 +427,107 @@ func TestHImportPipelineRetryAfterSessionLoss(t *testing.T) {
 	}
 	if h := srv.hash("k3"); h["a"] != "5" || h["b"] != "6" {
 		t.Errorf("k3 = %v, want a=5 b=6", h)
+	}
+}
+
+// TestHImportLazyDiscardPropagation pins the lazy discard contract: a
+// DISCARD/DISCARDALL executes on one pooled connection, and other sessions
+// still holding the fieldset replay the discard before their next HIMPORT
+// command, so post-discard behavior is deterministic and no zombie fieldsets
+// survive on connections the client keeps using.
+func TestHImportLazyDiscardPropagation(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        2,
+		PoolSize:        2,
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	// runBoth occupies both pooled connections concurrently (HOLD keeps each
+	// busy long enough for the other goroutine to be forced onto the second
+	// connection) and runs one HIMPORT SET on each; it returns the SET
+	// errors.
+	runBoth := func(fieldset, keyPrefix string) [2]error {
+		var wg sync.WaitGroup
+		var errs [2]error
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				pipe := client.Pipeline()
+				pipe.Do(ctx, "hold")
+				set := pipe.HImportSet(ctx, fmt.Sprintf("%s:%d", keyPrefix, i), fieldset, "v")
+				_, _ = pipe.Exec(ctx)
+				errs[i] = set.Err()
+			}(i)
+		}
+		wg.Wait()
+		return errs
+	}
+
+	// Prepare the fieldset on both pooled connections.
+	if err := client.HImportPrepare(ctx, "fs", "f").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	for i, err := range runBoth("fs", "seed") {
+		if err != nil {
+			t.Fatalf("seed set %d: %v", i, err)
+		}
+	}
+	if got := srv.totalSessionFieldsets(); got != 2 {
+		t.Fatalf("sessions holding fs = %d, want 2", got)
+	}
+
+	// DISCARD executes on one borrowed connection; the other session still
+	// holds the fieldset for now.
+	if err := client.HImportDiscard(ctx, "fs").Err(); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if got := srv.totalSessionFieldsets(); got != 1 {
+		t.Fatalf("sessions holding fs right after discard = %d, want 1", got)
+	}
+
+	// The next HIMPORT command on each connection replays the DISCARD: the
+	// leftover session copy is removed and every SET fails deterministically.
+	for i, err := range runBoth("fs", "late") {
+		if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+			t.Errorf("set %d after discard = %v, want no-such-fieldset", i, err)
+		}
+	}
+	if got := srv.totalSessionFieldsets(); got != 0 {
+		t.Errorf("sessions holding fs after replayed discard = %d, want 0", got)
+	}
+
+	// Same for DISCARDALL, via the epoch: prepare on both connections, wipe
+	// through one, and let the other session replay the wipe.
+	if err := client.HImportPrepare(ctx, "fs2", "g").Err(); err != nil {
+		t.Fatalf("prepare fs2: %v", err)
+	}
+	for i, err := range runBoth("fs2", "seed2") {
+		if err != nil {
+			t.Fatalf("seed2 set %d: %v", i, err)
+		}
+	}
+	if got := srv.totalSessionFieldsets(); got != 2 {
+		t.Fatalf("sessions holding fs2 = %d, want 2", got)
+	}
+	if err := client.HImportDiscardAll(ctx).Err(); err != nil {
+		t.Fatalf("discardall: %v", err)
+	}
+	if got := srv.totalSessionFieldsets(); got != 1 {
+		t.Fatalf("sessions right after discardall = %d, want 1", got)
+	}
+	for i, err := range runBoth("fs2", "late2") {
+		if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+			t.Errorf("set %d after discardall = %v, want no-such-fieldset", i, err)
+		}
+	}
+	if got := srv.totalSessionFieldsets(); got != 0 {
+		t.Errorf("sessions after replayed discardall = %d, want 0", got)
 	}
 }
 
