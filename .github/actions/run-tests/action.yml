@@ -76,6 +76,9 @@ runs:
       env:
         RCE_DOCKER: "true"
         RE_CLUSTER: "false"
+        # Passed through the environment (not ${{ }}-interpolated into the
+        # script) so the input value cannot inject shell commands.
+        MAKE_TARGET: ${{ inputs.make-target }}
       run: |
-        make ${{ inputs.make-target }}
+        make $MAKE_TARGET
       shell: bash
