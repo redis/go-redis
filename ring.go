@@ -146,7 +146,7 @@ type RingOptions struct {
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
 	// configure an optional separate connection pool used for pipelining on
 	// each shard, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. Zero values disable the separate pool.
+	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
@@ -830,6 +830,34 @@ func (c *Ring) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// ErrRingAutoPipelineUnsupported is returned by Ring's AutoPipeline /
+// AsyncAutoPipeline (and their WithOptions forms); check for it with
+// errors.Is. Autopipelining is not implemented for Ring; use the per-shard
+// clients or a ClusterClient. Ring is part of the UniversalClient
+// interface, so these methods exist to satisfy it and fail explicitly rather
+// than being silently absent.
+var ErrRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
+
+// AutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AutoPipeline() (*AutoPipeliner, error) {
+	return c.AutoPipelineWithOptions(nil)
+}
+
+// AutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return nil, ErrRingAutoPipelineUnsupported
+}
+
+// AsyncAutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return c.AsyncAutoPipelineWithOptions(nil)
+}
+
+// AsyncAutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return nil, ErrRingAutoPipelineUnsupported
 }
 
 func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

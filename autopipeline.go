@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -14,15 +15,16 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 )
 
-// AutoPipelineConfig configures the autopipelining behavior.
-type AutoPipelineConfig struct {
+// AutoPipelineOptions configures the autopipelining behavior.
+type AutoPipelineOptions struct {
 	// MaxBatchSize is the target batch size: the accumulator stops waiting for
 	// more commands once the shard queue reaches it, so a batch flushes promptly
 	// instead of lingering. It is a soft threshold, not a hard cap — under heavy
 	// concurrent enqueue (or while a flush waits on the concurrency semaphore) the
 	// queue can grow past it and execute as a single larger pipeline, which is
 	// safe and simply yields a deeper pipeline.
-	// Default: 200
+	// Default: 200 (the blocking face's no-options preset,
+	// DefaultBlockingAutoPipelineOptions, uses 300).
 	MaxBatchSize int
 
 	// MaxConcurrentBatches is the maximum number of pipeline batches that may
@@ -134,22 +136,22 @@ func numAutoPipelineShards() int {
 	return n
 }
 
-// DefaultAutoPipelineConfig returns the default autopipelining configuration.
+// DefaultAutoPipelineOptions returns the default autopipelining configuration.
 //
 // The default is ordered: MaxConcurrentBatches is 1, so batches execute
 // serially in submit order (a single ordered command stream) while still
 // reaching high throughput via deep pipelines when callers submit in windows.
 // To trade ordering for parallel-batch throughput, set MaxConcurrentBatches > 1
 // together with Unordered: true.
-func DefaultAutoPipelineConfig() *AutoPipelineConfig {
-	return &AutoPipelineConfig{
+func DefaultAutoPipelineOptions() *AutoPipelineOptions {
+	return &AutoPipelineOptions{
 		MaxBatchSize:         200,
 		MaxConcurrentBatches: 1, // ordered by default
 		MaxFlushDelay:        0, // lowest latency; no coalescing wait (batch via in-flight backpressure)
 	}
 }
 
-// DefaultBlockingAutoPipelineConfig returns the default config for the
+// DefaultBlockingAutoPipelineOptions returns the default config for the
 // blocking face (Client.AutoPipeline). It uses a single ordered batch stream
 // (MaxConcurrentBatches: 1). Counterintuitively this maximizes throughput AND
 // minimizes latency for the blocking face: with one batch in flight, callers whose
@@ -162,8 +164,8 @@ func DefaultAutoPipelineConfig() *AutoPipelineConfig {
 // per round-trip while latency rises. For maximum throughput use the async face
 // (AsyncAutoPipeline) with a window of in-flight commands (inflight>1); it keeps
 // MaxConcurrentBatches: 1 as well.
-func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
-	return &AutoPipelineConfig{
+func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
+	return &AutoPipelineOptions{
 		MaxBatchSize:         300,
 		MaxConcurrentBatches: 1,
 	}
@@ -172,9 +174,9 @@ func DefaultBlockingAutoPipelineConfig() *AutoPipelineConfig {
 // Validate reports whether the configuration is self-consistent. It returns an
 // error if MaxConcurrentBatches > 1 without Unordered: true — raising
 // concurrency gives up command ordering, so the caller must opt in explicitly.
-func (cfg *AutoPipelineConfig) Validate() error {
+func (cfg *AutoPipelineOptions) Validate() error {
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxConcurrentBatches=%d requires Unordered:true "+
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+
 			"(parallel batches do not preserve command ordering); set Unordered:true to allow it, "+
 			"or keep MaxConcurrentBatches=1 for an ordered stream", cfg.MaxConcurrentBatches)
 	}
@@ -182,19 +184,19 @@ func (cfg *AutoPipelineConfig) Validate() error {
 	// than being silently coerced to a default. Zero is allowed and means "use
 	// the default" (MaxBatchSize) or "no delay" (MaxFlushDelay).
 	if cfg.MaxBatchSize < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxBatchSize=%d must be >= 0", cfg.MaxBatchSize)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxBatchSize=%d must be >= 0", cfg.MaxBatchSize)
 	}
 	if cfg.MaxConcurrentBatches < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxConcurrentBatches=%d must be >= 0", cfg.MaxConcurrentBatches)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d must be >= 0", cfg.MaxConcurrentBatches)
 	}
 	if cfg.MaxFlushDelay < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
+		return fmt.Errorf("redis: AutoPipelineOptions.MaxFlushDelay=%s must be >= 0", cfg.MaxFlushDelay)
 	}
 	if cfg.NumShards < 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.NumShards=%d must be >= 0", cfg.NumShards)
+		return fmt.Errorf("redis: AutoPipelineOptions.NumShards=%d must be >= 0", cfg.NumShards)
 	}
 	if cfg.AdaptiveDelay && cfg.MaxFlushDelay <= 0 {
-		return fmt.Errorf("redis: AutoPipelineConfig.AdaptiveDelay requires MaxFlushDelay > 0 " +
+		return fmt.Errorf("redis: AutoPipelineOptions.AdaptiveDelay requires MaxFlushDelay > 0 " +
 			"(adaptive delay scales MaxFlushDelay by queue fill; with no MaxFlushDelay it would " +
 			"silently disable batch accumulation entirely)")
 	}
@@ -202,10 +204,27 @@ func (cfg *AutoPipelineConfig) Validate() error {
 }
 
 // cmdableClient is an interface for clients that support pipelining.
-// Both Client and ClusterClient implement this interface.
+// Both Client and ClusterClient implement this interface. It embeds
+// UniversalClient (Cmdable + Process + Do + AddHook + Watch + Subscribe... +
+// Close + PoolStats) so the AutoPipeliner can delegate the non-batched surface
+// back to the underlying client and itself satisfy UniversalClient.
 type cmdableClient interface {
-	Cmdable
-	Process(ctx context.Context, cmd Cmder) error
+	UniversalClient
+	// processPipelineHook is the hook-wrapped []Cmder pipeline entry — the same
+	// method Pipeline.Exec is wired to (see Client.Pipeline). The flusher
+	// dispatches drained batches through it directly, skipping the per-batch
+	// Pipeline construction; hooks/OTel see the identical call.
+	processPipelineHook(ctx context.Context, cmds []Cmder) error
+	// The async faces additionally dispatch through withProcessPipelineHook /
+	// withProcessHook with the base processors as the innermost, so the batch
+	// can be completed UNDER the user hooks (results ready the moment exec
+	// returns, before hooks unwind). Both *Client and *ClusterClient satisfy
+	// these via hooksMixin and their base processors.
+	withProcessPipelineHook(ctx context.Context, cmds []Cmder, hook ProcessPipelineHook) error
+	hookCount() int
+	withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error
+	processPipeline(ctx context.Context, cmds []Cmder) error
+	process(ctx context.Context, cmd Cmder) error
 }
 
 // apBatch is the completion signal shared by every command flushed together.
@@ -216,9 +235,61 @@ type cmdableClient interface {
 // one goroutine wake-up apiece).
 type apBatch struct {
 	done chan struct{}
+	// closed makes close() idempotent: on the async faces the dispatch closes
+	// the batch at the innermost exec seam (under the user hooks, so a hook
+	// reading a result after next() does not block on a channel its own
+	// goroutine closes — the #3867 deadlock), while the flusher keeps its
+	// deferred close as a panic backstop. Whichever runs first wins.
+	closed atomic.Bool
+	// dispGid is the goroutine id of the dispatcher while the batch is inside
+	// the hook chain (0 otherwise). await() consults it before blocking so a
+	// hook on the dispatch goroutine reading a result BEFORE next() gets the
+	// not-yet-executed view — what a plain pipeline hook sees — instead of a
+	// self-deadlock.
+	dispGid atomic.Int64
 }
 
 func newAPBatch() *apBatch { return &apBatch{done: make(chan struct{})} }
+
+// close completes the batch exactly once, waking every waiter.
+func (b *apBatch) close() {
+	if b.closed.CompareAndSwap(false, true) {
+		close(b.done)
+	}
+}
+
+// curGoroutineID parses the goroutine id from runtime.Stack's header
+// ("goroutine 123 ["). Called only on paths already paying a dispatch or an
+// about-to-block round-trip wait — never on await()'s fast path — so the
+// microsecond-scale stack read is noise against the batch RTT.
+// armSelfDeadlockGuard reports whether async dispatch should stamp the
+// dispatcher's goroutine id on the batches (see apBatch.dispGid). Armed when
+// user hooks exist — without hooks nothing can read a command inside the
+// chain — and always on cluster clients, whose node clients may carry their
+// own hooks (OnNewNode + AddHook, the redisotel pattern) that hookCount()
+// cannot see. NOTE: node-level hooks run on node-worker goroutines, so the
+// gid guard cannot protect a node hook that reads command results before
+// next(); such hooks must treat commands as write-only on the async face
+// (results are safe to read after next()). A hook added concurrently with an
+// in-flight dispatch misses the guard for that one batch; after-next reads
+// are still safe via the innermost close.
+func (ap *AutoPipeliner) armSelfDeadlockGuard() bool {
+	return ap.pipeliner.hookCount() > 0 || ap.config.contentSharded
+}
+
+func curGoroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	const skip = len("goroutine ")
+	var id int64
+	for _, c := range buf[skip:n] {
+		if c < '0' || c > '9' {
+			break
+		}
+		id = id*10 + int64(c-'0')
+	}
+	return id
+}
 
 // The shard queue stores bare Cmders. The batch a command waits on is the
 // shard's curBatch at enqueue time — read once to wire the command's ready
@@ -294,13 +365,14 @@ func putQueueSlice(slice []Cmder) {
 // client, or set MaxRetries: -1.
 //
 // Lifetime: AutoPipeline() returns a single, client-owned instance shared by all
-// callers. Close()ing it (or closing the client) stops the shared pipeliner for
-// everyone; a later AutoPipeline() call builds a fresh one.
+// callers. Close()ing it stops the shared pipeliner for everyone; a later
+// AutoPipeline() call on the client builds a fresh one. Closing the CLIENT also
+// stops it, but permanently: the getters then return ErrClosed.
 type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 
 	pipeliner cmdableClient
-	config    *AutoPipelineConfig
+	config    *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -410,18 +482,53 @@ func (s *apShard) stripe() *apStripe {
 	return &s.stripes[s.next.Add(1)%uint32(len(s.stripes))]
 }
 
+// getOrCreateAutoPipeliner is the shared caching protocol behind the four
+// AutoPipeline/AsyncAutoPipeline getters (Client and ClusterClient, each
+// face): return the cached live instance, refuse on a closed client, or build
+// and cache a new one. The caller supplies its cached-slot pointer, its
+// closed flag (both guarded by the mutex), the explicit-config override, the
+// fallback config, and a build closure (the cluster one wraps
+// clusterAutoPipelineOptions and installs slot sharding).
+func getOrCreateAutoPipeliner(
+	mu *sync.Mutex,
+	slot **AutoPipeliner,
+	closed *bool,
+	override *AutoPipelineOptions,
+	fallback func() *AutoPipelineOptions,
+	build func(*AutoPipelineOptions) (*AutoPipeliner, error),
+) (*AutoPipeliner, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if *closed {
+		return nil, ErrClosed
+	}
+	if *slot != nil && !(*slot).closed.Load() {
+		return *slot, nil
+	}
+	cfg := fallback()
+	if override != nil {
+		cfg = override
+	}
+	ap, err := build(cfg)
+	if err != nil {
+		return nil, err
+	}
+	*slot = ap
+	return ap, nil
+}
+
 // newAutoPipeliner builds an autopipeliner in either blocking or deferred mode.
 // It is unexported on purpose: the public entry points are
 // Client/ClusterClient.AutoPipeline and AsyncAutoPipeline, which also install
 // cluster slot-sharding. Constructing one directly would skip that wiring and
 // give a *ClusterClient degraded (cross-node) batching.
-func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, blocking bool) (*AutoPipeliner, error) {
+func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, blocking bool) (*AutoPipeliner, error) {
 	if config == nil {
-		config = DefaultAutoPipelineConfig()
+		config = DefaultAutoPipelineOptions()
 	} else {
 		// Copy so default-filling below doesn't mutate the caller's struct — the
-		// same *AutoPipelineConfig may be shared across clients (e.g. a reused
-		// Options.AutoPipelineConfig), and callers may inspect it afterward.
+		// same *AutoPipelineOptions may be shared across clients (e.g. a reused
+		// Options.AutoPipelineOptions), and callers may inspect it afterward.
 		cfgCopy := *config
 		config = &cfgCopy
 	}
@@ -453,7 +560,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 	// per-key order holds).
 	if config.NumShards > 1 && !config.Unordered && !blocking && !config.contentSharded {
 		return nil, fmt.Errorf(
-			"redis: AutoPipelineConfig.NumShards=%d requires Unordered:true on the deferred (async) face "+
+			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
 			config.NumShards)
 	}
@@ -546,7 +653,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineConfig, block
 // a blocking autopipeliner the call blocks until the command has executed; on a
 // deferred (async) one it returns immediately and the command's result
 // accessors (Err/Val/Result) block until it completes.
-func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
+func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 	cmd := NewCmd(ctx, args...)
 	if len(args) == 0 {
 		cmd.SetErr(errDoNoArgs)
@@ -561,17 +668,86 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return cmd
 	}
-	// Deferred face: keep the returns-immediately shape. Run on a normal
-	// connection in the background; the ready channel makes the command's
-	// result accessors block until it completes. Not tracked by batchWg — a
-	// Do racing Close simply fails with a closed-pool error like any other
-	// in-flight command on a closing client.
-	done := make(chan struct{})
-	cmd.setReady(done)
-	go func() {
-		defer close(done)
+	ap.runOutsidePipeline(ctx, cmd)
+	return cmd
+}
+
+// runOutsidePipeline executes an escape-hatch command (Do, DoRaw,
+// DoRawWriteTo) on a normal pooled connection, outside the batching engine,
+// following the face's call shape. Blocking face: synchronous Process.
+// Deferred face: returns-immediately — the command runs on a background
+// goroutine and a ready batch makes its result accessors block until it
+// completes. The batch completes at the innermost seam (under the user
+// hooks) so a ProcessHook reading the result cannot self-deadlock; the
+// deferred close is the panic backstop. Not tracked by batchWg — a call
+// racing Close simply fails with a closed-pool error like any other
+// in-flight command on a closing client.
+func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) {
+	if ap.blocking {
 		_ = ap.pipeliner.Process(ctx, cmd)
+		return
+	}
+	b := newAPBatch()
+	cmd.setReady(b)
+	go func() {
+		defer b.close()
+		if ap.armSelfDeadlockGuard() {
+			b.dispGid.Store(curGoroutineID())
+		}
+		executed := false
+		err := ap.pipeliner.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
+			executed = true
+			err := ap.pipeliner.process(ctx, cmd)
+			// Mirror Client.Process's belt-and-braces SetErr for the base
+			// call. It must run before close: waiters may read immediately.
+			cmd.SetErr(err)
+			b.close()
+			return err
+		})
+		if !executed {
+			// A hook short-circuited: surface its verdict instead of waking
+			// the reader with a silent zero value (batch still open here).
+			if err == nil {
+				err = errHookShortCircuit
+			}
+			cmd.SetErr(err)
+		}
 	}()
+}
+
+// DoRaw mirrors Do for raw RESP access: AutoPipeliner embeds cmdable, so
+// without this override DoRaw would ride the batching engine — but raw
+// commands carry Do's caveats and DoRawWriteTo-style streaming must not run
+// inside a shared batch's reply loop. Runs outside the pipeline, following
+// the face's call shape (see Do).
+func (ap *AutoPipeliner) DoRaw(ctx context.Context, args ...interface{}) *RawCmd {
+	cmd := NewRawCmd(ctx, args...)
+	if len(args) == 0 {
+		cmd.SetErr(errDoNoArgs)
+		return cmd
+	}
+	if ap.closed.Load() {
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
+	ap.runOutsidePipeline(ctx, cmd)
+	return cmd
+}
+
+// DoRawWriteTo mirrors Do for streamed raw RESP access (see DoRaw). On the
+// deferred face the write to w happens when the command executes; use the
+// result accessors (Err/Written) to wait before reading w.
+func (ap *AutoPipeliner) DoRawWriteTo(ctx context.Context, w io.Writer, args ...interface{}) *RawWriteToCmd {
+	cmd := NewRawWriteToCmd(ctx, w, args...)
+	if len(args) == 0 {
+		cmd.SetErr(errDoNoArgs)
+		return cmd
+	}
+	if ap.closed.Load() {
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
+	ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
 
@@ -583,6 +759,71 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) Cmder {
 func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 	return ap.cmdable(ctx, cmd)
 }
+
+// The methods below complete the UniversalClient surface by delegating to the
+// underlying client. They are NOT autopipelined — pub/sub, transactions (Watch),
+// hooks, Do and pool stats cannot be batched — so an AutoPipeliner used as a
+// UniversalClient batches only the typed data commands; everything here runs on
+// the underlying client exactly as it would there.
+//
+// Note on lifecycle: Close() (defined elsewhere) closes the AUTOPIPELINER —
+// drains in-flight batches and stops flushers — but does NOT close the
+// underlying client, whose lifecycle is owned by whoever created it.
+
+// AddHook adds a hook to the underlying client. Autopipelined batches are hooked
+// too, since dispatch goes through the hook-wrapped pipeline entry.
+func (ap *AutoPipeliner) AddHook(hook Hook) { ap.pipeliner.AddHook(hook) }
+
+// Watch runs a transactional function on the underlying client (not batched).
+func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	return ap.pipeliner.Watch(ctx, fn, keys...)
+}
+
+// Subscribe opens a pub/sub on the underlying client (not batched — pub/sub
+// needs a dedicated connection).
+func (ap *AutoPipeliner) Subscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.Subscribe(ctx, channels...)
+}
+
+// PSubscribe opens a pattern pub/sub on the underlying client (not batched).
+func (ap *AutoPipeliner) PSubscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.PSubscribe(ctx, channels...)
+}
+
+// SSubscribe opens a sharded pub/sub on the underlying client (not batched).
+func (ap *AutoPipeliner) SSubscribe(ctx context.Context, channels ...string) *PubSub {
+	return ap.pipeliner.SSubscribe(ctx, channels...)
+}
+
+// PoolStats returns the underlying client's connection pool statistics.
+func (ap *AutoPipeliner) PoolStats() *PoolStats { return ap.pipeliner.PoolStats() }
+
+// AutoPipeline delegates to the underlying client, which returns its cached
+// autopipeliner (typically this same instance). Present to satisfy the
+// UniversalClient surface.
+func (ap *AutoPipeliner) AutoPipeline() (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipeline()
+}
+
+// AutoPipelineWithOptions delegates to the underlying client.
+func (ap *AutoPipeliner) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return ap.pipeliner.AutoPipelineWithOptions(config)
+}
+
+// AsyncAutoPipeline delegates to the underlying client. Present to satisfy the
+// UniversalClient surface.
+func (ap *AutoPipeliner) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipeline()
+}
+
+// AsyncAutoPipelineWithOptions delegates to the underlying client.
+func (ap *AutoPipeliner) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return ap.pipeliner.AsyncAutoPipelineWithOptions(config)
+}
+
+// validate AutoPipeliner implements UniversalClient (drop-in for the real
+// clients; non-data operations delegate to the underlying client).
+var _ UniversalClient = (*AutoPipeliner)(nil)
 
 // AutoFuture is the handle returned by Submit. Call Wait (or Result on the
 // command after Wait) once the result is needed; it blocks only until the
@@ -602,7 +843,18 @@ func (f AutoFuture) Wait() error {
 		}
 		return errZeroAutoFuture
 	}
-	<-f.batch.done
+	select {
+	case <-f.batch.done:
+	default:
+		// Same self-deadlock guard as baseCmd.await(): a pipeline hook on
+		// the batch's own dispatch goroutine waiting a future pre-next()
+		// would block a channel only its goroutine can close. Give it the
+		// not-yet-executed view instead.
+		if gid := f.batch.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
+			return f.cmd.rawErr()
+		}
+		<-f.batch.done
+	}
 	return f.cmd.Err()
 }
 
@@ -622,6 +874,14 @@ func (f AutoFuture) WaitContext(ctx context.Context) error {
 			return f.cmd.Err()
 		}
 		return errZeroAutoFuture
+	}
+	select {
+	case <-f.batch.done:
+		return f.cmd.Err()
+	default:
+		if gid := f.batch.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
+			return f.cmd.rawErr() // see Wait: dispatch-goroutine self-deadlock guard
+		}
 	}
 	select {
 	case <-f.batch.done:
@@ -664,6 +924,12 @@ var errZeroAutoFuture = errors.New("redis: Wait on a zero AutoFuture")
 // errDoNoArgs is returned by Do when called without a command.
 var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argument")
 
+// errHookShortCircuit is set on commands whose batch a hook short-circuited:
+// the hook chain returned without calling next, so the pipeline never
+// executed and no per-command result exists. Used only when the hook did not
+// supply an error of its own.
+var errHookShortCircuit = errors.New("redis: autopipeline: pipeline hook returned without executing the batch")
+
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
 // Cmders on the deferred (async) face, where the typed methods (Set, Get, ...)
@@ -687,7 +953,12 @@ func (ap *AutoPipeliner) Submit(ctx context.Context, cmd Cmder) AutoFuture {
 // result is read.
 func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	f := ap.submit(ctx, cmd)
-	cmd.setReady(f.batch.done)
+	// The atomic ready store keeps the dispatch race benign: a hook that
+	// reads the command before this lands sees a nil ready - the
+	// non-blocking not-yet-executed view - while this goroutine always
+	// sees its own store before any await. Nothing runs under the hot
+	// stripe lock.
+	cmd.setReady(f.batch)
 	return nil
 }
 
@@ -709,7 +980,7 @@ func (ap *AutoPipeliner) processBlocking(ctx context.Context, cmd Cmder) error {
 // immediately and the command's own error tells the story.
 var completedBatch = func() *apBatch {
 	b := newAPBatch()
-	close(b.done)
+	b.close()
 	return b
 }()
 
@@ -732,6 +1003,11 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 			idx = -idx
 		}
 		s = ap.shards[idx%len(ap.shards)]
+	} else if len(ap.shards) == 1 {
+		// Single shard (the standalone default): skip the round-robin counter —
+		// it is a shared cache line bumped by every enqueue for a pick that is
+		// constant. Same guard the stripe pick already has.
+		s = ap.shards[0]
 	} else {
 		// Unsigned modulo: converting to int first goes negative after the
 		// uint32 counter passes 2^31 on 32-bit platforms and panics.
@@ -777,7 +1053,7 @@ func (s *apShard) wake() {
 func (ap *AutoPipeliner) IsBlocking() bool { return ap.blocking }
 
 // Config returns a copy of the effective configuration (defaults filled in).
-func (ap *AutoPipeliner) Config() AutoPipelineConfig { return *ap.config }
+func (ap *AutoPipeliner) Config() AutoPipelineOptions { return *ap.config }
 
 // IsClosed reports whether the AutoPipeliner has been closed, either by an
 // explicit Close or by closing the owning client. A closed AutoPipeliner
@@ -1087,6 +1363,55 @@ func (s *apShard) awaitExpectedArrivals(batchSize int) {
 	}
 }
 
+// dispatchCmds executes the drained stripe queues as one pipeline without
+// constructing a Pipeline object: the queue slices go straight to the client's
+// hook-wrapped pipeline processor (the exact entry Pipeline.Exec is wired to),
+// so hooks and OTel behave identically while the per-batch Pipeline allocation,
+// its append-growth reallocations and the per-command Process calls disappear.
+// A single-stripe drain (every ordered shard, and any drain that found one
+// non-empty stripe) passes its queue zero-copy; multi-stripe drains merge into
+// one pooled slice.
+// When onExecuted is non-nil (the async faces), the user-hook chain runs
+// around an innermost that calls the base pipeline exec and then onExecuted —
+// completing the batches while still INSIDE the chain, so hooks reading
+// results after next() don't self-deadlock. nil (the blocking face) keeps the
+// prebuilt hook chain exactly as before.
+func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, total int, onExecuted func()) {
+	cmds := queues[0]
+	if len(queues) > 1 {
+		cmds = getQueueSlice(total)
+		for i := range queues {
+			cmds = append(cmds, queues[i]...)
+		}
+	}
+	// Both faces run the user-hook chain around the base exec. The innermost
+	// records that execution actually happened: the Hook contract allows a
+	// hook to return WITHOUT calling next (circuit-breaker style), and in
+	// that case nothing has set the commands' results — surfacing the chain's
+	// error below is what keeps waiters from waking to silent zero values.
+	executed := false
+	err := ap.pipeliner.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		executed = true
+		err := ap.pipeliner.processPipeline(ctx, cmds)
+		if onExecuted != nil {
+			onExecuted()
+		}
+		return err
+	})
+	if !executed {
+		if err == nil {
+			err = errHookShortCircuit
+		}
+		// Safe to write: the batches are still open (onExecuted never ran;
+		// the callers' deferred backstop closes run after dispatchCmds
+		// returns), so no waiter is reading yet.
+		setCmdsErr(cmds, err)
+	}
+	if len(queues) > 1 {
+		putQueueSlice(cmds)
+	}
+}
+
 // flushBatchSlice takes the shard's currently-queued commands as one batch,
 // swaps in a fresh batch for subsequent enqueues, and dispatches the taken
 // batch. Completion is signalled by closing the batch's done channel once
@@ -1152,7 +1477,7 @@ func (s *apShard) flushBatchSlice() {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
 				}
-				close(batches[i].done)
+				batches[i].close()
 				putQueueSlice(queues[i])
 			}
 			return
@@ -1202,15 +1527,47 @@ func (s *apShard) flushBatchSlice() {
 		ap.batchWg.Add(1)
 		s.inFlight.Add(1)
 		go func() {
+			// Defer order matters: the batch close is registered BEFORE the
+			// permit release and inFlight decrement so it runs AFTER them
+			// (LIFO) — a woken lone caller's next command then observes an
+			// idle shard and takes the immediate-flush path instead of
+			// arming the silence-gap wait.
 			defer ap.batchWg.Done()
+			defer batches[0].close()
 			defer s.inFlight.Add(-1)
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
-			defer close(batches[0].done)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
-			_ = ap.pipeliner.Process(context.Background(), queues[0][0])
+			b := batches[0]
+			if ap.armSelfDeadlockGuard() {
+				b.dispGid.Store(curGoroutineID())
+			}
+			solo := queues[0][0]
+			// Both faces run the user-hook chain via withProcessHook so a
+			// hook that short-circuits (returns without calling next) is
+			// surfaced on the command instead of waking its waiter with a
+			// silent zero value. On the async face the innermost also
+			// completes the batch under the hooks (the #3867 deadlock fix);
+			// SetErr mirrors Client.Process and must precede that close —
+			// waiters may read the instant it happens.
+			executed := false
+			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
+				executed = true
+				err := ap.pipeliner.process(ctx, cmd)
+				cmd.SetErr(err)
+				if !ap.blocking {
+					b.close()
+				}
+				return err
+			})
+			if !executed {
+				if err == nil {
+					err = errHookShortCircuit
+				}
+				solo.SetErr(err)
+			}
 			ap.observeBatchExec(time.Since(execStart))
 		}()
 		return
@@ -1231,7 +1588,7 @@ func (s *apShard) flushBatchSlice() {
 		// populated first.
 		defer func() {
 			for i := range queues {
-				close(batches[i].done)
+				batches[i].close()
 				putQueueSlice(queues[i])
 			}
 		}()
@@ -1245,22 +1602,42 @@ func (s *apShard) flushBatchSlice() {
 		// execution; no per-batch timer is allocated.
 		ctx := context.Background()
 
-		pipe := ap.Pipeline()
-		defer putPipeliner(pipe)
-
-		for i := range queues {
-			for _, qc := range queues[i] {
-				_ = pipe.Process(ctx, qc)
+		// Async face: complete the batches at the innermost exec seam, while
+		// still inside the user-hook chain — a hook that reads a command's
+		// result after next() (redisotel's span-status pattern) finds it
+		// ready instead of blocking on a channel this goroutine closes only
+		// after the hook returns (the #3867 deadlock). The announce stays
+		// ordered BEFORE the closes wake any waiter, so the flusher knows the
+		// wave size the moment the first re-submitted command lands (see
+		// expectedArrivals). The blocking face keeps the deferred-close flow:
+		// its waiters sit on other goroutines, and its measured wave behavior
+		// stays byte-identical.
+		var onExecuted func()
+		if !ap.blocking {
+			if ap.armSelfDeadlockGuard() {
+				gid := curGoroutineID()
+				for i := range batches {
+					batches[i].dispGid.Store(gid)
+				}
+			}
+			onExecuted = func() {
+				ap.expectedArrivals.Add(int64(total))
+				for i := range batches {
+					batches[i].close()
+				}
 			}
 		}
+
 		execStart := time.Now()
-		_, _ = pipe.Exec(ctx)
+		ap.dispatchCmds(ctx, queues, total, onExecuted)
 		ap.observeBatchExec(time.Since(execStart))
 
-		// Announce the expected arrivals BEFORE the deferred closes wake this
-		// batch's waiters, so the flusher knows the wave size the moment its
-		// first command lands (see expectedArrivals).
-		ap.expectedArrivals.Add(int64(total))
+		if ap.blocking {
+			// Announce the expected arrivals BEFORE the deferred closes wake
+			// this batch's waiters, so the flusher knows the wave size the
+			// moment its first command lands (see expectedArrivals).
+			ap.expectedArrivals.Add(int64(total))
+		}
 	}()
 }
 
@@ -1327,7 +1704,7 @@ func (s *apShard) flushBatchSliceShutdown() {
 			}
 			defer func() {
 				for i := range queues {
-					close(batches[i].done)
+					batches[i].close()
 					putQueueSlice(queues[i])
 				}
 			}()
@@ -1341,15 +1718,21 @@ func (s *apShard) flushBatchSliceShutdown() {
 			// here would cap that relaxed window and time out in-flight commands the
 			// relaxation was meant to protect. (A user who wants shutdown bounded
 			// sets ReadTimeout/WriteTimeout on the client, as for any command.)
-			ctx := context.Background()
-			pipe := ap.Pipeline()
-			defer putPipeliner(pipe)
-			for i := range queues {
-				for _, qc := range queues[i] {
-					_ = pipe.Process(ctx, qc)
+			var onExecuted func()
+			if !ap.blocking {
+				if ap.armSelfDeadlockGuard() {
+					gid := curGoroutineID()
+					for i := range batches {
+						batches[i].dispGid.Store(gid)
+					}
+				}
+				onExecuted = func() {
+					for i := range batches {
+						batches[i].close()
+					}
 				}
 			}
-			_, _ = pipe.Exec(ctx)
+			ap.dispatchCmds(context.Background(), queues, total, onExecuted)
 		}()
 	}
 }

@@ -17,3 +17,9 @@ maintenanceNotifications/docs/
 # Docker-generated files (TLS certificates, cluster data, etc.)
 dockers/*/tls/
 dockers/osscluster-tls/
+
+# example build artifacts
+example/autopipeline/autopipeline
+
+# Claude Code worktrees (ephemeral, local)
+.claude/worktrees/

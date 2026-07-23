@@ -149,6 +149,11 @@ type UniversalOptions struct {
 	// IsClusterMode can be used when only one Addrs is provided (e.g. Elasticache supports setting up cluster mode with configuration endpoint).
 	IsClusterMode bool
 
+	// AutoPipelineOptions is the default config for the client's
+	// autopipeliner faces (AutoPipeline / AsyncAutoPipeline), applied when
+	// they are called without explicit options. See Options.AutoPipelineOptions.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
 }
@@ -208,6 +213,7 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		FailingTimeoutSeconds:     o.FailingTimeoutSeconds,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
@@ -276,6 +282,7 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		// Note: MaintNotificationsConfig not supported for FailoverOptions
@@ -334,6 +341,7 @@ func (o *UniversalOptions) Simple() *Options {
 		DisableIdentity:           o.DisableIdentity,
 		DisableIndentity:          o.DisableIndentity,
 		IdentitySuffix:            o.IdentitySuffix,
+		AutoPipelineOptions:       o.AutoPipelineOptions,
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
@@ -352,6 +360,13 @@ type UniversalClient interface {
 	Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error
 	Do(ctx context.Context, args ...interface{}) *Cmd
 	Process(ctx context.Context, cmd Cmder) error
+	// AutoPipeline / AsyncAutoPipeline return an AutoPipeliner for the concrete
+	// client. Supported on *Client (including sentinel-backed failover clients)
+	// and *ClusterClient; *Ring returns an error (not supported).
+	AutoPipeline() (*AutoPipeliner, error)
+	AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error)
+	AsyncAutoPipeline() (*AutoPipeliner, error)
+	AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error)
 	Subscribe(ctx context.Context, channels ...string) *PubSub
 	PSubscribe(ctx context.Context, channels ...string) *PubSub
 	SSubscribe(ctx context.Context, channels ...string) *PubSub
