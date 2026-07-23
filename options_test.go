@@ -476,3 +476,17 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestParseURLNonNegativePool(t *testing.T) {
+	_, err := ParseURL("redis://localhost/0?pool_size=-1")
+	if err == nil {
+		t.Fatal("expected error for negative pool_size")
+	}
+	opt, err := ParseURL("redis://localhost/0?pool_size=5&min_idle_conns=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.PoolSize != 5 || opt.MinIdleConns != 2 {
+		t.Fatalf("got pool=%d minIdle=%d", opt.PoolSize, opt.MinIdleConns)
+	}
+}

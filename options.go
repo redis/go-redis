@@ -614,6 +614,17 @@ func (o *queryOptions) int(name string) int {
 	return 0
 }
 
+func (o *queryOptions) intNonNeg(name string) int {
+	i := o.int(name)
+	if i < 0 {
+		if o.err == nil {
+			o.err = fmt.Errorf("redis: invalid %s number: must be >= 0", name)
+		}
+		return 0
+	}
+	return i
+}
+
 func (o *queryOptions) duration(name string) time.Duration {
 	s := o.string(name)
 	if s == "" {
@@ -686,12 +697,12 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.ReadTimeout = q.duration("read_timeout")
 	o.WriteTimeout = q.duration("write_timeout")
 	o.PoolFIFO = q.bool("pool_fifo")
-	o.PoolSize = q.int("pool_size")
+	o.PoolSize = q.intNonNeg("pool_size")
 	o.PoolTimeout = q.duration("pool_timeout")
-	o.MinIdleConns = q.int("min_idle_conns")
-	o.MaxIdleConns = q.int("max_idle_conns")
-	o.MaxActiveConns = q.int("max_active_conns")
-	o.MaxConcurrentDials = q.int("max_concurrent_dials")
+	o.MinIdleConns = q.intNonNeg("min_idle_conns")
+	o.MaxIdleConns = q.intNonNeg("max_idle_conns")
+	o.MaxActiveConns = q.intNonNeg("max_active_conns")
+	o.MaxConcurrentDials = q.intNonNeg("max_concurrent_dials")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {
