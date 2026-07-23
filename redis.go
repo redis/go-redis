@@ -1069,7 +1069,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				}
 			}
 			err := readReplyFunc(rd)
-			if err == nil || isRedisError(err) {
+			if himportNoSuchFieldset(err) {
 				// A failed injected PREPARE is the root cause of the
 				// command's "no such fieldset" reply (drained above).
 				if set, ok := cmd.(*HImportSetCmd); ok {

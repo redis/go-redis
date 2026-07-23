@@ -99,24 +99,6 @@ func (r *himportRegistry) discardAll() (epoch uint64) {
 	return epoch
 }
 
-// epoch returns the current discard-all epoch.
-func (r *himportRegistry) epoch() uint64 {
-	r.mu.RLock()
-	e := r.discardAllEpoch
-	r.mu.RUnlock()
-	return e
-}
-
-func (r *himportRegistry) empty() bool {
-	if r == nil {
-		return true
-	}
-	r.mu.RLock()
-	n := len(r.fieldsets)
-	r.mu.RUnlock()
-	return n == 0
-}
-
 // idle reports whether the registry implies no injection work at all: no
 // fieldsets to replay, no tombstones to discard, and no discard-all epoch a
 // session could be behind.
@@ -222,6 +204,13 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 			}
 			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) == fs.version {
 				continue
+			}
+			// The session holds an older version. Discard it before the
+			// re-prepare: the SET behind it is already on the wire, and if
+			// the re-prepare fails the SET must answer "no such fieldset"
+			// rather than silently writing the old version's field names.
+			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) != 0 {
+				injected = append(injected, NewHImportDiscardCmd(ctx, hc.fieldsetName))
 			}
 			prep := NewHImportPrepareCmd(ctx, hc.fieldsetName, fs.fields...)
 			prep.registryVersion = fs.version

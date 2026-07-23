@@ -12,6 +12,25 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+// epoch and empty are test-only registry accessors; the linter runs with
+// tests excluded, so keeping them in himport.go would flag them as unused.
+func (r *himportRegistry) epoch() uint64 {
+	r.mu.RLock()
+	e := r.discardAllEpoch
+	r.mu.RUnlock()
+	return e
+}
+
+func (r *himportRegistry) empty() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	n := len(r.fieldsets)
+	r.mu.RUnlock()
+	return n == 0
+}
+
 func TestHImportCmdArgs(t *testing.T) {
 	ctx := context.Background()
 
@@ -236,11 +255,21 @@ func TestHImportInjectedPrepare(t *testing.T) {
 		t.Errorf("injected for prepared connection = %v, want none", injectedKinds(inj))
 	}
 
-	// Fieldset replaced under a new version: the stale flag must not stop
-	// the replay.
+	// Fieldset replaced under a new version: the session's old version is
+	// discarded before the replay, so a failed re-prepare leaves the SET
+	// answering "no such fieldset" instead of silently writing the old
+	// version's field names.
 	c.himport.register("fs", []string{"f3"})
-	if inj := c.himportInjectedCmds(ctx, cn, []Cmder{set}); len(inj) != 1 {
-		t.Errorf("injected after re-register = %v, want one PREPARE", injectedKinds(inj))
+	inj = c.himportInjectedCmds(ctx, cn, []Cmder{set})
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"discard", "prepare"}) {
+		t.Errorf("injected after re-register = %v, want [discard prepare]", kinds)
+	}
+
+	// A connection with no version at all needs no discard.
+	fresh := pool.NewConn(nil)
+	inj = c.himportInjectedCmds(ctx, fresh, []Cmder{set})
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"prepare"}) {
+		t.Errorf("injected for fresh connection = %v, want [prepare]", kinds)
 	}
 }
 
@@ -319,13 +348,14 @@ func TestHImportInjectedDiscard(t *testing.T) {
 		t.Errorf("injected for PING = %v, want nil", injectedKinds(inj))
 	}
 
-	// Re-registering the name clears the tombstone: the new version is
-	// replayed as a PREPARE (silently replacing the server-side fieldset),
-	// no discard needed.
+	// Re-registering the name clears the tombstone. This session still
+	// holds the old version (its cleanup discard never ran), so the replay
+	// discards it before the PREPARE — a failed re-prepare must not leave
+	// the old field names live.
 	c.himport.register("fs", []string{"f-new"})
 	inj = c.himportInjectedCmds(ctx, cn, []Cmder{NewHImportSetCmd(ctx, "k", "fs", "v")})
-	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"prepare"}) {
-		t.Errorf("injected after re-register = %v, want [prepare]", kinds)
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"discard", "prepare"}) {
+		t.Errorf("injected after re-register = %v, want [discard prepare]", kinds)
 	}
 }
 
