@@ -107,6 +107,13 @@ type FTHNSWOptions struct {
 	MaxAllowedEdgesPerNode int
 	EFRunTime              int
 	Epsilon                float64
+	// Rerank toggles the exact re-scoring pass over approximate candidates on
+	// disk-backed HNSW indexes (Redis 8.10+), where the server requires it to
+	// be set explicitly. Rerank=true emits RERANK TRUE on its own; to emit
+	// RERANK FALSE, set HasRerank=true with Rerank=false, so that an explicit
+	// false can be distinguished from unset (omitted).
+	Rerank    bool
+	HasRerank bool
 }
 
 type FTVamanaOptions struct {
@@ -1494,6 +1501,13 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 				}
 				if schema.VectorArgs.HNSWOptions.Epsilon > 0 {
 					hnswArgs = append(hnswArgs, "EPSILON", schema.VectorArgs.HNSWOptions.Epsilon)
+				}
+				if schema.VectorArgs.HNSWOptions.Rerank || schema.VectorArgs.HNSWOptions.HasRerank {
+					rerank := "FALSE"
+					if schema.VectorArgs.HNSWOptions.Rerank {
+						rerank = "TRUE"
+					}
+					hnswArgs = append(hnswArgs, "RERANK", rerank)
 				}
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
