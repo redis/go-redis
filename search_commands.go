@@ -18,6 +18,7 @@ type SearchCmdable interface {
 	FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
+	FTAliasList(ctx context.Context, index string) *StringSliceCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
 	FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
@@ -1271,6 +1272,20 @@ func (c cmdable) FTAliasAdd(ctx context.Context, index string, alias string) *St
 // [FT.ALIASDEL]: (https://redis.io/commands/ft.aliasdel/)
 func (c cmdable) FTAliasDel(ctx context.Context, alias string) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "FT.ALIASDEL", alias)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// FTAliasList - Lists all aliases associated with an index.
+// The 'index' parameter specifies the index whose aliases are listed; it must
+// be the name of an index created with FT.CREATE, not an alias.
+// The reply is an unordered collection of alias names, already deduplicated
+// by the server; an index with no aliases yields an empty result, not an
+// error. Available since Redis 8.10.
+// For more information, please refer to the Redis documentation:
+// [FT.ALIASLIST]: (https://redis.io/commands/ft.aliaslist/)
+func (c cmdable) FTAliasList(ctx context.Context, index string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "FT.ALIASLIST", index)
 	_ = c(ctx, cmd)
 	return cmd
 }
