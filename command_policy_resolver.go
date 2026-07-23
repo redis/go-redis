@@ -109,6 +109,13 @@ var defaultPolicies = map[module]map[commandName]*routing.CommandPolicy{
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
 		},
+		"aliaslist": {
+			Request:  routing.ReqDefault,
+			Response: routing.RespDefaultKeyless,
+			Tips: map[string]string{
+				routing.ReadOnlyCMD: "",
+			},
+		},
 		"info": {
 			Request:  routing.ReqDefault,
 			Response: routing.RespDefaultKeyless,
