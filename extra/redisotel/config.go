@@ -33,6 +33,15 @@ type config struct {
 	mp    metric.MeterProvider
 	meter metric.Meter
 
+	// semconvCompliantMetrics, when true, registers the cumulative pool-stat
+	// metrics (waits, timeouts, hits, misses) as monotonic Counters as
+	// required by the OpenTelemetry database semantic conventions. It defaults
+	// to false to preserve backwards compatibility: existing users have these
+	// exported as UpDownCounter (which some backends surface as a Gauge), and
+	// switching the instrument type is a breaking change for them. New users
+	// that want spec-compliant metrics can opt in. See #3612.
+	semconvCompliantMetrics bool
+
 	poolName string
 
 	closeChan chan struct{}
@@ -226,5 +235,20 @@ func WithMeterProvider(mp metric.MeterProvider) MetricsOption {
 func WithCloseChan(closeChan chan struct{}) MetricsOption {
 	return metricsOption(func(conf *config) {
 		conf.closeChan = closeChan
+	})
+}
+
+// WithSemConvCompliantMetrics registers the cumulative connection-pool metrics
+// (db.client.connections.waits, .timeouts, .hits, .misses) as monotonic
+// Counters, matching the OpenTelemetry database semantic conventions.
+//
+// It is opt-in and defaults to off. By default these metrics remain
+// UpDownCounters for backwards compatibility, because changing an existing
+// instrument's type is a breaking change for current OTel users (e.g. the
+// Prometheus exporter would change the exported metric type). Enable this when
+// starting fresh or when you can tolerate the metric-type change. See #3612.
+func WithSemConvCompliantMetrics(on bool) MetricsOption {
+	return metricsOption(func(conf *config) {
+		conf.semconvCompliantMetrics = on
 	})
 }
