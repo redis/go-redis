@@ -814,9 +814,13 @@ and process all commands sent to a Redis server. This mimics the behavior of
 MONITOR in the redis-cli.
 
 Notes:
-- Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
-- The user should create a channel of type string
-- This runs concurrently in the background. Trigger via the Start and Stop functions
+  - Using MONITOR blocks the connection to the server for itself. It needs a dedicated connection
+  - The user should create a channel of type string
+  - This runs concurrently in the background. Trigger via the Start and Stop functions
+  - MONITOR runs on a dedicated connection with no read deadline, so an idle server
+    does not break it. If the connection fails, the channel is closed and the error is
+    available via Err(); a clean Stop leaves the channel open and reports no error
+
 See further: Redis MONITOR command: https://redis.io/commands/monitor
 */
 func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {

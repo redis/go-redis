@@ -991,6 +991,13 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 		}
 	}
 
+	// MONITOR takes over its connection indefinitely, so it must not run on
+	// a pooled connection: the pool (or another command) would read from the
+	// same connection the monitor goroutine is reading from.
+	if monitorCmd, ok := cmd.(*MonitorCmd); ok {
+		return false, nil, c.processMonitor(ctx, monitorCmd)
+	}
+
 	var usedConn *pool.Conn
 	var retryTimeout atomic.Uint32
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
@@ -1039,6 +1046,47 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 	}
 
 	return false, usedConn, nil
+}
+
+// processMonitor runs a MONITOR command on a dedicated, non-pooled
+// connection. The monitor's reader goroutine owns the connection until
+// monitoring stops or the connection fails; no read deadline is set, since
+// MONITOR receives no traffic while the server is idle.
+func (c *baseClient) processMonitor(ctx context.Context, cmd *MonitorCmd) error {
+	cn, err := c.connPool.NewConn(ctx)
+	if err != nil {
+		cmd.SetErr(err)
+		return err
+	}
+	// CloseConn (rather than cn.Close) removes the connection from the
+	// pool's bookkeeping and records metrics. Background context: the
+	// connection may outlive ctx and be closed much later by Stop or the
+	// reader goroutine.
+	closeConn := func() {
+		_ = c.connPool.CloseConn(context.Background(), cn, pool.CloseReasonMonitor, pool.MetricStateUsed)
+	}
+	if err := c.initConn(ctx, cn); err != nil {
+		closeConn()
+		cmd.SetErr(err)
+		return err
+	}
+	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		return writeCmd(wr, cmd)
+	}); err != nil {
+		closeConn()
+		cmd.SetErr(err)
+		return err
+	}
+	cmd.closeConn = closeConn
+	// Timeout 0 clears any read deadline armed during the handshake:
+	// MONITOR receives no traffic while the server is idle, so the
+	// connection must not have a read deadline at all.
+	if err := cn.WithReader(c.context(ctx), 0, cmd.readReply); err != nil {
+		closeConn()
+		cmd.SetErr(err)
+		return err
+	}
+	return nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {

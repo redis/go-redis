@@ -8039,6 +8039,9 @@ type MonitorCmd struct {
 	ch     chan string
 	status MonitorStatus
 	mu     sync.Mutex
+	// closeConn closes the dedicated connection the MONITOR command runs on.
+	// It is set before readReply spawns the reader goroutine.
+	closeConn func()
 }
 
 func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
@@ -8061,6 +8064,11 @@ func (cmd *MonitorCmd) String() string {
 func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 	ctx, cancel := context.WithCancel(cmd.ctx)
 	go func(ctx context.Context) {
+		defer func() {
+			if cmd.closeConn != nil {
+				cmd.closeConn()
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -8069,6 +8077,10 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 				err := cmd.readMonitor(rd, cancel)
 				if err != nil {
 					cmd.err = err
+					cancel()
+					// Close the channel so a listener blocked on it is unblocked
+					// and can pick up the error with cmd.Err().
+					close(cmd.ch)
 					return
 				}
 			}
@@ -8079,25 +8091,46 @@ func (cmd *MonitorCmd) readReply(rd *proto.Reader) error {
 
 func (cmd *MonitorCmd) readMonitor(rd *proto.Reader, cancel context.CancelFunc) error {
 	for {
-		cmd.mu.Lock()
-		st := cmd.status
-		pk, _ := rd.Peek(1)
-		cmd.mu.Unlock()
-		if len(pk) != 0 && st == monitorStatusStart {
-			cmd.mu.Lock()
+		if cmd.getStatus() == monitorStatusStop {
+			cancel()
+			return nil
+		}
+		// The reader goroutine is the only reader of this connection, so
+		// Peek can block without holding the mutex; Stop unblocks it by
+		// closing the connection.
+		pk, err := rd.Peek(1)
+		if err != nil {
+			if cmd.getStatus() == monitorStatusStop {
+				// Stop closed the connection to unblock Peek: shut down
+				// cleanly instead of reporting the read error.
+				cancel()
+				return nil
+			}
+			// The connection is no longer usable; without this the loop
+			// would spin forever re-peeking a dead connection.
+			return err
+		}
+		if len(pk) != 0 && cmd.getStatus() == monitorStatusStart {
 			line, err := rd.ReadString()
-			cmd.mu.Unlock()
 			if err != nil {
+				if cmd.getStatus() == monitorStatusStop {
+					// Stop closed the connection while a line was being
+					// read: shut down cleanly instead of reporting the
+					// read error.
+					cancel()
+					return nil
+				}
 				return err
 			}
 			cmd.ch <- line
 		}
-		if st == monitorStatusStop {
-			cancel()
-			break
-		}
 	}
-	return nil
+}
+
+func (cmd *MonitorCmd) getStatus() MonitorStatus {
+	cmd.mu.Lock()
+	defer cmd.mu.Unlock()
+	return cmd.status
 }
 
 func (cmd *MonitorCmd) Start() {
@@ -8110,6 +8143,11 @@ func (cmd *MonitorCmd) Stop() {
 	cmd.mu.Lock()
 	defer cmd.mu.Unlock()
 	cmd.status = monitorStatusStop
+	// The reader goroutine may be blocked in Peek waiting for traffic;
+	// closing the connection unblocks it so it can observe the stop.
+	if cmd.closeConn != nil {
+		cmd.closeConn()
+	}
 }
 
 type VectorScoreSliceCmd struct {
