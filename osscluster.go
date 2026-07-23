@@ -1601,14 +1601,15 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 // wants several shards to keep concurrent nodes' batches separate. The caller's
 // config is copied before the default is filled in, never mutated.
 func clusterAutoPipelineConfig(cfg *AutoPipelineConfig) *AutoPipelineConfig {
-	if cfg.NumShards != 0 {
-		return cfg
-	}
 	c2 := *cfg
-	c2.NumShards = numAutoPipelineShards()
+	if c2.NumShards == 0 {
+		c2.NumShards = numAutoPipelineShards()
+	}
 	// Slot routing keeps every key on one shard, so per-key order holds with
 	// several shards; mark it so construction's NumShards ordering check
-	// (which targets round-robin sharding) does not reject the cluster default.
+	// (which targets round-robin sharding) does not reject cluster configs.
+	// installAutoPipelineSharding applies slot routing whether NumShards was
+	// defaulted or caller-supplied, so the mark covers both.
 	c2.contentSharded = true
 	return &c2
 }

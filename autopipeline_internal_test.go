@@ -57,7 +57,9 @@ func TestAutoPipelineNumShardsValidation(t *testing.T) {
 
 // TestClusterAutoPipelineConfigShardDefault verifies the cluster wiring fills
 // in a multi-shard default (slot routing needs several shards) without mutating
-// the caller's config, and leaves an explicit NumShards untouched.
+// the caller's config, and marks an explicit NumShards contentSharded too —
+// installAutoPipelineSharding slot-routes either way, so an explicit count must
+// not be rejected by the round-robin ordering check.
 func TestClusterAutoPipelineConfigShardDefault(t *testing.T) {
 	user := &AutoPipelineConfig{MaxConcurrentBatches: 8, Unordered: true}
 	got := clusterAutoPipelineConfig(user)
@@ -82,9 +84,16 @@ func TestClusterAutoPipelineConfigShardDefault(t *testing.T) {
 		t.Fatalf("cluster default-config NumShards = %d, want >= 2 (slot routing must not be dead code at defaults)", def.NumShards)
 	}
 
-	explicit := &AutoPipelineConfig{MaxConcurrentBatches: 8, Unordered: true, NumShards: 3}
-	if got := clusterAutoPipelineConfig(explicit); got != explicit || got.NumShards != 3 {
-		t.Fatalf("explicit NumShards must pass through unchanged, got %+v", got)
+	explicit := &AutoPipelineConfig{NumShards: 3}
+	gotExplicit := clusterAutoPipelineConfig(explicit)
+	if gotExplicit.NumShards != 3 {
+		t.Fatalf("explicit NumShards changed: got %d, want 3", gotExplicit.NumShards)
+	}
+	if !gotExplicit.contentSharded {
+		t.Fatalf("explicit NumShards must be marked contentSharded (slot routing applies regardless of who set the count)")
+	}
+	if explicit.contentSharded {
+		t.Fatalf("caller's config mutated: contentSharded set on the input")
 	}
 }
 

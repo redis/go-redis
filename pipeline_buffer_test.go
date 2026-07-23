@@ -7,6 +7,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// skipWithoutRedis skips the test when no server answers at redisAddr, so a
+// unit-only run doesn't turn missing integration infrastructure into a
+// failure.
+func skipWithoutRedis(t *testing.T, ctx context.Context, client *redis.Client) {
+	t.Helper()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis at %s: %v", redisAddr, err)
+	}
+}
+
 // TestPipelineBufferSizes verifies that pipeline pool is created with custom buffer sizes
 func TestPipelineBufferSizes(t *testing.T) {
 	ctx := context.Background()
@@ -21,6 +31,7 @@ func TestPipelineBufferSizes(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
+	skipWithoutRedis(t, ctx, client)
 
 	// Test that regular commands work
 	err := client.Set(ctx, "test_key", "test_value", 0).Err()
@@ -75,6 +86,7 @@ func TestNoPipelinePool(t *testing.T) {
 		// No PipelineReadBufferSize or PipelineWriteBufferSize
 	})
 	defer client.Close()
+	skipWithoutRedis(t, ctx, client)
 
 	// Test that pipeline still works (using regular pool)
 	pipe := client.Pipeline()
@@ -117,6 +129,7 @@ func TestPipelinePoolStats(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
+	skipWithoutRedis(t, ctx, client)
 
 	// Execute some pipeline commands
 	pipe := client.Pipeline()
@@ -164,6 +177,7 @@ func TestNoPipelinePoolStats(t *testing.T) {
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 	})
 	defer client.Close()
+	skipWithoutRedis(t, ctx, client)
 
 	// Execute some commands
 	err := client.Set(ctx, "test_key", "test_value", 0).Err()
