@@ -14,7 +14,7 @@ var _ = Describe("RediSearch Builders", Label("search", "builders"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: 2})
+		client = reNewClient(2, false)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 
