@@ -31,6 +31,8 @@ type TimeseriesCmdable interface {
 	TSInfoWithArgs(ctx context.Context, key string, options *TSInfoOptions) *MapStringInterfaceCmd
 	TSMAdd(ctx context.Context, ktvSlices [][]interface{}) *IntSliceCmd
 	TSQueryIndex(ctx context.Context, filterExpr []string) *StringSliceCmd
+	TSQueryLabels(ctx context.Context, filterExpr []string) *StringSliceCmd
+	TSQueryLabelValues(ctx context.Context, label string, filterExpr []string) *StringSliceCmd
 	TSRevRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
 	TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd
 	TSRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
@@ -682,6 +684,53 @@ func (c cmdable) TSQueryIndex(ctx context.Context, filterExpr []string) *StringS
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// TSQueryLabels - Returns the set of label names present on the time series
+// matching the filter expressions. Passing no filter expressions queries all
+// indexed series. The reply is unordered and already deduplicated by the
+// server; it includes the label names used in the filter itself, and an
+// empty reply is a valid result, not an error.
+// filterExpr uses the same filter language as TSQueryIndex and is passed to
+// the server verbatim. Available since Redis 8.10.
+// For more information - https://redis.io/commands/ts.querylabels/
+func (c cmdable) TSQueryLabels(ctx context.Context, filterExpr []string) *StringSliceCmd {
+	args := []interface{}{"TS.QUERYLABELS", "LABELS"}
+	args = appendTSFilter(args, filterExpr)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSQueryLabelValues - Returns the set of values assigned to the given label
+// name across the time series matching the filter expressions. Passing no
+// filter expressions queries all indexed series. The label name is matched
+// byte-exactly; a label present on no matching series yields an empty reply,
+// not an error. The reply is unordered and already deduplicated by the
+// server.
+// filterExpr uses the same filter language as TSQueryIndex and is passed to
+// the server verbatim. Available since Redis 8.10.
+// For more information - https://redis.io/commands/ts.querylabels/
+func (c cmdable) TSQueryLabelValues(ctx context.Context, label string, filterExpr []string) *StringSliceCmd {
+	args := []interface{}{"TS.QUERYLABELS", "VALUES", label}
+	args = appendTSFilter(args, filterExpr)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// appendTSFilter appends the FILTER token followed by the filter expressions,
+// or nothing when no expressions are given: the server rejects a bare FILTER
+// token, and omitting it is the documented way to query all indexed series.
+func appendTSFilter(args []interface{}, filterExpr []string) []interface{} {
+	if len(filterExpr) == 0 {
+		return args
+	}
+	args = append(args, "FILTER")
+	for _, f := range filterExpr {
+		args = append(args, f)
+	}
+	return args
 }
 
 // TSRevRange - Returns a range of samples from a time-series key in reverse order.
