@@ -1068,6 +1068,8 @@ type clusterStateHolder struct {
 	state          atomic.Value
 	reloading      atomic.Uint32
 	reloadPending  atomic.Uint32 // set to 1 when reload is requested during active reload
+
+	onReload func() // called after a successful state reload
 }
 
 func newClusterStateHolder(load func(ctx context.Context) (*clusterState, error), reloadInterval time.Duration) *clusterStateHolder {
@@ -1083,6 +1085,9 @@ func (c *clusterStateHolder) Reload(ctx context.Context) (*clusterState, error) 
 		return nil, err
 	}
 	c.state.Store(state)
+	if c.onReload != nil {
+		c.onReload()
+	}
 	return state, nil
 }
 
@@ -1155,6 +1160,11 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+
+	spsMu          sync.Mutex
+	shardedPubSubs []*ShardedPubSub
+	spsNotifying   uint32 // CAS guard ensuring a single async notifier goroutine
+	spsPending     uint32 // set when a reload arrives; coalesces overlapping notifications
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1174,6 +1184,7 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
 	c.state = newClusterStateHolder(c.loadState, opt.ClusterStateReloadInterval)
+	c.state.onReload = c.notifyShardedPubSubs
 
 	c.SetCommandInfoResolver(NewDefaultCommandPolicyResolver())
 
@@ -1208,6 +1219,71 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	return c
 }
 
+// registerShardedPubSub adds a ShardedPubSub to the notification list.
+// It will be notified on topology changes so it can re-resolve channels.
+func (c *ClusterClient) registerShardedPubSub(sps *ShardedPubSub) {
+	c.spsMu.Lock()
+	defer c.spsMu.Unlock()
+	c.shardedPubSubs = append(c.shardedPubSubs, sps)
+}
+
+// deregisterShardedPubSub removes a ShardedPubSub from the notification list.
+func (c *ClusterClient) deregisterShardedPubSub(sps *ShardedPubSub) {
+	c.spsMu.Lock()
+	defer c.spsMu.Unlock()
+	for i, s := range c.shardedPubSubs {
+		if s == sps {
+			c.shardedPubSubs = append(c.shardedPubSubs[:i], c.shardedPubSubs[i+1:]...)
+			return
+		}
+	}
+}
+
+// notifyShardedPubSubs asynchronously notifies all registered ShardedPubSubs
+// of a topology change. At most one notifier goroutine runs at a time, but
+// reloads that arrive while a notification is in flight are coalesced into a
+// follow-up pass via spsPending. This guarantees that a reload happening during
+// an in-flight migration is not dropped: the running notifier re-runs once more
+// against the latest state, so subscriptions never get stranded on stale nodes.
+func (c *ClusterClient) notifyShardedPubSubs() {
+	// Record that there is work to do, then try to become the notifier.
+	atomic.StoreUint32(&c.spsPending, 1)
+	if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+		// A notifier is already running; it will observe spsPending and re-run.
+		return
+	}
+
+	go func() {
+		for {
+			// Claim the currently pending work before processing it. Any
+			// reload that arrives after this point re-sets spsPending and is
+			// handled by a subsequent iteration.
+			atomic.StoreUint32(&c.spsPending, 0)
+
+			c.spsMu.Lock()
+			subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+			copy(subs, c.shardedPubSubs)
+			c.spsMu.Unlock()
+
+			for _, sps := range subs {
+				sps.onTopologyChange()
+			}
+
+			// Release the notifier slot, then check whether new work arrived
+			// while we were processing.
+			atomic.StoreUint32(&c.spsNotifying, 0)
+			if atomic.LoadUint32(&c.spsPending) == 0 {
+				return
+			}
+			// New work arrived. Try to re-acquire the slot; if another caller
+			// already started a fresh notifier, let it handle the work.
+			if !atomic.CompareAndSwapUint32(&c.spsNotifying, 0, 1) {
+				return
+			}
+		}
+	}()
+}
+
 // Options returns read-only *ClusterOptions that were used to create the client.
 // Any alteration of the returned *ClusterOptions may result in undefined behaviour.
 func (c *ClusterClient) Options() *ClusterOptions {
@@ -1225,6 +1301,19 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
+	// Close any registered ShardedPubSubs first so their shard connections
+	// and forwarder goroutines are torn down; otherwise they would outlive
+	// the client that owns their topology updates.
+	c.spsMu.Lock()
+	subs := make([]*ShardedPubSub, len(c.shardedPubSubs))
+	copy(subs, c.shardedPubSubs)
+	c.spsMu.Unlock()
+	for _, sps := range subs {
+		// Each Close deregisters itself; ErrClosed from an already-closed
+		// instance is fine here.
+		_ = sps.Close()
+	}
+
 	return c.nodes.Close()
 }
 
@@ -2416,6 +2505,54 @@ func (c *ClusterClient) pubSub() *PubSub {
 	return pubsub
 }
 
+// pubSubForAddr returns a PubSub whose connections are always established to
+// the cluster node at addr, regardless of the subscribed channels. It is used
+// by ShardedPubSub, which resolves the owning node per channel itself and
+// needs every (re)connection to land exactly on the node its bookkeeping is
+// keyed by — the channel-derived resolution in pubSub() could pick a
+// different node (e.g. another replica) on reconnect.
+func (c *ClusterClient) pubSubForAddr(addr string) *PubSub {
+	var node *clusterNode
+	pubsub := &PubSub{
+		opt: c.opt.clientOptions(),
+		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
+			if node != nil {
+				panic("node != nil")
+			}
+
+			var err error
+			node, err = c.nodes.GetOrCreate(addr)
+			if err != nil {
+				return nil, err
+			}
+			cn, err := node.Client.pubSubPool.NewConn(ctx, node.Client.opt.Network, node.Client.opt.Addr, channels)
+			if err != nil {
+				node = nil
+				return nil, err
+			}
+			// will return nil if already initialized
+			err = node.Client.initConn(ctx, cn)
+			if err != nil {
+				_ = cn.Close()
+				node = nil
+				return nil, err
+			}
+			node.Client.pubSubPool.TrackConn(cn)
+			return cn, nil
+		},
+		closeConn: func(cn *pool.Conn) error {
+			// Untrack connection from PubSubPool
+			node.Client.pubSubPool.UntrackConn(cn)
+			err := cn.Close()
+			node = nil
+			return err
+		},
+	}
+	pubsub.init()
+
+	return pubsub
+}
+
 // Subscribe subscribes the client to the specified channels.
 // Channels can be omitted to create empty subscription.
 func (c *ClusterClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
@@ -2436,13 +2573,34 @@ func (c *ClusterClient) PSubscribe(ctx context.Context, channels ...string) *Pub
 	return pubsub
 }
 
-// SSubscribe Subscribes the client to the specified shard channels.
+// SSubscribe subscribes the client to the specified shard channels.
+// Note: In a Redis cluster, channels that hash to different slots will be
+// served by different nodes. A single PubSub connection can only receive
+// messages from channels on one shard. If you need to subscribe to channels
+// across multiple shards, use SSubscribeSharded instead.
 func (c *ClusterClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.pubSub()
 	if len(channels) > 0 {
 		_ = pubsub.SSubscribe(ctx, channels...)
 	}
 	return pubsub
+}
+
+// SSubscribeSharded subscribes the client to the specified shard channels,
+// automatically managing connections to all relevant cluster nodes.
+// Unlike SSubscribe, this correctly handles channels that hash to different
+// slots by maintaining one connection per shard node.
+//
+// As with Subscribe/SSubscribe, the error from the initial subscribe is
+// intentionally ignored here. Callers that need to observe subscription
+// errors should create the ShardedPubSub without channels and call
+// sps.SSubscribe(ctx, channels...) explicitly.
+func (c *ClusterClient) SSubscribeSharded(ctx context.Context, channels ...string) *ShardedPubSub {
+	sps := newShardedPubSub(c)
+	if len(channels) > 0 {
+		_ = sps.SSubscribe(ctx, channels...)
+	}
+	return sps
 }
 
 func (c *ClusterClient) retryBackoff(attempt int) time.Duration {
