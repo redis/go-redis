@@ -23,7 +23,7 @@ import (
 // the re-drive.
 func TestPipelineRetriesOnNetworkError(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: ":6379", MaxRetries: 2, PoolSize: 1})
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), MaxRetries: 2, PoolSize: 1})
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -66,7 +66,7 @@ func TestPipelineRetryExhausted(t *testing.T) {
 	ctx := context.Background()
 	var dials int32
 	client := redis.NewClient(&redis.Options{
-		Addr:       ":6379",
+		Addr:       apTestAddr(),
 		MaxRetries: 2, // -> 3 attempts total
 		PoolSize:   1,
 		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -99,7 +99,7 @@ func TestPipelineRetryExhausted(t *testing.T) {
 // their correct replies — and is not retried (redis errors are non-retryable).
 func TestPipelineWrongTypeNotRetriedIsolated(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: ":6379", MaxRetries: 3})
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), MaxRetries: 3})
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -130,7 +130,7 @@ func TestPipelineWrongTypeNotRetriedIsolated(t *testing.T) {
 // pipeline without retrying (context errors are non-retryable) and every command
 // carries the context error.
 func TestPipelineContextCanceledNotRetried(t *testing.T) {
-	client := redis.NewClient(&redis.Options{Addr: ":6379", MaxRetries: 3})
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), MaxRetries: 3})
 	defer client.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -153,7 +153,6 @@ type ClusterOptions struct {
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces
 	// (AutoPipeline and AsyncAutoPipeline), applied when they are called
 	// without explicit options. See Options.AutoPipelineOptions.
-	// See Options.AutoPipelineOptions.
 	AutoPipelineOptions *AutoPipelineOptions
 
 	TLSConfig *tls.Config

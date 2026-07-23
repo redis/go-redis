@@ -269,7 +269,7 @@ Notes:
 // concurrency (the autopipeline cases below use the default pool and still
 // hold only a handful of connections).
 func benchNormalBlocking(ctx context.Context) float64 {
-	rdb := redis.NewClient(&redis.Options{Addr: addr(), PoolSize: 50})
+	rdb := redis.NewClient(&redis.Options{Addr: addr(), PoolSize: goroutines})
 	defer rdb.Close()
 	rdb.FlushDB(ctx)
 
