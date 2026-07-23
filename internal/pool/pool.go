@@ -443,8 +443,16 @@ type ConnPool struct {
 	conns     map[uint64]*Conn
 	idleConns []*Conn
 
-	poolSize            atomic.Int32
-	idleConnsLen        atomic.Int32
+	poolSize     atomic.Int32
+	idleConnsLen atomic.Int32
+	// refillPending counts min-idle refill workers that are still waiting for
+	// a dial rate-limit token (or a pool turn). It bounds how many workers
+	// checkMinIdleConns spawns WITHOUT inflating poolSize/idleConnsLen while
+	// no dial is underway: newConn treats poolSize as live capacity when
+	// MaxActiveConns is set, so counting token-waiters there would make Get()
+	// return ErrPoolExhausted for connections that do not exist yet. Always 0
+	// when DialRateLimit is unset.
+	refillPending       atomic.Int32
 	idleCheckInProgress atomic.Bool
 	idleCheckNeeded     atomic.Bool
 
@@ -544,7 +552,8 @@ func (p *ConnPool) checkMinIdleConns() {
 
 		// Only create idle connections if we haven't reached the total pool size limit
 		// MinIdleConns should be a subset of PoolSize, not additional connections
-		for p.poolSize.Load() < p.cfg.PoolSize && p.idleConnsLen.Load() < p.cfg.MinIdleConns {
+		for p.poolSize.Load()+p.refillPending.Load() < p.cfg.PoolSize &&
+			p.idleConnsLen.Load()+p.refillPending.Load() < p.cfg.MinIdleConns {
 			// When rate limiting is disabled, keep the historical fast path:
 			// acquire the turn here and bail out early if the pool is busy.
 			if p.dialLimiter == nil && !p.semaphore.TryAcquire() {
@@ -553,14 +562,27 @@ func (p *ConnPool) checkMinIdleConns() {
 				break
 			}
 
-			p.poolSize.Add(1)
-			p.idleConnsLen.Add(1)
+			if p.dialLimiter == nil {
+				p.poolSize.Add(1)
+				p.idleConnsLen.Add(1)
+			} else {
+				// The worker may sleep on the rate-limit token for a long
+				// time. Reserve the slot in refillPending instead of the live
+				// counters so MaxActiveConns capacity checks (newConn) do not
+				// count connections that are not being dialed yet.
+				p.refillPending.Add(1)
+			}
 			go func() {
 				turnHeld := p.dialLimiter == nil // acquired above when disabled
+				counted := p.dialLimiter == nil  // live counters bumped above when disabled
 				defer func() {
 					if err := recover(); err != nil {
-						p.poolSize.Add(-1)
-						p.idleConnsLen.Add(-1)
+						if counted {
+							p.poolSize.Add(-1)
+							p.idleConnsLen.Add(-1)
+						} else {
+							p.refillPending.Add(-1)
+						}
 
 						if turnHeld {
 							p.freeTurn()
@@ -577,18 +599,26 @@ func (p *ConnPool) checkMinIdleConns() {
 					// a refill goroutine sleeping for a token while sitting on
 					// a turn would starve foreground Get() calls of turns.
 					if err := p.waitForDialToken(); err != nil {
-						// Pool closed while waiting; Close() resets counters.
+						// Pool closed while waiting.
+						p.refillPending.Add(-1)
 						return
 					}
 					if !p.semaphore.TryAcquire() {
 						// No free turn: give the token back for other dialers
 						// and let a later checkMinIdleConns retry the refill.
 						p.dialLimiter.refund()
-						p.poolSize.Add(-1)
-						p.idleConnsLen.Add(-1)
+						p.refillPending.Add(-1)
 						return
 					}
 					turnHeld = true
+					// Token and turn in hand: the dial starts now, so convert
+					// the reservation into live counters (bump live first so a
+					// concurrent check never sees both sides low and
+					// overspawns).
+					p.poolSize.Add(1)
+					p.idleConnsLen.Add(1)
+					p.refillPending.Add(-1)
+					counted = true
 				}
 
 				err := p.addIdleConn()

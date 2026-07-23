@@ -482,6 +482,40 @@ func TestDialRateLimitRefillDoesNotStarveGets(t *testing.T) {
 	}
 }
 
+// TestDialRateLimitRefillDoesNotInflateCapacity pins the MaxActiveConns
+// interaction: refill workers parked on a rate-limit token must not count as
+// live capacity. Before the fix checkMinIdleConns bumped poolSize once per
+// spawned worker, so with MinIdleConns == MaxActiveConns the counter hit the
+// cap while zero connections existed and the first Get() failed with
+// ErrPoolExhausted.
+func TestDialRateLimitRefillDoesNotInflateCapacity(t *testing.T) {
+	var dials atomic.Int32
+	slowDialer := func(context.Context) (net.Conn, error) {
+		dials.Add(1)
+		time.Sleep(20 * time.Millisecond) // keep the first refill dial in flight
+		return newDummyConn(), nil
+	}
+	p := pool.NewConnPool(&pool.Options{
+		Dialer:             slowDialer,
+		PoolSize:           10,
+		MaxConcurrentDials: 10,
+		MinIdleConns:       5,
+		MaxActiveConns:     5,
+		DialRateLimit:      1, // refill workers 2..5 park on the token bucket
+		DialRateBurst:      1,
+		PoolTimeout:        3 * time.Second,
+	})
+	defer p.Close()
+
+	// At this point at most one refill dial is underway; the other four
+	// workers wait for tokens and must not be counted as active conns.
+	cn, err := p.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get with token-waiting refill workers failed: %v", err)
+	}
+	p.Put(context.Background(), cn)
+}
+
 // TestDialRateLimitDisabled verifies zero behavioral change when the limiter is
 // not configured.
 func TestDialRateLimitDisabled(t *testing.T) {
