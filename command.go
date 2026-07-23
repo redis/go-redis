@@ -1322,8 +1322,13 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]int64, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadInt(); err != nil {
+		switch num, err := rd.ReadInt(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -1382,8 +1387,13 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]uint64, n)
 	for i := range cmd.val {
-		if cmd.val[i], err = rd.ReadUint(); err != nil {
+		switch num, err := rd.ReadUint(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -2107,8 +2117,13 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]bool, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadBool(); err != nil {
+		switch b, err := rd.ReadBool(); {
+		case err == Nil:
+			cmd.val[i] = false
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = b
 		}
 	}
 	return nil
