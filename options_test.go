@@ -489,4 +489,28 @@ func TestParseURLNonNegativePool(t *testing.T) {
 	if opt.PoolSize != 5 || opt.MinIdleConns != 2 {
 		t.Fatalf("got pool=%d minIdle=%d", opt.PoolSize, opt.MinIdleConns)
 	}
+
+	_, err = ParseClusterURL("redis://localhost?pool_size=-1")
+	if err == nil {
+		t.Fatal("expected error for negative pool_size in cluster URL")
+	}
+	copt, err := ParseClusterURL("redis://localhost?pool_size=5&min_idle_conns=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copt.PoolSize != 5 || copt.MinIdleConns != 2 {
+		t.Fatalf("cluster got pool=%d minIdle=%d", copt.PoolSize, copt.MinIdleConns)
+	}
+
+	_, err = ParseFailoverURL("redis://localhost?pool_size=-1&master_name=mymaster")
+	if err == nil {
+		t.Fatal("expected error for negative pool_size in failover URL")
+	}
+	fopt, err := ParseFailoverURL("redis://localhost?pool_size=5&min_idle_conns=2&master_name=mymaster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fopt.PoolSize != 5 || fopt.MinIdleConns != 2 {
+		t.Fatalf("failover got pool=%d minIdle=%d", fopt.PoolSize, fopt.MinIdleConns)
+	}
 }
