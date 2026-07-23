@@ -425,6 +425,9 @@ func (opt *Options) init() {
 }
 
 func (opt *Options) clone() *Options {
+	if opt == nil {
+		return nil
+	}
 	clone := *opt
 
 	// Deep clone MaintNotificationsConfig to avoid sharing between clients
