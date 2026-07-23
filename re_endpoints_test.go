@@ -4,10 +4,13 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"testing"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -90,7 +93,9 @@ func loadREConnection() (*reConnection, error) {
 	}
 
 	return &reConnection{
-		Addr:     fmt.Sprintf("%s:%d", host, port),
+		// JoinHostPort brackets IPv6 literals ("[::1]:6379"); Sprintf would
+		// produce an undialable "::1:6379".
+		Addr:     net.JoinHostPort(host, strconv.Itoa(port)),
 		Username: db.Username,
 		Password: db.Password,
 		TLS:      tlsEnabled,
@@ -132,6 +137,30 @@ func resolveREEndpoint(db reDatabaseConfig) (string, int, bool, error) {
 		return u.Hostname(), port, tlsEnabled, nil
 	}
 	return "", 0, false, fmt.Errorf("no endpoints found in database configuration")
+}
+
+// TestLoadREConnectionIPv6 pins the bracketed address form: url.Hostname()
+// strips the brackets from an IPv6 literal, and joining with a plain "%s:%d"
+// produced an undialable "::1:12000".
+func TestLoadREConnectionIPv6(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "endpoints.json")
+	cfg := `{"db": {"tls": true, "endpoints": ["rediss://[::1]:12000"]}}`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REDIS_ENDPOINTS_CONFIG_PATH", path)
+	t.Setenv("RE_DB_NAME", "db")
+
+	conn, err := loadREConnection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[::1]:12000"; conn.Addr != want {
+		t.Fatalf("Addr = %q, want %q", conn.Addr, want)
+	}
+	if !conn.TLS {
+		t.Fatal("rediss endpoint must enable TLS")
+	}
 }
 
 // A remote Redis Enterprise endpoint has higher latency than a local server, so
