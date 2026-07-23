@@ -221,7 +221,7 @@ period. Body only when the *why* isn't obvious from the diff; wrap at 72.
 
 - `commands/` — slash commands (e.g. `check-ci`, which summarizes a PR's CI).
 - `skills/` — task playbooks: `testing`, `add-command`, `commit-style`,
-  `update-ci-image`, `prepare-release`.
+  `update-ci-image`, `prepare-release`, `maintainer-review`.
 - `specs/` — the architecture docs listed above.
 
 For Claude Code, the skills auto-trigger from their descriptions. For other
