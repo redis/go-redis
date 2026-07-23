@@ -209,6 +209,48 @@ type Options struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
+	// DialRateLimit is the maximum number of new connections the pool creates per
+	// second. It smooths out connection-creation storms during traffic bursts:
+	// when no idle connection is available and a new one would be dialed, the
+	// request first tries to acquire a dial token. If none is available it waits
+	// for an idle connection to be returned (preferring reuse over creation)
+	// rather than dialing immediately. Only after waiting past PoolTimeout without
+	// obtaining a reusable connection or a token does it create a new connection.
+	//
+	// This differs from wrapping Dialer with a rate limiter: a throttled request
+	// can still be satisfied by a connection returned to the idle pool while it
+	// waits, avoiding both dial storms and needless connection churn.
+	//
+	// While MaxConcurrentDials caps how many dials happen at the same instant,
+	// DialRateLimit caps how many happen over time; the two compose.
+	//
+	// Latency tradeoff: during a burst with no reusable connection, a request may
+	// wait up to PoolTimeout (default ReadTimeout + 1s) before it falls back to
+	// creating a connection. If a request's context deadline is shorter than
+	// PoolTimeout, a throttled request can fail with a context error even though
+	// the pool is not full. Set DialRateLimit only when smoothing creation spikes
+	// is worth this added tail latency.
+	//
+	// Scope: the limiter paces connections created through the pool — Get()
+	// dials and the MinIdleConns refill. Connections dialed outside the pool's
+	// dial path, such as dedicated pub/sub connections and maintenance-
+	// notification handoff redials, are not paced.
+	//
+	// The limit is soft under sustained overload: a throttled request that has
+	// waited a full PoolTimeout without obtaining a connection or a token stops
+	// waiting and dials unpaced, so the effective dial rate can exceed
+	// DialRateLimit when demand outstrips the pool for longer than PoolTimeout.
+	//
+	// default: 0 (disabled)
+	DialRateLimit int
+
+	// DialRateBurst is the maximum burst of new connections allowed before the
+	// DialRateLimit throttle engages (the token-bucket capacity). When <= 0 it
+	// defaults to DialRateLimit. Has no effect unless DialRateLimit > 0.
+	//
+	// default: DialRateLimit
+	DialRateBurst int
+
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	//
@@ -703,6 +745,8 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
+	o.DialRateLimit = q.int("dial_rate_limit")
+	o.DialRateBurst = q.int("dial_rate_burst")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {
@@ -774,6 +818,8 @@ func newConnPool(
 		PoolFIFO:                 opt.PoolFIFO,
 		PoolSize:                 poolSize,
 		MaxConcurrentDials:       opt.MaxConcurrentDials,
+		DialRateLimit:            opt.DialRateLimit,
+		DialRateBurst:            opt.DialRateBurst,
 		PoolTimeout:              opt.PoolTimeout,
 		DialTimeout:              opt.DialTimeout,
 		DialerRetries:            opt.DialerRetries,

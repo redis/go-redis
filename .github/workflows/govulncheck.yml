@@ -29,7 +29,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version: "1.26.x"
+          # Pin a concrete toolchain: "1.26.x" can resolve to a runner-cached
+          # older patch (e.g. 1.26.4) that itself carries stdlib vulns
+          # (GO-2026-5856 in crypto/tls, fixed in 1.26.5), failing the scan
+          # for reasons unrelated to the code under review.
+          go-version: "1.26.5"
           cache: true
 
       - name: Install govulncheck

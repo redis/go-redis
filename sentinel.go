@@ -131,6 +131,13 @@ type FailoverOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
+	// DialRateLimit is the maximum number of new connections created per second.
+	// See Options.DialRateLimit. Default: 0 (disabled).
+	DialRateLimit int
+	// DialRateBurst is the burst allowance for DialRateLimit. See
+	// Options.DialRateBurst. Default: DialRateLimit.
+	DialRateBurst int
+
 	PoolTimeout           time.Duration
 	MinIdleConns          int
 	MaxIdleConns          int
@@ -214,6 +221,8 @@ func (opt *FailoverOptions) clientOptions() *Options {
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
 		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		DialRateLimit:         opt.DialRateLimit,
+		DialRateBurst:         opt.DialRateBurst,
 		PoolTimeout:           opt.PoolTimeout,
 		MinIdleConns:          opt.MinIdleConns,
 		MaxIdleConns:          opt.MaxIdleConns,
@@ -269,6 +278,8 @@ func (opt *FailoverOptions) sentinelOptions(addr string) *Options {
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
 		MaxConcurrentDials:    opt.MaxConcurrentDials,
+		DialRateLimit:         opt.DialRateLimit,
+		DialRateBurst:         opt.DialRateBurst,
 		PoolTimeout:           opt.PoolTimeout,
 		MinIdleConns:          opt.MinIdleConns,
 		MaxIdleConns:          opt.MaxIdleConns,
@@ -330,6 +341,8 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 		PoolFIFO:           opt.PoolFIFO,
 		PoolSize:           opt.PoolSize,
 		MaxConcurrentDials: opt.MaxConcurrentDials,
+		DialRateLimit:      opt.DialRateLimit,
+		DialRateBurst:      opt.DialRateBurst,
 		PoolTimeout:        opt.PoolTimeout,
 		MinIdleConns:       opt.MinIdleConns,
 		MaxIdleConns:       opt.MaxIdleConns,
@@ -455,6 +468,8 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.PoolFIFO = q.bool("pool_fifo")
 	o.PoolSize = q.int("pool_size")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
+	o.DialRateLimit = q.int("dial_rate_limit")
+	o.DialRateBurst = q.int("dial_rate_burst")
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
