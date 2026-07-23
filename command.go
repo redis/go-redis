@@ -155,6 +155,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeTSNRangePivotRowSlice
 	CmdTypeHotKeys
 	CmdTypeIncrEXInt
 	CmdTypeIncrEXFloat
@@ -5312,6 +5313,10 @@ type SlowLog struct {
 	// https://redis.io/commands/slowlog#output-format
 	ClientAddr string
 	ClientName string
+	// CommandArgc is the command's total argument count (including the command
+	// name), emitted only by Redis 8.10 or greater. It may exceed len(Args) when
+	// the slow log truncates the stored arguments (slowlog-max-argc, default 32).
+	CommandArgc int64
 }
 
 type SlowLogCmd struct {
@@ -5363,6 +5368,9 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		if nn < 4 {
 			return fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", nn)
 		}
+		if nn > 7 {
+			return fmt.Errorf("redis: got %d elements in slowlog get, expected at most 7", nn)
+		}
 
 		if cmd.val[i].ID, err = rd.ReadInt(); err != nil {
 			return err
@@ -5407,6 +5415,13 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
+
+		// Redis 8.10+ appends a 7th field: the command's total argument count.
+		if nn >= 7 {
+			if cmd.val[i].CommandArgc, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -5418,11 +5433,12 @@ func (cmd *SlowLogCmd) Clone() Cmder {
 		val = make([]SlowLog, len(cmd.val))
 		for i, log := range cmd.val {
 			val[i] = SlowLog{
-				ID:         log.ID,
-				Time:       log.Time,
-				Duration:   log.Duration,
-				ClientAddr: log.ClientAddr,
-				ClientName: log.ClientName,
+				ID:          log.ID,
+				Time:        log.Time,
+				Duration:    log.Duration,
+				ClientAddr:  log.ClientAddr,
+				ClientName:  log.ClientName,
+				CommandArgc: log.CommandArgc,
 			}
 			if log.Args != nil {
 				val[i].Args = make([]string, len(log.Args))
@@ -8952,6 +8968,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return tsTimestampValueSliceCmd.Val(), tsTimestampValueSliceCmd.Err()
+			}
+		case CmdTypeTSNRangePivotRowSlice:
+			if tsNRangePivotRowSliceCmd, ok := cmd.(interface {
+				Val() []TSNRangePivotRow
+				Err() error
+			}); ok {
+				return tsNRangePivotRowSliceCmd.Val(), tsNRangePivotRowSliceCmd.Err()
 			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface {
