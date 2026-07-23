@@ -18,7 +18,9 @@ type JSONGetTestStruct struct {
 
 var _ = Describe("JSON Commands", Label("json"), func() {
 	ctx := context.TODO()
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		return redis.NewClient(&redis.Options{
@@ -31,16 +33,17 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			rawClient.FlushDB(ctx)
+			closeSubject()
 		}
 	})
 
 	protocols := []int{2, 3}
 	for _, protocol := range protocols {
 		BeforeEach(func() {
-			client = setupRedisClient(protocol)
-			Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+			rawClient = setupRedisClient(protocol)
+			client, closeSubject = newUniversalSubject(rawClient)
+			Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 		})
 
 		Describe("arrays", Label("arrays"), func() {
@@ -783,7 +786,9 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 })
 
 var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 	var ctx = context.Background()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
@@ -797,8 +802,8 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			rawClient.FlushDB(ctx)
+			closeSubject()
 		}
 	})
 
@@ -808,7 +813,8 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 		for _, protocol := range protocols {
 			When("using protocol version", func() {
 				BeforeEach(func() {
-					client = setupRedisClient(protocol)
+					rawClient = setupRedisClient(protocol)
+					client, closeSubject = newUniversalSubject(rawClient)
 				})
 
 				It("should perform complex JSON and RediSearch operations", func() {

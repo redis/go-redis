@@ -832,6 +832,23 @@ func (c *Ring) Pipeline() Pipeliner {
 	return &pipe
 }
 
+// errRingAutoPipelineUnsupported is returned by Ring.AutoPipeline /
+// AsyncAutoPipeline. Autopipelining is not implemented for Ring; use the
+// per-shard clients or a ClusterClient. Ring is part of the UniversalClient
+// interface, so these methods exist to satisfy it and fail explicitly rather
+// than being silently absent.
+var errRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
+
+// AutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+func (c *Ring) AutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	return nil, errRingAutoPipelineUnsupported
+}
+
+// AsyncAutoPipeline is not supported by Ring; it returns errRingAutoPipelineUnsupported.
+func (c *Ring) AsyncAutoPipeline(config ...*AutoPipelineConfig) (*AutoPipeliner, error) {
+	return nil, errRingAutoPipelineUnsupported
+}
+
 func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
 	return c.TxPipeline().Pipelined(ctx, fn)
 }

@@ -16,6 +16,10 @@ inputs:
   client-libs-test-image-tag:
     description: 'Client libs test image tag'
     required: false
+  make-target:
+    description: 'Makefile target to run for the test step'
+    required: false
+    default: 'test.ci'
 runs:
   using: "composite"
   steps:
@@ -72,6 +76,9 @@ runs:
       env:
         RCE_DOCKER: "true"
         RE_CLUSTER: "false"
+        # Passed through the environment (not ${{ }}-interpolated into the
+        # script) so the input value cannot inject shell commands.
+        MAKE_TARGET: ${{ inputs.make-target }}
       run: |
-        make test.ci
+        make $MAKE_TARGET
       shell: bash

@@ -407,13 +407,21 @@ func (hm *Manager) Close() error {
 	additional := hm.additionalPoolHooks
 	hm.additionalPoolHooks = nil
 	hm.hooksMu.Unlock()
-	for _, ah := range additional {
+	for i, ah := range additional {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		err := ah.hook.Shutdown(shutdownCtx)
 		cancel()
 		if err != nil {
-			// Could not cleanly shut down an additional hook; stay open so the
-			// caller can retry Close, matching the primary-hook behavior above.
+			// Could not cleanly shut down this hook. Put it and the ones not
+			// yet processed back so a retried Close still sees them, then stay
+			// open so the caller can retry, matching the primary-hook behavior
+			// above. Hooks before i already shut down and detached.
+			hm.hooksMu.Lock()
+			remaining := make([]additionalPoolHook, 0, len(additional)-i+len(hm.additionalPoolHooks))
+			remaining = append(remaining, additional[i:]...)
+			remaining = append(remaining, hm.additionalPoolHooks...)
+			hm.additionalPoolHooks = remaining
+			hm.hooksMu.Unlock()
 			hm.closed.Store(false)
 			return err
 		}

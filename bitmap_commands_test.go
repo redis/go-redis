@@ -13,12 +13,15 @@ type bitCountExpected struct {
 }
 
 var _ = Describe("BitCountBite", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 	key := "bit_count_test"
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		client, closeSubject = newUniversalSubject(rawClient)
 		values := []int{0, 1, 0, 0, 1, 0, 1, 0, 1, 1}
 		for i, v := range values {
 			cmd := client.SetBit(ctx, key, int64(i), v)
@@ -27,7 +30,7 @@ var _ = Describe("BitCountBite", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	It("bit count bite", func() {
@@ -53,12 +56,15 @@ var _ = Describe("BitCountBite", func() {
 })
 
 var _ = Describe("BitCountByte", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 	key := "bit_count_test"
 
 	BeforeEach(func() {
-		client = redis.NewClient(redisOptions())
-		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		rawClient = redis.NewClient(redisOptions())
+		Expect(rawClient.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+		client, closeSubject = newUniversalSubject(rawClient)
 		values := []int{0, 0, 0, 0, 0, 0, 0, 1, 1, 1}
 		for i, v := range values {
 			cmd := client.SetBit(ctx, key, int64(i), v)
@@ -67,7 +73,7 @@ var _ = Describe("BitCountByte", func() {
 	})
 
 	AfterEach(func() {
-		Expect(client.Close()).NotTo(HaveOccurred())
+		Expect(closeSubject()).NotTo(HaveOccurred())
 	})
 
 	It("bit count byte", func() {
