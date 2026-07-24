@@ -310,6 +310,38 @@ func TestParseURLTLSOptions(t *testing.T) {
 		}
 	})
 
+	t.Run("both skip_verify aliases true", func(t *testing.T) {
+		// Both query keys must be consumed and OR'd; short-circuit would skip the second.
+		o, err := ParseURL("rediss://localhost:123/?skip_verify=true&tls_insecure_skip_verify=false")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+			t.Fatal("expected InsecureSkipVerify=true when either alias is true")
+		}
+	})
+
+	t.Run("invalid tls_insecure_skip_verify boolean", func(t *testing.T) {
+		_, err := ParseURL("rediss://localhost:123/?tls_insecure_skip_verify=ture")
+		if err == nil {
+			t.Fatal("expected error for invalid boolean")
+		}
+		if !strings.Contains(err.Error(), "invalid tls_insecure_skip_verify boolean") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid skip_verify still checked when both set", func(t *testing.T) {
+		// skip_verify=true would short-circuit || and hide a bad tls_insecure_skip_verify.
+		_, err := ParseURL("rediss://localhost:123/?skip_verify=true&tls_insecure_skip_verify=yes")
+		if err == nil {
+			t.Fatal("expected error for invalid tls_insecure_skip_verify boolean")
+		}
+		if !strings.Contains(err.Error(), "invalid tls_insecure_skip_verify boolean") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("client cert and key on rediss", func(t *testing.T) {
 		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile) +
 			"&tls_key_file=" + url.QueryEscape(keyFile)

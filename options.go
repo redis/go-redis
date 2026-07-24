@@ -734,6 +734,10 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if err != nil {
 		return nil, err
 	}
+	// applyTLSQueryOptions may set q.err via q.bool (e.g. invalid boolean values).
+	if q.err != nil {
+		return nil, q.err
+	}
 	o.TLSConfig = tlsCfg
 
 	// any parameters left?
@@ -761,15 +765,21 @@ func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (
 	keyFile := q.string("tls_key_file")
 	caFile := q.string("tls_ca_file")
 
+	// Always evaluate both bool params (no short-circuit) so each is consumed
+	// from the query and parse errors on either name are recorded in q.err.
 	var skipVerify bool
 	hasSkipVerify := false
 	if q.has("skip_verify") {
 		hasSkipVerify = true
-		skipVerify = skipVerify || q.bool("skip_verify")
+		if q.bool("skip_verify") {
+			skipVerify = true
+		}
 	}
 	if q.has("tls_insecure_skip_verify") {
 		hasSkipVerify = true
-		skipVerify = skipVerify || q.bool("tls_insecure_skip_verify")
+		if q.bool("tls_insecure_skip_verify") {
+			skipVerify = true
+		}
 	}
 
 	if certFile == "" && keyFile == "" && caFile == "" && !hasSkipVerify {
