@@ -1,9 +1,20 @@
 package redis
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -193,6 +204,294 @@ func TestParseURLIPv6TLSServerName(t *testing.T) {
 	if got, want := o.TLSConfig.ServerName, "2001:db8::1"; got != want {
 		t.Errorf("TLSConfig.ServerName: got %q, want %q", got, want)
 	}
+}
+
+// writeTempTLSMaterial generates a self-signed ECDSA cert/key pair and CA PEM
+// under t.TempDir(). No network is involved; material is only used by ParseURL.
+func writeTempTLSMaterial(t *testing.T) (certFile, keyFile, caFile string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{Organization: []string{"go-redis test"}},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	dir := t.TempDir()
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	caFile = filepath.Join(dir, "ca.pem")
+
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		t.Fatalf("create cert file: %v", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatalf("encode cert: %v", err)
+	}
+	if err := certOut.Close(); err != nil {
+		t.Fatalf("close cert: %v", err)
+	}
+
+	// CA file is the same self-signed cert (acts as trust root).
+	if err := os.WriteFile(caFile, mustRead(t, certFile), 0o600); err != nil {
+		t.Fatalf("write ca: %v", err)
+	}
+
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyOut, err := os.Create(keyFile)
+	if err != nil {
+		t.Fatalf("create key file: %v", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		t.Fatalf("encode key: %v", err)
+	}
+	if err := keyOut.Close(); err != nil {
+		t.Fatalf("close key: %v", err)
+	}
+
+	return certFile, keyFile, caFile
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return b
+}
+
+func TestParseURLTLSOptions(t *testing.T) {
+	certFile, keyFile, caFile := writeTempTLSMaterial(t)
+
+	t.Run("rediss skip_verify", func(t *testing.T) {
+		o, err := ParseURL("rediss://localhost:123/?skip_verify=true")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		if !o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=true")
+		}
+		if o.TLSConfig.ServerName != "localhost" {
+			t.Errorf("ServerName: got %q, want localhost", o.TLSConfig.ServerName)
+		}
+	})
+
+	t.Run("rediss tls_insecure_skip_verify", func(t *testing.T) {
+		o, err := ParseURL("rediss://localhost:123/?tls_insecure_skip_verify=true")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+			t.Fatal("expected TLSConfig with InsecureSkipVerify=true")
+		}
+	})
+
+	t.Run("client cert and key on rediss", func(t *testing.T) {
+		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile)
+		o, err := ParseURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
+		}
+		if o.TLSConfig.ServerName != "localhost" {
+			t.Errorf("ServerName: got %q, want localhost", o.TLSConfig.ServerName)
+		}
+	})
+
+	t.Run("ca file on rediss", func(t *testing.T) {
+		u := "rediss://localhost:123/?tls_ca_file=" + url.QueryEscape(caFile)
+		o, err := ParseURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil || o.TLSConfig.RootCAs == nil {
+			t.Fatal("expected TLSConfig with RootCAs set")
+		}
+	})
+
+	t.Run("all tls files on rediss", func(t *testing.T) {
+		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile) +
+			"&tls_ca_file=" + url.QueryEscape(caFile) +
+			"&tls_insecure_skip_verify=false"
+		o, err := ParseURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
+		}
+		if o.TLSConfig.RootCAs == nil {
+			t.Fatal("expected RootCAs")
+		}
+		if o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=false")
+		}
+	})
+
+	t.Run("tls files enable TLS on redis scheme", func(t *testing.T) {
+		// Providing cert paths on redis:// (not rediss://) should still build a TLSConfig.
+		u := "redis://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile)
+		o, err := ParseURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig when cert files are provided")
+		}
+		if o.TLSConfig.MinVersion != tls.VersionTLS12 {
+			t.Errorf("MinVersion: got %d, want TLS 1.2", o.TLSConfig.MinVersion)
+		}
+		if o.TLSConfig.ServerName != "localhost" {
+			t.Errorf("ServerName: got %q, want localhost", o.TLSConfig.ServerName)
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
+		}
+	})
+
+	t.Run("tls_insecure_skip_verify enables TLS on redis scheme", func(t *testing.T) {
+		o, err := ParseURL("redis://localhost:123/?tls_insecure_skip_verify=true")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+			t.Fatal("expected TLSConfig with InsecureSkipVerify=true")
+		}
+	})
+
+	t.Run("cert without key", func(t *testing.T) {
+		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile)
+		_, err := ParseURL(u)
+		if err == nil {
+			t.Fatal("expected error when only tls_cert_file is set")
+		}
+		if !strings.Contains(err.Error(), "tls_cert_file and tls_key_file") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("key without cert", func(t *testing.T) {
+		u := "rediss://localhost:123/?tls_key_file=" + url.QueryEscape(keyFile)
+		_, err := ParseURL(u)
+		if err == nil {
+			t.Fatal("expected error when only tls_key_file is set")
+		}
+		if !strings.Contains(err.Error(), "tls_cert_file and tls_key_file") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing cert file", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing-cert.pem")
+		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(missing) +
+			"&tls_key_file=" + url.QueryEscape(keyFile)
+		_, err := ParseURL(u)
+		if err == nil {
+			t.Fatal("expected error for missing cert file")
+		}
+		if !strings.Contains(err.Error(), "error loading TLS certificate") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing ca file", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing-ca.pem")
+		u := "rediss://localhost:123/?tls_ca_file=" + url.QueryEscape(missing)
+		_, err := ParseURL(u)
+		if err == nil {
+			t.Fatal("expected error for missing ca file")
+		}
+		if !strings.Contains(err.Error(), "error loading TLS CA certificate") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("invalid ca pem", func(t *testing.T) {
+		bad := filepath.Join(t.TempDir(), "bad-ca.pem")
+		if err := os.WriteFile(bad, []byte("not a pem"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		u := "rediss://localhost:123/?tls_ca_file=" + url.QueryEscape(bad)
+		_, err := ParseURL(u)
+		if err == nil {
+			t.Fatal("expected error for invalid CA PEM")
+		}
+		if !strings.Contains(err.Error(), "failed to parse TLS CA certificate") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("cluster url with tls options", func(t *testing.T) {
+		u := "rediss://localhost:123?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile) +
+			"&skip_verify=true"
+		o, err := ParseClusterURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
+		}
+		if !o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=true")
+		}
+	})
+
+	t.Run("failover url with tls options", func(t *testing.T) {
+		u := "rediss://localhost:6379/5?master_name=test&tls_ca_file=" + url.QueryEscape(caFile) +
+			"&tls_insecure_skip_verify=true"
+		o, err := ParseFailoverURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		if o.TLSConfig.RootCAs == nil {
+			t.Fatal("expected RootCAs")
+		}
+		if !o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=true")
+		}
+	})
 }
 
 func comprareOptions(t *testing.T, actual, expected *Options) {

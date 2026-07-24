@@ -3,11 +3,13 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
 	"net"
 	"net/url"
+	"os"
 	"runtime"
 	"slices"
 	"strconv"
@@ -491,7 +493,13 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
-//   - use "skip_verify=true" to ignore TLS certificate validation
+//   - TLS options (applied when the scheme is rediss://, or when any TLS file path /
+//     skip-verify option is present — in which case a tls.Config is created):
+//   - tls_cert_file, tls_key_file: paths to a client certificate and private key
+//     (PEM); both must be set together
+//   - tls_ca_file: path to a CA certificate file (PEM) used to verify the server
+//   - tls_insecure_skip_verify=true or skip_verify=true: skip server certificate
+//     verification (for testing only)
 //
 // Examples:
 //
@@ -505,6 +513,8 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //		ReadTimeout: 6 * time.Second,
 //		MaxRetries:  2,
 //	}
+//
+//	rediss://localhost:6379?tls_cert_file=/path/cert.pem&tls_key_file=/path/key.pem&tls_ca_file=/path/ca.pem
 func ParseURL(redisURL string) (*Options, error) {
 	u, err := url.Parse(redisURL)
 	if err != nil {
@@ -719,9 +729,12 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if q.err != nil {
 		return nil, q.err
 	}
-	if o.TLSConfig != nil && q.has("skip_verify") {
-		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+
+	tlsCfg, err := applyTLSQueryOptions(&q, o.TLSConfig, tlsServerName(o.Addr))
+	if err != nil {
+		return nil, err
 	}
+	o.TLSConfig = tlsCfg
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
@@ -729,6 +742,86 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	}
 
 	return o, nil
+}
+
+// applyTLSQueryOptions applies TLS-related URL query parameters to cfg.
+//
+// Supported parameters:
+//   - tls_cert_file / tls_key_file: client certificate and private key (PEM). Both
+//     must be provided together.
+//   - tls_ca_file: CA certificate file (PEM) used as RootCAs for server verification.
+//   - tls_insecure_skip_verify / skip_verify: when true, set InsecureSkipVerify.
+//
+// If cfg is nil and any TLS option is present, a new tls.Config is created with
+// ServerName set to serverName and MinVersion TLS 1.2. When the scheme is rediss://
+// the caller already provides a non-nil cfg; file paths then load into that config.
+// Parameters are always consumed from q so they do not appear as unknown options.
+func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (*tls.Config, error) {
+	certFile := q.string("tls_cert_file")
+	keyFile := q.string("tls_key_file")
+	caFile := q.string("tls_ca_file")
+
+	var skipVerify bool
+	hasSkipVerify := false
+	if q.has("skip_verify") {
+		hasSkipVerify = true
+		skipVerify = skipVerify || q.bool("skip_verify")
+	}
+	if q.has("tls_insecure_skip_verify") {
+		hasSkipVerify = true
+		skipVerify = skipVerify || q.bool("tls_insecure_skip_verify")
+	}
+
+	if certFile == "" && keyFile == "" && caFile == "" && !hasSkipVerify {
+		return cfg, nil
+	}
+
+	if (certFile == "") != (keyFile == "") {
+		return nil, fmt.Errorf("redis: tls_cert_file and tls_key_file must both be set or both omitted")
+	}
+
+	if cfg == nil {
+		cfg = &tls.Config{
+			ServerName: serverName,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
+	if certFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("redis: error loading TLS certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+
+	if caFile != "" {
+		pemData, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("redis: error loading TLS CA certificate: %w", err)
+		}
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(pemData) {
+			return nil, fmt.Errorf("redis: failed to parse TLS CA certificate from %q", caFile)
+		}
+		cfg.RootCAs = certPool
+	}
+
+	if hasSkipVerify {
+		cfg.InsecureSkipVerify = skipVerify
+	}
+
+	return cfg, nil
+}
+
+// tlsServerName extracts the host portion of addr for use as tls.Config.ServerName.
+// addr is expected to be host:port as produced by net.JoinHostPort.
+func tlsServerName(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 func getUserPassword(u *url.URL) (string, string) {
