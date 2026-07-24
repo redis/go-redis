@@ -176,7 +176,7 @@ type FailoverOptions struct {
 	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications upgrades are disabled.
 	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
-	//MaintNotificationsConfig *maintnotifications.Config
+	// MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -376,7 +376,13 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
-//   - use "skip_verify=true" to ignore TLS certificate validation
+//   - TLS options (applied when the scheme is rediss://, or when any TLS file path /
+//     skip-verify option is present — in which case a tls.Config is created):
+//   - tls_cert_file, tls_key_file: paths to a client certificate and private key
+//     (PEM); both must be set together
+//   - tls_ca_file: path to a CA certificate file (PEM) used to verify the server
+//   - tls_insecure_skip_verify=true or skip_verify=true: skip server certificate
+//     verification (for testing only)
 //
 // Example:
 //
@@ -490,9 +496,15 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 		o.SentinelAddrs = append(o.SentinelAddrs, net.JoinHostPort(h, p))
 	}
 
-	if o.TLSConfig != nil && q.has("skip_verify") {
-		o.TLSConfig.InsecureSkipVerify = q.bool("skip_verify")
+	serverName := ""
+	if len(o.SentinelAddrs) > 0 {
+		serverName = tlsServerName(o.SentinelAddrs[0])
 	}
+	tlsCfg, err := applyTLSQueryOptions(&q, o.TLSConfig, serverName)
+	if err != nil {
+		return nil, err
+	}
+	o.TLSConfig = tlsCfg
 
 	// any parameters left?
 	if r := q.remaining(); len(r) > 0 {
