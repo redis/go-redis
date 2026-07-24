@@ -14,8 +14,9 @@ import (
 type config struct {
 	// Common options.
 
-	dbSystem string
-	attrs    []attribute.KeyValue
+	dbSystem               string
+	attrs                  []attribute.KeyValue
+	skipSpanIfNotRecording bool
 
 	// Tracing options.
 
@@ -159,6 +160,14 @@ func WithCommandFilter(filter func(cmd redis.Cmder) bool) TracingOption {
 func WithCommandsFilter(filter func(cmds []redis.Cmder) bool) TracingOption {
 	return tracingOption(func(conf *config) {
 		conf.filterProcessPipeline = filter
+	})
+}
+
+// WithSkipSpanIfNotRecording tells the tracing hook to skip creating a new span
+// when the span in context is not recording.
+func WithSkipSpanIfNotRecording(on bool) TracingOption {
+	return tracingOption(func(conf *config) {
+		conf.skipSpanIfNotRecording = on
 	})
 }
 
