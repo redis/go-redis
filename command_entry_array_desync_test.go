@@ -63,17 +63,32 @@ func TestLatencyCmdShortEntryRejected(t *testing.T) {
 	}
 }
 
-// GeoSearchLocationCmd must validate each entry array against the requested
-// WITH flags, like GeoLocationCmd, instead of discarding the length.
-func TestGeoSearchLocationEntryLengthValidated(t *testing.T) {
+// GeoSearchLocationCmd must reconcile each entry array against the requested
+// WITH flags: extra elements are drained (forwards compatible with servers
+// that append fields), while entries shorter than the flags require are
+// rejected rather than over-read into the next reply.
+func TestGeoSearchLocationEntryLengthReconciled(t *testing.T) {
 	opt := &GeoSearchLocationQuery{WithDist: true} // withLen == 2
 
-	t.Run("oversized rejected", func(t *testing.T) {
+	t.Run("oversized drained", func(t *testing.T) {
 		rd := proto.NewReader(strings.NewReader(
-			"*1\r\n*3\r\n$1\r\na\r\n$3\r\n1.5\r\n:9\r\n"))
+			"*1\r\n*3\r\n$1\r\na\r\n$3\r\n1.5\r\n:9\r\n+PONG\r\n"))
+		cmd := NewGeoSearchLocationCmd(context.Background(), opt)
+		if err := cmd.readReply(rd); err != nil {
+			t.Fatalf("readReply: %v", err)
+		}
+		if len(cmd.val) != 1 || cmd.val[0].Name != "a" || cmd.val[0].Dist != 1.5 {
+			t.Fatalf("unexpected val: %+v", cmd.val)
+		}
+		assertSentinel(t, rd)
+	})
+
+	t.Run("short rejected", func(t *testing.T) {
+		rd := proto.NewReader(strings.NewReader(
+			"*1\r\n*1\r\n$1\r\na\r\n"))
 		cmd := NewGeoSearchLocationCmd(context.Background(), opt)
 		if err := cmd.readReply(rd); err == nil {
-			t.Fatalf("oversized geo entry accepted; readReply returned nil (val=%+v)", cmd.val)
+			t.Fatalf("short geo entry accepted; readReply returned nil (val=%+v)", cmd.val)
 		}
 	})
 

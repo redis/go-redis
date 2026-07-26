@@ -4823,10 +4823,10 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]GeoLocation, n)
-	// Each element is an array of [name, ...] whose length is fixed by the
-	// requested WITH flags. Validate it (like GeoLocationCmd) instead of
-	// discarding it, so a server declaring extra elements can't leave frames
-	// on the wire and desync the connection.
+	// Each element is an array of [name, ...] whose minimum length is set by
+	// the requested WITH flags. Entries shorter than that would make the
+	// parser read into the next reply; extra elements are drained below so a
+	// longer entry (e.g. from a newer server) can't leave frames on the wire.
 	withLen := 1
 	if cmd.opt.WithDist {
 		withLen++
@@ -4838,8 +4838,12 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 		withLen++
 	}
 	for i := 0; i < n; i++ {
-		if err = rd.ReadFixedArrayLen(withLen); err != nil {
+		nn, err := rd.ReadArrayLen()
+		if err != nil {
 			return err
+		}
+		if nn < withLen {
+			return fmt.Errorf("redis: got %d elements in GEOSEARCH reply, expected at least %d", nn, withLen)
 		}
 
 		var loc GeoLocation
@@ -4870,6 +4874,11 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 			}
 			loc.Latitude, err = rd.ReadFloat()
 			if err != nil {
+				return err
+			}
+		}
+		for j := withLen; j < nn; j++ {
+			if err := rd.DiscardNext(); err != nil {
 				return err
 			}
 		}
