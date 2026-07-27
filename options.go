@@ -734,10 +734,6 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	if err != nil {
 		return nil, err
 	}
-	// applyTLSQueryOptions may set q.err via q.bool (e.g. invalid boolean values).
-	if q.err != nil {
-		return nil, q.err
-	}
 	o.TLSConfig = tlsCfg
 
 	// any parameters left?
@@ -821,6 +817,10 @@ func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (
 		cfg.InsecureSkipVerify = skipVerify
 	}
 
+	// q.bool records parse failures in q.err without returning them.
+	if q.err != nil {
+		return nil, q.err
+	}
 	return cfg, nil
 }
 

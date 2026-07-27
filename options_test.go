@@ -524,6 +524,26 @@ func TestParseURLTLSOptions(t *testing.T) {
 			t.Error("expected InsecureSkipVerify=true")
 		}
 	})
+
+	t.Run("cluster url rejects invalid skip_verify", func(t *testing.T) {
+		_, err := ParseClusterURL("rediss://localhost:123?skip_verify=ture")
+		if err == nil {
+			t.Fatal("expected error for invalid boolean")
+		}
+		if !strings.Contains(err.Error(), "invalid skip_verify boolean") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("failover url rejects invalid tls_insecure_skip_verify", func(t *testing.T) {
+		_, err := ParseFailoverURL("rediss://localhost:6379?master_name=m&tls_insecure_skip_verify=yes")
+		if err == nil {
+			t.Fatal("expected error for invalid boolean")
+		}
+		if !strings.Contains(err.Error(), "invalid tls_insecure_skip_verify boolean") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
 }
 
 func comprareOptions(t *testing.T, actual, expected *Options) {
