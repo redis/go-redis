@@ -1153,6 +1153,12 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+
+	// himport is the cluster-wide HIMPORT fieldset registry, shared with
+	// every node client (masters and replicas alike — roles change with the
+	// topology) so any connection serving an HIMPORT SET can lazily replay
+	// the PREPARE (see himport.go, himport_cluster.go).
+	himport *himportRegistry
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1165,9 +1171,17 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:     opt,
+		nodes:   newClusterNodes(opt),
+		himport: newHImportRegistry(),
 	}
+
+	// Every node client shares the cluster-wide fieldset registry, replicas
+	// included: a promoted replica's connections carry no prepared flags, so
+	// the first HIMPORT SET routed to it replays the PREPARE lazily.
+	c.nodes.OnNewNode(func(nodeClient *Client) {
+		nodeClient.himport = c.himport
+	})
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
