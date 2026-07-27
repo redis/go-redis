@@ -28,12 +28,16 @@ func TestEntryArrayDrainsExtraElements(t *testing.T) {
 	})
 
 	t.Run("SlowLogCmd", func(t *testing.T) {
-		// entry declares 7 elements: the 6 known fields plus one extra
+		// entry declares 8 elements: the 7 known fields (through CommandArgc)
+		// plus one extra that only the drain loop can consume
 		rd := proto.NewReader(strings.NewReader(
-			"*1\r\n*7\r\n:1\r\n:1000\r\n:50\r\n*1\r\n$3\r\nGET\r\n$5\r\n1.2.3\r\n$4\r\nname\r\n:99\r\n+PONG\r\n"))
+			"*1\r\n*8\r\n:1\r\n:1000\r\n:50\r\n*1\r\n$3\r\nGET\r\n$5\r\n1.2.3\r\n$4\r\nname\r\n:99\r\n$5\r\nextra\r\n+PONG\r\n"))
 		cmd := NewSlowLogCmd(context.Background())
 		if err := cmd.readReply(rd); err != nil {
 			t.Fatalf("readReply: %v", err)
+		}
+		if len(cmd.val) != 1 || cmd.val[0].CommandArgc != 99 {
+			t.Fatalf("CommandArgc not parsed before drain: %+v", cmd.val)
 		}
 		assertSentinel(t, rd)
 	})
