@@ -1793,8 +1793,13 @@ func (c *ClusterClient) processPipelineNodeConn(
 			// SETs of registered fieldsets that lost their session state
 			// re-queue for the next attempt, which re-prepares lazily —
 			// the cluster equivalent of himportRetryFailedSets, bounded by
-			// the pipeline's attempt budget.
-			c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+			// the pipeline's attempt budget. A non-nil redis error here
+			// means pipelineReadCmds already re-queued the whole batch
+			// (retryable first-command error); adding the SETs again would
+			// duplicate them in the next attempt.
+			if err == nil {
+				c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+			}
 		}
 		return err
 	})
