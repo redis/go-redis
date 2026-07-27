@@ -5405,9 +5405,6 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		if nn < 4 {
 			return fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", nn)
 		}
-		if nn > 7 {
-			return fmt.Errorf("redis: got %d elements in slowlog get, expected at most 7", nn)
-		}
 
 		if cmd.val[i].ID, err = rd.ReadInt(); err != nil {
 			return err
@@ -5452,19 +5449,20 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
-    
+
 		// Redis 8.10+ appends a 7th field: the command's total argument count.
-	  if nn >= 7 {
+		if nn >= 7 {
 			if cmd.val[i].CommandArgc, err = rd.ReadInt(); err != nil {
 				return err
 			}
-    }
-    
+		}
+
 		// Drain any elements past the 7 this parser knows about so a server
 		// that declares a longer entry array doesn't leave frames on the wire.
 		for j := 7; j < nn; j++ {
 			if err = rd.DiscardNext(); err != nil {
-        return err
+				return err
+			}
 		}
 	}
 
