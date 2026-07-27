@@ -1006,12 +1006,6 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
-func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
-	// All search commands (FTSearchCmd, AggregateCmd, FTInfoCmd, FTSpellCheckCmd, FTSynDumpCmd)
-	// now have stable RESP3 parsing. No commands require the UnstableResp3 flag anymore.
-	return false, nil
-}
-
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -1047,17 +1041,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			retryTimeout.Store(1)
 			return err
 		}
-		readReplyFunc := cmd.readReply
-		// Apply unstable RESP3 search module.
-		if c.opt.Protocol != 2 {
-			useRawReply, err := c.assertUnstableCommand(cmd)
-			if err != nil {
-				return err
-			}
-			if useRawReply {
-				readReplyFunc = cmd.readRawReply
-			}
-		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
@@ -1068,13 +1051,13 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 					return err
 				}
 				// A push notification can arrive between the injected
-				// replies and the command reply; drain again so
-				// readReplyFunc does not consume it as the command's reply.
+				// replies and the command reply; drain again so the
+				// reply read below does not consume it as the command's.
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 				}
 			}
-			err := readReplyFunc(rd)
+			err := cmd.readReply(rd)
 			if himportNoSuchFieldset(err) {
 				// A failed injected PREPARE is the root cause of the
 				// command's "no such fieldset" reply (drained above).
