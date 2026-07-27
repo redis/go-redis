@@ -1750,7 +1750,17 @@ func (c *ClusterClient) processPipelineNode(
 func (c *ClusterClient) processPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the batch references get written ahead of
+	// the batch (see himport.go).
+	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		if isBadConn(err, false, node.Client.getAddr()) {
@@ -1764,7 +1774,29 @@ func (c *ClusterClient) processPipelineNodeConn(
 	}
 
 	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+		if err := node.Client.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with the batch replies unread: same handling
+			// as a write error — the batch may be retried on a fresh
+			// connection.
+			if isBadConn(err, false, node.Client.getAddr()) {
+				node.MarkAsFailing()
+			}
+			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			}
+			setCmdsErr(cmds, err)
+			return err
+		}
+		err := c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+		if err == nil || isRedisError(err) {
+			node.Client.himportAfterBatch(cn, injected, cmds)
+			// SETs of registered fieldsets that lost their session state
+			// re-queue for the next attempt, which re-prepares lazily —
+			// the cluster equivalent of himportRetryFailedSets, bounded by
+			// the pipeline's attempt budget.
+			c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+		}
+		return err
 	})
 }
 
@@ -2121,7 +2153,17 @@ func (c *ClusterClient) processTxPipelineNode(
 func (c *ClusterClient) processTxPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, wire []Cmder, cmds []Cmder, asking bool,
 ) *txOutcome {
+	// HIMPORT bookkeeping: pending discards and PREPAREs for registered
+	// fieldsets the transaction references get written ahead of the wire
+	// batch (before ASKING/MULTI; the session state is visible at EXEC).
+	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, wire)
 	}); err != nil {
 		// Write failure: re-route the whole tx on a fresh connection.
@@ -2133,7 +2175,16 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 
 	var outcome *txOutcome
 	readErr := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := node.Client.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with the tx replies unread; the batch was
+			// written and may have committed — fatal, discard the conn.
+			outcome = c.txReadFatal(err)
+			return nil
+		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
+		if outcome != nil && outcome.kind == txSuccess {
+			node.Client.himportAfterBatch(cn, injected, cmds)
+		}
 		return nil
 	})
 

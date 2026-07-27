@@ -478,8 +478,9 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
 
-		// Pass hooks so that reauth commands are recorded/traced
-		cn := newConn(c.opt, connPool, &c.hooksMixin)
+		// Pass hooks so that reauth commands are recorded/traced; share the
+		// HIMPORT registry for the same reason as in initConn.
+		cn := newConn(c.opt, connPool, &c.hooksMixin, c.himport)
 
 		if username != "" {
 			err = cn.AuthACL(ctx, username, password).Err()
@@ -593,7 +594,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// If we fail, we must transition to CLOSED
 	var initErr error
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool, &c.hooksMixin)
+	// The handshake Conn (handed to OnConnect) must share the client's
+	// HIMPORT registry: a private registry restarts versions at 1, so an
+	// OnConnect prepare would mark the pooled connection with a version
+	// number that collides with the client registry's and silently skips
+	// the replay of a different fieldset definition.
+	conn := newConn(c.opt, connPool, &c.hooksMixin, c.himport)
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -1346,8 +1352,13 @@ func (c *baseClient) pipelineProcessCmds(
 	// session was lost between prepare and use) are re-prepared and those
 	// SETs re-issued once on the same connection; the error must not
 	// surface for managed fieldsets.
+	//
+	// A transport failure here must NOT signal canRetry: the first round
+	// trip was fully consumed and its results delivered, so re-executing
+	// the whole batch would double-apply non-idempotent commands. The error
+	// still propagates so releaseConn discards the half-read connection.
 	if err := c.himportRetryFailedSets(ctx, cn, cmds); err != nil {
-		return true, err
+		return false, err
 	}
 
 	// Preserve retryable first-command errors (e.g. LOADING) for the outer
@@ -1579,11 +1590,10 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
 	// stay valid after the connections are returned.
-	conn.himport = c.himport
+	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin, c.himport)
 	return conn
 }
 
@@ -1782,15 +1792,19 @@ type Conn struct {
 }
 
 // newConn is a helper func to create a new Conn instance.
-// the Conn instance is not thread-safe and should not be shared between goroutines.
-// the parentHooks will be cloned, no need to clone before passing it.
-func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn {
+// The Conn instance is not thread-safe and should not be shared between goroutines.
+// The parentHooks will be cloned, no need to clone before passing it.
+// himport is the HIMPORT fieldset registry the Conn participates in — pass
+// the owning client's registry (a private one would restart versions at 1
+// and collide with the client's version space on the shared pooled
+// connections); nil disables HIMPORT tracking.
+func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himport *himportRegistry) *Conn {
 	c := Conn{
 		baseClient: baseClient{
 			opt:      opt,
 			connPool: connPool,
 			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			himport:  himport,
 		},
 	}
 

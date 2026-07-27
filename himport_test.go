@@ -585,6 +585,20 @@ func TestHImportRegistryWiring(t *testing.T) {
 	if shards[0].Client.himport != ring.opt.himport {
 		t.Error("ring shard clients must share the ring-wide HIMPORT registry")
 	}
+
+	// NewRing copies the options: rings built from one caller-owned struct
+	// must not share or clobber each other's registry.
+	sharedOpts := &RingOptions{Addrs: map[string]string{"shard1": "127.0.0.1:0"}}
+	ringA := NewRing(sharedOpts)
+	defer ringA.Close()
+	ringB := NewRing(sharedOpts)
+	defer ringB.Close()
+	if ringA.opt.himport == ringB.opt.himport {
+		t.Error("rings built from the same options must not share a registry")
+	}
+	if sharedOpts.himport != nil {
+		t.Error("NewRing must not write the registry into the caller's options")
+	}
 }
 
 // Fan-out copies carry a pre-assigned version/epoch: they mark or wipe the
@@ -620,22 +634,27 @@ func TestHImportFanOutCopyBookkeeping(t *testing.T) {
 }
 
 // A deterministic server rejection withdraws the registration, but only at
-// the failed version: a concurrent re-registration survives.
-func TestHImportRegistryRemoveVersion(t *testing.T) {
+// the failed version — a concurrent re-registration survives — and leaves a
+// tombstone: the fan-out may have prepared some sessions before another
+// master rejected it, and those sessions must be cleaned lazily.
+func TestHImportRegistryDiscardVersion(t *testing.T) {
 	r := newHImportRegistry()
 	v1, _ := r.register("fs", []string{"f"})
-	r.removeVersion("fs", v1)
+	r.discardVersion("fs", v1)
 	if _, ok := r.lookup("fs"); ok {
-		t.Error("removeVersion must delete the entry at the matching version")
+		t.Error("discardVersion must delete the entry at the matching version")
 	}
-	if _, tombs := r.cleanupSnapshot(); len(tombs) != 0 {
-		t.Errorf("removeVersion must not leave a tombstone, got %v", tombs)
+	if _, tombs := r.cleanupSnapshot(); len(tombs) != 1 || tombs[0] != "fs" {
+		t.Errorf("discardVersion must leave a tombstone for partial fan-out cleanup, got %v", tombs)
 	}
 
 	v2, _ := r.register("fs", []string{"g"})
-	r.removeVersion("fs", v2-1) // stale version: no-op
+	r.discardVersion("fs", v2-1) // stale version: no-op
 	if fs, ok := r.lookup("fs"); !ok || fs.version != v2 {
-		t.Error("removeVersion with a stale version must not clobber the current entry")
+		t.Error("discardVersion with a stale version must not clobber the current entry")
+	}
+	if _, tombs := r.cleanupSnapshot(); len(tombs) != 0 {
+		t.Errorf("stale discardVersion must not tombstone (re-register cleared it), got %v", tombs)
 	}
 }
 

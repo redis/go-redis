@@ -160,9 +160,9 @@ func NewHImportDiscardAllCmd(ctx context.Context) *HImportDiscardAllCmd {
 // transparently across the pool. Preparing an existing fieldset name again
 // silently replaces it.
 //
-// ClusterClient and Ring do not fan out the PREPARE to all nodes: the
-// registry is scoped to the node client that executed it. For cluster use,
-// prepare and set on a dedicated connection per node.
+// ClusterClient and Ring override this method (see himport_cluster.go): the
+// fieldset registers in a registry shared by every node/shard client and the
+// PREPARE additionally fans out eagerly to all masters/shards.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {

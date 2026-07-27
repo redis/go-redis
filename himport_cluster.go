@@ -18,9 +18,28 @@ import "context"
 // bounded. The fan-out is best-effort — any connection it does not reach is
 // covered by the lazy replay.
 
+// The fan-out helpers execute the per-node copies through each node client's
+// Process, so node-level hooks observe them; the cluster/ring-level
+// ProcessHook chain sees only the user's command object, not the fan-out.
+
 // himportForEach runs fn on a set of clients (all cluster masters, or all
 // ring shards).
 type himportForEach func(ctx context.Context, fn func(ctx context.Context, client *Client) error) error
+
+// himportRequeueFailedSets re-queues HIMPORT SETs of registered fieldsets
+// that failed with "no such fieldset" — their stale prepared flags were just
+// invalidated by himportAfterBatch, so the next pipeline attempt re-prepares
+// lazily and re-executes only those SETs (a full replace, so idempotent).
+// Bounded by the cluster pipeline's attempt budget.
+func (c *ClusterClient) himportRequeueFailedSets(ctx context.Context, cmds []Cmder, failedCmds *cmdsMap) {
+	for _, cmd := range cmds {
+		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.Err()) {
+			if _, registered := c.himport.lookup(set.fieldsetName); registered {
+				_ = c.mapCmdsByNode(ctx, failedCmds, []Cmder{set})
+			}
+		}
+	}
+}
 
 // himportFanOutPrepare registers the fieldset once in the shared registry
 // and executes a pre-versioned PREPARE copy on every client; each copy marks
@@ -38,7 +57,9 @@ func himportFanOutPrepare(ctx context.Context, registry *himportRegistry, forEac
 	})
 	if err != nil {
 		if isRedisError(err) {
-			registry.removeVersion(cmd.fieldsetName, version)
+			// Withdraw the registration; the tombstone cleans the sessions
+			// on which the fan-out succeeded before the rejection.
+			registry.discardVersion(cmd.fieldsetName, version)
 		}
 		cmd.SetErr(err)
 		return
@@ -88,6 +109,12 @@ func himportFanOutDiscardAll(ctx context.Context, registry *himportRegistry, for
 // resharding — are prepared lazily before their first HImportSet. See
 // HashCmdable.HImportPrepare (cmdable) for the fieldset semantics.
 //
+// The fan-out is best-effort and reports the first error: on a server
+// rejection (e.g. duplicate field name) the registration is withdrawn and
+// any sessions the fan-out already prepared are cleaned lazily; on a
+// transport failure the registration is kept and lazy replay covers the
+// connections the fan-out missed.
+//
 // Requires Redis 8.10 or newer.
 func (c *ClusterClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
 	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
@@ -121,7 +148,8 @@ func (c *ClusterClient) HImportDiscardAll(ctx context.Context) *IntCmd {
 
 // HImportPrepare registers the fieldset in the ring-wide registry and
 // eagerly prepares one connection on every shard; all other connections are
-// prepared lazily before their first HImportSet. See
+// prepared lazily before their first HImportSet. The fan-out is best-effort
+// with the same failure semantics as ClusterClient.HImportPrepare. See
 // HashCmdable.HImportPrepare (cmdable) for the fieldset semantics.
 //
 // Requires Redis 8.10 or newer.

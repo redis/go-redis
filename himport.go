@@ -103,15 +103,21 @@ func (r *himportRegistry) discardAll() (epoch uint64, removed int) {
 	return epoch, removed
 }
 
-// removeVersion withdraws a registration that turned out invalid (the
-// server rejected the fan-out PREPARE deterministically, so no session ever
-// stored it) — but only while the entry is still at that version, so a
-// concurrent re-registration is not clobbered. No tombstone is left: there
-// is nothing to discard anywhere.
-func (r *himportRegistry) removeVersion(name string, version uint64) {
+// discardVersion withdraws a registration whose fan-out PREPARE was rejected
+// by a server — but only while the entry is still at that version, so a
+// concurrent re-registration is not clobbered. A tombstone is left: the
+// fan-out may have succeeded on some masters before another rejected it
+// (per-node ACLs, rolling upgrades), and those sessions hold the withdrawn
+// fieldset; the tombstone makes their next HIMPORT command discard it
+// instead of leaving a fieldset the client can no longer address.
+func (r *himportRegistry) discardVersion(name string, version uint64) {
 	r.mu.Lock()
 	if fs, ok := r.fieldsets[name]; ok && fs.version == version {
 		delete(r.fieldsets, name)
+		if r.tombstones == nil {
+			r.tombstones = make(map[string]struct{})
+		}
+		r.tombstones[name] = struct{}{}
 	}
 	r.mu.Unlock()
 }
@@ -369,6 +375,10 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 // flags were invalidated by himportAfterBatch, so himportInjectedCmds
 // regenerates the PREPAREs for this connection. Transport errors are
 // returned; server errors stay recorded on the commands.
+// (The retry never needs to carry an ASKING prefix: a redirected [ASKING,
+// SET] pair can only reach this path if its injected PREPARE failed, and
+// then the root-cause swap in himportAfterBatch makes the SET's error a
+// prepare error, which does not match the retry filter below.)
 func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, cmds []Cmder) error {
 	if c.himport.idle() {
 		return nil
