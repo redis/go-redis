@@ -898,11 +898,11 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 		}
 		// A "no such fieldset" reply for a registered fieldset means the
 		// connection lost its server session state (e.g. RESET, concurrent
-		// discard). himportRecover invalidates the connection's prepared
-		// flag; grant a single extra attempt so the retry re-prepares
-		// lazily on whichever connection it lands.
+		// discard). The stale prepared flag was invalidated inside _process
+		// while the connection was still held; grant a single extra attempt
+		// so the retry re-prepares lazily on whichever connection it lands.
 		if err != nil && !retry && !himportRetried && !cmd.NoRetry() &&
-			c.himportRecover(cmd, err, cn) {
+			c.himportShouldRetrySet(cmd, err) {
 			himportRetried = true
 			if attempt == maxRetries {
 				maxRetries++
@@ -1006,12 +1006,6 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
-func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
-	// All search commands (FTSearchCmd, AggregateCmd, FTInfoCmd, FTSpellCheckCmd, FTSynDumpCmd)
-	// now have stable RESP3 parsing. No commands require the UnstableResp3 flag anymore.
-	return false, nil
-}
-
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -1047,17 +1041,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			retryTimeout.Store(1)
 			return err
 		}
-		readReplyFunc := cmd.readReply
-		// Apply unstable RESP3 search module.
-		if c.opt.Protocol != 2 {
-			useRawReply, err := c.assertUnstableCommand(cmd)
-			if err != nil {
-				return err
-			}
-			if useRawReply {
-				readReplyFunc = cmd.readRawReply
-			}
-		}
 		if err := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {
 			// To be sure there are no buffered push notifications, we process them before reading the reply
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
@@ -1068,22 +1051,31 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 					return err
 				}
 				// A push notification can arrive between the injected
-				// replies and the command reply; drain again so
-				// readReplyFunc does not consume it as the command's reply.
+				// replies and the command reply; drain again so the
+				// reply read below does not consume it as the command's.
 				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 				}
 			}
-			err := readReplyFunc(rd)
+			err := cmd.readReply(rd)
 			if himportNoSuchFieldset(err) {
-				// A failed injected PREPARE is the root cause of the
-				// command's "no such fieldset" reply (drained above).
 				if set, ok := cmd.(*HImportSetCmd); ok {
+					// A failed injected PREPARE is the root cause of the
+					// command's "no such fieldset" reply (drained above).
 					for _, ic := range injected {
 						if prep, ok := ic.(*HImportPrepareCmd); ok &&
 							prep.fieldsetName == set.fieldsetName && prep.Err() != nil {
 							err = prep.Err()
 							break
+						}
+					}
+					// The session lost a registered fieldset the flags claim
+					// is prepared: invalidate the flag now, while this
+					// goroutine still owns the connection, so the retry in
+					// process() replays the PREPARE.
+					if himportNoSuchFieldset(err) {
+						if _, registered := c.himport.lookup(set.fieldsetName); registered {
+							cn.UnmarkFieldsetPrepared(set.fieldsetName)
 						}
 					}
 				}
@@ -1353,12 +1345,15 @@ func (c *baseClient) pipelineProcessCmds(
 	// SETs re-issued once on the same connection; the error must not
 	// surface for managed fieldsets.
 	//
-	// A transport failure here must NOT signal canRetry: the first round
-	// trip was fully consumed and its results delivered, so re-executing
-	// the whole batch would double-apply non-idempotent commands. The error
-	// still propagates so releaseConn discards the half-read connection.
+	// A transport failure here must neither retry nor fail the batch: the
+	// first round trip was fully consumed and its results delivered, so
+	// re-executing would double-apply non-idempotent commands and failing
+	// would stamp a spurious error onto commands that succeeded. The
+	// re-issue errors stay on the retried SETs; the connection, which may
+	// hold unread replies, is marked for removal when released.
 	if err := c.himportRetryFailedSets(ctx, cn, cmds); err != nil {
-		return false, err
+		internal.Logger.Printf(ctx, "himport: pipeline set re-issue failed: %v", err)
+		cn.MarkCloseOnPut("himport: transport error during set re-issue")
 	}
 
 	// Preserve retryable first-command errors (e.g. LOADING) for the outer

@@ -421,21 +421,17 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 	})
 }
 
-// himportRecover prepares a retry after cmd failed with "no such fieldset":
-// if the fieldset is registered client-side, the executing connection lost
-// its server session state (for example a RESET, or a concurrent discard),
-// so its prepared flag is invalidated and the retry re-prepares lazily. It
-// reports whether such a retry may succeed.
-func (c *baseClient) himportRecover(cmd Cmder, err error, cn *pool.Conn) bool {
+// himportShouldRetrySet reports whether a retry of cmd may succeed after it
+// failed with "no such fieldset": true when the fieldset is registered
+// client-side — the executing connection lost its server session state (for
+// example a RESET, or a concurrent discard). The connection's prepared flag
+// was already invalidated inside _process, while that goroutine still owned
+// the connection, so the retry re-prepares lazily wherever it lands.
+func (c *baseClient) himportShouldRetrySet(cmd Cmder, err error) bool {
 	set, ok := cmd.(*HImportSetCmd)
 	if !ok || !himportNoSuchFieldset(err) {
 		return false
 	}
-	if _, registered := c.himport.lookup(set.fieldsetName); !registered {
-		return false
-	}
-	if cn != nil {
-		cn.UnmarkFieldsetPrepared(set.fieldsetName)
-	}
-	return true
+	_, registered := c.himport.lookup(set.fieldsetName)
+	return registered
 }

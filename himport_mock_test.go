@@ -36,6 +36,9 @@ type himportMockServer struct {
 	// pushBeforeSetReply, when armed, makes the next HIMPORT SET reply be
 	// preceded by an out-of-band RESP3 push frame.
 	pushBeforeSetReply bool
+	// boomBeforeNextPrepare, when armed, drops the connection when the next
+	// HIMPORT PREPARE arrives, before replying.
+	boomBeforeNextPrepare bool
 }
 
 // himportMockSession is one connection's fieldset state; guarded by the
@@ -108,6 +111,20 @@ func (s *himportMockServer) armPushBeforeSetReply() {
 	s.mu.Lock()
 	s.pushBeforeSetReply = true
 	s.mu.Unlock()
+}
+
+func (s *himportMockServer) armBoomBeforeNextPrepare() {
+	s.mu.Lock()
+	s.boomBeforeNextPrepare = true
+	s.mu.Unlock()
+}
+
+func (s *himportMockServer) consumeBoomBeforeNextPrepare() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	armed := s.boomBeforeNextPrepare
+	s.boomBeforeNextPrepare = false
+	return armed
 }
 
 func (s *himportMockServer) consumePushBeforeSetReply() bool {
@@ -240,6 +257,10 @@ func (s *himportMockServer) serve(conn net.Conn) {
 				continue
 			}
 			resp := s.commandReply(args, session)
+			if resp == "" {
+				// Sentinel from an armed connection drop.
+				return
+			}
 			if strings.ToUpper(args[0]) == "HIMPORT" && strings.ToUpper(args[1]) == "SET" &&
 				strings.HasPrefix(resp, "+OK") && s.consumePushBeforeSetReply() {
 				// Out-of-band push frame squeezed in right before the SET
@@ -269,6 +290,11 @@ func (s *himportMockServer) commandReply(args []string, session *himportMockSess
 func (s *himportMockServer) himportReply(args []string, session *himportMockSession) string {
 	switch strings.ToUpper(args[1]) {
 	case "PREPARE":
+		if s.consumeBoomBeforeNextPrepare() {
+			// Simulate the connection dying mid-replay: the caller closes
+			// the conn when it sees the empty sentinel.
+			return ""
+		}
 		name, fields := args[2], args[3:]
 		seen := make(map[string]struct{}, len(fields))
 		for _, f := range fields {
@@ -461,6 +487,60 @@ func TestHImportPipelineRecoversAfterSessionLoss(t *testing.T) {
 	}
 	if h := srv.hash("k3"); h["a"] != "5" || h["b"] != "6" {
 		t.Errorf("k3 = %v, want a=5 b=6", h)
+	}
+}
+
+// TestHImportPipelineReissueTransportErrorScoped pins the failure scoping of
+// the pipeline re-issue: when the retry round trip itself dies on a
+// transport error, the batch is neither re-executed nor failed wholesale —
+// commands whose results were delivered in the first round trip keep them,
+// the failed SETs keep their errors, and the suspect connection is discarded.
+func TestHImportPipelineReissueTransportErrorScoped(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        2,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k1", "fs", "1").Err(); err != nil {
+		t.Fatalf("set k1: %v", err)
+	}
+	if err := client.Do(ctx, "reset").Err(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// The first round trip delivers: plain SET OK, HIMPORT SET fails with
+	// "no such fieldset". The re-issue round trip then dies (the mock drops
+	// the connection on the replayed PREPARE).
+	srv.armBoomBeforeNextPrepare()
+	pipe := client.Pipeline()
+	plain := pipe.Set(ctx, "plain", "x", 0)
+	set2 := pipe.HImportSet(ctx, "k2", "fs", "2")
+	_, _ = pipe.Exec(ctx)
+
+	if plain.Err() != nil || plain.Val() != "OK" {
+		t.Errorf("delivered plain SET = %q, %v; must keep its first-round result", plain.Val(), plain.Err())
+	}
+	if err := set2.Err(); err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Errorf("failed HIMPORT SET = %v, want its own no-such-fieldset error", err)
+	}
+
+	// The half-read connection was discarded; the next command dials fresh
+	// and the registered fieldset replays.
+	if err := client.HImportSet(ctx, "k3", "fs", "3").Err(); err != nil {
+		t.Fatalf("set k3 on fresh connection: %v", err)
+	}
+	if h := srv.hash("k3"); h["a"] != "3" {
+		t.Errorf("k3 = %v, want a=3", h)
 	}
 }
 

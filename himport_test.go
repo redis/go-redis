@@ -658,37 +658,33 @@ func TestHImportRegistryDiscardVersion(t *testing.T) {
 	}
 }
 
-func TestHImportRecover(t *testing.T) {
+func TestHImportShouldRetrySet(t *testing.T) {
 	ctx := context.Background()
 	c := &baseClient{himport: newHImportRegistry()}
-	cn := pool.NewConn(nil)
 	noSuchFieldset := proto.RedisError("ERR no such fieldset")
 
 	set := NewHImportSetCmd(ctx, "k", "fs", "v")
 
 	// Unregistered fieldset: a retry would fail identically.
-	if c.himportRecover(set, noSuchFieldset, cn) {
-		t.Error("recover must refuse unregistered fieldsets")
+	if c.himportShouldRetrySet(set, noSuchFieldset) {
+		t.Error("retry must be refused for unregistered fieldsets")
 	}
 
-	version, epoch := c.himport.register("fs", []string{"f1"})
-	cn.MarkFieldsetPrepared("fs", version, epoch)
+	c.himport.register("fs", []string{"f1"})
 
 	// Wrong error: nothing to recover.
-	if c.himportRecover(set, proto.RedisError("ERR value count does not match fieldset field count"), cn) {
-		t.Error("recover must only react to no-such-fieldset errors")
+	if c.himportShouldRetrySet(set, proto.RedisError("ERR value count does not match fieldset field count")) {
+		t.Error("retry must only react to no-such-fieldset errors")
 	}
 	// Wrong command type: nothing to recover.
-	if c.himportRecover(NewStatusCmd(ctx, "ping"), noSuchFieldset, cn) {
-		t.Error("recover must only react to HIMPORT SET")
+	if c.himportShouldRetrySet(NewStatusCmd(ctx, "ping"), noSuchFieldset) {
+		t.Error("retry must only react to HIMPORT SET")
 	}
 
-	// Registered fieldset: the stale flag is invalidated and a retry may
-	// succeed.
-	if !c.himportRecover(set, noSuchFieldset, cn) {
-		t.Error("recover should allow a retry for registered fieldsets")
-	}
-	if cn.FieldsetPreparedVersion("fs") != 0 {
-		t.Error("recover must invalidate the connection's prepared flag")
+	// Registered fieldset: a retry may succeed (the stale flag is
+	// invalidated inside _process while the connection is held; the RESET
+	// recovery in TestHImportLazyReplay pins that end to end).
+	if !c.himportShouldRetrySet(set, noSuchFieldset) {
+		t.Error("retry should be allowed for registered fieldsets")
 	}
 }

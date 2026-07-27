@@ -691,13 +691,17 @@ func (cn *Conn) FieldsetPreparedVersion(name string) uint64 {
 
 // MarkFieldsetPrepared records that the named HIMPORT fieldset was prepared
 // on this connection's current server session at the given registry version.
-// A session acquiring its first fieldset adopts the given discard-all epoch:
-// fieldsets prepared after an HIMPORT DISCARDALL are not subject to it.
+// A session acquiring its first fieldset adopts the given discard-all epoch
+// (fieldsets prepared after an HIMPORT DISCARDALL are not subject to it);
+// the epoch never moves backwards, so a mark carrying an older snapshot
+// cannot regress a session already wiped at a newer epoch.
 func (cn *Conn) MarkFieldsetPrepared(name string, version, epoch uint64) {
 	cn.preparedFieldsetsMu.Lock()
 	if len(cn.preparedFieldsets) == 0 {
 		cn.preparedFieldsets = make(map[string]uint64)
-		cn.preparedFieldsetsEpoch = epoch
+		if epoch > cn.preparedFieldsetsEpoch {
+			cn.preparedFieldsetsEpoch = epoch
+		}
 	}
 	cn.preparedFieldsets[name] = version
 	cn.preparedFieldsetsMu.Unlock()
