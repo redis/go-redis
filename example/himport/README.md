@@ -16,6 +16,15 @@ once per connection session — on whichever pooled connection executes an
 `HImportSet`, including inside pipelines and transactions. A connection that
 lost its session state (`RESET`, reconnect) is re-prepared transparently.
 
+These guarantees apply only to the typed methods (`HImportPrepare`,
+`HImportSet`, `HImportDiscard`, `HImportDiscardAll`). Any HIMPORT command
+sent through generic command interfaces — `Do`, raw `Cmd` values, or similar
+low-level access — bypasses the client-side registry entirely: nothing is
+replayed onto other connections, `no such fieldset` is not recovered, and
+discards do not propagate. Such commands act on the session of whichever
+connection happens to execute them, so they are only meaningful on a
+dedicated connection (`client.Conn()`) managed explicitly by the caller.
+
 The example walks through:
 
 - basic prepare/set and reading the result back with regular hash commands

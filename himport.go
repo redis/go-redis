@@ -73,48 +73,47 @@ func (r *himportRegistry) lookup(name string) (himportFieldset, bool) {
 
 // discard removes the fieldset and leaves a tombstone so connections whose
 // sessions still hold it replay the DISCARD before their next HIMPORT
-// command.
-func (r *himportRegistry) discard(name string) {
+// command. It reports whether the fieldset was registered.
+func (r *himportRegistry) discard(name string) bool {
 	r.mu.Lock()
-	if _, ok := r.fieldsets[name]; ok {
-		delete(r.fieldsets, name)
-		if r.tombstones == nil {
-			r.tombstones = make(map[string]struct{})
-		}
-		r.tombstones[name] = struct{}{}
+	defer r.mu.Unlock()
+	if _, ok := r.fieldsets[name]; !ok {
+		return false
 	}
-	r.mu.Unlock()
+	delete(r.fieldsets, name)
+	if r.tombstones == nil {
+		r.tombstones = make(map[string]struct{})
+	}
+	r.tombstones[name] = struct{}{}
+	return true
 }
 
 // discardAll drops every fieldset and tombstone and moves to a new epoch;
 // connections prepared under an older epoch replay HIMPORT DISCARDALL before
-// their next HIMPORT command.
-func (r *himportRegistry) discardAll() (epoch uint64) {
+// their next HIMPORT command. It returns the new epoch and the number of
+// fieldsets that were registered.
+func (r *himportRegistry) discardAll() (epoch uint64, removed int) {
 	r.mu.Lock()
+	removed = len(r.fieldsets)
 	r.fieldsets = nil
 	r.tombstones = nil
 	r.discardAllEpoch++
 	epoch = r.discardAllEpoch
 	r.mu.Unlock()
-	return epoch
+	return epoch, removed
 }
 
-// epoch returns the current discard-all epoch.
-func (r *himportRegistry) epoch() uint64 {
-	r.mu.RLock()
-	e := r.discardAllEpoch
-	r.mu.RUnlock()
-	return e
-}
-
-func (r *himportRegistry) empty() bool {
-	if r == nil {
-		return true
+// removeVersion withdraws a registration that turned out invalid (the
+// server rejected the fan-out PREPARE deterministically, so no session ever
+// stored it) — but only while the entry is still at that version, so a
+// concurrent re-registration is not clobbered. No tombstone is left: there
+// is nothing to discard anywhere.
+func (r *himportRegistry) removeVersion(name string, version uint64) {
+	r.mu.Lock()
+	if fs, ok := r.fieldsets[name]; ok && fs.version == version {
+		delete(r.fieldsets, name)
 	}
-	r.mu.RLock()
-	n := len(r.fieldsets)
-	r.mu.RUnlock()
-	return n == 0
+	r.mu.Unlock()
 }
 
 // idle reports whether the registry implies no injection work at all: no
@@ -223,6 +222,13 @@ func (c *baseClient) himportInjectedCmds(ctx context.Context, cn *pool.Conn, cmd
 			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) == fs.version {
 				continue
 			}
+			// The session holds an older version. Discard it before the
+			// re-prepare: the SET behind it is already on the wire, and if
+			// the re-prepare fails the SET must answer "no such fieldset"
+			// rather than silently writing the old version's field names.
+			if !sessionWiped && cn.FieldsetPreparedVersion(hc.fieldsetName) != 0 {
+				injected = append(injected, NewHImportDiscardCmd(ctx, hc.fieldsetName))
+			}
 			prep := NewHImportPrepareCmd(ctx, hc.fieldsetName, fs.fields...)
 			prep.registryVersion = fs.version
 			prep.registryEpoch = epoch
@@ -274,14 +280,40 @@ func (c *baseClient) himportAfterCmd(cn *pool.Conn, hc himportCmder) {
 	}
 	switch cmd := hc.(type) {
 	case *HImportPrepareCmd:
-		version, epoch := c.himport.register(cmd.fieldsetName, cmd.fields)
+		version, epoch := cmd.registryVersion, cmd.registryEpoch
+		if version == 0 {
+			version, epoch = c.himport.register(cmd.fieldsetName, cmd.fields)
+		}
+		// A pre-assigned version marks a fan-out copy: the fieldset was
+		// registered once at the cluster/ring level; only mark the
+		// executing connection.
 		cn.MarkFieldsetPrepared(cmd.fieldsetName, version, epoch)
 	case *HImportDiscardCmd:
-		c.himport.discard(cmd.fieldsetName)
+		registered := c.himport.discard(cmd.fieldsetName)
 		cn.UnmarkFieldsetPrepared(cmd.fieldsetName)
+		// The managed API reports the registry lifecycle: 1 when the
+		// fieldset was registered on this client and is now removed. The
+		// executing connection's session count stands only for fieldsets
+		// the registry never knew (raw usage).
+		if registered {
+			cmd.SetVal(1)
+		}
 	case *HImportDiscardAllCmd:
-		epoch := c.himport.discardAll()
+		// A pre-assigned epoch marks a fan-out copy: the registry was
+		// already wiped at the cluster/ring level; only move the executing
+		// connection to that epoch.
+		if cmd.registryEpoch != 0 {
+			cn.ClearPreparedFieldsets(cmd.registryEpoch)
+			return
+		}
+		epoch, removed := c.himport.discardAll()
 		cn.ClearPreparedFieldsets(epoch)
+		// Same registry semantics: report how many registered fieldsets
+		// were removed, not how many the executing session happened to
+		// hold.
+		if removed > 0 {
+			cmd.SetVal(int64(removed))
+		}
 	}
 }
 
@@ -314,10 +346,8 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 				continue
 			}
 			// The session lost a fieldset the flags claim is prepared (e.g.
-			// RESET): invalidate the flag so a caller-initiated retry of the
-			// pipeline replays the PREPARE. Pipelines are not auto-retried:
-			// re-running the whole batch would repeat the side effects of
-			// commands that already succeeded.
+			// RESET): invalidate the flag so the SET's re-issue — or, inside
+			// transactions, the caller's retry — replays the PREPARE.
 			if himportNoSuchFieldset(set.Err()) {
 				if _, registered := c.himport.lookup(set.fieldsetName); registered {
 					cn.UnmarkFieldsetPrepared(set.fieldsetName)
@@ -329,6 +359,56 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			c.himportAfterCmd(cn, hc)
 		}
 	}
+}
+
+// himportRetryFailedSets re-issues, once, the HIMPORT SET commands of a
+// pipeline batch that failed with "no such fieldset" while their fieldset is
+// registered — the error must not surface for managed fieldsets (NF.4). Only
+// the SETs are re-sent: HIMPORT SET is a full replace, so re-execution is
+// idempotent, and no other command of the batch runs again. Their prepared
+// flags were invalidated by himportAfterBatch, so himportInjectedCmds
+// regenerates the PREPAREs for this connection. Transport errors are
+// returned; server errors stay recorded on the commands.
+func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, cmds []Cmder) error {
+	if c.himport.idle() {
+		return nil
+	}
+	var retry []Cmder
+	for _, cmd := range cmds {
+		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.Err()) {
+			if _, registered := c.himport.lookup(set.fieldsetName); registered {
+				retry = append(retry, set)
+			}
+		}
+	}
+	if len(retry) == 0 {
+		return nil
+	}
+
+	injected := c.himportInjectedCmds(ctx, cn, retry)
+	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		return writeCmds(wr, retry)
+	}); err != nil {
+		return err
+	}
+	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			return err
+		}
+		err := c.pipelineReadCmds(ctx, cn, rd, retry)
+		if err != nil && !isRedisError(err) {
+			return err
+		}
+		// Server errors (including a repeated failure) stay on the
+		// individual commands; the batch as a whole is done.
+		c.himportAfterBatch(cn, injected, retry)
+		return nil
+	})
 }
 
 // himportRecover prepares a retry after cmd failed with "no such fieldset":

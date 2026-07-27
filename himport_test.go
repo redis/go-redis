@@ -12,6 +12,25 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+// epoch and empty are test-only registry accessors; the linter runs with
+// tests excluded, so keeping them in himport.go would flag them as unused.
+func (r *himportRegistry) epoch() uint64 {
+	r.mu.RLock()
+	e := r.discardAllEpoch
+	r.mu.RUnlock()
+	return e
+}
+
+func (r *himportRegistry) empty() bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	n := len(r.fieldsets)
+	r.mu.RUnlock()
+	return n == 0
+}
+
 func TestHImportCmdArgs(t *testing.T) {
 	ctx := context.Background()
 
@@ -100,11 +119,15 @@ func TestHImportRegistry(t *testing.T) {
 		t.Errorf("tombstones after unknown discard = %v, want none", tombs)
 	}
 
-	// Discard-all moves to a new epoch and drops fieldsets and tombstones.
+	// Discard-all moves to a new epoch, drops fieldsets and tombstones, and
+	// reports how many fieldsets were registered.
 	r.discard("fs")
-	epoch := r.discardAll()
+	epoch, removed := r.discardAll()
 	if epoch != 1 || r.epoch() != 1 {
 		t.Errorf("epoch after discardAll = %d/%d, want 1", epoch, r.epoch())
+	}
+	if removed != 0 {
+		t.Errorf("discardAll removed = %d, want 0 (fs was already discarded)", removed)
 	}
 	if !r.empty() {
 		t.Error("registry should be empty after discardAll")
@@ -236,11 +259,21 @@ func TestHImportInjectedPrepare(t *testing.T) {
 		t.Errorf("injected for prepared connection = %v, want none", injectedKinds(inj))
 	}
 
-	// Fieldset replaced under a new version: the stale flag must not stop
-	// the replay.
+	// Fieldset replaced under a new version: the session's old version is
+	// discarded before the replay, so a failed re-prepare leaves the SET
+	// answering "no such fieldset" instead of silently writing the old
+	// version's field names.
 	c.himport.register("fs", []string{"f3"})
-	if inj := c.himportInjectedCmds(ctx, cn, []Cmder{set}); len(inj) != 1 {
-		t.Errorf("injected after re-register = %v, want one PREPARE", injectedKinds(inj))
+	inj = c.himportInjectedCmds(ctx, cn, []Cmder{set})
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"discard", "prepare"}) {
+		t.Errorf("injected after re-register = %v, want [discard prepare]", kinds)
+	}
+
+	// A connection with no version at all needs no discard.
+	fresh := pool.NewConn(nil)
+	inj = c.himportInjectedCmds(ctx, fresh, []Cmder{set})
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"prepare"}) {
+		t.Errorf("injected for fresh connection = %v, want [prepare]", kinds)
 	}
 }
 
@@ -319,13 +352,14 @@ func TestHImportInjectedDiscard(t *testing.T) {
 		t.Errorf("injected for PING = %v, want nil", injectedKinds(inj))
 	}
 
-	// Re-registering the name clears the tombstone: the new version is
-	// replayed as a PREPARE (silently replacing the server-side fieldset),
-	// no discard needed.
+	// Re-registering the name clears the tombstone. This session still
+	// holds the old version (its cleanup discard never ran), so the replay
+	// discards it before the PREPARE — a failed re-prepare must not leave
+	// the old field names live.
 	c.himport.register("fs", []string{"f-new"})
 	inj = c.himportInjectedCmds(ctx, cn, []Cmder{NewHImportSetCmd(ctx, "k", "fs", "v")})
-	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"prepare"}) {
-		t.Errorf("injected after re-register = %v, want [prepare]", kinds)
+	if kinds := injectedKinds(inj); !reflect.DeepEqual(kinds, []string{"discard", "prepare"}) {
+		t.Errorf("injected after re-register = %v, want [discard prepare]", kinds)
 	}
 }
 
@@ -391,8 +425,12 @@ func TestHImportAfterCmd(t *testing.T) {
 		t.Error("executing connection should be marked at the registered version")
 	}
 
-	// DISCARD unregisters, tombstones, and unmarks the executing connection.
-	c.himportAfterCmd(cn, NewHImportDiscardCmd(ctx, "fs"))
+	// DISCARD unregisters, tombstones, unmarks the executing connection,
+	// and reports the registry lifecycle: 1 for a registered fieldset even
+	// when the executing session did not hold it (server replied 0).
+	discard := NewHImportDiscardCmd(ctx, "fs")
+	discard.SetVal(0)
+	c.himportAfterCmd(cn, discard)
 	if _, ok := c.himport.lookup("fs"); ok {
 		t.Error("fieldset should be unregistered after discard")
 	}
@@ -402,14 +440,30 @@ func TestHImportAfterCmd(t *testing.T) {
 	if _, tombs := c.himport.cleanupSnapshot(); len(tombs) != 1 {
 		t.Errorf("tombstones after discard = %v, want [fs]", tombs)
 	}
+	if discard.Val() != 1 {
+		t.Errorf("discard value = %d, want 1 (fieldset was registered)", discard.Val())
+	}
 
-	// DISCARDALL clears everything and moves the connection to the new
-	// epoch.
+	// An unregistered name keeps the server's session reply.
+	rawDiscard := NewHImportDiscardCmd(ctx, "raw-only")
+	rawDiscard.SetVal(1)
+	c.himportAfterCmd(cn, rawDiscard)
+	if rawDiscard.Val() != 1 {
+		t.Errorf("unregistered discard value = %d, want the server reply 1", rawDiscard.Val())
+	}
+
+	// DISCARDALL clears everything, moves the connection to the new epoch,
+	// and reports the number of registered fieldsets removed.
 	c.himportAfterCmd(cn, NewHImportPrepareCmd(ctx, "fs1", "a"))
 	c.himportAfterCmd(cn, NewHImportPrepareCmd(ctx, "fs2", "b"))
-	c.himportAfterCmd(cn, NewHImportDiscardAllCmd(ctx))
+	discardAll := NewHImportDiscardAllCmd(ctx)
+	discardAll.SetVal(0)
+	c.himportAfterCmd(cn, discardAll)
 	if !c.himport.empty() {
 		t.Error("registry should be empty after discardall")
+	}
+	if discardAll.Val() != 2 {
+		t.Errorf("discardall value = %d, want 2 (registered fieldsets removed)", discardAll.Val())
 	}
 	if cn.HasPreparedFieldsets() {
 		t.Error("connection flags should be gone after discardall")
@@ -501,6 +555,87 @@ func TestHImportRegistryWiring(t *testing.T) {
 	defer failover.Close()
 	if failover.himport == nil {
 		t.Error("NewFailoverClient must initialize the HIMPORT registry")
+	}
+
+	// Cluster node clients — replicas included, roles change with the
+	// topology — share the cluster-wide registry.
+	cluster := NewClusterClient(&ClusterOptions{Addrs: []string{"127.0.0.1:0"}})
+	defer cluster.Close()
+	if cluster.himport == nil {
+		t.Fatal("NewClusterClient must initialize the HIMPORT registry")
+	}
+	node, err := cluster.nodes.GetOrCreate("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	if node.Client.himport != cluster.himport {
+		t.Error("cluster node clients must share the cluster-wide HIMPORT registry")
+	}
+
+	// Ring shard clients share the ring-wide registry.
+	ring := NewRing(&RingOptions{Addrs: map[string]string{"shard1": "127.0.0.1:0"}})
+	defer ring.Close()
+	if ring.opt.himport == nil {
+		t.Fatal("NewRing must initialize the HIMPORT registry")
+	}
+	shards := ring.sharding.List()
+	if len(shards) == 0 {
+		t.Fatal("ring has no shards")
+	}
+	if shards[0].Client.himport != ring.opt.himport {
+		t.Error("ring shard clients must share the ring-wide HIMPORT registry")
+	}
+}
+
+// Fan-out copies carry a pre-assigned version/epoch: they mark or wipe the
+// executing connection but must not touch the shared registry again.
+func TestHImportFanOutCopyBookkeeping(t *testing.T) {
+	ctx := context.Background()
+	c := &baseClient{himport: newHImportRegistry()}
+	cn := pool.NewConn(nil)
+
+	version, epoch := c.himport.register("fs", []string{"f"})
+
+	copyPrep := NewHImportPrepareCmd(ctx, "fs", "f")
+	copyPrep.registryVersion = version
+	copyPrep.registryEpoch = epoch
+	c.himportAfterCmd(cn, copyPrep)
+	if fs, _ := c.himport.lookup("fs"); fs.version != version {
+		t.Errorf("fan-out prepare copy bumped the registry version to %d", fs.version)
+	}
+	if cn.FieldsetPreparedVersion("fs") != version {
+		t.Error("fan-out prepare copy must mark the executing connection")
+	}
+
+	newEpoch, _ := c.himport.discardAll()
+	copyDA := NewHImportDiscardAllCmd(ctx)
+	copyDA.registryEpoch = newEpoch
+	c.himportAfterCmd(cn, copyDA)
+	if got := c.himport.epoch(); got != newEpoch {
+		t.Errorf("fan-out discardall copy bumped the epoch to %d, want %d", got, newEpoch)
+	}
+	if cn.FieldsetEpoch() != newEpoch || cn.HasPreparedFieldsets() {
+		t.Error("fan-out discardall copy must wipe the executing connection at the given epoch")
+	}
+}
+
+// A deterministic server rejection withdraws the registration, but only at
+// the failed version: a concurrent re-registration survives.
+func TestHImportRegistryRemoveVersion(t *testing.T) {
+	r := newHImportRegistry()
+	v1, _ := r.register("fs", []string{"f"})
+	r.removeVersion("fs", v1)
+	if _, ok := r.lookup("fs"); ok {
+		t.Error("removeVersion must delete the entry at the matching version")
+	}
+	if _, tombs := r.cleanupSnapshot(); len(tombs) != 0 {
+		t.Errorf("removeVersion must not leave a tombstone, got %v", tombs)
+	}
+
+	v2, _ := r.register("fs", []string{"g"})
+	r.removeVersion("fs", v2-1) // stale version: no-op
+	if fs, ok := r.lookup("fs"); !ok || fs.version != v2 {
+		t.Error("removeVersion with a stale version must not clobber the current entry")
 	}
 }
 

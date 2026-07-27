@@ -94,6 +94,16 @@ func (s *himportMockServer) totalSessionFieldsets() int {
 	return n
 }
 
+func (s *himportMockServer) hashKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.hashes))
+	for k := range s.hashes {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (s *himportMockServer) armPushBeforeSetReply() {
 	s.mu.Lock()
 	s.pushBeforeSetReply = true
@@ -165,6 +175,11 @@ func (s *himportMockServer) serve(conn net.Conn) {
 		return err == nil
 	}
 
+	var (
+		inMulti bool
+		queued  [][]string
+	)
+
 	for {
 		args, err := readCommand(rd)
 		if err != nil {
@@ -180,6 +195,23 @@ func (s *himportMockServer) serve(conn net.Conn) {
 			}
 			// Pre-RESP3 server: the client falls back to RESP2.
 			if !reply("-ERR unknown command 'HELLO'\r\n") {
+				return
+			}
+		case "MULTI":
+			inMulti = true
+			queued = queued[:0]
+			if !reply("+OK\r\n") {
+				return
+			}
+		case "EXEC":
+			inMulti = false
+			var b strings.Builder
+			fmt.Fprintf(&b, "*%d\r\n", len(queued))
+			for _, q := range queued {
+				b.WriteString(s.commandReply(q, session))
+			}
+			queued = queued[:0]
+			if !reply(b.String()) {
 				return
 			}
 		case "RESET":
@@ -199,26 +231,49 @@ func (s *himportMockServer) serve(conn net.Conn) {
 			if !reply("+OK\r\n") {
 				return
 			}
-		case "HIMPORT":
-			if !s.handleHImport(args, session, reply) {
-				return
-			}
 		default:
-			if !reply("+OK\r\n") {
+			if inMulti {
+				queued = append(queued, args)
+				if !reply("+QUEUED\r\n") {
+					return
+				}
+				continue
+			}
+			resp := s.commandReply(args, session)
+			if strings.ToUpper(args[0]) == "HIMPORT" && strings.ToUpper(args[1]) == "SET" &&
+				strings.HasPrefix(resp, "+OK") && s.consumePushBeforeSetReply() {
+				// Out-of-band push frame squeezed in right before the SET
+				// reply (after the injected PREPARE's reply): the client
+				// must drain it instead of consuming it as the SET reply.
+				// The payload is sized like a real notification so
+				// PeekPushNotificationName's initial peek window (36 bytes)
+				// is satisfied without waiting for the read deadline.
+				resp = ">2\r\n$8\r\ntestpush\r\n$32\r\n" + strings.Repeat("x", 32) + "\r\n" + resp
+			}
+			if !reply(resp) {
 				return
 			}
 		}
 	}
 }
 
-func (s *himportMockServer) handleHImport(args []string, session *himportMockSession, reply func(string) bool) bool {
+// commandReply produces the RESP reply for one command; used both for direct
+// dispatch and for commands queued inside MULTI/EXEC.
+func (s *himportMockServer) commandReply(args []string, session *himportMockSession) string {
+	if strings.ToUpper(args[0]) == "HIMPORT" {
+		return s.himportReply(args, session)
+	}
+	return "+OK\r\n"
+}
+
+func (s *himportMockServer) himportReply(args []string, session *himportMockSession) string {
 	switch strings.ToUpper(args[1]) {
 	case "PREPARE":
 		name, fields := args[2], args[3:]
 		seen := make(map[string]struct{}, len(fields))
 		for _, f := range fields {
 			if _, dup := seen[f]; dup {
-				return reply("-ERR duplicate field name in fieldset\r\n")
+				return "-ERR duplicate field name in fieldset\r\n"
 			}
 			seen[f] = struct{}{}
 		}
@@ -226,17 +281,17 @@ func (s *himportMockServer) handleHImport(args []string, session *himportMockSes
 		session.fieldsets[name] = append([]string(nil), fields...)
 		s.prepareCount++
 		s.mu.Unlock()
-		return reply("+OK\r\n")
+		return "+OK\r\n"
 	case "SET":
 		key, name, values := args[2], args[3], args[4:]
 		s.mu.Lock()
 		fields, ok := session.fieldsets[name]
 		s.mu.Unlock()
 		if !ok {
-			return reply("-ERR no such fieldset\r\n")
+			return "-ERR no such fieldset\r\n"
 		}
 		if len(values) != len(fields) {
-			return reply("-ERR value count does not match fieldset field count\r\n")
+			return "-ERR value count does not match fieldset field count\r\n"
 		}
 		hash := make(map[string]string, len(fields))
 		for i, f := range fields {
@@ -245,34 +300,24 @@ func (s *himportMockServer) handleHImport(args []string, session *himportMockSes
 		s.mu.Lock()
 		s.hashes[key] = hash
 		s.mu.Unlock()
-		if s.consumePushBeforeSetReply() {
-			// Out-of-band push frame squeezed in right before the SET reply
-			// (after the injected PREPARE's reply): the client must drain it
-			// instead of consuming it as the SET reply. The payload is sized
-			// like a real notification so PeekPushNotificationName's initial
-			// peek window (36 bytes) is satisfied without waiting for the
-			// read deadline.
-			payload := strings.Repeat("x", 32)
-			return reply(">2\r\n$8\r\ntestpush\r\n$32\r\n" + payload + "\r\n+OK\r\n")
-		}
-		return reply("+OK\r\n")
+		return "+OK\r\n"
 	case "DISCARD":
 		s.mu.Lock()
 		_, ok := session.fieldsets[args[2]]
 		delete(session.fieldsets, args[2])
 		s.mu.Unlock()
 		if ok {
-			return reply(":1\r\n")
+			return ":1\r\n"
 		}
-		return reply(":0\r\n")
+		return ":0\r\n"
 	case "DISCARDALL":
 		s.mu.Lock()
 		n := len(session.fieldsets)
 		session.fieldsets = make(map[string][]string)
 		s.mu.Unlock()
-		return reply(":" + strconv.Itoa(n) + "\r\n")
+		return ":" + strconv.Itoa(n) + "\r\n"
 	}
-	return reply("-ERR Unknown subcommand\r\n")
+	return "-ERR Unknown subcommand\r\n"
 }
 
 // TestHImportLazyReplay drives the client against the mock server and pins
@@ -369,12 +414,12 @@ func TestHImportLazyReplay(t *testing.T) {
 	}
 }
 
-// TestHImportPipelineRetryAfterSessionLoss pins the pipeline recovery
-// contract: a pipeline whose HIMPORT SETs fail with "no such fieldset" after
-// the session was wiped (RESET) is not auto-retried, but it invalidates the
-// connection's prepared flags, so the caller's retry of the pipeline replays
-// the PREPARE and succeeds.
-func TestHImportPipelineRetryAfterSessionLoss(t *testing.T) {
+// TestHImportPipelineRecoversAfterSessionLoss pins the pipeline recovery
+// contract (NF.4): HIMPORT SETs of a registered fieldset that fail with "no
+// such fieldset" after the session was wiped (RESET) are re-prepared and
+// re-issued once within the same Exec — the error never reaches the caller,
+// and only the SETs run again.
+func TestHImportPipelineRecoversAfterSessionLoss(t *testing.T) {
 	srv := newHImportMockServer(t)
 	ctx := context.Background()
 
@@ -399,34 +444,71 @@ func TestHImportPipelineRetryAfterSessionLoss(t *testing.T) {
 		t.Fatalf("reset: %v", err)
 	}
 
+	prepBefore := srv.prepares()
 	pipe := client.Pipeline()
+	other := pipe.Set(ctx, "plain", "x", 0)
 	set2 := pipe.HImportSet(ctx, "k2", "fs", "3", "4")
 	set3 := pipe.HImportSet(ctx, "k3", "fs", "5", "6")
-	_, _ = pipe.Exec(ctx)
-	if err := set2.Err(); err == nil || !strings.Contains(err.Error(), "no such fieldset") {
-		t.Fatalf("first pipeline exec = %v, want no-such-fieldset (pipelines are not auto-retried)", err)
-	}
-	if err := set3.Err(); err == nil {
-		t.Fatal("first pipeline exec: set3 should fail alongside set2")
-	}
-
-	// The failed exec must have invalidated the stale flag: retrying the
-	// pipeline on the same connection replays the PREPARE and succeeds.
-	prepBefore := srv.prepares()
-	pipe = client.Pipeline()
-	set2 = pipe.HImportSet(ctx, "k2", "fs", "3", "4")
-	set3 = pipe.HImportSet(ctx, "k3", "fs", "5", "6")
 	if _, err := pipe.Exec(ctx); err != nil {
-		t.Fatalf("pipeline retry: %v", err)
+		t.Fatalf("pipeline exec: %v", err)
 	}
-	if set2.Err() != nil || set3.Err() != nil {
-		t.Fatalf("pipeline retry sets: %v, %v", set2.Err(), set3.Err())
+	if other.Err() != nil || set2.Err() != nil || set3.Err() != nil {
+		t.Fatalf("pipeline cmds after transparent recovery: %v, %v, %v",
+			other.Err(), set2.Err(), set3.Err())
 	}
 	if got := srv.prepares(); got != prepBefore+1 {
-		t.Errorf("prepares after pipeline retry = %d, want %d (single replay)", got, prepBefore+1)
+		t.Errorf("prepares after recovery = %d, want %d (single replay)", got, prepBefore+1)
 	}
 	if h := srv.hash("k3"); h["a"] != "5" || h["b"] != "6" {
 		t.Errorf("k3 = %v, want a=5 b=6", h)
+	}
+}
+
+// TestHImportTxSurfacesSessionLoss pins the documented transaction
+// limitation: an executed MULTI/EXEC cannot be partially re-run, so the "no
+// such fieldset" error surfaces — but the stale flag is invalidated, and the
+// caller's retry of the transaction succeeds.
+func TestHImportTxSurfacesSessionLoss(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:            srv.addr(),
+		Protocol:        2,
+		PoolSize:        1,
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if err := client.HImportSet(ctx, "k1", "fs", "1").Err(); err != nil {
+		t.Fatalf("set k1: %v", err)
+	}
+	if err := client.Do(ctx, "reset").Err(); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	tx := client.TxPipeline()
+	set := tx.HImportSet(ctx, "k2", "fs", "2")
+	_, _ = tx.Exec(ctx)
+	if err := set.Err(); err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Fatalf("tx exec after session loss = %v, want no-such-fieldset", err)
+	}
+
+	// The stale flag was invalidated: the retried transaction replays the
+	// PREPARE and succeeds.
+	tx = client.TxPipeline()
+	set = tx.HImportSet(ctx, "k2", "fs", "2")
+	if _, err := tx.Exec(ctx); err != nil {
+		t.Fatalf("tx retry: %v", err)
+	}
+	if set.Err() != nil {
+		t.Fatalf("tx retry set: %v", set.Err())
+	}
+	if h := srv.hash("k2"); h["a"] != "2" {
+		t.Errorf("k2 = %v, want a=2", h)
 	}
 }
 
@@ -528,6 +610,93 @@ func TestHImportLazyDiscardPropagation(t *testing.T) {
 	}
 	if got := srv.totalSessionFieldsets(); got != 0 {
 		t.Errorf("sessions after replayed discardall = %d, want 0", got)
+	}
+}
+
+// TestHImportRingFanOut drives the ring (whose shards are plain standalone
+// servers, so two mock servers suffice) through the fan-out API: PREPARE
+// registers once and eagerly prepares one connection per shard, SETs on any
+// shard need no further replay, DISCARD/DISCARDALL clean every shard, and a
+// deterministic PREPARE rejection withdraws the registration.
+func TestHImportRingFanOut(t *testing.T) {
+	srv1 := newHImportMockServer(t)
+	srv2 := newHImportMockServer(t)
+	ctx := context.Background()
+
+	ring := redis.NewRing(&redis.RingOptions{
+		Addrs: map[string]string{
+			"shard1": srv1.addr(),
+			"shard2": srv2.addr(),
+		},
+		PoolSize:        1,
+		DisableIdentity: true,
+	})
+	defer ring.Close()
+
+	// Fan-out PREPARE: exactly one connection per shard is prepared.
+	if err := ring.HImportPrepare(ctx, "fs", "a", "b").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if p1, p2 := srv1.prepares(), srv2.prepares(); p1 != 1 || p2 != 1 {
+		t.Fatalf("prepares after fan-out = %d/%d, want 1/1", p1, p2)
+	}
+
+	// SETs route by key hash to some shard; the fan-out already prepared
+	// those connections, so no further PREPARE is sent.
+	for i := 0; i < 20; i++ {
+		key := fmt.Sprintf("ring:%d", i)
+		if err := ring.HImportSet(ctx, key, "fs", "1", "2").Err(); err != nil {
+			t.Fatalf("set %s: %v", key, err)
+		}
+	}
+	if p1, p2 := srv1.prepares(), srv2.prepares(); p1 != 1 || p2 != 1 {
+		t.Errorf("prepares after sets = %d/%d, want 1/1 (no replay needed)", p1, p2)
+	}
+	if total := len(srv1.hashKeys()) + len(srv2.hashKeys()); total != 20 {
+		t.Errorf("hashes across shards = %d, want 20", total)
+	}
+
+	// Fan-out DISCARD cleans both shard sessions; the return value reports
+	// the registry lifecycle.
+	removed, err := ring.HImportDiscard(ctx, "fs").Result()
+	if err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("discard = %d, want 1", removed)
+	}
+	if got := srv1.totalSessionFieldsets() + srv2.totalSessionFieldsets(); got != 0 {
+		t.Errorf("session fieldsets after fan-out discard = %d, want 0", got)
+	}
+	err = ring.HImportSet(ctx, "ring:after", "fs", "1", "2").Err()
+	if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Errorf("set after discard = %v, want no-such-fieldset pass-through", err)
+	}
+
+	// A deterministic server rejection (duplicate field) withdraws the
+	// registration: no replay is attempted afterwards.
+	err = ring.HImportPrepare(ctx, "dup", "f", "f").Err()
+	if err == nil || !strings.Contains(err.Error(), "duplicate field name") {
+		t.Fatalf("duplicate prepare = %v, want duplicate-field error", err)
+	}
+	err = ring.HImportSet(ctx, "ring:dup", "dup", "v").Err()
+	if err == nil || !strings.Contains(err.Error(), "no such fieldset") {
+		t.Errorf("set after rejected prepare = %v, want raw no-such-fieldset", err)
+	}
+
+	// Fan-out DISCARDALL reports the registry count and cleans both shards.
+	if err := ring.HImportPrepare(ctx, "fs2", "g").Err(); err != nil {
+		t.Fatalf("prepare fs2: %v", err)
+	}
+	count, err := ring.HImportDiscardAll(ctx).Result()
+	if err != nil {
+		t.Fatalf("discardall: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("discardall = %d, want 1", count)
+	}
+	if got := srv1.totalSessionFieldsets() + srv2.totalSessionFieldsets(); got != 0 {
+		t.Errorf("session fieldsets after fan-out discardall = %d, want 0", got)
 	}
 }
 

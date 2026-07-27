@@ -457,6 +457,24 @@ vals, err := rdb.Eval(ctx, "return {KEYS[1],ARGV[1]}", []string{"key"}, "hello")
 res, err := rdb.Do(ctx, "set", "key", "value").Result()
 ```
 
+### Raw commands and connection state
+
+`Do` sends the command verbatim on whichever pooled connection happens to be
+free. For keyspace commands that is all you need. It is the wrong tool for
+any command that alters **connection session state** — `SELECT`,
+`CLIENT SETNAME`, `CLIENT TRACKING`, `RESET`, `HIMPORT PREPARE`/`DISCARD`,
+and similar: the state lands on (or is wiped from) a single arbitrary
+connection, later commands are served by other connections that don't share
+it, and the affected connection eventually returns to the pool and serves
+unrelated callers. The result is nondeterministic behavior that typed APIs
+manage for you — for example, the typed `HImport*` methods keep a
+client-side registry and replay fieldsets onto every connection that needs
+them, while a raw `Do(ctx, "himport", "prepare", ...)` bypasses that
+entirely, with no replay, recovery, or discard propagation.
+
+For session-scoped work without a typed API, hold a dedicated connection
+(`client.Conn()`) for its whole lifetime and close it afterwards.
+
 ## Typed Errors
 
 go-redis provides typed error checking functions for common Redis errors:

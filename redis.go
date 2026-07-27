@@ -1069,7 +1069,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				}
 			}
 			err := readReplyFunc(rd)
-			if err == nil || isRedisError(err) {
+			if himportNoSuchFieldset(err) {
 				// A failed injected PREPARE is the root cause of the
 				// command's "no such fieldset" reply (drained above).
 				if set, ok := cmd.(*HImportSetCmd); ok {
@@ -1326,21 +1326,36 @@ func (c *baseClient) pipelineProcessCmds(
 		return true, err
 	}
 
+	var readErr error
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
 			return err
 		}
 		// read all replies
-		err := c.pipelineReadCmds(ctx, cn, rd, cmds)
-		if err == nil || isRedisError(err) {
-			c.himportAfterBatch(cn, injected, cmds)
+		readErr = c.pipelineReadCmds(ctx, cn, rd, cmds)
+		if readErr != nil && !isRedisError(readErr) {
+			return readErr
 		}
-		return err
+		c.himportAfterBatch(cn, injected, cmds)
+		return nil
 	}); err != nil {
 		return true, err
 	}
 
-	return false, nil
+	// Registered fieldsets whose SETs came back "no such fieldset" (the
+	// session was lost between prepare and use) are re-prepared and those
+	// SETs re-issued once on the same connection; the error must not
+	// surface for managed fieldsets.
+	if err := c.himportRetryFailedSets(ctx, cn, cmds); err != nil {
+		return true, err
+	}
+
+	// Preserve retryable first-command errors (e.g. LOADING) for the outer
+	// loop; the re-issue above may have cleared it.
+	if readErr != nil {
+		readErr = cmds[0].Err()
+	}
+	return readErr != nil, readErr
 }
 
 func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder) error {

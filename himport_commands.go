@@ -184,12 +184,15 @@ func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields
 // otherwise the fieldset must have been prepared on the executing connection
 // or the server replies "ERR no such fieldset".
 //
-// A single-command HImportSet that fails with "no such fieldset" for a
-// registered fieldset (the connection lost its session state, e.g. RESET) is
-// transparently re-prepared and retried once. Pipelined sets are not
-// auto-retried — re-running the batch would repeat side effects of commands
-// that already succeeded — but the connection's prepared flags are
-// invalidated, so retrying the pipeline replays the PREPARE and succeeds.
+// "no such fieldset" never surfaces for a registered fieldset: a
+// single-command HImportSet whose connection lost its session state (e.g.
+// RESET) is transparently re-prepared and retried once, and in pipelines the
+// failed HImportSets — and only those — are re-prepared and re-issued once
+// on the same connection (HIMPORT SET is a full replace, so the re-execution
+// is idempotent and no other command of the batch runs again). Inside
+// transactions the error does surface after EXEC — an executed transaction
+// cannot be partially re-run — but the connection's prepared flags are
+// invalidated, so retrying the transaction succeeds.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, values ...interface{}) *StatusCmd {
@@ -203,12 +206,13 @@ func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, value
 //
 //	HIMPORT DISCARD fieldset_name
 //
-// It returns 1 if the fieldset was removed from the executing connection's
-// session and 0 if that connection had no fieldset with this name. Other
-// pooled connections whose sessions still hold the fieldset replay the
-// DISCARD before their next HIMPORT command, so a subsequent HImportSet
-// fails with "no such fieldset" on every connection, exactly as on a single
-// connection. Hashes already created through the fieldset are not affected.
+// It returns 1 if the fieldset was registered on this client and is now
+// removed, 0 otherwise (for names never registered through the managed API,
+// the executing connection's session reply passes through unchanged). Pooled
+// connections whose sessions still hold the fieldset replay the DISCARD
+// before their next HIMPORT command, so a subsequent HImportSet fails with
+// "no such fieldset" on every connection, exactly as on a single connection.
+// Hashes already created through the fieldset are not affected.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
@@ -222,9 +226,10 @@ func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCm
 //
 //	HIMPORT DISCARDALL
 //
-// It returns the number of fieldsets removed from the executing connection's
-// session. Other pooled connections whose sessions were prepared earlier
-// replay HIMPORT DISCARDALL before their next HIMPORT command.
+// It returns the number of fieldsets removed from the client-side registry
+// (when none were registered, the executing connection's session count
+// passes through). Other pooled connections whose sessions were prepared
+// earlier replay HIMPORT DISCARDALL before their next HIMPORT command.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportDiscardAll(ctx context.Context) *IntCmd {
