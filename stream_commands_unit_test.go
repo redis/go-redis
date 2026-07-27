@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // These tests assert the argument lists built by the XTRIM/XADD trimming
@@ -190,6 +191,146 @@ func TestXAdd_TrimLimitArgs(t *testing.T) {
 			}
 			if !reflect.DeepEqual(cmd.Args(), tt.want) {
 				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
+// These tests assert the argument lists built by XREAD for the MAXCOUNT and
+// MAXSIZE options (Redis >= 8.10) without dispatching to a server:
+//   - both default to unset and emit no token when zero;
+//   - when set they are emitted in canonical order, after COUNT and before
+//     BLOCK, and before the STREAMS keys;
+//   - the first-key position (used for cluster routing) accounts for the new
+//     tokens, since they appear before STREAMS.
+func TestXRead_MaxArgs(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		args    *XReadArgs
+		want    []interface{}
+		wantPos int8
+	}{
+		{
+			name: "no_max_options",
+			args: &XReadArgs{Streams: []string{"s1", "0"}, Block: -1},
+			want: []interface{}{"xread", "streams", "s1", "0"},
+			// keyPos: 1 (xread) + 1 (streams) = 2
+			wantPos: 2,
+		},
+		{
+			name: "maxcount_only",
+			args: &XReadArgs{Streams: []string{"s1", "s2", "0", "0"}, MaxCount: 80, Block: -1},
+			want: []interface{}{"xread", "maxcount", int64(80), "streams", "s1", "s2", "0", "0"},
+			// keyPos: 1 + 2 (maxcount) + 1 (streams) = 4
+			wantPos: 4,
+		},
+		{
+			name: "maxsize_only",
+			args: &XReadArgs{Streams: []string{"s1", "0"}, MaxSize: 65536, Block: -1},
+			want: []interface{}{"xread", "maxsize", int64(65536), "streams", "s1", "0"},
+			// keyPos: 1 + 2 (maxsize) + 1 (streams) = 4
+			wantPos: 4,
+		},
+		{
+			name: "count_maxcount_maxsize_block",
+			args: &XReadArgs{
+				Streams:  []string{"s1", "s2", "0", "0"},
+				Count:    50,
+				MaxCount: 80,
+				MaxSize:  65536,
+				Block:    5 * time.Second,
+			},
+			want: []interface{}{
+				"xread", "count", int64(50), "maxcount", int64(80), "maxsize", int64(65536),
+				"block", int64(5000), "streams", "s1", "s2", "0", "0",
+			},
+			// keyPos: 1 + 2 (count) + 2 (maxcount) + 2 (maxsize) + 2 (block) + 1 (streams) = 10
+			wantPos: 10,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			c := captureCmdable(&captured)
+			cmd := c.XRead(ctx, tt.args)
+			if cmd == nil {
+				t.Fatalf("XRead returned nil")
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+			if got := cmd.firstKeyPos(); got != tt.wantPos {
+				t.Errorf("firstKeyPos mismatch: got %d, want %d", got, tt.wantPos)
+			}
+		})
+	}
+}
+
+// These tests assert the argument lists built by XREADGROUP for the MAXCOUNT and
+// MAXSIZE options (Redis >= 8.10), including their interaction with the existing
+// NOACK and CLAIM options and the first-key position used for cluster routing.
+func TestXReadGroup_MaxArgs(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		args    *XReadGroupArgs
+		want    []interface{}
+		wantPos int8
+	}{
+		{
+			name: "no_max_options",
+			args: &XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s1", ">"}, Block: -1},
+			want: []interface{}{"xreadgroup", "group", "g", "c", "streams", "s1", ">"},
+			// keyPos: 4 (group/consumer) + 1 (streams) = 5
+			wantPos: 5,
+		},
+		{
+			name: "maxcount_only",
+			args: &XReadGroupArgs{Group: "g", Consumer: "c", Streams: []string{"s1", ">"}, MaxCount: 80, Block: -1},
+			want: []interface{}{"xreadgroup", "group", "g", "c", "maxcount", int64(80), "streams", "s1", ">"},
+			// keyPos: 4 + 2 (maxcount) + 1 (streams) = 7
+			wantPos: 7,
+		},
+		{
+			name: "all_options",
+			args: &XReadGroupArgs{
+				Group:    "g",
+				Consumer: "c",
+				Streams:  []string{"s1", "s2", ">", ">"},
+				Count:    50,
+				MaxCount: 80,
+				MaxSize:  65536,
+				Block:    5 * time.Second,
+				NoAck:    true,
+				Claim:    30 * time.Second,
+			},
+			want: []interface{}{
+				"xreadgroup", "group", "g", "c", "count", int64(50), "maxcount", int64(80),
+				"maxsize", int64(65536), "block", int64(5000), "noack", "claim", int64(30000),
+				"streams", "s1", "s2", ">", ">",
+			},
+			// keyPos: 4 + 2 (count) + 2 (maxcount) + 2 (maxsize) + 2 (block) + 1 (noack) + 2 (claim) + 1 (streams) = 16
+			wantPos: 16,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured Cmder
+			c := captureCmdable(&captured)
+			cmd := c.XReadGroup(ctx, tt.args)
+			if cmd == nil {
+				t.Fatalf("XReadGroup returned nil")
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+			if got := cmd.firstKeyPos(); got != tt.wantPos {
+				t.Errorf("firstKeyPos mismatch: got %d, want %d", got, tt.wantPos)
 			}
 		})
 	}

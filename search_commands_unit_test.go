@@ -461,3 +461,57 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 		}
 	})
 }
+
+// TestParseFTHybridWarnings checks that FT.HYBRID warnings populate from either
+// the "warning" or "warnings" key.
+func TestParseFTHybridWarnings(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     []interface{}
+		expected []string
+	}{
+		{
+			name: "singular warning key",
+			data: []interface{}{
+				"total_results", int64(0),
+				"results", []interface{}{},
+				"warning", []interface{}{"Timeout limit was reached"},
+			},
+			expected: []string{"Timeout limit was reached"},
+		},
+		{
+			name: "plural warnings key",
+			data: []interface{}{
+				"total_results", int64(0),
+				"results", []interface{}{},
+				"warnings", []interface{}{"Timeout limit was reached"},
+			},
+			expected: []string{"Timeout limit was reached"},
+		},
+		{
+			name: "no warnings",
+			data: []interface{}{
+				"total_results", int64(0),
+				"results", []interface{}{},
+			},
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, _, err := parseFTHybrid(tt.data, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(result.Warnings) != len(tt.expected) {
+				t.Fatalf("len(Warnings) = %d, want %d (%v)", len(result.Warnings), len(tt.expected), result.Warnings)
+			}
+			for i, w := range result.Warnings {
+				if w != tt.expected[i] {
+					t.Errorf("Warnings[%d] = %q, want %q", i, w, tt.expected[i])
+				}
+			}
+		})
+	}
+}

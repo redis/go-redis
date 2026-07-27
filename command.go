@@ -155,6 +155,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeTSNRangePivotRowSlice
 	CmdTypeHotKeys
 	CmdTypeIncrEXInt
 	CmdTypeIncrEXFloat
@@ -1322,8 +1323,13 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]int64, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadInt(); err != nil {
+		switch num, err := rd.ReadInt(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -1382,8 +1388,13 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]uint64, n)
 	for i := range cmd.val {
-		if cmd.val[i], err = rd.ReadUint(); err != nil {
+		switch num, err := rd.ReadUint(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -2110,8 +2121,13 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]bool, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadBool(); err != nil {
+		switch b, err := rd.ReadBool(); {
+		case err == Nil:
+			cmd.val[i] = false
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = b
 		}
 	}
 	return nil
@@ -5334,6 +5350,10 @@ type SlowLog struct {
 	// https://redis.io/commands/slowlog#output-format
 	ClientAddr string
 	ClientName string
+	// CommandArgc is the command's total argument count (including the command
+	// name), emitted only by Redis 8.10 or greater. It may exceed len(Args) when
+	// the slow log truncates the stored arguments (slowlog-max-argc, default 32).
+	CommandArgc int64
 }
 
 type SlowLogCmd struct {
@@ -5385,6 +5405,9 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		if nn < 4 {
 			return fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", nn)
 		}
+		if nn > 7 {
+			return fmt.Errorf("redis: got %d elements in slowlog get, expected at most 7", nn)
+		}
 
 		if cmd.val[i].ID, err = rd.ReadInt(); err != nil {
 			return err
@@ -5429,13 +5452,19 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
-
-		// Drain any elements past the 6 this parser knows about so a server
-		// that declares a longer entry array doesn't leave frames on the wire.
-		for j := 6; j < nn; j++ {
-			if err = rd.DiscardNext(); err != nil {
+    
+		// Redis 8.10+ appends a 7th field: the command's total argument count.
+	  if nn >= 7 {
+			if cmd.val[i].CommandArgc, err = rd.ReadInt(); err != nil {
 				return err
 			}
+    }
+    
+		// Drain any elements past the 7 this parser knows about so a server
+		// that declares a longer entry array doesn't leave frames on the wire.
+		for j := 7; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+        return err
 		}
 	}
 
@@ -5448,11 +5477,12 @@ func (cmd *SlowLogCmd) Clone() Cmder {
 		val = make([]SlowLog, len(cmd.val))
 		for i, log := range cmd.val {
 			val[i] = SlowLog{
-				ID:         log.ID,
-				Time:       log.Time,
-				Duration:   log.Duration,
-				ClientAddr: log.ClientAddr,
-				ClientName: log.ClientName,
+				ID:          log.ID,
+				Time:        log.Time,
+				Duration:    log.Duration,
+				ClientAddr:  log.ClientAddr,
+				ClientName:  log.ClientName,
+				CommandArgc: log.CommandArgc,
 			}
 			if log.Args != nil {
 				val[i].Args = make([]string, len(log.Args))
@@ -8997,6 +9027,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return tsTimestampValueSliceCmd.Val(), tsTimestampValueSliceCmd.Err()
+			}
+		case CmdTypeTSNRangePivotRowSlice:
+			if tsNRangePivotRowSliceCmd, ok := cmd.(interface {
+				Val() []TSNRangePivotRow
+				Err() error
+			}); ok {
+				return tsNRangePivotRowSliceCmd.Val(), tsNRangePivotRowSliceCmd.Err()
 			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface {

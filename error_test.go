@@ -2,6 +2,7 @@ package redis_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 
@@ -49,6 +50,8 @@ var _ = Describe("error", func() {
 			proto.ParseErrorReply([]byte("-TRYAGAIN Command cannot be processed, please try again")):                                                              true,
 			proto.ParseErrorReply([]byte("-NOREPLICAS Not enough good replicas to write")):                                                                        true,
 			proto.ParseErrorReply([]byte("-ERR other")):                                                                                                           false,
+			// Logical search timeout (search-on-timeout fail): never retried.
+			proto.ParseErrorReply([]byte("-SEARCH_TIMEOUT Timeout limit was reached")): false,
 		}
 
 		for err, expected := range data {
@@ -65,5 +68,16 @@ var _ = Describe("error", func() {
 		t2 := testTimeout{timeout: false}
 		Expect(redis.ShouldRetry(t2, true)).To(Equal(true))
 		Expect(redis.ShouldRetry(t2, false)).To(Equal(true))
+	})
+
+	It("should not retry a logical search timeout", func() {
+		// -SEARCH_TIMEOUT (search-on-timeout fail) is never retried, plain or wrapped.
+		err := proto.ParseErrorReply([]byte("-SEARCH_TIMEOUT Timeout limit was reached"))
+		Expect(redis.ShouldRetry(err, false)).To(BeFalse())
+		Expect(redis.ShouldRetry(err, true)).To(BeFalse())
+
+		wrapped := fmt.Errorf("query failed: %w", err)
+		Expect(redis.ShouldRetry(wrapped, false)).To(BeFalse())
+		Expect(redis.ShouldRetry(wrapped, true)).To(BeFalse())
 	})
 })
