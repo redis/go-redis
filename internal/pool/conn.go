@@ -907,6 +907,12 @@ func (cn *Conn) RemoteAddr() net.Addr {
 func (cn *Conn) WithReader(
 	ctx context.Context, timeout time.Duration, fn func(rd *proto.Reader) error,
 ) error {
+	// Fast cancellation path: if the context is done, abort before any socket ops.
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if timeout >= 0 {
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveReadTimeout(timeout)
@@ -1005,6 +1011,10 @@ func (cn *Conn) deadline(ctx context.Context, timeout time.Duration) time.Time {
 	}
 
 	if ctx != nil {
+		// If context is already done, force immediate deadline to unblock socket ops.
+		if err := ctx.Err(); err != nil {
+			return time.Unix(0, nowNs)
+		}
 		deadline, ok := ctx.Deadline()
 		if ok {
 			if timeout == 0 {
