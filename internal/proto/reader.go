@@ -212,10 +212,15 @@ func parsePushNotificationName(buf []byte) (name string, complete bool, err erro
 }
 
 // pushSkipUintLine consumes a "<digits>\r\n" line. ok=false (nil err) means it's
-// not fully present yet; a non-nil err means a non-digit appeared before the CRLF.
+// not fully present yet; a non-nil err means a non-digit appeared before the
+// CRLF — including zero digits (an empty count/length line is malformed and
+// must not be silently accepted on a desynced stream).
 func pushSkipUintLine(buf []byte) (rest []byte, ok bool, err error) {
 	for i := 0; i+1 < len(buf); i++ {
 		if buf[i] == '\r' && buf[i+1] == '\n' {
+			if i == 0 {
+				return nil, false, fmt.Errorf("redis: can't parse push notification: %q", buf)
+			}
 			return buf[i+2:], true, nil
 		}
 		if buf[i] < '0' || buf[i] > '9' {

@@ -49,36 +49,6 @@ func cscRegisterCleanups(c *Client) {
 	}, h)
 }
 
-// commandHits / commandMisses count cache outcomes once per processCached call,
-// regardless of how many internal cache.Get probes it issues.
-var (
-	commandHits   atomic.Uint64
-	commandMisses atomic.Uint64
-
-	// commandCacheRejects counts failed cache fills (Fulfill returned false):
-	// capacity rejections, but also reservations lost to a racing invalidation
-	// or a stale-fetch takeover. A high rate with a low hit rate CAN mean
-	// MaxMemoryBytes is too small for the reply sizes (each shard admits at
-	// most its 1/16 share) — but on write-heavy keys race losses dominate, so
-	// it is not a pure capacity signal.
-	commandCacheRejects atomic.Uint64
-)
-
-// CacheAdmissionRejects returns the cumulative count of failed cache fills
-// since process start: capacity rejections plus fills lost to a racing
-// invalidation or reservation takeover. On write-heavy keys the race losses
-// dominate, so a high value does not by itself mean the cache is undersized.
-// Process-wide, like CommandStats.
-func CacheAdmissionRejects() uint64 {
-	return commandCacheRejects.Load()
-}
-
-// CommandStats returns the cumulative count of CSC-served-command hits and
-// misses since process start.
-func CommandStats() (hits, misses uint64) {
-	return commandHits.Load(), commandMisses.Load()
-}
-
 // ClientSideCacheConfig configures the built-in client-side cache. Pass a
 // non-nil value to Options.ClientSideCacheConfig to enable caching on a RESP3
 // client.
@@ -669,7 +639,6 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 	// Serve hits straight from the cache.
 	if data, ok := c.csc.Get(ctx, key); ok {
 		if err := applyCachedReply(cmd, data); err == nil {
-			commandHits.Add(1)
 			return nil
 		}
 		c.csc.DeleteByCacheKey(key)
@@ -680,7 +649,6 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		// Another goroutine is fetching; Reserve blocks until it completes.
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := applyCachedReply(cmd, data); err == nil {
-				commandHits.Add(1)
 				return nil
 			}
 			c.csc.DeleteByCacheKey(key)
@@ -708,17 +676,10 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
 		if err == nil {
-			if !c.fulfillCached(key, token, &fc) {
-				commandCacheRejects.Add(1)
-			}
+			c.fulfillCached(key, token, &fc)
 		} else {
 			c.csc.Cancel(key, token)
 		}
-	}
-	// Count a miss only when the command completed; a network/command error is
-	// a failure, not a miss, and would skew the hit-rate metric.
-	if err == nil {
-		commandMisses.Add(1)
 	}
 	return err
 }

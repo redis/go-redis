@@ -663,7 +663,7 @@ func TestLocalCache_PerShardByteCeilingPinned(t *testing.T) {
 	// Pins the documented limitation: the cache is 16-way sharded and each
 	// shard admits at most MaxMemoryBytes/16, so a 100KiB entry is rejected
 	// under a 1MiB budget. If admission becomes global, update the
-	// MaxMemoryBytes doc comment and CacheAdmissionRejects guidance.
+	// MaxMemoryBytes doc comment.
 	cache := NewLocalCache(CacheConfig{MaxMemoryBytes: 1 << 20})
 	if ok := cache.Set("get:big", []string{"big"}, make([]byte, 100<<10)); ok {
 		t.Fatal("per-shard byte cap should reject a 100KiB entry (1MiB/16 shards); docs now stale")

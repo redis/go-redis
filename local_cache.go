@@ -67,9 +67,8 @@ type CacheConfig struct {
 	// If both MaxEntries and MaxMemoryBytes are unlimited, MaxEntries defaults to
 	// defaultCacheMaxEntries so the cache cannot grow without bound. The cache is
 	// sharded 16 ways (above small thresholds) and each shard enforces its 1/16
-	// share, so an entry larger than MaxMemoryBytes/16 is never admitted (one
-	// source of CacheAdmissionRejects, which also counts fills lost to racing
-	// invalidations) — size it to at least 16× your largest reply.
+	// share, so an entry larger than MaxMemoryBytes/16 is never admitted —
+	// size it to at least 16× your largest reply.
 	MaxMemoryBytes int64
 	// Sizer estimates memory usage per entry. If nil, a built-in approximation is used.
 	//
