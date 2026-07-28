@@ -1,0 +1,30 @@
+name: Fork Tests
+on:
+  push:
+    branches: [ tdd/brpop-ctx-cancellation ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          check-latest: true
+      - name: Run tests with race detector
+        env:
+          REDIS_ADDR: localhost:6379
+        run: go test -v -race ./...
