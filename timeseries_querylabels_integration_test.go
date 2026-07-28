@@ -3,165 +3,106 @@ package redis_test
 import (
 	"context"
 	"fmt"
-	"os"
-	"sort"
-	"strings"
-	"testing"
+
+	. "github.com/bsm/ginkgo/v2"
+	. "github.com/bsm/gomega"
 
 	"github.com/redis/go-redis/v9"
 )
 
-// queryLabelsTestAddr is the standalone Redis used by the TS.QUERYLABELS
-// integration test. Defaults to :6379 (the repo's standard test server) and
-// can be overridden when a Redis 8.10 instance runs on a different port:
-//
-//	REDIS_QUERYLABELS_TEST_ADDR=localhost:6399 go test -run TestTSQueryLabels_Integration
-func queryLabelsTestAddr() string {
-	if a := os.Getenv("REDIS_QUERYLABELS_TEST_ADDR"); a != "" {
-		return a
-	}
-	return ":6379"
-}
+// TS.QUERYLABELS ships in RedisTimeSeries 8.10. The specs gate on
+// SkipBeforeRedisVersion, which compares major.minor as integers, and
+// exercise both command forms under RESP2 (array reply) and RESP3 (set
+// reply) against the suite's standard server.
+var _ = Describe("TS.QUERYLABELS", Label("timeseries", "tsquerylabels"), func() {
+	ctx := context.TODO()
 
-// TestTSQueryLabels_Integration exercises both TS.QUERYLABELS forms
-// end-to-end against a live server under RESP2 (array reply) and RESP3
-// (set reply).
-//
-// TS.QUERYLABELS ships in RedisTimeSeries 8.10. The test gates on the
-// command itself rather than on the REDIS_VERSION env variable, whose float
-// form cannot tell 8.10 from 8.1; older servers reply with an "unknown
-// command" error, which this test treats as a skip.
-func TestTSQueryLabels_Integration(t *testing.T) {
-	SkipBeforeRedisVersion("8.10", "TS.QUERYLABELS integration test requires Redis 8.10+")
-	probeCtx := context.Background()
-	probe := redis.NewClient(&redis.Options{Addr: queryLabelsTestAddr()})
-	t.Cleanup(func() { _ = probe.Close() })
-	if err := probe.Ping(probeCtx).Err(); err != nil {
-		t.Skipf("redis not reachable at %s: %v", queryLabelsTestAddr(), err)
-	}
-	if err := probe.TSQueryLabels(probeCtx, nil).Err(); err != nil {
-		t.Fatalf("TS.QUERYLABELS probe failed: %v", err)
-	}
+	for _, protocol := range []int{2, 3} {
+		protocol := protocol
 
-	for _, proto := range []int{2, 3} {
-		proto := proto
-		t.Run(fmt.Sprintf("RESP%d", proto), func(t *testing.T) {
-			ctx := context.Background()
-			client := redis.NewClient(&redis.Options{Addr: queryLabelsTestAddr(), Protocol: proto})
-			t.Cleanup(func() { _ = client.Close() })
+		Describe(fmt.Sprintf("RESP%d", protocol), func() {
+			var client *redis.Client
 
-			// The command aggregates over every indexed series in the shared
-			// test database, so scope all assertions with a filter on a tag
-			// value unique to this test run.
-			group := fmt.Sprintf("querylabels-test-resp%d", proto)
+			// The command aggregates over every indexed series in the
+			// database, so scope assertions with a filter on a tag value
+			// unique to this spec group.
+			group := fmt.Sprintf("querylabels-test-resp%d", protocol)
 			groupFilter := []string{"test_group=" + group}
 			keys := []string{
-				fmt.Sprintf("querylabels-test:%d:1", proto),
-				fmt.Sprintf("querylabels-test:%d:2", proto),
-				fmt.Sprintf("querylabels-test:%d:3", proto),
+				fmt.Sprintf("querylabels-test:%d:1", protocol),
+				fmt.Sprintf("querylabels-test:%d:2", protocol),
+				fmt.Sprintf("querylabels-test:%d:3", protocol),
 			}
-			// Pre-delete in case a previous run crashed between creation and
-			// cleanup; TS.CREATE fails on an existing key.
-			if err := client.Del(ctx, keys...).Err(); err != nil {
-				t.Fatalf("Del %v: %v", keys, err)
-			}
-			t.Cleanup(func() { _ = client.Del(ctx, keys...).Err() })
 
-			mustCreate := func(key string, labels map[string]string) {
-				t.Helper()
-				if err := client.TSCreateWithArgs(ctx, key, &redis.TSOptions{Labels: labels}).Err(); err != nil {
-					t.Fatalf("TS.CREATE %s: %v", key, err)
+			BeforeEach(func() {
+				SkipBeforeRedisVersion("8.10", "TS.QUERYLABELS requires Redis 8.10+")
+				client = redis.NewClient(&redis.Options{Addr: ":6379", Protocol: protocol})
+				Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+
+				mustCreate := func(key string, labels map[string]string) {
+					Expect(client.TSCreateWithArgs(ctx, key, &redis.TSOptions{Labels: labels}).Err()).NotTo(HaveOccurred())
 				}
-			}
-			mustCreate(keys[0], map[string]string{"test_group": group, "location": "kitchen", "unit": "celsius"})
-			mustCreate(keys[1], map[string]string{"test_group": group, "location": "bedroom", "unit": "celsius"})
-			mustCreate(keys[2], map[string]string{"test_group": group, "location": "kitchen"})
+				mustCreate(keys[0], map[string]string{"test_group": group, "location": "kitchen", "unit": "celsius"})
+				mustCreate(keys[1], map[string]string{"test_group": group, "location": "bedroom", "unit": "celsius"})
+				mustCreate(keys[2], map[string]string{"test_group": group, "location": "kitchen"})
+			})
 
-			assertUnorderedEqual := func(what string, got, want []string) {
-				t.Helper()
-				g := append([]string(nil), got...)
-				w := append([]string(nil), want...)
-				sort.Strings(g)
-				sort.Strings(w)
-				if len(g) != len(w) {
-					t.Fatalf("%s mismatch\n got: %v\nwant: %v", what, got, want)
+			AfterEach(func() {
+				if client == nil {
+					return
 				}
-				for i := range w {
-					if g[i] != w[i] {
-						t.Fatalf("%s mismatch\n got: %v\nwant: %v", what, got, want)
-					}
-				}
-			}
+				_ = client.Del(ctx, keys...).Err()
+				Expect(client.Close()).NotTo(HaveOccurred())
+				client = nil
+			})
 
-			// LABELS: every distinct label name across the matching series,
-			// including the label name used in the filter itself.
-			labels, err := client.TSQueryLabels(ctx, groupFilter).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS LABELS: %v", err)
-			}
-			assertUnorderedEqual("label names", labels, []string{"test_group", "location", "unit"})
+			It("lists every distinct label name across the matching series", func() {
+				// The reply includes the label name used in the filter
+				// itself and is unordered and deduplicated.
+				labels, err := client.TSQueryLabels(ctx, groupFilter).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(labels).To(ConsistOf("test_group", "location", "unit"))
+			})
 
-			// VALUES: deduplicated union of the label's values; series
-			// without the label contribute nothing.
-			values, err := client.TSQueryLabelValues(ctx, "location", groupFilter).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS VALUES location: %v", err)
-			}
-			assertUnorderedEqual("location values", values, []string{"kitchen", "bedroom"})
+			It("lists the deduplicated union of a label's values", func() {
+				values, err := client.TSQueryLabelValues(ctx, "location", groupFilter).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(ConsistOf("kitchen", "bedroom"))
 
-			values, err = client.TSQueryLabelValues(ctx, "unit", groupFilter).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS VALUES unit: %v", err)
-			}
-			assertUnorderedEqual("unit values", values, []string{"celsius"})
+				// Series without the label contribute nothing.
+				values, err = client.TSQueryLabelValues(ctx, "unit", groupFilter).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(ConsistOf("celsius"))
+			})
 
-			// A label that exists on no matching series yields an empty
-			// reply, not an error.
-			values, err = client.TSQueryLabelValues(ctx, "no-such-label", groupFilter).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS VALUES no-such-label: %v", err)
-			}
-			if len(values) != 0 {
-				t.Fatalf("expected an empty reply for an unknown label, got %v", values)
-			}
+			It("returns an empty reply for a label on no matching series", func() {
+				values, err := client.TSQueryLabelValues(ctx, "no-such-label", groupFilter).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(BeEmpty())
+			})
 
-			// Label names are matched byte-exactly: a case variant is a
-			// different label.
-			values, err = client.TSQueryLabelValues(ctx, "Location", groupFilter).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS VALUES Location: %v", err)
-			}
-			if len(values) != 0 {
-				t.Fatalf("expected an empty reply for a case-variant label, got %v", values)
-			}
+			It("matches label names byte-exactly", func() {
+				// A case variant is a different label.
+				values, err := client.TSQueryLabelValues(ctx, "Location", groupFilter).Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(values).To(BeEmpty())
+			})
 
-			// Omitting the filter queries all indexed series: the reply must
-			// at least contain this test's label names (the shared server may
-			// hold others).
-			labels, err = client.TSQueryLabels(ctx, nil).Result()
-			if err != nil {
-				t.Fatalf("TS.QUERYLABELS LABELS without FILTER: %v", err)
-			}
-			seen := make(map[string]bool, len(labels))
-			for _, l := range labels {
-				seen[l] = true
-			}
-			for _, want := range []string{"test_group", "location", "unit"} {
-				if !seen[want] {
-					t.Fatalf("unfiltered label names %v do not contain %q", labels, want)
-				}
-			}
+			It("queries all indexed series when the filter is omitted", func() {
+				labels, err := client.TSQueryLabels(ctx, nil).Result()
+				Expect(err).NotTo(HaveOccurred())
+				// FlushDB in BeforeEach makes this spec's series the only
+				// indexed ones in the database.
+				Expect(labels).To(ConsistOf("test_group", "location", "unit"))
+			})
 
-			// Server-side filter errors are propagated as-is (TSDB: prefix):
-			// a filter list without an inclusive matcher is rejected by the
-			// server, not by the client.
-			err = client.TSQueryLabels(ctx, []string{"test_group!=" + group}).Err()
-			if err == nil {
-				t.Fatalf("expected a server error for a filter without an inclusive matcher")
-			}
-			if !strings.Contains(err.Error(), "TSDB:") {
-				t.Fatalf("expected the TSDB-prefixed server error verbatim, got: %v", err)
-			}
+			It("propagates server-side filter errors as-is", func() {
+				// A filter list without an inclusive matcher is rejected by
+				// the server (TSDB: prefix), not by the client.
+				err := client.TSQueryLabels(ctx, []string{"test_group!=" + group}).Err()
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("TSDB:"))
+			})
 		})
 	}
-}
+})
