@@ -61,28 +61,29 @@ func isCacheable(cmd Cmder) bool {
 	// SORT_RO ... BY/GET reads pattern keys that extractRedisKeys can't
 	// enumerate, so its invalidations would be dropped and the result go stale.
 	// Plain SORT_RO is fine.
-	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd.Args()) {
+	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
 		return false
 	}
 	return cmdFirstKeyPos(cmd) != 0
 }
 
 // sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
-// (case-insensitive), scanning past the command name and key.
-func sortROHasByGet(args []interface{}) bool {
-	if len(args) < 3 {
-		return false
-	}
-	for _, a := range args[2:] {
-		s, ok := a.(string)
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
+// (case-insensitive), scanning past the command name and key. stringArg
+// normalizes string and []byte args alike.
+func sortROHasByGet(cmd Cmder) bool {
+	for i := 2; i < len(cmd.Args()); i++ {
+		if s := cmd.stringArg(i); strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
 			return true
 		}
 	}
 	return false
+}
+
+// isClientTrackingCmd reports whether cmd is a CLIENT TRACKING subcommand (any
+// mode: ON, OFF, or with options), with string or []byte args — Name and
+// stringArg normalize both.
+func isClientTrackingCmd(cmd Cmder) bool {
+	return cmd.Name() == "client" && strings.EqualFold(cmd.stringArg(1), "tracking")
 }
 
 // buildCacheKey returns the RESP-encoded form of the command's argument list,
@@ -101,9 +102,32 @@ func buildCacheKey(cmd Cmder) (string, bool) {
 	return buf.String(), true
 }
 
+// keyArg renders the key argument at pos exactly as proto.Writer sends it to
+// the server, so invalidation lookups match the key names in the server's
+// "invalidate" pushes. Only types whose stringArg rendering is byte-identical
+// to the wire encoding are accepted (fmt.Sprint of any integer matches the
+// writer's base-10 strconv output); for anything else — pointers, bools,
+// times, durations, floats, BinaryMarshaler values — the rendering can
+// diverge, the invalidation would never match, and the entry would be served
+// stale forever, so ok=false and the caller skips caching (see processCached).
+func keyArg(cmd Cmder, pos int) (string, bool) {
+	args := cmd.Args()
+	if pos < 0 || pos >= len(args) {
+		return "", false
+	}
+	switch args[pos].(type) {
+	case string, []byte,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return cmd.stringArg(pos), true
+	}
+	return "", false
+}
+
 // extractRedisKeys returns the Redis key arguments from cmd. The result
 // populates CacheEntry.RedisKeys so the cache can map incoming invalidations
-// back to affected entries.
+// back to affected entries. Returns nil (caller skips caching) when any key
+// argument cannot be rendered in its wire form (see keyArg).
 func extractRedisKeys(cmd Cmder) []string {
 	firstKey := cmdFirstKeyPos(cmd)
 	if firstKey == 0 {
@@ -120,7 +144,11 @@ func extractRedisKeys(cmd Cmder) []string {
 	case "mget", "exists", "sdiff", "sinter", "sunion":
 		keys := make([]string, 0, argsLen-firstKey)
 		for i := firstKey; i < argsLen; i++ {
-			keys = append(keys, cmd.stringArg(i))
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
+			}
+			keys = append(keys, k)
 		}
 		return keys
 
@@ -135,7 +163,11 @@ func extractRedisKeys(cmd Cmder) []string {
 		}
 		keys := make([]string, 0, numKeys)
 		for i := 2; i < 2+numKeys && i < argsLen; i++ {
-			keys = append(keys, cmd.stringArg(i))
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
+			}
+			keys = append(keys, k)
 		}
 		return keys
 
@@ -144,7 +176,12 @@ func extractRedisKeys(cmd Cmder) []string {
 		if firstKey+1 >= argsLen {
 			return nil
 		}
-		return []string{cmd.stringArg(firstKey), cmd.stringArg(firstKey + 1)}
+		k1, ok1 := keyArg(cmd, firstKey)
+		k2, ok2 := keyArg(cmd, firstKey+1)
+		if !ok1 || !ok2 {
+			return nil
+		}
+		return []string{k1, k2}
 
 	// JSON.MGET: keys from firstKeyPos to second-to-last (last arg is the
 	// JSON path, not a key).
@@ -155,11 +192,19 @@ func extractRedisKeys(cmd Cmder) []string {
 		}
 		keys := make([]string, 0, lastKey-firstKey+1)
 		for i := firstKey; i <= lastKey; i++ {
-			keys = append(keys, cmd.stringArg(i))
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
+			}
+			keys = append(keys, k)
 		}
 		return keys
 	}
 
 	// Single key at firstKeyPos (GET, HGET, LRANGE, ...).
-	return []string{cmd.stringArg(firstKey)}
+	k, ok := keyArg(cmd, firstKey)
+	if !ok {
+		return nil
+	}
+	return []string{k}
 }

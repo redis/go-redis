@@ -578,10 +578,17 @@ type ClientTrackingOptions struct {
 	NoLoop   bool
 }
 
-// ClientTracking enables or disables server-assisted client-side caching on
-// the current connection. When on is false, opt is ignored. Invalid option
-// combinations are reported via the returned command's Err and nothing is
-// sent to the server.
+// ClientTracking enables or disables server-assisted client-side caching for
+// the ONE connection that happens to serve this command. On a pooled client
+// that connection is arbitrary, so this is only meaningful on a dedicated
+// connection (see Client.Conn). When on is false, opt is ignored. Invalid
+// option combinations are reported via the returned command's Err and nothing
+// is sent to the server.
+//
+// Must not be combined with the built-in client-side cache: on a client
+// configured with Options.ClientSideCache or ClientSideCacheConfig this
+// command is rejected, because changing a pool connection's tracking state
+// would silently break the cache's invalidation.
 func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
 	if !on {
 		return c.ClientTrackingOff(ctx)
@@ -589,6 +596,8 @@ func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackin
 	return c.ClientTrackingOn(ctx, opt)
 }
 
+// ClientTrackingOn enables tracking on the serving connection. See
+// ClientTracking for the pooled-client and built-in-CSC caveats.
 func (c cmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
 	args := []interface{}{"client", "tracking", "on"}
 	if opt != nil {
@@ -604,6 +613,8 @@ func (c cmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOption
 	return cmd
 }
 
+// ClientTrackingOff disables tracking on the serving connection. See
+// ClientTracking for the pooled-client and built-in-CSC caveats.
 func (c cmdable) ClientTrackingOff(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "client", "tracking", "off")
 	_ = c(ctx, cmd)

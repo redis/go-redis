@@ -61,7 +61,7 @@ func TestFulfillCached_FailsClosedOnZeroConnID(t *testing.T) {
 	if !sf {
 		t.Fatal("Reserve should fetch")
 	}
-	if c.fulfillCached("get:k", tok, 0, []byte("v")) {
+	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v")}) {
 		t.Fatal("fulfillCached must fail closed when an eviction hook is active and connID==0")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {

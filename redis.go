@@ -238,6 +238,12 @@ type baseClient struct {
 	// csc is the shared client-side cache; nil when CSC is disabled.
 	csc Cache
 
+	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
+	// process and generalProcessPipeline). Set only on initConn's internal conn
+	// wrapper, whose init pipeline legitimately issues CLIENT TRACKING ON;
+	// never set on user-visible clients.
+	allowClientTracking bool
+
 	// The following are OWNER-ONLY and NOT copied by clone(): derived clients
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
 	// goroutines or flush its cache on their own Close.
@@ -531,6 +537,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	var initErr error
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
 	conn := newConn(c.opt, connPool, &c.hooksMixin)
+	// This internal conn's init pipeline issues CLIENT TRACKING ON itself;
+	// exempt it from the guard that blocks user-issued CLIENT TRACKING. Setting
+	// the field after newConn is safe: initHooks bound the pipeline hook as a
+	// method value on the addressable baseClient, so the guard reads the
+	// updated field.
+	conn.baseClient.allowClientTracking = true
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -592,8 +604,11 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 	// trackingEnabled reports whether THIS pool connection must issue
 	// CLIENT TRACKING ON during init. True when CSC (SharedTracking) is enabled:
-	// the shared cache is fed by per-connection tracking + the background drainer.
-	trackingEnabled := c.cscTrackingRequested()
+	// the shared cache is fed by per-connection tracking + the background
+	// drainer. Once CSC serving stops (owner Close, GC cleanup, or drainer
+	// damping), new and re-inited conns skip tracking — nothing consumes the
+	// pushes into the cache anymore.
+	trackingEnabled := c.cscTrackingRequested() && (c.cscActive == nil || c.cscActive.Load())
 	if trackingEnabled {
 		// initConn also runs on a handoff, which swaps the socket (dropping the
 		// server's tracking table) without a pool removal. Drop this conn's
@@ -622,6 +637,13 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		return nil
 	})
 	if initErr != nil {
+		if trackingEnabled {
+			// cscEvictOwnedEntries above bumped this conn's init generation; a
+			// failed init never serves, and the pubsub path has no OnRemove
+			// hook (and the close hook below is not yet installed), so drop
+			// the entry here to keep the map bounded to live conns.
+			c.cscForgetConn(cn.GetID())
+		}
 		cn.GetStateMachine().Transition(pool.StateClosed)
 		return fmt.Errorf("failed to initialize connection options: %w", initErr)
 	}
@@ -786,17 +808,26 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	// CLIENT TRACKING manipulates the per-connection tracking state that CSC
+	// installs in initConn. On a pooled client it would land on an arbitrary
+	// conn and — with no re-enable until that conn's next re-init — leave an
+	// untracked socket silently filling the cache with entries the server
+	// never invalidates. Reject it rather than serve stale data. The matcher
+	// runs first: it bails on the command name for everything that isn't
+	// CLIENT. The same guard covers pipelines in generalProcessPipeline.
+	if isClientTrackingCmd(cmd) && c.cscRejectsClientTracking() {
+		return errClientTrackingWithCSC
+	}
 	if c.csc != nil && isCacheable(cmd) {
 		return c.processCached(ctx, cmd)
 	}
-	return c.processWithRetry(ctx, cmd, nil, nil)
+	return c.processWithRetry(ctx, cmd, nil)
 }
 
-// processWithRetry runs cmd through the retry loop. rawReplyCapture (optional)
-// receives the successful reply's raw bytes for the CSC fetch path; connIDOut
-// (optional) receives the serving connection's id so that path can attribute
-// the cached entry to its owner (see FulfillOwned).
-func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCapture *[]byte, connIDOut *uint64) error {
+// processWithRetry runs cmd through the retry loop. capture (optional) is
+// filled by the successful attempt's reply read for the CSC fetch path (see
+// cscFetchCapture).
+func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, capture *cscFetchCapture) error {
 	// Start measuring total operation duration (includes all retries)
 	// Only call time.Now() if operation duration callback is set to avoid overhead
 	var operationStart time.Time
@@ -812,16 +843,13 @@ func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, rawReplyCa
 		totalAttempts++
 		attempt := attempt
 
-		retry, cn, err := c._process(ctx, cmd, attempt, rawReplyCapture)
+		retry, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
 			lastConn = cn
 		}
 		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
 		// which writes directly to an io.Writer and cannot undo partial writes)
 		if err == nil || !retry || cmd.NoRetry() {
-			if connIDOut != nil && lastConn != nil {
-				*connIDOut = lastConn.GetID()
-			}
 			// Record total operation duration
 			if opDurationCallback != nil {
 				operationDuration := time.Since(operationStart)
@@ -928,7 +956,7 @@ func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
 	}
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, rawReplyCapture *[]byte) (bool, *pool.Conn, error) {
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
 			return false, nil, err
@@ -965,7 +993,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, rawRe
 		// read the reply as raw RESP bytes and re-parse them through the
 		// command's normal reply handler. This reuses proto.Reader rather
 		// than duplicating parsing logic in a bespoke cache serializer.
-		if rawReplyCapture != nil {
+		if capture != nil {
 			origRead := readReplyFunc
 			readReplyFunc = func(rd *proto.Reader) error {
 				raw, err := rd.ReadRawReply()
@@ -975,7 +1003,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, rawRe
 				if err := origRead(proto.NewReader(bytes.NewReader(raw))); err != nil {
 					return err
 				}
-				*rawReplyCapture = raw
+				capture.raw = raw
 				return nil
 			}
 		}
@@ -992,6 +1020,13 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, rawRe
 				atomic.StoreUint32(&retryTimeout, 0)
 			}
 			return err
+		}
+		if capture != nil {
+			// Attribute while the conn is still held: once it is released, a
+			// queued handoff may swap the socket and bump the generation, and
+			// this capture is what fulfillCached compares against.
+			capture.connID = cn.GetID()
+			capture.initGen = c.cscConnInitGen(capture.connID)
 		}
 
 		return nil
@@ -1133,6 +1168,19 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
+	// Mirror process()'s CLIENT TRACKING guard: pipeline commands never pass
+	// through process, and a CLIENT TRACKING frame inside a pipeline would flip
+	// an arbitrary pool conn's tracking state just the same. initConn's own
+	// internal conn (allowClientTracking) is exempt — its pipeline is what
+	// enables tracking in the first place.
+	if c.cscRejectsClientTracking() {
+		for _, cmd := range cmds {
+			if isClientTrackingCmd(cmd) {
+				setCmdsErr(cmds, errClientTrackingWithCSC)
+				return errClientTrackingWithCSC
+			}
+		}
+	}
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
 	pipelineOpDurationCallback := otel.GetPipelineOperationDurationCallback()
@@ -1787,24 +1835,26 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 }
 
 // drainPushNotifications drains the push frames buffered on a connection the CSC
-// drainer has claimed, under a HARD read deadline. Returns a non-nil error for a
-// FATAL connection error (drainer removes the conn) — including a read timeout:
-// the loop only blocks while consuming a frame, so a deadline hit means a
-// partially consumed frame and a desynced conn that must not be re-pooled. The
-// built-in processor surfaces read errors; a custom processor runs via its own
-// ProcessPendingNotifications and its error is logged + re-pooled, not fatal.
-func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
+// drainer has claimed, under a HARD read deadline. processed reports whether
+// there was pending data to drain (the drainer's damping counter resets only on
+// a real, successful drain). Returns a non-nil error for a FATAL connection
+// error (drainer removes the conn) — including a read timeout: the loop only
+// blocks while consuming a frame, so a deadline hit means a partially consumed
+// frame and a desynced conn that must not be re-pooled. A custom processor's
+// error is also fatal: its contract gives no guarantee that no bytes were
+// consumed before the error, so the reader may be mid-frame.
+func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processed bool, err error) {
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
-		return nil
+		return false, nil
 	}
 	// Skip only when nothing is buffered (reader) AND nothing on the socket:
 	// MaybeHasData peeks only the socket, but an invalidate can sit in cn.rd.
 	if !cn.HasBufferedData() && !cn.MaybeHasData() {
-		return nil
+		return false, nil
 	}
 
 	handlerCtx := c.pushNotificationHandlerContext(cn)
-	err := cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})
 	if err != nil {
@@ -1812,18 +1862,24 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) error {
 		// boundary peek timeout returns nil). allowTimeout=false: such an error
 		// means bytes were consumed mid-frame, leaving the conn desynced —
 		// re-pooling would corrupt the next command's reply, so remove it.
-		//
-		// A CUSTOM processor's error contract is unknown, so it is not treated
-		// as connection-fatal: log and re-pool.
 		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
 			if isBadConn(err, false, c.opt.Addr) {
-				return err // fatal read/protocol/connection error — remove the conn
+				return true, err // fatal read/protocol/connection error — remove the conn
 			}
-		} else {
-			internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (re-pooling): %v", err)
+			return true, nil
 		}
+		// A CUSTOM processor's error contract is unknown: it may have consumed
+		// part of a frame before failing, and a mid-frame reader silently
+		// corrupts the next command's reply. The conn is idle and held solely
+		// by the drainer, so the safe default — removal — costs one reconnect;
+		// persistent failures are damped by the drainer (cscDrainCustomErrCap).
+		// TODO(csc): align the command-path drains (releaseConn,
+		// processPushNotifications), which still log + re-pool on the same
+		// evidence, with this rule.
+		internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (removing conn): %v", err)
+		return true, err
 	}
-	return nil
+	return true, nil
 }
 
 // processPendingPushNotificationWithReader processes all pending push notifications on a connection

@@ -71,6 +71,44 @@ func TestIsCacheable_XReadRejected(t *testing.T) {
 	}
 }
 
+// TestExtractRedisKeys_WireFaithfulTypesOnly: the invalidation index must hold
+// keys exactly as proto.Writer sends them, or the server's invalidation pushes
+// never match and stale entries are served forever. Types whose fmt.Sprint
+// rendering diverges from the wire form (pointers, bools, durations, floats...)
+// must make extraction fail (want nil) so the command is served uncached.
+func TestExtractRedisKeys_WireFaithfulTypesOnly(t *testing.T) {
+	key := "real-key"
+	cases := []struct {
+		name string
+		cmd  Cmder
+		want []string
+	}{
+		{"string key", makeCmd("get", "k"), []string{"k"}},
+		{"[]byte key", makeCmd("get", []byte("k")), []string{"k"}},
+		{"int key", makeCmd("get", 123), []string{"123"}},
+		{"uint64 key", makeCmd("get", uint64(7)), []string{"7"}},
+		{"pointer key", makeCmd("get", &key), nil},
+		{"bool key", makeCmd("get", true), nil},
+		{"float key", makeCmd("get", 1.5), nil},
+		// Multi-key commands: one divergent key poisons the whole extraction.
+		{"mget with pointer key", makeCmd("mget", "a", &key, "b"), nil},
+		{"mget with string keys", makeCmd("mget", "a", "b"), []string{"a", "b"}},
+	}
+	for _, tc := range cases {
+		got := extractRedisKeys(tc.cmd)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
 func TestIsCacheable_XPendingRejected(t *testing.T) {
 	// XPENDING's extended form returns wall-clock-relative idle times and its
 	// IDLE filter is time-dependent, so it must not be cached.
