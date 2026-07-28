@@ -221,6 +221,24 @@ func TestInvalidateHandlerDecodesPayloads(t *testing.T) {
 	}
 }
 
+// TestInvalidateHandlerNilPayloadFlushes: a nil <keys> payload (emitted by the
+// server on FLUSHDB/FLUSHALL) must flush the entire cache.
+func TestInvalidateHandlerNilPayloadFlushes(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache.Set("get:foo", []string{dbNamespacedKey(0, "foo")}, []byte("1"))
+	cache.Set("get:quux", []string{dbNamespacedKey(0, "quux")}, []byte("2"))
+	h := &invalidateHandler{cache: cache, db: 0}
+
+	err := h.HandlePushNotification(context.Background(), push.NotificationHandlerContext{},
+		[]interface{}{"invalidate", nil})
+	if err != nil {
+		t.Fatalf("HandlePushNotification: %v", err)
+	}
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("nil payload must flush the whole cache, Len=%d", n)
+	}
+}
+
 // drainablePooler is a non-*pool.ConnPool Pooler implementing idleConnDrainer.
 type drainablePooler struct {
 	pool.Pooler

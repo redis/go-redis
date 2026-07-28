@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,10 +14,19 @@ import (
 // cscMultiDBAddr is the address used by the standalone CSC regression tests
 // in this file. We bypass the Ginkgo harness (which assumes a CI cluster
 // fixture) and connect directly so these tests run with just a single Redis
-// instance available.
+// instance available. REDIS_PORT (a bare port) is the env var the suite reads
+// in main_test.go's BeforeSuite, so honor it as a best-effort way to follow
+// the suite's server. (BeforeSuite currently overrides it back to the stack
+// port, so the fallback below matches the suite's effective ":6379"; we read
+// the env var rather than the suite's redisAddr package var because standard
+// testing.T tests run in undefined order relative to BeforeSuite.)
+// REDIS_ADDR remains as a full host:port override for local runs.
 func cscMultiDBAddr() string {
 	if v := os.Getenv("REDIS_ADDR"); v != "" {
 		return v
+	}
+	if p := os.Getenv("REDIS_PORT"); p != "" {
+		return "localhost:" + p
 	}
 	return "localhost:6379"
 }
@@ -73,8 +83,11 @@ func TestCSCMultiDBRejected(t *testing.T) {
 		t.Fatalf("CLIENT TRACKING must NOT be enabled for DB != 0")
 	}
 
-	// And the cache must remain empty after a SET/GET cycle.
-	key := "csc-multidb-skip"
+	// And the cache must remain empty after a SET/GET cycle. Suffix the key
+	// with a per-run nonce so concurrent test processes sharing one Redis
+	// cannot collide (and no real application key is ever touched).
+	key := "csc-multidb-skip:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = c.Del(context.Background(), key).Err() })
 	if err := c.Set(ctx, key, "x", 0).Err(); err != nil {
 		t.Fatalf("SET: %v", err)
 	}
@@ -111,23 +124,27 @@ func TestCSCReadYourWrites(t *testing.T) {
 
 	ctx := context.Background()
 	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("redis not available: %v", err)
-	}
-	if err := mutator.FlushDB(ctx).Err(); err != nil {
-		t.Fatalf("FlushDB: %v", err)
+		t.Skipf("redis not available at %s: %v", cscMultiDBAddr(), err)
 	}
 
-	key := "csc-ryw"
+	// Only touch this test's own key — never FLUSHDB: the target may be a
+	// shared instance the suite was never pointed at. The per-run nonce keeps
+	// concurrent test processes sharing one Redis from colliding.
+	key := "csc-ryw:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := mutator.Del(ctx, key).Err(); err != nil {
+		t.Fatalf("DEL: %v", err)
+	}
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+
 	if err := mutator.Set(ctx, key, "v1", 0).Err(); err != nil {
 		t.Fatalf("SET v1: %v", err)
 	}
 	if got := c.Get(ctx, key).Val(); got != "v1" {
 		t.Fatalf("first GET: got %q want v1", got)
 	}
-	// Cache must hold the entry after Fulfill. The FLUSHDB above sends a
-	// nil-payload invalidate to the tracked conn; if it races the first GET's
-	// in-flight fetch, that fill is (correctly) suppressed — re-drive the GET
-	// until the fill lands.
+	// Cache must hold the entry after Fulfill. If an invalidate (e.g. a flush
+	// from an unrelated actor) races the first GET's in-flight fetch, that
+	// fill is (correctly) suppressed — re-drive the GET until the fill lands.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && cache.Len() < 1 {
 		time.Sleep(20 * time.Millisecond)
@@ -147,8 +164,10 @@ func TestCSCReadYourWrites(t *testing.T) {
 
 	// Drive the tracking conn until the invalidate is consumed and the
 	// cache entry is evicted. PING is a non-cacheable roundtrip so it
-	// goes through processPendingPushNotificationWithReader.
-	deadline = time.Now().Add(2 * time.Second)
+	// goes through processPendingPushNotificationWithReader. The budget is
+	// deliberately larger than one default read timeout (3s) so a single
+	// stalled roundtrip on a loaded runner can't blow it.
+	deadline = time.Now().Add(5 * time.Second)
 	for cache.Len() != 0 {
 		if err := c.Ping(ctx).Err(); err != nil {
 			t.Fatalf("PING: %v", err)

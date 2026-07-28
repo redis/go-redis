@@ -39,7 +39,11 @@ var defaultCacheableCommands = map[string]struct{}{
 	"georadiusbymember_ro": {}, "georadius_ro": {},
 	// Stream commands. XREAD is deliberately excluded: it supports BLOCK, and
 	// its $/+ IDs are state-relative, so identical args are not deterministic.
-	"xlen": {}, "xpending": {}, "xrange": {}, "xrevrange": {},
+	// XPENDING is excluded for the same class of reason: its extended form
+	// returns wall-clock-relative idle times and its IDLE filter is
+	// time-dependent, so identical args yield different correct results with
+	// no key modification (and therefore no invalidation).
+	"xlen": {}, "xrange": {}, "xrevrange": {},
 	// JSON (RedisJSON) commands
 	"json.get": {}, "json.mget": {}, "json.arrindex": {}, "json.arrlen": {},
 	"json.objkeys": {}, "json.objlen": {}, "json.resp": {},

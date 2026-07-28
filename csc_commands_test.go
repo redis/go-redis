@@ -29,7 +29,7 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"EXISTS", "TYPE", "SORT_RO", "LCS",
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
-		"XLEN", "XPENDING", "XRANGE", "XREVRANGE",
+		"XLEN", "XRANGE", "XREVRANGE",
 		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
@@ -68,6 +68,19 @@ func TestIsCacheable_XReadRejected(t *testing.T) {
 	cmd := makeCmd("XREAD", "COUNT", "5", "STREAMS", "s", "0")
 	if isCacheable(cmd) {
 		t.Error("expected XREAD to NOT be cacheable")
+	}
+}
+
+func TestIsCacheable_XPendingRejected(t *testing.T) {
+	// XPENDING's extended form returns wall-clock-relative idle times and its
+	// IDLE filter is time-dependent, so it must not be cached.
+	for _, cmd := range []Cmder{
+		makeCmd("XPENDING", "s", "grp"),
+		makeCmd("XPENDING", "s", "grp", "IDLE", "9000", "-", "+", "10"),
+	} {
+		if isCacheable(cmd) {
+			t.Errorf("expected %v to NOT be cacheable", cmd.Args())
+		}
 	}
 }
 
