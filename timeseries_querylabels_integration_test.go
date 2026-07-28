@@ -32,6 +32,7 @@ func queryLabelsTestAddr() string {
 // form cannot tell 8.10 from 8.1; older servers reply with an "unknown
 // command" error, which this test treats as a skip.
 func TestTSQueryLabels_Integration(t *testing.T) {
+	SkipBeforeRedisVersion("8.10", "TS.QUERYLABELS integration test requires Redis 8.10+")
 	probeCtx := context.Background()
 	probe := redis.NewClient(&redis.Options{Addr: queryLabelsTestAddr()})
 	t.Cleanup(func() { _ = probe.Close() })
@@ -39,10 +40,7 @@ func TestTSQueryLabels_Integration(t *testing.T) {
 		t.Skipf("redis not reachable at %s: %v", queryLabelsTestAddr(), err)
 	}
 	if err := probe.TSQueryLabels(probeCtx, nil).Err(); err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-			t.Skipf("TS.QUERYLABELS not supported by server (requires Redis 8.10+): %v", err)
-		}
-		t.Skipf("timeseries module not available: %v", err)
+		t.Fatalf("TS.QUERYLABELS probe failed: %v", err)
 	}
 
 	for _, proto := range []int{2, 3} {
