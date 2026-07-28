@@ -1846,6 +1846,19 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, nil
 }
 
+type txQueuedExecAbortError struct {
+	queuedErr error
+	execErr   error
+}
+
+func (e *txQueuedExecAbortError) Error() string {
+	return e.queuedErr.Error()
+}
+
+func (e *txQueuedExecAbortError) Unwrap() error {
+	return e.execErr
+}
+
 // txPipelineReadQueued reads queued replies from the Redis server.
 // It returns an error if the server returns an error or if the number of replies does not match the number of commands.
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
@@ -1875,10 +1888,6 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			}
 		}
 	}
-	if queuedErr != nil {
-		return queuedErr
-	}
-
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
@@ -1886,6 +1895,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {
+		if queuedErr != nil && isRedisError(err) {
+			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}
+		}
 		if err == Nil {
 			err = TxFailedErr
 		}
@@ -1894,6 +1906,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
+	}
+
+	if queuedErr != nil {
+		return queuedErr
 	}
 
 	return nil
