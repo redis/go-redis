@@ -72,6 +72,11 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
+
+	// errConnEvictedIdle is passed to OnRemove hooks when a pooled connection is evicted on
+	// Put because the idle pool is already at MaxIdleConns.
+	errConnEvictedIdle = errors.New("connection evicted: idle pool at capacity")
+
 	// metricCallbackMu protects all global metric callback functions for thread-safe access.
 	metricCallbackMu sync.RWMutex
 
@@ -1293,6 +1298,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				// expected state, don't log it
 			case StateClosed:
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
+				if hookManager != nil {
+					hookManager.ProcessOnRemove(ctx, cn, errHookRequestedRemoval)
+				}
 				shouldCloseConn = true
 				removedFromPool = p.removeConnWithLock(cn)
 			default:
@@ -1360,6 +1368,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	} else {
 		shouldCloseConn = true
+		if hookManager != nil {
+			hookManager.ProcessOnRemove(ctx, cn, errConnEvictedIdle)
+		}
 		removedFromPool = p.removeConnWithLock(cn)
 
 		// Only emit if we actually removed it from the map (not already taken by Close()).

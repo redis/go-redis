@@ -599,8 +599,8 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:   failover.opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
+			Timeout:         failover.opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
