@@ -295,6 +295,14 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		return 0
 	}
 
+	// Module commands registered keyless in the static policy table (e.g.
+	// ft.aliaslist) route as keyless even while the command-info cache is
+	// cold, so the first calls of a process don't hash a non-key argument
+	// (such as an index name) into a slot.
+	if defaultPolicyKeyless(name) {
+		return 0
+	}
+
 	switch name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
