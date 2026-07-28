@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1855,8 +1856,8 @@ func (e *txQueuedExecAbortError) Error() string {
 	return e.queuedErr.Error()
 }
 
-func (e *txQueuedExecAbortError) Unwrap() error {
-	return e.execErr
+func (e *txQueuedExecAbortError) Unwrap() []error {
+	return []error{e.queuedErr, e.execErr}
 }
 
 // txPipelineReadQueued reads queued replies from the Redis server.
@@ -1909,6 +1910,15 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	if queuedErr != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+		}
+		for i := 0; i < n; i++ {
+			if _, err := rd.ReadReply(); err != nil {
+				return err
+			}
+		}
 		return queuedErr
 	}
 

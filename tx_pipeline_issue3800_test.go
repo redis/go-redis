@@ -12,8 +12,10 @@ import (
 )
 
 type txQueueErrorServer struct {
-	ln       net.Listener
-	execSeen atomic.Int32
+	ln        net.Listener
+	execSeen  atomic.Int32
+	queueErr  string
+	execReply string
 }
 
 func (s *txQueueErrorServer) Addr() string { return s.ln.Addr().String() }
@@ -42,13 +44,13 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 		}
 
 		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "b" {
-			_, _ = c.Write([]byte("-ERR in transaction context, keys must in same slot\r\n"))
+			_, _ = c.Write([]byte(s.queueErr))
 			continue
 		}
 
 		if strings.EqualFold(args[0], "exec") {
 			s.execSeen.Add(1)
-			_, _ = c.Write([]byte("-EXECABORT Transaction discarded because of previous errors.\r\n"))
+			_, _ = c.Write([]byte(s.execReply))
 			continue
 		}
 
@@ -62,7 +64,11 @@ func startTxQueueErrorServer(t *testing.T) *txQueueErrorServer {
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
 	}
-	s := &txQueueErrorServer{ln: ln}
+	s := &txQueueErrorServer{
+		ln:        ln,
+		queueErr:  "-ERR in transaction context, keys must in same slot\r\n",
+		execReply: "-EXECABORT Transaction discarded because of previous errors.\r\n",
+	}
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -159,5 +165,77 @@ func TestTxPipelineExecDrainsExecAbortOnStickyConnection(t *testing.T) {
 	}
 	if srv.execSeen.Load() != 1 {
 		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestTxPipelineExecPreservesQueuedErrorHelpers(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.queueErr = "-OOM command not allowed when used memory > 'maxmemory'\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "a", 1, 0)
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if !IsOOMError(err) {
+		t.Fatalf("Exec() error = %v, want IsOOMError to be true", err)
+	}
+	if !IsExecAbortError(err) {
+		t.Fatalf("Exec() error = %v, want IsExecAbortError to be true", err)
+	}
+}
+
+func TestTxPipelineExecDrainsExecArrayOnStickyConnection(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	err := client.Watch(ctx, func(tx *Tx) error {
+		pipe := tx.TxPipeline()
+		pipe.Set(ctx, "a", 1, 0)
+		pipe.Set(ctx, "b", 1, 0)
+
+		_, err := pipe.Exec(ctx)
+		if err == nil {
+			t.Fatal("Exec() error = nil, want queued Redis error")
+		}
+		if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+			t.Fatalf("Exec() error = %q, want queued Redis error", got)
+		}
+
+		pong, pingErr := tx.Ping(ctx).Result()
+		if pingErr != nil {
+			t.Fatalf("Ping() error = %v, want nil", pingErr)
+		}
+		if pong != "PING" {
+			t.Fatalf("Ping() = %q, want %q", pong, "PING")
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Watch() error = %v, want nil", err)
 	}
 }
