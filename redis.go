@@ -1859,6 +1859,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
+	var queuedErr error
 	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
@@ -1869,7 +1870,13 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			if !isRedisError(err) {
 				return err
 			}
+			if queuedErr == nil {
+				queuedErr = err
+			}
 		}
+	}
+	if queuedErr != nil {
+		return queuedErr
 	}
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
