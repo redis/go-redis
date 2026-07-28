@@ -244,3 +244,21 @@ func TestExtractRedisKeys_KeylessCommand(t *testing.T) {
 		t.Errorf("expected nil for keyless command, got %v", keys)
 	}
 }
+
+func TestIsCacheable_SortRO_ByGetExcluded(t *testing.T) {
+	// Plain SORT_RO reads only the sorted key: cacheable.
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA"); !isCacheable(cmd) {
+		t.Error("plain SORT_RO should be cacheable")
+	}
+	// BY/GET forms read pattern-derived keys the reverse index cannot cover:
+	// their invalidations would be dropped, serving stale results forever.
+	if cmd := makeCmd("sort_ro", "mylist", "BY", "weight_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... BY must not be cacheable")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "get", "obj_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... GET must not be cacheable (case-insensitive)")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "By", "weight_*", "ALPHA"); isCacheable(cmd) {
+		t.Error("SORT_RO with BY among other options must not be cacheable")
+	}
+}

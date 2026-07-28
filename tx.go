@@ -28,6 +28,10 @@ func (c *Client) newTx() *Tx {
 			connPool:      pool.NewStickyConnPool(c.connPool),
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
+			// Carry the shared eviction hook (not csc: a sticky Tx must not serve
+			// cached reads) so close/reinit hooks on a Watch-initialized conn still
+			// evict from the parent cache.
+			cscPoolHook: c.cscPoolHook,
 		},
 	}
 	tx.init()

@@ -123,6 +123,11 @@ type Conn struct {
 	initConnFunc func(context.Context, *Conn) error
 
 	onClose func() error
+
+	// onCscClose is the client-side-caching close hook, kept separate from
+	// onClose (streaming-credentials cleanup) so neither clobbers the other.
+	// Both keep overwrite semantics, so re-running initConn can't accumulate them.
+	onCscClose func() error
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -580,6 +585,12 @@ func (cn *Conn) SetOnClose(fn func() error) {
 	cn.onClose = fn
 }
 
+// SetOnCscClose sets the client-side-caching close hook, overwriting any
+// previous one. It runs on Close in addition to the SetOnClose callback.
+func (cn *Conn) SetOnCscClose(fn func() error) {
+	cn.onCscClose = fn
+}
+
 // SetInitConnFunc sets the connection initialization function to be called on reconnections.
 func (cn *Conn) SetInitConnFunc(fn func(context.Context, *Conn) error) {
 	cn.initConnFunc = fn
@@ -849,6 +860,22 @@ func (cn *Conn) WithReader(
 	return fn(cn.rd)
 }
 
+// WithReaderHardDeadline runs fn under a HARD read deadline of now+timeout,
+// bypassing getEffectiveReadTimeout so a relaxed maintenance timeout can't extend
+// it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
+// become the socket deadline, or the read surfaces context.DeadlineExceeded, which
+// isBadConn treats as fatal.
+func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	return fn(cn.rd)
+}
+
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
@@ -894,6 +921,10 @@ func (cn *Conn) Close() error {
 	if cn.onClose != nil {
 		// ignore error
 		_ = cn.onClose()
+	}
+	if cn.onCscClose != nil {
+		// ignore error
+		_ = cn.onCscClose()
 	}
 
 	// Lock-free netConn access for better performance

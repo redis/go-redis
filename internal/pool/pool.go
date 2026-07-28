@@ -366,9 +366,11 @@ type ConnPool struct {
 
 	_closed uint32 // atomic
 
-	// Pool hooks manager for flexible connection processing
-	// Using atomic.Pointer for lock-free reads in hot paths (Get/Put)
+	// Pool hooks manager. atomic.Pointer keeps hot-path reads (Get/Put)
+	// lock-free; hookMu serializes Add/RemovePoolHook's read-clone-store so
+	// concurrent mutators (e.g. maintnotifications and CSC) can't lose an update.
 	hookManager atomic.Pointer[PoolHookManager]
+	hookMu      sync.Mutex
 }
 
 var _ Pooler = (*ConnPool)(nil)
@@ -403,7 +405,10 @@ func (p *ConnPool) initializeHooks() {
 
 // AddPoolHook adds a pool hook to the pool.
 func (p *ConnPool) AddPoolHook(hook PoolHook) {
-	// Lock-free read of current manager
+	// Serialize so a concurrent Add/Remove can't clobber this change.
+	p.hookMu.Lock()
+	defer p.hookMu.Unlock()
+
 	manager := p.hookManager.Load()
 	if manager == nil {
 		p.initializeHooks()
@@ -414,12 +419,15 @@ func (p *ConnPool) AddPoolHook(hook PoolHook) {
 	newManager := manager.Clone()
 	newManager.AddHook(hook)
 
-	// Atomically swap to new manager
+	// Atomically swap to new manager (hot-path readers load lock-free)
 	p.hookManager.Store(newManager)
 }
 
 // RemovePoolHook removes a pool hook from the pool.
 func (p *ConnPool) RemovePoolHook(hook PoolHook) {
+	p.hookMu.Lock()
+	defer p.hookMu.Unlock()
+
 	manager := p.hookManager.Load()
 	if manager != nil {
 		// Create new manager with removed hook
@@ -1392,6 +1400,118 @@ func (p *ConnPool) Filter(fn func(*Conn) bool) error {
 		}
 	}
 	return firstErr
+}
+
+// DrainState carries the cross-pass round bookkeeping for the CSC drainer
+// (DrainIdleConns); owned by one drainer goroutine, so no synchronization.
+type DrainState struct {
+	// round: idle conn ids snapshotted at round start; nil = snapshot a fresh round
+	// next pass. Connections that go idle mid-round are deferred.
+	round []uint64
+	// visited: round members already handled (drained/removed/reconciled).
+	visited map[uint64]struct{}
+}
+
+// DrainIdleConns runs one pass of the CSC invalidation drainer over the current
+// round, holding AT MOST ONE connection at a time and taking NO pool turn (ctx is
+// the per-cycle deadline). A round = idle conn ids snapshotted at start; mid-round
+// arrivals are deferred. Each member is drainerPop'd and drained by fn, or — if no
+// longer a claimable idle conn — reconciled (marked visited) so it can't hang the
+// round. Handles at least one member before honoring ctx (so a tiny DrainInterval
+// can't stall it). No-ops if the pool is closed.
+func (p *ConnPool) DrainIdleConns(ctx context.Context, st *DrainState, fn func(cn *Conn) error) {
+	if st == nil || fn == nil || p.closed() {
+		return
+	}
+
+	if st.round == nil {
+		st.round = p.idleConnIDsSnapshot()
+		st.visited = make(map[uint64]struct{}, len(st.round))
+		if len(st.round) == 0 {
+			st.round = nil
+			return
+		}
+	}
+
+	handled := 0
+	for _, id := range st.round {
+		if _, done := st.visited[id]; done {
+			continue
+		}
+		// Min-progress: handle at least one member — drained OR reconciled — before
+		// honoring the per-cycle deadline, so a pass does a bounded amount of work
+		// and cannot reconcile an entire large round (O(round*idleConns)) while
+		// ignoring an expired ctx. A deadline-truncated round resumes on the next
+		// pass (st.round/st.visited persist).
+		if handled > 0 && ctx.Err() != nil {
+			return
+		}
+
+		cn := p.drainerPop(id)
+		if cn == nil {
+			// Reconcile: not a claimable idle member right now (closed, in use,
+			// unusable, or transiently outside idleConns mid-putConn). Covered by
+			// the command-path drain and/or the next round.
+			st.visited[id] = struct{}{}
+			handled++
+			continue
+		}
+
+		if err := fn(cn); err != nil {
+			// Fatal drain error (read/protocol/connection) — remove without a turn.
+			p.removeConnInternal(ctx, cn, err, false)
+		} else {
+			// Normal return: runs OnPut (queues any maintenance handoff), no turn.
+			p.putConnWithoutTurn(ctx, cn)
+		}
+		st.visited[id] = struct{}{}
+		handled++
+	}
+
+	// Every member handled — round complete; snapshot a fresh round next pass.
+	st.round = nil
+}
+
+// idleConnIDsSnapshot returns the ids of the currently-idle connections.
+func (p *ConnPool) idleConnIDsSnapshot() []uint64 {
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	if len(p.idleConns) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(p.idleConns))
+	for _, cn := range p.idleConns {
+		ids = append(ids, cn.GetID())
+	}
+	return ids
+}
+
+// drainerPop claims the idle conn with the given id (strict IDLE->IN_USE) and
+// removes it from idleConns, under one connsMu hold, taking no turn and not
+// triggering checkMinIdleConns. Returns nil if it is not a claimable idle member.
+// Find-then-claim-then-remove order matters: a conn can be StateIdle yet briefly
+// absent from idleConns mid-putConn, and claiming first could leak it as IN_USE.
+func (p *ConnPool) drainerPop(id uint64) *Conn {
+	p.connsMu.Lock()
+	defer p.connsMu.Unlock()
+	if p.closed() {
+		return nil
+	}
+	for idx, cn := range p.idleConns {
+		if cn.GetID() != id {
+			continue
+		}
+		// Strict idle-only claim (unlike TryAcquire, which also accepts CREATED):
+		// the drainer must never claim an uninitialized connection.
+		if !cn.stateMachine.TryTransitionFast(StateIdle, StateInUse) {
+			return nil
+		}
+		// Order-preserving delete (matches removeConn).
+		p.idleConns = append(p.idleConns[:idx], p.idleConns[idx+1:]...)
+		p.idleConnsLen.Add(-1)
+		return cn
+	}
+	return nil
 }
 
 func (p *ConnPool) Close() error {
