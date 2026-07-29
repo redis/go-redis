@@ -17,7 +17,7 @@ var _ = Describe("Array Commands", Label("array"), func() {
 	var client *redis.Client
 
 	BeforeEach(func() {
-		SkipBeforeRedisVersion(8.8, "Redis 8.8.0 introduces support for Array")
+		SkipBeforeRedisVersion("8.8", "Redis 8.8.0 introduces support for Array")
 		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})

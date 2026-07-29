@@ -194,13 +194,13 @@ func (opt *RingOptions) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.ReadBufferSize == 0 {
@@ -713,6 +713,17 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 		panic(err)
 	}
 	return shard.Client.SSubscribe(ctx, channels...)
+}
+
+// Publish posts the message to the channel
+func (c *Ring) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	shard, err := c.sharding.GetByKey(channel)
+	if err != nil {
+		cmd := NewIntCmd(ctx, "publish", channel, message)
+		cmd.SetErr(err)
+		return cmd
+	}
+	return shard.Client.Publish(ctx, channel, message)
 }
 
 func (c *Ring) OnNewNode(fn func(rdb *Client)) {

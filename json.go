@@ -238,7 +238,7 @@ func (cmd *JSONSliceCmd) readReply(rd *proto.Reader) error {
 	} else if readType == proto.RespArray {
 		response, err := rd.ReadReply()
 		if err != nil {
-			return nil
+			return err
 		} else {
 			cmd.val = response.([]interface{})
 		}

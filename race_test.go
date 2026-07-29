@@ -180,7 +180,10 @@ var _ = Describe("races", func() {
 		})
 	})
 
-	It("should Watch/Unwatch", func() {
+	// NonRedisEnterprise: 10 goroutines running 1000 contended WATCH/MULTI/EXEC iterations
+	// on a single key is impractically slow against a remote Redis Enterprise endpoint
+	// (optimistic-lock retries x network latency); it needs a low-latency local server.
+	It("should Watch/Unwatch", Label("NonRedisEnterprise"), func() {
 		err := client.Set(ctx, "key", "0", 0).Err()
 		Expect(err).NotTo(HaveOccurred())
 

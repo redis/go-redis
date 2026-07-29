@@ -155,6 +155,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeTSNRangePivotRowSlice
 	CmdTypeHotKeys
 	CmdTypeIncrEXInt
 	CmdTypeIncrEXFloat
@@ -291,6 +292,14 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 
 	// first check if the command is keyless
 	if _, ok := keylessCommands[name]; ok {
+		return 0
+	}
+
+	// Module commands registered keyless in the static policy table (e.g.
+	// ft.aliaslist) route as keyless even while the command-info cache is
+	// cold, so the first calls of a process don't hash a non-key argument
+	// (such as an index name) into a slot.
+	if defaultPolicyKeyless(name) {
 		return 0
 	}
 
@@ -1322,8 +1331,13 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]int64, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadInt(); err != nil {
+		switch num, err := rd.ReadInt(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -1382,8 +1396,13 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]uint64, n)
 	for i := range cmd.val {
-		if cmd.val[i], err = rd.ReadUint(); err != nil {
+		switch num, err := rd.ReadUint(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -2030,6 +2049,9 @@ func (cmd *KeyValueSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]KeyValue, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the key-value array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]KeyValue, n/2)
 	}
 
@@ -2107,8 +2129,13 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]bool, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadBool(); err != nil {
+		switch b, err := rd.ReadBool(); {
+		case err == Nil:
+			cmd.val[i] = false
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = b
 		}
 	}
 	return nil
@@ -4137,6 +4164,9 @@ func (cmd *ZSliceCmd) readReply(rd *proto.Reader) error { // nolint:dupl
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -4817,10 +4847,27 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]GeoLocation, n)
+	// Each element is an array of [name, ...] whose minimum length is set by
+	// the requested WITH flags. Entries shorter than that would make the
+	// parser read into the next reply; extra elements are drained below so a
+	// longer entry (e.g. from a newer server) can't leave frames on the wire.
+	withLen := 1
+	if cmd.opt.WithDist {
+		withLen++
+	}
+	if cmd.opt.WithHash {
+		withLen++
+	}
+	if cmd.opt.WithCoord {
+		withLen++
+	}
 	for i := 0; i < n; i++ {
-		_, err = rd.ReadArrayLen()
+		nn, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
+		}
+		if nn < withLen {
+			return fmt.Errorf("redis: got %d elements in GEOSEARCH reply, expected at least %d", nn, withLen)
 		}
 
 		var loc GeoLocation
@@ -4851,6 +4898,11 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 			}
 			loc.Latitude, err = rd.ReadFloat()
 			if err != nil {
+				return err
+			}
+		}
+		for j := withLen; j < nn; j++ {
+			if err := rd.DiscardNext(); err != nil {
 				return err
 			}
 		}
@@ -5306,6 +5358,10 @@ type SlowLog struct {
 	// https://redis.io/commands/slowlog#output-format
 	ClientAddr string
 	ClientName string
+	// CommandArgc is the command's total argument count (including the command
+	// name), emitted only by Redis 8.10 or greater. It may exceed len(Args) when
+	// the slow log truncates the stored arguments (slowlog-max-argc, default 32).
+	CommandArgc int64
 }
 
 type SlowLogCmd struct {
@@ -5401,6 +5457,21 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 				return err
 			}
 		}
+
+		// Redis 8.10+ appends a 7th field: the command's total argument count.
+		if nn >= 7 {
+			if cmd.val[i].CommandArgc, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		}
+
+		// Drain any elements past the 7 this parser knows about so a server
+		// that declares a longer entry array doesn't leave frames on the wire.
+		for j := 7; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -5412,11 +5483,12 @@ func (cmd *SlowLogCmd) Clone() Cmder {
 		val = make([]SlowLog, len(cmd.val))
 		for i, log := range cmd.val {
 			val[i] = SlowLog{
-				ID:         log.ID,
-				Time:       log.Time,
-				Duration:   log.Duration,
-				ClientAddr: log.ClientAddr,
-				ClientName: log.ClientName,
+				ID:          log.ID,
+				Time:        log.Time,
+				Duration:    log.Duration,
+				ClientAddr:  log.ClientAddr,
+				ClientName:  log.ClientName,
+				CommandArgc: log.CommandArgc,
 			}
 			if log.Args != nil {
 				val[i].Args = make([]string, len(log.Args))
@@ -5482,8 +5554,8 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		if nn < 3 {
-			return fmt.Errorf("redis: got %d elements in latency get, expected at least 3", nn)
+		if nn < 4 {
+			return fmt.Errorf("redis: got %d elements in latency get, expected at least 4", nn)
 		}
 		if cmd.val[i].Name, err = rd.ReadString(); err != nil {
 			return err
@@ -5503,6 +5575,13 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 		cmd.val[i].Max = time.Duration(maximum) * time.Millisecond
+		// Drain any elements beyond the 4 this parser reads so a server that
+		// declares a longer entry array can't leave frames on the wire.
+		for j := 4; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -5693,6 +5772,14 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 
 	if v, ok := data["by-net-bytes"].([]interface{}); ok {
 		result.ByNetBytes = parseHotKeysKeyEntries(v)
+	}
+
+	// Only the first element of the outer array is parsed; drain the rest so a
+	// server that wraps more than one element doesn't leave frames on the wire.
+	for i := 1; i < arrayLen; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
 	}
 
 	cmd.val = result
@@ -6235,6 +6322,9 @@ func (cmd *ZSliceWithKeyCmd) readReply(rd *proto.Reader) (err error) {
 	if array {
 		cmd.val = make([]Z, n)
 	} else {
+		if n%2 != 0 {
+			return fmt.Errorf("redis: got %d elements in the sorted set array, wanted a multiple of 2", n)
+		}
 		cmd.val = make([]Z, n/2)
 	}
 
@@ -8943,6 +9033,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return tsTimestampValueSliceCmd.Val(), tsTimestampValueSliceCmd.Err()
+			}
+		case CmdTypeTSNRangePivotRowSlice:
+			if tsNRangePivotRowSliceCmd, ok := cmd.(interface {
+				Val() []TSNRangePivotRow
+				Err() error
+			}); ok {
+				return tsNRangePivotRowSliceCmd.Val(), tsNRangePivotRowSliceCmd.Err()
 			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface {
