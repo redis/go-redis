@@ -159,6 +159,72 @@ func TestCSCDisablesWhenHELLO3FallsBackToRESP2(t *testing.T) {
 	}
 }
 
+func TestCSCDisablesWhenClientTrackingIsRejected(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	var acceptCalls atomic.Int32
+	var getCalls atomic.Int32
+	var trackingCalls atomic.Int32
+	go func() {
+		for {
+			netConn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			acceptCalls.Add(1)
+			go serveTestRESPConn(netConn, func(command string) string {
+				switch command {
+				case "hello":
+					return "%0\r\n"
+				case "client":
+					trackingCalls.Add(1)
+					return "-ERR client tracking is disabled\r\n"
+				case "get":
+					getCalls.Add(1)
+					return "$1\r\nv\r\n"
+				default:
+					return "+OK\r\n"
+				}
+			})
+		}
+	}()
+
+	client := NewClient(&Options{
+		Addr:            ln.Addr().String(),
+		Protocol:        3,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		DisableIdentity: true,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	for i := 0; i < 2; i++ {
+		if got, err := client.Get(context.Background(), "key").Result(); err != nil || got != "v" {
+			t.Fatalf("GET %d: got value %q, error %v; want value %q", i+1, got, err, "v")
+		}
+	}
+	if client.cscActive == nil || client.cscActive.Load() {
+		t.Fatal("CSC must be disabled after CLIENT TRACKING is rejected")
+	}
+	if got := trackingCalls.Load(); got != 1 {
+		t.Fatalf("server received %d CLIENT TRACKING commands, want 1", got)
+	}
+	if got := getCalls.Load(); got != 2 {
+		t.Fatalf("server received %d GETs, want 2 (tracking rejection must bypass CSC)", got)
+	}
+	if got := acceptCalls.Load(); got != 1 {
+		t.Fatalf("server accepted %d connections, want 1 (tracking rejection must not discard a usable connection)", got)
+	}
+}
+
 func TestSelectRejectedWithCSC(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{

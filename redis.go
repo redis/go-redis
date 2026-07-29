@@ -633,7 +633,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		// socket, so it must not bump a second time here.
 		c.cscEvictOwnedEntries(cn.GetID())
 	}
-	_, initErr = conn.Pipelined(ctx, func(pipe Pipeliner) error {
+	var trackingCmd *StatusCmd
+	initCmds, initErr := conn.Pipelined(ctx, func(pipe Pipeliner) error {
 		if c.opt.DB > 0 {
 			pipe.Select(ctx, c.opt.DB)
 		}
@@ -648,7 +649,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 
 		if trackingEnabled {
 			// Must run before any cacheable command is issued on this conn.
-			pipe.ClientTrackingOn(ctx, nil)
+			trackingCmd = pipe.ClientTrackingOn(ctx, nil)
 		}
 
 		return nil
@@ -656,6 +657,23 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// The exemption is init-only. OnConnect is user code and must go through
 	// the same CSC connection-state guard as every other public command path.
 	conn.baseClient.allowClientTracking = false
+	trackingRejected := trackingCmd != nil && isRedisError(trackingCmd.Err())
+	for _, cmd := range initCmds {
+		if cmd != trackingCmd && cmd.Err() != nil {
+			trackingRejected = false
+			break
+		}
+	}
+	if trackingRejected {
+		// A server-side rejection means tracking is unavailable, but the
+		// connection and the preceding init commands are still usable. Disable
+		// CSC globally and continue without caching. Transport and protocol
+		// failures still take the normal connection-failure path below.
+		c.disableCSCServing(ctx, fmt.Sprintf("CLIENT TRACKING ON was rejected: %v", trackingCmd.Err()))
+		c.cscForgetConn(cn.GetID())
+		trackingEnabled = false
+		initErr = nil
+	}
 	if initErr != nil {
 		if trackingEnabled {
 			// cscEvictOwnedEntries above bumped this conn's init generation; a
@@ -1024,7 +1042,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 					return err
 				}
 				capture.raw = raw
-				return origRead(proto.NewReader(bytes.NewReader(raw)))
+				return origRead(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
 			}
 		}
 		readErr := cn.WithReader(c.context(ctx), c.cmdTimeout(cmd), func(rd *proto.Reader) error {

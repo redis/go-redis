@@ -493,8 +493,9 @@ func (c *baseClient) cscConnInitGen(connID uint64) uint64 {
 	return 0
 }
 
-// cscForgetConn drops connID's init-generation entry after a FAILED init (the
-// conn never serves; see forgetConn for why the pubsub path would leak it).
+// cscForgetConn drops connID's init-generation entry when initialization does
+// not establish tracked coverage, either because init failed or tracking was
+// rejected and CSC was disabled.
 func (c *baseClient) cscForgetConn(connID uint64) {
 	if h := c.cscHook(); h != nil {
 		h.forgetConn(connID)
@@ -724,7 +725,7 @@ func (c *baseClient) stopBackgroundDrainer() {
 // applyCachedReply populates cmd from a previously captured raw RESP reply by
 // replaying it through the command's own readReply.
 func applyCachedReply(cmd Cmder, raw []byte) error {
-	return cmd.readReply(proto.NewReader(bytes.NewReader(raw)))
+	return cmd.readReply(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
 }
 
 // isCacheableReplyResult reports whether a fully read Redis reply can be

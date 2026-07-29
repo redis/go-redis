@@ -18,6 +18,10 @@ import (
 // does NOT implement ConnOwnedCache — it exposes none of FulfillOwned/EvictByConn.
 type nonOwnerCache struct{ Cache }
 
+func testCSCNamespacedKey(db int, key string) string {
+	return cscNamespacedKey(cscNamespacePrefix(db, ""), key)
+}
+
 type unusedStreamingProvider struct{}
 
 func (unusedStreamingProvider) Subscribe(auth.CredentialsListener) (auth.Credentials, auth.UnsubscribeFunc, error) {
