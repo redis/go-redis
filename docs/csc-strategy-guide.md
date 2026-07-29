@@ -112,6 +112,8 @@ configured.
 - **Connection-state commands**: while CSC is active, user-issued `SELECT`,
   `AUTH`, `RESET`, `CLIENT TRACKING`, and protocol-changing `HELLO` commands are
   rejected because they would invalidate the cache namespace or tracking
-  assumptions for only one pooled connection.
+  assumptions for only one pooled connection. Raw `SUBSCRIBE`, `PSUBSCRIBE`,
+  and `SSUBSCRIBE` are also rejected on the ordinary pool; the typed subscription
+  methods remain supported because they use dedicated `PubSub` connections.
 - **RESP3 read buffer**: `ReadBufferSize` is clamped up to a small minimum on
   RESP3 clients so push-notification headers always fit the peek window.

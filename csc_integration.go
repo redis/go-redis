@@ -530,6 +530,11 @@ var errHelloWithCSC = errors.New(
 var errResetWithCSC = errors.New(
 	"redis: RESET is not allowed when client-side caching is enabled")
 
+// errSubscribeWithCSC rejects raw subscriptions on the ordinary pool. The
+// typed Subscribe methods use dedicated PubSub connections and remain allowed.
+var errSubscribeWithCSC = errors.New(
+	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled")
+
 // cscCommandError rejects commands that can make a pooled connection's state
 // diverge from the assumptions used by CSC.
 func (c *baseClient) cscCommandError(cmd Cmder) error {
@@ -549,24 +554,57 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 		return errHelloWithCSC
 	case isResetCmd(cmd):
 		return errResetWithCSC
+	case isSubscribeCmd(cmd):
+		return errSubscribeWithCSC
 	default:
 		return nil
 	}
 }
 
-// cscDrainHandle holds the drainer goroutine's lifecycle channels: stop signals
-// shutdown; done is closed on exit so stopBackgroundDrainer can join.
+// cscDrainHandle owns the drainer lifecycle and serializes client teardown.
+// stop signals shutdown; done is closed on exit so Close can join.
 type cscDrainHandle struct {
-	stop         chan struct{}
-	done         chan struct{}
-	stopOnce     sync.Once
-	teardownOnce sync.Once
+	stop             chan struct{}
+	done             chan struct{}
+	stopOnce         sync.Once
+	teardownOnce     sync.Once
+	handlerCloseOnce sync.Once
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 // signalStop closes stop at most once (so Close and the AddCleanup safety net
 // can't double-close) and does not join — a GC cleanup must not block.
 func (h *cscDrainHandle) signalStop() {
 	h.stopOnce.Do(func() { close(h.stop) })
+}
+
+// cscHandlerClient is exposed only through the background drainer's handler
+// context. Close must return before the handler does, otherwise it would wait
+// for the drainer goroutine that is currently invoking the handler.
+type cscHandlerClient struct {
+	*baseClient
+}
+
+func (c cscHandlerClient) Close() error {
+	h := c.cscDrainHandle
+	if h == nil {
+		return c.baseClient.Close()
+	}
+	h.handlerCloseOnce.Do(func() {
+		// Close has logically started: stop cache hits immediately and let the
+		// drainer exit as soon as this handler returns.
+		if c.cscActive != nil {
+			c.cscActive.Store(false)
+		}
+		h.signalStop()
+		go func() {
+			if err := c.baseClient.Close(); err != nil {
+				internal.Logger.Printf(context.Background(), "csc: deferred client close failed: %v", err)
+			}
+		}()
+	})
+	return nil
 }
 
 // cscMinDrainInterval floors a user-supplied DrainInterval: sub-millisecond

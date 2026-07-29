@@ -67,6 +67,21 @@ func (h *recordingHandler) count() int {
 	return h.n
 }
 
+type closingHandler struct {
+	closeReturned chan error
+}
+
+func (h *closingHandler) HandlePushNotification(
+	_ context.Context, handlerCtx push.NotificationHandlerContext, _ []interface{},
+) error {
+	closer, ok := handlerCtx.Client.(interface{ Close() error })
+	if !ok {
+		return errors.New("handler client does not implement Close")
+	}
+	h.closeReturned <- closer.Close()
+	return nil
+}
+
 func newIdleTCPConnPair(t *testing.T) (server, client net.Conn) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -272,6 +287,92 @@ func TestBackgroundDrainerLifecycle(t *testing.T) {
 
 	// Stop again: idempotent, no panic, no double-close of the stop channel.
 	c.stopBackgroundDrainer()
+}
+
+func TestHandlerContextCloseDuringCSCDrainIsDeferred(t *testing.T) {
+	closeReturned := make(chan error, 1)
+	proc := push.NewProcessor()
+	if err := proc.RegisterHandler("invalidate", &closingHandler{closeReturned: closeReturned}, false); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+
+	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	resourcesClosed := make(chan struct{})
+	c := &baseClient{
+		cscDrainHandle: h,
+		opt:            &Options{Protocol: 3},
+		pushProcessor:  proc,
+		onClose: func() error {
+			close(resourcesClosed)
+			return nil
+		},
+	}
+	cn, cleanup := newReaderBufferedPushConn(t, invalidateFrame("key"))
+	defer cleanup()
+
+	drainReturned := make(chan error, 1)
+	go func() {
+		_, err := c.drainPushNotifications(cn)
+		drainReturned <- err
+	}()
+	select {
+	case err := <-closeReturned:
+		if err != nil {
+			t.Fatalf("handler Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler Close joined its own drain and deadlocked")
+	}
+	select {
+	case <-h.stop:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not signal the drainer to stop")
+	}
+	select {
+	case err := <-drainReturned:
+		if err != nil {
+			t.Fatalf("drainPushNotifications: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain did not return after the handler")
+	}
+	select {
+	case <-resourcesClosed:
+		t.Fatal("resources closed before the active drain returned")
+	default:
+	}
+	ordinaryCloseStarted := make(chan struct{})
+	ordinaryCloseReturned := make(chan error, 1)
+	go func() {
+		close(ordinaryCloseStarted)
+		ordinaryCloseReturned <- c.Close()
+	}()
+	<-ordinaryCloseStarted
+	select {
+	case err := <-ordinaryCloseReturned:
+		t.Fatalf("ordinary Close returned before teardown completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	// The real drainer closes done immediately after the pass returns.
+	close(h.done)
+	select {
+	case err := <-ordinaryCloseReturned:
+		if err != nil {
+			t.Fatalf("ordinary Close during deferred teardown: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ordinary Close did not return after teardown completed")
+	}
+	select {
+	case <-resourcesClosed:
+	case <-time.After(time.Second):
+		t.Fatal("deferred Close did not finish after the drain returned")
+	}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("repeated Close: %v", err)
+	}
 }
 
 // TestCscDrainIntervalClampsMinimum: sub-millisecond DrainInterval values are

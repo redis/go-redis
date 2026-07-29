@@ -15,12 +15,14 @@ import (
 // TestIsClientTrackingCmd pins the guard's matcher: any CLIENT TRACKING
 // subcommand matches, other CLIENT subcommands (incl. TRACKINGINFO) do not.
 func TestIsClientTrackingCmd(t *testing.T) {
+	tracking := "tracking"
 	matching := []Cmder{
 		makeCmd("client", "tracking", "on"),
 		makeCmd("client", "tracking", "off"),
 		makeCmd("CLIENT", "TRACKING", "on", "bcast"),
 		makeCmd("Client", "Tracking"),
 		makeCmd([]byte("client"), []byte("tracking"), "off"), // raw []byte args
+		makeCmd("client", &tracking, "off"),                  // proto.Writer dereferences *string
 	}
 	for _, cmd := range matching {
 		if !isClientTrackingCmd(cmd) {
@@ -66,6 +68,10 @@ func TestClientTrackingRejectedWithCSC(t *testing.T) {
 	// non-matching cases — probing one here would dial for seconds.)
 	if err := c.Do(ctx, "client", "tracking", "off").Err(); !errors.Is(err, errClientTrackingWithCSC) {
 		t.Fatalf("raw Do(client tracking off) must be rejected with CSC enabled, got %v", err)
+	}
+	tracking := "tracking"
+	if err := c.Do(ctx, "client", &tracking, "off").Err(); !errors.Is(err, errClientTrackingWithCSC) {
+		t.Fatalf("pointer-encoded CLIENT TRACKING must be rejected with CSC enabled, got %v", err)
 	}
 }
 
@@ -264,6 +270,9 @@ func TestConnectionStateCommandsRejectedWithCSC(t *testing.T) {
 		{"AUTH", []interface{}{"auth", "password"}, errAuthWithCSC},
 		{"HELLO 2", []interface{}{"hello", 2}, errHelloWithCSC},
 		{"RESET", []interface{}{"reset"}, errResetWithCSC},
+		{"SUBSCRIBE", []interface{}{"subscribe", "channel"}, errSubscribeWithCSC},
+		{"PSUBSCRIBE", []interface{}{"psubscribe", "channel:*"}, errSubscribeWithCSC},
+		{"SSUBSCRIBE", []interface{}{"ssubscribe", "channel"}, errSubscribeWithCSC},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,6 +288,14 @@ func TestConnectionStateCommandsRejectedWithCSC(t *testing.T) {
 	})
 	if !errors.Is(err, errHelloWithCSC) {
 		t.Fatalf("pipelined HELLO 2 must be rejected with CSC enabled, got %v", err)
+	}
+
+	_, err = c.Pipelined(ctx, func(pipe Pipeliner) error {
+		pipe.Do(ctx, "subscribe", "channel")
+		return nil
+	})
+	if !errors.Is(err, errSubscribeWithCSC) {
+		t.Fatalf("pipelined SUBSCRIBE must be rejected with CSC enabled, got %v", err)
 	}
 
 	// Bare HELLO only reports connection properties and does not change

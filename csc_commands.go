@@ -75,7 +75,7 @@ func isCacheable(cmd Cmder) bool {
 
 // sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
 // (case-insensitive), scanning past the command name and key. stringArg
-// normalizes string and []byte args alike.
+// normalizes string, *string, and []byte tokens.
 func sortROHasByGet(cmd Cmder) bool {
 	for i := 2; i < len(cmd.Args()); i++ {
 		if s := cmd.stringArg(i); strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
@@ -86,8 +86,8 @@ func sortROHasByGet(cmd Cmder) bool {
 }
 
 // isClientTrackingCmd reports whether cmd is a CLIENT TRACKING subcommand (any
-// mode: ON, OFF, or with options), with string or []byte args — Name and
-// stringArg normalize both.
+// mode: ON, OFF, or with options). Name and stringArg normalize string,
+// *string, and []byte arguments.
 func isClientTrackingCmd(cmd Cmder) bool {
 	return cmd.Name() == "client" && strings.EqualFold(cmd.stringArg(1), "tracking")
 }
@@ -100,9 +100,8 @@ func isSelectCmd(cmd Cmder) bool {
 }
 
 // isAuthCmd reports whether cmd changes the authenticated user on its
-// connection. CSC entries are shared across the pool and are not namespaced by
-// ACL identity, so runtime authentication could otherwise serve a value fetched
-// under a different user's permissions.
+// connection. The cache namespace is fixed from Options.Username, so runtime
+// authentication would make the connection identity diverge from it.
 func isAuthCmd(cmd Cmder) bool {
 	return cmd.Name() == "auth"
 }
@@ -119,6 +118,19 @@ func isProtocolChangingHelloCmd(cmd Cmder) bool {
 // other state that a pooled CSC connection relies on.
 func isResetCmd(cmd Cmder) bool {
 	return cmd.Name() == "reset"
+}
+
+// isSubscribeCmd reports whether a raw command would turn an ordinary pooled
+// connection into a Pub/Sub connection. Pub/Sub pushes are deliberately left
+// for the dedicated PubSub reader, so the CSC drainer cannot safely own such a
+// connection.
+func isSubscribeCmd(cmd Cmder) bool {
+	switch cmd.Name() {
+	case "subscribe", "psubscribe", "ssubscribe":
+		return true
+	default:
+		return false
+	}
 }
 
 // buildCacheKey returns the RESP-encoded form of the command's argument list,

@@ -1154,6 +1154,16 @@ func (c *baseClient) disableMaintNotificationsUpgrades() error {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
+	if h := c.cscDrainHandle; h != nil {
+		h.closeOnce.Do(func() {
+			h.closeErr = c.closeResources()
+		})
+		return h.closeErr
+	}
+	return c.closeResources()
+}
+
+func (c *baseClient) closeResources() error {
 	var firstErr error
 
 	// CSC teardown (no-op when CSC is not active): stop the background
@@ -1921,6 +1931,7 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	}
 
 	handlerCtx := c.pushNotificationHandlerContext(cn)
+	handlerCtx.Client = cscHandlerClient{baseClient: c}
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})

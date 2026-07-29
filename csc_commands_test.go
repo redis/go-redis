@@ -386,4 +386,8 @@ func TestIsCacheable_SortRO_ByGetExcluded(t *testing.T) {
 	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "By", "weight_*", "ALPHA"); isCacheable(cmd) {
 		t.Error("SORT_RO with BY among other options must not be cacheable")
 	}
+	by := "BY"
+	if cmd := makeCmd("sort_ro", "mylist", &by, "weight_*"); isCacheable(cmd) {
+		t.Error("SORT_RO with pointer-encoded BY must not be cacheable")
+	}
 }
