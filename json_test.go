@@ -21,12 +21,14 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 	var client *redis.Client
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	AfterEach(func() {
@@ -787,12 +789,14 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 	var ctx = context.Background()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion, // Setting RESP2 or RESP3 protocol
 			UnstableResp3: true,            // Enable RESP3 features
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	AfterEach(func() {
