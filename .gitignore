@@ -17,6 +17,3 @@ maintenanceNotifications/docs/
 # Docker-generated files (TLS certificates, cluster data, etc.)
 dockers/*/tls/
 dockers/osscluster-tls/
-
-bench/
-docs/
