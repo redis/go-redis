@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"EXISTS", "TYPE", "SORT_RO", "LCS",
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
-		"XLEN", "XPENDING", "XRANGE", "XREAD", "XREVRANGE",
+		"XLEN", "XRANGE", "XREVRANGE",
 		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
@@ -63,12 +64,144 @@ func TestIsCacheable_WriteCommandsRejected(t *testing.T) {
 	}
 }
 
+func TestIsCacheable_XReadRejected(t *testing.T) {
+	// XREAD supports BLOCK and state-relative $/+ IDs, so it must not be cached.
+	cmd := makeCmd("XREAD", "COUNT", "5", "STREAMS", "s", "0")
+	if isCacheable(cmd) {
+		t.Error("expected XREAD to NOT be cacheable")
+	}
+}
+
+// TestExtractRedisKeys_WireFaithfulTypesOnly: the invalidation index must hold
+// keys exactly as proto.Writer sends them, or the server's invalidation pushes
+// never match and stale entries are served forever. Types whose fmt.Sprint
+// rendering diverges from the wire form (pointers, bools, durations, floats...)
+// must make extraction fail (want nil) so the command is served uncached.
+func TestExtractRedisKeys_WireFaithfulTypesOnly(t *testing.T) {
+	key := "real-key"
+	cases := []struct {
+		name string
+		cmd  Cmder
+		want []string
+	}{
+		{"string key", makeCmd("get", "k"), []string{"k"}},
+		{"[]byte key", makeCmd("get", []byte("k")), []string{"k"}},
+		{"int key", makeCmd("get", 123), []string{"123"}},
+		{"uint64 key", makeCmd("get", uint64(7)), []string{"7"}},
+		{"pointer key", makeCmd("get", &key), nil},
+		{"bool key", makeCmd("get", true), nil},
+		{"float key", makeCmd("get", 1.5), nil},
+		// Multi-key commands: one divergent key poisons the whole extraction.
+		{"mget with pointer key", makeCmd("mget", "a", &key, "b"), nil},
+		{"mget with string keys", makeCmd("mget", "a", "b"), []string{"a", "b"}},
+	}
+	for _, tc := range cases {
+		got := extractRedisKeys(tc.cmd)
+		if len(got) != len(tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+func TestIsCacheable_XPendingRejected(t *testing.T) {
+	// XPENDING's extended form returns wall-clock-relative idle times and its
+	// IDLE filter is time-dependent, so it must not be cached.
+	for _, cmd := range []Cmder{
+		makeCmd("XPENDING", "s", "grp"),
+		makeCmd("XPENDING", "s", "grp", "IDLE", "9000", "-", "+", "10"),
+	} {
+		if isCacheable(cmd) {
+			t.Errorf("expected %v to NOT be cacheable", cmd.Args())
+		}
+	}
+}
+
 func TestIsCacheable_KeylessCommandRejected(t *testing.T) {
 	// PING has no keys; even if someone added it to the allow-list it
 	// should be rejected because cmdFirstKeyPos returns 0.
 	cmd := makeCmd("ping")
 	if isCacheable(cmd) {
 		t.Error("expected keyless command PING to NOT be cacheable")
+	}
+}
+
+func TestIsCacheable_RawWriteToRejected(t *testing.T) {
+	cmd := NewRawWriteToCmd(context.Background(), &bytes.Buffer{}, "get", "k")
+	if isCacheable(cmd) {
+		t.Fatal("RawWriteToCmd must bypass CSC to preserve direct streaming")
+	}
+}
+
+func TestIsSelectCmd(t *testing.T) {
+	for _, cmd := range []Cmder{
+		makeCmd("select", 1),
+		makeCmd("SELECT", 1),
+		makeCmd([]byte("select"), 1),
+	} {
+		if !isSelectCmd(cmd) {
+			t.Errorf("expected %v to match SELECT", cmd.Args())
+		}
+	}
+	for _, cmd := range []Cmder{
+		makeCmd("get", "select"),
+		makeCmd("swapdb", 0, 1),
+	} {
+		if isSelectCmd(cmd) {
+			t.Errorf("expected %v not to match SELECT", cmd.Args())
+		}
+	}
+}
+
+func TestCSCStateCommandMatchers(t *testing.T) {
+	for _, cmd := range []Cmder{
+		makeCmd("auth", "password"),
+		makeCmd("AUTH", "user", "password"),
+		makeCmd([]byte("auth"), "password"),
+	} {
+		if !isAuthCmd(cmd) {
+			t.Errorf("expected %v to match AUTH", cmd.Args())
+		}
+	}
+	if isAuthCmd(makeCmd("get", "auth")) {
+		t.Fatal("GET auth must not match AUTH")
+	}
+
+	for _, cmd := range []Cmder{
+		makeCmd("hello", 2),
+		makeCmd("HELLO", 3),
+		makeCmd([]byte("hello"), []byte("2")),
+	} {
+		if !isProtocolChangingHelloCmd(cmd) {
+			t.Errorf("expected %v to match state-changing HELLO", cmd.Args())
+		}
+	}
+	for _, cmd := range []Cmder{
+		makeCmd("hello"),
+		makeCmd("get", "hello"),
+	} {
+		if isProtocolChangingHelloCmd(cmd) {
+			t.Errorf("expected %v not to match state-changing HELLO", cmd.Args())
+		}
+	}
+
+	for _, cmd := range []Cmder{
+		makeCmd("reset"),
+		makeCmd("RESET"),
+		makeCmd([]byte("reset")),
+	} {
+		if !isResetCmd(cmd) {
+			t.Errorf("expected %v to match RESET", cmd.Args())
+		}
+	}
+	if isResetCmd(makeCmd("config", "resetstat")) {
+		t.Fatal("CONFIG RESETSTAT must not match RESET")
 	}
 }
 
@@ -83,19 +216,19 @@ func TestIsCacheable_EmptyArgs(t *testing.T) {
 
 func TestBuildCacheKey_SimpleGet(t *testing.T) {
 	cmd := makeCmd("GET", "foo")
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key")
 	}
 	// Same command must produce identical keys.
-	if key2 := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
+	if key2, _ := buildCacheKey(makeCmd("GET", "foo")); key != key2 {
 		t.Errorf("identical commands produced different keys: %q vs %q", key, key2)
 	}
 }
 
 func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("GET", "foo"))
-	k2 := buildCacheKey(makeCmd("GET", "bar"))
+	k1, _ := buildCacheKey(makeCmd("GET", "foo"))
+	k2, _ := buildCacheKey(makeCmd("GET", "bar"))
 	if k1 == k2 {
 		t.Error("different keys must produce different cache keys")
 	}
@@ -103,8 +236,8 @@ func TestBuildCacheKey_DifferentArgsDiffer(t *testing.T) {
 
 func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 	// "a|b" as one arg vs "a" and "b" as two args must differ.
-	k1 := buildCacheKey(makeCmd("GET", "a|b"))
-	k2 := buildCacheKey(makeCmd("GET", "a", "b"))
+	k1, _ := buildCacheKey(makeCmd("GET", "a|b"))
+	k2, _ := buildCacheKey(makeCmd("GET", "a", "b"))
 	if k1 == k2 {
 		t.Error("length-prefixing should prevent separator collision")
 	}
@@ -112,15 +245,15 @@ func TestBuildCacheKey_CollisionSafety(t *testing.T) {
 
 func TestBuildCacheKey_BinaryData(t *testing.T) {
 	cmd := makeCmd("GET", []byte{0x00, 0x01, 0xff})
-	key := buildCacheKey(cmd)
-	if key == "" {
+	key, ok := buildCacheKey(cmd)
+	if !ok || key == "" {
 		t.Fatal("expected non-empty cache key for binary argument")
 	}
 }
 
 func TestBuildCacheKey_MultiKey(t *testing.T) {
-	k1 := buildCacheKey(makeCmd("MGET", "a", "b"))
-	k2 := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
+	k1, _ := buildCacheKey(makeCmd("MGET", "a", "b"))
+	k2, _ := buildCacheKey(makeCmd("MGET", "a", "b", "c"))
 	if k1 == k2 {
 		t.Error("different arg counts must produce different cache keys")
 	}
@@ -128,8 +261,8 @@ func TestBuildCacheKey_MultiKey(t *testing.T) {
 
 func TestBuildCacheKey_EmptyArgs(t *testing.T) {
 	cmd := makeCmd()
-	if key := buildCacheKey(cmd); key != "" {
-		t.Errorf("expected empty cache key for no-args command, got %q", key)
+	if key, ok := buildCacheKey(cmd); ok || key != "" {
+		t.Errorf("expected empty cache key for no-args command, got %q (ok=%v)", key, ok)
 	}
 }
 
@@ -229,19 +362,32 @@ func TestExtractRedisKeys_JSONMGet(t *testing.T) {
 	}
 }
 
-func TestExtractRedisKeys_XREAD(t *testing.T) {
-	// XREAD COUNT 10 STREAMS stream1 stream2 0 0
-	cmd := makeCmd("XREAD", "COUNT", 10, "STREAMS", "s1", "s2", "0", "0")
-	keys := extractRedisKeys(cmd)
-	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
-		t.Errorf("XREAD: expected [s1 s2], got %v", keys)
-	}
-}
-
 func TestExtractRedisKeys_KeylessCommand(t *testing.T) {
 	cmd := makeCmd("ping")
 	keys := extractRedisKeys(cmd)
 	if keys != nil {
 		t.Errorf("expected nil for keyless command, got %v", keys)
+	}
+}
+
+func TestIsCacheable_SortRO_ByGetExcluded(t *testing.T) {
+	// Plain SORT_RO reads only the sorted key: cacheable.
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA"); !isCacheable(cmd) {
+		t.Error("plain SORT_RO should be cacheable")
+	}
+	// BY/GET forms read pattern-derived keys the reverse index cannot cover:
+	// their invalidations would be dropped, serving stale results forever.
+	if cmd := makeCmd("sort_ro", "mylist", "BY", "weight_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... BY must not be cacheable")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "get", "obj_*"); isCacheable(cmd) {
+		t.Error("SORT_RO ... GET must not be cacheable (case-insensitive)")
+	}
+	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "By", "weight_*", "ALPHA"); isCacheable(cmd) {
+		t.Error("SORT_RO with BY among other options must not be cacheable")
+	}
+	by := "BY"
+	if cmd := makeCmd("sort_ro", "mylist", &by, "weight_*"); isCacheable(cmd) {
+		t.Error("SORT_RO with pointer-encoded BY must not be cacheable")
 	}
 }

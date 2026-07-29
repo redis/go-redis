@@ -1,224 +1,257 @@
 package redis
 
 import (
-	"fmt"
+	"bytes"
 	"strconv"
 	"strings"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // defaultCacheableCommands is the allow-list of read-only, deterministic
-// commands whose responses may be stored in the client-side cache.
-// Only commands in this set are eligible for caching (opt-in at the client level).
-// This matches the redis-py DEFAULT_ALLOW_LIST.
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
+// commands whose responses may be stored in the client-side cache. Keys are
+// lowercase to match baseCmd.Name() on the hot path.
 var defaultCacheableCommands = map[string]struct{}{
 	// String commands
-	"GET": {}, "MGET": {}, "GETBIT": {}, "GETRANGE": {},
-	"STRLEN": {}, "SUBSTR": {},
+	"get": {}, "mget": {}, "getbit": {}, "getrange": {},
+	"strlen": {}, "substr": {},
 	// Hash commands
-	"HGET": {}, "HGETALL": {}, "HMGET": {},
-	"HKEYS": {}, "HVALS": {}, "HLEN": {},
-	"HEXISTS": {}, "HSTRLEN": {},
+	"hget": {}, "hgetall": {}, "hmget": {},
+	"hkeys": {}, "hvals": {}, "hlen": {},
+	"hexists": {}, "hstrlen": {},
 	// List commands
-	"LINDEX": {}, "LLEN": {}, "LPOS": {}, "LRANGE": {},
+	"lindex": {}, "llen": {}, "lpos": {}, "lrange": {},
 	// Set commands
-	"SCARD": {}, "SISMEMBER": {}, "SMEMBERS": {}, "SMISMEMBER": {},
-	"SDIFF": {}, "SINTER": {}, "SINTERCARD": {}, "SUNION": {},
+	"scard": {}, "sismember": {}, "smembers": {}, "smismember": {},
+	"sdiff": {}, "sinter": {}, "sintercard": {}, "sunion": {},
 	// Sorted-set commands
-	"ZCARD": {}, "ZCOUNT": {}, "ZLEXCOUNT": {}, "ZMSCORE": {},
-	"ZRANGE": {}, "ZRANGEBYLEX": {}, "ZRANGEBYSCORE": {},
-	"ZRANK": {}, "ZREVRANGE": {}, "ZREVRANGEBYLEX": {},
-	"ZREVRANGEBYSCORE": {}, "ZREVRANK": {}, "ZSCORE": {},
-	"ZDIFF": {}, "ZINTER": {}, "ZUNION": {},
+	"zcard": {}, "zcount": {}, "zlexcount": {}, "zmscore": {},
+	"zrange": {}, "zrangebylex": {}, "zrangebyscore": {},
+	"zrank": {}, "zrevrange": {}, "zrevrangebylex": {},
+	"zrevrangebyscore": {}, "zrevrank": {}, "zscore": {},
+	"zdiff": {}, "zinter": {}, "zunion": {},
 	// Bit commands
-	"BITCOUNT": {}, "BITFIELD_RO": {}, "BITPOS": {},
+	"bitcount": {}, "bitfield_ro": {}, "bitpos": {},
 	// Key/generic commands
-	"EXISTS": {}, "TYPE": {}, "SORT_RO": {}, "LCS": {},
+	"exists": {}, "type": {}, "sort_ro": {}, "lcs": {},
 	// Geo commands
-	"GEODIST": {}, "GEOHASH": {}, "GEOPOS": {}, "GEOSEARCH": {},
-	"GEORADIUSBYMEMBER_RO": {}, "GEORADIUS_RO": {},
-	// Stream commands
-	"XLEN": {}, "XPENDING": {}, "XRANGE": {}, "XREAD": {}, "XREVRANGE": {},
+	"geodist": {}, "geohash": {}, "geopos": {}, "geosearch": {},
+	"georadiusbymember_ro": {}, "georadius_ro": {},
+	// Stream commands. XREAD is deliberately excluded: it supports BLOCK, and
+	// its $/+ IDs are state-relative, so identical args are not deterministic.
+	// XPENDING is excluded for the same class of reason: its extended form
+	// returns wall-clock-relative idle times and its IDLE filter is
+	// time-dependent, so identical args yield different correct results with
+	// no key modification (and therefore no invalidation).
+	"xlen": {}, "xrange": {}, "xrevrange": {},
 	// JSON (RedisJSON) commands
-	"JSON.GET": {}, "JSON.MGET": {}, "JSON.ARRINDEX": {}, "JSON.ARRLEN": {},
-	"JSON.OBJKEYS": {}, "JSON.OBJLEN": {}, "JSON.RESP": {},
-	"JSON.STRLEN": {}, "JSON.TYPE": {},
+	"json.get": {}, "json.mget": {}, "json.arrindex": {}, "json.arrlen": {},
+	"json.objkeys": {}, "json.objlen": {}, "json.resp": {},
+	"json.strlen": {}, "json.type": {},
 	// TimeSeries commands
-	"TS.GET": {}, "TS.INFO": {}, "TS.RANGE": {}, "TS.REVRANGE": {},
+	"ts.get": {}, "ts.info": {}, "ts.range": {}, "ts.revrange": {},
 }
 
-// cscSeparator is used to join command arguments into a flat cache key.
-// The pipe character is chosen because it is unlikely to appear in Redis
-// keys under normal usage, and length-prefixing each segment prevents
-// collisions even when arguments contain the separator character.
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
-const cscSeparator = "|"
-
-// isCacheable reports whether cmd is eligible for client-side caching.
-// A command is cacheable when:
-//  1. Its uppercased name appears in the defaultCacheableCommands allow-list.
-//  2. It operates on at least one key (firstKeyPos > 0).
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
+// isCacheable reports whether cmd is eligible for client-side caching: its
+// name is on the allow-list and it operates on at least one key.
 func isCacheable(cmd Cmder) bool {
-	name := strings.ToUpper(cmd.Name())
-	if _, ok := defaultCacheableCommands[name]; !ok {
+	// Commands such as RawWriteToCmd stream replies directly to an io.Writer.
+	// Capturing their replies for CSC would buffer the entire response first,
+	// defeating their streaming and allocation guarantees.
+	if cmd.NoRetry() {
 		return false
 	}
-	// Ensure the command actually has keys.
-	if cmdFirstKeyPos(cmd) == 0 {
+	if _, ok := defaultCacheableCommands[cmd.Name()]; !ok {
 		return false
 	}
-	return true
+	// SORT_RO ... BY/GET reads pattern keys that extractRedisKeys can't
+	// enumerate, so its invalidations would be dropped and the result go stale.
+	// Plain SORT_RO is fine.
+	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
+		return false
+	}
+	return cmdFirstKeyPos(cmd) != 0
 }
 
-// buildCacheKey constructs a unique, collision-free string that identifies a
-// command together with all of its arguments.
-// Format: "len:COMMAND|len:arg1|len:arg2|..."
-// Each segment is length-prefixed ("len:value") so that arguments containing
-// the separator character or binary data cannot collide with a different
-// argument list.  For example, the two calls
-//
-//	buildCacheKey(["GET", "a|b"])   -> "3:GET|3:a|b"
-//	buildCacheKey(["GET", "a", "b"]) -> "3:GET|1:a|1:b"
-//
-// produce distinct keys.
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
-func buildCacheKey(cmd Cmder) string {
+// sortROHasByGet reports whether a SORT_RO invocation uses BY or GET
+// (case-insensitive), scanning past the command name and key. stringArg
+// normalizes string, *string, and []byte tokens.
+func sortROHasByGet(cmd Cmder) bool {
+	for i := 2; i < len(cmd.Args()); i++ {
+		if s := cmd.stringArg(i); strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
+			return true
+		}
+	}
+	return false
+}
+
+// isClientTrackingCmd reports whether cmd is a CLIENT TRACKING subcommand (any
+// mode: ON, OFF, or with options). Name and stringArg normalize string,
+// *string, and []byte arguments.
+func isClientTrackingCmd(cmd Cmder) bool {
+	return cmd.Name() == "client" && strings.EqualFold(cmd.stringArg(1), "tracking")
+}
+
+// isSelectCmd reports whether cmd changes the selected database on its
+// connection. CSC keys are namespaced with Options.DB, so a runtime SELECT
+// would make the connection's actual database diverge from the cache namespace.
+func isSelectCmd(cmd Cmder) bool {
+	return cmd.Name() == "select"
+}
+
+// isAuthCmd reports whether cmd changes the authenticated user on its
+// connection. The cache namespace is fixed from Options.Username, so runtime
+// authentication would make the connection identity diverge from it.
+func isAuthCmd(cmd Cmder) bool {
+	return cmd.Name() == "auth"
+}
+
+// isProtocolChangingHelloCmd reports whether HELLO includes a protocol version
+// (and can therefore switch a tracked RESP3 connection to RESP2). A bare HELLO
+// only reports connection properties and is safe.
+func isProtocolChangingHelloCmd(cmd Cmder) bool {
+	return cmd.Name() == "hello" && len(cmd.Args()) > 1
+}
+
+// isResetCmd reports whether cmd resets all server-side connection state.
+// RESET disables tracking, switches to RESP2, deauthenticates, and changes
+// other state that a pooled CSC connection relies on.
+func isResetCmd(cmd Cmder) bool {
+	return cmd.Name() == "reset"
+}
+
+// isSubscribeCmd reports whether a raw command would turn an ordinary pooled
+// connection into a Pub/Sub connection. Pub/Sub pushes are deliberately left
+// for the dedicated PubSub reader, so the CSC drainer cannot safely own such a
+// connection.
+func isSubscribeCmd(cmd Cmder) bool {
+	switch cmd.Name() {
+	case "subscribe", "psubscribe", "ssubscribe":
+		return true
+	default:
+		return false
+	}
+}
+
+// buildCacheKey returns the RESP-encoded form of the command's argument list,
+// used as a collision-free canonical cache key. ok is false when the writer
+// cannot marshal the arguments, in which case the caller must skip caching
+// rather than bucket the command under an empty key.
+func buildCacheKey(cmd Cmder) (string, bool) {
 	args := cmd.Args()
 	if len(args) == 0 {
-		return ""
+		return "", false
 	}
-
-	var b strings.Builder
-	// Pre-allocate a reasonable capacity to reduce allocations.
-	b.Grow(64)
-
-	for i, arg := range args {
-		if i > 0 {
-			b.WriteString(cscSeparator)
-		}
-		s := argToString(arg)
-		// Length-prefix each segment for collision safety.
-		b.WriteString(strconv.Itoa(len(s)))
-		b.WriteByte(':')
-		b.WriteString(s)
+	var buf bytes.Buffer
+	if err := proto.NewWriter(&buf).WriteArgs(args); err != nil {
+		return "", false
 	}
-	return b.String()
+	return buf.String(), true
 }
 
-// extractRedisKeys returns the Redis key arguments from cmd by using the
-// command's key-position metadata and per-command knowledge of the argument
-// layout.
-//
-// This is used to populate the CacheEntry.RedisKeys slice so that the
-// localCache.byRedisKey index can map server-side invalidation messages
-// (which reference Redis keys) back to the affected cache entries.
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
+// keyArg renders the key argument at pos exactly as proto.Writer sends it to
+// the server, so invalidation lookups match the key names in the server's
+// "invalidate" pushes. Only types whose stringArg rendering is byte-identical
+// to the wire encoding are accepted (fmt.Sprint of any integer matches the
+// writer's base-10 strconv output); for anything else — pointers, bools,
+// times, durations, floats, BinaryMarshaler values — the rendering can
+// diverge, the invalidation would never match, and the entry would be served
+// stale forever, so ok=false and the caller skips caching (see processCached).
+func keyArg(cmd Cmder, pos int) (string, bool) {
+	args := cmd.Args()
+	if pos < 0 || pos >= len(args) {
+		return "", false
+	}
+	switch args[pos].(type) {
+	case string, []byte,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return cmd.stringArg(pos), true
+	}
+	return "", false
+}
+
+// extractRedisKeys returns the Redis key arguments from cmd. The result
+// populates CacheEntry.RedisKeys so the cache can map incoming invalidations
+// back to affected entries. Returns nil (caller skips caching) when any key
+// argument cannot be rendered in its wire form (see keyArg).
 func extractRedisKeys(cmd Cmder) []string {
 	firstKey := cmdFirstKeyPos(cmd)
 	if firstKey == 0 {
 		return nil
 	}
 
-	args := cmd.Args()
-	if firstKey >= len(args) {
+	argsLen := len(cmd.Args())
+	if firstKey >= argsLen {
 		return nil
 	}
 
-	name := strings.ToUpper(cmd.Name())
-
-	switch name {
+	switch cmd.Name() {
 	// All remaining args from firstKeyPos are keys.
-	case "MGET", "EXISTS", "SDIFF", "SINTER", "SUNION":
-		keys := make([]string, 0, len(args)-firstKey)
-		for i := firstKey; i < len(args); i++ {
-			keys = append(keys, argToString(args[i]))
+	case "mget", "exists", "sdiff", "sinter", "sunion":
+		keys := make([]string, 0, argsLen-firstKey)
+		for i := firstKey; i < argsLen; i++ {
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
+			}
+			keys = append(keys, k)
 		}
 		return keys
 
 	// Numkeys pattern: numkeys at args[1], keys from args[2].
-	case "SINTERCARD", "ZDIFF", "ZINTER", "ZUNION":
-		if len(args) < 3 {
+	case "sintercard", "zdiff", "zinter", "zunion":
+		if argsLen < 3 {
 			return nil
 		}
-		numKeys, err := strconv.Atoi(argToString(args[1]))
+		numKeys, err := strconv.Atoi(cmd.stringArg(1))
 		if err != nil || numKeys <= 0 {
 			return nil
 		}
 		keys := make([]string, 0, numKeys)
-		for i := 2; i < 2+numKeys && i < len(args); i++ {
-			keys = append(keys, argToString(args[i]))
+		for i := 2; i < 2+numKeys && i < argsLen; i++ {
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
+			}
+			keys = append(keys, k)
 		}
 		return keys
 
 	// LCS: exactly two consecutive keys starting at firstKeyPos.
-	case "LCS":
-		keys := make([]string, 0, 2)
-		for i := firstKey; i < firstKey+2 && i < len(args); i++ {
-			keys = append(keys, argToString(args[i]))
+	case "lcs":
+		if firstKey+1 >= argsLen {
+			return nil
 		}
-		return keys
+		k1, ok1 := keyArg(cmd, firstKey)
+		k2, ok2 := keyArg(cmd, firstKey+1)
+		if !ok1 || !ok2 {
+			return nil
+		}
+		return []string{k1, k2}
 
 	// JSON.MGET: keys from firstKeyPos to second-to-last (last arg is the
 	// JSON path, not a key).
-	case "JSON.MGET":
-		lastKey := len(args) - 2
+	case "json.mget":
+		lastKey := argsLen - 2
 		if lastKey < firstKey {
-			lastKey = firstKey
+			return nil
 		}
 		keys := make([]string, 0, lastKey-firstKey+1)
 		for i := firstKey; i <= lastKey; i++ {
-			keys = append(keys, argToString(args[i]))
-		}
-		return keys
-
-	// XREAD: keys appear after the STREAMS keyword; the second half of the
-	// remaining args are stream IDs, not keys.
-	case "XREAD":
-		streamsIdx := -1
-		for i, arg := range args {
-			if strings.ToUpper(argToString(arg)) == "STREAMS" {
-				streamsIdx = i
-				break
+			k, ok := keyArg(cmd, i)
+			if !ok {
+				return nil
 			}
-		}
-		if streamsIdx < 0 || streamsIdx >= len(args)-1 {
-			return nil
-		}
-		remaining := len(args) - streamsIdx - 1
-		numStreams := remaining / 2
-		if numStreams <= 0 {
-			return nil
-		}
-		keys := make([]string, numStreams)
-		for i := 0; i < numStreams; i++ {
-			keys[i] = argToString(args[streamsIdx+1+i])
+			keys = append(keys, k)
 		}
 		return keys
 	}
 
-	// Default: single key at firstKeyPos.
-	// This is correct for the majority of cacheable commands (GET, HGET,
-	// LRANGE, ZCARD, ZCOUNT, BITCOUNT, etc.) which have exactly one key
-	// followed by non-key arguments (field names, indices, scores, etc.).
-	return []string{argToString(args[firstKey])}
-}
-
-// argToString converts a command argument to its string representation.
-//
-//nolint:unused // Will be used by the CSC integration in _process hot path.
-func argToString(arg interface{}) string {
-	switch v := arg.(type) {
-	case string:
-		return v
-	case []byte:
-		return string(v)
-	default:
-		return fmt.Sprint(v)
+	// Single key at firstKeyPos (GET, HGET, LRANGE, ...).
+	k, ok := keyArg(cmd, firstKey)
+	if !ok {
+		return nil
 	}
+	return []string{k}
 }

@@ -123,6 +123,24 @@ type Conn struct {
 	initConnFunc func(context.Context, *Conn) error
 
 	onClose func() error
+
+	// onCscClose is the client-side-caching close hook, kept separate from
+	// onClose (streaming-credentials cleanup) so neither clobbers the other.
+	// Both keep overwrite semantics, so re-running initConn can't accumulate them.
+	onCscClose func() error
+
+	// onCscReinit runs after the connection is claimed for reinitialization but
+	// before its socket is replaced. CSC uses it to invalidate entries whose
+	// server-side tracking coverage belongs to the old socket.
+	onCscReinit func()
+
+	// cscReadPending requests one conservative drain after a command read through
+	// a transport whose buffered state cannot be fully observed by MaybeHasData.
+	cscReadPending atomic.Bool
+
+	// lastCscPeriodicProbeNs throttles bounded fallback reads on platforms and
+	// opaque transports without a non-consuming readiness mechanism.
+	lastCscPeriodicProbeNs atomic.Int64
 }
 
 func NewConn(netConn net.Conn) *Conn {
@@ -580,6 +598,18 @@ func (cn *Conn) SetOnClose(fn func() error) {
 	cn.onClose = fn
 }
 
+// SetOnCscClose sets the client-side-caching close hook, overwriting any
+// previous one. It runs on Close in addition to the SetOnClose callback.
+func (cn *Conn) SetOnCscClose(fn func() error) {
+	cn.onCscClose = fn
+}
+
+// SetOnCscReinit sets the client-side-caching pre-reinitialization hook,
+// overwriting any previous one.
+func (cn *Conn) SetOnCscReinit(fn func()) {
+	cn.onCscReinit = fn
+}
+
 // SetInitConnFunc sets the connection initialization function to be called on reconnections.
 func (cn *Conn) SetInitConnFunc(fn func(context.Context, *Conn) error) {
 	cn.initConnFunc = fn
@@ -634,6 +664,10 @@ func (cn *Conn) SetNetConnAndInitConn(ctx context.Context, netConn net.Conn) err
 	)
 	if err != nil {
 		return fmt.Errorf("cannot initialize connection from state %s: %w", finalState, err)
+	}
+
+	if cn.onCscReinit != nil {
+		cn.onCscReinit()
 	}
 
 	// Replace the underlying connection
@@ -849,6 +883,22 @@ func (cn *Conn) WithReader(
 	return fn(cn.rd)
 }
 
+// WithReaderHardDeadline runs fn under a HARD read deadline of now+timeout,
+// bypassing getEffectiveReadTimeout so a relaxed maintenance timeout can't extend
+// it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
+// become the socket deadline, or the read surfaces context.DeadlineExceeded, which
+// isBadConn treats as fatal.
+func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.Reader) error) error {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return errConnectionNotAvailable
+	}
+	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	return fn(cn.rd)
+}
+
 func (cn *Conn) WithWriter(
 	ctx context.Context, timeout time.Duration, fn func(wr *proto.Writer) error,
 ) error {
@@ -895,6 +945,10 @@ func (cn *Conn) Close() error {
 		// ignore error
 		_ = cn.onClose()
 	}
+	if cn.onCscClose != nil {
+		// ignore error
+		_ = cn.onCscClose()
+	}
 
 	// Lock-free netConn access for better performance
 	if netConn := cn.getNetConn(); netConn != nil {
@@ -912,6 +966,44 @@ func (cn *Conn) MaybeHasData() bool {
 		return maybeHasData(netConn)
 	}
 	return false
+}
+
+// MarkCscReadPending requests one conservative CSC drain after a command read
+// when the transport may retain data that MaybeHasData cannot observe.
+func (cn *Conn) MarkCscReadPending() {
+	netConn := cn.getNetConn()
+	if netConn == nil {
+		return
+	}
+	if needsCscReadProbe(netConn) {
+		cn.cscReadPending.Store(true)
+	}
+}
+
+// TakeCscReadPending consumes the post-command conservative-drain request.
+func (cn *Conn) TakeCscReadPending() bool {
+	return cn.cscReadPending.Swap(false)
+}
+
+// TakeCscPeriodicReadPending schedules a throttled conservative read for
+// transports with no readiness mechanism. It returns true at most once per
+// interval, including when several drainer passes race.
+func (cn *Conn) TakeCscPeriodicReadPending(interval time.Duration) bool {
+	netConn := cn.getNetConn()
+	if netConn == nil || interval <= 0 || !needsCscPeriodicProbe(netConn) {
+		return false
+	}
+
+	now := time.Now().UnixNano()
+	for {
+		last := cn.lastCscPeriodicProbeNs.Load()
+		if last != 0 && now-last < int64(interval) {
+			return false
+		}
+		if cn.lastCscPeriodicProbeNs.CompareAndSwap(last, now) {
+			return true
+		}
+	}
 }
 
 // deadline computes the effective deadline time based on context and timeout.
