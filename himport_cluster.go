@@ -124,6 +124,8 @@ func himportFanOutDiscardAll(ctx context.Context, registry *himportRegistry, for
 // connections the fan-out missed.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *ClusterClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
 	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
 	himportFanOutPrepare(ctx, c.himport, c.ForEachMaster, cmd)
@@ -136,6 +138,8 @@ func (c *ClusterClient) HImportPrepare(ctx context.Context, fieldsetName string,
 // fieldset was registered on this client and is now removed.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *ClusterClient) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
 	cmd := NewHImportDiscardCmd(ctx, fieldsetName)
 	himportFanOutDiscard(ctx, c.himport, c.ForEachMaster, cmd)
@@ -148,6 +152,8 @@ func (c *ClusterClient) HImportDiscard(ctx context.Context, fieldsetName string)
 // fieldsets removed from the registry.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *ClusterClient) HImportDiscardAll(ctx context.Context) *IntCmd {
 	cmd := NewHImportDiscardAllCmd(ctx)
 	himportFanOutDiscardAll(ctx, c.himport, c.ForEachMaster, cmd)
@@ -161,6 +167,8 @@ func (c *ClusterClient) HImportDiscardAll(ctx context.Context) *IntCmd {
 // HashCmdable.HImportPrepare (cmdable) for the fieldset semantics.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *Ring) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
 	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
 	himportFanOutPrepare(ctx, c.opt.himport, c.ForEachShard, cmd)
@@ -173,6 +181,8 @@ func (c *Ring) HImportPrepare(ctx context.Context, fieldsetName string, fields .
 // fieldset was registered on this client and is now removed.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *Ring) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
 	cmd := NewHImportDiscardCmd(ctx, fieldsetName)
 	himportFanOutDiscard(ctx, c.opt.himport, c.ForEachShard, cmd)
@@ -185,6 +195,8 @@ func (c *Ring) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd 
 // fieldsets removed from the registry.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c *Ring) HImportDiscardAll(ctx context.Context) *IntCmd {
 	cmd := NewHImportDiscardAllCmd(ctx)
 	himportFanOutDiscardAll(ctx, c.opt.himport, c.ForEachShard, cmd)

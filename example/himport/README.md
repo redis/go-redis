@@ -3,6 +3,9 @@
 Fast hash ingestion with the HIMPORT command family (hinted hash templates,
 Redis 8.10+).
 
+> **Experimental.** The HIMPORT commands and the typed go-redis API around
+> them are experimental and may change in a future release.
+
 `HIMPORT PREPARE` registers an ordered list of field names (a *fieldset*)
 inside a connection's session; `HIMPORT SET` then creates hashes by sending
 only the values, paired positionally with the prepared fields. The server

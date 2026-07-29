@@ -13,6 +13,9 @@ import "context"
 // lazily replays the PREPARE (at most once per connection session) on any
 // pooled connection about to execute an HImportSet that references it. See
 // himport.go.
+//
+// The whole HIMPORT surface — the typed methods, the HImport*Cmd types and
+// their constructors — is experimental and may be subject to change.
 
 // himportCmder marks HIMPORT commands that participate in client-side
 // fieldset tracking. Process paths do a single interface assertion on the
@@ -165,6 +168,8 @@ func NewHImportDiscardAllCmd(ctx context.Context) *HImportDiscardAllCmd {
 // PREPARE additionally fans out eagerly to all masters/shards.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
 	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
 	_ = c(ctx, cmd)
@@ -198,6 +203,8 @@ func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields
 // succeeds.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, values ...interface{}) *StatusCmd {
 	cmd := NewHImportSetCmd(ctx, key, fieldsetName, values...)
 	_ = c(ctx, cmd)
@@ -218,6 +225,8 @@ func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, value
 // Hashes already created through the fieldset are not affected.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
 	cmd := NewHImportDiscardCmd(ctx, fieldsetName)
 	_ = c(ctx, cmd)
@@ -235,6 +244,8 @@ func (c cmdable) HImportDiscard(ctx context.Context, fieldsetName string) *IntCm
 // earlier replay HIMPORT DISCARDALL before their next HIMPORT command.
 //
 // Requires Redis 8.10 or newer.
+//
+// note: the API is experimental and may be subject to change.
 func (c cmdable) HImportDiscardAll(ctx context.Context) *IntCmd {
 	cmd := NewHImportDiscardAllCmd(ctx)
 	_ = c(ctx, cmd)
