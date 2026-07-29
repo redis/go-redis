@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPeekPushNotificationName tests the updated PeekPushNotificationName method
@@ -780,5 +781,127 @@ func TestPeekPushNotificationName_OverflowingNameLength(t *testing.T) {
 	}
 	if name != "" {
 		t.Fatalf("PeekPushNotificationName: want empty name on error, got %q", name)
+	}
+}
+
+// idleConnReader serves scripted chunks and then blocks on the next Read, the
+// way an idle network connection does. Unlike the bytes/strings readers used
+// elsewhere in this file it never returns io.EOF on its own, so a Peek that
+// asks for more bytes than the server will ever send blocks instead of
+// erroring — the situation of issue #3935.
+type idleConnReader struct {
+	chunks   [][]byte
+	released chan struct{} // closed by the test to unblock a stuck Read
+}
+
+func (r *idleConnReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		<-r.released
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	n := copy(p, chunk)
+	if n == len(chunk) {
+		r.chunks = r.chunks[1:]
+	} else {
+		r.chunks[0] = chunk[n:]
+	}
+	return n, nil
+}
+
+// peekNameWithTimeout runs PeekPushNotificationName in a goroutine and fails
+// the test if it does not return within the deadline, which is how the hang
+// of issue #3935 manifests.
+func peekNameWithTimeout(t *testing.T, rd *Reader) (string, error) {
+	t.Helper()
+
+	type result struct {
+		name string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		name, err := rd.PeekPushNotificationName()
+		done <- result{name, err}
+	}()
+
+	select {
+	case res := <-done:
+		return res.name, res.err
+	case <-time.After(5 * time.Second):
+		t.Fatal("PeekPushNotificationName blocked waiting for bytes the server will not send")
+		return "", nil
+	}
+}
+
+// TestPeekPushNotificationName_ShortFrameIdleConnection reproduces issue
+// #3935: the subscribe confirmation for a channel name of six or fewer
+// characters is a complete push frame shorter than 36 bytes, the fixed
+// initial peek window, and with the connection otherwise idle
+// PeekPushNotificationName blocked forever inside bufio.Reader.Peek waiting
+// for bytes the server had no reason to send. The name must be identified
+// from the bytes actually available.
+func TestPeekPushNotificationName_ShortFrameIdleConnection(t *testing.T) {
+	testCases := []struct {
+		name  string
+		frame string
+		want  string
+	}{
+		// 35 bytes, one short of the old fixed 36-byte peek window.
+		{"subscribe six-char channel", ">3\r\n$9\r\nsubscribe\r\n$6\r\naaaaaa\r\n:1\r\n", "subscribe"},
+		{"subscribe one-char channel", ">3\r\n$9\r\nsubscribe\r\n$1\r\na\r\n:1\r\n", "subscribe"},
+		{"message with short payload", ">3\r\n$7\r\nmessage\r\n$1\r\na\r\n$1\r\nb\r\n", "message"},
+		{"minimal push frame", ">1\r\n$1\r\nx\r\n", "x"},
+		{"simple-string name", ">2\r\n+MOVING\r\n:1\r\n", "MOVING"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := &idleConnReader{
+				chunks:   [][]byte{[]byte(tc.frame)},
+				released: make(chan struct{}),
+			}
+			defer close(src.released)
+			rd := NewReader(src)
+
+			if _, err := rd.PeekReplyType(); err != nil {
+				t.Fatalf("PeekReplyType: %v", err)
+			}
+
+			name, err := peekNameWithTimeout(t, rd)
+			if err != nil {
+				t.Fatalf("PeekPushNotificationName: %v", err)
+			}
+			if name != tc.want {
+				t.Fatalf("PeekPushNotificationName: got %q, want %q", name, tc.want)
+			}
+		})
+	}
+}
+
+// TestPeekPushNotificationName_ByteByByteDelivery feeds the frame one byte
+// per Read, mimicking worst-case TCP fragmentation. The peek loop must keep
+// fetching single bytes until the name is parseable and never demand more
+// than the next byte.
+func TestPeekPushNotificationName_ByteByByteDelivery(t *testing.T) {
+	frame := ">3\r\n$9\r\nsubscribe\r\n$6\r\naaaaaa\r\n:1\r\n"
+	chunks := make([][]byte, 0, len(frame))
+	for i := 0; i < len(frame); i++ {
+		chunks = append(chunks, []byte{frame[i]})
+	}
+	src := &idleConnReader{chunks: chunks, released: make(chan struct{})}
+	defer close(src.released)
+	rd := NewReader(src)
+
+	if _, err := rd.PeekReplyType(); err != nil {
+		t.Fatalf("PeekReplyType: %v", err)
+	}
+
+	name, err := peekNameWithTimeout(t, rd)
+	if err != nil {
+		t.Fatalf("PeekPushNotificationName: %v", err)
+	}
+	if name != "subscribe" {
+		t.Fatalf("PeekPushNotificationName: got %q, want %q", name, "subscribe")
 	}
 }
