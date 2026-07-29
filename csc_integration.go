@@ -3,7 +3,6 @@ package redis
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"runtime"
 	"strconv"
@@ -65,8 +64,8 @@ const (
 // Password rotation does not change identity; provider-backed identities are
 // rejected before attachment.
 func cscNamespacePrefix(db int, username string) string {
-	identity := sha256.Sum256([]byte(username))
-	return strconv.Itoa(db) + cscNamespaceSep + string(identity[:]) + cscNamespaceSep
+	return strconv.Itoa(db) + cscNamespaceSep +
+		strconv.Itoa(len(username)) + ":" + username + cscNamespaceSep
 }
 
 func cscNamespacedKey(prefix, key string) string {
@@ -207,7 +206,7 @@ func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	// Credential providers may return a different ACL identity over the
 	// client's lifetime (or per context/connection), while the cache namespace
 	// is fixed when the client is created. Fixed credentials remain safe because
-	// the ACL username is included in the hashed namespace below.
+	// the ACL username is included in the length-delimited namespace below.
 	if c.opt.StreamingCredentialsProvider != nil ||
 		c.opt.CredentialsProviderContext != nil ||
 		c.opt.CredentialsProvider != nil {

@@ -81,6 +81,7 @@ surface. The API is experimental and may change in a future release.
 - [Scripting](https://redis.uptrace.dev/guide/lua-scripting.html).
 - [Redis Sentinel](https://redis.uptrace.dev/guide/go-redis-sentinel.html).
 - [Redis Cluster](https://redis.uptrace.dev/guide/go-redis-cluster.html).
+- [Client-side caching](#client-side-caching).
 - [Redis Performance Monitoring](https://redis.uptrace.dev/guide/redis-performance-monitoring.html).
 - [Redis Probabilistic [RedisStack]](https://redis.io/docs/data-types/probabilistic/)
 - [Customizable read and write buffers size.](#custom-buffer-sizes)
@@ -284,6 +285,42 @@ rdb := redis.NewClient(&redis.Options{
     Protocol: 3,  // specify 2 for RESP 2 or 3 for RESP 3
 })
 ```
+
+### Client-side caching
+
+go-redis supports server-assisted client-side caching for standalone clients.
+Eligible read replies are stored in the application's memory, so repeated reads
+can avoid a Redis round trip. Redis tracks which keys each connection has read
+and sends RESP3 invalidation notifications when those keys change. go-redis
+uses those notifications to evict affected entries automatically.
+
+Enable the built-in bounded cache with `ClientSideCacheConfig`:
+
+```go
+rdb := redis.NewClient(&redis.Options{
+    Addr:     "localhost:6379",
+    Protocol: 3,
+    DB:       0,
+    ClientSideCacheConfig: &redis.ClientSideCacheConfig{
+        MaxEntries: 10_000,
+    },
+})
+defer rdb.Close()
+```
+
+Client-side caching currently requires RESP3, a standalone client, and database
+0. Fixed `Username` and `Password` values are supported. It is disabled when a
+dynamic credential provider is configured, because cached data must never be
+reused after the client's ACL identity changes. Only deterministic read
+commands supported by the cache are stored; writes and streaming responses
+bypass it.
+
+Invalidations are processed asynchronously. `DrainInterval` controls how often
+idle connections are checked for them, while `MaxStaleness` can provide an
+optional upper bound on an entry's lifetime. See the
+[client-side caching example](./example/client-side-caching) for a runnable
+demonstration and the [CSC strategy guide](./docs/csc-strategy-guide.md) for
+advanced configuration details.
 
 ### Connecting via a redis url
 

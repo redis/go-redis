@@ -324,7 +324,7 @@ type Options struct {
 	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
 	// provider-backed credentials can change the ACL identity after the cache
 	// namespace is selected. Fixed Username/Password values are supported and
-	// included in a hashed cache namespace.
+	// included in the cache namespace.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
 	// ClientSideCache is an explicit Cache implementation used for client-side
@@ -334,7 +334,7 @@ type Options struct {
 	//
 	// A shared Cache is only safe across clients on the same server and DB.
 	// Clients with different fixed Username/Password values are isolated by a
-	// hashed identity namespace.
+	// username namespace.
 	// Client-side caching is restricted to DB 0 and disabled with a warning
 	// otherwise. It is also disabled with any credential provider; see
 	// ClientSideCacheConfig.

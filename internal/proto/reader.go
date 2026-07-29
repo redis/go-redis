@@ -76,7 +76,11 @@ func (r *Reader) Buffered() int {
 	return r.rd.Buffered()
 }
 
-// Size returns the size of the underlying buffer in bytes.
+// Size returns the size of the underlying read buffer.
+func (r *Reader) Size() int {
+	return r.rd.Size()
+}
+
 func (r *Reader) Peek(n int) ([]byte, error) {
 	return r.rd.Peek(n)
 }

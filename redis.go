@@ -1180,18 +1180,6 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
-func (c *baseClient) assertUnstableCommand(cmd Cmder) (bool, error) {
-	switch cmd.(type) {
-	case *AggregateCmd, *FTInfoCmd, *FTSpellCheckCmd, *FTSearchCmd, *FTSynDumpCmd:
-		if c.opt.UnstableResp3 {
-			return true, nil
-		}
-		return false, fmt.Errorf("RESP3 responses for this command are disabled because they may still change. Please set the flag UnstableResp3. See the README and the release notes for guidance")
-	default:
-		return false, nil
-	}
-}
-
 func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (bool, *pool.Conn, error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
@@ -1228,16 +1216,6 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 			return err
 		}
 		readReplyFunc := cmd.readReply
-		// Apply unstable RESP3 search module.
-		if c.opt.Protocol != 2 {
-			useRawReply, err := c.assertUnstableCommand(cmd)
-			if err != nil {
-				return err
-			}
-			if useRawReply {
-				readReplyFunc = cmd.readRawReply
-			}
-		}
 		// When the caller requested raw-reply capture (client-side cache),
 		// read the reply as raw RESP bytes and re-parse them through the
 		// command's normal reply handler. This reuses proto.Reader rather
