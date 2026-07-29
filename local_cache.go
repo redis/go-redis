@@ -36,9 +36,10 @@ type CacheEntry struct {
 	// touch under the shard's RLock without upgrading to a write lock.
 	lastAccessNs atomic.Int64
 
-	// validAtNs is the wall-clock UnixNano when the entry became Valid, used by the
-	// MaxStaleness backstop. Written under Lock (Set/Fulfill), read under RLock (get).
-	validAtNs int64
+	// validAt retains time.Now's monotonic component for the MaxStaleness
+	// backstop, so wall-clock corrections cannot extend an entry's lifetime.
+	// Written under Lock (Set/Fulfill), read under RLock (get).
+	validAt time.Time
 
 	// ownerConnID is the conn that fetched this entry (set by FulfillOwned; 0 =
 	// none). Default CLIENT TRACKING sends a key's invalidation only to that
@@ -196,7 +197,7 @@ func NewLocalCache(cfg CacheConfig) Cache {
 				s.maxMemoryBytes++
 			}
 		}
-		s.maxStalenessNs = int64(cfg.MaxStaleness)
+		s.maxStaleness = cfg.MaxStaleness
 		s.sizer = sizer
 		s.staleTimeout = staleTimeout
 	}
@@ -229,7 +230,7 @@ type cacheShard struct {
 
 	maxEntries     int
 	maxMemoryBytes int64
-	maxStalenessNs int64
+	maxStaleness   time.Duration
 	sizer          CacheSizer
 	staleTimeout   time.Duration
 }
@@ -327,12 +328,12 @@ func (s *cacheShard) get(ctx context.Context, cacheKey string) ([]byte, bool) {
 			return nil, false
 		}
 
-		// Max-staleness backstop: a Valid entry older than maxStalenessNs is treated
+		// Max-staleness backstop: a Valid entry older than maxStaleness is treated
 		// as a miss and evicted, so a lost invalidation or connection-lifecycle
 		// staleness (Window 2) cannot keep a stale value resident past MaxStaleness.
 		// Evict under the write lock so the next access re-fetches — a stale-but-present
 		// entry would otherwise suppress the re-fetch via Reserve.
-		if s.maxStalenessNs > 0 && time.Now().UnixNano()-entry.validAtNs > s.maxStalenessNs {
+		if s.maxStaleness > 0 && time.Since(entry.validAt) > s.maxStaleness {
 			s.mu.RUnlock()
 			s.mu.Lock()
 			if cur, ok := s.entries[cacheKey]; ok && cur == entry {
@@ -372,7 +373,7 @@ func (c *localCache) Set(cacheKey string, redisKeys []string, value []byte) bool
 		State:      CacheEntryValid,
 		sizeBytes:  entrySize,
 		waitClosed: true,
-		validAtNs:  time.Now().UnixNano(),
+		validAt:    time.Now(),
 	}
 	entry.lastAccessNs.Store(nextLRUToken())
 
@@ -486,7 +487,7 @@ func (c *localCache) fulfill(cacheKey string, token, ownerConnID uint64, value [
 	entry.Value = valueCopy
 	entry.sizeBytes = valueSize
 	entry.State = CacheEntryValid
-	entry.validAtNs = time.Now().UnixNano()
+	entry.validAt = time.Now()
 	entry.token = 0
 	entry.lastAccessNs.Store(nextLRUToken())
 	if ownerConnID != 0 {

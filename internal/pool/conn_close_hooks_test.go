@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"net"
 	"testing"
 )
@@ -59,5 +60,37 @@ func TestConn_SetOnCscCloseOverwrites(t *testing.T) {
 	}
 	if first != 0 || second != 1 {
 		t.Fatalf("overwrite semantics violated: first=%d (want 0) second=%d (want 1)", first, second)
+	}
+}
+
+func TestConn_CscReinitHookRunsBeforeSocketReplacement(t *testing.T) {
+	oldServer, oldClient := net.Pipe()
+	defer oldServer.Close()
+	defer oldClient.Close()
+	newServer, newClient := net.Pipe()
+	defer newServer.Close()
+	defer newClient.Close()
+
+	cn := NewConn(oldClient)
+	hookCalled := false
+	cn.SetOnCscReinit(func() {
+		hookCalled = true
+		if cn.GetNetConn() != oldClient {
+			t.Error("CSC reinit hook ran after the old socket was replaced")
+		}
+	})
+	cn.SetInitConnFunc(func(context.Context, *Conn) error {
+		if !hookCalled {
+			t.Error("init ran before the CSC reinit hook")
+		}
+		if cn.GetNetConn() != newClient {
+			t.Error("init did not run on the replacement socket")
+		}
+		cn.GetStateMachine().Transition(StateIdle)
+		return nil
+	})
+
+	if err := cn.SetNetConnAndInitConn(context.Background(), newClient); err != nil {
+		t.Fatalf("SetNetConnAndInitConn: %v", err)
 	}
 }

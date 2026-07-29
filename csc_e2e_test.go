@@ -59,6 +59,24 @@ var _ = Describe("Client-side cache (standalone)", func() {
 			Should(BeNumerically(">=", 1))
 	})
 
+	It("caches and invalidates negative lookups", func() {
+		key := "csc-e2e-negative"
+
+		Expect(client.Get(ctx, key).Err()).To(Equal(redis.Nil))
+		Eventually(cache.Len, 2*time.Second, 50*time.Millisecond).
+			Should(BeNumerically(">=", 1))
+
+		Expect(client.Get(ctx, key).Err()).To(Equal(redis.Nil))
+		Expect(mutator.Set(ctx, key, "created", 0).Err()).NotTo(HaveOccurred())
+
+		Eventually(func() int {
+			Expect(client.Ping(ctx).Err()).NotTo(HaveOccurred())
+			return cache.Len()
+		}, 2*time.Second, 50*time.Millisecond).Should(Equal(0))
+
+		Expect(client.Get(ctx, key).Val()).To(Equal("created"))
+	})
+
 	It("removes the cached entry when another client mutates the key", func() {
 		key := "csc-e2e-invalidate"
 		Expect(mutator.Set(ctx, key, "v1", 0).Err()).NotTo(HaveOccurred())

@@ -3,7 +3,6 @@ package redis
 import (
 	"context"
 
-	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -25,13 +24,14 @@ func (c *Client) newTx() *Tx {
 	tx := Tx{
 		baseClient: baseClient{
 			opt:           c.cloneOpt(), // Clone options under optLock to avoid race with initConn
-			connPool:      pool.NewStickyConnPool(c.connPool),
+			connPool:      c.baseClient.newStickyConnPool(),
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
 			// Carry the shared eviction hook (not csc: a sticky Tx must not serve
 			// cached reads) so close/reinit hooks on a Watch-initialized conn still
 			// evict from the parent cache.
 			cscPoolHook: c.cscPoolHook,
+			cscActive:   c.cscActive,
 		},
 	}
 	tx.init()

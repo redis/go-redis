@@ -55,6 +55,12 @@ var defaultCacheableCommands = map[string]struct{}{
 // isCacheable reports whether cmd is eligible for client-side caching: its
 // name is on the allow-list and it operates on at least one key.
 func isCacheable(cmd Cmder) bool {
+	// Commands such as RawWriteToCmd stream replies directly to an io.Writer.
+	// Capturing their replies for CSC would buffer the entire response first,
+	// defeating their streaming and allocation guarantees.
+	if cmd.NoRetry() {
+		return false
+	}
 	if _, ok := defaultCacheableCommands[cmd.Name()]; !ok {
 		return false
 	}
@@ -84,6 +90,35 @@ func sortROHasByGet(cmd Cmder) bool {
 // stringArg normalize both.
 func isClientTrackingCmd(cmd Cmder) bool {
 	return cmd.Name() == "client" && strings.EqualFold(cmd.stringArg(1), "tracking")
+}
+
+// isSelectCmd reports whether cmd changes the selected database on its
+// connection. CSC keys are namespaced with Options.DB, so a runtime SELECT
+// would make the connection's actual database diverge from the cache namespace.
+func isSelectCmd(cmd Cmder) bool {
+	return cmd.Name() == "select"
+}
+
+// isAuthCmd reports whether cmd changes the authenticated user on its
+// connection. CSC entries are shared across the pool and are not namespaced by
+// ACL identity, so runtime authentication could otherwise serve a value fetched
+// under a different user's permissions.
+func isAuthCmd(cmd Cmder) bool {
+	return cmd.Name() == "auth"
+}
+
+// isProtocolChangingHelloCmd reports whether HELLO includes a protocol version
+// (and can therefore switch a tracked RESP3 connection to RESP2). A bare HELLO
+// only reports connection properties and is safe.
+func isProtocolChangingHelloCmd(cmd Cmder) bool {
+	return cmd.Name() == "hello" && len(cmd.Args()) > 1
+}
+
+// isResetCmd reports whether cmd resets all server-side connection state.
+// RESET disables tracking, switches to RESP2, deauthenticates, and changes
+// other state that a pooled CSC connection relies on.
+func isResetCmd(cmd Cmder) bool {
+	return cmd.Name() == "reset"
 }
 
 // buildCacheKey returns the RESP-encoded form of the command's argument list,

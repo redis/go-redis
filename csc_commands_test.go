@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"testing"
 )
@@ -128,6 +129,79 @@ func TestIsCacheable_KeylessCommandRejected(t *testing.T) {
 	cmd := makeCmd("ping")
 	if isCacheable(cmd) {
 		t.Error("expected keyless command PING to NOT be cacheable")
+	}
+}
+
+func TestIsCacheable_RawWriteToRejected(t *testing.T) {
+	cmd := NewRawWriteToCmd(context.Background(), &bytes.Buffer{}, "get", "k")
+	if isCacheable(cmd) {
+		t.Fatal("RawWriteToCmd must bypass CSC to preserve direct streaming")
+	}
+}
+
+func TestIsSelectCmd(t *testing.T) {
+	for _, cmd := range []Cmder{
+		makeCmd("select", 1),
+		makeCmd("SELECT", 1),
+		makeCmd([]byte("select"), 1),
+	} {
+		if !isSelectCmd(cmd) {
+			t.Errorf("expected %v to match SELECT", cmd.Args())
+		}
+	}
+	for _, cmd := range []Cmder{
+		makeCmd("get", "select"),
+		makeCmd("swapdb", 0, 1),
+	} {
+		if isSelectCmd(cmd) {
+			t.Errorf("expected %v not to match SELECT", cmd.Args())
+		}
+	}
+}
+
+func TestCSCStateCommandMatchers(t *testing.T) {
+	for _, cmd := range []Cmder{
+		makeCmd("auth", "password"),
+		makeCmd("AUTH", "user", "password"),
+		makeCmd([]byte("auth"), "password"),
+	} {
+		if !isAuthCmd(cmd) {
+			t.Errorf("expected %v to match AUTH", cmd.Args())
+		}
+	}
+	if isAuthCmd(makeCmd("get", "auth")) {
+		t.Fatal("GET auth must not match AUTH")
+	}
+
+	for _, cmd := range []Cmder{
+		makeCmd("hello", 2),
+		makeCmd("HELLO", 3),
+		makeCmd([]byte("hello"), []byte("2")),
+	} {
+		if !isProtocolChangingHelloCmd(cmd) {
+			t.Errorf("expected %v to match state-changing HELLO", cmd.Args())
+		}
+	}
+	for _, cmd := range []Cmder{
+		makeCmd("hello"),
+		makeCmd("get", "hello"),
+	} {
+		if isProtocolChangingHelloCmd(cmd) {
+			t.Errorf("expected %v not to match state-changing HELLO", cmd.Args())
+		}
+	}
+
+	for _, cmd := range []Cmder{
+		makeCmd("reset"),
+		makeCmd("RESET"),
+		makeCmd([]byte("reset")),
+	} {
+		if !isResetCmd(cmd) {
+			t.Errorf("expected %v to match RESET", cmd.Args())
+		}
+	}
+	if isResetCmd(makeCmd("config", "resetstat")) {
+		t.Fatal("CONFIG RESETSTAT must not match RESET")
 	}
 }
 

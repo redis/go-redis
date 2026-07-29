@@ -3,10 +3,30 @@ package redis
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+type recordingConnOwnedCache struct {
+	Cache
+	owner        ConnOwnedCache
+	fulfillCalls int
+}
+
+func (c *recordingConnOwnedCache) FulfillOwned(
+	cacheKey string,
+	token, ownerConnID uint64,
+	value []byte,
+) bool {
+	c.fulfillCalls++
+	return c.owner.FulfillOwned(cacheKey, token, ownerConnID, value)
+}
+
+func (c *recordingConnOwnedCache) EvictByConn(connID uint64) int {
+	return c.owner.EvictByConn(connID)
+}
 
 func TestLocalCache_FulfillOwned_EvictByConn(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
@@ -165,8 +185,79 @@ func TestCSCEvictOwnedEntries_UsesSharedHookWhenCscNil(t *testing.T) {
 	}
 	// The conn keeps serving: fetches capturing the post-eviction generation
 	// must remain valid (the eviction bumps, it does not tombstone).
-	if hook.coverageLostSince(connID, hook.initGenOf(connID)) {
-		t.Fatal("post-handoff fetches on the same conn must keep their coverage")
+	if got := hook.initGenOf(connID); got == 0 {
+		t.Fatal("handoff must leave a live generation for the replacement socket")
+	}
+}
+
+func TestCSCHookInvalidateAllCoverage(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	owner := cache.(ConnOwnedCache)
+	hook := &cscEvictOnRemoveHook{
+		evictor: owner,
+		initGen: make(map[uint64]uint64),
+	}
+
+	const (
+		conn1 = uint64(11)
+		conn2 = uint64(22)
+	)
+	hook.bumpInitGen(conn1)
+	hook.bumpInitGen(conn2)
+	oldGen := hook.initGenOf(conn1)
+
+	for _, entry := range []struct {
+		key    string
+		connID uint64
+	}{
+		{"get:one", conn1},
+		{"get:two", conn2},
+	} {
+		token, _ := cache.Reserve(entry.key, []string{entry.key})
+		if !owner.FulfillOwned(entry.key, token, entry.connID, []byte("v")) {
+			t.Fatalf("FulfillOwned(%q) failed", entry.key)
+		}
+	}
+
+	lateToken, _ := cache.Reserve("get:late", []string{"late"})
+	hook.invalidateAllCoverage()
+
+	if cache.Len() != 1 {
+		t.Fatalf("valid entries from stopped coverage must be evicted; got len=%d", cache.Len())
+	}
+	if hook.fulfillOwnedIfCovered("get:late", lateToken, conn1, oldGen, []byte("stale")) {
+		t.Fatal("an in-flight fetch from revoked coverage must not publish")
+	}
+	cache.Cancel("get:late", lateToken)
+}
+
+func TestFulfillCached_RejectsInactiveCSC(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	hook := &cscEvictOnRemoveHook{
+		evictor: cache.(ConnOwnedCache),
+		initGen: make(map[uint64]uint64),
+	}
+	const connID = uint64(33)
+	hook.bumpInitGen(connID)
+
+	active := &atomic.Bool{}
+	active.Store(false)
+	c := &baseClient{
+		opt:         &Options{Protocol: 3},
+		csc:         cache,
+		cscPoolHook: hook,
+		cscActive:   active,
+	}
+	token, _ := cache.Reserve("get:k", []string{"k"})
+	if c.fulfillCached("get:k", token, &cscFetchCapture{
+		raw:     []byte("$1\r\nv\r\n"),
+		connID:  connID,
+		initGen: hook.initGenOf(connID),
+	}) {
+		t.Fatal("a fetch must not publish after its CSC drainer stops")
+	}
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("inactive CSC left a cached entry behind")
 	}
 }
 
@@ -245,12 +336,60 @@ func TestFulfillCached_RaceWithConnRemoval(t *testing.T) {
 		t.Fatal("Reserve should fetch")
 	}
 	if c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen}) {
-		// FulfillOwned returns true (it did store), but the entry must then be
-		// evicted; fulfillCached returns FulfillOwned's result, so true is ok
-		// only if the entry is gone afterwards. Assert the eviction below.
+		t.Fatal("coverage loss must reject fulfillment before publication")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
 		t.Fatal("entry owned by a just-removed conn must not remain resident")
+	}
+}
+
+// TestFulfillCached_CoverageLossSkipsPublication verifies the generation guard
+// runs before FulfillOwned changes the placeholder to Valid. This matters to
+// concurrent Get waiters: publishing and deleting immediately afterward still
+// leaves a window in which a waiter can return an uncovered value.
+func TestFulfillCached_CoverageLossSkipsPublication(t *testing.T) {
+	base := NewLocalCache(CacheConfig{MaxEntries: 64})
+	cache := &recordingConnOwnedCache{
+		Cache: base,
+		owner: base.(ConnOwnedCache),
+	}
+	hook := &cscEvictOnRemoveHook{evictor: cache}
+	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cscPoolHook: hook}
+
+	const connID = uint64(42)
+	hook.bumpInitGen(connID)
+	gen := hook.initGenOf(connID)
+
+	token, shouldFetch := cache.Reserve("get:k", []string{"k"})
+	if !shouldFetch {
+		t.Fatal("Reserve should fetch")
+	}
+	local := base.(*localCache)
+	shard := local.shardFor("get:k")
+	shard.mu.RLock()
+	waitCh := shard.entries["get:k"].waitCh
+	shard.mu.RUnlock()
+
+	// Removal wins before fulfillment. The cache method must never be called:
+	// fulfillCached cancels the placeholder, waking waiters to observe a miss.
+	hook.markRemoved(connID)
+	if c.fulfillCached("get:k", token, &cscFetchCapture{
+		raw:     []byte("v"),
+		connID:  connID,
+		initGen: gen,
+	}) {
+		t.Fatal("a reply without invalidation coverage must not be published")
+	}
+	if cache.fulfillCalls != 0 {
+		t.Fatalf("FulfillOwned was called %d times after coverage loss; want 0", cache.fulfillCalls)
+	}
+	select {
+	case <-waitCh:
+	default:
+		t.Fatal("coverage loss must cancel the placeholder and wake waiters")
+	}
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("a waiter must observe a miss, never a transient uncovered value")
 	}
 }
 
@@ -268,16 +407,9 @@ func TestInitGenLifecycle(t *testing.T) {
 	if got := hook.initGenOf(connID); got != 1 {
 		t.Fatalf("first init must bump the generation to 1, got %d", got)
 	}
-	if hook.coverageLostSince(connID, 1) {
-		t.Fatal("coverage must be intact while the conn lives")
-	}
-
 	hook.markRemoved(connID)
 	if got := hook.initGenOf(connID); got != 0 {
 		t.Fatalf("markRemoved must delete the generation entry, got %d", got)
-	}
-	if !hook.coverageLostSince(connID, 1) {
-		t.Fatal("a removed conn's captured generation must read as coverage lost")
 	}
 
 	// Failed init: forgetConn drops the entry the failed init's bump created.
@@ -317,6 +449,50 @@ func TestFulfillCached_RaceWithHandoffReinit(t *testing.T) {
 	c.fulfillCached("get:k", tok, &cscFetchCapture{raw: []byte("v"), connID: connID, initGen: gen})
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
 		t.Fatal("entry fetched on a socket replaced before fulfill must not remain resident")
+	}
+}
+
+func TestFulfillCached_HandoffBumpsCoverageBeforeSocketSwap(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 64})
+	hook := &cscEvictOnRemoveHook{evictor: cache.(ConnOwnedCache)}
+	c := &baseClient{opt: &Options{Protocol: 3}, csc: cache, cscPoolHook: hook}
+
+	oldServer, oldClient := net.Pipe()
+	defer oldServer.Close()
+	defer oldClient.Close()
+	newServer, newClient := net.Pipe()
+	defer newServer.Close()
+	defer newClient.Close()
+	cn := pool.NewConn(oldClient)
+	connID := cn.GetID()
+
+	// Model the first successful tracked initialization and capture a reply
+	// from that socket.
+	hook.bumpInitGen(connID)
+	c.cscInstallConnReinitHook(cn)
+	token, _ := cache.Reserve("get:k", []string{"k"})
+	oldGen := c.cscConnInitGen(connID)
+
+	cn.SetInitConnFunc(func(context.Context, *pool.Conn) error {
+		cn.GetStateMachine().Transition(pool.StateIdle)
+		return nil
+	})
+	if err := cn.SetNetConnAndInitConn(context.Background(), newClient); err != nil {
+		t.Fatalf("replace socket: %v", err)
+	}
+	if got := c.cscConnInitGen(connID); got == oldGen {
+		t.Fatal("socket replacement did not change CSC coverage generation")
+	}
+
+	if c.fulfillCached("get:k", token, &cscFetchCapture{
+		raw:     []byte("v"),
+		connID:  connID,
+		initGen: oldGen,
+	}) {
+		t.Fatal("an old-socket reply must be rejected after handoff")
+	}
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("old-socket reply became visible after handoff")
 	}
 }
 

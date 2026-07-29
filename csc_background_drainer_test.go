@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -66,9 +67,37 @@ func (h *recordingHandler) count() int {
 	return h.n
 }
 
-// newReaderBufferedPushConn returns a conn with `frame` buffered in proto.Reader
-// but no socket-visible data (net.Pipe has no syscall.Conn, so MaybeHasData is
-// false) — the coalesced-push case (invalidate left in cn.rd after a prior reply).
+func newIdleTCPConnPair(t *testing.T) (server, client net.Conn) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	client, err = net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	select {
+	case server = <-accepted:
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("accept timed out")
+	}
+	return server, client
+}
+
+// newReaderBufferedPushConn returns a conn with frame buffered in proto.Reader
+// but no socket-visible data — the coalesced-push case (an invalidate left in
+// cn.rd after a prior reply).
 func newReaderBufferedPushConn(t *testing.T, frame []byte) (*pool.Conn, func()) {
 	t.Helper()
 	server, client := net.Pipe()
@@ -86,6 +115,62 @@ func newReaderBufferedPushConn(t *testing.T, frame []byte) (*pool.Conn, func()) 
 	return cn, func() { _ = server.Close(); _ = client.Close() }
 }
 
+// bufferedNetConn models a wrapper such as tls.Conn: bytes may already be
+// buffered inside the wrapper while NetConn's raw socket is empty.
+type bufferedNetConn struct {
+	net.Conn
+	buffered *bytes.Reader
+}
+
+func (c *bufferedNetConn) Read(p []byte) (int, error) {
+	if c.buffered.Len() > 0 {
+		return c.buffered.Read(p)
+	}
+	return c.Conn.Read(p)
+}
+
+func (c *bufferedNetConn) NetConn() net.Conn {
+	return c.Conn
+}
+
+func TestDrainPushNotifications_ConsumesWrappedBufferedPush(t *testing.T) {
+	switch runtime.GOOS {
+	case "linux", "darwin", "dragonfly", "freebsd", "netbsd", "openbsd", "solaris", "illumos":
+	default:
+		t.Skip("platform has no non-consuming raw-socket probe")
+	}
+
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	rec := &recordingHandler{}
+	proc := push.NewProcessor()
+	if err := proc.RegisterHandler("invalidate", rec, false); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+	cn := pool.NewConn(&bufferedNetConn{
+		Conn:     client,
+		buffered: bytes.NewReader(invalidateFrame("foo")),
+	})
+	cn.MarkCscReadPending()
+
+	processorSucceeded, err := c.drainPushNotifications(cn)
+	if err != nil {
+		t.Fatalf("drain wrapped push: %v", err)
+	}
+	if !processorSucceeded {
+		t.Fatal("successful wrapped-buffer processing must reset consecutive failure damping")
+	}
+	if rec.count() != 1 {
+		t.Fatal("push hidden in the wrapper buffer was not consumed")
+	}
+	if cn.TakeCscReadPending() {
+		t.Fatal("wrapped-reader drain request was not consumed")
+	}
+}
+
 // TestDrainPushNotifications_ConsumesReaderBufferedPush is a regression guard: a
 // push buffered in proto.Reader (no socket data) must still drain — the gate
 // checks HasBufferedData(), not only MaybeHasData().
@@ -100,8 +185,6 @@ func TestDrainPushNotifications_ConsumesReaderBufferedPush(t *testing.T) {
 	cn, cleanup := newReaderBufferedPushConn(t, invalidateFrame("foo"))
 	defer cleanup()
 
-	// Assert HasBufferedData, not MaybeHasData: the latter is false on Unix
-	// (net.Pipe has no syscall.Conn) but true on the non-Unix stub.
 	if !cn.HasBufferedData() {
 		t.Fatal("precondition: frame was not buffered in the reader")
 	}
@@ -221,9 +304,9 @@ func TestCscDrainIntervalClampsMinimum(t *testing.T) {
 // must evict for both string and []byte key names in the push payload.
 func TestInvalidateHandlerDecodesPayloads(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("get:foo", []string{dbNamespacedKey(0, "foo")}, []byte("1"))
-	cache.Set("get:quux", []string{dbNamespacedKey(0, "quux")}, []byte("2"))
-	h := &invalidateHandler{cache: cache, db: 0}
+	cache.Set("get:foo", []string{testCSCNamespacedKey(0, "foo")}, []byte("1"))
+	cache.Set("get:quux", []string{testCSCNamespacedKey(0, "quux")}, []byte("2"))
+	h := &invalidateHandler{cache: cache, keyPrefix: cscNamespacePrefix(0, "")}
 
 	err := h.HandlePushNotification(context.Background(), push.NotificationHandlerContext{},
 		[]interface{}{"invalidate", []interface{}{"foo", []byte("quux")}})
@@ -239,9 +322,9 @@ func TestInvalidateHandlerDecodesPayloads(t *testing.T) {
 // server on FLUSHDB/FLUSHALL) must flush the entire cache.
 func TestInvalidateHandlerNilPayloadFlushes(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("get:foo", []string{dbNamespacedKey(0, "foo")}, []byte("1"))
-	cache.Set("get:quux", []string{dbNamespacedKey(0, "quux")}, []byte("2"))
-	h := &invalidateHandler{cache: cache, db: 0}
+	cache.Set("get:foo", []string{testCSCNamespacedKey(0, "foo")}, []byte("1"))
+	cache.Set("get:quux", []string{testCSCNamespacedKey(0, "quux")}, []byte("2"))
+	h := &invalidateHandler{cache: cache, keyPrefix: cscNamespacePrefix(0, "")}
 
 	err := h.HandlePushNotification(context.Background(), push.NotificationHandlerContext{},
 		[]interface{}{"invalidate", nil})
@@ -394,9 +477,31 @@ func TestBackgroundDrainerDisablesCSCOnPersistentCustomErrors(t *testing.T) {
 	defer cleanup()
 
 	c := newDampingClient(cn)
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	hook := &cscEvictOnRemoveHook{
+		evictor: cache.(ConnOwnedCache),
+		initGen: make(map[uint64]uint64),
+	}
+	const ownerConnID = uint64(55)
+	hook.bumpInitGen(ownerConnID)
+	token, _ := cache.Reserve("get:k", []string{"k"})
+	if !cache.(ConnOwnedCache).FulfillOwned("get:k", token, ownerConnID, []byte("v")) {
+		t.Fatal("failed to seed owned entry")
+	}
+	c.csc = cache
+	c.cscPoolHook = hook
 	c.startBackgroundDrainer()
-	t.Cleanup(c.stopBackgroundDrainer)
+	t.Cleanup(func() {
+		// drainablePooler embeds a nil Pooler and therefore has only stubbed
+		// hook methods; the production attachment gate would never register
+		// this hook on it.
+		c.cscPoolHook = nil
+		c.stopBackgroundDrainer()
+	})
 	waitDrainerSelfStop(t, c)
+	if _, ok := cache.Get(context.Background(), "get:k"); ok {
+		t.Fatal("damping must evict entries whose invalidation coverage just stopped")
+	}
 }
 
 // TestBackgroundDrainerDampingSurvivesCleanConns: in a real pool, each fatal
@@ -405,12 +510,20 @@ func TestBackgroundDrainerDisablesCSCOnPersistentCustomErrors(t *testing.T) {
 // damping counter, or a persistently failing processor would churn conns
 // forever without ever tripping the cap.
 func TestBackgroundDrainerDampingSurvivesCleanConns(t *testing.T) {
+	switch runtime.GOOS {
+	case "linux", "darwin", "dragonfly", "freebsd", "netbsd", "openbsd", "solaris", "illumos":
+	default:
+		t.Skip("platform has no non-consuming socket probe for an empty connection")
+	}
+
 	pushy, cleanup1 := newReaderBufferedPushConn(t, invalidateFrame("foo"))
 	defer cleanup1()
 	// A conn with nothing buffered and nothing on the socket: its drain is a
-	// clean no-op (net.Pipe has no syscall.Conn, so MaybeHasData is false).
-	server, client := net.Pipe()
-	defer func() { _ = server.Close(); _ = client.Close() }()
+	// clean no-op. Use TCP so the Unix non-consuming socket probe can prove
+	// emptiness; opaque wrappers deliberately request a bounded read instead.
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
 	clean := pool.NewConn(client)
 
 	// Alternate failing and clean conns per drain pass.
@@ -522,10 +635,27 @@ func TestBackgroundDrainerCleanupOnGC(t *testing.T) {
 	})
 	defer cp.Close()
 
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	hook := &cscEvictOnRemoveHook{
+		evictor: cache.(ConnOwnedCache),
+		initGen: make(map[uint64]uint64),
+	}
+	const ownerConnID = uint64(66)
+	hook.bumpInitGen(ownerConnID)
+	token, _ := cache.Reserve("get:k", []string{"k"})
+	if !cache.(ConnOwnedCache).FulfillOwned("get:k", token, ownerConnID, []byte("v")) {
+		t.Fatal("failed to seed owned entry")
+	}
+
 	// Build a *Client with a running drainer, register the cleanup, and return
 	// ONLY its done channel so the *Client becomes unreachable when this returns.
 	done := func() <-chan struct{} {
-		c := &Client{baseClient: &baseClient{opt: &Options{Protocol: 3}, connPool: cp}}
+		c := &Client{baseClient: &baseClient{
+			opt:         &Options{Protocol: 3},
+			connPool:    cp,
+			csc:         cache,
+			cscPoolHook: hook,
+		}}
 		c.baseClient.startBackgroundDrainer()
 		h := c.baseClient.cscDrainHandle
 		if h == nil {
@@ -540,7 +670,10 @@ func TestBackgroundDrainerCleanupOnGC(t *testing.T) {
 		runtime.GC()
 		select {
 		case <-done:
-			return // cleanup fired and the goroutine exited
+			if _, ok := cache.Get(context.Background(), "get:k"); ok {
+				t.Fatal("GC cleanup stopped the drainer without evicting its coverage")
+			}
+			return
 		case <-time.After(50 * time.Millisecond):
 		}
 		select {

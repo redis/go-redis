@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"runtime"
 	"strconv"
@@ -16,11 +17,10 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// cscRegisterCleanups arranges for a client dropped without Close to still stop
-// its background CSC drainer goroutine. The cleanup captures only the handle
-// (never *Client, which the goroutine doesn't reference) so the wrapper can be
-// collected, and only signals stop (a GC cleanup must not block); the signal is
-// idempotent, so a later explicit Close is safe.
+// cscRegisterCleanups arranges for a client dropped without Close to stop its
+// background CSC drainer. The drainer's exit path revokes its pool's cache
+// coverage; the runtime cleanup itself stays non-blocking and never captures
+// *Client, so the wrapper remains collectible.
 func cscRegisterCleanups(c *Client) {
 	h := c.baseClient.cscDrainHandle
 	if h == nil {
@@ -39,10 +39,10 @@ func cscRegisterCleanups(c *Client) {
 		ownedCache = c.baseClient.csc
 	}
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
-		h.signalStop()
 		if active != nil {
 			active.Store(false)
 		}
+		h.signalStop()
 		if ih != nil && ownedCache != nil {
 			ih.releaseIfBoundTo(ownedCache)
 		}
@@ -56,32 +56,37 @@ type ClientSideCacheConfig = CacheConfig
 
 const (
 	invalidatePushName = "invalidate"
-	// cscNamespaceSep separates the DB-number prefix from the key. NUL is a
-	// legal byte in Redis keys, but CSC is restricted to DB 0 (see attachCSC),
-	// so a collision requires a key starting with "0\x00" — out of scope.
+	// cscNamespaceSep separates fixed-width/logically-delimited namespace parts
+	// from the command or Redis key.
 	cscNamespaceSep = "\x00"
 )
 
-// dbNamespacedKey prefixes key with its database number so entries and
-// invalidation indexes do not collide across SELECTed databases.
-func dbNamespacedKey(db int, key string) string {
-	return strconv.Itoa(db) + cscNamespaceSep + key
+// cscNamespacePrefix scopes a shared cache by database and fixed ACL identity.
+// Password rotation does not change identity; provider-backed identities are
+// rejected before attachment.
+func cscNamespacePrefix(db int, username string) string {
+	identity := sha256.Sum256([]byte(username))
+	return strconv.Itoa(db) + cscNamespaceSep + string(identity[:]) + cscNamespaceSep
+}
+
+func cscNamespacedKey(prefix, key string) string {
+	return prefix + key
 }
 
 // invalidateHandler propagates RESP3 "invalidate" push notifications into the
-// shared client-side cache. The db field scopes incoming key names so a shared
-// cache is not cross-evicted by clients pointing at a different DB.
+// shared client-side cache. keyPrefix scopes incoming key names so a shared
+// cache cannot collide across databases or fixed ACL identities.
 //
-// The binding (cache, db) is mutable under mu: the owning client's teardown
+// The binding (cache, keyPrefix) is mutable under mu: the owning client's teardown
 // RELEASES it (cache=nil) instead of unregistering the handler, so the handler
 // can stay registered protected — application code holding the processor
 // cannot silently unregister invalidation out from under a live client — while
 // a successor client on the same processor can still rebind it (see
 // registerInvalidateHandler).
 type invalidateHandler struct {
-	mu    sync.RWMutex
-	cache Cache
-	db    int
+	mu        sync.RWMutex
+	cache     Cache
+	keyPrefix string
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
@@ -90,7 +95,7 @@ func (h *invalidateHandler) HandlePushNotification(
 	_ context.Context, _ push.NotificationHandlerContext, notification []interface{},
 ) error {
 	h.mu.RLock()
-	cache, db := h.cache, h.db
+	cache, keyPrefix := h.cache, h.keyPrefix
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -110,7 +115,7 @@ func (h *invalidateHandler) HandlePushNotification(
 			default:
 				continue
 			}
-			cache.DeleteByRedisKey(dbNamespacedKey(db, name))
+			cache.DeleteByRedisKey(cscNamespacedKey(keyPrefix, name))
 		}
 	}
 	return nil
@@ -131,18 +136,18 @@ func (h *invalidateHandler) releaseIfBoundTo(cache Cache) {
 // different cache would leave the new cache uninvalidated.
 var errInvalidateHandlerBound = errors.New(`csc: a different "invalidate" push handler is already registered`)
 
-// bindTo binds the handler to (cache, db). Success when that is already the
+// bindTo binds the handler to (cache, keyPrefix). Success when that is already the
 // binding (a derived Client.Conn sharing the parent's processor and cache) or
 // when the handler was released by a previous owner's teardown (rebind);
 // errInvalidateHandlerBound otherwise.
-func (h *invalidateHandler) bindTo(cache Cache, db int) error {
+func (h *invalidateHandler) bindTo(cache Cache, keyPrefix string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
-	case h.cache == cache && h.db == db:
+	case h.cache == cache && h.keyPrefix == keyPrefix:
 		return nil
 	case h.cache == nil:
-		h.cache, h.db = cache, db
+		h.cache, h.keyPrefix = cache, keyPrefix
 		return nil
 	default:
 		return errInvalidateHandlerBound
@@ -159,7 +164,7 @@ func lookupInvalidateHandler(p push.NotificationProcessor) *invalidateHandler {
 	return h
 }
 
-func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int) error {
+func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, keyPrefix string) error {
 	if p == nil || cache == nil {
 		return nil
 	}
@@ -168,25 +173,49 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, db int
 		if !ok {
 			return errInvalidateHandlerBound
 		}
-		return h.bindTo(cache, db)
+		return h.bindTo(cache, keyPrefix)
 	}
 	// VoidProcessor (RESP2) returns an error here; the caller treats it as
 	// "CSC not available" rather than fatal. Registered PROTECTED: application
 	// code holding the processor must not be able to unregister invalidation
 	// under a live client (that would serve unbounded-stale hits with no
 	// signal); owner teardown releases the BINDING instead of the handler.
-	return p.RegisterHandler(invalidatePushName, &invalidateHandler{cache: cache, db: db}, true)
+	err := p.RegisterHandler(invalidatePushName, &invalidateHandler{cache: cache, keyPrefix: keyPrefix}, true)
+	if err == nil {
+		return nil
+	}
+	// Another client can register the same protected handler between GetHandler
+	// and RegisterHandler. Re-read it and accept the compatible binding.
+	if existing := p.GetHandler(invalidatePushName); existing != nil {
+		h, ok := existing.(*invalidateHandler)
+		if !ok {
+			return errInvalidateHandlerBound
+		}
+		return h.bindTo(cache, keyPrefix)
+	}
+	return err
 }
 
 // attachCSC dispatches to the invalidation strategy in
 // Options.ClientSideCacheStrategy. Safe with a nil cache; on failure c.csc stays
 // nil and commands fall back to normal round-trips. Adding a strategy: a new
-// CSCStrategy constant plus cases in Options.init, here, and (if it doesn't track
-// on pool conns) cscStrategyTracksPoolConns.
+// CSCStrategy constant plus cases in Options.init and here.
 func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
 	if cache == nil || c.opt.Protocol != 3 {
 		return
 	}
+	// Credential providers may return a different ACL identity over the
+	// client's lifetime (or per context/connection), while the cache namespace
+	// is fixed when the client is created. Fixed credentials remain safe because
+	// the ACL username is included in the hashed namespace below.
+	if c.opt.StreamingCredentialsProvider != nil ||
+		c.opt.CredentialsProviderContext != nil ||
+		c.opt.CredentialsProvider != nil {
+		internal.Logger.Printf(ctx,
+			"redis: client-side caching is disabled with credential providers")
+		return
+	}
+	c.cscKeyPrefix = cscNamespacePrefix(c.opt.DB, c.opt.Username)
 	switch c.opt.ClientSideCacheStrategy {
 	case CSCStrategySharedTracking:
 		c.attachSharedTrackingCSC(ctx, cache)
@@ -211,6 +240,13 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if _, ok := c.connPool.(idleConnDrainer); !ok {
 		return
 	}
+	// The lifecycle hook serializes cache publication with connection removal
+	// and socket replacement. Without it, a reply can become visible after its
+	// tracking coverage is gone.
+	reg, ok := c.connPool.(poolHookSupport)
+	if !ok || !reg.SupportsPoolHooks() {
+		return
+	}
 	// SharedTracking needs per-conn attribution to evict a connection's entries on
 	// close; disable CSC for a cache that lacks it rather than serve un-evictable
 	// entries.
@@ -220,28 +256,16 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 				"(FulfillOwned/EvictByConn); use redis.NewLocalCache or implement it.")
 		return
 	}
-	if err := registerInvalidateHandler(c.pushProcessor, cache, c.opt.DB); err != nil {
+	if err := registerInvalidateHandler(c.pushProcessor, cache, c.cscKeyPrefix); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
 	}
 	c.csc = cache
+	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
-	c.registerConnEvictHook(cache)
 }
 
-// cscStrategyTracksPoolConns reports whether the strategy issues CLIENT TRACKING
-// ON on pool conns. SharedTracking does; a future sidecar strategy would not.
-func (c *baseClient) cscStrategyTracksPoolConns() bool {
-	switch c.opt.ClientSideCacheStrategy {
-	case CSCStrategySharedTracking:
-		return true
-	default:
-		return true
-	}
-}
-
-// cscHook returns the shared evict-on-remove hook, nil when CSC is off or the
-// pool doesn't support hooks.
+// cscHook returns the shared evict-on-remove hook, nil when CSC is off.
 func (c *baseClient) cscHook() *cscEvictOnRemoveHook {
 	h, _ := c.cscPoolHook.(*cscEvictOnRemoveHook)
 	return h
@@ -255,6 +279,15 @@ func (c *baseClient) cscInstallConnCloseHook(cn *pool.Conn) {
 	cn.SetOnCscClose(func() error {
 		c.cscOnConnClose(cn.GetID())
 		return nil
+	})
+}
+
+// cscInstallConnReinitHook invalidates the old socket's cache coverage before
+// SetNetConnAndInitConn replaces it. The later init can then safely enable
+// tracking for the new socket without a post-swap publication window.
+func (c *baseClient) cscInstallConnReinitHook(cn *pool.Conn) {
+	cn.SetOnCscReinit(func() {
+		c.cscEvictOwnedEntries(cn.GetID())
 	})
 }
 
@@ -272,18 +305,18 @@ func (c *baseClient) cscOnConnClose(connID uint64) {
 	}
 }
 
-// poolHookRegistrar is the *pool.ConnPool subset used to (de)register the
-// evict-on-remove hook. Without it, close-time eviction still runs via
-// cscOnConnClose (but without the OnRemove path's removed-ring).
-type poolHookRegistrar interface {
+// poolHookSupport is the pool capability SharedTracking needs to serialize
+// cache publication with connection removal and reinitialization.
+type poolHookSupport interface {
 	AddPoolHook(hook pool.PoolHook)
 	RemovePoolHook(hook pool.PoolHook)
+	SupportsPoolHooks() bool
 }
 
 // cscEvictOnRemoveHook evicts a connection's owned entries when the pool removes
 // it (the server stops delivering their invalidations — Window 2), and tracks
 // per-conn init generations so fulfillCached can catch a value whose owning
-// conn was removed or re-initialized mid-fetch (see coverageLostSince).
+// conn was removed or re-initialized mid-fetch.
 type cscEvictOnRemoveHook struct {
 	evictor ConnOwnedCache
 
@@ -319,10 +352,9 @@ func (h *cscEvictOnRemoveHook) markRemoved(connID uint64) {
 	h.evictor.EvictByConn(connID)
 }
 
-// bumpInitGen records that connID's socket (and with it, the server-side
-// tracking table) was replaced. Called before the re-init eviction so a racing
-// fulfillCached that captured the pre-bump generation cannot publish an
-// uncovered entry unnoticed.
+// bumpInitGen advances connID's coverage generation. On reinit it is called by
+// the pre-swap hook, before the old socket and its server-side tracking table
+// are replaced.
 func (h *cscEvictOnRemoveHook) bumpInitGen(connID uint64) {
 	h.mu.Lock()
 	if h.initGen == nil {
@@ -330,6 +362,14 @@ func (h *cscEvictOnRemoveHook) bumpInitGen(connID uint64) {
 	}
 	h.initGen[connID]++
 	h.mu.Unlock()
+}
+
+// invalidateConnCoverage revokes all cache coverage associated with connID.
+// Bumping before eviction also rejects an in-flight fetch that completed on the
+// connection just before it left the parent's invalidation drainer.
+func (h *cscEvictOnRemoveHook) invalidateConnCoverage(connID uint64) {
+	h.bumpInitGen(connID)
+	h.evictor.EvictByConn(connID)
 }
 
 // initGenOf returns connID's current init generation (0 if never bumped).
@@ -348,27 +388,46 @@ func (h *cscEvictOnRemoveHook) forgetConn(connID uint64) {
 	h.mu.Unlock()
 }
 
-// coverageLostSince reports whether connID's invalidation coverage changed
-// after gen was captured at reply time: a removal deletes the entry (reads 0)
-// and a handoff/reauth re-init bumps it — either way an entry fetched on the
-// old socket receives no invalidations and must not stay cached. Relies on the
-// invariant that every serving conn's captured gen is >= 1 (first init bumps;
-// Conn/Tx/clone all carry the hook, so derived-client inits bump too).
-func (h *cscEvictOnRemoveHook) coverageLostSince(connID, gen uint64) bool {
+// fulfillOwnedIfCovered linearizes the final coverage check with connection
+// removal/re-init generation changes. Holding h.mu through FulfillOwned means
+// either the old generation is rejected before the placeholder becomes valid,
+// or publication wins first and the subsequent lifecycle path evicts it before
+// closing/replacing the tracked socket.
+func (h *cscEvictOnRemoveHook) fulfillOwnedIfCovered(
+	cacheKey string,
+	token, ownerConnID, capturedGen uint64,
+	value []byte,
+) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.initGen[connID] != gen
+	if h.initGen[ownerConnID] != capturedGen {
+		return false
+	}
+	return h.evictor.FulfillOwned(cacheKey, token, ownerConnID, value)
 }
 
-// registerConnEvictHook wires the OnRemove eviction hook when the cache supports
-// owning-conn attribution and the pool supports hooks. No-op otherwise; close-time
-// eviction still runs via cscOnConnClose.
-func (c *baseClient) registerConnEvictHook(cache Cache) {
-	owner, ok := cache.(ConnOwnedCache)
-	if !ok {
-		return
+// invalidateAllCoverage revokes every connection generation known to this
+// client's pool and evicts the entries those connections own. Incrementing
+// instead of deleting keeps in-flight fetches that captured an old generation
+// from publishing after a drainer stops.
+func (h *cscEvictOnRemoveHook) invalidateAllCoverage() {
+	h.mu.Lock()
+	connIDs := make([]uint64, 0, len(h.initGen))
+	for connID := range h.initGen {
+		h.initGen[connID]++
+		connIDs = append(connIDs, connID)
 	}
-	reg, ok := c.connPool.(poolHookRegistrar)
+	h.mu.Unlock()
+
+	for _, connID := range connIDs {
+		h.evictor.EvictByConn(connID)
+	}
+}
+
+// registerConnEvictHook wires the required OnRemove eviction hook. Attachment
+// validates both capabilities before calling it.
+func (c *baseClient) registerConnEvictHook(cache Cache, reg poolHookSupport) {
+	owner, ok := cache.(ConnOwnedCache)
 	if !ok {
 		return
 	}
@@ -377,8 +436,8 @@ func (c *baseClient) registerConnEvictHook(cache Cache) {
 	c.cscPoolHook = h
 }
 
-// cscEvictOwnedEntries evicts connID's entries on (re)init/handoff, where the
-// socket (and its server tracking) is replaced but the conn id keeps serving. It
+// cscEvictOwnedEntries evicts connID's entries on first init or immediately
+// before a reinit/handoff replaces the socket and its tracking table. It
 // prefers the shared hook (so Conn/Tx, which carry it but have a nil csc, still
 // evict from the parent cache). Scoped only — no removed-ring (the conn keeps
 // serving, and the ring never ages out); the fulfill-vs-re-init race is closed
@@ -386,8 +445,7 @@ func (c *baseClient) registerConnEvictHook(cache Cache) {
 // first init).
 func (c *baseClient) cscEvictOwnedEntries(connID uint64) {
 	if h := c.cscHook(); h != nil {
-		h.bumpInitGen(connID)
-		h.evictor.EvictByConn(connID)
+		h.invalidateConnCoverage(connID)
 		return
 	}
 	if c.csc == nil {
@@ -398,12 +456,27 @@ func (c *baseClient) cscEvictOwnedEntries(connID uint64) {
 	}
 }
 
+// newStickyConnPool creates a derived sticky pool and revokes the claimed
+// connection's parent-cache ownership before it becomes unreachable to the
+// parent's idle-connection drainer.
+func (c *baseClient) newStickyConnPool() *pool.StickyConnPool {
+	sticky := pool.NewStickyConnPool(c.connPool)
+	if h := c.cscHook(); h != nil {
+		sticky.SetOnFirstConn(func(cn *pool.Conn) {
+			if cn != nil {
+				h.invalidateConnCoverage(cn.GetID())
+			}
+		})
+	}
+	return sticky
+}
+
 // cscFetchCapture receives, from the successful attempt's reply read — while
 // the serving connection is still held — everything the CSC fetch path needs to
 // attribute the cached entry: the raw RESP reply, the conn id, and the conn's
 // CSC init generation. The generation must be captured before the conn is
 // released: a handoff queued at Put can re-init the socket (bumping the
-// generation) before fulfillCached runs (see coverageLostSince).
+// generation) before fulfillCached runs.
 type cscFetchCapture struct {
 	raw     []byte
 	connID  uint64
@@ -412,7 +485,7 @@ type cscFetchCapture struct {
 
 // cscConnInitGen returns connID's CSC init generation, captured by _process at
 // reply time (while the conn is still held) and compared by fulfillCached via
-// coverageLostSince. Zero without an active evict-on-remove hook.
+// fulfillOwnedIfCovered. Zero without an active evict-on-remove hook.
 func (c *baseClient) cscConnInitGen(connID uint64) uint64 {
 	if h := c.cscHook(); h != nil {
 		return h.initGenOf(connID)
@@ -436,11 +509,48 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 var errClientTrackingWithCSC = errors.New(
 	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled")
 
-// cscRejectsClientTracking reports whether this client must reject user-issued
-// CLIENT TRACKING commands: CSC is (or per options, should be) tracking pool
-// conns, and this is not initConn's exempt internal conn.
-func (c *baseClient) cscRejectsClientTracking() bool {
-	return (c.csc != nil || c.cscTrackingRequested()) && !c.allowClientTracking
+// errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
+// keys use Options.DB, while SELECT mutates only the chosen pool connection.
+var errSelectWithCSC = errors.New(
+	"redis: SELECT is not allowed when client-side caching is enabled")
+
+// errAuthWithCSC rejects runtime authentication because it can change one
+// connection's ACL identity without changing the client's fixed cache namespace.
+var errAuthWithCSC = errors.New(
+	"redis: AUTH is not allowed when client-side caching is enabled")
+
+// errHelloWithCSC rejects HELLO with arguments because it can switch a tracked
+// connection out of RESP3 (and can also change authentication).
+var errHelloWithCSC = errors.New(
+	"redis: HELLO with arguments is not allowed when client-side caching is enabled")
+
+// errResetWithCSC rejects RESET because it disables tracking and switches the
+// connection to RESP2.
+var errResetWithCSC = errors.New(
+	"redis: RESET is not allowed when client-side caching is enabled")
+
+// cscCommandError rejects commands that can make a pooled connection's state
+// diverge from the assumptions used by CSC.
+func (c *baseClient) cscCommandError(cmd Cmder) error {
+	// The successful attachment signal is shared with derived clients.
+	// initConn's internal command wrapper is exempt during library setup.
+	if !c.cscTrackingRequested() || c.allowClientTracking {
+		return nil
+	}
+	switch {
+	case isClientTrackingCmd(cmd):
+		return errClientTrackingWithCSC
+	case isSelectCmd(cmd):
+		return errSelectWithCSC
+	case isAuthCmd(cmd):
+		return errAuthWithCSC
+	case isProtocolChangingHelloCmd(cmd):
+		return errHelloWithCSC
+	case isResetCmd(cmd):
+		return errResetWithCSC
+	default:
+		return nil
+	}
 }
 
 // cscDrainHandle holds the drainer goroutine's lifecycle channels: stop signals
@@ -506,22 +616,28 @@ func (c *baseClient) startBackgroundDrainer() {
 	// Built-in processor errors are real conn desyncs and are never damped.
 	_, builtinProc := c.pushProcessor.(*push.Processor)
 	go func() {
-		defer close(h.done)
+		defer func() {
+			active.Store(false)
+			if hook := c.cscHook(); hook != nil {
+				hook.invalidateAllCoverage()
+			}
+			close(h.done)
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		// st persists round/visited across ticks; single-goroutine, no lock.
 		var st pool.DrainState
 		consecFatal := 0
 		drain := func(cn *pool.Conn) error {
-			processed, err := c.drainPushNotifications(cn)
+			processorSucceeded, err := c.drainPushNotifications(cn)
 			switch {
 			case err != nil:
 				consecFatal++
-			case processed:
-				// Only a drain that actually consumed data proves the
-				// processor works. Conns with nothing buffered — including
-				// the fresh redial replacing each removed conn — must not
-				// reset the counter, or the damping never trips.
+			case processorSucceeded:
+				// A successful processor invocation resets consecutive
+				// failures. A conn skipped without invoking the processor —
+				// including a clean replacement after a fatal drain — does
+				// not reset the counter.
 				consecFatal = 0
 			}
 			return err
@@ -531,6 +647,9 @@ func (c *baseClient) startBackgroundDrainer() {
 			case <-h.stop:
 				return
 			case <-ticker.C:
+				if !active.Load() {
+					return
+				}
 				// ctx bounds the whole pass; the drain read has its own hard deadline.
 				cycleCtx, cancel := context.WithTimeout(context.Background(), interval/2)
 				cp.DrainIdleConns(cycleCtx, &st, drain)
@@ -540,12 +659,25 @@ func (c *baseClient) startBackgroundDrainer() {
 						"csc: disabling client-side caching: the custom push notification processor failed %d consecutive drains "+
 							"(each failure removes a connection because the reader may be mid-frame); "+
 							"caching cannot be kept fresh safely with this processor", consecFatal)
-					active.Store(false)
 					return
 				}
 			}
 		}
 	}()
+}
+
+// disableCSCServing atomically stops cache hits and revokes all tracked
+// connection coverage. The owner drainer observes the shared active flag on its
+// next tick, including when a derived Conn or Tx discovered the incompatibility.
+func (c *baseClient) disableCSCServing(ctx context.Context, reason string) {
+	active := c.cscActive
+	if active == nil || !active.CompareAndSwap(true, false) {
+		return
+	}
+	if hook := c.cscHook(); hook != nil {
+		hook.invalidateAllCoverage()
+	}
+	internal.Logger.Printf(ctx, "csc: disabling client-side caching: %s", reason)
 }
 
 // stopBackgroundDrainer joins the drainer goroutine, deregisters the evict hook,
@@ -566,12 +698,14 @@ func (c *baseClient) stopBackgroundDrainer() {
 		// Owner only. The hook (when present) is always registered alongside the
 		// drainer, so removing it here — before the pool is closed — can't strand it.
 		if c.cscPoolHook != nil {
-			if reg, ok := c.connPool.(poolHookRegistrar); ok {
+			if reg, ok := c.connPool.(poolHookSupport); ok {
 				reg.RemovePoolHook(c.cscPoolHook)
 			}
 		}
 		h.signalStop()
 		<-h.done
+		// The drainer's exit defer revoked and evicted this pool's coverage
+		// before closing done, including for injected caches shared elsewhere.
 		// Owned cache: release the handler binding so a successor client on
 		// the same processor can rebind (see invalidateHandler). A shared
 		// explicit cache (cscOwnsCache false) may still serve other clients,
@@ -593,6 +727,13 @@ func applyCachedReply(cmd Cmder, raw []byte) error {
 	return cmd.readReply(proto.NewReader(bytes.NewReader(raw)))
 }
 
+// isCacheableReplyResult reports whether a fully read Redis reply can be
+// cached. redis.Nil is a normal negative lookup, not a transport/protocol
+// failure; tracking will invalidate it if the key is later created.
+func isCacheableReplyResult(err error) bool {
+	return err == nil || err == Nil
+}
+
 // cscDrainSkipWindow is the default SharedTracking drain period (overridable via
 // ClientSideCacheConfig.DrainInterval). A buffered invalidation is picked up within
 // roughly one round; MaxStaleness, when configured, is the hard time-based backstop.
@@ -612,6 +753,10 @@ const cscDrainCustomErrCap = 8
 // Only invoked after process has verified that CSC is active and cmd is
 // eligible.
 func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Once the drainer has stopped (owner Close, or the owner dropped without
 	// Close), no invalidations flow — a surviving clone must not serve stale hits.
 	if a := c.cscActive; a != nil && !a.Load() {
@@ -629,17 +774,25 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		return c.processWithRetry(ctx, cmd, nil)
 	}
 
-	db := c.opt.DB
-	key := dbNamespacedKey(db, rawKey)
+	keyPrefix := c.cscKeyPrefix
+	if keyPrefix == "" {
+		// A successfully attached client always has a namespace. Fail closed if
+		// an incomplete custom baseClient reaches this path.
+		return c.processWithRetry(ctx, cmd, nil)
+	}
+	key := cscNamespacedKey(keyPrefix, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
 	for i, k := range redisKeys {
-		nsRedisKeys[i] = dbNamespacedKey(db, k)
+		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
 	}
 
 	// Serve hits straight from the cache.
 	if data, ok := c.csc.Get(ctx, key); ok {
-		if err := applyCachedReply(cmd, data); err == nil {
-			return nil
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
+			return err
 		}
 		c.csc.DeleteByCacheKey(key)
 	}
@@ -648,8 +801,11 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 	if !shouldFetch {
 		// Another goroutine is fetching; Reserve blocks until it completes.
 		if data, ok := c.csc.Get(ctx, key); ok {
-			if err := applyCachedReply(cmd, data); err == nil {
-				return nil
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
+				return err
 			}
 			c.csc.DeleteByCacheKey(key)
 		}
@@ -675,7 +831,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
-		if err == nil {
+		if isCacheableReplyResult(err) {
 			c.fulfillCached(key, token, &fc)
 		} else {
 			c.csc.Cancel(key, token)
@@ -688,11 +844,15 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 // an evict-on-remove hook is active so EvictByConn can drop it if that conn is
 // removed. It also closes the attribute-vs-coverage races: the conn is released
 // before this runs, so its OnRemove eviction — or a handoff re-init's scoped
-// eviction — may fire before the entry exists. After attributing we re-check
-// (removed-ring and init generation, via coverageLostSince) against the state
-// captured at reply time, and drop the entry if its invalidation coverage was
-// lost in between.
+// eviction — may fire before the entry exists. Publication is serialized with
+// the hook's init-generation changes, so a reply whose invalidation coverage
+// was already lost never becomes visible and never wakes waiters with stale
+// data.
 func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
+	if active := c.cscActive; active != nil && !active.Load() {
+		c.csc.Cancel(key, token)
+		return false
+	}
 	if hook := c.cscHook(); hook != nil {
 		if fc.connID == 0 {
 			// Invariant: an active hook always gets a real conn id (>=1). A zero id
@@ -700,14 +860,14 @@ func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture
 			c.csc.Cancel(key, token)
 			return false
 		}
-		owner := hook.evictor
-		done := owner.FulfillOwned(key, token, fc.connID, fc.raw)
-		if done && hook.coverageLostSince(fc.connID, fc.initGen) {
-			// Scoped to this key: EvictByConn here would also drop entries the
-			// conn's NEW socket legitimately tracks after a handoff re-init.
-			c.csc.DeleteByCacheKey(key)
+		if !hook.fulfillOwnedIfCovered(key, token, fc.connID, fc.initGen, fc.raw) {
+			// A coverage mismatch leaves the reservation IN_PROGRESS because
+			// FulfillOwned was deliberately skipped. Cancel wakes its waiters
+			// as misses so one can safely refetch on a covered connection.
+			c.csc.Cancel(key, token)
+			return false
 		}
-		return done
+		return true
 	}
 	return c.csc.Fulfill(key, token, fc.raw)
 }

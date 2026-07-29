@@ -318,6 +318,12 @@ type Options struct {
 	// with ClientSideCache it is the on/off switch for the feature: leave both
 	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
 	// takes precedence over this config.
+	//
+	// Client-side caching is disabled when CredentialsProvider,
+	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
+	// provider-backed credentials can change the ACL identity after the cache
+	// namespace is selected. Fixed Username/Password values are supported and
+	// included in a hashed cache namespace.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
 	// ClientSideCache is an explicit Cache implementation used for client-side
@@ -326,8 +332,11 @@ type Options struct {
 	// custom implementation.
 	//
 	// A shared Cache is only safe across clients on the same server and DB.
+	// Clients with different fixed Username/Password values are isolated by a
+	// hashed identity namespace.
 	// Client-side caching is restricted to DB 0 and disabled with a warning
-	// otherwise.
+	// otherwise. It is also disabled with any credential provider; see
+	// ClientSideCacheConfig.
 	ClientSideCache Cache
 
 	// ClientSideCacheStrategy selects the invalidation architecture used when
@@ -352,17 +361,6 @@ const (
 	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
 	CSCStrategySharedTracking CSCStrategy = iota
 )
-
-// cscCacheOwnerAware reports whether the configured cache supports per-connection
-// eviction (ConnOwnedCache), which SharedTracking requires. A localCache built
-// from ClientSideCacheConfig does; an explicit ClientSideCache must too.
-func (opt *Options) cscCacheOwnerAware() bool {
-	if opt.ClientSideCache != nil {
-		_, ok := opt.ClientSideCache.(ConnOwnedCache)
-		return ok
-	}
-	return opt.ClientSideCacheConfig != nil
-}
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
