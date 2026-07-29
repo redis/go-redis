@@ -145,6 +145,187 @@ var _ = Describe("ConnPool", func() {
 	})
 })
 
+func TestDrainIdleConnsHoldsPoolTurn(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer: dummyDialer,
+		// Keep PoolSize above MaxActiveConns: a temporary drainer claim must not
+		// make Get spuriously return ErrPoolExhausted.
+		PoolSize:           2,
+		MaxActiveConns:     1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        time.Second,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+
+	ctx := context.Background()
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// A bare ConnPool has no client init hook, so simulate initConn's final
+	// state before returning the connection to the idle pool.
+	cn.GetStateMachine().Transition(pool.StateInUse)
+	connPool.Put(ctx, cn)
+
+	draining := make(chan struct{})
+	releaseDrain := make(chan struct{})
+	drainDone := make(chan struct{})
+	var state pool.DrainState
+	go func() {
+		connPool.DrainIdleConns(ctx, &state, func(*pool.Conn) error {
+			close(draining)
+			<-releaseDrain
+			return nil
+		})
+		close(drainDone)
+	}()
+
+	select {
+	case <-draining:
+	case <-time.After(time.Second):
+		t.Fatal("drainer did not claim the idle connection")
+	}
+
+	type getResult struct {
+		cn  *pool.Conn
+		err error
+	}
+	getDone := make(chan getResult, 1)
+	go func() {
+		cn, err := connPool.Get(ctx)
+		getDone <- getResult{cn: cn, err: err}
+	}()
+
+	select {
+	case result := <-getDone:
+		if result.cn != nil {
+			connPool.Put(ctx, result.cn)
+		}
+		t.Fatalf("Get returned while the drainer held the only connection: %v", result.err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseDrain)
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("drainer did not return the connection")
+	}
+
+	select {
+	case result := <-getDone:
+		if result.err != nil {
+			t.Fatalf("Get after drain: %v", result.err)
+		}
+		connPool.Put(ctx, result.cn)
+	case <-time.After(time.Second):
+		t.Fatal("Get did not receive the returned connection")
+	}
+}
+
+func TestGetTimesOutWhileDrainerHoldsIdleConn(t *testing.T) {
+	const poolTimeout = 40 * time.Millisecond
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer:             dummyDialer,
+		PoolSize:           2,
+		MaxActiveConns:     1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        poolTimeout,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+
+	ctx := context.Background()
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	cn.GetStateMachine().Transition(pool.StateInUse)
+	connPool.Put(ctx, cn)
+
+	draining := make(chan struct{})
+	releaseDrain := make(chan struct{})
+	drainDone := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseDrain) }) }
+	t.Cleanup(release)
+
+	var state pool.DrainState
+	go func() {
+		connPool.DrainIdleConns(ctx, &state, func(*pool.Conn) error {
+			close(draining)
+			<-releaseDrain
+			return nil
+		})
+		close(drainDone)
+	}()
+
+	select {
+	case <-draining:
+	case <-time.After(time.Second):
+		t.Fatal("drainer did not claim the idle connection")
+	}
+
+	getDone := make(chan error, 1)
+	go func() {
+		_, err := connPool.Get(ctx)
+		getDone <- err
+	}()
+	select {
+	case err := <-getDone:
+		if !errors.Is(err, pool.ErrPoolTimeout) {
+			t.Fatalf("Get while drainer is blocked: got %v, want ErrPoolTimeout", err)
+		}
+	case <-time.After(10 * poolTimeout):
+		t.Fatalf("Get did not return within a bounded multiple of PoolTimeout (%v)", poolTimeout)
+	}
+	if stats := connPool.Stats(); stats.Timeouts != 1 || stats.PendingRequests != 0 {
+		t.Fatalf("timeout stats: got Timeouts=%d PendingRequests=%d, want 1 and 0",
+			stats.Timeouts, stats.PendingRequests)
+	}
+
+	release()
+	select {
+	case <-drainDone:
+	case <-time.After(time.Second):
+		t.Fatal("drainer did not return the connection")
+	}
+
+	cn, err = connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get after timed-out drainer wait: %v", err)
+	}
+	connPool.Put(ctx, cn)
+}
+
+func TestMaxActiveConnsStillReturnsPoolExhausted(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer:             dummyDialer,
+		PoolSize:           2,
+		MaxActiveConns:     1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        time.Second,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+
+	first, err := connPool.Get(context.Background())
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	defer connPool.Remove(context.Background(), first, pool.ErrClosed)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := connPool.Get(ctx); !errors.Is(err, pool.ErrPoolExhausted) {
+		t.Fatalf("second Get: got %v, want ErrPoolExhausted", err)
+	}
+}
+
 var _ = Describe("MinIdleConns", func() {
 	const poolSize = 100
 	ctx := context.Background()

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -313,11 +314,68 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// ClientSideCacheConfig enables client-side caching when non-nil. Together
+	// with ClientSideCache it is the on/off switch for the feature: leave both
+	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
+	// takes precedence over this config.
+	//
+	// Client-side caching is disabled when CredentialsProvider,
+	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
+	// provider-backed credentials can change the ACL identity after the cache
+	// namespace is selected. Fixed Username/Password values are supported and
+	// included in a hashed cache namespace.
+	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCache is an explicit Cache implementation used for client-side
+	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// advanced users that want to share a cache across clients or supply a
+	// custom implementation.
+	//
+	// A shared Cache is only safe across clients on the same server and DB.
+	// Clients with different fixed Username/Password values are isolated by a
+	// hashed identity namespace.
+	// Client-side caching is restricted to DB 0 and disabled with a warning
+	// otherwise. It is also disabled with any credential provider; see
+	// ClientSideCacheConfig.
+	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the invalidation architecture used when
+	// client-side caching is enabled (via ClientSideCacheConfig or
+	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
+	// CSCStrategySharedTracking, currently the only implemented strategy. See
+	// docs/csc-strategy-guide.md.
+	ClientSideCacheStrategy CSCStrategy
 }
+
+// CSCStrategy selects the client-side caching invalidation architecture. Set via
+// Options.ClientSideCacheStrategy; fixed for the client's lifetime.
+//
+// CSCStrategySharedTracking is currently the only implemented strategy; the type
+// exists as an extension point for additional architectures (e.g. a BCAST sidecar)
+// without a breaking API change.
+type CSCStrategy int
+
+const (
+	// CSCStrategySharedTracking (default, the zero value): one shared cache; every
+	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
+	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
+	CSCStrategySharedTracking CSCStrategy = iota
+)
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
+	}
+	// An unknown strategy would thread the CSC gates inconsistently (e.g. tracking
+	// on with no drainer), serving stale data. Clamp to the only supported value.
+	switch opt.ClientSideCacheStrategy {
+	case CSCStrategySharedTracking:
+	default:
+		internal.Logger.Printf(context.Background(),
+			"redis: unknown ClientSideCacheStrategy %d; falling back to CSCStrategySharedTracking",
+			opt.ClientSideCacheStrategy)
+		opt.ClientSideCacheStrategy = CSCStrategySharedTracking
 	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {
@@ -357,6 +415,13 @@ func (opt *Options) init() {
 	}
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
+	} else if opt.Protocol == 3 && opt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+		// Too small to hold a push header, the processor would consume frames before
+		// knowing their name and could swallow a Pub/Sub frame. Clamp to the minimum.
+		internal.Logger.Printf(context.Background(),
+			"redis: ReadBufferSize=%d is below the RESP3 minimum %d; clamping.",
+			opt.ReadBufferSize, proto.MinRESP3ReadBufferSize)
+		opt.ReadBufferSize = proto.MinRESP3ReadBufferSize
 	}
 	if opt.WriteBufferSize == 0 {
 		opt.WriteBufferSize = proto.DefaultBufferSize
@@ -411,6 +476,11 @@ func (opt *Options) init() {
 
 	if opt.FailingTimeoutSeconds == 0 {
 		opt.FailingTimeoutSeconds = 15
+	}
+
+	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
+		internal.Logger.Printf(context.Background(),
+			"redis: client-side caching requires Protocol: 3 (RESP3); caching is disabled")
 	}
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
