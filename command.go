@@ -295,6 +295,14 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		return 0
 	}
 
+	// Module commands registered keyless in the static policy table (e.g.
+	// ft.aliaslist) route as keyless even while the command-info cache is
+	// cold, so the first calls of a process don't hash a non-key argument
+	// (such as an index name) into a slot.
+	if defaultPolicyKeyless(name) {
+		return 0
+	}
+
 	switch name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro":
 		if cmd.stringArg(2) != "0" {
@@ -4839,10 +4847,27 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 	}
 
 	cmd.val = make([]GeoLocation, n)
+	// Each element is an array of [name, ...] whose minimum length is set by
+	// the requested WITH flags. Entries shorter than that would make the
+	// parser read into the next reply; extra elements are drained below so a
+	// longer entry (e.g. from a newer server) can't leave frames on the wire.
+	withLen := 1
+	if cmd.opt.WithDist {
+		withLen++
+	}
+	if cmd.opt.WithHash {
+		withLen++
+	}
+	if cmd.opt.WithCoord {
+		withLen++
+	}
 	for i := 0; i < n; i++ {
-		_, err = rd.ReadArrayLen()
+		nn, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
+		}
+		if nn < withLen {
+			return fmt.Errorf("redis: got %d elements in GEOSEARCH reply, expected at least %d", nn, withLen)
 		}
 
 		var loc GeoLocation
@@ -4873,6 +4898,11 @@ func (cmd *GeoSearchLocationCmd) readReply(rd *proto.Reader) error {
 			}
 			loc.Latitude, err = rd.ReadFloat()
 			if err != nil {
+				return err
+			}
+		}
+		for j := withLen; j < nn; j++ {
+			if err := rd.DiscardNext(); err != nil {
 				return err
 			}
 		}
@@ -5383,9 +5413,6 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		if nn < 4 {
 			return fmt.Errorf("redis: got %d elements in slowlog get, expected at least 4", nn)
 		}
-		if nn > 7 {
-			return fmt.Errorf("redis: got %d elements in slowlog get, expected at most 7", nn)
-		}
 
 		if cmd.val[i].ID, err = rd.ReadInt(); err != nil {
 			return err
@@ -5434,6 +5461,14 @@ func (cmd *SlowLogCmd) readReply(rd *proto.Reader) error {
 		// Redis 8.10+ appends a 7th field: the command's total argument count.
 		if nn >= 7 {
 			if cmd.val[i].CommandArgc, err = rd.ReadInt(); err != nil {
+				return err
+			}
+		}
+
+		// Drain any elements past the 7 this parser knows about so a server
+		// that declares a longer entry array doesn't leave frames on the wire.
+		for j := 7; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
 				return err
 			}
 		}
@@ -5519,8 +5554,8 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 		if err != nil {
 			return err
 		}
-		if nn < 3 {
-			return fmt.Errorf("redis: got %d elements in latency get, expected at least 3", nn)
+		if nn < 4 {
+			return fmt.Errorf("redis: got %d elements in latency get, expected at least 4", nn)
 		}
 		if cmd.val[i].Name, err = rd.ReadString(); err != nil {
 			return err
@@ -5540,6 +5575,13 @@ func (cmd *LatencyCmd) readReply(rd *proto.Reader) error {
 			return err
 		}
 		cmd.val[i].Max = time.Duration(maximum) * time.Millisecond
+		// Drain any elements beyond the 4 this parser reads so a server that
+		// declares a longer entry array can't leave frames on the wire.
+		for j := 4; j < nn; j++ {
+			if err = rd.DiscardNext(); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -5730,6 +5772,14 @@ func (cmd *HotKeysCmd) readReply(rd *proto.Reader) error {
 
 	if v, ok := data["by-net-bytes"].([]interface{}); ok {
 		result.ByNetBytes = parseHotKeysKeyEntries(v)
+	}
+
+	// Only the first element of the outer array is parsed; drain the rest so a
+	// server that wraps more than one element doesn't leave frames on the wire.
+	for i := 1; i < arrayLen; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
 	}
 
 	cmd.val = result

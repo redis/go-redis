@@ -35,12 +35,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 	ctx := context.TODO()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	protocols := []int{2, 3}
