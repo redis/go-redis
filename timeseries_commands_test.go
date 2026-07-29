@@ -1952,9 +1952,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(len(resultSentinel)).To(Equal(3))
 
-				// Aggregation: one aggregator per key
+				// Aggregation: one aggregator spec per key
 				optAgg := &redis.TSNRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Min, redis.Max, redis.Sum},
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {redis.Max}, {redis.Sum}},
 					BucketDuration: 2000,
 				}
 				resultAgg, err := client.TSNRangeWithArgs(ctx, keys, 1000, 3000, optAgg).Result()
@@ -1967,7 +1967,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 				// EMPTY flag (emit empty buckets)
 				optEmpty := &redis.TSNRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Min, redis.Max, redis.Sum},
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {redis.Max}, {redis.Sum}},
 					BucketDuration: 500,
 					Empty:          true,
 				}
@@ -2013,7 +2013,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 				// Aggregation in reverse order
 				optAgg := &redis.TSNRevRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Max, redis.Min},
+					Aggregators:    [][]redis.Aggregator{{redis.Max}, {redis.Min}},
 					BucketDuration: 2000,
 				}
 				resultAgg, err := client.TSNRevRangeWithArgs(ctx, keys, 1000, 3000, optAgg).Result()
@@ -2040,7 +2040,7 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				// Same key twice with different aggregators: two value columns from one physical series
 				dupKeys := []string{"{dup}:x", "{dup}:x"}
 				optAgg := &redis.TSNRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {redis.Max}},
 					BucketDuration: 2000,
 				}
 				result, err := client.TSNRangeWithArgs(ctx, dupKeys, 1000, 2000, optAgg).Result()
@@ -2051,16 +2051,64 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 				}
 			})
 
-			It("should TSNRangeWithArgs validate aggregator count", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
+			It("should TSNRange support multiple aggregators per key", Label("timeseries", "tsnrange", "multiaggregators", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				keys := []string{"{multi}:a", "{multi}:b"}
+				for _, k := range keys {
+					Expect(client.TSCreate(ctx, k).Err()).NotTo(HaveOccurred())
+				}
+				Expect(client.TSMAdd(ctx, [][]interface{}{
+					{"{multi}:a", 1000, 1.0},
+					{"{multi}:b", 1000, 10.0},
+					{"{multi}:a", 1500, 3.0},
+					{"{multi}:b", 1500, 20.0},
+				}).Err()).NotTo(HaveOccurred())
+
+				// Two aggregators for the first key, one for the second:
+				// AGGREGATION MIN,MAX SUM <bucketDuration>
+				optAgg := &redis.TSNRangeOptions{
+					Aggregators:    [][]redis.Aggregator{{redis.Min, redis.Max}, {redis.Sum}},
+					BucketDuration: 2000,
+				}
+				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 2000, optAgg)
+				// Each per-key spec is a single comma-joined wire token
+				Expect(cmd.Args()).To(ContainElements("MIN,MAX", "SUM"))
+
+				result, err := cmd.Result()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(result)).To(BeNumerically(">", 0))
+				// Row width is the total number of aggregators, flattened key by key
+				for _, row := range result {
+					Expect(len(row.Values)).To(Equal(3))
+				}
+				// The bucket [0, 2000) holds both samples: min(a)=1, max(a)=3, sum(b)=30
+				Expect(result[0].Values[0]).To(BeEquivalentTo(1.0))
+				Expect(result[0].Values[1]).To(BeEquivalentTo(3.0))
+				Expect(result[0].Values[2]).To(BeEquivalentTo(30.0))
+			})
+
+			It("should TSNRangeWithArgs validate aggregator spec count", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
 				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
 
 				keys := []string{"{val}:a", "{val}:b", "{val}:c"}
-				// 2 aggregators for 3 keys: must error
+				// 2 aggregator specs for 3 keys: must error
 				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 1000, &redis.TSNRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Min, redis.Max},
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {redis.Max}},
 					BucketDuration: 100,
 				})
-				Expect(cmd.Err()).To(MatchError(ContainSubstring("requires exactly 3 aggregator(s), got 2")))
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("requires exactly 3 aggregator spec(s), got 2")))
+			})
+
+			It("should TSNRangeWithArgs reject empty aggregator specs", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
+				SkipBeforeRedisVersion("8.10", "TS.NRANGE requires Redis 8.10+")
+
+				keys := []string{"{val3}:a", "{val3}:b"}
+				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 1000, &redis.TSNRangeOptions{
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {}},
+					BucketDuration: 100,
+				})
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("empty timeseries aggregator spec at index 1")))
 			})
 
 			It("should TSNRangeWithArgs reject Invalid aggregators", Label("timeseries", "tsnrange", "validation", "NonRedisEnterprise"), func() {
@@ -2068,10 +2116,10 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 				keys := []string{"{val2}:a", "{val2}:b"}
 				cmd := client.TSNRangeWithArgs(ctx, keys, 0, 1000, &redis.TSNRangeOptions{
-					Aggregators:    []redis.Aggregator{redis.Min, redis.Invalid},
+					Aggregators:    [][]redis.Aggregator{{redis.Min}, {redis.Sum, redis.Invalid}},
 					BucketDuration: 100,
 				})
-				Expect(cmd.Err()).To(MatchError(ContainSubstring("invalid timeseries aggregator at index 1: Invalid")))
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("invalid timeseries aggregator at index 1[1]: Invalid")))
 			})
 
 			It("should TSRead and TSReadWithArgs", Label("timeseries", "tsread", "tsreadWithArgs", "NonRedisEnterprise"), func() {
