@@ -838,7 +838,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
-		// Another goroutine is fetching; Reserve blocks until it completes.
+		// Another goroutine is fetching; Get below waits until it completes.
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := ctx.Err(); err != nil {
 				return err
