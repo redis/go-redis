@@ -126,6 +126,13 @@ func TestCSCReadYourWrites(t *testing.T) {
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("redis not available at %s: %v", cscMultiDBAddr(), err)
 	}
+	unavailable, err := probeClientTracking(ctx, mutator)
+	if unavailable {
+		t.Skipf("CLIENT TRACKING is unavailable: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("probe CLIENT TRACKING: %v", err)
+	}
 
 	// Only touch this test's own key — never FLUSHDB: the target may be a
 	// shared instance the suite was never pointed at. The per-run nonce keeps

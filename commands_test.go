@@ -372,6 +372,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientTracking ON/OFF", func() {
+			skipIfClientTrackingUnavailable(ctx, client)
+
 			conn := client.Conn()
 			defer conn.Close()
 
@@ -393,6 +395,8 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should ClientTracking with BCAST and NOLOOP", func() {
+			skipIfClientTrackingUnavailable(ctx, client)
+
 			conn := client.Conn()
 			defer conn.Close()
 

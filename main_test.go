@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +18,7 @@ import (
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/logging"
 )
 
@@ -91,6 +93,72 @@ func SkipAfterRedisVersion(version float64, msg string) {
 	if RedisVersion > version {
 		Skip(fmt.Sprintf("(redis version > %f) %s", version, msg))
 	}
+}
+
+func isClientTrackingUnavailable(err error) bool {
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+
+	msg := strings.ToLower(strings.TrimPrefix(redisErr.Error(), "ERR "))
+	return strings.HasPrefix(msg, "noperm") ||
+		strings.HasPrefix(msg, "unknown command") ||
+		strings.HasPrefix(msg, "unknown subcommand") ||
+		strings.HasPrefix(msg, "command 'client|tracking' is not allowed")
+}
+
+func TestIsClientTrackingUnavailable(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{proto.RedisError("NOPERM this user has no permissions"), true},
+		{proto.RedisError("ERR unknown command 'client'"), true},
+		{proto.RedisError("ERR Unknown subcommand or wrong number of arguments for 'tracking'"), true},
+		{proto.RedisError("ERR command 'client|tracking' is not allowed"), true},
+		{proto.RedisError("LOADING Redis is loading the dataset"), false},
+		{proto.RedisError("MASTERDOWN Link with MASTER is down"), false},
+		{fmt.Errorf("unknown command: connection failed"), false},
+	}
+
+	for _, tt := range tests {
+		if got := isClientTrackingUnavailable(tt.err); got != tt.want {
+			t.Errorf("isClientTrackingUnavailable(%q) = %t, want %t", tt.err, got, tt.want)
+		}
+	}
+}
+
+// probeClientTracking checks whether Redis accepts CLIENT TRACKING on a
+// dedicated connection. unavailable is true only for known unsupported or
+// permission responses; other server, connection, and cleanup errors fail.
+func probeClientTracking(ctx context.Context, client *redis.Client) (unavailable bool, err error) {
+	conn := client.Conn()
+	if err := conn.ClientTrackingOn(ctx, nil).Err(); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			return false, fmt.Errorf("close CLIENT TRACKING probe connection: %w", closeErr)
+		}
+
+		return isClientTrackingUnavailable(err), err
+	}
+
+	offErr := conn.ClientTrackingOff(ctx).Err()
+	closeErr := conn.Close()
+	if offErr != nil {
+		return false, fmt.Errorf("disable CLIENT TRACKING after probe: %w", offErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close CLIENT TRACKING probe connection: %w", closeErr)
+	}
+	return false, nil
+}
+
+func skipIfClientTrackingUnavailable(ctx context.Context, client *redis.Client) {
+	unavailable, err := probeClientTracking(ctx, client)
+	if unavailable {
+		Skip(fmt.Sprintf("CLIENT TRACKING is unavailable: %v", err))
+	}
+	Expect(err).NotTo(HaveOccurred())
 }
 
 var _ = BeforeSuite(func() {

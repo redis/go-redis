@@ -24,6 +24,7 @@ var _ = Describe("Client-side cache strategies", func() {
 
 		mutator = redis.NewClient(redisOptions())
 		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
+		skipIfClientTrackingUnavailable(ctx, mutator)
 		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 	})
 

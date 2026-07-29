@@ -28,6 +28,7 @@ var _ = Describe("Client-side cache (standalone)", func() {
 		// the first GET's fill, making cache-population assertions flaky.
 		mutator = redis.NewClient(redisOptions())
 		Expect(mutator.Ping(ctx).Err()).NotTo(HaveOccurred())
+		skipIfClientTrackingUnavailable(ctx, mutator)
 		Expect(mutator.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		opt := redisOptions()
