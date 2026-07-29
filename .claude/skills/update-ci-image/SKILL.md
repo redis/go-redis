@@ -27,6 +27,7 @@ The `redislabs/client-libs-test` image is referenced in **six** places (five liv
 3. `.github/workflows/build.yml` — update the `["8.X.x"]="<tag>"` line in `redis_version_mapping`.
 4. `.github/actions/run-tests/action.yml` — update the matching `["8.X.x"]="<tag>"` line.
 5. `.github/workflows/doctests.yaml` — update the `image:` line **only if** doctests should run against this version. Doctests typically pin to the latest stable; check before changing.
+6. `CONTRIBUTING.md` — update the "By default the docker image … is `redislabs/client-libs-test:<tag>`." prose line to match the new `Makefile` default. This one is easy to forget because nothing breaks when it's stale.
 
 If the version that doctests run against (`Makefile` default) and the mapping for that same minor version diverge, you have a bug — they should resolve to the same tag.
 
@@ -42,7 +43,7 @@ If the version that doctests run against (`Makefile` default) and the mapping fo
 
 1. `.github/workflows/build.yml` — drop the `- "<X.Y>.x"` line from both `redis-version` matrices and the `["<X.Y>.x"]="..."` entry.
 2. `.github/actions/run-tests/action.yml` — drop the same `["<X.Y>.x"]="..."` mapping entry.
-3. If `Makefile` / `docker-compose.yml` / `doctests.yaml` were pinned to this version, pick a replacement (usually the next-newest version still in the matrix) and update them too.
+3. If `Makefile` / `docker-compose.yml` / `doctests.yaml` were pinned to this version, pick a replacement (usually the next-newest version still in the matrix) and update them too, along with the `CONTRIBUTING.md` prose line.
 
 ### Switch to a custom build (e.g. `custom-26172898734-debian` for an unreleased server feature)
 
@@ -60,7 +61,7 @@ After editing, search for any stale tag references:
 # Pattern: literal old tag, e.g. "8.8-rc1" or "client-libs-test:8.8"
 ```
 
-Expected matches: zero in `Makefile`, `docker-compose.yml`, `.github/**`. A reference in `AGENTS.md` or the `testing` skill documentation (e.g. "e.g. `redislabs/client-libs-test:8.8-m03`") is illustrative — leave it unless the doc is misleading after the change.
+Expected matches: zero in `Makefile`, `docker-compose.yml`, `.github/**`, and `CONTRIBUTING.md`. A reference in `AGENTS.md` or the `testing` skill documentation (e.g. "e.g. `redislabs/client-libs-test:8.8-m03`") is illustrative — leave it unless the doc is misleading after the change.
 
 ## Gotchas
 
