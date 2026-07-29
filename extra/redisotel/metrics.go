@@ -140,6 +140,25 @@ func poolStatsAttrs(conf *config) (poolAttrs, idleAttrs, usedAttrs attribute.Set
 	return
 }
 
+// cumulativePoolStat creates an observable instrument for a monotonically
+// increasing pool statistic. By default it uses Int64ObservableUpDownCounter to
+// preserve backwards compatibility with existing exporters; when
+// conf.semconvCompliantMetrics is set it uses Int64ObservableCounter as the
+// OpenTelemetry database semantic conventions require. Both instrument types
+// satisfy metric.Int64Observable, so callers observe them uniformly. See #3612.
+func cumulativePoolStat(conf *config, name, description string) (metric.Int64Observable, error) {
+	if conf.semconvCompliantMetrics {
+		return conf.meter.Int64ObservableCounter(
+			name,
+			metric.WithDescription(description),
+		)
+	}
+	return conf.meter.Int64ObservableUpDownCounter(
+		name,
+		metric.WithDescription(description),
+	)
+}
+
 func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, error) {
 	poolAttrs, idleAttrs, usedAttrs := poolStatsAttrs(conf)
 
@@ -175,9 +194,9 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	waits, err := conf.meter.Int64ObservableUpDownCounter(
+	waits, err := cumulativePoolStat(conf,
 		"db.client.connections.waits",
-		metric.WithDescription("The number of times a connection was waited for"),
+		"The number of times a connection was waited for",
 	)
 	if err != nil {
 		return nil, err
@@ -192,25 +211,25 @@ func reportPoolStats(rdb *redis.Client, conf *config) (metric.Registration, erro
 		return nil, err
 	}
 
-	timeouts, err := conf.meter.Int64ObservableUpDownCounter(
+	timeouts, err := cumulativePoolStat(conf,
 		"db.client.connections.timeouts",
-		metric.WithDescription("The number of connection timeouts that have occurred trying to obtain a connection from the pool"),
+		"The number of connection timeouts that have occurred trying to obtain a connection from the pool",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	hits, err := conf.meter.Int64ObservableUpDownCounter(
+	hits, err := cumulativePoolStat(conf,
 		"db.client.connections.hits",
-		metric.WithDescription("The number of times free connection was found in the pool"),
+		"The number of times free connection was found in the pool",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	misses, err := conf.meter.Int64ObservableUpDownCounter(
+	misses, err := cumulativePoolStat(conf,
 		"db.client.connections.misses",
-		metric.WithDescription("The number of times free connection was not found in the pool"),
+		"The number of times free connection was not found in the pool",
 	)
 	if err != nil {
 		return nil, err

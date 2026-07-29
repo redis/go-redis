@@ -155,6 +155,7 @@ const (
 	CmdTypeFTSearch
 	CmdTypeTSTimestampValue
 	CmdTypeTSTimestampValueSlice
+	CmdTypeTSNRangePivotRowSlice
 	CmdTypeHotKeys
 	CmdTypeIncrEXInt
 	CmdTypeIncrEXFloat
@@ -291,6 +292,14 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 
 	// first check if the command is keyless
 	if _, ok := keylessCommands[name]; ok {
+		return 0
+	}
+
+	// Module commands registered keyless in the static policy table (e.g.
+	// ft.aliaslist) route as keyless even while the command-info cache is
+	// cold, so the first calls of a process don't hash a non-key argument
+	// (such as an index name) into a slot.
+	if defaultPolicyKeyless(name) {
 		return 0
 	}
 
@@ -1322,8 +1331,13 @@ func (cmd *IntSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]int64, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadInt(); err != nil {
+		switch num, err := rd.ReadInt(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -1382,8 +1396,13 @@ func (cmd *UintSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]uint64, n)
 	for i := range cmd.val {
-		if cmd.val[i], err = rd.ReadUint(); err != nil {
+		switch num, err := rd.ReadUint(); {
+		case err == Nil:
+			cmd.val[i] = 0
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = num
 		}
 	}
 	return nil
@@ -2110,8 +2129,13 @@ func (cmd *BoolSliceCmd) readReply(rd *proto.Reader) error {
 	}
 	cmd.val = make([]bool, n)
 	for i := 0; i < len(cmd.val); i++ {
-		if cmd.val[i], err = rd.ReadBool(); err != nil {
+		switch b, err := rd.ReadBool(); {
+		case err == Nil:
+			cmd.val[i] = false
+		case err != nil:
 			return err
+		default:
+			cmd.val[i] = b
 		}
 	}
 	return nil
@@ -8967,6 +8991,13 @@ func ExtractCommandValue(cmd interface{}) (interface{}, error) {
 				Err() error
 			}); ok {
 				return tsTimestampValueSliceCmd.Val(), tsTimestampValueSliceCmd.Err()
+			}
+		case CmdTypeTSNRangePivotRowSlice:
+			if tsNRangePivotRowSliceCmd, ok := cmd.(interface {
+				Val() []TSNRangePivotRow
+				Err() error
+			}); ok {
+				return tsNRangePivotRowSliceCmd.Val(), tsNRangePivotRowSliceCmd.Err()
 			}
 		case CmdTypeStringSlice:
 			if stringSliceCmd, ok := cmd.(interface {

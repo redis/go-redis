@@ -462,6 +462,68 @@ func TestFTHybridWithArgs_ShardKRatio(t *testing.T) {
 	})
 }
 
+// TestFTCreateHNSWRerank_Args verifies the RERANK attribute (Redis 8.10+,
+// disk-backed HNSW) is emitted as an explicit RERANK TRUE/FALSE key-value pair
+// counted in the attribute-count token, and omitted when HasRerank is unset.
+func TestFTCreateHNSWRerank_Args(t *testing.T) {
+	tests := []struct {
+		name string
+		opts *FTHNSWOptions
+		want []interface{}
+	}{
+		{
+			name: "rerank_unset",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2"},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 6,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2",
+			},
+		},
+		{
+			name: "rerank_true",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Rerank: true, HasRerank: true},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 8,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "RERANK", "TRUE",
+			},
+		},
+		{
+			name: "rerank_true_without_has_flag",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Rerank: true},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 8,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "RERANK", "TRUE",
+			},
+		},
+		{
+			name: "rerank_false_explicit",
+			opts: &FTHNSWOptions{Type: "FLOAT32", Dim: 2, DistanceMetric: "L2", Rerank: false, HasRerank: true},
+			want: []interface{}{
+				"FT.CREATE", "idx", "SCHEMA", "v", "VECTOR", "HNSW", 8,
+				"TYPE", "FLOAT32", "DIM", 2, "DISTANCE_METRIC", "L2", "RERANK", "FALSE",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &mockCmdable{}
+			c := m.asCmdable()
+			cmd := c.FTCreate(context.Background(), "idx", nil, &FieldSchema{
+				FieldName:  "v",
+				FieldType:  SearchFieldTypeVector,
+				VectorArgs: &FTVectorArgs{HNSWOptions: tt.opts},
+			})
+			if cmd.Err() != nil {
+				t.Fatalf("unexpected error: %v", cmd.Err())
+			}
+			if !reflect.DeepEqual(cmd.Args(), tt.want) {
+				t.Errorf("args mismatch\n got: %#v\nwant: %#v", cmd.Args(), tt.want)
+			}
+		})
+	}
+}
+
 // TestParseFTHybridWarnings checks that FT.HYBRID warnings populate from either
 // the "warning" or "warnings" key.
 func TestParseFTHybridWarnings(t *testing.T) {
