@@ -48,6 +48,10 @@ type RingOptions struct {
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
 
+	// himport is the ring-wide HIMPORT fieldset registry, set by NewRing and
+	// shared with every shard client (see himport.go, himport_cluster.go).
+	himport *himportRegistry
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
@@ -270,10 +274,16 @@ func newRingShard(opt *RingOptions, addr string) *ringShard {
 	clopt := opt.clientOptions()
 	clopt.Addr = addr
 
-	return &ringShard{
+	shard := &ringShard{
 		Client: opt.NewClient(clopt),
 		addr:   addr,
 	}
+	// Share the ring-wide HIMPORT fieldset registry so any shard connection
+	// serving an HIMPORT SET can lazily replay the PREPARE.
+	if opt.himport != nil {
+		shard.Client.himport = opt.himport
+	}
+	return shard
 }
 
 func (shard *ringShard) String() string {
@@ -605,7 +615,16 @@ func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")
 	}
+	// Shallow-copy the options: the ring-wide HIMPORT registry is carried
+	// through them to shard construction, and reusing one caller-owned
+	// RingOptions across several rings must not make the rings share (or
+	// clobber each other's) registry.
+	optCopy := *opt
+	opt = &optCopy
 	opt.init()
+	// The registry must exist before the first shard is created; shards
+	// adopt it in newRingShard.
+	opt.himport = newHImportRegistry()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())
 

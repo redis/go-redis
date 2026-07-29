@@ -48,6 +48,11 @@ func (c *Client) newTx() *Tx {
 			hooksMixin:    c.hooksMixin.clone(),
 			pushProcessor: c.pushProcessor, // Copy push processor from parent client
 			onClose:       &onCloseHooks{},
+			// Share the HIMPORT fieldset registry: the sticky pool borrows
+			// connections from the parent client's pool, so fieldsets
+			// prepared on them stay valid after the connections are
+			// returned.
+			himport: c.himport,
 		},
 	}
 	tx.init()
