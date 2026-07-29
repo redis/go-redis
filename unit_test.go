@@ -74,3 +74,35 @@ func TestCmdFirstKeyPosWithInfo_UsesCommandInfoWhenWarm(t *testing.T) {
 		t.Fatalf("post-Get: got %d, want 0", pos)
 	}
 }
+
+// TestCmdFirstKeyPosWithInfo_PolicyTableKeyless checks that a module command
+// registered keyless in the static policy table routes as keyless even on a
+// cold command-info cache, and that key-carrying or specially-routed module
+// commands are not affected.
+func TestCmdFirstKeyPosWithInfo_PolicyTableKeyless(t *testing.T) {
+	ctx := context.Background()
+
+	// Keyless per the policy table: the index argument must not be treated
+	// as a key while the command-info cache is cold.
+	for _, name := range []string{"ft.aliaslist", "ft.aliasadd", "ft.search", "ft.spellcheck"} {
+		cmd := NewCmd(ctx, name, "idx")
+		if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 0 {
+			t.Errorf("%s cold cache: got %d, want 0 (keyless)", name, got)
+		}
+	}
+
+	// Slot-from-key (RespDefaultHashSlot) and special request routing
+	// (ReqSpecial) keep the hardcoded fallback.
+	for _, name := range []string{"ft.suglen", "ft.sugdel", "ft.cursor"} {
+		cmd := NewCmd(ctx, name, "key")
+		if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 1 {
+			t.Errorf("%s cold cache: got %d, want 1", name, got)
+		}
+	}
+
+	// Unregistered module commands are untouched.
+	cmd := NewCmd(ctx, "mymodule.cmd", "arg1")
+	if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 1 {
+		t.Errorf("unregistered module cmd: got %d, want 1", got)
+	}
+}
