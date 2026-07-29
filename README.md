@@ -318,7 +318,7 @@ bypass it.
 Invalidations are processed asynchronously. `DrainInterval` controls how often
 idle connections are checked for them, while `MaxStaleness` can provide an
 optional upper bound on an entry's lifetime. See the
-[client-side caching example](./example/client-side-caching) for a runnable
+[client-side caching example](./example/client-side-caching) for a working
 demonstration and the [CSC strategy guide](./docs/csc-strategy-guide.md) for
 advanced configuration details.
 
