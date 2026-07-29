@@ -105,13 +105,17 @@ func (r *Reader) PeekReplyType() (byte, error) {
 // verified that the next reply is a push notification (e.g. via PeekReplyType
 // returning RespPush).
 //
-// To identify the name the method may block briefly reading more bytes from
-// the underlying connection. That is safe: once the push marker '>' has been
-// observed, the server is committed to sending the rest of the frame, so
-// fetching the next few header bytes does not race with anything the caller
-// could be waiting on. Blocking is preferred to a truncated peek, which would
-// silently misidentify the notification and cause the caller's ReadReply to
-// consume (and drop) the frame; see issue #3839.
+// To identify the name the method may block reading more bytes from the
+// underlying connection, but only ever waits for one byte beyond the valid
+// frame prefix it has already seen. That byte is guaranteed to arrive: an
+// incomplete prefix means the server is still committed to sending the rest
+// of the frame. Demanding any fixed amount instead can deadlock — a complete
+// frame such as a subscribe confirmation for a short channel name can be
+// smaller than the fixed window, and once it is buffered the server has
+// nothing more to send (issue #3935). Blocking for in-flight bytes is
+// preferred to a truncated peek, which would silently misidentify the
+// notification and cause the caller's ReadReply to consume (and drop) the
+// frame; see issue #3839.
 func (r *Reader) PeekPushNotificationName() (string, error) {
 	c, err := r.rd.Peek(1)
 	if err != nil {
@@ -121,16 +125,18 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		return "", fmt.Errorf("redis: can't peek push notification name, next reply is not a push notification")
 	}
 
-	// Start with a peek window that covers every Redis-defined notification
-	// header (MOVING, MIGRATING, FAILED_OVER, message, pmessage, smessage,
-	// subscribe, unsubscribe, ...). If a longer name is encountered, grow
-	// the window up to maxPushHeaderPeek before giving up.
-	const initialPeek = 36
 	const maxPushHeaderPeek = 4096
 
-	peekSize := initialPeek
 	for {
-		buf, peekErr := r.rd.Peek(peekSize)
+		// Parse from what is already buffered; this never blocks.
+		avail := r.rd.Buffered()
+		if avail > maxPushHeaderPeek {
+			avail = maxPushHeaderPeek
+		}
+		buf, peekErr := r.rd.Peek(avail)
+		if peekErr != nil {
+			return "", peekErr
+		}
 		name, complete, parseErr := parsePushNotificationName(buf)
 		if parseErr != nil {
 			return "", parseErr
@@ -138,17 +144,14 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		if complete {
 			return name, nil
 		}
-		// Parser ran out of bytes. Surface a failed underlying read before
-		// growing further; otherwise grow the peek window and retry.
-		if peekErr != nil {
-			return "", peekErr
-		}
-		if peekSize >= maxPushHeaderPeek {
+		if avail >= maxPushHeaderPeek {
 			return "", fmt.Errorf("redis: push notification header exceeds %d bytes", maxPushHeaderPeek)
 		}
-		peekSize *= 2
-		if peekSize > maxPushHeaderPeek {
-			peekSize = maxPushHeaderPeek
+		// Valid but incomplete prefix: the rest of the frame is in flight.
+		// Block for exactly one more byte — the read that delivers it picks
+		// up whatever else has already arrived — then re-parse.
+		if _, err := r.rd.Peek(avail + 1); err != nil {
+			return "", err
 		}
 	}
 }

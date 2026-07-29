@@ -65,7 +65,9 @@ var _ = Describe("Client", func() {
 		client.Close()
 	})
 
-	It("should Stringer", func() {
+	// NonRedisEnterprise: asserts the exact local address in the client's String()
+	// representation, which does not match a remote Redis Enterprise endpoint.
+	It("should Stringer", Label("NonRedisEnterprise"), func() {
 		Expect(client.String()).To(Equal(fmt.Sprintf("Redis<:%s db:0>", redisPort)))
 	})
 
@@ -126,7 +128,10 @@ var _ = Describe("Client", func() {
 		Expect(client.PoolStats()).To(BeAssignableToTypeOf(&redis.PoolStats{}))
 	})
 
-	It("should support custom dialers", func() {
+	// NonRedisEnterprise: this spec installs a plain custom net.Dialer, which replaces
+	// go-redis' TLS-aware dial path, so it cannot connect to a TLS-enabled Redis
+	// Enterprise endpoint; it exercises client dialer wiring against a local server.
+	It("should support custom dialers", Label("NonRedisEnterprise"), func() {
 		custom := redis.NewClient(&redis.Options{
 			Network: "tcp",
 			Addr:    redisAddr,
@@ -337,10 +342,12 @@ var _ = Describe("Client", func() {
 	It("should retry command on network error", func() {
 		Expect(client.Close()).NotTo(HaveOccurred())
 
-		client = redis.NewClient(&redis.Options{
+		retryOpt := &redis.Options{
 			Addr:       redisAddr,
 			MaxRetries: 1,
-		})
+		}
+		applyREConnection(retryOpt)
+		client = redis.NewClient(retryOpt)
 
 		// Put bad connection in the pool.
 		cn, err := client.Pool().Get(ctx)
@@ -813,7 +820,10 @@ var _ = Describe("Dialer connection timeouts", func() {
 	})
 })
 
-var _ = Describe("Credentials Provider Priority", func() {
+// NonRedisEnterprise: these specs exercise client-side credential-provider
+// precedence against a local Redis (recording the AUTH command sent) and require
+// a localhost server; they are not meaningful against a remote Enterprise cluster.
+var _ = Describe("Credentials Provider Priority", Label("NonRedisEnterprise"), func() {
 	var client *redis.Client
 	var opt *redis.Options
 	var recorder *commandRecorder

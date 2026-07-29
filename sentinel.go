@@ -538,6 +538,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		baseClient: &baseClient{
 			opt:     opt,
 			onClose: &onCloseHooks{},
+			himport: newHImportRegistry(),
 		},
 	}
 	rdb.init()

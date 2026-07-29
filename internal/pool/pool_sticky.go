@@ -102,6 +102,14 @@ func (p *StickyConnPool) Put(ctx context.Context, cn *Conn) {
 			p.freeConn(ctx, cn)
 		}
 	}()
+	// A connection marked for removal on release (it may hold unread
+	// replies) must not be served to the next Get: record it as a bad
+	// connection — exactly like Remove — so Get refuses and the underlying
+	// connection is removed from the parent pool when the sticky pool
+	// unwinds (the parent's Put honors the same mark).
+	if reason := cn.CloseOnPutReason(); reason != "" {
+		p._badConnError.Store(BadConnError{wrapped: errors.New(reason)})
+	}
 	p.ch <- cn
 }
 

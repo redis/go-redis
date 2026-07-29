@@ -366,6 +366,11 @@ type baseClient struct {
 
 	// streamingCredentialsManager is used to manage streaming credentials
 	streamingCredentialsManager *streaming.Manager
+
+	// himport is the client-side registry of HIMPORT fieldsets, used to
+	// lazily replay HIMPORT PREPARE onto pooled connections (see himport.go).
+	// Shared by clones and by Conn instances derived from the same pool.
+	himport *himportRegistry
 }
 
 func (c *baseClient) clone() *baseClient {
@@ -381,6 +386,7 @@ func (c *baseClient) clone() *baseClient {
 		pushProcessor:               c.pushProcessor,
 		maintNotificationsManager:   maintNotificationsManager,
 		streamingCredentialsManager: c.streamingCredentialsManager,
+		himport:                     c.himport,
 	}
 	return clone
 }
@@ -472,8 +478,9 @@ func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth
 
 		connPool := pool.NewSingleConnPool(c.connPool, poolCn)
 
-		// Pass hooks so that reauth commands are recorded/traced
-		cn := newConn(c.opt, connPool, &c.hooksMixin)
+		// Pass hooks so that reauth commands are recorded/traced; share the
+		// HIMPORT registry for the same reason as in initConn.
+		cn := newConn(c.opt, connPool, &c.hooksMixin, c.himport)
 
 		if username != "" {
 			err = cn.AuthACL(ctx, username, password).Err()
@@ -587,7 +594,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// If we fail, we must transition to CLOSED
 	var initErr error
 	connPool := pool.NewSingleConnPool(c.connPool, cn)
-	conn := newConn(c.opt, connPool, &c.hooksMixin)
+	// The handshake Conn (handed to OnConnect) must share the client's
+	// HIMPORT registry: a private registry restarts versions at 1, so an
+	// OnConnect prepare would mark the pooled connection with a version
+	// number that collides with the client registry's and silently skips
+	// the replay of a different fieldset definition.
+	conn := newConn(c.opt, connPool, &c.hooksMixin, c.himport)
 
 	username, password := "", ""
 	if c.opt.StreamingCredentialsProvider != nil {
@@ -874,13 +886,29 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 
 	var lastErr error
 	totalAttempts := 0
-	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+	maxRetries := c.opt.MaxRetries
+	himportRetried := false
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		attempt := attempt
 
 		retry, cn, err := c._process(ctx, cmd, attempt)
 		if cn != nil {
 			lastConn = cn
+		}
+		// A "no such fieldset" reply for a registered fieldset means the
+		// connection lost its server session state (e.g. RESET, concurrent
+		// discard). The stale prepared flag was invalidated inside _process
+		// while the connection was still held; grant a single extra attempt
+		// so the retry re-prepares lazily on whichever connection it lands.
+		if err != nil && !retry && !himportRetried && !cmd.NoRetry() &&
+			c.himportShouldRetrySet(cmd, err) {
+			himportRetried = true
+			if attempt == maxRetries {
+				maxRetries++
+			}
+			lastErr = err
+			continue
 		}
 		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
 		// which writes directly to an io.Writer and cannot undo partial writes)
@@ -994,7 +1022,20 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
 		}
 
+		// HIMPORT bookkeeping: pending discards for this session and the
+		// PREPARE for an HIMPORT SET's registered fieldset are written in
+		// the same round trip, right before the command.
+		var injected []Cmder
+		if _, ok := cmd.(himportCmder); ok {
+			injected = c.himportInjectedCmds(ctx, cn, []Cmder{cmd})
+		}
+
 		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			for _, ic := range injected {
+				if err := writeCmd(wr, ic); err != nil {
+					return err
+				}
+			}
 			return writeCmd(wr, cmd)
 		}); err != nil {
 			retryTimeout.Store(1)
@@ -1005,7 +1046,44 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
-			return cmd.readReply(rd)
+			if len(injected) > 0 {
+				if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+					return err
+				}
+				// A push notification can arrive between the injected
+				// replies and the command reply; drain again so the
+				// reply read below does not consume it as the command's.
+				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+					internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+				}
+			}
+			err := cmd.readReply(rd)
+			// Assert the command type before touching the error: the
+			// errors.As chain inside himportNoSuchFieldset allocates, and
+			// this is the per-command hot path.
+			if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(err) {
+				// A failed injected PREPARE is the root cause of the
+				// command's "no such fieldset" reply (drained above).
+				for _, ic := range injected {
+					if prep, ok := ic.(*HImportPrepareCmd); ok &&
+						prep.fieldsetName == set.fieldsetName && prep.Err() != nil {
+						err = prep.Err()
+						break
+					}
+				}
+				// The session lost a registered fieldset the flags claim is
+				// prepared — and the same event (failover, cross-region
+				// switch, reset storm) may have wiped other sessions whose
+				// flags also still look current. Bump the fieldset version
+				// so every connection re-prepares before its next use,
+				// wherever the retry granted by process() lands.
+				if himportNoSuchFieldset(err) {
+					if fs, registered := c.himport.lookup(set.fieldsetName); registered {
+						c.himport.refreshVersion(set.fieldsetName, fs.version)
+					}
+				}
+			}
+			return err
 		}); err != nil {
 			if cmd.readTimeout() == nil {
 				retryTimeout.Store(1)
@@ -1015,6 +1093,9 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 			return err
 		}
 
+		if hc, ok := cmd.(himportCmder); ok {
+			c.himportAfterCmd(cn, hc)
+		}
 		return nil
 	}); err != nil {
 		retry := shouldRetry(err, retryTimeout.Load() == 1)
@@ -1229,21 +1310,67 @@ func (c *baseClient) pipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
 	}
 
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the batch references get written ahead of
+	// the batch.
+	injected := c.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		setCmdsErr(cmds, err)
 		return true, err
 	}
 
+	var readErr error
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with every batch reply unreadXX: stamp the
+			// batch like a write failure. The outer retry loop stamps only
+			// on its exit branch, not when attempts run out, so without
+			// this a batch that keeps dying here would surface an Exec
+			// error while every command still reports Err() == nil.
+			setCmdsErr(cmds, err)
+			return err
+		}
 		// read all replies
-		return c.pipelineReadCmds(ctx, cn, rd, cmds)
+		readErr = c.pipelineReadCmds(ctx, cn, rd, cmds)
+		if readErr != nil && !isRedisError(readErr) {
+			return readErr
+		}
+		c.himportAfterBatch(cn, injected, cmds)
+		return nil
 	}); err != nil {
 		return true, err
 	}
 
-	return false, nil
+	// Registered fieldsets whose SETs came back "no such fieldset" (the
+	// session was lost between prepare and use) are re-prepared and those
+	// SETs re-issued once on the same connection; the error must not
+	// surface for managed fieldsets.
+	//
+	// A transport failure here must neither retry nor fail the batch: the
+	// first round trip was fully consumed and its results delivered, so
+	// re-executing would double-apply non-idempotent commands and failing
+	// would stamp a spurious error onto commands that succeeded. The
+	// re-issue errors stay on the retried SETs; the connection, which may
+	// hold unread replies, is marked for removal when released.
+	if err := c.himportRetryFailedSets(ctx, cn, cmds); err != nil {
+		internal.Logger.Printf(ctx, "himport: pipeline set re-issue failed: %v", err)
+		cn.MarkCloseOnPut("himport: transport error during set re-issue")
+	}
+
+	// Preserve retryable first-command errors (e.g. LOADING) for the outer
+	// loop; the re-issue above may have cleared it.
+	if readErr != nil {
+		readErr = cmds[0].Err()
+	}
+	return readErr != nil, readErr
 }
 
 func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *proto.Reader, cmds []Cmder) error {
@@ -1271,7 +1398,17 @@ func (c *baseClient) txPipelineProcessCmds(
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
 	}
 
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the transaction references get written ahead
+	// of MULTI; the session state is visible inside the transaction.
+	injected := c.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		setCmdsErr(cmds, err)
@@ -1279,6 +1416,13 @@ func (c *baseClient) txPipelineProcessCmds(
 	}
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with every transaction reply unread: stamp
+			// the batch like a write failure (see pipelineProcessCmds).
+			setCmdsErr(cmds, err)
+			return err
+		}
+
 		statusCmd := cmds[0].(*StatusCmd)
 		// Trim multi and exec.
 		trimmedCmds := cmds[1 : len(cmds)-1]
@@ -1289,7 +1433,11 @@ func (c *baseClient) txPipelineProcessCmds(
 		}
 
 		// Read replies.
-		return c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
+		err := c.pipelineReadCmds(ctx, cn, rd, trimmedCmds)
+		if err == nil || isRedisError(err) {
+			c.himportAfterBatch(cn, injected, trimmedCmds)
+		}
+		return err
 	}); err != nil {
 		return false, err
 	}
@@ -1371,6 +1519,7 @@ func NewClient(opt *Options) *Client {
 		baseClient: &baseClient{
 			opt:     opt,
 			onClose: &onCloseHooks{},
+			himport: newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -1448,7 +1597,11 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 }
 
 func (c *Client) Conn() *Conn {
-	return newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin)
+	// Share the HIMPORT fieldset registry: the sticky pool borrows
+	// connections from this client's pool, so fieldsets prepared on them
+	// stay valid after the connections are returned.
+	conn := newConn(c.opt, pool.NewStickyConnPool(c.connPool), &c.hooksMixin, c.himport)
+	return conn
 }
 
 func (c *Client) Process(ctx context.Context, cmd Cmder) error {
@@ -1646,14 +1799,19 @@ type Conn struct {
 }
 
 // newConn is a helper func to create a new Conn instance.
-// the Conn instance is not thread-safe and should not be shared between goroutines.
-// the parentHooks will be cloned, no need to clone before passing it.
-func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin) *Conn {
+// The Conn instance is not thread-safe and should not be shared between goroutines.
+// The parentHooks will be cloned, no need to clone before passing it.
+// himport is the HIMPORT fieldset registry the Conn participates in — pass
+// the owning client's registry (a private one would restart versions at 1
+// and collide with the client's version space on the shared pooled
+// connections); nil disables HIMPORT tracking.
+func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himport *himportRegistry) *Conn {
 	c := Conn{
 		baseClient: baseClient{
 			opt:      opt,
 			connPool: connPool,
 			onClose:  &onCloseHooks{},
+			himport:  himport,
 		},
 	}
 
