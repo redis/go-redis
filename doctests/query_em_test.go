@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -325,12 +326,19 @@ func ExampleClient_query_em() {
 
 	fmt.Println(res5) // >>> OK
 
-	res6, err := rdb.FTSearch(ctx, "idx:email",
-		"@email:{test\\@redis\\.com}",
-	).Result()
-
-	if err != nil {
-		panic(err)
+	var res6 redis.FTSearchResult
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		res6, err = rdb.FTSearch(ctx, "idx:email",
+			"@email:{test\\@redis\\.com}",
+		).Result()
+		if err != nil {
+			panic(err)
+		}
+		if res6.Total == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	fmt.Println(res6.Total) // >>> 1
