@@ -21,6 +21,14 @@ import "context"
 // The fan-out helpers execute the per-node copies through each node client's
 // Process, so node-level hooks observe them; the cluster/ring-level
 // ProcessHook chain sees only the user's command object, not the fan-out.
+//
+// Known limitation: an HImportPrepare pipelined together with HImportSets of
+// the same new fieldset in one ClusterClient Exec is not ordered across
+// nodes — per-node sub-batches run concurrently, and the registration
+// happens when the PREPARE's node completes, so SETs routed to other nodes
+// can race it and fail with "no such fieldset". Register the fieldset with
+// the client-level HImportPrepare before pipelining (the HLD's back-to-back
+// PREPARE+SET pattern is a single-connection guarantee).
 
 // himportForEach runs fn on a set of clients (all cluster masters, or all
 // ring shards).

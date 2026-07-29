@@ -186,13 +186,16 @@ func (c cmdable) HImportPrepare(ctx context.Context, fieldsetName string, fields
 //
 // "no such fieldset" never surfaces for a registered fieldset: a
 // single-command HImportSet whose connection lost its session state (e.g.
-// RESET) is transparently re-prepared and retried once, and in pipelines the
-// failed HImportSets — and only those — are re-prepared and re-issued once
-// on the same connection (HIMPORT SET is a full replace, so the re-execution
-// is idempotent and no other command of the batch runs again). Inside
-// transactions the error does surface after EXEC — an executed transaction
-// cannot be partially re-run — but the connection's prepared flags are
-// invalidated, so retrying the transaction succeeds.
+// RESET) is transparently re-prepared and retried once — the failure also
+// stales every other connection's prepared flag, so the retry re-prepares
+// wherever it lands, and this recovery attempt is granted even when retries
+// are disabled (MaxRetries -1). In pipelines the failed HImportSets — and
+// only those — are re-prepared and re-issued once on the same connection
+// (HIMPORT SET is a full replace, so the re-execution is idempotent and no
+// other command of the batch runs again). Inside transactions the error does
+// surface after EXEC — an executed transaction cannot be partially re-run —
+// but the prepared flags are invalidated, so retrying the transaction
+// succeeds.
 //
 // Requires Redis 8.10 or newer.
 func (c cmdable) HImportSet(ctx context.Context, key, fieldsetName string, values ...interface{}) *StatusCmd {

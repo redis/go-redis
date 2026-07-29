@@ -499,15 +499,24 @@ func TestHImportAfterBatch(t *testing.T) {
 	}
 
 	// A registered fieldset that came back "no such fieldset" without a
-	// failed injected PREPARE means the session lost it: the stale flag is
-	// invalidated so a caller retry re-prepares.
+	// failed injected PREPARE means the session lost it — and other
+	// sessions may have been wiped by the same event. The fieldset version
+	// is bumped once, staling every connection's mark, so any retry
+	// re-prepares wherever it lands.
 	fs, _ := c.himport.lookup("fs")
 	cn.MarkFieldsetPrepared("fs", fs.version, 0)
 	lost := NewHImportSetCmd(ctx, "k3", "fs", "v")
 	lost.SetErr(proto.RedisError("ERR no such fieldset"))
-	c.himportAfterBatch(cn, nil, []Cmder{lost})
-	if cn.FieldsetPreparedVersion("fs") != 0 {
-		t.Error("stale prepared flag must be invalidated after no-such-fieldset")
+	lost2 := NewHImportSetCmd(ctx, "k4", "fs", "v")
+	lost2.SetErr(proto.RedisError("ERR no such fieldset"))
+	c.himportAfterBatch(cn, nil, []Cmder{lost, lost2})
+	bumped, _ := c.himport.lookup("fs")
+	if bumped.version != fs.version+1 {
+		t.Errorf("fieldset version = %d, want %d (bumped exactly once for two failed sets)",
+			bumped.version, fs.version+1)
+	}
+	if cn.FieldsetPreparedVersion("fs") == bumped.version {
+		t.Error("the connection's mark must be stale against the bumped version")
 	}
 
 	// Successful user-issued commands in the batch update the registry.
@@ -655,6 +664,38 @@ func TestHImportRegistryDiscardVersion(t *testing.T) {
 	}
 	if _, tombs := r.cleanupSnapshot(); len(tombs) != 0 {
 		t.Errorf("stale discardVersion must not tombstone (re-register cleared it), got %v", tombs)
+	}
+}
+
+// refreshVersion invalidates every connection's mark by bumping the version
+// while keeping the fields — used on "no such fieldset" so a retry
+// re-prepares on whichever connection it lands (mass session loss may have
+// staled more marks than the reporting connection's).
+func TestHImportRegistryRefreshVersion(t *testing.T) {
+	r := newHImportRegistry()
+	v1, _ := r.register("fs", []string{"f1", "f2"})
+
+	r.refreshVersion("fs", v1)
+	fs, ok := r.lookup("fs")
+	if !ok || fs.version <= v1 {
+		t.Fatalf("version after refresh = %d, want > %d", fs.version, v1)
+	}
+	if !reflect.DeepEqual(fs.fields, []string{"f1", "f2"}) {
+		t.Errorf("fields after refresh = %v, must be unchanged", fs.fields)
+	}
+
+	// A stale expected version must not disturb a concurrent
+	// re-registration.
+	v2, _ := r.register("fs", []string{"g"})
+	r.refreshVersion("fs", v2-1)
+	if fs, _ := r.lookup("fs"); fs.version != v2 {
+		t.Errorf("version = %d, want %d (stale refresh must no-op)", fs.version, v2)
+	}
+
+	// Unregistered names are ignored.
+	r.refreshVersion("missing", 1)
+	if _, ok := r.lookup("missing"); ok {
+		t.Error("refresh must not create entries")
 	}
 }
 

@@ -34,7 +34,10 @@ type himportRegistry struct {
 	// tombstones holds names discarded through this client whose server-side
 	// copies may survive on pooled connections that prepared them. An entry
 	// is removed when the name is registered again (the new version replaces
-	// the fieldset on the server, so no discard is needed).
+	// the fieldset on the server, so no discard is needed) or by discardAll.
+	// Known limitation: a workload discarding many uniquely-named fieldsets
+	// grows this map for the client's lifetime and pays an O(tombstones)
+	// snapshot per HIMPORT round trip; HImportDiscardAll resets it.
 	tombstones map[string]struct{}
 	// discardAllEpoch increments on every successful HImportDiscardAll.
 	discardAllEpoch uint64
@@ -118,6 +121,23 @@ func (r *himportRegistry) discardVersion(name string, version uint64) {
 			r.tombstones = make(map[string]struct{})
 		}
 		r.tombstones[name] = struct{}{}
+	}
+	r.mu.Unlock()
+}
+
+// refreshVersion bumps a registered fieldset to a new version, keeping its
+// fields — but only while the entry is still at the given version, so a
+// concurrent re-registration is not disturbed. Every connection's prepared
+// flag becomes stale, forcing a re-prepare before the fieldset's next use on
+// each of them. Used when a "no such fieldset" reply signals session loss
+// that may have hit more connections than the one that reported it (failover,
+// cross-region switch, reset storms).
+func (r *himportRegistry) refreshVersion(name string, version uint64) {
+	r.mu.Lock()
+	if fs, ok := r.fieldsets[name]; ok && fs.version == version {
+		r.nextVersion++
+		fs.version = r.nextVersion
+		r.fieldsets[name] = fs
 	}
 	r.mu.Unlock()
 }
@@ -331,6 +351,7 @@ func (c *baseClient) himportAfterCmd(cn *pool.Conn, hc himportCmder) {
 // user-issued HIMPORT commands that succeeded in the batch.
 func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []Cmder) {
 	var failed map[string]error
+	var refreshed map[string]struct{}
 	for _, cmd := range injected {
 		if prep, ok := cmd.(*HImportPrepareCmd); ok {
 			if err := prep.Err(); err != nil {
@@ -352,11 +373,20 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 				continue
 			}
 			// The session lost a fieldset the flags claim is prepared (e.g.
-			// RESET): invalidate the flag so the SET's re-issue — or, inside
-			// transactions, the caller's retry — replays the PREPARE.
+			// RESET) — and the same event may have wiped other sessions
+			// whose flags also still look current. Bump the fieldset
+			// version once so the SET's re-issue, the cluster re-queue on
+			// whichever connection it lands, or the caller's transaction
+			// retry replays the PREPARE.
 			if himportNoSuchFieldset(set.Err()) {
-				if _, registered := c.himport.lookup(set.fieldsetName); registered {
-					cn.UnmarkFieldsetPrepared(set.fieldsetName)
+				if _, done := refreshed[set.fieldsetName]; !done {
+					if refreshed == nil {
+						refreshed = make(map[string]struct{})
+					}
+					refreshed[set.fieldsetName] = struct{}{}
+					if fs, registered := c.himport.lookup(set.fieldsetName); registered {
+						c.himport.refreshVersion(set.fieldsetName, fs.version)
+					}
 				}
 			}
 			continue
@@ -375,10 +405,11 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 // flags were invalidated by himportAfterBatch, so himportInjectedCmds
 // regenerates the PREPAREs for this connection. Transport errors are
 // returned; server errors stay recorded on the commands.
-// (The retry never needs to carry an ASKING prefix: a redirected [ASKING,
-// SET] pair can only reach this path if its injected PREPARE failed, and
-// then the root-cause swap in himportAfterBatch makes the SET's error a
-// prepare error, which does not match the retry filter below.)
+// (The retry does not carry an ASKING prefix. A redirected [ASKING, SET]
+// pair whose injected PREPARE failed is excluded by the root-cause swap in
+// himportAfterBatch; one that lost its session without an injection can be
+// re-issued here, and the bare SET then draws a fresh MOVED/ASK that the
+// outer cluster redirect handling resolves.)
 func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, cmds []Cmder) error {
 	if c.himport.idle() {
 		return nil

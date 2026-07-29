@@ -831,3 +831,63 @@ func TestHImportInjectedPrepareWithPushNotification(t *testing.T) {
 		t.Errorf("k2 = %v, want a=3 b=4", h)
 	}
 }
+
+// TestHImportPipelineInjectedReplyFailureStampsBatch pins the error stamping
+// when the injected-reply read dies on a transport error before any batch
+// reply was consumed: Exec surfaces the error and every command of the batch
+// carries it. The outer retry loop stamps errors only on its exit branch,
+// not when the attempt budget runs out mid-loop, so the pipeline path must
+// stamp before returning — otherwise a batch that keeps dying here reports
+// Err() == nil on every command while Exec errors.
+func TestHImportPipelineInjectedReplyFailureStampsBatch(t *testing.T) {
+	srv := newHImportMockServer(t)
+	ctx := context.Background()
+
+	client := redis.NewClient(&redis.Options{
+		Addr:     srv.addr(),
+		Protocol: 2,
+		PoolSize: 1,
+		// Exhaust the budget on the first attempt: stamping must not
+		// depend on a later attempt reaching the read path.
+		MaxRetries:      -1,
+		DisableIdentity: true,
+	})
+	defer client.Close()
+
+	if err := client.HImportPrepare(ctx, "fs", "a").Err(); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	// Drop the connection so the next batch runs on a fresh session and
+	// gets the PREPARE injected ahead of it.
+	if err := client.Do(ctx, "boom").Err(); err == nil {
+		t.Fatal("boom should surface a connection error")
+	}
+
+	// The mock drops the connection when the injected PREPARE arrives: the
+	// batch was fully written, not one reply arrives.
+	srv.armBoomBeforeNextPrepare()
+	pipe := client.Pipeline()
+	plain := pipe.Set(ctx, "plain", "x", 0)
+	set := pipe.HImportSet(ctx, "k1", "fs", "1")
+	if _, err := pipe.Exec(ctx); err == nil {
+		t.Fatal("exec must surface the transport error")
+	}
+	if plain.Err() == nil || set.Err() == nil {
+		t.Errorf("batch commands must carry the exec error, got %v / %v",
+			plain.Err(), set.Err())
+	}
+
+	// Same contract on the transaction path.
+	if err := client.Do(ctx, "boom").Err(); err == nil {
+		t.Fatal("boom should surface a connection error")
+	}
+	srv.armBoomBeforeNextPrepare()
+	tx := client.TxPipeline()
+	txSet := tx.HImportSet(ctx, "k2", "fs", "2")
+	if _, err := tx.Exec(ctx); err == nil {
+		t.Fatal("tx exec must surface the transport error")
+	}
+	if txSet.Err() == nil {
+		t.Error("tx command must carry the exec error")
+	}
+}

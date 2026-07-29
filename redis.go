@@ -1058,25 +1058,28 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int) (bool
 				}
 			}
 			err := cmd.readReply(rd)
-			if himportNoSuchFieldset(err) {
-				if set, ok := cmd.(*HImportSetCmd); ok {
-					// A failed injected PREPARE is the root cause of the
-					// command's "no such fieldset" reply (drained above).
-					for _, ic := range injected {
-						if prep, ok := ic.(*HImportPrepareCmd); ok &&
-							prep.fieldsetName == set.fieldsetName && prep.Err() != nil {
-							err = prep.Err()
-							break
-						}
+			// Assert the command type before touching the error: the
+			// errors.As chain inside himportNoSuchFieldset allocates, and
+			// this is the per-command hot path.
+			if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(err) {
+				// A failed injected PREPARE is the root cause of the
+				// command's "no such fieldset" reply (drained above).
+				for _, ic := range injected {
+					if prep, ok := ic.(*HImportPrepareCmd); ok &&
+						prep.fieldsetName == set.fieldsetName && prep.Err() != nil {
+						err = prep.Err()
+						break
 					}
-					// The session lost a registered fieldset the flags claim
-					// is prepared: invalidate the flag now, while this
-					// goroutine still owns the connection, so the retry in
-					// process() replays the PREPARE.
-					if himportNoSuchFieldset(err) {
-						if _, registered := c.himport.lookup(set.fieldsetName); registered {
-							cn.UnmarkFieldsetPrepared(set.fieldsetName)
-						}
+				}
+				// The session lost a registered fieldset the flags claim is
+				// prepared — and the same event (failover, cross-region
+				// switch, reset storm) may have wiped other sessions whose
+				// flags also still look current. Bump the fieldset version
+				// so every connection re-prepares before its next use,
+				// wherever the retry granted by process() lands.
+				if himportNoSuchFieldset(err) {
+					if fs, registered := c.himport.lookup(set.fieldsetName); registered {
+						c.himport.refreshVersion(set.fieldsetName, fs.version)
 					}
 				}
 			}
@@ -1327,6 +1330,12 @@ func (c *baseClient) pipelineProcessCmds(
 	var readErr error
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with every batch reply unreadXX: stamp the
+			// batch like a write failure. The outer retry loop stamps only
+			// on its exit branch, not when attempts run out, so without
+			// this a batch that keeps dying here would surface an Exec
+			// error while every command still reports Err() == nil.
+			setCmdsErr(cmds, err)
 			return err
 		}
 		// read all replies
@@ -1408,6 +1417,9 @@ func (c *baseClient) txPipelineProcessCmds(
 
 	if err := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		if err := c.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with every transaction reply unread: stamp
+			// the batch like a write failure (see pipelineProcessCmds).
+			setCmdsErr(cmds, err)
 			return err
 		}
 
