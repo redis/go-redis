@@ -14,6 +14,8 @@ jobs:
   benchmark:
     name: benchmark
     runs-on: ubuntu-latest
+    # Run benchmarks only for pushes or same-repo PRs; skip for fork PRs
+    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     strategy:
       fail-fast: false
       matrix:
@@ -26,8 +28,7 @@ jobs:
           - "8.0.x" # Redis CE 8.0
         go-version:
           - "1.25.x"
-          - oldstable
-          - stable
+          - "1.24.x"
 
     steps:
       - name: Set up ${{ matrix.go-version }}
@@ -77,6 +78,8 @@ jobs:
   test-redis-ce:
     name: test-redis-ce
     runs-on: ubuntu-latest
+    # Run full CE matrix only for pushes or same-repo PRs; skip on fork PRs
+    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     strategy:
         fail-fast: false
         matrix:
@@ -89,8 +92,7 @@ jobs:
             - "8.0.x" # Redis CE 8.0
           go-version:
             - "1.25.x"
-            - oldstable
-            - stable
+            - "1.24.x"
 
     steps:
       - name: Checkout code
@@ -107,4 +109,3 @@ jobs:
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
-
