@@ -390,7 +390,7 @@ type baseClient struct {
 	// (Conn/WithTimeout) share the cache but must not stop the owner's
 	// goroutines or flush its cache on their own Close.
 
-	// cscOwnsCache is true only when this client constructed its localCache (not
+	// cscOwnsCache is true only when this client constructed its LocalCache (not
 	// an injected/shared one); it gates the defensive flush on drainer stop.
 	cscOwnsCache bool
 
@@ -987,6 +987,12 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 		// process any pending push notifications before returning the connection to the pool
 		if err := c.processPushNotifications(ctx, cn); err != nil {
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+			if isBadConn(err, false, c.opt.Addr) {
+				// A mid-frame read failure may leave the reply stream
+				// desynchronized, so the connection cannot be reused.
+				c.connPool.Remove(ctx, cn, err)
+				return
+			}
 		}
 		if c.cscTrackingRequested() {
 			// A TLS-like wrapper can retain decrypted bytes after the command
@@ -2284,9 +2290,6 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 		// corrupts the next command's reply. The conn is idle and held solely
 		// by the drainer, so the safe default — removal — costs one reconnect;
 		// persistent failures are damped by the drainer (cscDrainCustomErrCap).
-		// TODO(csc): align the command-path drains (releaseConn,
-		// processPushNotifications), which still log + re-pool on the same
-		// evidence, with this rule.
 		internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (removing conn): %v", err)
 		return true, err
 	}

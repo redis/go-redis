@@ -327,6 +327,8 @@ type Options struct {
 	// provider-backed credentials can change the ACL identity after the cache
 	// namespace is selected. Fixed Username/Password values are supported and
 	// included in the cache namespace.
+	//
+	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
 	// ClientSideCache is an explicit Cache implementation used for client-side
@@ -340,12 +342,16 @@ type Options struct {
 	// Client-side caching is restricted to DB 0 and disabled with a warning
 	// otherwise. It is also disabled with any credential provider; see
 	// ClientSideCacheConfig.
+	//
+	// Experimental: this API may change in a minor release.
 	ClientSideCache Cache
 
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
 	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
 	// CSCStrategySharedTracking, currently the only implemented strategy.
+	//
+	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
 }
 
@@ -355,6 +361,8 @@ type Options struct {
 // CSCStrategySharedTracking is currently the only implemented strategy; the type
 // exists as an extension point for additional architectures (e.g. a BCAST sidecar)
 // without a breaking API change.
+//
+// Experimental: this API may change in a minor release.
 type CSCStrategy int
 
 const (

@@ -171,9 +171,9 @@ func keyArg(cmd Cmder, pos int) (string, bool) {
 	return "", false
 }
 
-// extractRedisKeys returns the Redis key arguments from cmd. The result
-// populates CacheEntry.RedisKeys so the cache can map incoming invalidations
-// back to affected entries. Returns nil (caller skips caching) when any key
+// extractRedisKeys returns the Redis key arguments from cmd. The result lets
+// the cache map incoming invalidations back to affected entries. Returns nil
+// (caller skips caching) when any key
 // argument cannot be rendered in its wire form (see keyArg).
 func extractRedisKeys(cmd Cmder) []string {
 	firstKey := cmdFirstKeyPosWithInfo(cmd, nil)

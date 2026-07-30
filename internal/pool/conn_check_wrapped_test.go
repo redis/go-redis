@@ -1,3 +1,5 @@
+//go:build linux || darwin || dragonfly || freebsd || netbsd || openbsd || solaris || illumos
+
 package pool_test
 
 import (

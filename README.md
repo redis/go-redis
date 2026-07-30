@@ -294,6 +294,8 @@ can avoid a Redis round trip. Redis tracks which keys each connection has read
 and sends RESP3 invalidation notifications when those keys change. go-redis
 uses those notifications to evict affected entries automatically.
 
+> **Experimental:** The client-side caching API may change in a minor release.
+
 Enable the built-in bounded cache with `ClientSideCacheConfig`:
 
 ```go
@@ -314,6 +316,13 @@ dynamic credential provider is configured, because cached data must never be
 reused after the client's ACL identity changes. Only deterministic read
 commands supported by the cache are stored; writes and streaming responses
 bypass it.
+
+While client-side caching is enabled, go-redis rejects `SELECT`, `AUTH`,
+`HELLO` with arguments, `RESET`, `CLIENT TRACKING`, and raw `SUBSCRIBE`,
+`PSUBSCRIBE`, or `SSUBSCRIBE` commands because they would change connection
+state that the cache relies on. A guarded command also fails its whole
+pipeline. The typed `Subscribe`, `PSubscribe`, and `SSubscribe` APIs remain
+supported because they use dedicated connections.
 
 Invalidations are processed asynchronously. `DrainInterval` controls how often
 idle connections are checked for them, while `MaxStaleness` can provide an

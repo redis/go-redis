@@ -8,10 +8,16 @@ import (
 	"time"
 )
 
+func (c *LocalCache) set(cacheKey string, redisKeys []string, value []byte) bool {
+	c.DeleteByCacheKey(cacheKey)
+	token, shouldFetch := c.Reserve(cacheKey, redisKeys)
+	return shouldFetch && token != 0 && c.FulfillOwned(cacheKey, token, 0, value)
+}
+
 func TestLocalCache_SetGet(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
 
-	if ok := cache.Set("get:foo", []string{"foo"}, []byte("bar")); !ok {
+	if ok := cache.set("get:foo", []string{"foo"}, []byte("bar")); !ok {
 		t.Fatal("Set should cache entry")
 	}
 
@@ -24,10 +30,31 @@ func TestLocalCache_SetGet(t *testing.T) {
 	}
 }
 
+func TestLocalCache_Stats(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	if _, ok := cache.Get(context.Background(), "missing"); ok {
+		t.Fatal("missing entry unexpectedly hit")
+	}
+	if !cache.set("get:foo", []string{"foo"}, []byte("bar")) {
+		t.Fatal("failed to seed cache")
+	}
+	if _, ok := cache.Get(context.Background(), "get:foo"); !ok {
+		t.Fatal("seeded entry missed")
+	}
+
+	stats := cache.Stats()
+	if stats.Hits != 1 || stats.Misses != 1 || stats.Entries != 1 {
+		t.Fatalf("unexpected stats: %+v", stats)
+	}
+	if stats.MemoryUsageBytes <= 0 {
+		t.Fatalf("memory usage must be positive: %+v", stats)
+	}
+}
+
 func TestLocalCache_DeleteByCacheKey(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("get:a", []string{"a"}, []byte("1"))
-	cache.Set("get:b", []string{"b"}, []byte("2"))
+	cache.set("get:a", []string{"a"}, []byte("1"))
+	cache.set("get:b", []string{"b"}, []byte("2"))
 
 	if !cache.DeleteByCacheKey("get:a") {
 		t.Fatal("DeleteByCacheKey should return true for existing key")
@@ -45,9 +72,9 @@ func TestLocalCache_DeleteByCacheKey(t *testing.T) {
 
 func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("mget:a:b", []string{"a", "b"}, []byte("ab"))
-	cache.Set("mget:b:c", []string{"b", "c"}, []byte("bc"))
-	cache.Set("get:d", []string{"d"}, []byte("d"))
+	cache.set("mget:a:b", []string{"a", "b"}, []byte("ab"))
+	cache.set("mget:b:c", []string{"b", "c"}, []byte("bc"))
+	cache.set("get:d", []string{"d"}, []byte("d"))
 
 	removed := cache.DeleteByRedisKey("b")
 	if removed != 2 {
@@ -66,8 +93,8 @@ func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
 
 func TestLocalCache_Flush(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("get:a", []string{"a"}, []byte("1"))
-	cache.Set("get:b", []string{"b"}, []byte("2"))
+	cache.set("get:a", []string{"a"}, []byte("1"))
+	cache.set("get:b", []string{"b"}, []byte("2"))
 	token, shouldFetch := cache.Reserve("get:c", []string{"c"})
 	if !shouldFetch || token == 0 {
 		t.Fatal("Reserve should create in-progress entry")
@@ -84,7 +111,7 @@ func TestLocalCache_Flush(t *testing.T) {
 		t.Fatalf("Len after Flush mismatch: got %d want %d", cache.Len(), 0)
 	}
 
-	if cache.Fulfill("get:c", token, []byte("3")) {
+	if cache.FulfillOwned("get:c", token, 0, []byte("3")) {
 		t.Fatal("Fulfill must fail after Flush removed the placeholder")
 	}
 	if _, ok := cache.Get(context.Background(), "get:c"); ok {
@@ -98,7 +125,7 @@ func TestLocalCache_DeleteByRedisKey_PoisonsInProgress(t *testing.T) {
 	// PRE-invalidation value. The placeholder must be removed so Fulfill
 	// fails and the stale value is never published.
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
-	cache.Set("get:a", []string{"shared"}, []byte("1"))
+	cache.set("get:a", []string{"shared"}, []byte("1"))
 	token, shouldFetch := cache.Reserve("get:b", []string{"shared"})
 	if !shouldFetch || token == 0 {
 		t.Fatal("Reserve should create in-progress entry")
@@ -112,7 +139,7 @@ func TestLocalCache_DeleteByRedisKey_PoisonsInProgress(t *testing.T) {
 		t.Fatal("valid entry should be removed")
 	}
 
-	if cache.Fulfill("get:b", token, []byte("2")) {
+	if cache.FulfillOwned("get:b", token, 0, []byte("2")) {
 		t.Fatal("Fulfill must fail after the placeholder was invalidated")
 	}
 	if _, ok := cache.Get(context.Background(), "get:b"); ok {
@@ -132,7 +159,7 @@ func TestLocalCache_Flush_PoisonsInProgress(t *testing.T) {
 	if removed := cache.Flush(); removed != 1 {
 		t.Fatalf("Flush removed mismatch: got %d want 1 (the placeholder)", removed)
 	}
-	if cache.Fulfill("get:k", token, []byte("v")) {
+	if cache.FulfillOwned("get:k", token, 0, []byte("v")) {
 		t.Fatal("Fulfill must fail after Flush removed the placeholder")
 	}
 	if _, ok := cache.Get(context.Background(), "get:k"); ok {
@@ -143,10 +170,10 @@ func TestLocalCache_Flush_PoisonsInProgress(t *testing.T) {
 func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 2})
 
-	if !cache.Set("k1", []string{"k1"}, []byte("v1")) {
+	if !cache.set("k1", []string{"k1"}, []byte("v1")) {
 		t.Fatal("failed to set k1")
 	}
-	if !cache.Set("k2", []string{"k2"}, []byte("v2")) {
+	if !cache.set("k2", []string{"k2"}, []byte("v2")) {
 		t.Fatal("failed to set k2")
 	}
 
@@ -154,7 +181,7 @@ func TestLocalCache_EvictsLRU_ByMaxEntries(t *testing.T) {
 		t.Fatal("k1 should exist and become MRU")
 	}
 
-	if !cache.Set("k3", []string{"k3"}, []byte("v3")) {
+	if !cache.set("k3", []string{"k3"}, []byte("v3")) {
 		t.Fatal("failed to set k3")
 	}
 
@@ -173,7 +200,7 @@ func TestLocalCache_GetTouch_SecondChanceEviction(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 3})
 
 	for _, k := range []string{"a", "b", "c"} {
-		if !cache.Set(k, []string{k}, []byte(k)) {
+		if !cache.set(k, []string{k}, []byte(k)) {
 			t.Fatalf("failed to set %s", k)
 		}
 	}
@@ -187,7 +214,7 @@ func TestLocalCache_GetTouch_SecondChanceEviction(t *testing.T) {
 		t.Fatal("b should exist")
 	}
 
-	if !cache.Set("d", []string{"d"}, []byte("d")) {
+	if !cache.set("d", []string{"d"}, []byte("d")) {
 		t.Fatal("failed to set d")
 	}
 
@@ -211,7 +238,7 @@ func TestLocalCache_ConcurrentGetsDuringEviction(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 500; i++ {
 				key := fmt.Sprintf("k%d", i%16)
-				cache.Set(key, []string{key}, []byte("v"))
+				cache.set(key, []string{key}, []byte("v"))
 				cache.Get(context.Background(), key)
 			}
 		}(g)
@@ -231,10 +258,10 @@ func TestLocalCache_Evicts_ByMaxMemory(t *testing.T) {
 		},
 	})
 
-	if !cache.Set("a", []string{"a"}, []byte("aaaa")) { // 4
+	if !cache.set("a", []string{"a"}, []byte("aaaa")) { // 4
 		t.Fatal("failed to set a")
 	}
-	if !cache.Set("b", []string{"b"}, []byte("bb")) { // +2 => evict a
+	if !cache.set("b", []string{"b"}, []byte("bb")) { // +2 => evict a
 		t.Fatal("failed to set b")
 	}
 
@@ -245,7 +272,7 @@ func TestLocalCache_Evicts_ByMaxMemory(t *testing.T) {
 		t.Fatal("b should remain cached")
 	}
 
-	if cache.Set("big", []string{"big"}, []byte("123456")) { // 6 > 5
+	if cache.set("big", []string{"big"}, []byte("123456")) { // 6 > 5
 		t.Fatal("oversized entry should not be cached")
 	}
 	if _, ok := cache.Get(context.Background(), "big"); ok {
@@ -277,7 +304,7 @@ func TestLocalCache_ReserveFulfill_WaitsOnInProgress(t *testing.T) {
 	case <-time.After(60 * time.Millisecond):
 	}
 
-	if !cache.Fulfill("get:wait", token, []byte("ready")) {
+	if !cache.FulfillOwned("get:wait", token, 0, []byte("ready")) {
 		t.Fatal("Fulfill should succeed")
 	}
 
@@ -302,7 +329,7 @@ func TestLocalCache_FulfillFailsAfterDelete(t *testing.T) {
 		t.Fatal("DeleteByCacheKey should remove placeholder")
 	}
 
-	if cache.Fulfill("get:foo", token, []byte("bar")) {
+	if cache.FulfillOwned("get:foo", token, 0, []byte("bar")) {
 		t.Fatal("Fulfill should fail after placeholder deletion")
 	}
 	if _, ok := cache.Get(context.Background(), "get:foo"); ok {
@@ -347,11 +374,11 @@ func TestLocalCache_ConcurrentAccess(t *testing.T) {
 						if i%9 == 0 {
 							cache.Cancel(cacheKey, token)
 						} else {
-							cache.Fulfill(cacheKey, token, value)
+							cache.FulfillOwned(cacheKey, token, 0, value)
 						}
 					}
 				case 1:
-					cache.Set(cacheKey, []string{key}, []byte(fmt.Sprintf("set:%d:%d", id, i)))
+					cache.set(cacheKey, []string{key}, []byte(fmt.Sprintf("set:%d:%d", id, i)))
 				case 2:
 					cache.Get(context.Background(), cacheKey)
 				case 3:
@@ -461,12 +488,12 @@ func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 	}
 
 	// Old token is now invalid — Fulfill with it must fail.
-	if cache.Fulfill("get:x", token1, []byte("stale")) {
+	if cache.FulfillOwned("get:x", token1, 0, []byte("stale")) {
 		t.Fatal("Fulfill with old token should fail after takeover")
 	}
 
 	// New token should work.
-	if !cache.Fulfill("get:x", token3, []byte("good")) {
+	if !cache.FulfillOwned("get:x", token3, 0, []byte("good")) {
 		t.Fatal("Fulfill with takeover token should succeed")
 	}
 
@@ -478,7 +505,7 @@ func TestLocalCache_Reserve_TakeoverRecoversStalePlaceholder(t *testing.T) {
 
 func TestLocalCache_Get_NilContext(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
-	cache.Set("get:nilctx", []string{"nilctx"}, []byte("value"))
+	cache.set("get:nilctx", []string{"nilctx"}, []byte("value"))
 
 	// nil context must not panic on cache hit.
 	val, ok := cache.Get(nil, "get:nilctx")
@@ -550,7 +577,7 @@ func TestLocalCache_ConcurrentReserveFulfill_NoHijack(t *testing.T) {
 	}
 
 	// Winner fulfills with the correct value.
-	if !cache.Fulfill(cacheKey, winner.token, []byte(correctValue)) {
+	if !cache.FulfillOwned(cacheKey, winner.token, 0, []byte(correctValue)) {
 		t.Fatal("winner Fulfill should succeed")
 	}
 
@@ -581,7 +608,7 @@ func TestLocalCache_MaxStalenessBackstop(t *testing.T) {
 	// With MaxStaleness set, a fresh entry hits; one older than the window misses
 	// and is evicted so the next access re-fetches (else Reserve suppresses it).
 	c := NewLocalCache(CacheConfig{MaxStaleness: 30 * time.Millisecond})
-	if !c.Set("k", []string{"rk"}, []byte("v")) {
+	if !c.set("k", []string{"rk"}, []byte("v")) {
 		t.Fatal("Set failed")
 	}
 	if v, ok := c.Get(ctx, "k"); !ok || string(v) != "v" {
@@ -597,7 +624,7 @@ func TestLocalCache_MaxStalenessBackstop(t *testing.T) {
 
 	// MaxStaleness disabled (zero) must not expire entries by age.
 	c2 := NewLocalCache(CacheConfig{})
-	c2.Set("k", []string{"rk"}, []byte("v"))
+	c2.set("k", []string{"rk"}, []byte("v"))
 	time.Sleep(20 * time.Millisecond)
 	if _, ok := c2.Get(ctx, "k"); !ok {
 		t.Fatal("MaxStaleness=0 must not expire entries by age")
@@ -609,7 +636,7 @@ func TestLocalCache_UnboundedConfigGetsDefaultLimit(t *testing.T) {
 	// bounded (MaxEntries defaults to defaultCacheMaxEntries).
 	cache := NewLocalCache(CacheConfig{})
 	for i := 0; i < defaultCacheMaxEntries+100; i++ {
-		cache.Set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
+		cache.set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
 	}
 	if n := cache.Len(); n > defaultCacheMaxEntries {
 		t.Fatalf("unbounded config must default to %d entries, got Len=%d",
@@ -624,7 +651,7 @@ func TestLocalCache_ShardedMaxEntriesIsGlobalCap(t *testing.T) {
 	const maxEntries = 100
 	cache := NewLocalCache(CacheConfig{MaxEntries: maxEntries})
 
-	lc := cache.(*localCache)
+	lc := cache
 	if lc.shardCount == 1 {
 		t.Fatalf("test expects a sharded cache, got 1 shard")
 	}
@@ -637,7 +664,7 @@ func TestLocalCache_ShardedMaxEntriesIsGlobalCap(t *testing.T) {
 	}
 
 	for i := 0; i < 20*maxEntries; i++ {
-		cache.Set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
+		cache.set(fmt.Sprintf("get:k%d", i), []string{fmt.Sprintf("k%d", i)}, []byte("v"))
 	}
 	if n := cache.Len(); n > maxEntries {
 		t.Fatalf("total entries exceed MaxEntries: got %d want <= %d", n, maxEntries)
@@ -649,7 +676,7 @@ func TestLocalCache_ShardedMaxMemoryIsGlobalCap(t *testing.T) {
 	const maxBytes = 1<<20 + 13 // not divisible by 16
 	cache := NewLocalCache(CacheConfig{MaxMemoryBytes: maxBytes})
 
-	lc := cache.(*localCache)
+	lc := cache
 	var sum int64
 	for i := range lc.shards {
 		sum += lc.shards[i].maxMemoryBytes
@@ -665,10 +692,10 @@ func TestLocalCache_PerShardByteCeilingPinned(t *testing.T) {
 	// under a 1MiB budget. If admission becomes global, update the
 	// MaxMemoryBytes doc comment.
 	cache := NewLocalCache(CacheConfig{MaxMemoryBytes: 1 << 20})
-	if ok := cache.Set("get:big", []string{"big"}, make([]byte, 100<<10)); ok {
+	if ok := cache.set("get:big", []string{"big"}, make([]byte, 100<<10)); ok {
 		t.Fatal("per-shard byte cap should reject a 100KiB entry (1MiB/16 shards); docs now stale")
 	}
-	if ok := cache.Set("get:small", []string{"small"}, make([]byte, 4<<10)); !ok {
+	if ok := cache.set("get:small", []string{"small"}, make([]byte, 4<<10)); !ok {
 		t.Fatal("a 4KiB entry must be admitted under the per-shard cap")
 	}
 }
@@ -699,13 +726,13 @@ func TestLocalCache_ReserveHonorsCapWithoutEvictingPeers(t *testing.T) {
 	if tokens[maxEntries] != 0 {
 		t.Fatalf("overflow Reserve should return token 0, got %d", tokens[maxEntries])
 	}
-	if cache.Fulfill(overflow, tokens[maxEntries], []byte("v")) {
+	if cache.FulfillOwned(overflow, tokens[maxEntries], 0, []byte("v")) {
 		t.Fatal("Fulfill must fail for the rejected overflow reservation")
 	}
 	// Every earlier in-flight placeholder survived and can complete.
 	for i := 0; i < maxEntries; i++ {
 		key := fmt.Sprintf("get:k%d", i)
-		if !cache.Fulfill(key, tokens[i], []byte("v")) {
+		if !cache.FulfillOwned(key, tokens[i], 0, []byte("v")) {
 			t.Fatalf("Fulfill(%s) must succeed: peer placeholder was wrongly evicted", key)
 		}
 	}

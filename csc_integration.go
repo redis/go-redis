@@ -40,6 +40,8 @@ func cscRegisterCleanups(c *Client) {
 // ClientSideCacheConfig configures the built-in client-side cache. Pass a
 // non-nil value to Options.ClientSideCacheConfig to enable caching on a RESP3
 // client.
+//
+// Experimental: this API may change in a minor release.
 type ClientSideCacheConfig = CacheConfig
 
 const (
@@ -136,6 +138,19 @@ func sameCache(a, b Cache) bool {
 	return typ == reflect.TypeOf(b) && typ.Comparable() && a == b
 }
 
+func isNilCache(cache Cache) bool {
+	if cache == nil {
+		return true
+	}
+	v := reflect.ValueOf(cache)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 // errInvalidateHandlerBound: piggybacking on a handler bound to a live
 // different cache would leave the new cache uninvalidated.
 var errInvalidateHandlerBound = errors.New(`csc: a different "invalidate" push handler is already registered`)
@@ -211,7 +226,7 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, keyPre
 // nil and commands fall back to normal round-trips. Adding a strategy: a new
 // CSCStrategy constant plus cases in Options.init and here.
 func (c *baseClient) attachCSC(ctx context.Context, cache Cache) {
-	if cache == nil || c.opt.Protocol != 3 {
+	if isNilCache(cache) || c.opt.Protocol != 3 {
 		return
 	}
 	// Credential providers may return a different ACL identity over the
@@ -257,15 +272,6 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if !ok || !reg.SupportsPoolHooks() {
 		return
 	}
-	// SharedTracking needs per-conn attribution to evict a connection's entries on
-	// close; disable CSC for a cache that lacks it rather than serve un-evictable
-	// entries.
-	if _, ok := cache.(ConnOwnedCache); !ok {
-		internal.Logger.Printf(ctx,
-			"csc: disabling client-side caching: ClientSideCache must implement redis.ConnOwnedCache "+
-				"(FulfillOwned/EvictByConn); use redis.NewLocalCache or implement it.")
-		return
-	}
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.cscKeyPrefix); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
@@ -303,15 +309,14 @@ func (c *baseClient) cscInstallConnReinitHook(cn *pool.Conn) {
 
 // cscOnConnClose evicts a closing conn's entries: via the shared hook (which
 // records the removed-ring, closing the close-before-fulfill race), else scoped
-// EvictByConn on the owning cache. CSC only attaches for ConnOwnedCache caches,
-// so no full-flush fallback is needed.
+// EvictByConn on the owning cache.
 func (c *baseClient) cscOnConnClose(connID uint64) {
 	if h := c.cscHook(); h != nil {
 		h.markRemoved(connID)
 		return
 	}
-	if owner, ok := c.csc.(ConnOwnedCache); ok {
-		owner.EvictByConn(connID)
+	if c.csc != nil {
+		c.csc.EvictByConn(connID)
 	}
 }
 
@@ -328,7 +333,7 @@ type poolHookSupport interface {
 // per-conn init generations so fulfillCached can catch a value whose owning
 // conn was removed or re-initialized mid-fetch.
 type cscEvictOnRemoveHook struct {
-	evictor ConnOwnedCache
+	evictor Cache
 
 	mu sync.Mutex
 	// initGen counts a live conn's socket (re)initializations: bumped by
@@ -434,14 +439,9 @@ func (h *cscEvictOnRemoveHook) invalidateAllCoverage() {
 	}
 }
 
-// registerConnEvictHook wires the required OnRemove eviction hook. Attachment
-// validates both capabilities before calling it.
+// registerConnEvictHook wires the required OnRemove eviction hook.
 func (c *baseClient) registerConnEvictHook(cache Cache, reg poolHookSupport) {
-	owner, ok := cache.(ConnOwnedCache)
-	if !ok {
-		return
-	}
-	h := &cscEvictOnRemoveHook{evictor: owner, initGen: make(map[uint64]uint64)}
+	h := &cscEvictOnRemoveHook{evictor: cache, initGen: make(map[uint64]uint64)}
 	reg.AddPoolHook(h)
 	c.cscPoolHook = h
 }
@@ -461,9 +461,7 @@ func (c *baseClient) cscEvictOwnedEntries(connID uint64) {
 	if c.csc == nil {
 		return
 	}
-	if owner, ok := c.csc.(ConnOwnedCache); ok {
-		owner.EvictByConn(connID)
-	}
+	c.csc.EvictByConn(connID)
 }
 
 // newStickyConnPool creates a derived sticky pool and revokes the claimed
@@ -920,5 +918,5 @@ func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture
 		}
 		return true
 	}
-	return c.csc.Fulfill(key, token, fc.raw)
+	return c.csc.FulfillOwned(key, token, 0, fc.raw)
 }

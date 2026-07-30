@@ -17,7 +17,7 @@ import (
 var _ = Describe("Client-side cache (standalone)", func() {
 	var (
 		ctx     context.Context
-		cache   redis.Cache
+		cache   *redis.LocalCache
 		client  *redis.Client
 		mutator *redis.Client
 	)
@@ -236,8 +236,7 @@ var _ = Describe("Client-side cache strategies", func() {
 			if err := csc.Get(ctx, key).Err(); err != nil {
 				return 0, err
 			}
-			hits, _ := csc.CSCStats()
-			return hits, nil
+			return csc.CSCStats().Hits, nil
 		}, 2*time.Second, 20*time.Millisecond).Should(BeNumerically(">", 0),
 			"expected at least one cache hit for strategy %d", strategy)
 

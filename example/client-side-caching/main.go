@@ -49,11 +49,11 @@ func main() {
 
 	first := get(ctx, cached, key)  // Cache miss: fetched from Redis.
 	second := get(ctx, cached, key) // Cache hit: served from local memory.
-	hits, misses := cached.CSCStats()
+	stats := cached.CSCStats()
 
 	fmt.Printf("first read: %s\n", first)
 	fmt.Printf("second read: %s\n", second)
-	fmt.Printf("cache stats: %d hit, %d miss\n", hits, misses)
+	fmt.Printf("cache stats: %d hit, %d miss\n", stats.Hits, stats.Misses)
 
 	if err := writer.Set(ctx, key, "hello again", 0).Err(); err != nil {
 		log.Fatalf("update value: %v", err)

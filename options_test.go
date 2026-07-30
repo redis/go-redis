@@ -585,3 +585,25 @@ func TestClientSideCacheRESP2Warning(t *testing.T) {
 		})
 	}
 }
+
+func TestUniversalOptionsSimpleCopiesClientSideCache(t *testing.T) {
+	cfg := &ClientSideCacheConfig{MaxEntries: 10}
+	cache := NewLocalCache(CacheConfig{MaxEntries: 20})
+	const strategy = CSCStrategy(42)
+
+	opt := (&UniversalOptions{
+		ClientSideCacheConfig:   cfg,
+		ClientSideCache:         cache,
+		ClientSideCacheStrategy: strategy,
+	}).Simple()
+
+	if opt.ClientSideCacheConfig != cfg {
+		t.Fatal("Simple did not copy ClientSideCacheConfig")
+	}
+	if opt.ClientSideCache != cache {
+		t.Fatal("Simple did not copy ClientSideCache")
+	}
+	if opt.ClientSideCacheStrategy != strategy {
+		t.Fatal("Simple did not copy ClientSideCacheStrategy")
+	}
+}

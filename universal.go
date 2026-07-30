@@ -151,6 +151,24 @@ type UniversalOptions struct {
 
 	// MaintNotificationsConfig provides configuration for maintnotifications upgrades.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// ClientSideCacheConfig enables client-side caching when NewUniversalClient
+	// selects a standalone Client. See Options.ClientSideCacheConfig.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCache supplies an explicit cache when NewUniversalClient selects
+	// a standalone Client. See Options.ClientSideCache.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the standalone client's invalidation
+	// strategy. See Options.ClientSideCacheStrategy.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheStrategy CSCStrategy
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -337,6 +355,9 @@ func (o *UniversalOptions) Simple() *Options {
 		UnstableResp3:             o.UnstableResp3,
 		PushNotificationProcessor: o.PushNotificationProcessor,
 		MaintNotificationsConfig:  o.MaintNotificationsConfig,
+		ClientSideCacheConfig:     o.ClientSideCacheConfig,
+		ClientSideCache:           o.ClientSideCache,
+		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
 	}
 }
 
