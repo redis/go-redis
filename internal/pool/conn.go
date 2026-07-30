@@ -91,7 +91,7 @@ type Conn struct {
 	// State machine for connection state management
 	// Replaces: usable, Inited, used
 	// Provides thread-safe state transitions with FIFO waiting queue
-	// States: CREATED → INITIALIZING → IDLE ⇄ IN_USE
+	// States: CREATED → INITIALIZING → IDLE ↔ IN_USE
 	//                                    ↓
 	//                                UNUSABLE (handoff/reauth)
 	//                                    ↓
@@ -320,7 +320,7 @@ func (cn *Conn) IsInited() bool {
 // This is the preferred method for acquiring a connection from the pool, as it
 // ensures that only one goroutine marks the connection as used.
 //
-// Implementation: Uses state machine transitions IDLE ⇄ IN_USE
+// Implementation: Uses state machine transitions IDLE ↔ IN_USE
 //
 // Returns true if the swap was successful (old value matched), false otherwise.
 // Deprecated: Use GetStateMachine().TryTransition() directly for better state management.
@@ -913,6 +913,8 @@ func (cn *Conn) WithReader(
 			return err
 		}
 	}
+
+	var cancelWatchDone chan struct{}
 	if timeout >= 0 {
 		// Use relaxed timeout if set, otherwise use provided timeout
 		effectiveTimeout := cn.getEffectiveReadTimeout(timeout)
@@ -923,11 +925,33 @@ func (cn *Conn) WithReader(
 			return errConnectionNotAvailable
 		}
 
-		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
+		// Compute and set initial read deadline
+		dl := cn.deadline(ctx, effectiveTimeout)
+		if err := netConn.SetReadDeadline(dl); err != nil {
 			return err
 		}
+
+		// If we have no read deadline (e.g., BRPop(timeout=0) and no ctx deadline)
+		// but we do have a context, spawn a watcher to force an immediate deadline
+		// when ctx.Done() fires. This unblocks an in-flight Read without closing
+		// the socket and without affecting the common hot path where a deadline exists.
+		if ctx != nil && dl.Equal(noDeadline) {
+			cancelWatchDone = make(chan struct{})
+			go func(nc net.Conn, done <-chan struct{}, c context.Context) {
+				select {
+				case <-c.Done():
+					_ = nc.SetReadDeadline(time.Unix(0, getCachedTimeNs()))
+				case <-done:
+				}
+			}(netConn, cancelWatchDone, ctx)
+		}
 	}
-	return fn(cn.rd)
+
+	err := fn(cn.rd)
+	if cancelWatchDone != nil {
+		close(cancelWatchDone)
+	}
+	return err
 }
 
 func (cn *Conn) WithWriter(
