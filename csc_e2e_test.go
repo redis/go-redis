@@ -297,19 +297,19 @@ func rawClientHasTrackingFlag(t *testing.T, c *redis.Client) bool {
 	return false
 }
 
-// TestCSCMultiDBRejected verifies that the canonical (Phase 1) CSC path
+// TestCSCNonZeroDBRejected verifies that the canonical (Phase 1) CSC path
 // refuses to enable when Options.DB != 0. Industry survey (redis-py /
 // node-redis / Jedis / Lettuce) shows no consensus on how to handle
-// multi-DB CSC: redis-py and node-redis silently allow desynchronisation,
-// Jedis lets per-conn tracking break on close, and Lettuce explicitly
-// forbids mid-session SELECT on tracked conns. To pick the safest stance
-// we refuse to enable CSC unless DB == 0.
+// CSC across logical databases: redis-py and node-redis silently allow
+// desynchronisation, Jedis lets per-conn tracking break on close, and Lettuce
+// explicitly forbids mid-session SELECT on tracked conns. To pick the safest
+// stance we refuse to enable CSC unless DB == 0.
 //
 // CLIENT TRACKING is per-connection and bound to the DB the conn was on
 // when tracking was enabled. A runtime SELECT changes the active DB but
 // does not re-key the server's tracking table, so writes to a different
 // DB silently produce stale cached reads.
-func TestCSCMultiDBRejected(t *testing.T) {
+func TestCSCNonZeroDBRejected(t *testing.T) {
 	cache := redis.NewLocalCache(redis.CacheConfig{MaxEntries: 16})
 	c := redis.NewClient(&redis.Options{
 		Addr:            cscNativeAddr(),
@@ -334,7 +334,7 @@ func TestCSCMultiDBRejected(t *testing.T) {
 	// And the cache must remain empty after a SET/GET cycle. Suffix the key
 	// with a per-run nonce so concurrent test processes sharing one Redis
 	// cannot collide (and no real application key is ever touched).
-	key := "csc-multidb-skip:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	key := "csc-nonzero-db-skip:" + strconv.FormatInt(time.Now().UnixNano(), 10)
 	t.Cleanup(func() { _ = c.Del(context.Background(), key).Err() })
 	if err := c.Set(ctx, key, "x", 0).Err(); err != nil {
 		t.Fatalf("SET: %v", err)
