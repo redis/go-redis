@@ -112,6 +112,32 @@ var _ = Describe("tests conn_check with real conns", func() {
 		Expect(connCheck(conn)).To(HaveOccurred())
 	})
 
+	It("reports a remotely closed socket to CSC", func() {
+		ln, listenErr := net.Listen("tcp", "127.0.0.1:0")
+		Expect(listenErr).NotTo(HaveOccurred())
+		defer ln.Close()
+
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			server, acceptErr := ln.Accept()
+			if acceptErr == nil {
+				accepted <- server
+			}
+		}()
+
+		client, dialErr := net.Dial("tcp", ln.Addr().String())
+		Expect(dialErr).NotTo(HaveOccurred())
+		defer client.Close()
+		server := <-accepted
+		Expect(server.Close()).NotTo(HaveOccurred())
+
+		cn := NewConn(client)
+		Eventually(func() bool {
+			_, checkErr := cn.CheckForData()
+			return checkErr != nil
+		}).Should(BeTrue())
+	})
+
 	It("check conn deadline", func() {
 		Expect(conn.SetDeadline(time.Now())).NotTo(HaveOccurred())
 		time.Sleep(time.Millisecond * 10)

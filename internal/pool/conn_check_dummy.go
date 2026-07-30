@@ -21,6 +21,10 @@ func maybeHasData(_ net.Conn) bool {
 	return false
 }
 
+func checkForData(_ net.Conn) (bool, error) {
+	return false, nil
+}
+
 func needsCscReadProbe(_ net.Conn) bool {
 	return true
 }

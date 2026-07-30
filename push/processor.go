@@ -27,6 +27,15 @@ type Processor struct {
 	registry *Registry
 }
 
+type timeoutError interface {
+	Timeout() bool
+}
+
+func isTimeoutError(err error) bool {
+	var timeoutErr timeoutError
+	return errors.As(err, &timeoutErr) && timeoutErr.Timeout()
+}
+
 // NewProcessor creates a new push notification processor
 func NewProcessor() *Processor {
 	return &Processor{
@@ -53,17 +62,59 @@ func (p *Processor) UnregisterHandler(pushNotificationName string) error {
 // This method should be called by the client in WithReader before reading the reply
 // It will try to read from the socket and if it is empty - it may block.
 func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader) error {
+	return p.processPendingNotifications(ctx, handlerCtx, rd, false)
+}
+
+// ProcessPendingNotificationsBuffered processes one pending push notification
+// and then continues only through frames already buffered by that read. It is
+// used by callers that have already established socket readiness and must not
+// wait for another frame after draining the current batch.
+func (p *Processor) ProcessPendingNotificationsBuffered(
+	ctx context.Context, handlerCtx NotificationHandlerContext, rd *proto.Reader,
+) error {
+	return p.processPendingNotifications(ctx, handlerCtx, rd, true)
+}
+
+func (p *Processor) processPendingNotifications(
+	ctx context.Context,
+	handlerCtx NotificationHandlerContext,
+	rd *proto.Reader,
+	bufferedContinuation bool,
+) error {
 	if rd == nil {
 		return nil
 	}
 
-	for {
+	processed := false
+	for !bufferedContinuation || !processed || rd.Buffered() > 0 {
 		// Check if there's data available to read
-		replyType, err := rd.PeekReplyType()
-		if err != nil {
-			// No more data available or error reading
-			// if timeout, it will be handled by the caller
-			break
+		var replyType byte
+		if bufferedContinuation {
+			for {
+				b, err := rd.Peek(1)
+				if err != nil {
+					if isTimeoutError(err) {
+						return nil
+					}
+					return err
+				}
+				replyType = b[0]
+				if replyType != proto.RespAttr {
+					break
+				}
+				// Unlike Peek, DiscardNext consumes bytes. Any error here is
+				// fatal because the reader may be left mid-frame.
+				if err := rd.DiscardNext(); err != nil {
+					return err
+				}
+			}
+		} else {
+			var err error
+			replyType, err = rd.PeekReplyType()
+			if err != nil {
+				// No more data available or error reading.
+				break
+			}
 		}
 
 		// Only process push notifications (arrays starting with >)
@@ -77,6 +128,12 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 			// Name too long to peek: consume & dispatch below rather than leave the
 			// frame at the buffer head (which would stall and desync the next reply).
 			if !errors.Is(err, proto.ErrPushNotificationNameTooLong) {
+				if bufferedContinuation {
+					if isTimeoutError(err) {
+						return nil
+					}
+					return err
+				}
 				break
 			}
 		} else if willHandleNotificationInClient(notificationName) {
@@ -89,8 +146,10 @@ func (p *Processor) ProcessPendingNotifications(ctx context.Context, handlerCtx 
 		// Normal reply-read callers log-and-ignore this and let their own read fail.
 		reply, err := rd.ReadReply()
 		if err != nil {
+			internal.Logger.Printf(ctx, "push: error reading push notification: %v", err)
 			return err
 		}
+		processed = true
 
 		// Convert to slice of interfaces
 		notification, ok := reply.([]interface{})

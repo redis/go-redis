@@ -84,14 +84,26 @@ func underlyingSyscallConn(conn net.Conn) (syscall.Conn, bool) {
 
 // maybeHasData checks if there is data in the socket without consuming it
 func maybeHasData(conn net.Conn) bool {
+	hasData, _ := checkForData(conn)
+	return hasData
+}
+
+func checkForData(conn net.Conn) (bool, error) {
 	// Unlike the general health check, CSC only uses this as a readiness hint
 	// before a bounded read, so unwrapping TLS is safe and avoids blocking.
 	_ = conn.SetDeadline(time.Time{})
 	sysConn, ok := underlyingSyscallConn(conn)
 	if !ok {
-		return false
+		return false, nil
 	}
-	return checkSyscallConn(sysConn) == errUnexpectedRead
+	switch err := checkSyscallConn(sysConn); err {
+	case nil:
+		return false, nil
+	case errUnexpectedRead:
+		return true, nil
+	default:
+		return false, err
+	}
 }
 
 // needsCscReadProbe reports whether a command read may leave data hidden from

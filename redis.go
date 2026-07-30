@@ -404,7 +404,7 @@ type baseClient struct {
 	// cscPoolHook is the evict-on-remove pool hook (nil when CSC is off). Unlike
 	// the owner-only fields above it IS copied by clone(): a clone reads it in
 	// processCached to attribute fetches to the shared hook. Only the owner (the
-	// one with cscDrainHandle) deregisters it, in stopBackgroundDrainer.
+	// one with cscDrainHandle) deregisters it when the drainer exits.
 	cscPoolHook pool.PoolHook
 
 	// cscActive is allocated only after CSC attaches successfully and becomes
@@ -772,7 +772,7 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// drainer. Once CSC serving stops (owner Close, GC cleanup, or drainer
 	// damping), new and re-inited conns skip tracking — nothing consumes the
 	// pushes into the cache anymore.
-	trackingEnabled := !helloFallbackToRESP2 && c.cscTrackingRequested()
+	trackingEnabled := !helloFallbackToRESP2 && !cn.IsPubSub() && c.cscTrackingRequested()
 	if trackingEnabled && c.cscConnInitGen(cn.GetID()) == 0 {
 		// First initialization establishes generation 1. Reinitialization
 		// already bumped and evicted through onCscReinit before replacing the
@@ -1034,28 +1034,41 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	opDurationCallback := otel.GetOperationDurationCallback()
+	if opDurationCallback == nil {
+		return c.processCommand(ctx, cmd, nil)
+	}
+
+	start := time.Now()
+	var state processState
+	err := c.processCommand(ctx, cmd, &state)
+	opDurationCallback(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn, c.opt.DB)
+	return err
+}
+
+type processState struct {
+	attempts int
+	lastConn *pool.Conn
+}
+
+func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState) error {
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
 	if c.csc != nil && isCacheable(cmd) {
-		return c.processCached(ctx, cmd)
+		return c.processCached(ctx, cmd, state)
 	}
-	return c.processWithRetry(ctx, cmd, nil)
+	return c.processWithRetry(ctx, cmd, nil, state)
 }
 
 // processWithRetry runs cmd through the retry loop. capture (optional) is
 // filled by the successful attempt's reply read for the CSC fetch path (see
 // cscFetchCapture).
-func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, capture *cscFetchCapture) error {
-	// Start measuring total operation duration (includes all retries)
-	// Only call time.Now() if operation duration callback is set to avoid overhead
-	var operationStart time.Time
-	opDurationCallback := otel.GetOperationDurationCallback()
-	if opDurationCallback != nil {
-		operationStart = time.Now()
-	}
+func (c *baseClient) processWithRetry(
+	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState,
+) error {
 	var lastConn *pool.Conn
 
 	var lastErr error
@@ -1069,6 +1082,10 @@ func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, capture *c
 		retry, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
 			lastConn = cn
+		}
+		if state != nil {
+			state.attempts = totalAttempts
+			state.lastConn = lastConn
 		}
 		// A "no such fieldset" reply for a registered fieldset means the
 		// connection lost its server session state (e.g. RESET, concurrent
@@ -1087,12 +1104,6 @@ func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, capture *c
 		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
 		// which writes directly to an io.Writer and cannot undo partial writes)
 		if err == nil || !retry || cmd.NoRetry() {
-			// Record total operation duration
-			if opDurationCallback != nil {
-				operationDuration := time.Since(operationStart)
-				opDurationCallback(ctx, operationDuration, cmd, totalAttempts, err, lastConn, c.opt.DB)
-			}
-
 			if err != nil {
 				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(err)
@@ -1103,12 +1114,6 @@ func (c *baseClient) processWithRetry(ctx context.Context, cmd Cmder, capture *c
 		}
 
 		lastErr = err
-	}
-
-	// Record failed operation after all retries
-	if opDurationCallback != nil {
-		operationDuration := time.Since(operationStart)
-		opDurationCallback(ctx, operationDuration, cmd, totalAttempts, lastErr, lastConn, c.opt.DB)
 	}
 
 	// Record error metric for exhausted retries
@@ -2219,8 +2224,9 @@ const cscFallbackProbeInterval = 100 * time.Millisecond
 // successful processor invocation; it resets custom-processor damping even when
 // the frame was hidden inside a transport wrapper. A non-nil error is
 // connection-fatal (the drainer removes the conn), including a read timeout
-// after a frame started: the reader may be desynchronized. A custom processor's
-// error is also fatal because its contract cannot prove no bytes were consumed.
+// after reply consumption starts: the reader may be desynchronized. A custom
+// processor's error is also fatal because its contract cannot prove no bytes
+// were consumed.
 func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded bool, err error) {
 	if c.opt.Protocol != 3 || c.pushProcessor == nil {
 		return false, nil
@@ -2229,14 +2235,37 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	// MaybeHasData peeks only the socket, but an invalidate can sit in cn.rd.
 	readPending := cn.TakeCscReadPending()
 	periodicReadPending := cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval)
-	hasData := cn.HasBufferedData() || cn.MaybeHasData()
+	socketData, socketErr := cn.CheckForData()
+	if socketErr != nil {
+		return false, socketErr
+	}
+	hasData := cn.HasBufferedData() || socketData
 	if !readPending && !periodicReadPending && !hasData {
 		return false, nil
+	}
+	if !hasData {
+		// TLS and opaque wrappers can hide bytes from the socket readiness
+		// check. Probe one byte without consuming it under a tiny deadline;
+		// only a confirmed byte gets the longer fragmented-frame budget below.
+		err := cn.WithReaderHardDeadline(cscDrainProbeReadCap, func(rd *proto.Reader) error {
+			_, err := rd.Peek(1)
+			return err
+		})
+		if err != nil {
+			if isTimeout, hasTimeoutFlag := isTimeoutError(err); isTimeout && hasTimeoutFlag {
+				return false, nil
+			}
+			return false, err
+		}
 	}
 
 	handlerCtx := c.pushNotificationHandlerContext(cn)
 	handlerCtx.Client = cscHandlerClient{baseClient: c}
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		if processor, ok := c.pushProcessor.(*push.Processor); ok {
+			return processor.ProcessPendingNotificationsBuffered(
+				context.Background(), handlerCtx, rd)
+		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})
 	if err != nil {

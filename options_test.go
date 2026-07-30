@@ -1,12 +1,9 @@
 package redis
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -542,28 +539,6 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 	}()
 
 	wg.Wait()
-}
-
-type capturingLogger struct {
-	mu   sync.Mutex
-	logs []string
-}
-
-func (l *capturingLogger) Printf(_ context.Context, format string, v ...interface{}) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.logs = append(l.logs, fmt.Sprintf(format, v...))
-}
-
-func (l *capturingLogger) contains(substr string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for _, msg := range l.logs {
-		if strings.Contains(msg, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestClientSideCacheRESP2Warning(t *testing.T) {

@@ -301,6 +301,8 @@ type Options struct {
 
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created for RESP3 connections.
+	// With client-side caching, a custom processor runs while an idle connection
+	// is borrowed from the pool and should return promptly.
 	PushNotificationProcessor push.NotificationProcessor
 
 	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
@@ -343,8 +345,7 @@ type Options struct {
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
 	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
-	// CSCStrategySharedTracking, currently the only implemented strategy. See
-	// docs/csc-strategy-guide.md.
+	// CSCStrategySharedTracking, currently the only implemented strategy.
 	ClientSideCacheStrategy CSCStrategy
 }
 

@@ -90,10 +90,12 @@ type CacheConfig struct {
 	DrainInterval time.Duration
 
 	// MaxStaleness caps how long a cached entry is served after it became valid,
-	// regardless of invalidation. Zero (default) disables it. It is a correctness
+	// regardless of invalidation. It is a correctness
 	// BACKSTOP for lost invalidations or connection-lifecycle gaps ("Window 2"), not
 	// the primary freshness mechanism. Keep it well above the invalidation round-trip
 	// (e.g. seconds); per-entry refetch overhead scales ~1/MaxStaleness.
+	//
+	// Default: 0 (disabled).
 	MaxStaleness time.Duration
 }
 

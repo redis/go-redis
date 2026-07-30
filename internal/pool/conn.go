@@ -1054,7 +1054,9 @@ func (cn *Conn) WithReader(
 // it (used by the CSC drainer). Takes no context: an expired cycle ctx must not
 // become the socket deadline, or the read surfaces context.DeadlineExceeded, which
 // isBadConn treats as fatal.
-func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.Reader) error) error {
+func (cn *Conn) WithReaderHardDeadline(
+	timeout time.Duration, fn func(rd *proto.Reader) error,
+) (err error) {
 	netConn := cn.getNetConn()
 	if netConn == nil {
 		return errConnectionNotAvailable
@@ -1062,6 +1064,11 @@ func (cn *Conn) WithReaderHardDeadline(timeout time.Duration, fn func(rd *proto.
 	if err := netConn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return err
 	}
+	defer func() {
+		if clearErr := netConn.SetReadDeadline(time.Time{}); clearErr != nil {
+			err = clearErr
+		}
+	}()
 	return fn(cn.rd)
 }
 
@@ -1102,11 +1109,18 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
-	if cn.IsClosed() {
-		return nil
+	for {
+		state := cn.stateMachine.GetState()
+		if state == StateClosed {
+			return nil
+		}
+		if cn.stateMachine.TryTransitionFast(state, StateClosed) {
+			// TryTransitionFast deliberately skips waiter notification; Close
+			// still needs to wake any goroutine waiting on initialization.
+			cn.stateMachine.notifyWaiters()
+			break
+		}
 	}
-	// Transition to CLOSED state
-	cn.stateMachine.Transition(StateClosed)
 
 	if cn.onClose != nil {
 		// ignore error
@@ -1116,6 +1130,7 @@ func (cn *Conn) Close() error {
 	if cn.onCscClose != nil {
 		// ignore error
 		_ = cn.onCscClose()
+		cn.onCscClose = nil
 	}
 
 	// Lock-free netConn access for better performance
@@ -1134,6 +1149,15 @@ func (cn *Conn) MaybeHasData() bool {
 		return maybeHasData(netConn)
 	}
 	return false
+}
+
+// CheckForData reports whether the socket has data ready and surfaces a
+// detected closed or failed socket.
+func (cn *Conn) CheckForData() (bool, error) {
+	if netConn := cn.getNetConn(); netConn != nil {
+		return checkForData(netConn)
+	}
+	return false, nil
 }
 
 // MarkCscReadPending requests one conservative CSC drain after a command read
@@ -1162,10 +1186,13 @@ func (cn *Conn) TakeCscPeriodicReadPending(interval time.Duration) bool {
 		return false
 	}
 
-	now := time.Now().UnixNano()
+	now := time.Since(cn.createdAt).Nanoseconds()
+	if now <= 0 {
+		now = 1
+	}
 	for {
 		last := cn.lastCscPeriodicProbeNs.Load()
-		if last != 0 && now-last < int64(interval) {
+		if last != 0 && now >= last && now-last < int64(interval) {
 			return false
 		}
 		if cn.lastCscPeriodicProbeNs.CompareAndSwap(last, now) {

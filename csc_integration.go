@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"runtime"
 	"strconv"
 	"sync"
@@ -28,23 +29,11 @@ func cscRegisterCleanups(c *Client) {
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
 	// also stops clones from serving once the drainer is gone.
 	active := c.baseClient.cscActive
-	// For an owned cache, also release the handler binding on GC (see
-	// invalidateHandler): capture the handler and cache, never *Client.
-	// releaseIfBoundTo is a tiny leaf-mutex op, safe in a cleanup.
-	var ih *invalidateHandler
-	var ownedCache Cache
-	if c.baseClient.cscOwnsCache {
-		ih = lookupInvalidateHandler(c.baseClient.pushProcessor)
-		ownedCache = c.baseClient.csc
-	}
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
 		if active != nil {
 			active.Store(false)
 		}
 		h.signalStop()
-		if ih != nil && ownedCache != nil {
-			ih.releaseIfBoundTo(ownedCache)
-		}
 	}, h)
 }
 
@@ -86,6 +75,7 @@ type invalidateHandler struct {
 	mu        sync.RWMutex
 	cache     Cache
 	keyPrefix string
+	users     int
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
@@ -120,15 +110,30 @@ func (h *invalidateHandler) HandlePushNotification(
 	return nil
 }
 
-// releaseIfBoundTo unbinds the handler from cache (making it rebindable by a
-// successor client) if that is still its current binding. Owner-teardown only;
-// no-op when the binding has already changed.
-func (h *invalidateHandler) releaseIfBoundTo(cache Cache) {
+func (h *invalidateHandler) release() {
 	h.mu.Lock()
-	if h.cache == cache {
-		h.cache = nil
+	if h.users > 0 {
+		h.releaseLocked()
 	}
 	h.mu.Unlock()
+}
+
+func (h *invalidateHandler) releaseLocked() {
+	h.users--
+	if h.users == 0 {
+		h.cache = nil
+		h.keyPrefix = ""
+	}
+}
+
+// sameCache compares Cache interface values without panicking when an
+// implementation uses a non-comparable value type.
+func sameCache(a, b Cache) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	typ := reflect.TypeOf(a)
+	return typ == reflect.TypeOf(b) && typ.Comparable() && a == b
 }
 
 // errInvalidateHandlerBound: piggybacking on a handler bound to a live
@@ -143,10 +148,12 @@ func (h *invalidateHandler) bindTo(cache Cache, keyPrefix string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
-	case h.cache == cache && h.keyPrefix == keyPrefix:
+	case sameCache(h.cache, cache) && h.keyPrefix == keyPrefix:
+		h.users++
 		return nil
 	case h.cache == nil:
 		h.cache, h.keyPrefix = cache, keyPrefix
+		h.users = 1
 		return nil
 	default:
 		return errInvalidateHandlerBound
@@ -179,7 +186,11 @@ func registerInvalidateHandler(p push.NotificationProcessor, cache Cache, keyPre
 	// code holding the processor must not be able to unregister invalidation
 	// under a live client (that would serve unbounded-stale hits with no
 	// signal); owner teardown releases the BINDING instead of the handler.
-	err := p.RegisterHandler(invalidatePushName, &invalidateHandler{cache: cache, keyPrefix: keyPrefix}, true)
+	err := p.RegisterHandler(invalidatePushName, &invalidateHandler{
+		cache:     cache,
+		keyPrefix: keyPrefix,
+		users:     1,
+	}, true)
 	if err == nil {
 		return nil
 	}
@@ -563,13 +574,14 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 // cscDrainHandle owns the drainer lifecycle and serializes client teardown.
 // stop signals shutdown; done is closed on exit so Close can join.
 type cscDrainHandle struct {
-	stop             chan struct{}
-	done             chan struct{}
-	stopOnce         sync.Once
-	teardownOnce     sync.Once
-	handlerCloseOnce sync.Once
-	closeOnce        sync.Once
-	closeErr         error
+	stop              chan struct{}
+	done              chan struct{}
+	stopOnce          sync.Once
+	teardownOnce      sync.Once
+	handlerCloseOnce  sync.Once
+	closeOnce         sync.Once
+	closeErr          error
+	invalidateHandler *invalidateHandler
 }
 
 // signalStop closes stop at most once (so Close and the AddCleanup safety net
@@ -640,7 +652,11 @@ func (c *baseClient) startBackgroundDrainer() {
 	if c.cscDrainHandle != nil {
 		return // already running (startBackgroundDrainer runs once, in NewClient)
 	}
-	h := &cscDrainHandle{stop: make(chan struct{}), done: make(chan struct{})}
+	h := &cscDrainHandle{
+		stop:              make(chan struct{}),
+		done:              make(chan struct{}),
+		invalidateHandler: lookupInvalidateHandler(c.pushProcessor),
+	}
 	c.cscDrainHandle = h
 	active := &atomic.Bool{}
 	active.Store(true)
@@ -656,8 +672,16 @@ func (c *baseClient) startBackgroundDrainer() {
 	go func() {
 		defer func() {
 			active.Store(false)
+			if c.cscPoolHook != nil {
+				if reg, ok := c.connPool.(poolHookSupport); ok {
+					reg.RemovePoolHook(c.cscPoolHook)
+				}
+			}
 			if hook := c.cscHook(); hook != nil {
 				hook.invalidateAllCoverage()
+			}
+			if h.invalidateHandler != nil {
+				h.invalidateHandler.release()
 			}
 			close(h.done)
 		}()
@@ -718,8 +742,9 @@ func (c *baseClient) disableCSCServing(ctx context.Context, reason string) {
 	internal.Logger.Printf(ctx, "csc: disabling client-side caching: %s", reason)
 }
 
-// stopBackgroundDrainer joins the drainer goroutine, deregisters the evict hook,
-// and flushes an owned cache. Owner-only: clones have no handle and return early.
+// stopBackgroundDrainer joins the drainer goroutine and flushes an owned cache.
+// The drainer's exit path releases its handler binding and pool hook, including
+// when it stops itself. Owner-only: clones have no handle and return early.
 // The fields are never cleared here — fulfillCached reads cscPoolHook on the hot
 // path, so niling under a concurrent Close would race; teardownOnce makes repeat
 // Close idempotent instead.
@@ -733,26 +758,10 @@ func (c *baseClient) stopBackgroundDrainer() {
 		if c.cscActive != nil {
 			c.cscActive.Store(false)
 		}
-		// Owner only. The hook (when present) is always registered alongside the
-		// drainer, so removing it here — before the pool is closed — can't strand it.
-		if c.cscPoolHook != nil {
-			if reg, ok := c.connPool.(poolHookSupport); ok {
-				reg.RemovePoolHook(c.cscPoolHook)
-			}
-		}
 		h.signalStop()
 		<-h.done
 		// The drainer's exit defer revoked and evicted this pool's coverage
 		// before closing done, including for injected caches shared elsewhere.
-		// Owned cache: release the handler binding so a successor client on
-		// the same processor can rebind (see invalidateHandler). A shared
-		// explicit cache (cscOwnsCache false) may still serve other clients,
-		// so its binding is left in place.
-		if c.cscOwnsCache {
-			if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
-				ih.releaseIfBoundTo(c.csc)
-			}
-		}
 		if c.cscOwnsCache && c.csc != nil {
 			c.csc.Flush()
 		}
@@ -780,7 +789,11 @@ const cscDrainSkipWindow = 5 * time.Millisecond
 // cscDrainHardReadCap is the hard socket read deadline the drainer applies via
 // Conn.WithReaderHardDeadline. It bounds only a rare partial-frame mid-read. A
 // var (not const) so the tuning harness can sweep it.
-var cscDrainHardReadCap = 50 * time.Microsecond
+var cscDrainHardReadCap = 50 * time.Millisecond
+
+// cscDrainProbeReadCap bounds the non-consuming one-byte probe used only when
+// an opaque transport may hold data that the socket readiness check cannot see.
+const cscDrainProbeReadCap = 50 * time.Microsecond
 
 // cscDrainCustomErrCap is the number of CONSECUTIVE fatal custom-processor
 // drain errors after which the drainer disables CSC instead of removing (and
@@ -790,7 +803,7 @@ const cscDrainCustomErrCap = 8
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
 // Only invoked after process has verified that CSC is active and cmd is
 // eligible.
-func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
+func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -798,25 +811,25 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 	// Once the drainer has stopped (owner Close, or the owner dropped without
 	// Close), no invalidations flow — a surviving clone must not serve stale hits.
 	if a := c.cscActive; a != nil && !a.Load() {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
-		return c.processWithRetry(ctx, cmd, nil)
+		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 	key := cscNamespacedKey(keyPrefix, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
@@ -865,7 +878,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder) error {
 		}()
 	}
 
-	err := c.processWithRetry(ctx, cmd, capture)
+	err := c.processWithRetry(ctx, cmd, capture, state)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel

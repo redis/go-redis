@@ -326,21 +326,29 @@ func ExampleClient_query_em() {
 
 	fmt.Println(res5) // >>> OK
 
-	var res6 redis.FTSearchResult
-	deadline := time.Now().Add(2 * time.Second)
+	// REMOVE_START
+	deadline := time.Now().Add(30 * time.Second)
 	for {
-		res6, err = rdb.FTSearch(ctx, "idx:email",
-			"@email:{test\\@redis\\.com}",
-		).Result()
+		info, err := rdb.FTInfo(ctx, "idx:email").Result()
 		if err != nil {
 			panic(err)
 		}
-		if res6.Total == 1 || time.Now().After(deadline) {
+		if info.NumDocs == 1 {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		if time.Now().After(deadline) {
+			panic("timed out waiting for idx:email to index key:1")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	// REMOVE_END
 
+	res6, err := rdb.FTSearch(ctx, "idx:email",
+		"@email:{test\\@redis\\.com}",
+	).Result()
+	if err != nil {
+		panic(err)
+	}
 	fmt.Println(res6.Total) // >>> 1
 	// STEP_END
 

@@ -107,7 +107,7 @@ func (r *Reader) PeekReplyType() (byte, error) {
 
 // MinRESP3ReadBufferSize is the minimum buffer size used when RESP3 push
 // notifications must be inspected without consuming them.
-const MinRESP3ReadBufferSize = 512
+const MinRESP3ReadBufferSize = 128
 
 // ErrPushNotificationNameTooLong is returned when the push header does not fit
 // in the bounded peek window. Callers should consume the frame with ReadReply.

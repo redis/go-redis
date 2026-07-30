@@ -32,6 +32,24 @@ func (c *chunkedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+type testTimeoutError struct{}
+
+func (testTimeoutError) Error() string { return "i/o timeout" }
+func (testTimeoutError) Timeout() bool { return true }
+
+type timeoutAfterReader struct {
+	data []byte
+	read bool
+}
+
+func (r *timeoutAfterReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, testTimeoutError{}
+	}
+	r.read = true
+	return copy(p, r.data), nil
+}
+
 // TestProcessor_ConsumesFragmentedPushFrame: a push frame whose header is split
 // across reads must still be consumed and dispatched (not left at the buffer head
 // stalling the drain loop). Fails on the old clamped-peek reader.
@@ -50,6 +68,81 @@ func TestProcessor_ConsumesFragmentedPushFrame(t *testing.T) {
 		if len(h.GetHandledNotifications()) != 1 {
 			t.Fatalf("split=%d: handler called %d times, want 1", split, len(h.GetHandledNotifications()))
 		}
+	}
+}
+
+func TestProcessor_BufferedPeekTimeoutEndsBatch(t *testing.T) {
+	t.Run("empty boundary", func(t *testing.T) {
+		rd := proto.NewReader(&timeoutAfterReader{read: true})
+		p := NewProcessor()
+
+		if err := p.ProcessPendingNotificationsBuffered(
+			context.Background(), NotificationHandlerContext{}, rd,
+		); err != nil {
+			t.Fatalf("ProcessPendingNotificationsBuffered: %v", err)
+		}
+	})
+
+	t.Run("partial next frame", func(t *testing.T) {
+		frame := []byte(">2\r\n$10\r\ninvalidate\r\n$1\r\nk\r\n")
+		rd := proto.NewReader(&timeoutAfterReader{data: append(frame, '>')})
+		p := NewProcessor()
+		h := NewTestHandler("invalidate")
+		if err := p.RegisterHandler("invalidate", h, false); err != nil {
+			t.Fatalf("RegisterHandler: %v", err)
+		}
+
+		if err := p.ProcessPendingNotificationsBuffered(
+			context.Background(), NotificationHandlerContext{}, rd,
+		); err != nil {
+			t.Fatalf("ProcessPendingNotificationsBuffered: %v", err)
+		}
+		if got := len(h.GetHandledNotifications()); got != 1 {
+			t.Fatalf("handled %d complete frames, want 1", got)
+		}
+		if got := rd.Buffered(); got != 1 {
+			t.Fatalf("buffered bytes after timeout: got %d, want 1", got)
+		}
+	})
+
+	t.Run("partial attribute is fatal", func(t *testing.T) {
+		rd := proto.NewReader(&timeoutAfterReader{data: []byte("|1\r\n+meta\r\n")})
+		p := NewProcessor()
+
+		err := p.ProcessPendingNotificationsBuffered(
+			context.Background(), NotificationHandlerContext{}, rd,
+		)
+		if err == nil {
+			t.Fatal("timeout after attribute consumption must be returned")
+		}
+	})
+}
+
+func TestProcessor_BufferedContinuationStopsBeforeAnotherRead(t *testing.T) {
+	frame := []byte(">2\r\n$10\r\ninvalidate\r\n$1\r\nk\r\n")
+	rd := proto.NewReader(&chunkedReader{chunks: [][]byte{frame, frame}})
+	p := NewProcessor()
+	h := NewTestHandler("invalidate")
+	if err := p.RegisterHandler("invalidate", h, false); err != nil {
+		t.Fatalf("RegisterHandler: %v", err)
+	}
+
+	if err := p.ProcessPendingNotificationsBuffered(
+		context.Background(), NotificationHandlerContext{}, rd,
+	); err != nil {
+		t.Fatalf("ProcessPendingNotificationsBuffered: %v", err)
+	}
+	if got := len(h.GetHandledNotifications()); got != 1 {
+		t.Fatalf("buffered continuation handled %d frames, want 1", got)
+	}
+
+	if err := p.ProcessPendingNotifications(
+		context.Background(), NotificationHandlerContext{}, rd,
+	); err != nil {
+		t.Fatalf("ProcessPendingNotifications: %v", err)
+	}
+	if got := len(h.GetHandledNotifications()); got != 2 {
+		t.Fatalf("normal processing handled %d total frames, want 2", got)
 	}
 }
 
