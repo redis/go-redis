@@ -1408,6 +1408,14 @@ func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, tot
 		if !executed {
 			setCmdsErr(cmds, chainErr)
 		} else if cmdsFirstErr(cmds) == nil {
+			// Post-next error on an all-clean batch: the exec fully succeeded,
+			// so the error can only be the hook's own verdict — apply it.
+			// On a mixed batch it is applied to nothing: hooks conventionally
+			// return next's error (`err := next(...); return err`), so after a
+			// partial failure the chain error is presumed to be that echo, and
+			// stamping it on the commands that DID succeed would overwrite
+			// valid replies with their batchmates' failure. Exec-recorded
+			// per-command outcomes always win over a post-next rewrap.
 			setCmdsErr(cmds, chainErr)
 		}
 	}
@@ -1545,7 +1553,7 @@ func (s *apShard) flushBatchSlice() {
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
 			b := batches[0]
-			if ap.armSelfDeadlockGuard() {
+			if !ap.blocking && ap.armSelfDeadlockGuard() {
 				b.dispGid.Store(curGoroutineID())
 			}
 			solo := queues[0][0]
