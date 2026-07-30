@@ -97,6 +97,13 @@ type UniversalOptions struct {
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
 
+	// DialRateLimit is the maximum number of new connections created per second.
+	// See Options.DialRateLimit. Default: 0 (disabled).
+	DialRateLimit int
+	// DialRateBurst is the burst allowance for DialRateLimit. See
+	// Options.DialRateBurst. Default: DialRateLimit.
+	DialRateBurst int
+
 	PoolTimeout           time.Duration
 	MinIdleConns          int
 	MaxIdleConns          int
@@ -195,6 +202,8 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
 		MaxConcurrentDials:    o.MaxConcurrentDials,
+		DialRateLimit:         o.DialRateLimit,
+		DialRateBurst:         o.DialRateBurst,
 		PoolTimeout:           o.PoolTimeout,
 		MinIdleConns:          o.MinIdleConns,
 		MaxIdleConns:          o.MaxIdleConns,
@@ -261,6 +270,8 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
 		MaxConcurrentDials:    o.MaxConcurrentDials,
+		DialRateLimit:         o.DialRateLimit,
+		DialRateBurst:         o.DialRateBurst,
 		PoolTimeout:           o.PoolTimeout,
 		MinIdleConns:          o.MinIdleConns,
 		MaxIdleConns:          o.MaxIdleConns,
@@ -321,6 +332,8 @@ func (o *UniversalOptions) Simple() *Options {
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
 		MaxConcurrentDials:    o.MaxConcurrentDials,
+		DialRateLimit:         o.DialRateLimit,
+		DialRateBurst:         o.DialRateBurst,
 		PoolTimeout:           o.PoolTimeout,
 		MinIdleConns:          o.MinIdleConns,
 		MaxIdleConns:          o.MaxIdleConns,
