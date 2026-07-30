@@ -76,6 +76,11 @@ func (r *Reader) Buffered() int {
 	return r.rd.Buffered()
 }
 
+// Size returns the size of the underlying read buffer.
+func (r *Reader) Size() int {
+	return r.rd.Size()
+}
+
 func (r *Reader) Peek(n int) ([]byte, error) {
 	return r.rd.Peek(n)
 }
@@ -99,6 +104,14 @@ func (r *Reader) PeekReplyType() (byte, error) {
 	}
 	return b[0], nil
 }
+
+// MinRESP3ReadBufferSize is the minimum buffer size used when RESP3 push
+// notifications must be inspected without consuming them.
+const MinRESP3ReadBufferSize = 128
+
+// ErrPushNotificationNameTooLong is returned when the push header does not fit
+// in the bounded peek window. Callers should consume the frame with ReadReply.
+var ErrPushNotificationNameTooLong = errors.New("redis: push notification name exceeds peek window")
 
 // PeekPushNotificationName returns the notification name of the next RESP3
 // push frame without consuming it. The caller is expected to have already
@@ -145,12 +158,15 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 			return name, nil
 		}
 		if avail >= maxPushHeaderPeek {
-			return "", fmt.Errorf("redis: push notification header exceeds %d bytes", maxPushHeaderPeek)
+			return "", ErrPushNotificationNameTooLong
 		}
 		// Valid but incomplete prefix: the rest of the frame is in flight.
 		// Block for exactly one more byte — the read that delivers it picks
 		// up whatever else has already arrived — then re-parse.
 		if _, err := r.rd.Peek(avail + 1); err != nil {
+			if errors.Is(err, bufio.ErrBufferFull) {
+				return "", ErrPushNotificationNameTooLong
+			}
 			return "", err
 		}
 	}
