@@ -72,6 +72,11 @@ var (
 
 	// errConnNotPooled is returned when trying to return a non-pooled connection to the pool.
 	errConnNotPooled = errors.New("connection not pooled")
+
+	// errConnEvictedIdle is passed to OnRemove hooks when a pooled connection is evicted on
+	// Put because the idle pool is already at MaxIdleConns.
+	errConnEvictedIdle = errors.New("connection evicted: idle pool at capacity")
+
 	// metricCallbackMu protects all global metric callback functions for thread-safe access.
 	metricCallbackMu sync.RWMutex
 
@@ -1298,6 +1303,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 				// expected state, don't log it
 			case StateClosed:
 				internal.Logger.Printf(ctx, "Unexpected conn[%d] state changed by hook to %v, closing it", cn.GetID(), currentState)
+				if hookManager != nil {
+					hookManager.ProcessOnRemove(ctx, cn, errHookRequestedRemoval)
+				}
 				shouldCloseConn = true
 				removedFromPool = p.removeConnWithLock(cn)
 			default:
@@ -1365,6 +1373,9 @@ func (p *ConnPool) putConn(ctx context.Context, cn *Conn, freeTurn bool) {
 		}
 	} else {
 		shouldCloseConn = true
+		if hookManager != nil {
+			hookManager.ProcessOnRemove(ctx, cn, errConnEvictedIdle)
+		}
 		removedFromPool = p.removeConnWithLock(cn)
 
 		// Only emit if we actually removed it from the map (not already taken by Close()).
@@ -1743,8 +1754,11 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 	if err := connCheck(cn.getNetConn()); err != nil {
 		// If there's unexpected data, it might be push notifications (RESP3)
 		if p.cfg.PushNotificationsEnabled && err == errUnexpectedRead {
-			// Peek at the reply type to check if it's a push notification
-			if replyType, err := cn.rd.PeekReplyType(); err == nil && replyType == proto.RespPush {
+			// Peek at the reply type to check if it's a push notification.
+			// Use the readerMu-guarded peek: a concurrent handoff may be
+			// resetting cn.rd via SetNetConn on a connection popped by Get
+			// before the OnGet state check rejects it.
+			if replyType, err := cn.PeekReplyTypeForCheck(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
 				// The client will process these notifications before using the connection
 				internal.Logger.Printf(

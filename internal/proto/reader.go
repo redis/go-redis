@@ -105,13 +105,17 @@ func (r *Reader) PeekReplyType() (byte, error) {
 // verified that the next reply is a push notification (e.g. via PeekReplyType
 // returning RespPush).
 //
-// To identify the name the method may block briefly reading more bytes from
-// the underlying connection. That is safe: once the push marker '>' has been
-// observed, the server is committed to sending the rest of the frame, so
-// fetching the next few header bytes does not race with anything the caller
-// could be waiting on. Blocking is preferred to a truncated peek, which would
-// silently misidentify the notification and cause the caller's ReadReply to
-// consume (and drop) the frame; see issue #3839.
+// To identify the name the method may block reading more bytes from the
+// underlying connection, but only ever waits for one byte beyond the valid
+// frame prefix it has already seen. That byte is guaranteed to arrive: an
+// incomplete prefix means the server is still committed to sending the rest
+// of the frame. Demanding any fixed amount instead can deadlock — a complete
+// frame such as a subscribe confirmation for a short channel name can be
+// smaller than the fixed window, and once it is buffered the server has
+// nothing more to send (issue #3935). Blocking for in-flight bytes is
+// preferred to a truncated peek, which would silently misidentify the
+// notification and cause the caller's ReadReply to consume (and drop) the
+// frame; see issue #3839.
 func (r *Reader) PeekPushNotificationName() (string, error) {
 	c, err := r.rd.Peek(1)
 	if err != nil {
@@ -121,16 +125,18 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		return "", fmt.Errorf("redis: can't peek push notification name, next reply is not a push notification")
 	}
 
-	// Start with a peek window that covers every Redis-defined notification
-	// header (MOVING, MIGRATING, FAILED_OVER, message, pmessage, smessage,
-	// subscribe, unsubscribe, ...). If a longer name is encountered, grow
-	// the window up to maxPushHeaderPeek before giving up.
-	const initialPeek = 36
 	const maxPushHeaderPeek = 4096
 
-	peekSize := initialPeek
 	for {
-		buf, peekErr := r.rd.Peek(peekSize)
+		// Parse from what is already buffered; this never blocks.
+		avail := r.rd.Buffered()
+		if avail > maxPushHeaderPeek {
+			avail = maxPushHeaderPeek
+		}
+		buf, peekErr := r.rd.Peek(avail)
+		if peekErr != nil {
+			return "", peekErr
+		}
 		name, complete, parseErr := parsePushNotificationName(buf)
 		if parseErr != nil {
 			return "", parseErr
@@ -138,17 +144,14 @@ func (r *Reader) PeekPushNotificationName() (string, error) {
 		if complete {
 			return name, nil
 		}
-		// Parser ran out of bytes. Surface a failed underlying read before
-		// growing further; otherwise grow the peek window and retry.
-		if peekErr != nil {
-			return "", peekErr
-		}
-		if peekSize >= maxPushHeaderPeek {
+		if avail >= maxPushHeaderPeek {
 			return "", fmt.Errorf("redis: push notification header exceeds %d bytes", maxPushHeaderPeek)
 		}
-		peekSize *= 2
-		if peekSize > maxPushHeaderPeek {
-			peekSize = maxPushHeaderPeek
+		// Valid but incomplete prefix: the rest of the frame is in flight.
+		// Block for exactly one more byte — the read that delivers it picks
+		// up whatever else has already arrived — then re-parse.
+		if _, err := r.rd.Peek(avail + 1); err != nil {
+			return "", err
 		}
 	}
 }
@@ -440,6 +443,16 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		// Reject unhashable keys (arrays/maps) before they are used as a map
+		// key, which would otherwise panic. This check must run before the
+		// value is read so it also guards the Nil and RedisError paths below,
+		// which write the key into the map and continue.
+		switch k.(type) {
+		case []interface{}, map[interface{}]interface{}:
+			return nil, fmt.Errorf("redis: RESP3 map key must be a scalar type, got %T", k)
+		}
+
 		v, err := r.ReadReply()
 		if err != nil {
 			if err == Nil {
@@ -452,6 +465,7 @@ func (r *Reader) readMap(line []byte) (map[interface{}]interface{}, error) {
 			}
 			return nil, err
 		}
+
 		m[k] = v
 	}
 	return m, nil
@@ -754,7 +768,15 @@ func (r *Reader) Discard(line []byte) (err error) {
 	}
 
 	n, err := replyLen(line)
-	if err != nil && err != Nil {
+	if err != nil {
+		if err == Nil {
+			// A nil reply ($-1, =-1, !-1, *-1, %-1) carries no payload; the
+			// header line was already consumed by readLine, so there is
+			// nothing to discard. Falling through would Discard(n+2)==2 bytes
+			// that belong to the next reply and desync the stream, matching
+			// how readRawReplyBuf/readRawReplyWriteTo already treat Nil.
+			return nil
+		}
 		return err
 	}
 
@@ -771,8 +793,14 @@ func (r *Reader) Discard(line []byte) (err error) {
 		}
 		return nil
 	case RespMap, RespAttr:
-		// Read key & value.
-		for i := 0; i < n*2; i++ {
+		// Iterate over the n key/value pairs rather than n*2 elements: a count
+		// above MaxInt/2 makes n*2 overflow to a negative loop bound, which
+		// would skip the body entirely and return nil, leaving the map bytes in
+		// the stream for the next reply to consume (a silent desync).
+		for i := 0; i < n; i++ {
+			if err = r.DiscardNext(); err != nil {
+				return err
+			}
 			if err = r.DiscardNext(); err != nil {
 				return err
 			}
@@ -865,10 +893,12 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		for i := 0; i < n*2; i++ {
-			buf, err = r.readRawReplyBuf(buf)
-			if err != nil {
-				return buf, err
+		for i := 0; i < n; i++ {
+			for pair := 0; pair < 2; pair++ {
+				buf, err = r.readRawReplyBuf(buf)
+				if err != nil {
+					return buf, err
+				}
 			}
 		}
 		return buf, nil
@@ -883,11 +913,15 @@ func (r *Reader) readRawReplyBuf(buf []byte) ([]byte, error) {
 			}
 			return buf, err
 		}
-		// Read the attribute key-value pairs
-		for i := 0; i < n*2; i++ {
-			buf, err = r.readRawReplyBuf(buf)
-			if err != nil {
-				return buf, err
+		// Read the attribute key-value pairs. Iterate over pairs rather than
+		// n*2 elements so a count above MaxInt/2 can't overflow int to a
+		// negative loop bound and skip the body.
+		for i := 0; i < n; i++ {
+			for pair := 0; pair < 2; pair++ {
+				buf, err = r.readRawReplyBuf(buf)
+				if err != nil {
+					return buf, err
+				}
 			}
 		}
 		// Read the command reply that follows the attribute
@@ -964,11 +998,13 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 			}
 			return written, err
 		}
-		for i := 0; i < count*2; i++ {
-			n, err := r.readRawReplyWriteTo(w)
-			written += n
-			if err != nil {
-				return written, err
+		for i := 0; i < count; i++ {
+			for pair := 0; pair < 2; pair++ {
+				n, err := r.readRawReplyWriteTo(w)
+				written += n
+				if err != nil {
+					return written, err
+				}
 			}
 		}
 		return written, nil
@@ -983,12 +1019,16 @@ func (r *Reader) readRawReplyWriteTo(w io.Writer) (int64, error) {
 			}
 			return written, err
 		}
-		// Read the attribute key-value pairs
-		for i := 0; i < count*2; i++ {
-			n, err := r.readRawReplyWriteTo(w)
-			written += n
-			if err != nil {
-				return written, err
+		// Read the attribute key-value pairs. Iterate over pairs rather than
+		// count*2 elements so a count above MaxInt/2 can't overflow int to a
+		// negative loop bound and skip the body.
+		for i := 0; i < count; i++ {
+			for pair := 0; pair < 2; pair++ {
+				n, err := r.readRawReplyWriteTo(w)
+				written += n
+				if err != nil {
+					return written, err
+				}
 			}
 		}
 		// Read the command reply that follows the attribute

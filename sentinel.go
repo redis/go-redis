@@ -554,6 +554,7 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		baseClient: &baseClient{
 			opt:     opt,
 			onClose: &onCloseHooks{},
+			himport: newHImportRegistry(),
 		},
 	}
 	rdb.init()
@@ -643,8 +644,8 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:   failover.opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
+			Timeout:         failover.opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
@@ -722,7 +723,7 @@ func (c *SentinelClient) Process(ctx context.Context, cmd Cmder) error {
 
 func (c *SentinelClient) pubSub() *PubSub {
 	pubsub := &PubSub{
-		opt: c.opt,
+		opt: c.cloneOpt(),
 		newConn: func(ctx context.Context, addr string, channels []string) (*pool.Conn, error) {
 			cn, err := c.pubSubPool.NewConn(ctx, c.opt.Network, addr, channels)
 			if err != nil {

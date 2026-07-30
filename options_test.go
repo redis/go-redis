@@ -1,10 +1,9 @@
-//go:build go1.7
-
 package redis
 
 import (
 	"crypto/tls"
 	"errors"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +30,18 @@ func TestParseURL(t *testing.T) {
 			url: "redis://12345",
 			o:   &Options{Addr: "12345:6379"},
 		}, {
+			// IPv6 literal without a port keeps a single pair of brackets
+			url: "redis://[::1]",
+			o:   &Options{Addr: "[::1]:6379"},
+		}, {
+			// IPv6 literal with a port
+			url: "redis://[::1]:6380",
+			o:   &Options{Addr: "[::1]:6380"},
+		}, {
+			// IPv6 literal without a port, with a db number
+			url: "redis://[2001:db8::1]/2",
+			o:   &Options{Addr: "[2001:db8::1]:6379", DB: 2},
+		}, {
 			url: "rediss://localhost:123",
 			o:   &Options{Addr: "localhost:123", TLSConfig: &tls.Config{ /* no deep comparison */ }},
 		}, {
@@ -56,6 +67,14 @@ func TestParseURL(t *testing.T) {
 		}, {
 			// negative values disable timeouts as well
 			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			// a zero or negative duration written with a unit disables the timeout,
+			// the same as the plain "0" / "-1" forms above
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=0s",
+			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
+		}, {
+			url: "redis://localhost:123/?db=2&conn_max_idle_time=-1s",
 			o:   &Options{Addr: "localhost:123", DB: 2, ConnMaxIdleTime: -1},
 		}, {
 			// absent timeout values will use defaults
@@ -157,6 +176,25 @@ func TestParseURL(t *testing.T) {
 	}
 }
 
+func TestParseURLIPv6TLSServerName(t *testing.T) {
+	// For rediss:// the TLS SNI ServerName must be the bare IPv6 host, not the
+	// bracketed form, otherwise the handshake is attempted with an invalid
+	// server name.
+	o, err := ParseURL("rediss://[2001:db8::1]")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if o.Addr != "[2001:db8::1]:6379" {
+		t.Errorf("Addr: got %q, want %q", o.Addr, "[2001:db8::1]:6379")
+	}
+	if o.TLSConfig == nil {
+		t.Fatal("expected a TLSConfig for the rediss scheme")
+	}
+	if got, want := o.TLSConfig.ServerName, "2001:db8::1"; got != want {
+		t.Errorf("TLSConfig.ServerName: got %q, want %q", got, want)
+	}
+}
+
 func comprareOptions(t *testing.T, actual, expected *Options) {
 	t.Helper()
 
@@ -231,7 +269,7 @@ func comprareOptions(t *testing.T, actual, expected *Options) {
 func TestReadTimeoutOptions(t *testing.T) {
 	testDataInputOutputMap := map[time.Duration]time.Duration{
 		-1: 0 * time.Second,
-		0:  3 * time.Second,
+		0:  5 * time.Second,
 		1:  1 * time.Nanosecond,
 		3:  3 * time.Nanosecond,
 	}
@@ -246,6 +284,70 @@ func TestReadTimeoutOptions(t *testing.T) {
 		if o.WriteTimeout != o.ReadTimeout {
 			t.Errorf("got %d instead of %d as WriteTimeout option", o.WriteTimeout, o.ReadTimeout)
 		}
+	}
+}
+
+// Pin the retry backoff defaults shared by Options, ClusterOptions and
+// RingOptions, including the -1 escape hatch.
+func TestRetryBackoffOptions(t *testing.T) {
+	check := func(t *testing.T, kind string, min, max time.Duration) {
+		t.Helper()
+		if min != 10*time.Millisecond {
+			t.Errorf("%s: got %s as default MinRetryBackoff, want 10ms", kind, min)
+		}
+		if max != time.Second {
+			t.Errorf("%s: got %s as default MaxRetryBackoff, want 1s", kind, max)
+		}
+	}
+
+	o := &Options{}
+	o.init()
+	check(t, "Options", o.MinRetryBackoff, o.MaxRetryBackoff)
+
+	co := &ClusterOptions{}
+	co.init()
+	check(t, "ClusterOptions", co.MinRetryBackoff, co.MaxRetryBackoff)
+
+	ro := &RingOptions{}
+	ro.init()
+	check(t, "RingOptions", ro.MinRetryBackoff, ro.MaxRetryBackoff)
+
+	disabled := &Options{MinRetryBackoff: -1, MaxRetryBackoff: -1}
+	disabled.init()
+	if disabled.MinRetryBackoff != 0 || disabled.MaxRetryBackoff != 0 {
+		t.Errorf("-1 must disable backoff, got min=%s max=%s",
+			disabled.MinRetryBackoff, disabled.MaxRetryBackoff)
+	}
+}
+
+func TestClusterStateReloadIntervalOption(t *testing.T) {
+	o := &ClusterOptions{}
+	o.init()
+	if o.ClusterStateReloadInterval != 60*time.Second {
+		t.Errorf("got %s as default ClusterStateReloadInterval, want 60s",
+			o.ClusterStateReloadInterval)
+	}
+
+	o = &ClusterOptions{ClusterStateReloadInterval: 5 * time.Minute}
+	o.init()
+	if o.ClusterStateReloadInterval != 5*time.Minute {
+		t.Errorf("explicit ClusterStateReloadInterval overridden: got %s",
+			o.ClusterStateReloadInterval)
+	}
+}
+
+// The keep-alive policy is shared by the default dialer (options.go) and the
+// sentinel master/replica dialer (sentinel.go); pin it so a change shows up
+// in review instead of drifting silently.
+func TestDefaultKeepAliveConfig(t *testing.T) {
+	want := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     30 * time.Second,
+		Interval: 5 * time.Second,
+		Count:    3,
+	}
+	if defaultKeepAliveConfig != want {
+		t.Errorf("defaultKeepAliveConfig = %+v, want %+v", defaultKeepAliveConfig, want)
 	}
 }
 

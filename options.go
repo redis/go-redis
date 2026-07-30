@@ -121,12 +121,12 @@ type Options struct {
 	// MinRetryBackoff is the minimum backoff between each retry.
 	// -1 disables backoff.
 	//
-	// default: 8 milliseconds
+	// default: 10 milliseconds
 	MinRetryBackoff time.Duration
 
 	// MaxRetryBackoff is the maximum backoff between each retry.
 	// -1 disables backoff.
-	// default: 512 milliseconds;
+	// default: 1 second;
 	MaxRetryBackoff time.Duration
 
 	// DialTimeout for establishing new connections.
@@ -157,7 +157,7 @@ type Options struct {
 	//	- `-1` - no timeout (block indefinitely).
 	//	- `-2` - disables SetReadDeadline calls completely.
 	//
-	// default: 3 seconds
+	// default: 5 seconds
 	ReadTimeout time.Duration
 
 	// WriteTimeout for socket writes. If reached, commands will fail
@@ -166,7 +166,7 @@ type Options struct {
 	//	- `-1` - no timeout (block indefinitely).
 	//	- `-2` - disables SetWriteDeadline calls completely.
 	//
-	// default: 3 seconds
+	// default: 5 seconds (same as ReadTimeout, which it follows when unset)
 	WriteTimeout time.Duration
 
 	// ContextTimeoutEnabled controls whether the client respects context timeouts and deadlines.
@@ -430,7 +430,7 @@ func (opt *Options) init() {
 	case -1:
 		opt.ReadTimeout = 0
 	case 0:
-		opt.ReadTimeout = 3 * time.Second
+		opt.ReadTimeout = 5 * time.Second
 	}
 	switch opt.WriteTimeout {
 	case -2:
@@ -463,13 +463,13 @@ func (opt *Options) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.FailingTimeoutSeconds == 0 {
@@ -505,13 +505,24 @@ func (opt *Options) NewDialer() func(context.Context, string, string) (net.Conn,
 	return NewDialer(opt)
 }
 
+// defaultKeepAliveConfig is the TCP keep-alive policy of the default dialers
+// here and in sentinel.go: start probing after 30s idle (below typical LB/NAT
+// idle timeouts), then declare the peer dead after 3 unanswered probes 5s
+// apart.
+var defaultKeepAliveConfig = net.KeepAliveConfig{
+	Enable:   true,
+	Idle:     30 * time.Second,
+	Interval: 5 * time.Second,
+	Count:    3,
+}
+
 // NewDialer returns a function that will be used as the default dialer
 // when none is specified in Options.Dialer.
 func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		netDialer := &net.Dialer{
-			Timeout:   opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
+			Timeout:         opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
@@ -610,10 +621,12 @@ func setupTCPConn(u *url.URL) (*Options, error) {
 // a host and a port. If the host is missing, it defaults to localhost
 // and if the port is missing, it defaults to 6379.
 func getHostPortWithDefaults(u *url.URL) (string, string) {
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		host = u.Host
-	}
+	// u.Hostname and u.Port strip the surrounding brackets from IPv6 literals
+	// (e.g. "[::1]" -> "::1") and handle the missing-port case, which
+	// net.SplitHostPort instead reports as an error. Relying on them avoids
+	// leaving the brackets on the host, which the caller's net.JoinHostPort
+	// would wrap again and turn "redis://[::1]" into "[[::1]]:6379".
+	host, port := u.Hostname(), u.Port()
 	if host == "" {
 		host = "localhost"
 	}
@@ -690,6 +703,10 @@ func (o *queryOptions) duration(name string) time.Duration {
 	}
 	dur, err := time.ParseDuration(s)
 	if err == nil {
+		if dur <= 0 {
+			// disable timeouts
+			return -1
+		}
 		return dur
 	}
 	if o.err == nil {

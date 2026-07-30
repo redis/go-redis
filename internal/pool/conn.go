@@ -109,6 +109,18 @@ type Conn struct {
 	expiresAt time.Time
 	poolName  string // Name of the pool this connection belongs to (for metrics)
 
+	// preparedFieldsets tracks HIMPORT fieldsets prepared on this
+	// connection's current server session: fieldset name -> client-side
+	// registry version. The server drops fieldsets when the session ends,
+	// so the map is cleared whenever the underlying network connection is
+	// replaced. preparedFieldsetsEpoch records the registry's discard-all
+	// epoch the session was prepared under; a session behind the current
+	// epoch replays HIMPORT DISCARDALL before its next HIMPORT command.
+	// Guarded by preparedFieldsetsMu; the map is nil until first use.
+	preparedFieldsetsMu    sync.Mutex
+	preparedFieldsets      map[string]uint64
+	preparedFieldsetsEpoch uint64
+
 	// When a goroutine closes a connection, it usually knows the reason, so closeReason is not needed.
 	// closeReason is only used when an in-use connection is closed by another goroutine,
 	// to inform the goroutine using the connection why the connection was closed.
@@ -661,6 +673,85 @@ func (cn *Conn) SetNetConn(netConn net.Conn) {
 	cn.readerMu.Unlock()
 
 	cn.bw.Reset(netConn)
+
+	// A new socket is a new server session with no HIMPORT fieldsets and
+	// nothing left to discard.
+	cn.ClearPreparedFieldsets(0)
+}
+
+// FieldsetPreparedVersion returns the client-side registry version at which
+// the named HIMPORT fieldset was prepared on this connection's current server
+// session, or 0 if it was not prepared on it (registry versions start at 1).
+func (cn *Conn) FieldsetPreparedVersion(name string) uint64 {
+	cn.preparedFieldsetsMu.Lock()
+	version := cn.preparedFieldsets[name]
+	cn.preparedFieldsetsMu.Unlock()
+	return version
+}
+
+// MarkFieldsetPrepared records that the named HIMPORT fieldset was prepared
+// on this connection's current server session at the given registry version.
+// A session acquiring its first fieldset adopts the given discard-all epoch
+// (fieldsets prepared after an HIMPORT DISCARDALL are not subject to it);
+// the epoch never moves backwards, so a mark carrying an older snapshot
+// cannot regress a session already wiped at a newer epoch.
+func (cn *Conn) MarkFieldsetPrepared(name string, version, epoch uint64) {
+	cn.preparedFieldsetsMu.Lock()
+	if len(cn.preparedFieldsets) == 0 {
+		cn.preparedFieldsets = make(map[string]uint64)
+		if epoch > cn.preparedFieldsetsEpoch {
+			cn.preparedFieldsetsEpoch = epoch
+		}
+	}
+	cn.preparedFieldsets[name] = version
+	cn.preparedFieldsetsMu.Unlock()
+}
+
+// UnmarkFieldsetPrepared forgets that the named HIMPORT fieldset was prepared
+// on this connection, forcing a replay before the next HIMPORT SET using it.
+func (cn *Conn) UnmarkFieldsetPrepared(name string) {
+	cn.preparedFieldsetsMu.Lock()
+	delete(cn.preparedFieldsets, name)
+	cn.preparedFieldsetsMu.Unlock()
+}
+
+// HasPreparedFieldsets reports whether any HIMPORT fieldset is prepared on
+// this connection's current server session.
+func (cn *Conn) HasPreparedFieldsets() bool {
+	cn.preparedFieldsetsMu.Lock()
+	n := len(cn.preparedFieldsets)
+	cn.preparedFieldsetsMu.Unlock()
+	return n > 0
+}
+
+// PreparedFieldsetNames returns the names of the HIMPORT fieldsets prepared
+// on this connection's current server session.
+func (cn *Conn) PreparedFieldsetNames() []string {
+	cn.preparedFieldsetsMu.Lock()
+	names := make([]string, 0, len(cn.preparedFieldsets))
+	for name := range cn.preparedFieldsets {
+		names = append(names, name)
+	}
+	cn.preparedFieldsetsMu.Unlock()
+	return names
+}
+
+// FieldsetEpoch returns the discard-all epoch this connection's prepared
+// fieldsets belong to (0 when none were ever prepared on the session).
+func (cn *Conn) FieldsetEpoch() uint64 {
+	cn.preparedFieldsetsMu.Lock()
+	epoch := cn.preparedFieldsetsEpoch
+	cn.preparedFieldsetsMu.Unlock()
+	return epoch
+}
+
+// ClearPreparedFieldsets forgets all HIMPORT fieldsets prepared on this
+// connection and records the discard-all epoch the wipe corresponds to.
+func (cn *Conn) ClearPreparedFieldsets(epoch uint64) {
+	cn.preparedFieldsetsMu.Lock()
+	cn.preparedFieldsets = nil
+	cn.preparedFieldsetsEpoch = epoch
+	cn.preparedFieldsetsMu.Unlock()
 }
 
 // GetNetConn safely returns the current network connection using atomic load (lock-free).
@@ -774,8 +865,13 @@ func (cn *Conn) MarkQueuedForHandoff() error {
 			// Already unusable - this is fine, keep the new handoff state
 			return nil
 		}
-		// Restore the original state if transition fails for other reasons
-		cn.handoffStateAtomic.Store(currentState)
+		// Restore the original handoff state only if nothing else changed it
+		// since our CAS above. A concurrent handoff worker may have completed
+		// the handoff and run ClearHandoffState in this window; a plain Store
+		// would clobber that, resurrecting ShouldHandoff=true and wedging the
+		// connection so it can never be acquired again. The CAS leaves the
+		// worker's state intact when it has taken over.
+		cn.handoffStateAtomic.CompareAndSwap(newState, currentState)
 		return fmt.Errorf("failed to mark connection as unusable: %w", err)
 	}
 	return nil
@@ -868,6 +964,18 @@ func (cn *Conn) PeekReplyTypeSafe() (byte, error) {
 	if cn.rd.Buffered() <= 0 {
 		return 0, fmt.Errorf("redis: can't peek reply type, no data available")
 	}
+	return cn.rd.PeekReplyType()
+}
+
+// PeekReplyTypeForCheck peeks at the reply type while holding readerMu, so it is
+// safe against a concurrent SetNetConn resetting the reader during handoff.
+// Unlike PeekReplyTypeSafe it does not require the data to already be buffered:
+// the pool health check calls it after connCheck reports unexpected socket data,
+// and connCheck only MSG_PEEKs, so the byte still has to be pulled from the
+// socket into the reader here.
+func (cn *Conn) PeekReplyTypeForCheck() (byte, error) {
+	cn.readerMu.RLock()
+	defer cn.readerMu.RUnlock()
 	return cn.rd.PeekReplyType()
 }
 

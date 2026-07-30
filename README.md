@@ -21,6 +21,7 @@ In `go-redis` we are aiming to support the last three releases of Redis. Current
 - [Redis 8.2](https://raw.githubusercontent.com/redis/redis/8.2/00-RELEASENOTES) - using Redis CE 8.2
 - [Redis 8.4](https://raw.githubusercontent.com/redis/redis/8.4/00-RELEASENOTES) - using Redis CE 8.4
 - [Redis 8.8](https://raw.githubusercontent.com/redis/redis/8.8/00-RELEASENOTES) - using Redis CE 8.8
+- [Redis 8.10](https://raw.githubusercontent.com/redis/redis/8.10/00-RELEASENOTES) - using Redis CE 8.10
 
 Although the `go.mod` states it requires at minimum `go 1.24`, our CI is configured to run the tests against all supported
 versions of Redis and multiple versions of Go ([1.24](https://go.dev/doc/devel/release#go1.24.0), oldstable, and stable). We observe that some modules related test may not pass with
@@ -456,6 +457,24 @@ vals, err := rdb.Eval(ctx, "return {KEYS[1],ARGV[1]}", []string{"key"}, "hello")
 // custom command
 res, err := rdb.Do(ctx, "set", "key", "value").Result()
 ```
+
+### Raw commands and connection state
+
+`Do` sends the command verbatim on whichever pooled connection happens to be
+free. For keyspace commands that is all you need. It is the wrong tool for
+any command that alters **connection session state** — `SELECT`,
+`CLIENT SETNAME`, `CLIENT TRACKING`, `RESET`, `HIMPORT PREPARE`/`DISCARD`,
+and similar: the state lands on (or is wiped from) a single arbitrary
+connection, later commands are served by other connections that don't share
+it, and the affected connection eventually returns to the pool and serves
+unrelated callers. The result is nondeterministic behavior that typed APIs
+manage for you — for example, the typed `HImport*` methods keep a
+client-side registry and replay fieldsets onto every connection that needs
+them, while a raw `Do(ctx, "himport", "prepare", ...)` bypasses that
+entirely, with no replay, recovery, or discard propagation.
+
+For session-scoped work without a typed API, hold a dedicated connection
+(`client.Conn()`) for its whole lifetime and close it afterwards.
 
 ## Typed Errors
 

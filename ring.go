@@ -48,6 +48,10 @@ type RingOptions struct {
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
 
+	// himport is the ring-wide HIMPORT fieldset registry, set by NewRing and
+	// shared with every shard client (see himport.go, himport_cluster.go).
+	himport *himportRegistry
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
@@ -202,13 +206,13 @@ func (opt *RingOptions) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.ReadBufferSize == 0 {
@@ -282,10 +286,16 @@ func newRingShard(opt *RingOptions, addr string) *ringShard {
 	clopt := opt.clientOptions()
 	clopt.Addr = addr
 
-	return &ringShard{
+	shard := &ringShard{
 		Client: opt.NewClient(clopt),
 		addr:   addr,
 	}
+	// Share the ring-wide HIMPORT fieldset registry so any shard connection
+	// serving an HIMPORT SET can lazily replay the PREPARE.
+	if opt.himport != nil {
+		shard.Client.himport = opt.himport
+	}
+	return shard
 }
 
 func (shard *ringShard) String() string {
@@ -381,9 +391,10 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 		return
 	}
 	existing := c.shards
+	onNewNode := c.onNewNode
 	c.mu.RUnlock()
 
-	shards, created, unused := c.newRingShards(addrs, existing)
+	shards, created, unused := c.newRingShards(addrs, existing, onNewNode)
 
 	c.mu.Lock()
 	if c.closed {
@@ -399,7 +410,7 @@ func (c *ringSharding) SetAddrs(addrs map[string]string) {
 }
 
 func (c *ringSharding) newRingShards(
-	addrs map[string]string, existing *ringShards,
+	addrs map[string]string, existing *ringShards, onNewNode []func(rdb *Client),
 ) (shards *ringShards, created, unused map[string]*ringShard) {
 	shards = &ringShards{m: make(map[string]*ringShard, len(addrs))}
 	created = make(map[string]*ringShard) // indexed by addr
@@ -420,7 +431,7 @@ func (c *ringSharding) newRingShards(
 			shards.m[name] = shard
 			created[addr] = shard
 
-			for _, fn := range c.onNewNode {
+			for _, fn := range onNewNode {
 				fn(shard.Client)
 			}
 		}
@@ -616,7 +627,16 @@ func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")
 	}
+	// Shallow-copy the options: the ring-wide HIMPORT registry is carried
+	// through them to shard construction, and reusing one caller-owned
+	// RingOptions across several rings must not make the rings share (or
+	// clobber each other's) registry.
+	optCopy := *opt
+	opt = &optCopy
 	opt.init()
+	// The registry must exist before the first shard is created; shards
+	// adopt it in newRingShard.
+	opt.himport = newHImportRegistry()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())
 
@@ -724,6 +744,17 @@ func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 		panic(err)
 	}
 	return shard.Client.SSubscribe(ctx, channels...)
+}
+
+// Publish posts the message to the channel
+func (c *Ring) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
+	shard, err := c.sharding.GetByKey(channel)
+	if err != nil {
+		cmd := NewIntCmd(ctx, "publish", channel, message)
+		cmd.SetErr(err)
+		return cmd
+	}
+	return shard.Client.Publish(ctx, channel, message)
 }
 
 func (c *Ring) OnNewNode(fn func(rdb *Client)) {
