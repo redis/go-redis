@@ -831,7 +831,6 @@ func (ap *AutoPipeliner) AsyncAutoPipelineWithOptions(config *AutoPipelineOption
 	return ap.pipeliner.AsyncAutoPipelineWithOptions(config)
 }
 
-
 // AutoFuture is the handle returned by Submit. Call Wait (or Result on the
 // command after Wait) once the result is needed; it blocks only until the
 // command's batch has executed.
