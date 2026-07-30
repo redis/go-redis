@@ -6,12 +6,14 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -458,6 +460,23 @@ type badConn struct {
 
 	readDelay, writeDelay time.Duration
 	readErr, writeErr     error
+}
+
+// flakyWriteConn wraps a real, healthy connection and fails exactly one Write
+// when armed. Unlike seeding a broken conn into the idle pool (which the
+// pool's health check filters out before use), a wire-level failure on a
+// live conn genuinely reaches the pipeline write path — so retry tests using
+// it actually exercise the retry loop.
+type flakyWriteConn struct {
+	net.Conn
+	fail *atomic.Bool // arm with Store(true); consumed by the next Write
+}
+
+func (c *flakyWriteConn) Write(b []byte) (int, error) {
+	if c.fail.CompareAndSwap(true, false) {
+		return 0, io.EOF
+	}
+	return c.Conn.Write(b)
 }
 
 var _ net.Conn = &badConn{}

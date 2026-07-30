@@ -436,8 +436,8 @@ func TestClusterAutoPipelineOptionsShardDefault(t *testing.T) {
 	// slot-routed shards — deriving the shard count from the permit budget
 	// once collapsed cluster slot routing to a single shard at the default.
 	def := clusterAutoPipelineOptions(DefaultAutoPipelineOptions())
-	if def.NumShards < 2 {
-		t.Fatalf("cluster default-config NumShards = %d, want >= 2 (slot routing must not be dead code at defaults)", def.NumShards)
+	if want := numAutoPipelineShards(); def.NumShards != want {
+		t.Fatalf("cluster default-config NumShards = %d, want %d (slot routing must not be collapsed by the permit budget)", def.NumShards, want)
 	}
 
 	// An explicit NumShards is preserved, but the cluster still marks

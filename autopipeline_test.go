@@ -1305,12 +1305,13 @@ func TestAutoPipelineErrorsOnUnsafeConfig(t *testing.T) {
 
 // ===== from autopipeline_fuzz_test.go =====
 // TestAutoPipelineDifferentialFuzz runs the same randomized, type-diverse command
-// stream through a plain client and through an AutoPipeliner (blocking face, so
-// per-call order matches the sequential plain run) and diffs every result. This
-// is the highest-leverage correctness net for a batching layer: it re-covers
-// cross-talk, ordering, and reply-shape demux across arbitrary command mixes,
-// including nil/empty/large/binary values. Both types satisfy redis.Cmdable, so
-// the exact same op sequence drives both.
+// stream through a plain client and diffs every result against two autopipeline
+// runs: the blocking face called sequentially (which exercises the lone-command
+// fast path — each call flushes solo), and the async face driven windowed —
+// every command submitted before any result is read — so the stream coalesces
+// into real multi-command batches and the diff covers cross-talk, ordering, and
+// reply-shape demux where they can actually break. A counting hook asserts the
+// async phase really formed >=2-command batches (anti-vacuousness guard).
 func TestAutoPipelineDifferentialFuzz(t *testing.T) {
 	ctx := context.Background()
 	// Dedicated DB so FlushDB between runs can't touch anything else.
@@ -1344,8 +1345,55 @@ func TestAutoPipelineDifferentialFuzz(t *testing.T) {
 					seed, i, ops[i].kind, ops[i].key, plainRes[i], apRes[i])
 			}
 		}
+
+		// Async windowed phase: submit everything, then read. The ordered
+		// default preserves submit order, so results must equal the
+		// sequential plain run — but now via real multi-command batches.
+		if err := client.FlushDB(ctx).Err(); err != nil {
+			t.Fatal(err)
+		}
+		batchClient := redis.NewClient(&redis.Options{Addr: apTestAddr(), DB: 15})
+		var realBatches atomic.Int32
+		batchClient.AddHook(batchCountingHook{batches: &realBatches})
+		asyncAP, err := batchClient.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+			MaxBatchSize:  100,
+			MaxFlushDelay: 2 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		asyncRes := runOpsWindowed(ctx, asyncAP, ops)
+		asyncAP.Close()
+		batchClient.Close()
+
+		for i := range ops {
+			if plainRes[i] != asyncRes[i] {
+				t.Fatalf("seed=%d op#%d %s(%s): plain=%q async-windowed=%q",
+					seed, i, ops[i].kind, ops[i].key, plainRes[i], asyncRes[i])
+			}
+		}
+		if realBatches.Load() == 0 {
+			t.Fatalf("seed=%d: async windowed run formed no >=2-command batches — differential coverage is vacuous", seed)
+		}
 	}
 	client.FlushDB(ctx)
+}
+
+// batchCountingHook counts pipeline dispatches of >=2 commands: proof the
+// windowed fuzz phase exercised real batches rather than the solo fast path.
+type batchCountingHook struct{ batches *atomic.Int32 }
+
+func (batchCountingHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (batchCountingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (h batchCountingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) >= 2 {
+			h.batches.Add(1)
+		}
+		return next(ctx, cmds)
+	}
 }
 
 type fuzzOp struct {
@@ -1433,6 +1481,98 @@ func runOps(ctx context.Context, c redis.Cmdable, ops []fuzzOp) []string {
 		case "setbin":
 			out[i] = res(c.Set(ctx, op.key, "b\x00\r\n\x01\xffX", 0).Result())
 		}
+	}
+	return out
+}
+
+// runOpsWindowed issues the whole op sequence first and materializes results
+// afterwards, in order — on the async face this coalesces the stream into
+// real multi-command batches instead of lone-command flushes. Result strings
+// are normalized identically to runOps.
+func runOpsWindowed(ctx context.Context, c redis.Cmdable, ops []fuzzOp) []string {
+	out := make([]string, len(ops))
+	res := func(v interface{}, err error) string {
+		if err != nil {
+			return "ERR:" + err.Error()
+		}
+		return fmt.Sprintf("%v", v)
+	}
+	thunks := make([]func() string, len(ops))
+	for i, op := range ops {
+		switch op.kind {
+		case "set":
+			cmd := c.Set(ctx, op.key, op.val, 0)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "get":
+			cmd := c.Get(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "getdel":
+			cmd := c.GetDel(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "incr":
+			cmd := c.Incr(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "incrby":
+			cmd := c.IncrBy(ctx, op.key, op.n)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "append":
+			cmd := c.Append(ctx, op.key, op.val)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "strlen":
+			cmd := c.StrLen(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "exists":
+			cmd := c.Exists(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "del":
+			cmd := c.Del(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "hset":
+			cmd := c.HSet(ctx, op.key, op.val, op.n)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "hget":
+			cmd := c.HGet(ctx, op.key, op.val)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "hgetall":
+			cmd := c.HGetAll(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "lpush":
+			cmd := c.LPush(ctx, op.key, op.val)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "lrange":
+			cmd := c.LRange(ctx, op.key, 0, -1)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "llen":
+			cmd := c.LLen(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "expire":
+			cmd := c.Expire(ctx, op.key, 100*time.Second)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "ttl":
+			cmd := c.TTL(ctx, op.key)
+			thunks[i] = func() string {
+				d, err := cmd.Result()
+				if err != nil {
+					return "ERR:" + err.Error()
+				}
+				if d > 0 {
+					return "ttl>0"
+				}
+				return fmt.Sprintf("%v", d)
+			}
+		case "type":
+			cmd := c.Type(ctx, op.key)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "setbig":
+			cmd := c.Set(ctx, op.key, strings.Repeat("Z", 70000), 0)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		case "setbin":
+			cmd := c.Set(ctx, op.key, "b\x00\r\n\x01\xffX", 0)
+			thunks[i] = func() string { return res(cmd.Result()) }
+		}
+	}
+	for i, th := range thunks {
+		out[i] = th()
 	}
 	return out
 }
@@ -1689,16 +1829,29 @@ func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 // ===== from autopipeline_retry_test.go =====
 // TestAutoPipelineRetriesOnNetworkError verifies AutoPipeline inherits the
 // pipeline retry/re-drive loop (it dispatches through the same execer as manual
-// Pipeline). A broken conn is seeded; the batch's first attempt fails on it and
-// the retry redials a healthy conn. Results are read through the futures, and
-// must be correct after the re-drive.
+// Pipeline). The pooled conn's next write is armed to fail at the wire (a
+// seeded broken idle conn would be filtered by the pool health check and never
+// carry an attempt); the batch's first attempt genuinely dies, the retry
+// redials, and the futures must read correct results from the re-drive.
 //
 // MaxFlushDelay forces the two commands into one real (>=2) batch so they run
 // through the pipeline execer; a lone command would take the single-command
 // fast path (Process) instead.
 func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), MaxRetries: 2, PoolSize: 1})
+	var failNextWrite atomic.Bool
+	var dials atomic.Int32
+	client := redis.NewClient(&redis.Options{
+		Addr: apTestAddr(), MaxRetries: 2, PoolSize: 1,
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials.Add(1)
+			cn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &flakyWriteConn{Conn: cn, fail: &failNextWrite}, nil
+		},
+	})
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -1706,13 +1859,6 @@ func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 	if err := client.Set(ctx, "apr:n", 0, 0).Err(); err != nil {
 		t.Fatal(err)
 	}
-
-	cn, err := client.Pool().Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cn.SetNetConn(&badConn{writeErr: io.EOF})
-	client.Pool().Put(ctx, cn)
 
 	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
 		MaxBatchSize:  300,
@@ -1722,6 +1868,11 @@ func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ap.Close()
+
+	// Arm after the handshake: the pooled conn is healthy, so it passes the
+	// pool health check, and the batch's first write dies on the wire.
+	dialsBefore := dials.Load()
+	failNextWrite.Store(true)
 
 	s := ap.Set(ctx, "apr:k", "v", 0)
 	n := ap.Incr(ctx, "apr:n")
@@ -1736,6 +1887,12 @@ func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 	}
 	if n.Val() != 1 {
 		t.Fatalf("incr = %d, want 1", n.Val())
+	}
+	if failNextWrite.Load() {
+		t.Fatal("armed write failure never consumed: the first attempt did not reach the wire")
+	}
+	if got := dials.Load(); got != dialsBefore+1 {
+		t.Fatalf("dials after failure = %d, want %d (exactly one redial by the retry)", got, dialsBefore+1)
 	}
 }
 
@@ -3792,6 +3949,77 @@ func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
 		}
 		if err := set.Err(); err != nil {
 			t.Errorf("set: err = %v, want success kept", err)
+		}
+	})
+}
+
+// Regression: the async face with NO hooks must survive a multi-command
+// batch whose first reply is an error. pipelineProcessCmds re-reads the
+// first command's error after the himport re-issue pass; doing that via
+// Err() awaited the command's own still-open batch and self-deadlocked the
+// dispatcher (the dispGid guard is unarmed without hooks). A plain redis.Nil
+// on the first command was enough to trigger it. rawErr() is the fix.
+func TestAsyncAutoPipelineErrorFirstReplyNoHooks(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+
+	// Forced single batch: everything lands in one flush, first reply is a
+	// redis.Nil (missing key). No hooks anywhere — the default configuration.
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		cmds := make([]*redis.StringCmd, 10)
+		for i := range cmds {
+			cmds[i] = ap.Get(ctx, fmt.Sprintf("ap:errfirst:missing:%d", i))
+		}
+		for i, cmd := range cmds {
+			if err := cmd.Err(); err != redis.Nil {
+				t.Errorf("cmd %d: got %v, want redis.Nil", i, err)
+			}
+		}
+	})
+}
+
+// Regression: HIMPORT commands inside an async batch. himportAfterBatch and
+// himportRetryFailedSets run on the execution path (standalone and per-node
+// cluster goroutines) and read the batch's commands; doing so via Err()
+// awaited the still-open batch and self-deadlocked exactly like the case
+// above — even when every command succeeded. Works against servers without
+// HIMPORT support too: the reads happen regardless of the reply.
+func TestAsyncAutoPipelineHImportBatchNoHooks(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		set := ap.Set(ctx, "ap:himport:plain", "v", 0)
+		h1 := ap.HImportSet(ctx, "ap:himport:h", "fieldset-a", "f1", "v1")
+		h2 := ap.HImportSet(ctx, "ap:himport:h", "fieldset-b", "f2", "v2")
+		disc := ap.HImportDiscard(ctx, "fieldset-a")
+
+		// The HIMPORT replies depend on server support — only completion
+		// matters here (pre-fix this blocked forever). The plain SET in the
+		// same batch must succeed.
+		_ = h1.Err()
+		_ = h2.Err()
+		_ = disc.Err()
+		if err := set.Err(); err != nil {
+			t.Errorf("plain SET in himport batch: %v", err)
 		}
 	})
 }

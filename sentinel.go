@@ -599,7 +599,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		} else {
 			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
 		}
-		rdb.pipelinePool, err = newConnPool(pipelineOpt, rdb.dialHook, mainPoolName+"_pipeline")
+		rdb.pipelinePoolName = mainPoolName + "_pipeline"
+		rdb.pipelinePool, err = newConnPool(pipelineOpt, rdb.dialHook, rdb.pipelinePoolName)
 		if err != nil {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
 		}

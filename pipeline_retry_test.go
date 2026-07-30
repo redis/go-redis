@@ -17,13 +17,26 @@ import (
 // through this same execer, so it inherits whatever is proven here
 // (see autopipeline_retry_test.go for the AutoPipeline-specific coverage).
 
-// TestPipelineRetriesOnNetworkError seeds a broken connection into the pool; the
-// first pipeline attempt fails on it, and the retry redials a healthy conn and
-// re-drives the whole batch. Verifies the replies are correct and in order after
-// the re-drive.
+// TestPipelineRetriesOnNetworkError arms the pooled conn's next write to fail
+// at the wire (a seeded broken idle conn would be filtered by the pool health
+// check and never carry an attempt); the first pipeline attempt genuinely
+// dies, and the retry redials a healthy conn and re-drives the whole batch.
+// Verifies the replies are correct and in order after the re-drive.
 func TestPipelineRetriesOnNetworkError(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), MaxRetries: 2, PoolSize: 1})
+	var failNextWrite atomic.Bool
+	var dials atomic.Int32
+	client := redis.NewClient(&redis.Options{
+		Addr: apTestAddr(), MaxRetries: 2, PoolSize: 1,
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials.Add(1)
+			cn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &flakyWriteConn{Conn: cn, fail: &failNextWrite}, nil
+		},
+	})
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -32,13 +45,8 @@ func TestPipelineRetriesOnNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Put a bad connection in the pool: the next pipeline write fails on it.
-	cn, err := client.Pool().Get(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cn.SetNetConn(&badConn{writeErr: io.EOF})
-	client.Pool().Put(ctx, cn)
+	dialsBefore := dials.Load()
+	failNextWrite.Store(true)
 
 	pipe := client.Pipeline()
 	set := pipe.Set(ctx, "pr:k", "v", 0)
@@ -55,6 +63,12 @@ func TestPipelineRetriesOnNetworkError(t *testing.T) {
 	}
 	if incr.Val() != 1 {
 		t.Fatalf("incr = %d, want 1", incr.Val())
+	}
+	if failNextWrite.Load() {
+		t.Fatal("armed write failure never consumed: the first attempt did not reach the wire")
+	}
+	if got := dials.Load(); got != dialsBefore+1 {
+		t.Fatalf("dials after failure = %d, want %d (exactly one redial by the retry)", got, dialsBefore+1)
 	}
 }
 

@@ -1724,9 +1724,11 @@ func (c *baseClient) pipelineProcessCmds(
 	}
 
 	// Preserve retryable first-command errors (e.g. LOADING) for the outer
-	// loop; the re-issue above may have cleared it.
+	// loop; the re-issue above may have cleared it. rawErr: this runs on the
+	// execution path; never await here (an async autopipeline command's ready
+	// channel is closed by this very batch — Err() would self-deadlock).
 	if readErr != nil {
-		readErr = cmds[0].Err()
+		readErr = cmds[0].rawErr()
 	}
 	return readErr != nil, readErr
 }
@@ -2011,7 +2013,12 @@ func (c *Client) init() {
 }
 
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
+	// Snapshot under the guard: AutoPipeline()/Close() mutate the
+	// autopipeliner fields concurrently, so a bare struct copy of them is a
+	// data race (init below discards the copied values either way).
+	c.autopipelinerMu.Lock()
 	clone := *c
+	c.autopipelinerMu.Unlock()
 	if c.cscLifecycleOwner != nil {
 		clone.cscLifecycleOwner = c.cscLifecycleOwner
 	} else if c.baseClient.cscDrainHandle != nil {

@@ -536,6 +536,13 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		config = &cfgCopy
 	}
 
+	// Validate BEFORE default-filling: Validate treats zero as "use the
+	// default" but rejects negatives, and coercing first would silently
+	// swallow a negative typo the documented contract promises to error on.
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	// Apply defaults for zero values
 	if config.MaxBatchSize <= 0 {
 		config.MaxBatchSize = 200
@@ -545,13 +552,6 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		// Default to an ordered single stream. Callers raise this (with
 		// Unordered:true) to opt into parallel-batch throughput.
 		config.MaxConcurrentBatches = 1
-	}
-
-	// Reject configurations that silently drop ordering. This is a deterministic
-	// misconfiguration; surface it as an error so the post-init AutoPipeline /
-	// AsyncAutoPipeline calls never panic on a bad config.
-	if err := config.Validate(); err != nil {
-		return nil, err
 	}
 
 	// NumShards > 1 on the deferred (async) face distributes commands

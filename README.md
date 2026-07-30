@@ -418,7 +418,7 @@ ctx := context.Background()
 
 // Blocking face: drop-in for a normal client, batched under the hood.
 ap, err := rdb.AutoPipeline()
-if err != nil { // only on an invalid AutoPipelineOptions
+if err != nil { // invalid AutoPipelineOptions, or the client is closed
     log.Fatal(err)
 }
 defer ap.Close()
@@ -461,7 +461,7 @@ for _, cmd := range cmds {
 Each face has a no-argument form that uses `Options.AutoPipelineOptions` (or the
 built-in default) and a `WithOptions` form that takes an explicit
 `*AutoPipelineOptions`; both return `(*AutoPipeliner, error)` — the error is
-non-nil only for an invalid config (e.g.
+non-nil for an invalid config or a closed client (e.g.
 `ap, err := rdb.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 8, Unordered: true})`);
 a handful of parallel batches saturates the link — more permits only add
 overlapping batches without deepening them.
