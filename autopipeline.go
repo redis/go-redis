@@ -521,9 +521,9 @@ func getOrCreateAutoPipeliner(
 	if *slot != nil && !(*slot).closed.Load() {
 		return *slot, nil
 	}
-	cfg := fallback()
-	if override != nil {
-		cfg = override
+	cfg := override
+	if cfg == nil {
+		cfg = fallback()
 	}
 	ap, err := build(cfg)
 	if err != nil {
