@@ -155,6 +155,15 @@ func getRecorder() Recorder {
 	return r
 }
 
+// Enabled reports whether a real recorder is installed. Callers use it to
+// skip metric work whose INPUTS are expensive to obtain — e.g. reading a
+// command's result, which on the async autopipeline face blocks until the
+// command executes.
+func Enabled() bool {
+	_, noop := getRecorder().(noopRecorder)
+	return !noop
+}
+
 // SetGlobalRecorder sets the global recorder (called by Init() in extra/redisotel-native)
 func SetGlobalRecorder(r Recorder) {
 	recorderMu.Lock()

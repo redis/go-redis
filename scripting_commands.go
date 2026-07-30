@@ -60,6 +60,9 @@ func (c cmdable) eval(ctx context.Context, name, payload string, keys []string, 
 		cmd.SetFirstKeyPos(3)
 	}
 	_ = c(ctx, cmd)
+	// This result read normalizes NOSCRIPT to ErrNoScript, which
+	// Script.Run/RunRO rely on to fall back to EVAL. It awaits execution, so
+	// the Eval family is synchronous even on the async autopipeline face.
 	if err := cmd.Err(); err != nil {
 		if HasErrorPrefix(err, "NOSCRIPT") {
 			cmd.SetErr(ErrNoScript)

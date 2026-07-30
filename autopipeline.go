@@ -275,7 +275,12 @@ func (b *apBatch) close() {
 // goroutines the gid guard cannot identify, so they must not read command
 // results on the async face; the same applies to a goroutine a hook spawns
 // and joins before returning. A hook added concurrently with an in-flight
-// dispatch misses the guard for that one batch.
+// dispatch misses the guard for that one batch. The guard covers result
+// READS only: a hook that ISSUES a command on the same AutoPipeliner and
+// synchronously waits for it cannot be saved — the nested command needs the
+// dispatch slot the hook chain is holding, and the engine recovers only by
+// failing the flush after the permit backstops (see
+// autoPipelinePermitBackstop) expire.
 func (ap *AutoPipeliner) armSelfDeadlockGuard() bool {
 	return ap.pipeliner.hookCount() > 0 || ap.config.contentSharded
 }

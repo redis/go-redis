@@ -16,6 +16,7 @@ import (
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
@@ -605,6 +606,12 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
 		}
 	}
+
+	// Register pools for OTel async gauge metrics, matching NewClient (the
+	// failover client previously registered none, so pool gauges were silent
+	// for the identical standalone setup). The pipeline pool is nil when not
+	// configured.
+	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.pipelinePool, opt.Addr)
 
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 

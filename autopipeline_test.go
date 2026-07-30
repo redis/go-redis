@@ -4023,3 +4023,42 @@ func TestAsyncAutoPipelineHImportBatchNoHooks(t *testing.T) {
 		}
 	})
 }
+
+// Regression: Publish (and XRead's lag metric) read the command result only
+// to record OTel metrics; with no recorder installed that read awaited
+// execution, silently turning fire-and-forget publishes on the async face
+// into blocking calls. Submission of a window must complete well inside the
+// flush delay — i.e. without waiting for any result.
+func TestAsyncAutoPipelinePublishDoesNotAwait(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  1000,
+		MaxFlushDelay: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	cmds := make([]*redis.IntCmd, 100)
+	for i := range cmds {
+		cmds[i] = ap.Publish(ctx, "ap:pub:chan", i)
+	}
+	submitted := time.Since(start)
+	// Generous bound: submission is pure enqueueing (microseconds); awaiting
+	// even one result would cost the 100ms flush delay.
+	if submitted > 50*time.Millisecond {
+		t.Fatalf("submitting 100 publishes took %v — a result read is awaiting execution", submitted)
+	}
+	for i, cmd := range cmds {
+		if err := cmd.Err(); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+	}
+}

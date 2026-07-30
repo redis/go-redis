@@ -2012,6 +2012,10 @@ func (c *Client) init() {
 	})
 }
 
+// WithTimeout returns a clone sharing the parent's connection pools with the
+// given read/write timeout. The clone caches its own autopipeliners: an
+// AutoPipeline()/AsyncAutoPipeline() created on the clone is NOT stopped by
+// the parent's Close — call Close on the clone's autopipeliner explicitly.
 func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	// Snapshot under the guard: AutoPipeline()/Close() mutate the
 	// autopipeliner fields concurrently, so a bare struct copy of them is a

@@ -483,7 +483,15 @@ directly on your context, and `Do` also bypasses batching with plain
 a dropped connection a batch is retried whole (up to `MaxRetries`), so
 non-idempotent commands may execute twice. Both faces return a cached,
 client-shared instance: the first call's config wins and `Close` stops it for
-all callers.
+all callers. Hooks may read command results (the engine hands a hook running
+on the dispatch goroutine the same view a plain pipeline hook gets), but a
+hook must never issue a command on the same autopipeliner and wait for it —
+the nested command needs the very dispatch slot the hook is holding, and the
+engine only recovers by failing that flush after its 30s permit backstops.
+`Options.Limiter` is consulted once per batch dispatch (as with a manual
+pipeline), not once per command. An autopipeliner created on a
+`WithTimeout`/`WithReadTimeout` clone is not stopped by the parent's `Close` —
+close it explicitly.
 
 ### Advanced Configuration
 
