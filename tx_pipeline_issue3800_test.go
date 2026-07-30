@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -16,6 +17,7 @@ type txQueueErrorServer struct {
 	execSeen  atomic.Int32
 	queueErr  string
 	execReply string
+	resp3     bool
 }
 
 func (s *txQueueErrorServer) Addr() string { return s.ln.Addr().String() }
@@ -34,6 +36,10 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 		}
 
 		if strings.EqualFold(args[0], "hello") {
+			if s.resp3 {
+				_, _ = c.Write([]byte("%7\r\n+server\r\n+redis\r\n+version\r\n$5\r\n7.2.0\r\n+proto\r\n:3\r\n+id\r\n:1\r\n+mode\r\n+standalone\r\n+role\r\n+master\r\n+modules\r\n*0\r\n"))
+				continue
+			}
 			_, _ = c.Write([]byte("-ERR unknown command 'hello'\r\n"))
 			continue
 		}
@@ -79,6 +85,16 @@ func startTxQueueErrorServer(t *testing.T) *txQueueErrorServer {
 		}
 	}()
 	return s
+}
+
+func fakeRESP3PushNotification(notificationType string, args ...string) string {
+	buf := &bytes.Buffer{}
+	fmt.Fprintf(buf, ">%d\r\n", 1+len(args))
+	fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(notificationType), notificationType)
+	for _, arg := range args {
+		fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(arg), arg)
+	}
+	return buf.String()
 }
 
 func TestTxPipelineExecReturnsQueuedRedisError(t *testing.T) {
@@ -247,6 +263,50 @@ func TestTxPipelineExecDrainsExecArrayWithErrorElement(t *testing.T) {
 
 	client := NewClient(&Options{
 		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	err := client.Watch(ctx, func(tx *Tx) error {
+		pipe := tx.TxPipeline()
+		pipe.Set(ctx, "a", 1, 0)
+		pipe.Set(ctx, "b", 1, 0)
+
+		_, err := pipe.Exec(ctx)
+		if err == nil {
+			t.Fatal("Exec() error = nil, want queued Redis error")
+		}
+		if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+			t.Fatalf("Exec() error = %q, want queued Redis error", got)
+		}
+
+		pong, pingErr := tx.Ping(ctx).Result()
+		if pingErr != nil {
+			t.Fatalf("Ping() error = %v, want nil", pingErr)
+		}
+		if pong != "PING" {
+			t.Fatalf("Ping() = %q, want %q", pong, "PING")
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Watch() error = %v, want nil", err)
+	}
+}
+
+func TestTxPipelineExecDrainsExecArrayAfterRESP3Push(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.resp3 = true
+	srv.execReply = fakeRESP3PushNotification("MOVING", "slot", "123") + "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		Protocol:     3,
 		DialTimeout:  time.Second,
 		ReadTimeout:  time.Second,
 		WriteTimeout: time.Second,

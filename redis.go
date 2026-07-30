@@ -1915,6 +1915,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 		}
 		for i := 0; i < n; i++ {
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			}
 			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
 				return err
 			}
