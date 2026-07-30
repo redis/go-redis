@@ -1896,11 +1896,11 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	// Parse number of replies.
 	line, err := rd.ReadLine()
 	if err != nil {
-		if queuedErr != nil && isRedisError(err) {
-			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}
-		}
 		if err == Nil {
 			err = TxFailedErr
+		}
+		if queuedErr != nil && isRedisError(err) {
+			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}
 		}
 		return err
 	}
