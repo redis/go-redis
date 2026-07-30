@@ -13,11 +13,14 @@ jobs:
   test-e2e-mock:
     name: E2E Tests (Mock Proxy)
     runs-on: ubuntu-latest
+    # Run E2E only for pushes or same-repo PRs; skip on fork PRs
+    if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
     strategy:
       fail-fast: false
       matrix:
         go-version:
-          - stable
+          - "1.25.x"
+          - "1.24.x"
 
     steps:
       - name: Checkout code
@@ -59,4 +62,3 @@ jobs:
           docker logs cae-resp-proxy 2>&1 | tail -100
           echo "=== proxy-fault-injector logs ==="
           docker logs proxy-fault-injector 2>&1 | tail -100
-
