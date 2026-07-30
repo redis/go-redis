@@ -239,3 +239,45 @@ func TestTxPipelineExecDrainsExecArrayOnStickyConnection(t *testing.T) {
 		t.Fatalf("Watch() error = %v, want nil", err)
 	}
 }
+
+func TestTxPipelineExecDrainsExecArrayWithErrorElement(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*2\r\n-WRONGTYPE Operation against a key holding the wrong kind of value\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	err := client.Watch(ctx, func(tx *Tx) error {
+		pipe := tx.TxPipeline()
+		pipe.Set(ctx, "a", 1, 0)
+		pipe.Set(ctx, "b", 1, 0)
+
+		_, err := pipe.Exec(ctx)
+		if err == nil {
+			t.Fatal("Exec() error = nil, want queued Redis error")
+		}
+		if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+			t.Fatalf("Exec() error = %q, want queued Redis error", got)
+		}
+
+		pong, pingErr := tx.Ping(ctx).Result()
+		if pingErr != nil {
+			t.Fatalf("Ping() error = %v, want nil", pingErr)
+		}
+		if pong != "PING" {
+			t.Fatalf("Ping() = %q, want %q", pong, "PING")
+		}
+
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Watch() error = %v, want nil", err)
+	}
+}
