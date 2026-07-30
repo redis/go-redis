@@ -1415,7 +1415,7 @@ func runOps(ctx context.Context, c redis.Cmdable, ops []fuzzOp) []string {
 		case "llen":
 			out[i] = res(c.LLen(ctx, op.key).Result())
 		case "expire":
-			out[i] = res(c.Expire(ctx, op.key, 1000).Result())
+			out[i] = res(c.Expire(ctx, op.key, 100*time.Second).Result())
 		case "ttl":
 			// TTL varies with wall clock; normalize to "set"/"unset".
 			d, err := c.TTL(ctx, op.key).Result()
@@ -3661,6 +3661,137 @@ func TestClusterNodeHookShortCircuit(t *testing.T) {
 			if cmd.Err() == nil {
 				t.Fatalf("cmd %d: err = nil, want the node hook's error surfaced", i)
 			}
+		}
+	})
+}
+
+// postNextErrorHook calls next and then returns its own error regardless —
+// ofek's #3867 case: a hook's post-next verdict used to be discarded because
+// the batch had already completed at the innermost seam.
+type postNextErrorHook struct{ err error }
+
+func (h postNextErrorHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h postNextErrorHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		_ = next(ctx, cmd)
+		return h.err
+	}
+}
+func (h postNextErrorHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		_ = next(ctx, cmds)
+		return h.err
+	}
+}
+
+// TestAutoPipelineHookPostNextError pins that an error a hook returns AFTER
+// calling next (successful exec underneath) reaches every command on both
+// faces, across the batch, solo and Do dispatch paths.
+func TestAutoPipelineHookPostNextError(t *testing.T) {
+	errInjected := errors.New("hook injected after next")
+	for _, tc := range []struct {
+		name  string
+		async bool
+	}{{"blocking", false}, {"async", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			defer c.Close()
+			if err := c.Ping(ctx).Err(); err != nil {
+				t.Skipf("no redis: %v", err)
+			}
+			c.AddHook(postNextErrorHook{err: errInjected})
+
+			var ap *redis.AutoPipeliner
+			var err error
+			if tc.async {
+				ap, err = c.AsyncAutoPipeline()
+			} else {
+				ap, err = c.AutoPipeline()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer ap.Close()
+
+			runWithWatchdog(t, 30*time.Second, func() {
+				// Batch path: concurrent commands flush as one pipeline.
+				const N = 16
+				var wg sync.WaitGroup
+				errs := make([]error, N)
+				wg.Add(N)
+				for i := 0; i < N; i++ {
+					go func(i int) {
+						defer wg.Done()
+						errs[i] = ap.Set(ctx, fmt.Sprintf("pn:%d", i), i, 0).Err()
+					}(i)
+				}
+				wg.Wait()
+				for i, err := range errs {
+					if !errors.Is(err, errInjected) {
+						t.Errorf("batch cmd %d: err = %v, want the hook's post-next error", i, err)
+					}
+				}
+				// Solo path (lone command -> Process chain).
+				if err := ap.Set(ctx, "pn:solo", 1, 0).Err(); !errors.Is(err, errInjected) {
+					t.Errorf("solo: err = %v, want the hook's post-next error", err)
+				}
+				// Do (escape hatch).
+				if err := ap.Do(ctx, "PING").Err(); !errors.Is(err, errInjected) {
+					t.Errorf("Do: err = %v, want the hook's post-next error", err)
+				}
+			})
+		})
+	}
+}
+
+// TestAutoPipelineHookPostNextErrorPartialBatch pins the boundary of the
+// post-next rule: when the exec recorded ANY per-command outcome-error
+// (here a redis.Nil), those results are the source of truth — a hook's
+// post-next error must not rewrite them, exactly as a plain pipeline never
+// rewrites per-command results (the hook's verdict goes to the Exec caller,
+// which does not exist here).
+func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
+	errInjected := errors.New("hook injected after next")
+	ctx := context.Background()
+	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := c.FlushDB(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Set(ctx, "pnp:present", "v", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	c.AddHook(postNextErrorHook{err: errInjected})
+
+	// Wide flush window so all three commands deterministically land in ONE
+	// pipeline batch (the rule is per-batch: hooks fire per batch).
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		// One batch: a hit, a miss (redis.Nil), and a write.
+		hit := ap.Get(ctx, "pnp:present")
+		miss := ap.Get(ctx, "pnp:absent")
+		set := ap.Set(ctx, "pnp:new", 1, 0)
+
+		if err := miss.Err(); err != redis.Nil {
+			t.Errorf("miss: err = %v, want redis.Nil kept (exec outcome wins)", err)
+		}
+		if v, err := hit.Result(); err != nil || v != "v" {
+			t.Errorf("hit: v=%q err=%v, want success kept", v, err)
+		}
+		if err := set.Err(); err != nil {
+			t.Errorf("set: err = %v, want success kept", err)
 		}
 	})
 }
