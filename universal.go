@@ -401,6 +401,9 @@ var (
 	_ UniversalClient = (*Client)(nil)
 	_ UniversalClient = (*ClusterClient)(nil)
 	_ UniversalClient = (*Ring)(nil)
+	// AutoPipeliner is a drop-in for the real clients; non-data operations
+	// delegate to the underlying client.
+	_ UniversalClient = (*AutoPipeliner)(nil)
 )
 
 // NewUniversalClient returns a new multi client. The type of the returned client depends

@@ -831,9 +831,6 @@ func (ap *AutoPipeliner) AsyncAutoPipelineWithOptions(config *AutoPipelineOption
 	return ap.pipeliner.AsyncAutoPipelineWithOptions(config)
 }
 
-// validate AutoPipeliner implements UniversalClient (drop-in for the real
-// clients; non-data operations delegate to the underlying client).
-var _ UniversalClient = (*AutoPipeliner)(nil)
 
 // AutoFuture is the handle returned by Submit. Call Wait (or Result on the
 // command after Wait) once the result is needed; it blocks only until the
