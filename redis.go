@@ -1852,12 +1852,25 @@ type txQueuedExecAbortError struct {
 	execErr   error
 }
 
+type txQueuedReadError struct {
+	queuedErr error
+	readErr   error
+}
+
 func (e *txQueuedExecAbortError) Error() string {
 	return e.queuedErr.Error()
 }
 
 func (e *txQueuedExecAbortError) Unwrap() []error {
 	return []error{e.queuedErr, e.execErr}
+}
+
+func (e *txQueuedReadError) Error() string {
+	return fmt.Sprintf("%v (queued command failed: %v)", e.readErr, e.queuedErr)
+}
+
+func (e *txQueuedReadError) Unwrap() error {
+	return e.readErr
 }
 
 // txPipelineReadQueued reads queued replies from the Redis server.
@@ -1898,6 +1911,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	if err != nil {
 		if err == Nil {
 			err = TxFailedErr
+		}
+		if queuedErr != nil && !isRedisError(err) {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 		}
 		if queuedErr != nil && isRedisError(err) {
 			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}

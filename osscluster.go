@@ -2541,6 +2541,9 @@ func (c *ClusterClient) readTxPipelineReplies(
 	line, err := rd.ReadLine()
 	if err != nil {
 		if !isRedisError(err) {
+			if firstFatal != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+			}
 			return c.txReadFatal(err) // IO error
 		}
 		return c.classifyExecError(err, firstRedirect, firstFatal)
