@@ -88,7 +88,7 @@ func (r *metricsRecorder) RecordOperationDuration(
 		// Required attributes
 		attribute.String(AttrDBOperationName, cmd.FullName()),
 		getLibraryVersionAttr(),
-		attribute.Int(AttrRedisClientOperationRetryAttempts, attempts-1), // attempts-1 = retry count
+		attribute.Int(AttrRedisClientOperationRetryAttempts, max(attempts-1, 0)),
 
 		// Recommended attributes
 		attribute.String(AttrDBSystemName, DBSystemRedis),
@@ -151,8 +151,8 @@ func (r *metricsRecorder) RecordPipelineOperationDuration(
 	attrs := []attribute.KeyValue{
 		attribute.String(AttrDBOperationName, operationName),
 		getLibraryVersionAttr(),
-		attribute.Int(AttrRedisClientOperationRetryAttempts, attempts-1), // attempts-1 = retry count
-		attribute.Int(AttrDBOperationBatchSize, cmdCount),                // number of commands in pipeline
+		attribute.Int(AttrRedisClientOperationRetryAttempts, max(attempts-1, 0)),
+		attribute.Int(AttrDBOperationBatchSize, cmdCount), // number of commands in pipeline
 		attribute.String(AttrDBSystemName, DBSystemRedis),
 		attribute.String(AttrServerAddress, serverAddr),
 		attribute.String(AttrDBNamespace, strconv.Itoa(dbIndex)),
