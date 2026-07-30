@@ -2190,6 +2190,8 @@ func (c *Client) Pipeline() Pipeliner {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 	return c.AutoPipelineWithOptions(nil)
 }
@@ -2197,6 +2199,8 @@ func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 // AutoPipelineWithOptions is AutoPipeline with explicit options instead of
 // Options.AutoPipelineOptions / the default. The instance is cached and shared;
 // the first call's config wins.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineOptions {
@@ -2222,6 +2226,8 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 	return c.AsyncAutoPipelineWithOptions(nil)
 }
@@ -2229,6 +2235,8 @@ func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 // AsyncAutoPipelineWithOptions is AsyncAutoPipeline with an explicit config
 // instead of Options.AutoPipelineOptions / the default. The instance is cached
 // and shared; the first call's config wins.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineOptions {

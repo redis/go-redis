@@ -16,6 +16,8 @@ import (
 )
 
 // AutoPipelineOptions configures the autopipelining behavior.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type AutoPipelineOptions struct {
 	// MaxBatchSize is the target batch size: the accumulator stops waiting for
 	// more commands once the shard queue reaches it, so a batch flushes promptly
@@ -143,6 +145,8 @@ func numAutoPipelineShards() int {
 // reaching high throughput via deep pipelines when callers submit in windows.
 // To trade ordering for parallel-batch throughput, set MaxConcurrentBatches > 1
 // together with Unordered: true.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func DefaultAutoPipelineOptions() *AutoPipelineOptions {
 	return &AutoPipelineOptions{
 		MaxBatchSize:         200,
@@ -164,6 +168,8 @@ func DefaultAutoPipelineOptions() *AutoPipelineOptions {
 // per round-trip while latency rises. For maximum throughput use the async face
 // (AsyncAutoPipeline) with a window of in-flight commands (inflight>1); it keeps
 // MaxConcurrentBatches: 1 as well.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
 	return &AutoPipelineOptions{
 		MaxBatchSize:         300,
@@ -376,6 +382,8 @@ func putQueueSlice(slice []Cmder) {
 // callers. Close()ing it stops the shared pipeliner for everyone; a later
 // AutoPipeline() call on the client builds a fresh one. Closing the CLIENT also
 // stops it, but permanently: the getters then return ErrClosed.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 

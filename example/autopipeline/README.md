@@ -1,5 +1,7 @@
 # Automatic pipelining
 
+> **EXPERIMENTAL:** the autopipelining API is subject to change in a future release.
+
 A tour of go-redis **autopipelining** plus a runnable throughput comparison.
 
 Autopipelining batches commands from many goroutines into Redis pipelines

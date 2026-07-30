@@ -384,6 +384,8 @@ type UniversalClient interface {
 	// AutoPipeline / AsyncAutoPipeline return an AutoPipeliner for the concrete
 	// client. Supported on *Client (including sentinel-backed failover clients)
 	// and *ClusterClient; *Ring returns an error (not supported).
+	//
+	// EXPERIMENTAL: this API is subject to change, use with caution.
 	AutoPipeline() (*AutoPipeliner, error)
 	AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error)
 	AsyncAutoPipeline() (*AutoPipeliner, error)

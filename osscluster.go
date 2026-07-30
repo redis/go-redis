@@ -1641,12 +1641,16 @@ func clusterAutoPipelineOptions(cfg *AutoPipelineOptions) *AutoPipelineOptions {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AutoPipeline() (*AutoPipeliner, error) {
 	return c.AutoPipelineWithOptions(nil)
 }
 
 // AutoPipelineWithOptions is AutoPipeline with explicit options instead of
 // ClusterOptions.AutoPipelineOptions / the default. Cached/shared; first call wins.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineOptions {
@@ -1697,12 +1701,16 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 //
 // It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
 // without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
 	return c.AsyncAutoPipelineWithOptions(nil)
 }
 
 // AsyncAutoPipelineWithOptions is AsyncAutoPipeline with an explicit config
 // instead of ClusterOptions.AutoPipelineOptions / the default. Cached/shared.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *ClusterClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
 		func() *AutoPipelineOptions {

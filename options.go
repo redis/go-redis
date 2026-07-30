@@ -260,6 +260,8 @@ type Options struct {
 	// is nil. Pass a config to either method to override. Commands issued
 	// through an autopipeliner are batched into pipelines to cut round-trips
 	// and raise throughput.
+	//
+	// EXPERIMENTAL: this API is subject to change, use with caution.
 	AutoPipelineOptions *AutoPipelineOptions
 
 	// PoolFIFO type of connection pool.

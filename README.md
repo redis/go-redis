@@ -396,6 +396,9 @@ high-throughput / high-load / scale scenarios; at low concurrency a plain
 client is simpler and just as fast. A runnable usage tour and throughput
 comparison live in [`example/autopipeline`](example/autopipeline).
 
+> **EXPERIMENTAL:** the autopipelining API is subject to change in a future
+> release as we gather feedback — pin your go-redis version if you adopt it.
+
 When many goroutines issue commands concurrently, autopipelining batches them
 into Redis pipelines automatically — without you writing any pipeline code. It
 comes in two faces:
