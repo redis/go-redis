@@ -304,8 +304,9 @@ func (opt *ClusterOptions) init() {
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
-//   - TLS options (applied when the scheme is rediss://, or when any TLS file path /
-//     skip-verify option is present — in which case a tls.Config is created):
+//   - TLS options (applied when the scheme is rediss://, or when any TLS file path is
+//     present, or when skip_verify/tls_insecure_skip_verify is true — in which case a
+//     tls.Config is created). A false skip-verify value alone does not enable TLS:
 //   - tls_cert_file, tls_key_file: paths to a client certificate and private key
 //     (PEM); both must be set together
 //   - tls_ca_file: path to a CA certificate file (PEM) used to verify the server
@@ -411,11 +412,9 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 		o.Addrs = append(o.Addrs, net.JoinHostPort(h, p))
 	}
 
-	serverName := ""
-	if len(o.Addrs) > 0 {
-		serverName = tlsServerName(o.Addrs[0])
-	}
-	tlsCfg, err := applyTLSQueryOptions(&q, o.TLSConfig, serverName)
+	// Leave ServerName empty for multi-node TLS so tls.Dial uses each dial addr
+	// as the server name instead of pinning every node to the first seed.
+	tlsCfg, err := applyTLSQueryOptions(&q, o.TLSConfig, "")
 	if err != nil {
 		return nil, err
 	}

@@ -426,6 +426,61 @@ func TestParseURLTLSOptions(t *testing.T) {
 		}
 	})
 
+	t.Run("skip_verify false alone does not enable TLS on redis scheme", func(t *testing.T) {
+		o, err := ParseURL("redis://localhost:123/?skip_verify=false")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig != nil {
+			t.Fatalf("expected nil TLSConfig when skip_verify=false alone, got %+v", o.TLSConfig)
+		}
+	})
+
+	t.Run("tls_insecure_skip_verify false alone does not enable TLS on redis scheme", func(t *testing.T) {
+		o, err := ParseURL("redis://localhost:123/?tls_insecure_skip_verify=false")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig != nil {
+			t.Fatalf("expected nil TLSConfig, got %+v", o.TLSConfig)
+		}
+	})
+
+	t.Run("skip_verify false on rediss keeps TLS without insecure", func(t *testing.T) {
+		o, err := ParseURL("rediss://localhost:123/?skip_verify=false")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig for rediss scheme")
+		}
+		if o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=false")
+		}
+		if o.TLSConfig.ServerName != "localhost" {
+			t.Errorf("ServerName: got %q, want localhost", o.TLSConfig.ServerName)
+		}
+	})
+
+	t.Run("skip_verify false with cert files still enables TLS", func(t *testing.T) {
+		u := "redis://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile) +
+			"&skip_verify=false"
+		o, err := ParseURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig when cert files are provided")
+		}
+		if o.TLSConfig.InsecureSkipVerify {
+			t.Error("expected InsecureSkipVerify=false")
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
+		}
+	})
+
 	t.Run("cert without key", func(t *testing.T) {
 		u := "rediss://localhost:123/?tls_cert_file=" + url.QueryEscape(certFile)
 		_, err := ParseURL(u)
@@ -522,6 +577,40 @@ func TestParseURLTLSOptions(t *testing.T) {
 		}
 		if !o.TLSConfig.InsecureSkipVerify {
 			t.Error("expected InsecureSkipVerify=true")
+		}
+	})
+
+	t.Run("cluster redis scheme TLS leaves ServerName empty for multi-node", func(t *testing.T) {
+		// When TLS is enabled via query params on redis://, do not pin ServerName
+		// to the first seed; tls.Dial fills it from each connection address.
+		o, err := ParseClusterURL("redis://node-a:6379?addr=node-b:6379&tls_insecure_skip_verify=true")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil || !o.TLSConfig.InsecureSkipVerify {
+			t.Fatal("expected TLSConfig with InsecureSkipVerify=true")
+		}
+		if o.TLSConfig.ServerName != "" {
+			t.Errorf("ServerName: got %q, want empty for multi-node", o.TLSConfig.ServerName)
+		}
+	})
+
+	t.Run("cluster rediss keeps scheme ServerName when applying certs", func(t *testing.T) {
+		u := "rediss://localhost:123?tls_cert_file=" + url.QueryEscape(certFile) +
+			"&tls_key_file=" + url.QueryEscape(keyFile)
+		o, err := ParseClusterURL(u)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if o.TLSConfig == nil {
+			t.Fatal("expected TLSConfig")
+		}
+		// rediss:// still sets ServerName from the URL host in setupClusterConn.
+		if o.TLSConfig.ServerName != "localhost" {
+			t.Errorf("ServerName: got %q, want localhost", o.TLSConfig.ServerName)
+		}
+		if len(o.TLSConfig.Certificates) != 1 {
+			t.Fatalf("Certificates: got %d, want 1", len(o.TLSConfig.Certificates))
 		}
 	})
 

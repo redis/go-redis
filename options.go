@@ -493,8 +493,9 @@ func NewDialer(opt *Options) func(context.Context, string, string) (net.Conn, er
 //     URL attributes (scheme, host, userinfo, resp.), query parameters using these
 //     names will be treated as unknown parameters
 //   - unknown parameter names will result in an error
-//   - TLS options (applied when the scheme is rediss://, or when any TLS file path /
-//     skip-verify option is present — in which case a tls.Config is created):
+//   - TLS options (applied when the scheme is rediss://, or when any TLS file path is
+//     present, or when skip_verify/tls_insecure_skip_verify is true — in which case a
+//     tls.Config is created). A false skip-verify value alone does not enable TLS:
 //   - tls_cert_file, tls_key_file: paths to a client certificate and private key
 //     (PEM); both must be set together
 //   - tls_ca_file: path to a CA certificate file (PEM) used to verify the server
@@ -752,9 +753,12 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 //   - tls_ca_file: CA certificate file (PEM) used as RootCAs for server verification.
 //   - tls_insecure_skip_verify / skip_verify: when true, set InsecureSkipVerify.
 //
-// If cfg is nil and any TLS option is present, a new tls.Config is created with
-// ServerName set to serverName and MinVersion TLS 1.2. When the scheme is rediss://
-// the caller already provides a non-nil cfg; file paths then load into that config.
+// If cfg is nil, a new tls.Config is created only when TLS material is present
+// (cert/key/ca files) or when skip-verify is true. A false skip-verify value alone
+// does not enable TLS on redis://. When a new config is created, ServerName is set
+// to serverName (may be empty for multi-endpoint clients so each dial uses the
+// connection host) and MinVersion TLS 1.2. When the scheme is rediss:// the caller
+// already provides a non-nil cfg; file paths then load into that config.
 // Parameters are always consumed from q so they do not appear as unknown options.
 func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (*tls.Config, error) {
 	certFile := q.string("tls_cert_file")
@@ -778,7 +782,19 @@ func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (
 		}
 	}
 
-	if certFile == "" && keyFile == "" && caFile == "" && !hasSkipVerify {
+	// q.bool records parse failures in q.err without returning them.
+	if q.err != nil {
+		return nil, q.err
+	}
+
+	// Material that requires a TLS config: cert paths, CA, or skip_verify=true.
+	// Presence of skip_verify=false alone must not enable TLS on redis://.
+	needsTLS := certFile != "" || keyFile != "" || caFile != "" || skipVerify
+	if !needsTLS {
+		// Explicit skip_verify=false on rediss:// still applies to the existing cfg.
+		if hasSkipVerify && cfg != nil {
+			cfg.InsecureSkipVerify = false
+		}
 		return cfg, nil
 	}
 
@@ -817,10 +833,6 @@ func applyTLSQueryOptions(q *queryOptions, cfg *tls.Config, serverName string) (
 		cfg.InsecureSkipVerify = skipVerify
 	}
 
-	// q.bool records parse failures in q.err without returning them.
-	if q.err != nil {
-		return nil, q.err
-	}
 	return cfg, nil
 }
 
