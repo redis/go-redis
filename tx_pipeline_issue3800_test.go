@@ -17,16 +17,17 @@ import (
 )
 
 type txQueueErrorServer struct {
-	ln                 net.Listener
-	execSeen           atomic.Int32
-	unwatchSeen        atomic.Int32
-	queueErr           string
-	execReply          string
-	resp3              bool
-	holdAfterExec      bool
-	holdAfterQueueErr  bool
-	closeAfterQueueErr bool
-	closeOnSetC        bool
+	ln                  net.Listener
+	execSeen            atomic.Int32
+	unwatchSeen         atomic.Int32
+	queueErr            string
+	execReply           string
+	himportPrepareReply string
+	resp3               bool
+	holdAfterExec       bool
+	holdAfterQueueErr   bool
+	closeAfterQueueErr  bool
+	closeOnSetC         bool
 }
 
 func (s *txQueueErrorServer) Addr() string { return s.ln.Addr().String() }
@@ -56,6 +57,17 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 		if strings.EqualFold(args[0], "multi") {
 			_, _ = c.Write([]byte("+OK\r\n"))
 			continue
+		}
+
+		if strings.EqualFold(args[0], "himport") && len(args) > 1 {
+			switch strings.ToLower(args[1]) {
+			case "prepare":
+				_, _ = c.Write([]byte(s.himportPrepareReply))
+				continue
+			case "set":
+				_, _ = c.Write([]byte("+QUEUED\r\n"))
+				continue
+			}
 		}
 
 		if strings.EqualFold(args[0], "unwatch") {
@@ -97,9 +109,10 @@ func startTxQueueErrorServer(t *testing.T) *txQueueErrorServer {
 		t.Fatalf("failed to listen: %v", err)
 	}
 	s := &txQueueErrorServer{
-		ln:        ln,
-		queueErr:  "-ERR in transaction context, keys must in same slot\r\n",
-		execReply: "-EXECABORT Transaction discarded because of previous errors.\r\n",
+		ln:                  ln,
+		queueErr:            "-ERR in transaction context, keys must in same slot\r\n",
+		execReply:           "-EXECABORT Transaction discarded because of previous errors.\r\n",
+		himportPrepareReply: "+OK\r\n",
 	}
 	go func() {
 		for {
@@ -633,6 +646,100 @@ func TestClusterTxPipelineReturnsQueuedErrorAfterExecArray(t *testing.T) {
 	}
 	if cmds[1].Err() == nil || !strings.Contains(cmds[1].Err().Error(), "ERR in transaction context, keys must in same slot") {
 		t.Fatalf("cmd[1] err = %v, want queued Redis error", cmds[1].Err())
+	}
+}
+
+func TestTxPipelineExecQueuedErrorPreservesHImportAfterBatch(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.himportPrepareReply = "-ERR duplicate field name in fieldset\r\n"
+	srv.execReply = "*1\r\n-ERR no such fieldset\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	client.himport.register("fs", []string{"f1"})
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	himportSet := pipe.HImportSet(ctx, "k", "fs", "v1")
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error", got)
+	}
+	if himportSet.Err() == nil || !strings.Contains(himportSet.Err().Error(), "ERR duplicate field name in fieldset") {
+		t.Fatalf("HImportSet err = %v, want injected prepare root cause", himportSet.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestClusterTxPipelineReturnsRedirectAfterExecArray(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txRetryMoved {
+		t.Fatalf("outcome.kind = %v, want txRetryMoved", outcome.kind)
+	}
+	if outcome.addr != "127.0.0.1:7001" {
+		t.Fatalf("outcome.addr = %q, want %q", outcome.addr, "127.0.0.1:7001")
+	}
+	if outcome.err == nil || !strings.Contains(outcome.err.Error(), "MOVED 123 127.0.0.1:7001") {
+		t.Fatalf("outcome.err = %v, want MOVED root cause", outcome.err)
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
 	}
 }
 

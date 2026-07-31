@@ -1827,6 +1827,9 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
+			if err == nil || isRedisError(err) {
+				c.himportAfterBatch(cn, injected, trimmedCmds)
+			}
 			setCmdsErr(cmds, err)
 			return err
 		}
@@ -1942,11 +1945,26 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if err != nil {
 			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 		}
+		hasHImport := false
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
 		for i := 0; i < n; i++ {
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
-			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
+			if hasHImport {
+				err := cmds[i].readReply(rd)
+				cmds[i].SetErr(err)
+				if err != nil && !isRedisError(err) {
+					return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+				}
+				continue
+			}
+			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 		}

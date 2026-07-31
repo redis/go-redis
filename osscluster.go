@@ -2573,6 +2573,28 @@ func (c *ClusterClient) readTxPipelineReplies(
 		setCmdsErr(cmds, firstFatal)
 		return &txOutcome{kind: txFatal, err: firstFatal}
 	}
+	if firstRedirect != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			parseErr := fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+			setCmdsErr(cmds, parseErr)
+			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
+		}
+		for i := 0; i < n; i++ {
+			c.txProcessPush(ctx, node, cn, rd)
+			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
+				return c.txReadFatal(err)
+			}
+		}
+		switch {
+		case firstRedirect.moved:
+			return &txOutcome{kind: txRetryMoved, err: firstRedirect.err, addr: firstRedirect.addr}
+		case firstRedirect.ask:
+			return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr}
+		case firstRedirect.tryAgain:
+			return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
+		}
+	}
 
 	// Success: read the N command results.
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
