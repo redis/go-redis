@@ -80,3 +80,50 @@ func TestFastSemaphoreAcquireTimerRaceOldTimerChan(t *testing.T) {
 	s := NewFastSemaphore(1)
 	hammerAcquireReleaseRace(t, s.TryAcquire, s.Acquire, s.Release)
 }
+
+// hammerStaleTimerFire pins pooled-timer hygiene: every iteration times an
+// Acquire out (firing the pooled timer), then immediately runs a
+// long-budget Acquire that must win via a released token — a stale fire
+// leaking through the pool would surface as an instant spurious timeout.
+func hammerStaleTimerFire(t *testing.T, tryAcquire func() bool, acquire func(context.Context, time.Duration, error) error, release func()) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 0; i < 200; i++ {
+		if !tryAcquire() {
+			t.Fatal("token missing at loop start")
+		}
+		if err := acquire(ctx, time.Millisecond, errSemTestTimeout); err != errSemTestTimeout {
+			t.Fatalf("iter %d: want timeout, got %v", i, err)
+		}
+		go func() {
+			time.Sleep(2 * time.Millisecond)
+			release()
+		}()
+		if err := acquire(ctx, 10*time.Second, errSemTestTimeout); err != nil {
+			t.Fatalf("iter %d: spurious timeout from a stale pooled-timer fire: %v", i, err)
+		}
+		release()
+	}
+}
+
+func TestFIFOSemaphoreNoStaleTimerFire(t *testing.T) {
+	s := NewFIFOSemaphore(1)
+	hammerStaleTimerFire(t, s.TryAcquire, s.Acquire, s.Release)
+}
+
+func TestFastSemaphoreNoStaleTimerFire(t *testing.T) {
+	s := NewFastSemaphore(1)
+	hammerStaleTimerFire(t, s.TryAcquire, s.Acquire, s.Release)
+}
+
+func TestFIFOSemaphoreNoStaleTimerFireOldTimerChan(t *testing.T) {
+	t.Setenv("GODEBUG", "asynctimerchan=1")
+	s := NewFIFOSemaphore(1)
+	hammerStaleTimerFire(t, s.TryAcquire, s.Acquire, s.Release)
+}
+
+func TestFastSemaphoreNoStaleTimerFireOldTimerChan(t *testing.T) {
+	t.Setenv("GODEBUG", "asynctimerchan=1")
+	s := NewFastSemaphore(1)
+	hammerStaleTimerFire(t, s.TryAcquire, s.Acquire, s.Release)
+}

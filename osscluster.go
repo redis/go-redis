@@ -1922,6 +1922,15 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
+	// This call runs on a per-node fan-out goroutine, so register it as an
+	// executor of every deferred-face batch among cmds: a NODE-level hook
+	// (OnNewNode — redisotel's tracing) reading a result before next() must
+	// get the not-yet-executed view from the accessor guards instead of
+	// blocking on a batch only this call chain completes (reproduced as a
+	// permanent wedge with a rediscmd-shaped Err() peek).
+	unregister := registerBatchExecutors(cmds)
+	defer unregister()
+
 	// executed guards against a node-level hook short-circuiting (returning
 	// without calling next): the inner callback then never runs, and without
 	// surfacing the chain's error the cluster pipeline would report success

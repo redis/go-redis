@@ -273,6 +273,99 @@ type apBatch struct {
 	// not-yet-executed view — what a plain pipeline hook sees — instead of a
 	// self-deadlock.
 	dispGid atomic.Int64
+	// nodeGids registers cluster per-node executor goroutines: the cluster
+	// pipeline fans a batch out to one goroutine per node, and each runs the
+	// NODE client's own hook chain (OnNewNode hooks — redisotel's tracing
+	// lives there), which the single dispGid slot cannot vouch for. A node
+	// hook reading a result there would block on a batch that completes only
+	// after its own return — reproduced as a permanent wedge with a
+	// rediscmd-shaped Err() peek. Guarded by nodeMu; entered/left once per
+	// node call, consulted only on the guards' slow path (done still open).
+	nodeMu   sync.Mutex
+	nodeGids []int64
+}
+
+// enterNodeDispatch registers the calling goroutine as an executor of this
+// batch for the duration of a cluster node call; the returned func
+// unregisters it. Registered goroutines get the same treatment as the
+// dispatcher in the accessor guards: result reads return the current view
+// instead of self-deadlocking on the batch's own completion signal.
+func (b *apBatch) enterNodeDispatch() func() {
+	gid := curGoroutineID()
+	b.nodeMu.Lock()
+	b.nodeGids = append(b.nodeGids, gid)
+	b.nodeMu.Unlock()
+	return func() {
+		b.nodeMu.Lock()
+		for i, g := range b.nodeGids {
+			if g == gid {
+				b.nodeGids[i] = b.nodeGids[len(b.nodeGids)-1]
+				b.nodeGids = b.nodeGids[:len(b.nodeGids)-1]
+				break
+			}
+		}
+		b.nodeMu.Unlock()
+	}
+}
+
+// isDispatchGoroutine reports whether gid is currently executing this batch:
+// the flusher/dispatch goroutine or a registered cluster node executor.
+func (b *apBatch) isDispatchGoroutine(gid int64) bool {
+	if g := b.dispGid.Load(); g != 0 && g == gid {
+		return true
+	}
+	b.nodeMu.Lock()
+	defer b.nodeMu.Unlock()
+	for _, g := range b.nodeGids {
+		if g == gid {
+			return true
+		}
+	}
+	return false
+}
+
+// noopUnregister is registerBatchExecutors' zero-batch result, shared so the
+// plain-pipeline path stays allocation-free.
+var noopUnregister = func() {}
+
+// registerBatchExecutors marks the calling goroutine as an executor of every
+// deferred-face batch among cmds (plain pipeline commands carry none) and
+// returns the combined unregister. The cluster pipeline calls it around each
+// node's hook chain.
+func registerBatchExecutors(cmds []Cmder) func() {
+	var undo []func()
+	var seenFirst *apBatch
+	var seenMore map[*apBatch]struct{}
+	for _, cmd := range cmds {
+		bc, ok := cmd.(interface{ readyBatch() *apBatch })
+		if !ok {
+			continue
+		}
+		b := bc.readyBatch()
+		if b == nil || b == seenFirst {
+			continue
+		}
+		if seenFirst == nil {
+			seenFirst = b
+		} else {
+			if seenMore == nil {
+				seenMore = make(map[*apBatch]struct{}, 2)
+			}
+			if _, dup := seenMore[b]; dup {
+				continue
+			}
+			seenMore[b] = struct{}{}
+		}
+		undo = append(undo, b.enterNodeDispatch())
+	}
+	if len(undo) == 0 {
+		return noopUnregister
+	}
+	return func() {
+		for _, u := range undo {
+			u()
+		}
+	}
 }
 
 func newAPBatch() *apBatch { return &apBatch{done: make(chan struct{})} }
@@ -929,7 +1022,7 @@ func (f AutoFuture) Wait() error {
 		// the batch's own dispatch goroutine waiting a future pre-next()
 		// would block a channel only its goroutine can close. Give it the
 		// not-yet-executed view instead.
-		if gid := f.batch.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
+		if f.batch.isDispatchGoroutine(curGoroutineID()) {
 			return f.cmd.rawErr()
 		}
 		<-f.batch.done
@@ -958,7 +1051,7 @@ func (f AutoFuture) WaitContext(ctx context.Context) error {
 	case <-f.batch.done:
 		return f.cmd.Err()
 	default:
-		if gid := f.batch.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
+		if f.batch.isDispatchGoroutine(curGoroutineID()) {
 			return f.cmd.rawErr() // see Wait: dispatch-goroutine self-deadlock guard
 		}
 	}

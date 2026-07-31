@@ -418,12 +418,13 @@ func (cmd *baseCmd) await() {
 		return
 	default:
 	}
-	if gid := b.dispGid.Load(); gid != 0 && gid == curGoroutineID() {
-		// A hook on the batch's own dispatch goroutine is reading this
+	if b.isDispatchGoroutine(curGoroutineID()) {
+		// A hook on one of the batch's own executor goroutines (the
+		// dispatcher, or a cluster per-node executor) is reading this
 		// command's result BEFORE next() has executed it. Blocking would
-		// self-deadlock (only this goroutine completes the batch); return the
-		// not-yet-executed state instead — the same view a plain pipeline
-		// hook has before next().
+		// self-deadlock (the batch completes only after that goroutine
+		// returns); return the not-yet-executed state instead — the same
+		// view a plain pipeline hook has before next().
 		return
 	}
 	<-b.done
@@ -435,6 +436,11 @@ func (cmd *baseCmd) await() {
 // reading errors while a batch is being executed does not deadlock on the
 // batch's own completion signal.
 func (cmd *baseCmd) rawErr() error { return cmd.err }
+
+// readyBatch exposes the deferred-face batch gating this command (nil for
+// synchronous commands) to the cluster fan-out, which registers its per-node
+// goroutines as executors of every batch they carry.
+func (cmd *baseCmd) readyBatch() *apBatch { return cmd.ready.Load() }
 
 var _ Cmder = (*Cmd)(nil)
 
