@@ -1051,9 +1051,9 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		p.Remove(ctx, cn, err)
 		return
 	}
-	// Use the stricter CSC drainer semantics here so a partially buffered RESP3
-	// push frame never gets re-pooled as a clean connection.
-	if _, err := c.drainPushNotifications(cn); err != nil {
+	// Release-time draining keeps the caller's handler context/client identity,
+	// but any drain error is still treated as connection-fatal.
+	if _, err := c.drainPushNotificationsOnRelease(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
 		p.Remove(ctx, cn, err)
 		return
@@ -1066,6 +1066,53 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		cn.MarkCscReadPending()
 	}
 	p.Put(ctx, cn)
+}
+
+func (c *baseClient) drainPushNotificationsOnRelease(ctx context.Context, cn *pool.Conn) (processorSucceeded bool, err error) {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return false, nil
+	}
+	readPending := cn.TakeCscReadPending()
+	periodicReadPending := cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval)
+	socketData, socketErr := cn.CheckForData()
+	if socketErr != nil {
+		return false, socketErr
+	}
+	hasData := cn.HasBufferedData() || socketData
+	if !readPending && !periodicReadPending && !hasData {
+		return false, nil
+	}
+	if !hasData {
+		err := cn.WithReaderHardDeadline(cscDrainProbeReadCap, func(rd *proto.Reader) error {
+			_, err := rd.Peek(1)
+			return err
+		})
+		if err != nil {
+			if isTimeout, hasTimeoutFlag := isTimeoutError(err); isTimeout && hasTimeoutFlag {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		if processor, ok := c.pushProcessor.(*push.Processor); ok {
+			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+		}
+		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	})
+	if err != nil {
+		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+			if isBadConn(err, false, c.opt.Addr) {
+				return true, err
+			}
+			return true, nil
+		}
+		internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (removing conn): %v", err)
+		return true, err
+	}
+	return true, nil
 }
 
 func (c *baseClient) withConn(

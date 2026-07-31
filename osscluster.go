@@ -2207,12 +2207,13 @@ const (
 // when the read loop exited before consuming all N+2 replies, leaving bytes
 // on the wire.
 type txOutcome struct {
-	kind           txOutcomeKind
-	err            error
-	addr           string
-	execErr        error
-	himportedCount int
-	unreadReplies  bool
+	kind             txOutcomeKind
+	err              error
+	addr             string
+	execErr          error
+	himportedIndexes map[int]struct{}
+	readCount        int
+	unreadReplies    bool
 }
 
 // txRedirect records the first queue-stage redirect (MOVED/ASK/TRYAGAIN) seen
@@ -2465,8 +2466,18 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return nil
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
-		if outcome != nil && outcome.himportedCount > 0 {
-			node.Client.himportAfterBatch(cn, injected, cmds)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			filtered := make([]Cmder, len(cmds))
+			for i, cmd := range cmds {
+				if _, ok := cmd.(himportCmder); !ok {
+					filtered[i] = cmd
+					continue
+				}
+				if _, ok := outcome.himportedIndexes[i]; ok {
+					filtered[i] = cmd
+				}
+			}
+			node.Client.himportAfterBatch(cn, injected, filtered)
 		}
 		return nil
 	})
@@ -2576,7 +2587,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
 		}
 		hasHImport := false
-		himportedCount := 0
+		himportedIndexes := make(map[int]struct{})
 		for _, cmd := range cmds {
 			if _, ok := cmd.(himportCmder); ok {
 				hasHImport = true
@@ -2585,25 +2596,29 @@ func (c *ClusterClient) readTxPipelineReplies(
 		}
 		for i := 0; i < n; i++ {
 			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
-				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
 			}
 			if hasHImport && i < len(cmds) {
 				if _, ok := cmds[i].(himportCmder); ok {
-					himportedCount++
+					himportedIndexes[i] = struct{}{}
 				}
 				err := cmds[i].readReply(rd)
 				cmds[i].SetErr(err)
 				if err != nil && !isRedisError(err) {
-					return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+					return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
 				}
 				continue
 			}
 			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
-				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
 			}
 		}
-		setCmdsErr(cmds, firstFatal)
-		return &txOutcome{kind: txFatal, err: firstFatal, himportedCount: himportedCount}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		setCmdsErr(cmds[readCount:], firstFatal)
+		return &txOutcome{kind: txFatal, err: firstFatal, himportedIndexes: himportedIndexes, readCount: readCount}
 	}
 	if firstRedirect != nil {
 		n, err := strconv.Atoi(string(line[1:]))
@@ -2616,22 +2631,22 @@ func (c *ClusterClient) readTxPipelineReplies(
 			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
 				switch {
 				case firstRedirect.moved:
-					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
 				case firstRedirect.ask:
-					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
 				case firstRedirect.tryAgain:
-					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, unreadReplies: true}
 				}
 				return c.txReadFatal(err)
 			}
 			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
 				switch {
 				case firstRedirect.moved:
-					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
 				case firstRedirect.ask:
-					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
 				case firstRedirect.tryAgain:
-					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, unreadReplies: true}
 				}
 				return c.txReadFatal(err)
 			}
@@ -2650,7 +2665,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 
 	// Success: read the N command results.
 	hasHImport := false
-	himportedCount := 0
+	himportedIndexes := make(map[int]struct{})
 	for _, cmd := range cmds {
 		if _, ok := cmd.(himportCmder); ok {
 			hasHImport = true
@@ -2661,13 +2676,13 @@ func (c *ClusterClient) readTxPipelineReplies(
 		return c.txReadFatal(err) // IO error mid-results
 	}
 	if hasHImport {
-		for _, cmd := range cmds {
+		for i, cmd := range cmds {
 			if _, ok := cmd.(himportCmder); ok {
-				himportedCount++
+				himportedIndexes[i] = struct{}{}
 			}
 		}
 	}
-	return &txOutcome{kind: txSuccess, himportedCount: himportedCount}
+	return &txOutcome{kind: txSuccess, himportedIndexes: himportedIndexes, readCount: len(cmds)}
 }
 
 func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {

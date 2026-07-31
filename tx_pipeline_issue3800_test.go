@@ -148,6 +148,13 @@ type partialPushErrorProcessor struct{ *push.Processor }
 
 type partialPushTimeoutProcessor struct{ *push.Processor }
 
+type handlerContextRecordingProcessor struct {
+	*push.Processor
+	ctx    context.Context
+	client interface{}
+	err    error
+}
+
 func (p partialPushErrorProcessor) ProcessPendingNotifications(
 	_ context.Context, _ push.NotificationHandlerContext, rd *proto.Reader,
 ) error {
@@ -190,6 +197,33 @@ func (p partialPushTimeoutProcessor) ProcessPendingNotifications(
 		}
 	}
 	return &net.OpError{Op: "read", Err: timeoutErrorStub{}}
+}
+
+func (p *handlerContextRecordingProcessor) ProcessPendingNotifications(
+	ctx context.Context, handlerCtx push.NotificationHandlerContext, rd *proto.Reader,
+) error {
+	b, err := rd.Peek(1)
+	if err != nil {
+		return err
+	}
+	if b[0] != proto.RespPush {
+		return nil
+	}
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+	}
+	p.ctx = ctx
+	p.client = handlerCtx.Client
+	if p.err != nil {
+		return p.err
+	}
+	return nil
 }
 
 func TestTxPipelineExecReturnsQueuedRedisError(t *testing.T) {
@@ -826,7 +860,7 @@ func TestClusterTxPipelineQueuedErrorPreservesHImportAfterBatch(t *testing.T) {
 			return err
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himportedCount > 0 {
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -948,7 +982,7 @@ func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
 	var outcome *txOutcome
 	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himportedCount > 0 {
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -1188,7 +1222,7 @@ func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *
 			return err
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himportedCount > 0 {
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -1207,6 +1241,86 @@ func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *
 	himportDiscard := cmds[1].(*HImportDiscardCmd)
 	if himportDiscard.Err() == nil || !strings.Contains(himportDiscard.Err().Error(), "ERR in transaction context, keys must in same slot") {
 		t.Fatalf("HImportDiscard err = %v, want queued Redis error", himportDiscard.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestClusterTxPipelineQueuedErrorPartialHImportReadPreservesReadSideEffects(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	nodeClient.himport.register("fs", []string{"f1"})
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewHImportPrepareCmd(ctx, "fs", "f1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+		NewHImportDiscardCmd(ctx, "fs"),
+	}
+	injected := nodeClient.himportInjectedCmds(ctx, cn, cmds)
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		if err := nodeClient.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			return err
+		}
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			nodeClient.himportAfterBatch(cn, injected, cmds)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if outcome.readCount != 1 {
+		t.Fatalf("outcome.readCount = %d, want 1", outcome.readCount)
+	}
+	prepare := cmds[0].(*HImportPrepareCmd)
+	if prepare.Err() != nil {
+		t.Fatalf("HImportPrepare err = %v, want nil", prepare.Err())
+	}
+	if _, ok := nodeClient.himport.lookup("fs"); !ok {
+		t.Fatal("fieldset fs unexpectedly missing from registry")
+	}
+	discard := cmds[2].(*HImportDiscardCmd)
+	if discard.Err() == nil || !strings.Contains(discard.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("HImportDiscard err = %v, want queued Redis error", discard.Err())
 	}
 	if srv.execSeen.Load() != 1 {
 		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
@@ -1451,6 +1565,37 @@ func TestTxQueuedReadErrorPreservesHelpersAndBadConn(t *testing.T) {
 	}
 	if !isBadConn(forceBad, false, "127.0.0.1:6379") {
 		t.Fatalf("isBadConn(%v) = false, want true for forced bad conn", forceBad)
+	}
+}
+
+func TestReleaseConnDrainPreservesHandlerContext(t *testing.T) {
+	cp := &releaseRecordingPool{}
+	proc := &handlerContextRecordingProcessor{Processor: push.NewProcessor()}
+	type ctxKey string
+	key := ctxKey("req")
+	ctx := context.WithValue(context.Background(), key, "value")
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		connPool:      cp,
+		pushProcessor: proc,
+	}
+
+	cn, cleanup := newReaderBufferedPushConn(t, invalidateFrame("foo"))
+	defer cleanup()
+
+	c.releaseConn(ctx, cn, nil)
+
+	if got := proc.ctx.Value(key); got != "value" {
+		t.Fatalf("handler ctx value = %v, want %q", got, "value")
+	}
+	if _, ok := proc.client.(cscHandlerClient); ok {
+		t.Fatalf("handler client = %T, want regular client context during release", proc.client)
+	}
+	if proc.client == nil {
+		t.Fatal("handler client = nil, want non-nil client")
+	}
+	if cp.removes != 0 || cp.puts != 1 {
+		t.Fatalf("releaseConn() pool ops = removes:%d puts:%d, want clean put", cp.removes, cp.puts)
 	}
 }
 
