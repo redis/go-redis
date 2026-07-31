@@ -4564,3 +4564,35 @@ func TestAPBlockingContextCancelDoesNotCancelExecution(t *testing.T) {
 		client.Del(ctx, "apbctx:k")
 	})
 }
+
+// Regression: a blocking command (BLPOP) submitted on the DEFERRED face must
+// not stall the submitter — the call returns immediately and only the result
+// accessors block (exactly like Do). Previously the diverted path executed
+// inline, so an async ap.BLPop froze the caller for the full block duration.
+func TestAsyncAutoPipelineBlockingCommandDoesNotStallSubmit(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		start := time.Now()
+		cmd := ap.BLPop(ctx, 500*time.Millisecond, "apblk:empty")
+		submitted := time.Since(start)
+		if submitted > 100*time.Millisecond {
+			t.Fatalf("async BLPop stalled the submitter for %v — must return immediately", submitted)
+		}
+		if err := cmd.Err(); err != redis.Nil { // times out empty -> Nil
+			t.Fatalf("BLPop result: %v, want redis.Nil", err)
+		}
+		if elapsed := time.Since(start); elapsed < 400*time.Millisecond {
+			t.Fatalf("BLPop completed in %v — did not actually block server-side", elapsed)
+		}
+	})
+}

@@ -45,7 +45,9 @@ var _ = Describe("RedisTimeseries commands", Label("timeseries"), func() {
 
 			AfterEach(func() {
 				if client != nil {
-					rawClient.FlushDB(ctx)
+					// Flush through the SUBJECT: ordered after queued writes,
+					// executed by closeSubject's drain (see json_test.go).
+					client.FlushDB(ctx)
 					closeSubject()
 				}
 			})

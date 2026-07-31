@@ -721,7 +721,7 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 		_ = ap.pipeliner.Process(ctx, cmd)
 		return cmd
 	}
-	ap.runOutsidePipeline(ctx, cmd)
+	_ = ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
 
@@ -735,10 +735,10 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // deferred close is the panic backstop. Not tracked by batchWg — a call
 // racing Close simply fails with a closed-pool error like any other
 // in-flight command on a closing client.
-func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) {
+func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
 	if ap.blocking {
 		_ = ap.pipeliner.Process(ctx, cmd)
-		return
+		return completedBatch
 	}
 	b := newAPBatch()
 	cmd.setReady(b)
@@ -761,6 +761,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) {
 		// post-next rewrites and suppressions are all honored.
 		cmd.SetErr(err)
 	}()
+	return b
 }
 
 // DoRaw mirrors Do for raw RESP access: AutoPipeliner embeds cmdable, so
@@ -778,7 +779,7 @@ func (ap *AutoPipeliner) DoRaw(ctx context.Context, args ...interface{}) *RawCmd
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	ap.runOutsidePipeline(ctx, cmd)
+	_ = ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
 
@@ -795,7 +796,7 @@ func (ap *AutoPipeliner) DoRawWriteTo(ctx context.Context, w io.Writer, args ...
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
-	ap.runOutsidePipeline(ctx, cmd)
+	_ = ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
 
@@ -986,15 +987,21 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	}
 	if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) {
 		// Blocking commands (and the conn-hostile ones above) are executed
-		// directly, outside the pipeline. They still must respect a closed
-		// AutoPipeliner: enqueue() rejects on the batched path, so mirror
-		// that here instead of running after Close().
+		// directly, outside the pipeline — via runOutsidePipeline, which
+		// keeps each face's call shape: the blocking face runs the command
+		// synchronously, the deferred face runs it on its own goroutine so
+		// this call returns immediately and the result accessors block (a
+		// BLPOP submitted on the async face must not stall the submitter,
+		// exactly like Do). They still must respect a closed AutoPipeliner:
+		// enqueue() rejects on the batched path, so mirror that here instead
+		// of running after Close().
 		if ap.closed.Load() {
 			cmd.SetErr(ErrClosed)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
-		_ = ap.pipeliner.Process(ctx, cmd)
-		return finish(AutoFuture{cmd: cmd, batch: completedBatch})
+		// runOutsidePipeline sets the command ready itself on the deferred
+		// face; the returned batch completes when the command has executed.
+		return AutoFuture{cmd: cmd, batch: ap.runOutsidePipeline(ctx, cmd)}
 	}
 	return finish(AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)})
 }
