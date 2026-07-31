@@ -2613,10 +2613,17 @@ func (c *ClusterClient) readTxPipelineReplies(
 	}
 
 	// Success: read the N command results.
+	hasHImport := false
+	for _, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); ok {
+			hasHImport = true
+			break
+		}
+	}
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
 		return c.txReadFatal(err) // IO error mid-results
 	}
-	return &txOutcome{kind: txSuccess}
+	return &txOutcome{kind: txSuccess, himported: hasHImport}
 }
 
 func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {

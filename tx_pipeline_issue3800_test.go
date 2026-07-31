@@ -853,6 +853,66 @@ func TestClusterTxPipelineReturnsRedirectAfterExecArray(t *testing.T) {
 	}
 }
 
+func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewHImportPrepareCmd(ctx, "fs", "f1"),
+	}
+	injected := nodeClient.himportInjectedCmds(ctx, cn, cmds)
+	if len(injected) != 0 {
+		t.Fatalf("injected cmds = %d, want 0", len(injected))
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		if outcome != nil && outcome.himported {
+			nodeClient.himportAfterBatch(cn, injected, cmds)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txSuccess {
+		t.Fatalf("outcome.kind = %v, want txSuccess", outcome.kind)
+	}
+	if _, ok := nodeClient.himport.lookup("fs"); !ok {
+		t.Fatal("fieldset fs missing from registry after successful HIMPORT PREPARE")
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
 func TestTxPipelineExecQueuedErrorHImportArrayLenMismatchDoesNotPanic(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.himportPrepareReply = "-ERR duplicate field name in fieldset\r\n"
