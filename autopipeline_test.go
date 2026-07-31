@@ -4230,6 +4230,7 @@ func TestAsyncAutoPipelineScanIterator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer ap.Close()
 
 	const n = 33
 	for i := 0; i < n; i++ {

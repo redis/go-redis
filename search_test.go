@@ -4402,6 +4402,9 @@ var _ = Describe("RediSearch commands Resp 3", Label("search"), func() {
 
 	AfterEach(func() {
 		Expect(closeSubject()).NotTo(HaveOccurred())
+		// client2 is spec-local like the subject; leaking it across specs
+		// accumulates pools and goroutines over the suite.
+		Expect(client2.Close()).NotTo(HaveOccurred())
 	})
 
 	It("should handle FTAggregate with RESP3", Label("search", "ftcreate", "ftaggregate"), func() {

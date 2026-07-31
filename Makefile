@@ -77,8 +77,8 @@ test.ci.skip-vectorsets:
 # newUniversalSubject in main_test.go). Requires the docker env
 # (make docker.start).
 #
-# The focus lists every parametrized suite explicitly (Describe names differ
-# in case). Skipped on purpose: DDL Commands (needs the cluster topology the
+# The focus covers every parametrized suite (some via the Commands/BitCount
+# substrings — Describe names differ in case). Skipped on purpose: DDL Commands (needs the cluster topology the
 # lightweight BeforeSuite doesn't build), HotKeys Commands (same), and
 # AutoPipeline Blocking Commands (the AP suite itself — running it through an
 # AP subject would nest engines).
