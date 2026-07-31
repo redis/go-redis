@@ -475,7 +475,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
 		PipelinePoolSize:        opt.PipelinePoolSize,
 		DisableIdentity:         opt.DisableIdentity,
-		DisableIndentity:        opt.DisableIdentity,
+		DisableIndentity:        opt.DisableIndentity,
 		IdentitySuffix:          opt.IdentitySuffix,
 		FailingTimeoutSeconds:   opt.FailingTimeoutSeconds,
 		TLSConfig:               opt.TLSConfig,
