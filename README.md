@@ -481,7 +481,8 @@ you can batch by hand.
 Caveats: a command's context is not honored once it is queued (batches execute
 on the autopipeliner's own context) — use a plain client for per-command
 deadlines. Blocking commands (`BLPOP`, `WAIT`, ...) are never batched and run
-directly on your context, and `Do` also bypasses batching with plain
+directly on your context — as are `SHUTDOWN` and `MONITOR`, which would
+poison a shared pipeline connection — and `Do` also bypasses batching with plain
 `Client.Do` semantics — prefer the typed methods (`ap.Set`, `ap.Get`, ...). On
 a dropped connection a batch is retried whole (up to `MaxRetries`), so
 non-idempotent commands may execute twice. Both faces return a cached,

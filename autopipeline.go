@@ -900,12 +900,23 @@ func (f AutoFuture) WaitContext(ctx context.Context) error {
 // Cmd returns the underlying command (call Wait first before reading results).
 func (f AutoFuture) Cmd() Cmder { return f.cmd }
 
+// runsOutsidePipeline reports commands that must never ride a shared
+// pipeline connection: SHUTDOWN terminates the server before replying, so
+// its batchmates would all fail with EOF and the batch would be retried
+// against a dead server; MONITOR rebinds the connection into a monitor
+// stream, poisoning every reply after it. They execute directly on their
+// own pooled connection, like blocking commands.
+func runsOutsidePipeline(name string) bool {
+	return name == "shutdown" || name == "monitor"
+}
+
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
-	if cmd.readTimeout() != nil {
-		// Blocking commands are executed directly, outside the pipeline. They
-		// still must respect a closed AutoPipeliner: enqueue() rejects on the
-		// batched path, so mirror that here instead of running after Close().
+	if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) {
+		// Blocking commands (and the conn-hostile ones above) are executed
+		// directly, outside the pipeline. They still must respect a closed
+		// AutoPipeliner: enqueue() rejects on the batched path, so mirror
+		// that here instead of running after Close().
 		if ap.closed.Load() {
 			cmd.SetErr(ErrClosed)
 			return AutoFuture{cmd: cmd, batch: completedBatch}

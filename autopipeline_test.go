@@ -4062,3 +4062,81 @@ func TestAsyncAutoPipelinePublishDoesNotAwait(t *testing.T) {
 		}
 	}
 }
+
+// routeRecordingHook records which dispatch path each command takes: names
+// seen by the pipeline hook rode a batch; names seen by the process hook ran
+// directly on their own connection.
+type routeRecordingHook struct {
+	mu       *sync.Mutex
+	pipeline map[string]bool
+	direct   map[string]bool
+}
+
+func (h routeRecordingHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h routeRecordingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		h.mu.Lock()
+		h.direct[cmd.Name()] = true
+		h.mu.Unlock()
+		return next(ctx, cmd)
+	}
+}
+func (h routeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.mu.Lock()
+		for _, cmd := range cmds {
+			h.pipeline[cmd.Name()] = true
+		}
+		h.mu.Unlock()
+		return next(ctx, cmds)
+	}
+}
+
+// Regression: SHUTDOWN must never ride a shared pipeline batch — the server
+// exits before replying, so every batchmate would fail with EOF and the
+// whole batch would be retried against a dead server (review finding by
+// cxljs on the pool PR). It runs directly, like a blocking command. The
+// client points at a closed port so nothing real is shut down: only the
+// routing is asserted, via hooks that record which path each command took.
+func TestAutoPipelineShutdownRunsOutsidePipeline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := ln.Addr().String()
+	ln.Close() // guaranteed-refused port
+
+	hook := routeRecordingHook{mu: &sync.Mutex{}, pipeline: map[string]bool{}, direct: map[string]bool{}}
+	client := redis.NewClient(&redis.Options{Addr: deadAddr, MaxRetries: -1})
+	defer client.Close()
+	client.AddHook(hook)
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  10,
+		MaxFlushDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	set := ap.Set(context.Background(), "k", "v", 0)
+	down := ap.Shutdown(context.Background())
+	mon := ap.Monitor(context.Background(), make(chan string, 1))
+	_ = set.Err()  // dial refused — only routing matters
+	_ = down.Err() // dial refused — only routing matters
+	_ = mon.Err()  // dial refused — only routing matters
+
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	for _, name := range []string{"shutdown", "monitor"} {
+		if !hook.direct[name] {
+			t.Fatalf("%s did not take the direct (outside-pipeline) path", name)
+		}
+		if hook.pipeline[name] {
+			t.Fatalf("%s rode a pipeline batch — it would poison its batchmates", name)
+		}
+	}
+	if !hook.pipeline["set"] && !hook.direct["set"] {
+		t.Fatal("SET was never dispatched at all")
+	}
+}
