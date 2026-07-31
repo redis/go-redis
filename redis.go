@@ -1869,8 +1869,8 @@ func (e *txQueuedReadError) Error() string {
 	return fmt.Sprintf("%v (queued command failed: %v)", e.readErr, e.queuedErr)
 }
 
-func (e *txQueuedReadError) Unwrap() error {
-	return e.readErr
+func (e *txQueuedReadError) Unwrap() []error {
+	return []error{e.queuedErr, e.readErr}
 }
 
 // txPipelineReadQueued reads queued replies from the Redis server.

@@ -576,3 +576,23 @@ func TestClusterTxPipelineReturnsQueuedErrorAfterExecArray(t *testing.T) {
 		t.Fatalf("cmd[1] err = %v, want queued Redis error", cmds[1].Err())
 	}
 }
+
+func TestTxQueuedReadErrorPreservesHelpersAndBadConn(t *testing.T) {
+	err := &txQueuedReadError{
+		queuedErr: proto.NewOOMError("OOM command not allowed when used memory > 'maxmemory'"),
+		readErr:   &net.OpError{Op: "read", Err: timeoutErrorStub{}},
+	}
+
+	if !IsOOMError(err) {
+		t.Fatalf("IsOOMError(%v) = false, want true", err)
+	}
+	if !isBadConn(err, false, "127.0.0.1:6379") {
+		t.Fatalf("isBadConn(%v) = false, want true", err)
+	}
+}
+
+type timeoutErrorStub struct{}
+
+func (timeoutErrorStub) Error() string   { return "i/o timeout" }
+func (timeoutErrorStub) Timeout() bool   { return true }
+func (timeoutErrorStub) Temporary() bool { return false }

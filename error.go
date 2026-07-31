@@ -190,6 +190,11 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 		return false
 	}
 
+	var txReadErr *txQueuedReadError
+	if errors.As(err, &txReadErr) {
+		return isBadConn(txReadErr.readErr, allowTimeout, addr)
+	}
+
 	// Check for context errors (works with wrapped errors)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
