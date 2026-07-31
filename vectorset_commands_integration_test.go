@@ -62,10 +62,12 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			AfterEach(func() {
 				if client != nil {
-					// Flush through the SUBJECT: ordered after queued writes,
-					// executed by closeSubject's drain (see json_test.go).
-					client.FlushDB(ctx)
-					closeSubject()
+					// Flush through the SUBJECT: ordered after queued writes
+					// (see json_test.go); awaiting Err() forces it to execute, and
+					// both steps are asserted so a failed teardown cannot silently
+					// leak state into later specs.
+					Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+					Expect(closeSubject()).NotTo(HaveOccurred())
 				}
 			})
 

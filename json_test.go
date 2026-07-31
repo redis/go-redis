@@ -36,11 +36,13 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 	AfterEach(func() {
 		if client != nil {
 			// Flush through the SUBJECT: on the async face the flush is
-			// ordered after any queued writes, and closeSubject's drain
-			// guarantees it executes — so no late fire-and-forget command can
-			// survive the flush, and the flush itself runs on a live client.
-			client.FlushDB(ctx)
-			closeSubject()
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 
@@ -811,11 +813,13 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 	AfterEach(func() {
 		if client != nil {
 			// Flush through the SUBJECT: on the async face the flush is
-			// ordered after any queued writes, and closeSubject's drain
-			// guarantees it executes — so no late fire-and-forget command can
-			// survive the flush, and the flush itself runs on a live client.
-			client.FlushDB(ctx)
-			closeSubject()
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 

@@ -28,10 +28,14 @@ var errSemTestTimeout = errors.New("sem test timeout")
 func hammerAcquireReleaseRace(t *testing.T, tryAcquire func() bool, acquire func(context.Context, time.Duration, error) error, release func()) {
 	t.Helper()
 	ctx := context.Background()
+	iters := 200000
+	if testing.Short() {
+		iters = 2000
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 200000; i++ {
+		for i := 0; i < iters; i++ {
 			if !tryAcquire() {
 				t.Error("token missing at loop start")
 				return
@@ -88,7 +92,11 @@ func TestFastSemaphoreAcquireTimerRaceOldTimerChan(t *testing.T) {
 func hammerStaleTimerFire(t *testing.T, tryAcquire func() bool, acquire func(context.Context, time.Duration, error) error, release func()) {
 	t.Helper()
 	ctx := context.Background()
-	for i := 0; i < 200; i++ {
+	iters := 200
+	if testing.Short() {
+		iters = 20
+	}
+	for i := 0; i < iters; i++ {
 		if !tryAcquire() {
 			t.Fatal("token missing at loop start")
 		}
