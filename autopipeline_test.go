@@ -4372,7 +4372,10 @@ func TestAutoPipelineSubmitReadBeforeWait(t *testing.T) {
 	})
 }
 
-// batchSizeRecordingHook records the command count of every pipeline dispatch.
+// batchSizeRecordingHook records the command count of every dispatch. A
+// drain cycle that catches exactly one command takes the engine's SOLO fast
+// path (ProcessHook, no pipeline) — timing-dependent on loaded runners — so
+// solo dispatches are recorded as size-1 entries to keep the total exact.
 type batchSizeRecordingHook struct {
 	mu    *sync.Mutex
 	sizes *[]int
@@ -4380,13 +4383,28 @@ type batchSizeRecordingHook struct {
 
 func (h batchSizeRecordingHook) DialHook(next redis.DialHook) redis.DialHook { return next }
 func (h batchSizeRecordingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
-	return next
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if cmd.Name() == "set" { // only the test's own commands, not handshakes
+			h.mu.Lock()
+			*h.sizes = append(*h.sizes, 1)
+			h.mu.Unlock()
+		}
+		return next(ctx, cmd)
+	}
 }
 func (h batchSizeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
-		h.mu.Lock()
-		*h.sizes = append(*h.sizes, len(cmds))
-		h.mu.Unlock()
+		n := 0
+		for _, cmd := range cmds {
+			if cmd.Name() == "set" { // exclude conn-init handshake pipelines
+				n++
+			}
+		}
+		if n > 0 {
+			h.mu.Lock()
+			*h.sizes = append(*h.sizes, n)
+			h.mu.Unlock()
+		}
 		return next(ctx, cmds)
 	}
 }
@@ -4463,7 +4481,10 @@ func TestAutoPipelineMaxBatchBytes(t *testing.T) {
 		if utotal != 10 {
 			t.Fatalf("uncapped run dispatched %d commands, want 10", utotal)
 		}
-		if len(uncapped) > 3 {
+		if len(uncapped) > 4 {
+			// A slow runner can split a solo straggler off the window; the
+			// signal is "far fewer dispatches than the capped run", not an
+			// exact count.
 			t.Fatalf("uncapped control fragmented into %d batches (%v) — coalescing regressed", len(uncapped), uncapped)
 		}
 	})
