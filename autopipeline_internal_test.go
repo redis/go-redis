@@ -2,11 +2,16 @@
 package redis
 
 import (
+	"bytes"
 	"context"
+	"net"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // internalTestRedisAddr mirrors main_test.go's redisAddr for the internal
@@ -449,5 +454,78 @@ func TestClusterAutoPipelineOptionsShardDefault(t *testing.T) {
 	}
 	if explicit.contentSharded {
 		t.Fatalf("caller config mutated: contentSharded set on the original")
+	}
+}
+
+// pushInjectionScript builds a RESP3 stream: a push frame wedged between two
+// bulk-string replies. A push-blind reader consumes the push frame AS the
+// first command's reply and shifts every subsequent reply by one.
+func pushInjectionScript() []byte {
+	return []byte(">2\r\n$8\r\nTESTPUSH\r\n$4\r\ndata\r\n" + // push frame (no handler: consumed+ignored)
+		"$2\r\nv1\r\n" + // reply for cmd 1
+		"$2\r\nv2\r\n") // reply for cmd 2
+}
+
+func pushInjectionConn(t *testing.T) *pool.Conn {
+	t.Helper()
+	server, client := net.Pipe()
+	t.Cleanup(func() { server.Close(); client.Close() })
+	return pool.NewConn(client)
+}
+
+// TestStandalonePipelineReadDrainsPushMidBatch pins the standalone pipeline
+// read loop: a RESP3 push notification arriving mid-batch must be drained
+// before each reply read, not consumed as a command's reply (which would
+// silently misassociate every following reply).
+func TestStandalonePipelineReadDrainsPushMidBatch(t *testing.T) {
+	opt := &Options{Addr: "127.0.0.1:1", Protocol: 3}
+	client := NewClient(opt)
+	defer client.Close()
+
+	ctx := context.Background()
+	cn := pushInjectionConn(t)
+	rd := proto.NewReader(bytes.NewReader(pushInjectionScript()))
+
+	cmd1 := NewStringCmd(ctx, "get", "k1")
+	cmd2 := NewStringCmd(ctx, "get", "k2")
+	if err := client.baseClient.pipelineReadCmds(ctx, cn, rd, []Cmder{cmd1, cmd2}); err != nil {
+		t.Fatalf("pipelineReadCmds: %v", err)
+	}
+	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {
+		t.Fatalf("replies misassociated: cmd1=%q cmd2=%q, want v1/v2 (push frame consumed as a reply?)",
+			cmd1.Val(), cmd2.Val())
+	}
+}
+
+// TestClusterPipelineReadDrainsPushMidBatch pins the CLUSTER pipeline read
+// loop — the one the autopipeliner routes all cluster traffic through, and
+// the only reader that was push-blind before this PR: without the drain, a
+// maintnotifications MOVING frame mid-batch shifted every subsequent reply
+// by one for existing ClusterClient.Pipeline() users too.
+func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
+	copt := &ClusterOptions{Addrs: []string{"127.0.0.1:1"}, Protocol: 3}
+	cc := NewClusterClient(copt)
+	defer cc.Close()
+
+	nodeClient := NewClient(&Options{Addr: "127.0.0.1:1", Protocol: 3})
+	defer nodeClient.Close()
+	node := &clusterNode{Client: nodeClient}
+
+	ctx := context.Background()
+	cn := pushInjectionConn(t)
+	rd := proto.NewReader(bytes.NewReader(pushInjectionScript()))
+
+	cmd1 := NewStringCmd(ctx, "get", "k1")
+	cmd2 := NewStringCmd(ctx, "get", "k2")
+	failed := newCmdsMap()
+	if err := cc.pipelineReadCmds(ctx, node, cn, rd, []Cmder{cmd1, cmd2}, failed); err != nil {
+		t.Fatalf("pipelineReadCmds: %v", err)
+	}
+	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {
+		t.Fatalf("replies misassociated: cmd1=%q cmd2=%q, want v1/v2 (push frame consumed as a reply?)",
+			cmd1.Val(), cmd2.Val())
+	}
+	if len(failed.m) != 0 {
+		t.Fatalf("unexpected remapped commands: %d", len(failed.m))
 	}
 }

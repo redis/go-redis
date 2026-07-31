@@ -35,8 +35,10 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	AfterEach(func() {
 		if client != nil {
-			rawClient.FlushDB(ctx)
+			// Close the subject FIRST: it drains queued async writes, so the
+			// flush below cannot be undone by a late fire-and-forget command.
 			closeSubject()
+			rawClient.FlushDB(ctx)
 		}
 	})
 
@@ -806,8 +808,10 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 
 	AfterEach(func() {
 		if client != nil {
-			rawClient.FlushDB(ctx)
+			// Close the subject FIRST: it drains queued async writes, so the
+			// flush below cannot be undone by a late fire-and-forget command.
 			closeSubject()
+			rawClient.FlushDB(ctx)
 		}
 	})
 

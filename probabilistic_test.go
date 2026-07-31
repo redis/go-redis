@@ -41,8 +41,10 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 
 			AfterEach(func() {
 				if client != nil {
-					rawClient.FlushDB(ctx)
+					// Close the subject FIRST: it drains queued async writes,
+					// so the flush cannot be undone by a late command.
 					closeSubject()
+					rawClient.FlushDB(ctx)
 				}
 			})
 

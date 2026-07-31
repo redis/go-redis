@@ -377,7 +377,11 @@ type baseCmd struct {
 	// slotCache memoizes the cluster slot once computed, so the cluster
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
-	// distinguishable from unset.
+	// distinguishable from unset. A plain field is safe by construction: it
+	// is written at most once, on the submitting goroutine BEFORE the command
+	// is published to a stripe queue (the stripe mutex is the happens-before
+	// edge to the flusher that later reads it). Do not write it from any
+	// other point in the command's life.
 	slotCache uint16
 
 	// ready, when non-nil, is the batch whose done channel closes once the

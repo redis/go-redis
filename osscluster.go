@@ -1677,6 +1677,24 @@ func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 // commands are already rejected from pipelines, so only single-node commands
 // reach here.
 func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
+	// Reject commands whose request policy cannot ride a pipeline (ReqAllNodes/
+	// ReqAllShards/ReqMultiShard) at submit, BEFORE they can join a merged
+	// batch: mapCmdsByNode fails a whole mapping on such a command (user
+	// pipelines are all-or-nothing), and one autopipeline caller must not be
+	// able to poison unrelated callers' batches. Rejecting here also keeps the
+	// lone-command fast path consistent with batched dispatch — the command is
+	// refused regardless of what it happens to coalesce with.
+	ap.setPreflight(func(ctx context.Context, cmd Cmder) error {
+		if c.cmdInfoResolver == nil {
+			return nil
+		}
+		if policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd); policy != nil && !policy.CanBeUsedInPipeline() {
+			return fmt.Errorf(
+				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+			)
+		}
+		return nil
+	})
 	const slots = 16384
 	n := ap.numShards()
 	ap.setShardFn(func(cmd Cmder) int {
@@ -1812,15 +1830,18 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 			}
 			if policy != nil && !policy.CanBeUsedInPipeline() {
-				// Fail ONLY the offending command, not the whole mapping: a merged
-				// autopipeline batch carries many unrelated callers' commands, and
-				// one caller enqueueing a non-pipelineable command (e.g. a
-				// multi-shard MGET under the dynamic resolver) must not error
-				// everyone else's batch.
-				cmd.SetErr(fmt.Errorf(
+				// All-or-nothing: a user Pipeline() relies on the whole batch
+				// either dispatching or failing before anything executes, so a
+				// non-pipelineable command fails the entire mapping pre-dispatch.
+				// Autopipeline batches never reach here with such a command: the
+				// cluster face rejects them at submit (see the preflight installed
+				// by installAutoPipelineSharding), so one caller's bad command
+				// cannot poison a merged batch.
+				err := fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
-				))
-				continue
+				)
+				setCmdsErr(cmds, err)
+				return err
 			}
 			slot := c.cmdSlot(cmd, -1)
 			var node *clusterNode
@@ -1855,15 +1876,18 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 		}
 		if policy != nil && !policy.CanBeUsedInPipeline() {
-			// Fail ONLY the offending command, not the whole mapping: a merged
-			// autopipeline batch carries many unrelated callers' commands, and
-			// one caller enqueueing a non-pipelineable command (e.g. a
-			// multi-shard MGET under the dynamic resolver) must not error
-			// everyone else's batch.
-			cmd.SetErr(fmt.Errorf(
+			// All-or-nothing: a user Pipeline() relies on the whole batch
+			// either dispatching or failing before anything executes, so a
+			// non-pipelineable command fails the entire mapping pre-dispatch.
+			// Autopipeline batches never reach here with such a command: the
+			// cluster face rejects them at submit (see the preflight installed
+			// by installAutoPipelineSharding), so one caller's bad command
+			// cannot poison a merged batch.
+			err := fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
-			))
-			continue
+			)
+			setCmdsErr(cmds, err)
+			return err
 		}
 		slot := c.cmdSlot(cmd, -1)
 		var node *clusterNode
@@ -1928,7 +1952,7 @@ func (c *ClusterClient) processPipelineNode(
 		// Deliberate abort by a hook: set the error, do not remap for retry
 		// (a retry would re-run the same hook).
 		if err == nil {
-			err = errHookShortCircuit
+			err = ErrHookShortCircuit
 		}
 		setCmdsErr(cmds, err)
 		return
@@ -2373,7 +2397,7 @@ func (c *ClusterClient) processTxPipelineNode(
 		// A node-level hook returned without calling next: surface its
 		// verdict instead of a generic no-outcome failure.
 		if chainErr == nil {
-			chainErr = errHookShortCircuit
+			chainErr = ErrHookShortCircuit
 		}
 		outcome = &txOutcome{kind: txFatal, err: chainErr}
 	}

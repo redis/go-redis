@@ -7,7 +7,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// skipWithoutRedis skips the test when no server answers at redisAddr, so a
+// skipWithoutRedis skips the test when no server answers at apTestAddr(), so a
 // unit-only run doesn't turn missing integration infrastructure into a
 // failure. It probes with a DEFAULT-options client, not the test's configured
 // one: probing with the client under test would convert a regression in the
@@ -15,10 +15,10 @@ import (
 // skip while the server is up.
 func skipWithoutRedis(t *testing.T, ctx context.Context, _ *redis.Client) {
 	t.Helper()
-	probe := redis.NewClient(&redis.Options{Addr: redisAddr})
+	probe := redis.NewClient(&redis.Options{Addr: apTestAddr()})
 	defer probe.Close()
 	if err := probe.Ping(ctx).Err(); err != nil {
-		t.Skipf("no redis at %s: %v", redisAddr, err)
+		t.Skipf("no redis at %s: %v", apTestAddr(), err)
 	}
 }
 
@@ -30,7 +30,7 @@ func TestPipelineBufferSizes(t *testing.T) {
 
 	// Create client with custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:                    redisAddr,
+		Addr:                    apTestAddr(),
 		ReadBufferSize:          64 * 1024,  // 64 KiB for regular connections
 		WriteBufferSize:         64 * 1024,  // 64 KiB for regular connections
 		PipelineReadBufferSize:  512 * 1024, // 512 KiB for pipeline connections
@@ -87,7 +87,7 @@ func TestNoPipelinePool(t *testing.T) {
 
 	// Create client WITHOUT custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:            redisAddr,
+		Addr:            apTestAddr(),
 		ReadBufferSize:  64 * 1024, // 64 KiB for all connections
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 		// No PipelineReadBufferSize or PipelineWriteBufferSize
@@ -128,7 +128,7 @@ func TestPipelinePoolStats(t *testing.T) {
 
 	// Create client with custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:                    redisAddr,
+		Addr:                    apTestAddr(),
 		ReadBufferSize:          64 * 1024,  // 64 KiB for regular connections
 		WriteBufferSize:         64 * 1024,  // 64 KiB for regular connections
 		PipelineReadBufferSize:  512 * 1024, // 512 KiB for pipeline connections
@@ -179,7 +179,7 @@ func TestNoPipelinePoolStats(t *testing.T) {
 
 	// Create client WITHOUT custom pipeline buffer sizes
 	client := redis.NewClient(&redis.Options{
-		Addr:            redisAddr,
+		Addr:            apTestAddr(),
 		ReadBufferSize:  64 * 1024, // 64 KiB for all connections
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 	})

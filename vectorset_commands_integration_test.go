@@ -62,8 +62,10 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			AfterEach(func() {
 				if client != nil {
-					rawClient.FlushDB(ctx)
+					// Close the subject FIRST: it drains queued async writes,
+					// so the flush cannot be undone by a late command.
 					closeSubject()
+					rawClient.FlushDB(ctx)
 				}
 			})
 

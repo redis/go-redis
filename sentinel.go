@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -591,6 +592,12 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		pipelineOpt := opt.clone()
 		if opt.PipelineReadBufferSize > 0 {
 			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+			// Same clamp Options.init applies to the main pool: RESP3 push
+			// parsing needs a minimum read buffer, and a tiny pipeline reader
+			// would break push-notification handling on pipeline conns.
+			if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+				pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
+			}
 		}
 		if opt.PipelineWriteBufferSize > 0 {
 			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize

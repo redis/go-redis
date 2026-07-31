@@ -1057,6 +1057,12 @@ func (c *baseClient) withConn(
 // withPipelineConn executes fn with a connection from the pipeline pool when
 // one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
 // otherwise it falls back to the regular pool via withConn.
+// withPipelineConn is withConn/releaseConn for the DEDICATED pipeline pool.
+// It deliberately mirrors their semantics (Limiter accounting, init/acquire
+// error paths, bad-conn removal, push-notification drain on release) — when
+// touching either path, keep the twin in sync; they have already drifted
+// once (a functionally-inert Limiter-ordering divergence and a missed
+// drain-error removal, both since realigned).
 func (c *baseClient) withPipelineConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) (retErr error) {
@@ -1113,6 +1119,14 @@ func (c *baseClient) withPipelineConn(
 			// connection to the pool.
 			if err := c.processPushNotifications(ctx, cn); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+				if isBadConn(err, false, c.opt.Addr) {
+					// Mirror releaseConn: a mid-frame read failure may leave
+					// the reply stream desynchronized, and the next pipeline
+					// on this conn would consume leftover push bytes as
+					// command replies. The conn cannot be reused.
+					c.pipelinePool.Remove(ctx, cn, err)
+					return
+				}
 			}
 			c.pipelinePool.Put(ctx, cn)
 		}
@@ -1925,6 +1939,12 @@ func NewClient(opt *Options) *Client {
 		pipelineOpt := opt.clone()
 		if opt.PipelineReadBufferSize > 0 {
 			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+			// Same clamp Options.init applies to the main pool: RESP3 push
+			// parsing needs a minimum read buffer, and a tiny pipeline reader
+			// would break push-notification handling on pipeline conns.
+			if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+				pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
+			}
 		}
 		if opt.PipelineWriteBufferSize > 0 {
 			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
@@ -2058,7 +2078,14 @@ func (c *Client) Close() error {
 		}
 	}
 	if c.cscLifecycleOwner != nil {
-		if err := c.cscLifecycleOwner.baseClient.Close(); err != nil && firstErr == nil {
+		// Delegate through the OWNER's *Client.Close, not its baseClient:
+		// the owner may hold cached autopipeliners of its own whose flusher
+		// goroutines must stop with the shared pools, and its
+		// autopipelinerClosed flag must flip so later owner getters cannot
+		// resurrect a pipeliner against closed pools. Client.Close is
+		// idempotent through baseClient.Close, so an owner also closed
+		// directly is fine.
+		if err := c.cscLifecycleOwner.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return firstErr

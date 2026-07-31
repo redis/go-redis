@@ -22,6 +22,7 @@ import (
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
+	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 // apTestAddr is the redis address for the plain go tests in this file:
@@ -4251,5 +4252,315 @@ func TestAsyncAutoPipelineScanIterator(t *testing.T) {
 		if got != n {
 			t.Fatalf("scanned %d keys, want %d", got, n)
 		}
+	})
+}
+
+// markNonPipelinable installs a resolver marking one command name with a
+// fan-out request policy (ReqMultiShard), which cannot ride a pipeline.
+func markNonPipelinable(c *redis.ClusterClient, name string) {
+	c.SetCommandInfoResolver(redis.NewCommandInfoResolver(func(ctx context.Context, cmd redis.Cmder) *routing.CommandPolicy {
+		if cmd.Name() == name {
+			return &routing.CommandPolicy{Request: routing.ReqMultiShard}
+		}
+		return nil
+	}))
+}
+
+// TestClusterPipelineNonPipelinableAllOrNothing pins user Pipeline() atomicity:
+// a command whose request policy cannot ride a pipeline fails the WHOLE batch
+// before anything dispatches — existing users rely on all-or-nothing (review
+// decision on #3942; an earlier revision executed the rest and returned an
+// error, silently landing partial writes).
+func TestClusterPipelineNonPipelinableAllOrNothing(t *testing.T) {
+	ctx := context.Background()
+	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+	markNonPipelinable(c, "getdel")
+
+	_ = c.Del(ctx, "aon:{a}:1", "aon:{a}:2").Err()
+
+	pipe := c.Pipeline()
+	set1 := pipe.Set(ctx, "aon:{a}:1", "v1", 0)
+	bad := pipe.GetDel(ctx, "aon:{a}:marked")
+	set2 := pipe.Set(ctx, "aon:{a}:2", "v2", 0)
+	_, execErr := pipe.Exec(ctx)
+	if execErr == nil {
+		t.Fatal("Exec must fail when the batch contains a non-pipelinable command")
+	}
+	for i, cmd := range []redis.Cmder{set1, bad, set2} {
+		if cmd.Err() == nil {
+			t.Fatalf("cmd %d: err = nil, want the policy error on every command (all-or-nothing)", i)
+		}
+	}
+	// Nothing may have executed.
+	if n, _ := c.Exists(ctx, "aon:{a}:1", "aon:{a}:2").Result(); n != 0 {
+		t.Fatalf("writes landed despite the failed batch: %d keys exist", n)
+	}
+}
+
+// TestAPClusterNonPipelinableRejectedAtSubmit pins the autopipeline side of the
+// same decision: the offending command is rejected at submit (before it can
+// join a merged batch), while unrelated batch-mates execute normally — one
+// caller's bad command must not poison everyone else's batch.
+func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
+	ctx := context.Background()
+	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+	markNonPipelinable(c, "getdel")
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		set1 := ap.Set(ctx, "apnp:{a}:1", "v1", 0)
+		bad := ap.GetDel(ctx, "apnp:{a}:marked")
+		set2 := ap.Set(ctx, "apnp:{a}:2", "v2", 0)
+
+		if err := bad.Err(); err == nil || !strings.Contains(err.Error(), "cannot pipeline command") {
+			t.Fatalf("marked command: err = %v, want the request-policy rejection", err)
+		}
+		if err := set1.Err(); err != nil {
+			t.Fatalf("batch-mate set1 poisoned: %v", err)
+		}
+		if err := set2.Err(); err != nil {
+			t.Fatalf("batch-mate set2 poisoned: %v", err)
+		}
+	})
+}
+
+// Regression: reading a Submit()-ed command's result accessors BEFORE calling
+// Wait() must be safe — Submit now marks the command ready like every other
+// async entry point, so Err()/Val() self-gate through await(). Previously
+// this was a silent data race with the dispatch goroutine (this test trips
+// -race on the unfixed code).
+func TestAutoPipelineSubmitReadBeforeWait(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		for i := 0; i < 200; i++ {
+			cmd := redis.NewStatusCmd(ctx, "set", fmt.Sprintf("subrace:%d", i), i)
+			_ = ap.Submit(ctx, cmd) // future deliberately ignored
+			// Misuse-but-must-be-safe: read the command directly, no Wait().
+			if err := cmd.Err(); err != nil {
+				t.Fatalf("cmd %d: %v", i, err)
+			}
+		}
+	})
+}
+
+// batchSizeRecordingHook records the command count of every pipeline dispatch.
+type batchSizeRecordingHook struct {
+	mu    *sync.Mutex
+	sizes *[]int
+}
+
+func (h batchSizeRecordingHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h batchSizeRecordingHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (h batchSizeRecordingHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.mu.Lock()
+		*h.sizes = append(*h.sizes, len(cmds))
+		h.mu.Unlock()
+		return next(ctx, cmds)
+	}
+}
+
+// TestAutoPipelineMaxBatchBytes pins the byte-volume flush cap: with large
+// payloads and a small MaxBatchBytes, a window that would otherwise coalesce
+// into one huge burst is split into several bounded batches (300 x 64KiB in
+// one batch is ~19MB written down a single connection before any reply is
+// read — enough to stall a constrained link past its write deadline).
+func TestAutoPipelineMaxBatchBytes(t *testing.T) {
+	ctx := context.Background()
+	const payload = 64 * 1024
+	value := strings.Repeat("x", payload)
+
+	run := func(maxBytes int) []int {
+		client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+		defer client.Close()
+		if err := client.Ping(ctx).Err(); err != nil {
+			t.Skipf("no redis: %v", err)
+		}
+		var mu sync.Mutex
+		var sizes []int
+		client.AddHook(batchSizeRecordingHook{mu: &mu, sizes: &sizes})
+
+		ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+			MaxBatchSize:  100,
+			MaxFlushDelay: 30 * time.Millisecond, // would coalesce everything without the byte cap
+			MaxBatchBytes: maxBytes,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cmds := make([]*redis.StatusCmd, 10)
+		for i := range cmds {
+			cmds[i] = ap.Set(ctx, fmt.Sprintf("mbb:%d", i), value, 0)
+		}
+		for i, cmd := range cmds {
+			if err := cmd.Err(); err != nil {
+				t.Fatalf("cmd %d: %v", i, err)
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]int, len(sizes))
+		copy(out, sizes)
+		return out
+	}
+
+	runWithWatchdog(t, 60*time.Second, func() {
+		capped := run(150 * 1024) // ~2 x 64KiB per batch
+		total, maxBatch := 0, 0
+		for _, n := range capped {
+			total += n
+			if n > maxBatch {
+				maxBatch = n
+			}
+		}
+		if total != 10 {
+			t.Fatalf("capped run dispatched %d commands, want 10", total)
+		}
+		if len(capped) < 4 {
+			t.Fatalf("capped run used %d batches (%v), want the byte cap to split into >= 4", len(capped), capped)
+		}
+		if maxBatch > 3 {
+			t.Fatalf("capped run had a %d-command batch (%v) — cap not enforced", maxBatch, capped)
+		}
+
+		uncapped := run(0)
+		utotal := 0
+		for _, n := range uncapped {
+			utotal += n
+		}
+		if utotal != 10 {
+			t.Fatalf("uncapped run dispatched %d commands, want 10", utotal)
+		}
+		if len(uncapped) > 3 {
+			t.Fatalf("uncapped control fragmented into %d batches (%v) — coalescing regressed", len(uncapped), uncapped)
+		}
+	})
+}
+
+// panicPipelineHook panics inside the pipeline hook chain when armed — a
+// stand-in for a hook or command-encoder panic during dispatch.
+type panicPipelineHook struct{ armed *atomic.Bool }
+
+func (h panicPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h panicPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (h panicPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if h.armed.Load() {
+			panic("boom: injected dispatch panic")
+		}
+		return next(ctx, cmds)
+	}
+}
+
+// TestAutoPipelinePanicInDispatchWakesWaiters pins the engine's panic
+// containment: a panic inside the dispatch (hook chain / exec) must not kill
+// the process — on a plain client it unwinds into the caller, but the
+// engine's dispatch goroutines have no caller. Every waiter must wake with a
+// descriptive error, and the engine must stay usable afterwards.
+func TestAutoPipelinePanicInDispatchWakesWaiters(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	var armed atomic.Bool
+	client.AddHook(panicPipelineHook{armed: &armed})
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		armed.Store(true)
+		cmds := make([]*redis.StatusCmd, 5)
+		for i := range cmds {
+			cmds[i] = ap.Set(ctx, fmt.Sprintf("pan:%d", i), i, 0)
+		}
+		for i, cmd := range cmds {
+			err := cmd.Err() // must wake, not hang, not crash
+			if err == nil || !strings.Contains(err.Error(), "panic during dispatch") {
+				t.Fatalf("cmd %d: err = %v, want the recovered-panic error", i, err)
+			}
+		}
+		armed.Store(false)
+
+		// Engine survived: the next round executes normally.
+		if err := ap.Set(ctx, "pan:after", "ok", 0).Err(); err != nil {
+			t.Fatalf("engine unusable after recovered panic: %v", err)
+		}
+	})
+}
+
+// TestAPBlockingContextCancelDoesNotCancelExecution is the blocking-face twin
+// of TestAPContextCancelDoesNotCancelExecution: cancelling the caller's ctx
+// concurrently with a blocking-face call must not cancel the command's
+// execution — the batch runs on the engine's context, and the call returns
+// the executed result.
+func TestAPBlockingContextCancelDoesNotCancelExecution(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		cctx, cancel := context.WithCancel(ctx)
+		go func() {
+			// Cancel while the call is (likely) queued/flushing; the engine
+			// dispatches on its own context, so this must be irrelevant.
+			time.Sleep(time.Millisecond)
+			cancel()
+		}()
+		if err := ap.Set(cctx, "apbctx:k", "v", 0).Err(); err != nil {
+			t.Fatalf("blocking call should return the executed result after ctx cancel, got %v", err)
+		}
+		if v, _ := client.Get(ctx, "apbctx:k").Result(); v != "v" {
+			t.Fatalf("value not persisted: %q", v)
+		}
+		client.Del(ctx, "apbctx:k")
 	})
 }

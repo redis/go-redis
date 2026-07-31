@@ -403,7 +403,7 @@ func BenchmarkDispatchPath(b *testing.B) {
 // 4KiB and ~90x at 64KiB (the payload is decoded into the caller's buffer
 // instead of a freshly allocated string; allocs/op only goes 11 -> 10), with
 // throughput at parity (the fast path reads payload+CRLF in a single socket
-// read when the buffer has cap >= n+2, as allocated here). The per-goroutine
+// read when the buffer has len >= n+2, as allocated here). The per-goroutine
 // read buffers are allocated OUTSIDE the timed region so B/op reflects the
 // command path, not the harness.
 func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
@@ -430,6 +430,11 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 						MaxBatchSize:         300,
 						MaxConcurrentBatches: 80,
 						Unordered:            true,
+						// Bound each pipeline write burst: 300 x 64KiB in one
+						// batch is ~19MB down a single conn before any reply
+						// is read — enough to stall a constrained CI runner
+						// past its write deadline.
+						MaxBatchBytes: 2 << 20,
 					},
 				})
 				defer c.Close()
@@ -458,13 +463,13 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 				base, extra := b.N/goroutines, b.N%goroutines
 				var count int64
 
-				// Allocate cap >= sz+2 so GetToBuffer takes the fast path that
-				// reads payload+CRLF in a single socket read. The slice handed
-				// to GetToBuffer is still len==sz. Allocated before ResetTimer
-				// so the harness buffers don't pollute B/op.
+				// len >= sz+2 opts into GetToBuffer's fast path (payload+CRLF
+				// in a single socket read; the 2 bytes after the payload are
+				// scratch). Allocated before ResetTimer so the harness buffers
+				// don't pollute B/op.
 				rbufs := make([][]byte, goroutines)
 				for i := range rbufs {
-					rbufs[i] = make([]byte, sz, sz+2)
+					rbufs[i] = make([]byte, sz+2)
 				}
 
 				b.ResetTimer()

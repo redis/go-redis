@@ -320,3 +320,39 @@ func TestPipelineContextCanceledNotRetried(t *testing.T) {
 		t.Fatalf("cmd err = %v, want context.Canceled", c.Err())
 	}
 }
+
+// TestAutoPipelineHeterogeneousReplyDemuxRESP2Batch is the RESP2 twin of the
+// batched demux test above: the same nine heterogeneous replies land in one
+// real async batch over Protocol 2, pinning that batch reply demultiplexing
+// holds on both protocol encodings (the RESP2 variant was previously only
+// inferred from a comment, never asserted through a real batch).
+func TestAutoPipelineHeterogeneousReplyDemuxRESP2Batch(t *testing.T) {
+	ctx := context.Background()
+	c := redis.NewClient(&redis.Options{Addr: apTestAddr(), Protocol: 2})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	big, binary := seedReplyShapeData(t, ctx, c)
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	cSet := ap.Set(ctx, "rs:s", "v", 0)
+	cGet := ap.Get(ctx, "rs:s")
+	cIncr := ap.Incr(ctx, "rs:n")
+	cArr := ap.LRange(ctx, "rs:list", 0, -1)
+	cMap := ap.HGetAll(ctx, "rs:hash")
+	cNil := ap.Get(ctx, "rs:missing")
+	cBig := ap.Get(ctx, "rs:big")
+	cBin := ap.Get(ctx, "rs:bin")
+	cFloat := ap.IncrByFloat(ctx, "rs:f", 1.5)
+
+	assertReplyShapes(t, cSet, cGet, cIncr, cArr, cMap, cNil, cBig, cBin, cFloat, big, binary)
+}
