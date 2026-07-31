@@ -407,12 +407,15 @@ comes in two faces:
   executes and returns its own value/error, exactly like a normal client, so
   existing code keeps working unchanged. Under concurrency the engine coalesces
   commands from all goroutines into deep, back-to-back pipelines (a single
-  ordered batch stream by default), reaching ~1M+ SET/sec vs ~100k for a plain
-  client (measured locally over loopback; indicative, not a spec).
-  Per-goroutine ordering is preserved.
+  ordered batch stream by default), reaching roughly an order of magnitude
+  more executed commands per second than a plain client in the same
+  environment. Per-goroutine ordering is preserved.
 - **`AsyncAutoPipeline()` — deferred, highest throughput.** Command calls return
   immediately; you submit a window of commands and read their results afterward,
-  which keeps each pipeline deep (~2-3M SET/sec). Ordered by default.
+  which keeps each pipeline deep — tens of times a plain client's throughput.
+  Ordered by default. Absolute numbers depend heavily on the machine, network
+  path and server; see `autopipeline_bench_README.md` for the benchmark
+  methodology and multipliers.
 
 ```go
 rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})

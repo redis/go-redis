@@ -4209,3 +4209,46 @@ func TestClusterNodeHookPostNextError(t *testing.T) {
 		}
 	})
 }
+
+// Regression: ScanIterator on the deferred (async) face. Next() used to read
+// the command's page/cursor fields without awaiting execution — the fetch
+// only enqueues on this face — so it spun re-issuing SCANs with a stale
+// cursor forever, flooding the engine with an unbounded batch and hanging
+// the caller. Next() now awaits the fetch before reading.
+func TestAsyncAutoPipelineScanIterator(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.FlushDB(ctx).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 33
+	for i := 0; i < n; i++ {
+		if err := ap.Set(ctx, fmt.Sprintf("apiter:%d", i), i, 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		var got int
+		iter := ap.Scan(ctx, 0, "apiter:*", 5).Iterator()
+		for iter.Next(ctx) {
+			got++
+		}
+		if err := iter.Err(); err != nil {
+			t.Fatalf("iterator: %v", err)
+		}
+		if got != n {
+			t.Fatalf("scanned %d keys, want %d", got, n)
+		}
+	})
+}
