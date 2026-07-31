@@ -544,13 +544,18 @@ func getOrCreateAutoPipeliner(
 	mu *sync.Mutex,
 	slot **AutoPipeliner,
 	closed *bool,
+	sharedClosed *atomic.Bool,
 	override *AutoPipelineOptions,
 	fallback func() *AutoPipelineOptions,
 	build func(*AutoPipelineOptions) (*AutoPipeliner, error),
 ) (*AutoPipeliner, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	if *closed {
+	// closed covers THIS wrapper's Close; sharedClosed covers the shared
+	// pools closing through ANY sharer (e.g. a WithTimeout clone falling
+	// through to baseClient.Close) — a fresh pipeliner against closed pools
+	// would leak flushers that error forever.
+	if *closed || (sharedClosed != nil && sharedClosed.Load()) {
 		return nil, ErrClosed
 	}
 	if *slot != nil && !(*slot).closed.Load() {
@@ -822,6 +827,35 @@ func (ap *AutoPipeliner) Process(ctx context.Context, cmd Cmder) error {
 // AddHook adds a hook to the underlying client. Autopipelined batches are hooked
 // too, since dispatch goes through the hook-wrapped pipeline entry.
 func (ap *AutoPipeliner) AddHook(hook Hook) { ap.pipeliner.AddHook(hook) }
+
+// The four commands below have CLUSTER-WIDE overrides on ClusterClient
+// (DBSize sums every master, the Script commands fan out to every shard).
+// The embedded generic cmdable would route them as ordinary keyless commands
+// to one picked shard — partial results, scripts missing on other shards —
+// so they delegate to the underlying client instead of batching. On a
+// standalone client the delegation is semantically identical to the generic
+// path; these are rare admin/script-management commands, not data-path.
+
+// DBSize delegates to the underlying client (cluster-wide sum on ClusterClient).
+func (ap *AutoPipeliner) DBSize(ctx context.Context) *IntCmd {
+	return ap.pipeliner.DBSize(ctx)
+}
+
+// ScriptLoad delegates to the underlying client (loads every shard on ClusterClient).
+func (ap *AutoPipeliner) ScriptLoad(ctx context.Context, script string) *StringCmd {
+	return ap.pipeliner.ScriptLoad(ctx, script)
+}
+
+// ScriptFlush delegates to the underlying client (flushes every shard on ClusterClient).
+func (ap *AutoPipeliner) ScriptFlush(ctx context.Context) *StatusCmd {
+	return ap.pipeliner.ScriptFlush(ctx)
+}
+
+// ScriptExists delegates to the underlying client (ANDs results across shards
+// on ClusterClient).
+func (ap *AutoPipeliner) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
+	return ap.pipeliner.ScriptExists(ctx, hashes...)
+}
 
 // Watch runs a transactional function on the underlying client (not batched).
 func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
@@ -1582,20 +1616,38 @@ func (ap *AutoPipeliner) dispatchCmdsMaybeChunked(ctx context.Context, queues []
 		merged = true
 	}
 
+	// abortErr, once set, fails every remaining command instead of
+	// dispatching further chunks: the unchunked path fails or retries the
+	// batch as a UNIT, so in the ordered stream later commands must not
+	// overtake a prefix that died on a transport-class failure (retries
+	// exhausted, hook abort). Per-command redis errors (WRONGTYPE, nil) are
+	// normal chunk outcomes and do not abort.
+	var abortErr error
+	dispatchChunk := func(chunk []Cmder) {
+		if abortErr != nil {
+			setCmdsErr(chunk, abortErr)
+			return
+		}
+		ap.dispatchCmds(ctx, [][]Cmder{chunk}, len(chunk))
+		for _, cmd := range chunk {
+			if err := cmd.rawErr(); err != nil && !isRedisError(err) {
+				abortErr = err
+				break
+			}
+		}
+	}
 	start := 0
 	var chunkBytes int64
 	for i, cmd := range cmds {
 		chunkBytes += cmdApproxBytes(cmd)
 		if chunkBytes >= limit && i+1 > start {
-			chunk := cmds[start : i+1]
-			ap.dispatchCmds(ctx, [][]Cmder{chunk}, len(chunk))
+			dispatchChunk(cmds[start : i+1])
 			start = i + 1
 			chunkBytes = 0
 		}
 	}
 	if start < len(cmds) {
-		chunk := cmds[start:]
-		ap.dispatchCmds(ctx, [][]Cmder{chunk}, len(chunk))
+		dispatchChunk(cmds[start:])
 	}
 	if merged {
 		putQueueSlice(cmds)

@@ -351,6 +351,12 @@ func (h *onCloseHooks) run() error {
 }
 
 type baseClient struct {
+	// apClosed flips when the shared pools begin closing; every wrapper and
+	// every clone SHARING those pools refuses to build a new autopipeliner
+	// from then on. A pointer: withTimeout/clone copy it, so the flag is one
+	// per pool-set, not one per wrapper. See baseClient.Close.
+	apClosed *atomic.Bool
+
 	opt        *Options
 	optLock    sync.RWMutex
 	connPool   pool.Pooler
@@ -437,6 +443,7 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
+		apClosed:                    c.apClosed,
 		opt:                         c.opt,
 		connPool:                    c.connPool,
 		pipelinePool:                c.pipelinePool,
@@ -1513,6 +1520,14 @@ func (c *baseClient) disableMaintNotificationsUpgrades() error {
 // It is rare to Close a Client, as the Client is meant to be
 // long-lived and shared between many goroutines.
 func (c *baseClient) Close() error {
+	// The pools this baseClient owns are shared with every WithTimeout/
+	// WithReadTimeout clone. Once ANY sharer closes them, no wrapper may
+	// build a fresh autopipeliner against them — its flushers would run
+	// against closed pools forever. The atomic is checked by the
+	// AutoPipeline getters of every wrapper sharing this base.
+	if c.apClosed != nil {
+		c.apClosed.Store(true)
+	}
 	if h := c.cscDrainHandle; h != nil {
 		h.closeOnce.Do(func() {
 			h.closeErr = c.closeResources()
@@ -1903,9 +1918,10 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			opt:     opt,
-			onClose: &onCloseHooks{},
-			himport: newHImportRegistry(),
+			apClosed: &atomic.Bool{},
+			opt:      opt,
+			onClose:  &onCloseHooks{},
+			himport:  newHImportRegistry(),
 		},
 	}
 	c.init()
@@ -2229,7 +2245,7 @@ func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2265,7 +2281,7 @@ func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2397,6 +2413,7 @@ type Conn struct {
 func newConn(opt *Options, connPool pool.Pooler, parentHooks *hooksMixin, himport *himportRegistry) *Conn {
 	c := Conn{
 		baseClient: baseClient{
+			apClosed: &atomic.Bool{},
 			opt:      opt,
 			connPool: connPool,
 			onClose:  &onCloseHooks{},

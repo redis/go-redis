@@ -4617,3 +4617,72 @@ func TestAsyncAutoPipelineBlockingCommandDoesNotStallSubmit(t *testing.T) {
 		}
 	})
 }
+
+// TestWithTimeoutCloneCloseBlocksParentResurrection pins the shared-pool
+// closed flag: closing an ordinary WithTimeout clone closes the SHARED pools,
+// so the parent's AutoPipeline getters must return ErrClosed instead of
+// building fresh flushers against dead pools.
+func TestWithTimeoutCloneCloseBlocksParentResurrection(t *testing.T) {
+	ctx := context.Background()
+	parent := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	if err := parent.Ping(ctx).Err(); err != nil {
+		parent.Close()
+		t.Skipf("no redis: %v", err)
+	}
+
+	clone := parent.WithTimeout(5 * time.Second)
+	if err := clone.Close(); err != nil {
+		t.Fatalf("clone close: %v", err)
+	}
+
+	if _, err := parent.AutoPipeline(); err != redis.ErrClosed {
+		t.Fatalf("parent.AutoPipeline after clone Close = %v, want ErrClosed (shared pools are gone)", err)
+	}
+	if _, err := parent.AsyncAutoPipeline(); err != redis.ErrClosed {
+		t.Fatalf("parent.AsyncAutoPipeline after clone Close = %v, want ErrClosed", err)
+	}
+	_ = parent.Close()
+}
+
+// TestAPClusterWideCommandsDelegate pins that cluster-wide commands issued on
+// the autopipeliner use ClusterClient's fan-out overrides rather than the
+// generic single-shard routing (DBSize must sum every master).
+func TestAPClusterWideCommandsDelegate(t *testing.T) {
+	ctx := context.Background()
+	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+	ap, err := c.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Keys hashed to different slots so the cluster-wide count differs from
+	// any single shard's.
+	for i := 0; i < 30; i++ {
+		if err := ap.Set(ctx, fmt.Sprintf("apwide:%d", i), i, 0).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := c.DBSize(ctx).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ap.DBSize(ctx).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("ap.DBSize = %d, cluster-wide DBSize = %d — the autopipeliner must delegate to the fan-out override", got, want)
+	}
+	sha, err := ap.ScriptLoad(ctx, "return 1").Result()
+	if err != nil || sha == "" {
+		t.Fatalf("ap.ScriptLoad: %q, %v", sha, err)
+	}
+	exists, err := ap.ScriptExists(ctx, sha).Result()
+	if err != nil || len(exists) != 1 || !exists[0] {
+		t.Fatalf("script must exist on EVERY shard after delegated ScriptLoad: %v %v", exists, err)
+	}
+}

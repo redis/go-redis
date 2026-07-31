@@ -4,9 +4,12 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -527,5 +530,63 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 	}
 	if len(failed.m) != 0 {
 		t.Fatalf("unexpected remapped commands: %d", len(failed.m))
+	}
+}
+
+// TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
+// ordered-stream contract at the unit level: when an earlier chunk dies on a
+// transport-class failure (here a hook abort), later chunks are NOT
+// dispatched — the unchunked path fails the batch as a unit, and later
+// commands must not overtake a failed prefix. All commands carry the failure.
+// (Unit-level on purpose: through the public API the byte cap wakes the
+// flusher mid-submission, so one logical batch may split into several drains
+// and the "single dispatch" assertion races. Direct dispatch pins one drain.)
+func TestDispatchChunkedAbortsAfterFailedPrefix(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	var dispatches atomic.Int32
+	client.AddHook(chunkBreakerHook{dispatches: &dispatches})
+
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxBatchBytes: 150 * 1024, // ~2 x 64KiB per chunk -> 5 chunks of 2
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	value := strings.Repeat("x", 64*1024)
+	cmds := make([]Cmder, 10)
+	for i := range cmds {
+		cmds[i] = NewStatusCmd(ctx, "set", "cab:"+strconv.Itoa(i), value)
+	}
+	ap.dispatchCmdsMaybeChunked(ctx, [][]Cmder{cmds}, len(cmds))
+
+	for i, cmd := range cmds {
+		if err := cmd.Err(); err == nil || !strings.Contains(err.Error(), "chunk breaker") {
+			t.Fatalf("cmd %d: err = %v, want the chunk breaker error on every command", i, err)
+		}
+	}
+	if n := dispatches.Load(); n != 1 {
+		t.Fatalf("hook saw %d chunk dispatches, want exactly 1 (later chunks must not run after a failed prefix)", n)
+	}
+}
+
+// chunkBreakerHook aborts every pipeline dispatch it sees (without calling
+// next) and counts them.
+type chunkBreakerHook struct {
+	dispatches *atomic.Int32
+}
+
+func (h chunkBreakerHook) DialHook(next DialHook) DialHook          { return next }
+func (h chunkBreakerHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (h chunkBreakerHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		h.dispatches.Add(1)
+		return errors.New("chunk breaker")
 	}
 }

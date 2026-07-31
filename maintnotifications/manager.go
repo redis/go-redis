@@ -77,6 +77,11 @@ type Manager struct {
 	activeOperationCount atomic.Int64 // Number of active operations
 	closed               atomic.Bool  // Manager closed state
 
+	// shutdownTimeout bounds each pool hook's Shutdown during Close. A field
+	// (not a constant) so tests can exercise the failed-Close-then-retry
+	// path without waiting out the real budget.
+	shutdownTimeout time.Duration
+
 	// Notification hooks for extensibility
 	hooks        []NotificationHook
 	hooksMu      sync.RWMutex // Protects hooks slice
@@ -124,11 +129,12 @@ func NewManager(client interfaces.ClientInterface, pool pool.Pooler, config *Con
 	}
 
 	hm := &Manager{
-		client:  client,
-		pool:    pool,
-		options: client.GetOptions(),
-		config:  config.Clone(),
-		hooks:   make([]NotificationHook, 0),
+		client:          client,
+		pool:            pool,
+		options:         client.GetOptions(),
+		config:          config.Clone(),
+		hooks:           make([]NotificationHook, 0),
+		shutdownTimeout: 10 * time.Second,
 	}
 
 	// Set up push notification handling
@@ -388,7 +394,7 @@ func (hm *Manager) Close() error {
 	// Shutdown the pool hook if it exists
 	if hm.poolHooksRef != nil {
 		// Use a timeout to prevent hanging indefinitely
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), hm.shutdownTimeout)
 		defer cancel()
 
 		err := hm.poolHooksRef.Shutdown(shutdownCtx)
@@ -411,7 +417,7 @@ func (hm *Manager) Close() error {
 	hm.additionalPoolHooks = nil
 	hm.hooksMu.Unlock()
 	for i, ah := range additional {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), hm.shutdownTimeout)
 		err := ah.hook.Shutdown(shutdownCtx)
 		cancel()
 		if err != nil {

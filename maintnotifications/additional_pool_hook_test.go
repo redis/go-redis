@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
 )
@@ -76,5 +77,57 @@ func TestInitPoolHookForPoolNil(t *testing.T) {
 	manager.InitPoolHookForPool(nil, func(context.Context, string, string) (net.Conn, error) { return nil, nil })
 	if len(manager.additionalPoolHooks) != 0 {
 		t.Fatal("nil pool must not register an additional hook")
+	}
+}
+
+// TestCloseRetriesAdditionalHookAfterShutdownError pins Close's put-back
+// semantics: when an additional pool hook's Shutdown fails (a handoff worker
+// that won't drain within the budget), the failed hook — and any not yet
+// processed — must be restored so a RETRIED Close still shuts it down and
+// detaches it from its pool. The original code nilled the slice before the
+// loop, so a retried Close silently skipped teardown and leaked the hook.
+func TestCloseRetriesAdditionalHookAfterShutdownError(t *testing.T) {
+	client := &MockClient{options: &MockOptions{}}
+	primary := &countingPool{}
+	pipelinePool := &countingPool{}
+
+	manager, err := NewManager(client, primary, DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	manager.shutdownTimeout = 50 * time.Millisecond // seam: fail fast, not in 10s
+
+	dialer := func(context.Context, string, string) (net.Conn, error) { return nil, nil }
+	manager.InitPoolHook(dialer)
+	manager.InitPoolHookForPool(pipelinePool, dialer)
+
+	hook := manager.additionalPoolHooks[0].hook
+	// A handoff worker that won't drain: Shutdown waits on workerWg and must
+	// time out against the shortened budget.
+	hook.workerManager.workerWg.Add(1)
+
+	if err := manager.Close(); err == nil {
+		t.Fatal("Close must fail while a hook's workers cannot drain")
+	}
+	if len(manager.additionalPoolHooks) != 1 {
+		t.Fatalf("failed Close must put the hook back for retry, tracked=%d", len(manager.additionalPoolHooks))
+	}
+	if pipelinePool.removed != 0 {
+		t.Fatalf("hook must stay attached after the failed Close, removals=%d", pipelinePool.removed)
+	}
+	if manager.closed.Load() {
+		t.Fatal("manager must reopen after a failed Close so the caller can retry")
+	}
+
+	// Worker drains; the retried Close finishes the job.
+	hook.workerManager.workerWg.Done()
+	if err := manager.Close(); err != nil {
+		t.Fatalf("retried Close: %v", err)
+	}
+	if len(manager.additionalPoolHooks) != 0 {
+		t.Fatalf("retried Close must consume the restored hook, tracked=%d", len(manager.additionalPoolHooks))
+	}
+	if pipelinePool.removed != 1 {
+		t.Fatalf("retried Close must detach the hook from its pool, removals=%d", pipelinePool.removed)
 	}
 }
