@@ -1890,6 +1890,7 @@ func (c *baseClient) txPipelineProcessCmds(
 			}
 			if errors.As(err, &execArrayErr) {
 				setCmdsErr(cmds[:1], err)
+				setCmdsErr(trimmedCmds[:execArrayErr.readCount], err)
 				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
 				setCmdsErr(cmds[len(cmds)-1:], err)
 				return err
@@ -1950,6 +1951,22 @@ func (e *txQueuedReadError) Error() string {
 
 func (e *txQueuedReadError) Unwrap() []error {
 	return []error{e.queuedErr, e.readErr}
+}
+
+func discardExecResult(rd *proto.Reader) error {
+	for {
+		line, err := rd.ReadLine()
+		if err != nil {
+			return err
+		}
+		if line[0] == proto.RespAttr {
+			if err := rd.Discard(line); err != nil {
+				return err
+			}
+			continue
+		}
+		return rd.Discard(line)
+	}
 }
 
 // txPipelineReadQueued reads queued replies from the Redis server.
@@ -2018,6 +2035,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if err != nil {
 			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 		}
+		if n < 0 {
+			return fmt.Errorf("redis: invalid EXEC array length %d", n)
+		}
 		hasHImport := false
 		himportedIndexes := make(map[int]struct{})
 		for _, cmd := range cmds {
@@ -2041,7 +2061,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				}
 				continue
 			}
-			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 			}
 		}
