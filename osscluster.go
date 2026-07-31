@@ -1931,6 +1931,16 @@ func (c *ClusterClient) processPipelineNode(
 			err = errHookShortCircuit
 		}
 		setCmdsErr(cmds, err)
+		return
+	}
+	if err != nil && cmdsFirstErr(cmds) == nil {
+		// Post-next verdict from a node-level hook on an all-clean sub-batch:
+		// the exec fully succeeded, so the error can only be the hook's own —
+		// apply it, mirroring AutoPipeliner.dispatchCmds. On a mixed batch the
+		// exec-recorded outcomes win (hooks conventionally echo next's error,
+		// and stamping the echo would overwrite successful replies). No remap:
+		// retrying would re-run the same hook.
+		setCmdsErr(cmds, err)
 	}
 }
 

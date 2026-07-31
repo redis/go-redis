@@ -4140,3 +4140,72 @@ func TestAutoPipelineShutdownRunsOutsidePipeline(t *testing.T) {
 		t.Fatal("SET was never dispatched at all")
 	}
 }
+
+// armablePostNextPipelineHook calls next and then, when armed, returns its
+// own error regardless of the exec outcome — the node-level twin of ofek's
+// post-next-verdict case. Disarmed it is transparent, so conn-init
+// handshakes (which pipeline through the hook chain) pass during warmup.
+type armablePostNextPipelineHook struct {
+	err   error
+	armed *atomic.Bool
+}
+
+func (h armablePostNextPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h armablePostNextPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (h armablePostNextPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := next(ctx, cmds)
+		if h.armed.Load() {
+			return h.err
+		}
+		return err
+	}
+}
+
+// TestClusterNodeHookPostNextError pins that a NODE-level hook's post-next
+// verdict is applied to an all-clean sub-batch (mirroring dispatchCmds):
+// the exec succeeds on the wire, the hook returns an error afterwards, and
+// every command must carry that error instead of reporting success
+// (suppressed Copilot finding on #3867: the verdict was dropped on the
+// cluster node path).
+func TestClusterNodeHookPostNextError(t *testing.T) {
+	ctx := context.Background()
+	errVerdict := errors.New("node post-next verdict")
+	c := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{":16600", ":16601", ":16602"},
+	})
+	defer c.Close()
+	var armed atomic.Bool
+	c.OnNewNode(func(cl *redis.Client) {
+		cl.AddHook(armablePostNextPipelineHook{err: errVerdict, armed: &armed})
+	})
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+
+	runWithWatchdog(t, 60*time.Second, func() {
+		warm := c.Pipeline()
+		for i := 0; i < 12; i++ {
+			warm.Set(ctx, fmt.Sprintf("npn:%d", i), i, 0)
+		}
+		if _, err := warm.Exec(ctx); err != nil {
+			t.Fatalf("warmup: %v", err)
+		}
+		armed.Store(true)
+		defer armed.Store(false)
+
+		pipe := c.Pipeline()
+		cmds := make([]*redis.StatusCmd, 0, 12)
+		for i := 0; i < 12; i++ {
+			cmds = append(cmds, pipe.Set(ctx, fmt.Sprintf("npn:%d", i), i, 0))
+		}
+		_, _ = pipe.Exec(ctx)
+		for i, cmd := range cmds {
+			if !errors.Is(cmd.Err(), errVerdict) {
+				t.Fatalf("cmd %d: err = %v, want the node hook's post-next verdict", i, cmd.Err())
+			}
+		}
+	})
+}
