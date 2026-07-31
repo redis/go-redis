@@ -2609,7 +2609,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 				}
 				continue
 			}
-			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
 			}
 		}
@@ -2639,7 +2639,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 				}
 				return c.txReadFatal(err)
 			}
-			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
 				switch {
 				case firstRedirect.moved:
 					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
