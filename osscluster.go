@@ -2567,7 +2567,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 		for i := 0; i < n; i++ {
 			c.txProcessPush(ctx, node, cn, rd)
 			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
-				return c.txReadFatal(err)
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
 			}
 		}
 		setCmdsErr(cmds, firstFatal)

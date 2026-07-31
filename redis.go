@@ -1935,7 +1935,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
 			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
-				return err
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 		}
 		return queuedErr
