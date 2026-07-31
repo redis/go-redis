@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2554,6 +2555,23 @@ func (c *ClusterClient) readTxPipelineReplies(
 		setCmdsErr(cmds, err)
 		// A non-array aggregate reply may carry an unread payload.
 		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+	}
+
+	if firstFatal != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			parseErr := fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+			setCmdsErr(cmds, parseErr)
+			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
+		}
+		for i := 0; i < n; i++ {
+			c.txProcessPush(ctx, node, cn, rd)
+			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
+				return c.txReadFatal(err)
+			}
+		}
+		setCmdsErr(cmds, firstFatal)
+		return &txOutcome{kind: txFatal, err: firstFatal}
 	}
 
 	// Success: read the N command results.

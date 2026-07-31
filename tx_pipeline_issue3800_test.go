@@ -487,3 +487,92 @@ func TestClusterTxPipelinePreservesQueuedErrorOnMissingExecReply(t *testing.T) {
 		t.Fatal("outcome.unreadReplies = false, want true for missing EXEC reply")
 	}
 }
+
+func TestTxPipelineExecErrorIncludesExecAbortContext(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "a", 1, 0)
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error text", got)
+	}
+	if got := err.Error(); !strings.Contains(got, "EXECABORT") {
+		t.Fatalf("Exec() error = %q, want EXECABORT context", got)
+	}
+}
+
+func TestClusterTxPipelineReturnsQueuedErrorAfterExecArray(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*2\r\n+OK\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if outcome.err == nil {
+		t.Fatal("outcome.err = nil, want queued Redis error")
+	}
+	if got := outcome.err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("outcome.err = %q, want queued Redis error", got)
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+	if cmds[1].Err() == nil || !strings.Contains(cmds[1].Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("cmd[1] err = %v, want queued Redis error", cmds[1].Err())
+	}
+}

@@ -1858,7 +1858,7 @@ type txQueuedReadError struct {
 }
 
 func (e *txQueuedExecAbortError) Error() string {
-	return e.queuedErr.Error()
+	return fmt.Sprintf("%v (exec: %v)", e.queuedErr, e.execErr)
 }
 
 func (e *txQueuedExecAbortError) Unwrap() []error {
