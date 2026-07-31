@@ -1827,7 +1827,8 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
-			if err == nil || isRedisError(err) {
+			var execArrayErr *txQueuedExecArrayError
+			if errors.As(err, &execArrayErr) && execArrayErr.himported {
 				c.himportAfterBatch(cn, injected, trimmedCmds)
 			}
 			setCmdsErr(cmds, err)
@@ -1854,6 +1855,7 @@ type txQueuedExecAbortError struct {
 
 type txQueuedExecArrayError struct {
 	queuedErr error
+	himported bool
 }
 
 type txQueuedReadError struct {
@@ -1956,7 +1958,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 			}
-			if hasHImport {
+			if hasHImport && i < len(cmds) {
 				err := cmds[i].readReply(rd)
 				cmds[i].SetErr(err)
 				if err != nil && !isRedisError(err) {
@@ -1968,7 +1970,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 		}
-		return &txQueuedExecArrayError{queuedErr: queuedErr}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himported: hasHImport}
 	}
 
 	return nil

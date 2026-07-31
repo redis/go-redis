@@ -2211,6 +2211,7 @@ type txOutcome struct {
 	err           error
 	addr          string
 	execErr       error
+	himported     bool
 	unreadReplies bool
 }
 
@@ -2464,7 +2465,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return nil
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
-		if outcome != nil && outcome.kind == txSuccess {
+		if outcome != nil && outcome.himported {
 			node.Client.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -2564,14 +2565,29 @@ func (c *ClusterClient) readTxPipelineReplies(
 			setCmdsErr(cmds, parseErr)
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
 		}
+		hasHImport := false
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
 		for i := 0; i < n; i++ {
 			c.txProcessPush(ctx, node, cn, rd)
-			if _, err := rd.ReadReply(); err != nil && !isRedisError(err) {
+			if hasHImport && i < len(cmds) {
+				err := cmds[i].readReply(rd)
+				cmds[i].SetErr(err)
+				if err != nil && !isRedisError(err) {
+					return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+				}
+				continue
+			}
+			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
 			}
 		}
 		setCmdsErr(cmds, firstFatal)
-		return &txOutcome{kind: txFatal, err: firstFatal}
+		return &txOutcome{kind: txFatal, err: firstFatal, himported: hasHImport}
 	}
 	if firstRedirect != nil {
 		n, err := strconv.Atoi(string(line[1:]))
