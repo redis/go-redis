@@ -144,6 +144,20 @@ func fakeRESP3PushNotification(notificationType string, args ...string) string {
 	return buf.String()
 }
 
+func filteredHImportCmds(cmds []Cmder, indexes map[int]struct{}) []Cmder {
+	filtered := make([]Cmder, len(cmds))
+	for i, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); !ok {
+			filtered[i] = cmd
+			continue
+		}
+		if _, ok := indexes[i]; ok {
+			filtered[i] = cmd
+		}
+	}
+	return filtered
+}
+
 type partialPushErrorProcessor struct{ *push.Processor }
 
 type partialPushTimeoutProcessor struct{ *push.Processor }
@@ -861,7 +875,7 @@ func TestClusterTxPipelineQueuedErrorPreservesHImportAfterBatch(t *testing.T) {
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
 		if outcome != nil && len(outcome.himportedIndexes) > 0 {
-			nodeClient.himportAfterBatch(cn, injected, cmds)
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
 		}
 		return nil
 	}); err != nil {
@@ -983,7 +997,7 @@ func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
 	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
 		if outcome != nil && len(outcome.himportedIndexes) > 0 {
-			nodeClient.himportAfterBatch(cn, injected, cmds)
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
 		}
 		return nil
 	}); err != nil {
@@ -1273,6 +1287,46 @@ func TestTxPipelineExecQueuedErrorPartialHImportReadSkipsUnreadSideEffects(t *te
 	}
 }
 
+func TestTxPipelineExecQueuedErrorMixedBatchDiscardsNonHImportReplies(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.himportPrepareReply = "-ERR duplicate field name in fieldset\r\n"
+	srv.execReply = "*2\r\n+PONG\r\n-ERR no such fieldset\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	client.himport.register("fs", []string{"f1"})
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	incr := pipe.Incr(ctx, "a")
+	himportSet := pipe.HImportSet(ctx, "k", "fs", "v1")
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error", got)
+	}
+	if incr.Err() == nil || !strings.Contains(incr.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Incr err = %v, want queued Redis error", incr.Err())
+	}
+	if himportSet.Err() == nil || !strings.Contains(himportSet.Err().Error(), "ERR duplicate field name in fieldset") {
+		t.Fatalf("HImportSet err = %v, want injected prepare root cause", himportSet.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
 func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.execReply = "*1\r\n+OK\r\n"
@@ -1321,7 +1375,7 @@ func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
 		if outcome != nil && len(outcome.himportedIndexes) > 0 {
-			nodeClient.himportAfterBatch(cn, injected, cmds)
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
 		}
 		return nil
 	}); err != nil {
@@ -1394,7 +1448,7 @@ func TestClusterTxPipelineQueuedErrorPartialHImportReadPreservesReadSideEffects(
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
 		if outcome != nil && len(outcome.himportedIndexes) > 0 {
-			nodeClient.himportAfterBatch(cn, injected, cmds)
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
 		}
 		return nil
 	}); err != nil {
@@ -1419,6 +1473,84 @@ func TestClusterTxPipelineQueuedErrorPartialHImportReadPreservesReadSideEffects(
 	discard := cmds[2].(*HImportDiscardCmd)
 	if discard.Err() == nil || !strings.Contains(discard.Err().Error(), "ERR in transaction context, keys must in same slot") {
 		t.Fatalf("HImportDiscard err = %v, want queued Redis error", discard.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestClusterTxPipelineQueuedErrorMixedBatchDiscardsNonHImportReplies(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.himportPrepareReply = "-ERR duplicate field name in fieldset\r\n"
+	srv.execReply = "*2\r\n+PONG\r\n-ERR no such fieldset\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	nodeClient.himport.register("fs", []string{"f1"})
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewIntCmd(ctx, "incr", "a"),
+		NewHImportSetCmd(ctx, "k", "fs", "v1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	injected := nodeClient.himportInjectedCmds(ctx, cn, cmds)
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		if err := nodeClient.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			return err
+		}
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("outcome = nil, want txFatal")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if got := outcome.err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("outcome.err = %q, want queued Redis error", got)
+	}
+	incr := cmds[0].(*IntCmd)
+	if incr.Err() == nil || !strings.Contains(incr.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Incr err = %v, want queued Redis error", incr.Err())
+	}
+	himportSet := cmds[1].(*HImportSetCmd)
+	if himportSet.Err() == nil || !strings.Contains(himportSet.Err().Error(), "ERR duplicate field name in fieldset") {
+		t.Fatalf("HImportSet err = %v, want injected prepare root cause", himportSet.Err())
 	}
 	if srv.execSeen.Load() != 1 {
 		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())

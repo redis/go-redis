@@ -2601,13 +2601,13 @@ func (c *ClusterClient) readTxPipelineReplies(
 			if hasHImport && i < len(cmds) {
 				if _, ok := cmds[i].(himportCmder); ok {
 					himportedIndexes[i] = struct{}{}
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
+					}
+					continue
 				}
-				err := cmds[i].readReply(rd)
-				cmds[i].SetErr(err)
-				if err != nil && !isRedisError(err) {
-					return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
-				}
-				continue
 			}
 			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
@@ -2616,6 +2616,12 @@ func (c *ClusterClient) readTxPipelineReplies(
 		readCount := n
 		if readCount > len(cmds) {
 			readCount = len(cmds)
+		}
+		for i := 0; i < readCount; i++ {
+			if _, ok := himportedIndexes[i]; ok {
+				continue
+			}
+			setCmdsErr(cmds[i:i+1], firstFatal)
 		}
 		setCmdsErr(cmds[readCount:], firstFatal)
 		return &txOutcome{kind: txFatal, err: firstFatal, himportedIndexes: himportedIndexes, readCount: readCount}

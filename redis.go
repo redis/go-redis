@@ -2058,13 +2058,13 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			if hasHImport && i < len(cmds) {
 				if _, ok := cmds[i].(himportCmder); ok {
 					himportedIndexes[i] = struct{}{}
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+					}
+					continue
 				}
-				err := cmds[i].readReply(rd)
-				cmds[i].SetErr(err)
-				if err != nil && !isRedisError(err) {
-					return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
-				}
-				continue
 			}
 			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
