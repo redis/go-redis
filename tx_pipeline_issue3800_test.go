@@ -19,6 +19,7 @@ import (
 type txQueueErrorServer struct {
 	ln                 net.Listener
 	execSeen           atomic.Int32
+	unwatchSeen        atomic.Int32
 	queueErr           string
 	execReply          string
 	resp3              bool
@@ -55,6 +56,10 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 		if strings.EqualFold(args[0], "multi") {
 			_, _ = c.Write([]byte("+OK\r\n"))
 			continue
+		}
+
+		if strings.EqualFold(args[0], "unwatch") {
+			s.unwatchSeen.Add(1)
 		}
 
 		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "b" {
@@ -642,6 +647,48 @@ func TestTxQueuedReadErrorPreservesHelpersAndBadConn(t *testing.T) {
 	}
 	if !isBadConn(err, false, "127.0.0.1:6379") {
 		t.Fatalf("isBadConn(%v) = false, want true", err)
+	}
+}
+
+func TestTxPipelineExecSuccessfulArrayClearsWatchOnClose(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	err := client.Watch(ctx, func(tx *Tx) error {
+		_, err := tx.TxPipelined(ctx, func(pipe Pipeliner) error {
+			pipe.Set(ctx, "a", 1, 0)
+			pipe.Set(ctx, "b", 1, 0)
+			return nil
+		})
+		if err == nil {
+			t.Fatal("Exec() error = nil, want queued Redis error")
+		}
+		if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+			t.Fatalf("Exec() error = %q, want queued Redis error", got)
+		}
+		return err
+	}, "key")
+	if err == nil {
+		t.Fatal("Watch() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Watch() error = %q, want queued Redis error", got)
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+	if srv.unwatchSeen.Load() != 0 {
+		t.Fatalf("UNWATCH replies seen = %d, want 0", srv.unwatchSeen.Load())
 	}
 }
 

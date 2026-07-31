@@ -1852,6 +1852,10 @@ type txQueuedExecAbortError struct {
 	execErr   error
 }
 
+type txQueuedExecArrayError struct {
+	queuedErr error
+}
+
 type txQueuedReadError struct {
 	queuedErr error
 	readErr   error
@@ -1863,6 +1867,14 @@ func (e *txQueuedExecAbortError) Error() string {
 
 func (e *txQueuedExecAbortError) Unwrap() []error {
 	return []error{e.queuedErr, e.execErr}
+}
+
+func (e *txQueuedExecArrayError) Error() string {
+	return e.queuedErr.Error()
+}
+
+func (e *txQueuedExecArrayError) Unwrap() error {
+	return e.queuedErr
 }
 
 func (e *txQueuedReadError) Error() string {
@@ -1941,7 +1953,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 		}
-		return queuedErr
+		return &txQueuedExecArrayError{queuedErr: queuedErr}
 	}
 
 	return nil
