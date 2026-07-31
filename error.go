@@ -86,6 +86,11 @@ func shouldRetry(err error, retryTimeout bool) bool {
 		return false
 	}
 
+	var txReadErr *txQueuedReadError
+	if errors.As(err, &txReadErr) {
+		return false
+	}
+
 	// Check for EOF errors (works with wrapped errors)
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true

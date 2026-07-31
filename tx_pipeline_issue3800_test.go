@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 type txQueueErrorServer struct {
@@ -47,7 +48,7 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 
 		if strings.EqualFold(args[0], "hello") {
 			if s.resp3 {
-				_, _ = c.Write([]byte("%7\r\n+server\r\n+redis\r\n+version\r\n$5\r\n7.2.0\r\n+proto\r\n:3\r\n+id\r\n:1\r\n+mode\r\n+standalone\r\n+role\r\n+master\r\n+modules\r\n*0\r\n"))
+				_, _ = c.Write([]byte("%0\r\n"))
 				continue
 			}
 			_, _ = c.Write([]byte("-ERR unknown command 'hello'\r\n"))
@@ -134,6 +135,24 @@ func fakeRESP3PushNotification(notificationType string, args ...string) string {
 		fmt.Fprintf(buf, "$%d\r\n%s\r\n", len(arg), arg)
 	}
 	return buf.String()
+}
+
+type partialPushErrorProcessor struct{ *push.Processor }
+
+func (p partialPushErrorProcessor) ProcessPendingNotifications(
+	_ context.Context, _ push.NotificationHandlerContext, rd *proto.Reader,
+) error {
+	b, err := rd.Peek(1)
+	if err != nil {
+		return err
+	}
+	if b[0] != proto.RespPush {
+		return nil
+	}
+	if _, err := rd.ReadLine(); err != nil {
+		return err
+	}
+	return proto.NewOOMError("OOM custom push processor failure")
 }
 
 func TestTxPipelineExecReturnsQueuedRedisError(t *testing.T) {
@@ -910,6 +929,215 @@ func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
 	}
 	if srv.execSeen.Load() != 1 {
 		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestTxPipelineExecQueuedErrorPushDrainFailureClosesStickyConn(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.resp3 = true
+	srv.execReply = fakeRESP3PushNotification("MOVING", "slot", "123") + "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		Protocol:     3,
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	client.pushProcessor = partialPushErrorProcessor{push.NewProcessor()}
+	client.opt.PushNotificationProcessor = client.pushProcessor
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "a", 1, 0)
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error with push-drain failure")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error context", got)
+	}
+	if !IsOOMError(err) {
+		t.Fatalf("Exec() error = %v, want custom processor error visible", err)
+	}
+
+	pong, pingErr := client.Ping(ctx).Result()
+	if pingErr != nil {
+		t.Fatalf("Ping() error = %v, want nil", pingErr)
+	}
+	if pong != "PING" {
+		t.Fatalf("Ping() = %q, want %q", pong, "PING")
+	}
+}
+
+func TestTxPipelineExecQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	client.himport.register("fs", []string{"f1"})
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "b", 1, 0)
+	himportDiscard := pipe.HImportDiscard(ctx, "fs")
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error", got)
+	}
+	if _, ok := client.himport.lookup("fs"); !ok {
+		t.Fatal("fieldset fs unexpectedly removed from registry")
+	}
+	if himportDiscard.Err() == nil || !strings.Contains(himportDiscard.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("HImportDiscard err = %v, want queued Redis error", himportDiscard.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	nodeClient.himport.register("fs", []string{"f1"})
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "b", "1"),
+		NewHImportDiscardCmd(ctx, "fs"),
+	}
+	injected := nodeClient.himportInjectedCmds(ctx, cn, cmds)
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		if err := nodeClient.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			return err
+		}
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		if outcome != nil && outcome.himported {
+			nodeClient.himportAfterBatch(cn, injected, cmds)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if _, ok := nodeClient.himport.lookup("fs"); !ok {
+		t.Fatal("fieldset fs unexpectedly removed from registry")
+	}
+	himportDiscard := cmds[1].(*HImportDiscardCmd)
+	if himportDiscard.Err() == nil || !strings.Contains(himportDiscard.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("HImportDiscard err = %v, want queued Redis error", himportDiscard.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestClusterTxPipelineRedirectDrainFailurePreservesRetry(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
+	srv.execReply = "*2\r\n+OK\r\n"
+	srv.holdAfterExec = true
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, 100*time.Millisecond, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txRetryMoved {
+		t.Fatalf("outcome.kind = %v, want txRetryMoved", outcome.kind)
+	}
+	if outcome.addr != "127.0.0.1:7001" {
+		t.Fatalf("outcome.addr = %q, want %q", outcome.addr, "127.0.0.1:7001")
+	}
+	var netErr net.Error
+	if !errors.As(outcome.err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("outcome.err = %v, want wrapped timeout preserving redirect outcome", outcome.err)
 	}
 }
 

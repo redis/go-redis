@@ -2586,8 +2586,22 @@ func (c *ClusterClient) readTxPipelineReplies(
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
 			}
 		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		appliedHImport := false
+		if hasHImport {
+			appliedHImport = true
+			for i, cmd := range cmds {
+				if _, ok := cmd.(himportCmder); ok && i >= readCount {
+					appliedHImport = false
+					break
+				}
+			}
+		}
 		setCmdsErr(cmds, firstFatal)
-		return &txOutcome{kind: txFatal, err: firstFatal, himported: hasHImport}
+		return &txOutcome{kind: txFatal, err: firstFatal, himported: appliedHImport}
 	}
 	if firstRedirect != nil {
 		n, err := strconv.Atoi(string(line[1:]))
@@ -2599,6 +2613,14 @@ func (c *ClusterClient) readTxPipelineReplies(
 		for i := 0; i < n; i++ {
 			c.txProcessPush(ctx, node, cn, rd)
 			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+				}
 				return c.txReadFatal(err)
 			}
 		}
