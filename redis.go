@@ -1051,15 +1051,12 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		p.Remove(ctx, cn, err)
 		return
 	}
-	// process any pending push notifications before returning the connection to the pool
-	if err := c.processPushNotifications(ctx, cn); err != nil {
+	// Use the stricter CSC drainer semantics here so a partially buffered RESP3
+	// push frame never gets re-pooled as a clean connection.
+	if _, err := c.drainPushNotifications(cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
-		if isBadConn(err, false, c.opt.Addr) {
-			// A mid-frame read failure may leave the reply stream
-			// desynchronized, so the connection cannot be reused.
-			p.Remove(ctx, cn, err)
-			return
-		}
+		p.Remove(ctx, cn, err)
+		return
 	}
 	if c.cscTrackingRequested() {
 		// A TLS-like wrapper can retain decrypted bytes after the command
