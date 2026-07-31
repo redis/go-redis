@@ -409,8 +409,8 @@ comes in two faces:
   commands from all goroutines into deep, back-to-back pipelines (a single
   ordered batch stream by default), reaching several times a plain client's
   executed commands per second in the same environment — roughly an order of
-  magnitude with a parallel-batch config (MaxConcurrentBatches > 1 with
-  Unordered). Per-goroutine ordering is preserved.
+  magnitude with a parallel-batch config (`MaxConcurrentBatches` > 1 with
+  `Unordered`). Per-goroutine ordering is preserved.
 - **`AsyncAutoPipeline()` — deferred, highest throughput.** Command calls return
   immediately; you submit a window of commands and read their results afterward,
   which keeps each pipeline deep — tens of times a plain client's throughput.

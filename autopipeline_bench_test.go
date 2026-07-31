@@ -324,10 +324,11 @@ func benchWindowed(b *testing.B, cfg *redis.AutoPipelineOptions, goroutines, win
 		b.Fatal(err)
 	}
 
-	per := b.N / goroutines
-	if per == 0 {
-		per = 1
-	}
+	// Exact b.N partitioning: the first b.N%goroutines workers run one extra
+	// command, so the total is b.N and ns/op / allocs/op are per command at
+	// any -benchtime (a floor-and-min-1 split would over-run for small b.N
+	// and drop the remainder for large).
+	base, extra := b.N/goroutines, b.N%goroutines
 	b.ReportAllocs()
 	b.ResetTimer()
 	var wg sync.WaitGroup
@@ -335,6 +336,10 @@ func benchWindowed(b *testing.B, cfg *redis.AutoPipelineOptions, goroutines, win
 	for g := 0; g < goroutines; g++ {
 		go func(id int) {
 			defer wg.Done()
+			per := base
+			if id < extra {
+				per++
+			}
 			futs := make([]redis.AutoFuture, 0, window)
 			cmds := 0
 			for cmds < per {
@@ -415,6 +420,12 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 				c := redis.NewClient(&redis.Options{
 					Addr:     benchAddr,
 					PoolSize: 10,
+					// Generous deadlines: at 64KiB payloads a slow CI runner
+					// pushes gigabytes through few conns; the default 3s
+					// write deadline trips under that load and the bench
+					// (correctly) fails on the surfaced error.
+					ReadTimeout:  30 * time.Second,
+					WriteTimeout: 30 * time.Second,
 					AutoPipelineOptions: &redis.AutoPipelineOptions{
 						MaxBatchSize:         300,
 						MaxConcurrentBatches: 80,
@@ -435,11 +446,16 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 				}
 				pstr := string(payload)
 
-				const goroutines = 500
-				per := b.N / goroutines
-				if per == 0 {
-					per = 1
+				// Fewer workers at large payloads: 500 goroutines x 64KiB
+				// saturates a CI runner's socket budget and only measures
+				// queueing on the write deadline.
+				goroutines := 500
+				if sz >= 65536 {
+					goroutines = 100
 				}
+				// Exact b.N partitioning (see benchWindowed): each unit is
+				// one Set+Get pair.
+				base, extra := b.N/goroutines, b.N%goroutines
 				var count int64
 
 				// Allocate cap >= sz+2 so GetToBuffer takes the fast path that
@@ -458,6 +474,10 @@ func BenchmarkAutoPipelineZeroCopy(b *testing.B) {
 				for g := 0; g < goroutines; g++ {
 					go func(id int) {
 						defer wg.Done()
+						per := base
+						if id < extra {
+							per++
+						}
 						rbuf := rbufs[id]
 						for i := 0; i < per; i++ {
 							key := fmt.Sprintf("zc:%d:%d", id, i)
