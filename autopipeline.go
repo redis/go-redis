@@ -556,6 +556,14 @@ type AutoPipeliner struct {
 	// merged batch). The returned error is set on the command.
 	preflight func(ctx context.Context, cmd Cmder) error
 
+	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
+	// (shared across WithTimeout clones). The getters refuse to build a fresh
+	// pipeliner once it is set; this reference makes an ALREADY-built
+	// pipeliner refuse new work too — without it, a clone's Close would leave
+	// a cached pipeliner accepting enqueues against closed pools, failing
+	// them one dispatch at a time instead of with ErrClosed at submit.
+	sharedClosed *atomic.Bool
+
 	// expectedArrivals counts how many commands the engine expects to arrive
 	// at any moment: a completed batch of N≥2 commands wakes its N waiters
 	// together, and in a closed loop each immediately submits its next command
@@ -683,6 +691,10 @@ func getOrCreateAutoPipeliner(
 	if err != nil {
 		return nil, err
 	}
+	// Thread the shared pool-set closed flag into the pipeliner so an
+	// ALREADY-cached instance also refuses enqueues once any sharer closes
+	// the pools (the check above only protects fresh builds).
+	ap.sharedClosed = sharedClosed
 	*slot = ap
 	return ap, nil
 }
@@ -1094,10 +1106,11 @@ func (f AutoFuture) Cmd() Cmder { return f.cmd }
 // desyncing every reply behind it; the rest change per-connection state
 // (database, auth, protocol, transaction, subscription mode) that would
 // leak to every unrelated caller sharing the pipeline conn afterwards. The
-// typed surface cannot produce the stateful ones (they live on
-// statefulCmdable), but raw Submit/Do accept any Cmder. Diverted commands
-// execute directly on their own pooled connection — the same semantics
-// (including the same footguns) as plain Client.Do.
+// typed surface cannot produce most of the stateful ones (they live on
+// statefulCmdable) — but ReadOnly/ReadWrite ARE on cmdable, and raw
+// Submit/Do accept any Cmder. Diverted commands execute directly on their
+// own pooled connection — the same semantics (including the same footguns)
+// as plain Client.Do.
 var outsidePipelineCommands = map[string]struct{}{
 	"shutdown": {}, "monitor": {},
 	"select": {}, "auth": {}, "hello": {}, "reset": {}, "quit": {},
@@ -1105,6 +1118,10 @@ var outsidePipelineCommands = map[string]struct{}{
 	"subscribe": {}, "unsubscribe": {}, "psubscribe": {}, "punsubscribe": {},
 	"ssubscribe": {}, "sunsubscribe": {},
 	"client": {},
+	// Connection-scoped cluster state: queued onto a shared pipeline conn
+	// they would leak replica-reads (or a pending redirect) to every later
+	// batch on that conn.
+	"readonly": {}, "readwrite": {}, "asking": {},
 }
 
 func runsOutsidePipeline(name string) bool {
@@ -1143,7 +1160,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// exactly like Do). They still must respect a closed AutoPipeliner:
 		// enqueue() rejects on the batched path, so mirror that here instead
 		// of running after Close().
-		if ap.closed.Load() {
+		if ap.isClosed() {
 			cmd.SetErr(ErrClosed)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
@@ -1151,7 +1168,10 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// face; the returned batch completes when the command has executed.
 		return AutoFuture{cmd: cmd, batch: ap.runOutsidePipeline(ctx, cmd)}
 	}
-	return finish(AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)})
+	// No finish here: enqueue stamps ready under the stripe lock, before the
+	// command is visible to any drain (the error paths above still go through
+	// finish for uniform accessor behavior).
+	return AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)}
 }
 
 // ErrSubmitBlockingFace rejects Submit on the blocking face: Submit does not
@@ -1249,8 +1269,14 @@ var completedBatch = func() *apBatch {
 // enqueue queues a command and returns the batch whose done channel completes
 // when it has executed. On a closed autopipeliner it errors the command and
 // returns the already-closed batch.
+// isClosed reports whether this pipeliner (or the shared pool set it rides
+// on) has been closed. Two atomic loads; no locks.
+func (ap *AutoPipeliner) isClosed() bool {
+	return ap.closed.Load() || (ap.sharedClosed != nil && ap.sharedClosed.Load())
+}
+
 func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
-	if ap.closed.Load() {
+	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
@@ -1281,12 +1307,22 @@ func (ap *AutoPipeliner) enqueue(cmd Cmder) *apBatch {
 	// Re-check closed under the stripe lock (see Close): either we win the lock
 	// first and the shutdown drain flushes us, or the drain ran first and we
 	// reject here — so a late enqueue never hangs on an unclosed done.
-	if ap.closed.Load() {
+	if ap.isClosed() {
 		st.mu.Unlock()
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
 	batch := st.curBatch
+	if !ap.blocking {
+		// Publish the gating batch BEFORE the command becomes visible to a
+		// drain (the drain takes this same stripe lock): a flush racing the
+		// submitter's return path must observe ready already set, or the
+		// cluster node-executor registration would skip this command's batch
+		// and a node hook reading the command mid-dispatch could block on a
+		// batch its own call chain completes. The blocking face deliberately
+		// never carries a batch (see submit).
+		cmd.setReady(batch)
+	}
 	st.queue = append(st.queue, cmd)
 	st.queueLen.Store(int32(len(st.queue)))
 	if ap.config.MaxBatchBytes > 0 {

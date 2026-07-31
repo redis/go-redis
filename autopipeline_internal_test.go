@@ -590,3 +590,48 @@ func (h chunkBreakerHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessP
 		return errors.New("chunk breaker")
 	}
 }
+
+// TestEnqueueStampsReadyUnderStripeLock pins the setReady ordering the
+// cluster node-executor registration depends on: on the deferred face the
+// gating batch is published on the command BEFORE it becomes visible to a
+// drain (both sides hold the stripe lock), so a flush racing the submitter
+// can never take a command whose readyBatch is still nil — which would skip
+// its batch during node-executor registration and let a node hook
+// self-deadlock (codex on #3942).
+func TestEnqueueStampsReadyUnderStripeLock(t *testing.T) {
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize:  100,
+		MaxFlushDelay: time.Hour, // hold the drain so the queue state is inspectable
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := NewStatusCmd(context.Background(), "set", "readystamp", "v")
+	batch := ap.enqueue(cmd)
+	if got := cmd.readyBatch(); got != batch {
+		t.Fatalf("readyBatch right after enqueue = %p, want the enqueued batch %p (must be stamped under the stripe lock)", got, batch)
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Err(); err != nil {
+		t.Fatalf("drained command: %v", err)
+	}
+}
+
+// TestConnStateClusterCommandsRunOutsidePipeline pins the divert set for the
+// connection-scoped cluster state commands: queued onto a shared pipeline
+// conn they would leak replica-reads (or a pending redirect) to every later
+// batch on that conn (codex on #3942).
+func TestConnStateClusterCommandsRunOutsidePipeline(t *testing.T) {
+	for _, name := range []string{"readonly", "readwrite", "asking"} {
+		if !runsOutsidePipeline(name) {
+			t.Errorf("runsOutsidePipeline(%q) = false, want true", name)
+		}
+	}
+}

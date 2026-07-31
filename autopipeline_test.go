@@ -4648,6 +4648,45 @@ func TestWithTimeoutCloneCloseBlocksParentResurrection(t *testing.T) {
 	_ = parent.Close()
 }
 
+// TestWithTimeoutCloneCloseStopsCachedAutoPipeliner pins the second half of
+// the shared-closed contract: an autopipeliner built and CACHED before a
+// WithTimeout clone closes the shared pools must refuse new work at submit
+// with ErrClosed — not accept enqueues that then fail against dead pools one
+// dispatch at a time (codex on #3942).
+func TestWithTimeoutCloneCloseStopsCachedAutoPipeliner(t *testing.T) {
+	ctx := context.Background()
+	parent := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	if err := parent.Ping(ctx).Err(); err != nil {
+		parent.Close()
+		t.Skipf("no redis: %v", err)
+	}
+	defer parent.Close()
+
+	ap, err := parent.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ap.Set(ctx, "cloneclose:pre", "v", 0).Err(); err != nil {
+		t.Fatalf("pre-close set: %v", err)
+	}
+
+	clone := parent.WithTimeout(5 * time.Second)
+	if err := clone.Close(); err != nil {
+		t.Fatalf("clone close: %v", err)
+	}
+
+	if err := ap.Set(ctx, "cloneclose:post", "v", 0).Err(); err != redis.ErrClosed {
+		t.Fatalf("cached autopipeliner Set after clone Close = %v, want ErrClosed", err)
+	}
+	if err := ap.Do(ctx, "get", "cloneclose:post").Err(); err != redis.ErrClosed {
+		t.Fatalf("cached autopipeliner Do after clone Close = %v, want ErrClosed", err)
+	}
+	// Diverted commands must refuse too, not run against the closed pools.
+	if err := ap.Do(ctx, "client", "id").Err(); err != redis.ErrClosed {
+		t.Fatalf("diverted command after clone Close = %v, want ErrClosed", err)
+	}
+}
+
 // TestAPClusterWideCommandsDelegate pins that cluster-wide commands issued on
 // the autopipeliner use ClusterClient's fan-out overrides rather than the
 // generic single-shard routing (DBSize must sum every master).
