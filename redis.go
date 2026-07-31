@@ -2489,9 +2489,14 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	// Short read timeout: 10us is enough to consume any already-buffered push
-	// notifications without blocking the caller.
-	return cn.WithReader(ctx, 10*time.Microsecond, func(rd *proto.Reader) error {
+	// Short read timeout: MaybeHasData confirmed kernel-buffered bytes, so
+	// the first read returns immediately — the deadline only needs to cover
+	// scheduler pauses, not network waits. 10us was routinely lost to
+	// scheduling on loaded machines: the peek then timed out with nothing
+	// consumed, the processor treated that as "no pending data", and a
+	// connection with buffered push bytes was returned to the pool instead
+	// of being drained (or removed, when the frame turns out partial).
+	return cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
