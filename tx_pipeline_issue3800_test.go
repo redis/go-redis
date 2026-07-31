@@ -1099,6 +1099,48 @@ func TestTxPipelineExecQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *tes
 	}
 }
 
+func TestTxPipelineExecQueuedErrorPartialHImportReadSkipsUnreadSideEffects(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*1\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	client.himport.register("fs", []string{"f1"})
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	prepare := pipe.HImportPrepare(ctx, "fs", "f1")
+	pipe.Set(ctx, "b", 1, 0)
+	discard := pipe.HImportDiscard(ctx, "fs")
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want queued Redis error")
+	}
+	if got := err.Error(); !strings.Contains(got, "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error", got)
+	}
+	if prepare.Err() != nil {
+		t.Fatalf("HImportPrepare err = %v, want nil", prepare.Err())
+	}
+	if _, ok := client.himport.lookup("fs"); !ok {
+		t.Fatal("fieldset fs unexpectedly removed from registry")
+	}
+	if discard.Err() == nil || !strings.Contains(discard.Err().Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("HImportDiscard err = %v, want queued Redis error", discard.Err())
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
 func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.execReply = "*1\r\n+OK\r\n"
@@ -1228,6 +1270,66 @@ func TestClusterTxPipelineRedirectDrainFailurePreservesRetry(t *testing.T) {
 	}
 }
 
+func TestClusterTxPipelineRedirectReadFailurePreservesRetry(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
+	srv.execReply = ""
+	srv.holdAfterExec = true
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, 100*time.Millisecond, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txRetryMoved {
+		t.Fatalf("outcome.kind = %v, want txRetryMoved", outcome.kind)
+	}
+	if outcome.addr != "127.0.0.1:7001" {
+		t.Fatalf("outcome.addr = %q, want %q", outcome.addr, "127.0.0.1:7001")
+	}
+	var netErr net.Error
+	if !errors.As(outcome.err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("outcome.err = %v, want wrapped timeout preserving redirect outcome", outcome.err)
+	}
+	if !strings.Contains(outcome.err.Error(), "MOVED 123 127.0.0.1:7001") {
+		t.Fatalf("outcome.err = %q, want MOVED root cause context", outcome.err)
+	}
+}
+
 func TestClusterTxPipelineQueuedErrorPushDrainFailurePreservesRetry(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.resp3 = true
@@ -1340,6 +1442,15 @@ func TestTxQueuedReadErrorPreservesHelpersAndBadConn(t *testing.T) {
 	}
 	if !isBadConn(err, false, "127.0.0.1:6379") {
 		t.Fatalf("isBadConn(%v) = false, want true", err)
+	}
+
+	forceBad := &txQueuedReadError{
+		queuedErr: proto.NewMovedError("MOVED 1 127.0.0.1:7001", "127.0.0.1:7001"),
+		readErr:   proto.NewOOMError("OOM custom push processor failure"),
+		forceBad:  true,
+	}
+	if !isBadConn(forceBad, false, "127.0.0.1:6379") {
+		t.Fatalf("isBadConn(%v) = false, want true for forced bad conn", forceBad)
 	}
 }
 

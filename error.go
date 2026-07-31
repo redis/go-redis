@@ -197,6 +197,9 @@ func isBadConn(err error, allowTimeout bool, addr string) bool {
 
 	var txReadErr *txQueuedReadError
 	if errors.As(err, &txReadErr) {
+		if txReadErr.forceBad {
+			return true
+		}
 		return isBadConn(txReadErr.readErr, allowTimeout, addr)
 	}
 

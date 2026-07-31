@@ -2546,6 +2546,16 @@ func (c *ClusterClient) readTxPipelineReplies(
 			if firstFatal != nil {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
 			}
+			if firstRedirect != nil {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+				}
+			}
 			return c.txReadFatal(err) // IO error
 		}
 		return c.classifyExecError(err, firstRedirect, firstFatal)
@@ -2633,6 +2643,8 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr}
 		case firstRedirect.tryAgain:
 			return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
+		default:
+			return &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx redirect outcome missing after draining EXEC array"), unreadReplies: true}
 		}
 	}
 

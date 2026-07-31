@@ -1828,8 +1828,18 @@ func (c *baseClient) txPipelineProcessCmds(
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
 			var execArrayErr *txQueuedExecArrayError
-			if errors.As(err, &execArrayErr) && execArrayErr.himportedCount > 0 {
-				c.himportAfterBatch(cn, injected, trimmedCmds)
+			if errors.As(err, &execArrayErr) && len(execArrayErr.himportedIndexes) > 0 {
+				filtered := make([]Cmder, len(trimmedCmds))
+				for i, cmd := range trimmedCmds {
+					if _, ok := cmd.(himportCmder); !ok {
+						filtered[i] = cmd
+						continue
+					}
+					if _, ok := execArrayErr.himportedIndexes[i]; ok {
+						filtered[i] = cmd
+					}
+				}
+				c.himportAfterBatch(cn, injected, filtered)
 			}
 			setCmdsErr(cmds, err)
 			return err
@@ -1854,13 +1864,14 @@ type txQueuedExecAbortError struct {
 }
 
 type txQueuedExecArrayError struct {
-	queuedErr      error
-	himportedCount int
+	queuedErr        error
+	himportedIndexes map[int]struct{}
 }
 
 type txQueuedReadError struct {
 	queuedErr error
 	readErr   error
+	forceBad  bool
 }
 
 func (e *txQueuedExecAbortError) Error() string {
@@ -1954,7 +1965,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 		}
 		hasHImport := false
-		himportedCount := 0
+		himportedIndexes := make(map[int]struct{})
 		for _, cmd := range cmds {
 			if _, ok := cmd.(himportCmder); ok {
 				hasHImport = true
@@ -1963,24 +1974,24 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		}
 		for i := 0; i < n; i++ {
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 			}
 			if hasHImport && i < len(cmds) {
 				if _, ok := cmds[i].(himportCmder); ok {
-					himportedCount++
+					himportedIndexes[i] = struct{}{}
 				}
 				err := cmds[i].readReply(rd)
 				cmds[i].SetErr(err)
 				if err != nil && !isRedisError(err) {
-					return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+					return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 				}
 				continue
 			}
 			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
-				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 			}
 		}
-		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedCount: himportedCount}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes}
 	}
 
 	return nil
