@@ -1841,6 +1841,12 @@ func (c *baseClient) txPipelineProcessCmds(
 				}
 				c.himportAfterBatch(cn, injected, filtered)
 			}
+			if errors.As(err, &execArrayErr) {
+				setCmdsErr(cmds[:1], err)
+				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
+				setCmdsErr(cmds[len(cmds)-1:], err)
+				return err
+			}
 			setCmdsErr(cmds, err)
 			return err
 		}
@@ -1866,6 +1872,7 @@ type txQueuedExecAbortError struct {
 type txQueuedExecArrayError struct {
 	queuedErr        error
 	himportedIndexes map[int]struct{}
+	readCount        int
 }
 
 type txQueuedReadError struct {
@@ -1991,7 +1998,11 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 			}
 		}
-		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes, readCount: readCount}
 	}
 
 	return nil
