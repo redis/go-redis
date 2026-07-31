@@ -2207,12 +2207,12 @@ const (
 // when the read loop exited before consuming all N+2 replies, leaving bytes
 // on the wire.
 type txOutcome struct {
-	kind          txOutcomeKind
-	err           error
-	addr          string
-	execErr       error
-	himported     bool
-	unreadReplies bool
+	kind           txOutcomeKind
+	err            error
+	addr           string
+	execErr        error
+	himportedCount int
+	unreadReplies  bool
 }
 
 // txRedirect records the first queue-stage redirect (MOVED/ASK/TRYAGAIN) seen
@@ -2465,7 +2465,7 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return nil
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
-		if outcome != nil && outcome.himported {
+		if outcome != nil && outcome.himportedCount > 0 {
 			node.Client.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -2566,6 +2566,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
 		}
 		hasHImport := false
+		himportedCount := 0
 		for _, cmd := range cmds {
 			if _, ok := cmd.(himportCmder); ok {
 				hasHImport = true
@@ -2573,8 +2574,13 @@ func (c *ClusterClient) readTxPipelineReplies(
 			}
 		}
 		for i := 0; i < n; i++ {
-			c.txProcessPush(ctx, node, cn, rd)
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+			}
 			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					himportedCount++
+				}
 				err := cmds[i].readReply(rd)
 				cmds[i].SetErr(err)
 				if err != nil && !isRedisError(err) {
@@ -2586,22 +2592,8 @@ func (c *ClusterClient) readTxPipelineReplies(
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
 			}
 		}
-		readCount := n
-		if readCount > len(cmds) {
-			readCount = len(cmds)
-		}
-		appliedHImport := false
-		if hasHImport {
-			appliedHImport = true
-			for i, cmd := range cmds {
-				if _, ok := cmd.(himportCmder); ok && i >= readCount {
-					appliedHImport = false
-					break
-				}
-			}
-		}
 		setCmdsErr(cmds, firstFatal)
-		return &txOutcome{kind: txFatal, err: firstFatal, himported: appliedHImport}
+		return &txOutcome{kind: txFatal, err: firstFatal, himportedCount: himportedCount}
 	}
 	if firstRedirect != nil {
 		n, err := strconv.Atoi(string(line[1:]))
@@ -2611,7 +2603,17 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
 		}
 		for i := 0; i < n; i++ {
-			c.txProcessPush(ctx, node, cn, rd)
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+				}
+				return c.txReadFatal(err)
+			}
 			if err := rd.DiscardNext(); err != nil && !isRedisError(err) {
 				switch {
 				case firstRedirect.moved:
@@ -2636,6 +2638,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 
 	// Success: read the N command results.
 	hasHImport := false
+	himportedCount := 0
 	for _, cmd := range cmds {
 		if _, ok := cmd.(himportCmder); ok {
 			hasHImport = true
@@ -2645,13 +2648,24 @@ func (c *ClusterClient) readTxPipelineReplies(
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
 		return c.txReadFatal(err) // IO error mid-results
 	}
-	return &txOutcome{kind: txSuccess, himported: hasHImport}
+	if hasHImport {
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				himportedCount++
+			}
+		}
+	}
+	return &txOutcome{kind: txSuccess, himportedCount: himportedCount}
 }
 
 func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {
 	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
+}
+
+func (c *ClusterClient) txProcessPushErr(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) error {
+	return node.Client.processPendingPushNotificationWithReader(ctx, cn, rd)
 }
 
 // txReadFatal classifies a read-phase IO error. The MULTI..EXEC batch was

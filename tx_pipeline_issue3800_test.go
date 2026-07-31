@@ -24,6 +24,7 @@ type txQueueErrorServer struct {
 	queueErr            string
 	execReply           string
 	himportPrepareReply string
+	preQueueReply       string
 	resp3               bool
 	holdAfterExec       bool
 	holdAfterQueueErr   bool
@@ -86,6 +87,12 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 			continue
 		}
 
+		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "a" && s.preQueueReply != "" {
+			_, _ = c.Write([]byte(s.preQueueReply))
+			s.preQueueReply = ""
+			continue
+		}
+
 		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "c" && s.closeOnSetC {
 			return
 		}
@@ -139,6 +146,8 @@ func fakeRESP3PushNotification(notificationType string, args ...string) string {
 
 type partialPushErrorProcessor struct{ *push.Processor }
 
+type partialPushTimeoutProcessor struct{ *push.Processor }
+
 func (p partialPushErrorProcessor) ProcessPendingNotifications(
 	_ context.Context, _ push.NotificationHandlerContext, rd *proto.Reader,
 ) error {
@@ -149,10 +158,38 @@ func (p partialPushErrorProcessor) ProcessPendingNotifications(
 	if b[0] != proto.RespPush {
 		return nil
 	}
-	if _, err := rd.ReadLine(); err != nil {
+	n, err := rd.ReadArrayLen()
+	if err != nil {
 		return err
 	}
+	for i := 0; i < n; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+	}
 	return proto.NewOOMError("OOM custom push processor failure")
+}
+
+func (p partialPushTimeoutProcessor) ProcessPendingNotifications(
+	_ context.Context, _ push.NotificationHandlerContext, rd *proto.Reader,
+) error {
+	b, err := rd.Peek(1)
+	if err != nil {
+		return err
+	}
+	if b[0] != proto.RespPush {
+		return nil
+	}
+	n, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+	}
+	return &net.OpError{Op: "read", Err: timeoutErrorStub{}}
 }
 
 func TestTxPipelineExecReturnsQueuedRedisError(t *testing.T) {
@@ -789,7 +826,7 @@ func TestClusterTxPipelineQueuedErrorPreservesHImportAfterBatch(t *testing.T) {
 			return err
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himported {
+		if outcome != nil && outcome.himportedCount > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -911,7 +948,7 @@ func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
 	var outcome *txOutcome
 	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himported {
+		if outcome != nil && outcome.himportedCount > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -935,7 +972,7 @@ func TestClusterTxPipelineSuccessPreservesHImportAfterBatch(t *testing.T) {
 func TestTxPipelineExecQueuedErrorPushDrainFailureClosesStickyConn(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.resp3 = true
-	srv.execReply = fakeRESP3PushNotification("MOVING", "slot", "123") + "*1\r\n+OK\r\n"
+	srv.execReply = "*2\r\n" + fakeRESP3PushNotification("MOVING", "slot", "123") + "+OK\r\n+OK\r\n"
 	defer func() { _ = srv.Close() }()
 
 	client := NewClient(&Options{
@@ -963,6 +1000,56 @@ func TestTxPipelineExecQueuedErrorPushDrainFailureClosesStickyConn(t *testing.T)
 	}
 	if !IsOOMError(err) {
 		t.Fatalf("Exec() error = %v, want custom processor error visible", err)
+	}
+
+	pong, pingErr := client.Ping(ctx).Result()
+	if pingErr != nil {
+		t.Fatalf("Ping() error = %v, want nil", pingErr)
+	}
+	if pong != "PING" {
+		t.Fatalf("Ping() = %q, want %q", pong, "PING")
+	}
+}
+
+func TestTxPipelineExecPushDrainFailureBeforeQueuedErrorKeepsRetryableReadError(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.resp3 = true
+	srv.preQueueReply = fakeRESP3PushNotification("MOVING", "slot", "123")
+	srv.holdAfterQueueErr = true
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		Protocol:     3,
+		DialTimeout:  time.Second,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: time.Second,
+	})
+	client.pushProcessor = partialPushTimeoutProcessor{push.NewProcessor()}
+	client.opt.PushNotificationProcessor = client.pushProcessor
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "a", 1, 0)
+	pipe.Set(ctx, "b", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want retryable read error")
+	}
+	if strings.Contains(err.Error(), "queued command failed: <nil>") {
+		t.Fatalf("Exec() error = %q, unexpectedly wrapped nil queued error", err.Error())
+	}
+	if IsOOMError(err) {
+		t.Fatalf("Exec() error = %v, should not expose queued Redis error before any queued error was seen", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("Exec() error = %v, want wrapped read timeout", err)
+	}
+	if got := pipe.Len(); got != 0 {
+		t.Fatalf("pipe.Len() = %d, want 0 after Exec", got)
 	}
 
 	pong, pingErr := client.Ping(ctx).Result()
@@ -1059,7 +1146,7 @@ func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *
 			return err
 		}
 		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
-		if outcome != nil && outcome.himported {
+		if outcome != nil && outcome.himportedCount > 0 {
 			nodeClient.himportAfterBatch(cn, injected, cmds)
 		}
 		return nil
@@ -1138,6 +1225,74 @@ func TestClusterTxPipelineRedirectDrainFailurePreservesRetry(t *testing.T) {
 	var netErr net.Error
 	if !errors.As(outcome.err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("outcome.err = %v, want wrapped timeout preserving redirect outcome", outcome.err)
+	}
+}
+
+func TestClusterTxPipelineQueuedErrorPushDrainFailurePreservesRetry(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.resp3 = true
+	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
+	srv.execReply = "*2\r\n" + fakeRESP3PushNotification("MOVING", "slot", "123") + "+OK\r\n+OK\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		Protocol:     3,
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	nodeClient.pushProcessor = partialPushErrorProcessor{push.NewProcessor()}
+	nodeClient.opt.PushNotificationProcessor = nodeClient.pushProcessor
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txRetryMoved {
+		t.Fatalf("outcome.kind = %v, want txRetryMoved", outcome.kind)
+	}
+	if outcome.addr != "127.0.0.1:7001" {
+		t.Fatalf("outcome.addr = %q, want %q", outcome.addr, "127.0.0.1:7001")
+	}
+	if got := outcome.err.Error(); !strings.Contains(got, "MOVED 123 127.0.0.1:7001") {
+		t.Fatalf("outcome.err = %q, want MOVED root cause context", got)
+	}
+	if srv.execSeen.Load() != 1 {
+		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+	if moved, _, _ := isMovedError(outcome.err); !moved {
+		t.Fatalf("outcome.err = %v, want wrapped MOVED error", outcome.err)
+	}
+	if !IsOOMError(outcome.err) {
+		t.Fatalf("outcome.err = %v, want custom push processor error visible", outcome.err)
 	}
 }
 

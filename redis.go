@@ -1828,7 +1828,7 @@ func (c *baseClient) txPipelineProcessCmds(
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
 			var execArrayErr *txQueuedExecArrayError
-			if errors.As(err, &execArrayErr) && execArrayErr.himported {
+			if errors.As(err, &execArrayErr) && execArrayErr.himportedCount > 0 {
 				c.himportAfterBatch(cn, injected, trimmedCmds)
 			}
 			setCmdsErr(cmds, err)
@@ -1854,9 +1854,8 @@ type txQueuedExecAbortError struct {
 }
 
 type txQueuedExecArrayError struct {
-	queuedErr error
-	himported bool
-	readCount int
+	queuedErr      error
+	himportedCount int
 }
 
 type txQueuedReadError struct {
@@ -1905,7 +1904,10 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+			if queuedErr != nil {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+			}
+			return err
 		}
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
@@ -1952,6 +1954,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 		}
 		hasHImport := false
+		himportedCount := 0
 		for _, cmd := range cmds {
 			if _, ok := cmd.(himportCmder); ok {
 				hasHImport = true
@@ -1963,6 +1966,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					himportedCount++
+				}
 				err := cmds[i].readReply(rd)
 				cmds[i].SetErr(err)
 				if err != nil && !isRedisError(err) {
@@ -1974,21 +1980,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
 			}
 		}
-		readCount := n
-		if readCount > len(cmds) {
-			readCount = len(cmds)
-		}
-		himported := false
-		if hasHImport {
-			himported = true
-			for i, cmd := range cmds {
-				if _, ok := cmd.(himportCmder); ok && i >= readCount {
-					himported = false
-					break
-				}
-			}
-		}
-		return &txQueuedExecArrayError{queuedErr: queuedErr, himported: himported, readCount: readCount}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedCount: himportedCount}
 	}
 
 	return nil
