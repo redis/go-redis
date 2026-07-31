@@ -1895,6 +1895,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
 			if !isRedisError(err) {
+				if queuedErr != nil {
+					return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+				}
 				return err
 			}
 			if queuedErr == nil {

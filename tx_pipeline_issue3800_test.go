@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync/atomic"
@@ -16,12 +17,15 @@ import (
 )
 
 type txQueueErrorServer struct {
-	ln            net.Listener
-	execSeen      atomic.Int32
-	queueErr      string
-	execReply     string
-	resp3         bool
-	holdAfterExec bool
+	ln                 net.Listener
+	execSeen           atomic.Int32
+	queueErr           string
+	execReply          string
+	resp3              bool
+	holdAfterExec      bool
+	holdAfterQueueErr  bool
+	closeAfterQueueErr bool
+	closeOnSetC        bool
 }
 
 func (s *txQueueErrorServer) Addr() string { return s.ln.Addr().String() }
@@ -55,7 +59,17 @@ func (s *txQueueErrorServer) handle(c net.Conn) {
 
 		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "b" {
 			_, _ = c.Write([]byte(s.queueErr))
+			if s.closeAfterQueueErr {
+				return
+			}
+			if s.holdAfterQueueErr {
+				select {}
+			}
 			continue
+		}
+
+		if strings.EqualFold(args[0], "set") && len(args) > 1 && args[1] == "c" && s.closeOnSetC {
+			return
 		}
 
 		if strings.EqualFold(args[0], "exec") {
@@ -394,6 +408,7 @@ func TestTxPipelineExecConvertsNilExecReplyToTxFailedErr(t *testing.T) {
 func TestTxPipelineExecPreservesQueuedErrorOnMissingExecReply(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.execReply = ""
+	srv.holdAfterExec = true
 	defer func() { _ = srv.Close() }()
 
 	client := NewClient(&Options{
@@ -422,6 +437,41 @@ func TestTxPipelineExecPreservesQueuedErrorOnMissingExecReply(t *testing.T) {
 	}
 	if srv.execSeen.Load() != 1 {
 		t.Fatalf("EXEC replies seen = %d, want 1", srv.execSeen.Load())
+	}
+}
+
+func TestTxPipelineExecPreservesQueuedErrorOnQueuedReplyReadFailure(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.closeOnSetC = true
+	defer func() { _ = srv.Close() }()
+
+	client := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  100 * time.Millisecond,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = client.Close() }()
+
+	ctx := context.Background()
+	pipe := client.TxPipeline()
+	pipe.Set(ctx, "a", 1, 0)
+	pipe.Set(ctx, "b", 1, 0)
+	pipe.Set(ctx, "c", 1, 0)
+
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("Exec() error = nil, want timeout with queued Redis error context")
+	}
+	if !strings.Contains(err.Error(), "ERR in transaction context, keys must in same slot") {
+		t.Fatalf("Exec() error = %q, want queued Redis error context", err)
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) && !errors.Is(err, io.EOF) {
+		t.Fatalf("Exec() error = %v, want wrapped network read error or EOF", err)
+	}
+	if srv.execSeen.Load() != 0 {
+		t.Fatalf("EXEC replies seen = %d, want 0", srv.execSeen.Load())
 	}
 }
 
