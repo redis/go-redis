@@ -418,7 +418,7 @@ func (cmd *baseCmd) await() {
 		return
 	default:
 	}
-	if b.isDispatchGoroutine(curGoroutineID()) {
+	if b.isExecutorGoroutine() {
 		// A hook on one of the batch's own executor goroutines (the
 		// dispatcher, or a cluster per-node executor) is reading this
 		// command's result BEFORE next() has executed it. Blocking would
