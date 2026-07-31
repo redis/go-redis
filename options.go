@@ -190,7 +190,8 @@ type Options struct {
 
 	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
 	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
@@ -223,7 +224,8 @@ type Options struct {
 
 	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
 	// If set to a value > 0, a separate connection pool will be created specifically for
-	// pipelining operations (Pipeline() and AutoPipeline()) with this buffer size.
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
 	//
 	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
 	// throughput) while keeping regular command buffers small (to save memory).
@@ -250,6 +252,17 @@ type Options struct {
 	//
 	// default: 10
 	PipelinePoolSize int
+
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
+	// AutoPipeline and AsyncAutoPipeline use it when called without an
+	// explicit config, falling back to their per-face defaults
+	// (DefaultBlockingAutoPipelineOptions / DefaultAutoPipelineOptions) when it
+	// is nil. Pass a config to either method to override. Commands issued
+	// through an autopipeliner are batched into pipelines to cut round-trips
+	// and raise throughput.
+	//
+	// EXPERIMENTAL: this API is subject to change, use with caution.
+	AutoPipelineOptions *AutoPipelineOptions
 
 	// PoolFIFO type of connection pool.
 	//

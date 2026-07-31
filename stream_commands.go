@@ -381,8 +381,11 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
 
-	// Record stream lag for each message (if command succeeded)
-	if cmd.Err() == nil {
+	// Record stream lag for each message (if command succeeded).
+	// Enabled-gated: reading the result awaits execution on the async
+	// autopipeline face, needlessly blocking the caller when no recorder is
+	// installed.
+	if otel.Enabled() && cmd.Err() == nil {
 		streams := cmd.Val()
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {

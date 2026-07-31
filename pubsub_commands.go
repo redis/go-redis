@@ -20,8 +20,11 @@ type PubSubCmdable interface {
 func (c cmdable) Publish(ctx context.Context, channel string, message interface{}) *IntCmd {
 	cmd := NewIntCmd(ctx, "publish", channel, message)
 	_ = c(ctx, cmd)
-	// Record PubSub message sent (if command succeeded)
-	if cmd.Err() == nil {
+	// Record PubSub message sent (if command succeeded). Enabled-gated:
+	// reading the result awaits execution on the async autopipeline face,
+	// which would turn a fire-and-forget publish into a blocking call when
+	// no recorder is installed.
+	if otel.Enabled() && cmd.Err() == nil {
 		otel.RecordPubSubMessage(ctx, nil, "sent", channel, false)
 	}
 	return cmd
@@ -30,8 +33,9 @@ func (c cmdable) Publish(ctx context.Context, channel string, message interface{
 func (c cmdable) SPublish(ctx context.Context, channel string, message interface{}) *IntCmd {
 	cmd := NewIntCmd(ctx, "spublish", channel, message)
 	_ = c(ctx, cmd)
-	// Record PubSub message sent (if command succeeded)
-	if cmd.Err() == nil {
+	// Record PubSub message sent (if command succeeded). Enabled-gated: see
+	// Publish.
+	if otel.Enabled() && cmd.Err() == nil {
 		otel.RecordPubSubMessage(ctx, nil, "sent", channel, true)
 	}
 	return cmd

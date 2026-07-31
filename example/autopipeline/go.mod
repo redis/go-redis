@@ -1,4 +1,4 @@
-module github.com/redis/go-redis/example/ft-aliaslist
+module github.com/redis/go-redis/example/autopipeline
 
 go 1.24
 

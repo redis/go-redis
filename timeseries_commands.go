@@ -1302,10 +1302,12 @@ func (cmd *TSNRangePivotRowSliceCmd) SetVal(val []TSNRangePivotRow) {
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) Result() ([]TSNRangePivotRow, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) Val() []TSNRangePivotRow {
+	cmd.await()
 	return cmd.val
 }
 
