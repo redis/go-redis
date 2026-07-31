@@ -62,10 +62,10 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 
 			AfterEach(func() {
 				if client != nil {
-					// Close the subject FIRST: it drains queued async writes,
-					// so the flush cannot be undone by a late command.
+					// Flush through the SUBJECT: ordered after queued writes,
+					// executed by closeSubject's drain (see json_test.go).
+					client.FlushDB(ctx)
 					closeSubject()
-					rawClient.FlushDB(ctx)
 				}
 			})
 
