@@ -1593,10 +1593,12 @@ func (h resultPeekHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		if h.before {
 			_ = cmd.Err()
+			_ = cmd.String()
 		}
 		err := next(ctx, cmd)
 		if !h.before {
 			_ = cmd.Err()
+			_ = cmd.String()
 		}
 		return err
 	}
@@ -1607,12 +1609,14 @@ func (h resultPeekHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redi
 		if h.before {
 			for _, c := range cmds {
 				_ = c.Err()
+				_ = c.String()
 			}
 		}
 		err := next(ctx, cmds)
 		if !h.before {
 			for _, c := range cmds {
 				_ = c.Err()
+				_ = c.String()
 			}
 		}
 		return err
@@ -4684,5 +4688,74 @@ func TestAPClusterWideCommandsDelegate(t *testing.T) {
 	exists, err := ap.ScriptExists(ctx, sha).Result()
 	if err != nil || len(exists) != 1 || !exists[0] {
 		t.Fatalf("script must exist on EVERY shard after delegated ScriptLoad: %v %v", exists, err)
+	}
+}
+
+// TestAsyncCommandStringAwaits pins String()'s accessor contract on the
+// deferred face: formatting an in-flight command from another goroutine
+// blocks until execution — reading the value field without that barrier is a
+// data race with reply processing (review finding by ofek and cursor on
+// #3942) — and then includes the executed result. The dispatch-goroutine
+// case (a hook formatting its own batch) is covered by resultPeekHook, which
+// also calls String and relies on the dispatch-gid guard in await.
+func TestAsyncCommandStringAwaits(t *testing.T) {
+	ctx := context.Background()
+	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	gate := make(chan struct{})
+	var armed atomic.Bool
+	client.AddHook(gateHook{gate: gate, armed: &armed})
+
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runWithWatchdog(t, 30*time.Second, func() {
+		armed.Store(true)
+		cmd := ap.Set(ctx, "strawait", "value-42", 0)
+		sCh := make(chan string, 1)
+		go func() { sCh <- cmd.String() }()
+
+		select {
+		case s := <-sCh:
+			t.Fatalf("String returned %q before the command executed", s)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		armed.Store(false)
+		close(gate)
+		s := <-sCh
+		if !strings.Contains(s, "set strawait value-42") || !strings.Contains(s, "OK") {
+			t.Fatalf("String after execution = %q, want args and the OK result", s)
+		}
+	})
+}
+
+// gateHook holds every dispatch (solo and pipelined) until gate closes,
+// while armed.
+type gateHook struct {
+	gate  chan struct{}
+	armed *atomic.Bool
+}
+
+func (h gateHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h gateHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if h.armed.Load() {
+			<-h.gate
+		}
+		return next(ctx, cmd)
+	}
+}
+func (h gateHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if h.armed.Load() {
+			<-h.gate
+		}
+		return next(ctx, cmds)
 	}
 }

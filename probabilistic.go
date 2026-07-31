@@ -233,6 +233,7 @@ func newScanDumpCmd(ctx context.Context, args ...interface{}) *ScanDumpCmd {
 }
 
 func (cmd *ScanDumpCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -318,6 +319,7 @@ func (cmd *BFInfoCmd) SetVal(val BFInfo) {
 }
 
 func (cmd *BFInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -657,6 +659,7 @@ func (cmd *CFInfoCmd) SetVal(val CFInfo) {
 }
 
 func (cmd *CFInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -829,6 +832,7 @@ func (cmd *CMSInfoCmd) SetVal(val CMSInfo) {
 }
 
 func (cmd *CMSInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1032,6 +1036,7 @@ func (cmd *TopKInfoCmd) SetVal(val TopKInfo) {
 }
 
 func (cmd *TopKInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1289,6 +1294,7 @@ func (cmd *TDigestInfoCmd) SetVal(val TDigestInfo) {
 }
 
 func (cmd *TDigestInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 

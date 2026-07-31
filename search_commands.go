@@ -983,6 +983,7 @@ func (cmd *AggregateCmd) RawResult() (interface{}, error) {
 }
 
 func (cmd *AggregateCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2178,6 +2179,7 @@ func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
 }
 
 func (cmd *FTInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2385,6 +2387,7 @@ func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckC
 }
 
 func (cmd *FTSpellCheckCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2705,6 +2708,7 @@ func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...inter
 }
 
 func (cmd *FTSearchCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2992,6 +2996,7 @@ func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...inter
 }
 
 func (cmd *FTHybridCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3536,6 +3541,7 @@ func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
 }
 
 func (cmd *FTSynDumpCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 

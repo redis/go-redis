@@ -622,6 +622,7 @@ func newTSTimestampValueCmd(ctx context.Context, args ...interface{}) *TSTimesta
 }
 
 func (cmd *TSTimestampValueCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -955,6 +956,7 @@ func newTSTimestampValueSliceCmd(ctx context.Context, args ...interface{}) *TSTi
 }
 
 func (cmd *TSTimestampValueSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1294,6 +1296,7 @@ func newTSNRangePivotRowSliceCmd(ctx context.Context, args ...interface{}) *TSNR
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 

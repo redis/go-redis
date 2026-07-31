@@ -514,16 +514,30 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 		return nil, err
 	}
 
+	if err := c.initPooledConn(ctx, c.connPool, cn); err != nil {
+		return nil, err
+	}
+
+	return cn, nil
+}
+
+// initPooledConn brings a conn freshly obtained from p to a usable state: it
+// runs the connection handshake if needed, records the connection-create-time
+// metric, and re-acquires the conn after initConn parks it IDLE. On failure
+// the conn is Removed from p (never leaked) and the error is unwrapped to the
+// caller-visible cause. Shared by the main-pool path (_getConn) and the
+// dedicated pipeline-pool path (withPipelineConn) so the two cannot drift.
+func (c *baseClient) initPooledConn(ctx context.Context, p pool.Pooler, cn *pool.Conn) error {
 	if cn.IsInited() {
-		return cn, nil
+		return nil
 	}
 
 	if err := c.initConn(ctx, cn); err != nil {
-		c.connPool.Remove(ctx, cn, err)
-		if err := errors.Unwrap(err); err != nil {
-			return nil, err
+		p.Remove(ctx, cn, err)
+		if unwrapped := errors.Unwrap(err); unwrapped != nil {
+			return unwrapped
 		}
-		return nil, err
+		return err
 	}
 
 	if dialStartNs := cn.GetDialStartNs(); dialStartNs > 0 {
@@ -536,10 +550,14 @@ func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {
 	// initConn will transition to IDLE state, so we need to acquire it
 	// before returning it to the user.
 	if !cn.TryAcquire() {
-		return nil, fmt.Errorf("redis: connection is not usable")
+		err := fmt.Errorf("redis: connection is not usable")
+		// Remove rather than abandon: an unacquirable conn left outside the
+		// pool's accounting would leak its slot.
+		p.Remove(ctx, cn, err)
+		return err
 	}
 
-	return cn, nil
+	return nil
 }
 
 // poolForConn returns the pool that owns cn — the dedicated pipeline pool when
@@ -1018,29 +1036,38 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 	if c.opt.Limiter != nil {
 		c.opt.Limiter.ReportResult(err)
 	}
+	c.releaseConnToPool(ctx, c.connPool, cn, err)
+}
 
+// releaseConnToPool returns a conn to p after a command or pipeline ran on
+// it: bad conns are Removed, pending push notifications are drained (a
+// mid-frame drain failure also Removes — the reply stream may be
+// desynchronized), and a client-side-cache post-read probe is requested when
+// tracking is on. Limiter accounting stays with the callers, whose shapes
+// differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
+func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
 	if isBadConn(err, false, c.opt.Addr) {
-		c.connPool.Remove(ctx, cn, err)
-	} else {
-		// process any pending push notifications before returning the connection to the pool
-		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
-			if isBadConn(err, false, c.opt.Addr) {
-				// A mid-frame read failure may leave the reply stream
-				// desynchronized, so the connection cannot be reused.
-				c.connPool.Remove(ctx, cn, err)
-				return
-			}
-		}
-		if c.cscTrackingRequested() {
-			// A TLS-like wrapper can retain decrypted bytes after the command
-			// reply even when its raw socket is empty. Ask the background
-			// drainer for one bounded post-read probe before relying on raw
-			// socket peeks again.
-			cn.MarkCscReadPending()
-		}
-		c.connPool.Put(ctx, cn)
+		p.Remove(ctx, cn, err)
+		return
 	}
+	// process any pending push notifications before returning the connection to the pool
+	if err := c.processPushNotifications(ctx, cn); err != nil {
+		internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
+		if isBadConn(err, false, c.opt.Addr) {
+			// A mid-frame read failure may leave the reply stream
+			// desynchronized, so the connection cannot be reused.
+			p.Remove(ctx, cn, err)
+			return
+		}
+	}
+	if c.cscTrackingRequested() {
+		// A TLS-like wrapper can retain decrypted bytes after the command
+		// reply even when its raw socket is empty. Ask the background
+		// drainer for one bounded post-read probe before relying on raw
+		// socket peeks again.
+		cn.MarkCscReadPending()
+	}
+	p.Put(ctx, cn)
 }
 
 func (c *baseClient) withConn(
@@ -1065,11 +1092,11 @@ func (c *baseClient) withConn(
 // one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
 // otherwise it falls back to the regular pool via withConn.
 // withPipelineConn is withConn/releaseConn for the DEDICATED pipeline pool.
-// It deliberately mirrors their semantics (Limiter accounting, init/acquire
-// error paths, bad-conn removal, push-notification drain on release) — when
-// touching either path, keep the twin in sync; they have already drifted
-// once (a functionally-inert Limiter-ordering divergence and a missed
-// drain-error removal, both since realigned).
+// Conn preparation and release go through the shared pool-parameterized
+// helpers (initPooledConn, releaseConnToPool) — the paths used to mirror each
+// other by hand and drifted three times (a Limiter-ordering divergence, a
+// missed drain-error removal, a missed client-side-cache probe), so only the
+// Limiter shape is allowed to live here.
 func (c *baseClient) withPipelineConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) (retErr error) {
@@ -1095,48 +1122,14 @@ func (c *baseClient) withPipelineConn(
 		return err
 	}
 
-	// Initialize connection if needed.
-	if !cn.IsInited() {
-		if err := c.initConn(ctx, cn); err != nil {
-			c.pipelinePool.Remove(ctx, cn, err)
-			if unwrapped := errors.Unwrap(err); unwrapped != nil {
-				return unwrapped
-			}
-			return err
-		}
-
-		// initConn transitions the connection to IDLE, so re-acquire it.
-		if !cn.TryAcquire() {
-			// Couldn't re-acquire: remove the connection so it isn't leaked from
-			// the pipeline pool's accounting (the deferred Put/Remove below only
-			// runs once fnErr is set, which it isn't on this early return).
-			err := fmt.Errorf("redis: connection is not usable")
-			c.pipelinePool.Remove(ctx, cn, err)
-			return err
-		}
+	if err := c.initPooledConn(ctx, c.pipelinePool, cn); err != nil {
+		return err
 	}
 
 	var fnErr error
 	defer func() {
 		retErr = fnErr
-		if isBadConn(fnErr, false, c.opt.Addr) {
-			c.pipelinePool.Remove(ctx, cn, fnErr)
-		} else {
-			// Process any pending push notifications before returning the
-			// connection to the pool.
-			if err := c.processPushNotifications(ctx, cn); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
-				if isBadConn(err, false, c.opt.Addr) {
-					// Mirror releaseConn: a mid-frame read failure may leave
-					// the reply stream desynchronized, and the next pipeline
-					// on this conn would consume leftover push bytes as
-					// command replies. The conn cannot be reused.
-					c.pipelinePool.Remove(ctx, cn, err)
-					return
-				}
-			}
-			c.pipelinePool.Put(ctx, cn)
-		}
+		c.releaseConnToPool(ctx, c.pipelinePool, cn, fnErr)
 	}()
 
 	fnErr = fn(ctx, cn)

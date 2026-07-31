@@ -96,6 +96,7 @@ func newJSONCmd(ctx context.Context, args ...interface{}) *JSONCmd {
 }
 
 func (cmd *JSONCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -218,6 +219,7 @@ func NewJSONSliceCmd(ctx context.Context, args ...interface{}) *JSONSliceCmd {
 }
 
 func (cmd *JSONSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -309,6 +311,7 @@ func NewIntPointerSliceCmd(ctx context.Context, args ...interface{}) *IntPointer
 }
 
 func (cmd *IntPointerSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
