@@ -1890,7 +1890,12 @@ func (c *baseClient) txPipelineProcessCmds(
 			}
 			if errors.As(err, &execArrayErr) {
 				setCmdsErr(cmds[:1], err)
-				setCmdsErr(trimmedCmds[:execArrayErr.readCount], err)
+				for i := 0; i < execArrayErr.readCount; i++ {
+					if _, ok := execArrayErr.himportedIndexes[i]; ok {
+						continue
+					}
+					setCmdsErr(trimmedCmds[i:i+1], err)
+				}
 				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
 				setCmdsErr(cmds[len(cmds)-1:], err)
 				return err
