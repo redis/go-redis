@@ -1695,6 +1695,21 @@ func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
 		}
 		return nil
 	})
+	// Commands whose routing is not slot-derived must not be coalesced: a solo
+	// flush reaches ClusterClient.process and its special handling (FT.CURSOR
+	// READ/DEL are sticky to the node holding the cursor), but inside a batch
+	// mapCmdsByNode routes by slot and can hit the wrong shard — visible only
+	// under concurrent traffic, which is the worst way to find it. Divert them
+	// instead of rejecting: they work fine on their own connection (review
+	// finding by codex on #3942).
+	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
+		if c.cmdInfoResolver == nil {
+			return false
+		}
+		policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+		return policy != nil && policy.Request == routing.ReqSpecial
+	})
+
 	const slots = 16384
 	n := ap.numShards()
 	ap.setShardFn(func(cmd Cmder) int {
@@ -1958,11 +1973,12 @@ func (c *ClusterClient) processPipelineNode(
 		return err
 	})
 	if !executed {
-		// Deliberate abort by a hook: set the error, do not remap for retry
-		// (a retry would re-run the same hook).
-		if err == nil {
-			err = ErrHookShortCircuit
-		}
+		// A hook returned without calling next. If it supplied an error that is
+		// a deliberate abort: set it and do not remap for retry (a retry would
+		// re-run the same hook). If it returned nil it short-circuited
+		// SUCCESSFULLY, having served the batch itself — the same thing a plain
+		// Pipeline hook may do — so setCmdsErr(nil) leaves the values it set
+		// intact (review finding by codex on #3942).
 		setCmdsErr(cmds, err)
 		return
 	}
@@ -2402,12 +2418,11 @@ func (c *ClusterClient) processTxPipelineNode(
 		return err
 	})
 
-	if !executed {
-		// A node-level hook returned without calling next: surface its
-		// verdict instead of a generic no-outcome failure.
-		if chainErr == nil {
-			chainErr = ErrHookShortCircuit
-		}
+	if !executed && chainErr != nil {
+		// A node-level hook aborted with an error: surface its verdict. A hook
+		// that returned nil short-circuited successfully (it served the batch),
+		// which is legal for plain pipelines too, so it is not turned into a
+		// fatal outcome (review finding by codex on #3942).
 		outcome = &txOutcome{kind: txFatal, err: chainErr}
 	}
 	if outcome == nil {

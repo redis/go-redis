@@ -571,6 +571,14 @@ type AutoPipeliner struct {
 	// merged batch). The returned error is set on the command.
 	preflight func(ctx context.Context, cmd Cmder) error
 
+	// mustDivert, when set, forces a command off the batching path even though
+	// it is otherwise batchable — cluster mode uses it for commands whose
+	// routing is NOT slot-derived (ReqSpecial, e.g. FT.CURSOR READ, which is
+	// sticky to the node that owns the cursor). Batched, mapCmdsByNode would
+	// route them by slot and reach the wrong shard; diverted, they go through
+	// Client/ClusterClient.Process and keep their special routing.
+	mustDivert func(ctx context.Context, cmd Cmder) bool
+
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
 	// (shared across WithTimeout clones). The getters refuse to build a fresh
 	// pipeliner once it is set; this reference makes an ALREADY-built
@@ -934,14 +942,12 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		if ap.armSelfDeadlockGuard() {
 			b.dispGid.Store(curGoroutineID())
 		}
-		executed := false
+		// A hook that returns nil WITHOUT calling next has short-circuited
+		// SUCCESSFULLY (it served the command itself); plain Client hooks may do
+		// that, so nothing here synthesizes an error for it — see dispatchCmds.
 		err := ap.pipeliner.withProcessHook(ctx, cmd, func(ctx context.Context, cmd Cmder) error {
-			executed = true
 			return ap.pipeliner.process(ctx, cmd)
 		})
-		if !executed && err == nil {
-			err = ErrHookShortCircuit
-		}
 		// The chain's final verdict, exactly like Client.Process — recorded
 		// before the deferred close wakes the reader, so short-circuits,
 		// post-next rewrites and suppressions are all honored.
@@ -1293,7 +1299,8 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// fan-out and aggregation. Running the preflight first therefore rejected
 	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
 	// command policies enabled (review finding by codex on #3942).
-	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd)
+	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
+		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)
@@ -1350,14 +1357,6 @@ var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argu
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrAutoPipelineTimeout = errors.New(
 	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)")
-
-// ErrHookShortCircuit is set on commands whose batch a hook short-circuited:
-// the hook chain returned without calling next, so the pipeline never
-// executed and no per-command result exists. Used only when the hook did not
-// supply an error of its own.
-//
-// EXPERIMENTAL: this API is subject to change, use with caution.
-var ErrHookShortCircuit = errors.New("redis: autopipeline: pipeline hook returned without executing the batch")
 
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
@@ -1551,6 +1550,13 @@ func (ap *AutoPipeliner) setShardFn(fn func(Cmder) int) { ap.shardFn = fn }
 // construction, before the AutoPipeliner is published.
 func (ap *AutoPipeliner) setPreflight(fn func(ctx context.Context, cmd Cmder) error) {
 	ap.preflight = fn
+}
+
+// setMustDivert installs a predicate that forces a command off the batching
+// path (see the mustDivert field). Called once during construction, before the
+// AutoPipeliner is published.
+func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) bool) {
+	ap.mustDivert = fn
 }
 
 // Close stops the autopipeliner and flushes any pending commands. Worst
@@ -1955,7 +1961,7 @@ func (s *apShard) awaitExpectedArrivals(batchSize int) {
 // batches are still open (the callers' deferred closes run after this
 // returns, so no waiter is reading yet):
 //   - short-circuit (hook returned without calling next): nothing set the
-//     commands' results — the chain's error (or ErrHookShortCircuit) is set
+//     commands' results — the chain's error, if any, is set
 //     on every command;
 //   - post-next verdict (exec ran, a hook still returned an error): applied
 //     to the commands ONLY when every one of them is error-free — the case
@@ -1975,14 +1981,20 @@ func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, tot
 	// decodes into a caller buffer that a retry could not un-write) disables
 	// retries for the WHOLE slice it is dispatched in — see cmdsContainNoRetry.
 	// In a shared batch that would silently strip retries from unrelated
-	// callers' ordinary commands, so split the batch and dispatch each policy
-	// group on its own. Both groups still ride real pipelines; only the mixed
-	// case pays a second dispatch (review finding by codex on #3942).
-	if retryable, noRetry := splitByRetryPolicy(cmds); noRetry != nil {
-		ap.dispatchCmds(ctx, [][]Cmder{retryable}, len(retryable))
-		ap.dispatchCmds(ctx, [][]Cmder{noRetry}, len(noRetry))
-		putQueueSlice(retryable)
-		putQueueSlice(noRetry)
+	// callers' ordinary commands, so a mixed batch is dispatched as several
+	// pipelines instead of one.
+	//
+	// Split into CONTIGUOUS RUNS, in order, never into two policy groups:
+	// grouping would reorder the stream — a zero-copy read submitted before a
+	// SET to the same key would execute after it, so the read observes the new
+	// value on a face that promises submit order. Runs preserve every relative
+	// position while still keeping each dispatched slice policy-uniform (both
+	// findings by codex on #3942; the grouping bug was introduced by the first
+	// fix for the retry leak).
+	if runs := splitRetryRuns(cmds); runs != nil {
+		for _, run := range runs {
+			ap.dispatchCmds(ctx, [][]Cmder{run}, len(run))
+		}
 		if len(queues) > 1 {
 			putQueueSlice(cmds)
 		}
@@ -1993,9 +2005,12 @@ func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, tot
 		executed = true
 		return ap.pipeliner.processPipeline(ctx, cmds)
 	})
-	if !executed && chainErr == nil {
-		chainErr = ErrHookShortCircuit
-	}
+	// NOTE: a hook that returns nil WITHOUT calling next has short-circuited
+	// SUCCESSFULLY — it served the batch itself (a cache, a mock) and set the
+	// command values. Plain Pipeline/Client hooks are allowed to do exactly
+	// that, so no error is synthesized for it: doing so made a hook that works
+	// on a pipeline fail on an autopipelined batch (review finding by codex on
+	// #3942). Only the hook's own error propagates, below.
 	if chainErr != nil {
 		if !executed {
 			setCmdsErr(cmds, chainErr)
@@ -2081,30 +2096,40 @@ func (ap *AutoPipeliner) dispatchCmdsMaybeChunked(ctx context.Context, queues []
 	}
 }
 
-// splitByRetryPolicy partitions cmds into the retry-allowed and retry-forbidden
-// groups. It returns (cmds, nil) unchanged — no allocation, no copy — unless the
-// slice is genuinely MIXED, which is the only case that needs splitting: a batch
-// that is entirely one policy already has consistent semantics.
-func splitByRetryPolicy(cmds []Cmder) (retryable, noRetry []Cmder) {
-	n := 0
-	for _, cmd := range cmds {
-		if cmd.NoRetry() {
-			n++
+// splitRetryRuns slices cmds into maximal CONTIGUOUS runs of one retry policy,
+// preserving order: run i's commands all precede run i+1's, exactly as
+// submitted. It returns nil when the whole batch is already policy-uniform —
+// the overwhelmingly common case — so uniform batches allocate nothing and are
+// dispatched as one pipeline.
+//
+// Runs are sub-slices of cmds, not copies, so they must be dispatched before
+// cmds is recycled and must not be returned to the slice pool individually.
+func splitRetryRuns(cmds []Cmder) [][]Cmder {
+	if len(cmds) < 2 {
+		return nil
+	}
+	first := cmds[0].NoRetry()
+	boundary := -1
+	for i := 1; i < len(cmds); i++ {
+		if cmds[i].NoRetry() != first {
+			boundary = i
+			break
 		}
 	}
-	if n == 0 || n == len(cmds) {
-		return cmds, nil
+	if boundary < 0 {
+		return nil // uniform: one dispatch, no split
 	}
-	retryable = getQueueSlice(len(cmds) - n)
-	noRetry = getQueueSlice(n)
-	for _, cmd := range cmds {
-		if cmd.NoRetry() {
-			noRetry = append(noRetry, cmd)
-		} else {
-			retryable = append(retryable, cmd)
+	runs := make([][]Cmder, 0, 4)
+	start := 0
+	policy := first
+	for i := 1; i < len(cmds); i++ {
+		if p := cmds[i].NoRetry(); p != policy {
+			runs = append(runs, cmds[start:i])
+			start = i
+			policy = p
 		}
 	}
-	return retryable, noRetry
+	return append(runs, cmds[start:])
 }
 
 // recoverDispatchPanic converts a panic on a dispatch goroutine (a hook or
@@ -2270,14 +2295,10 @@ func (s *apShard) flushBatchSlice() {
 			// waiter, so a hook that short-circuits, rewrites, or suppresses
 			// the error is honored. Hooks on this goroutine read the command
 			// deadlock-free via the dispGid guard stamped above.
-			executed := false
+			// A successful short-circuit stays successful (see dispatchCmds).
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
-				executed = true
 				return ap.pipeliner.process(ctx, cmd)
 			})
-			if !executed && err == nil {
-				err = ErrHookShortCircuit
-			}
 			solo.SetErr(err)
 			ap.observeBatchExec(time.Since(execStart))
 		}()

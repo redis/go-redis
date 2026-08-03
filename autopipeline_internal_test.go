@@ -1110,42 +1110,98 @@ func TestBlockingSetCoversEveryReadTimeoutHelper(t *testing.T) {
 	}
 }
 
-// TestNoRetryDoesNotLeakToBatchmates pins per-command retry isolation: a
-// zero-copy read forbids retries because its reply decodes into a caller
-// buffer, and cmdsContainNoRetry applies that to a whole dispatched slice — so
-// in a shared batch it would strip retries from unrelated callers. The engine
-// splits mixed batches by policy instead.
-func TestNoRetryDoesNotLeakToBatchmates(t *testing.T) {
+// TestNoRetryRunsIsolatePolicyAndPreserveOrder pins BOTH halves of retry
+// isolation. A zero-copy read forbids retries because its reply decodes into a
+// caller buffer, and cmdsContainNoRetry applies that verdict to a whole
+// dispatched slice — so a shared batch must not put one in with retryable
+// commands. But the split must never REORDER: grouping all retryable commands
+// ahead of the no-retry ones would run a later SET before an earlier zero-copy
+// GET of the same key, and the ordered faces promise submit order. Contiguous
+// runs satisfy both (both findings by codex on #3942 — the reordering bug came
+// from the first fix for the retry leak).
+func TestNoRetryRunsIsolatePolicyAndPreserveOrder(t *testing.T) {
 	ctx := context.Background()
-	plain := NewStatusCmd(ctx, "set", "split:a", "v")
-	zc := NewZeroCopyStringCmd(ctx, make([]byte, 16), "get", "split:b")
-	if !zc.NoRetry() {
+	mk := func(tag string) Cmder { return NewStatusCmd(ctx, "set", tag, "v") }
+	mkZC := func(tag string) Cmder {
+		return NewZeroCopyStringCmd(ctx, make([]byte, 8), "get", tag)
+	}
+	if !mkZC("x").NoRetry() {
 		t.Fatal("precondition: zero-copy read should forbid retries")
 	}
 
-	// Mixed batch: split, and every command lands in exactly one group.
-	retryable, noRetry := splitByRetryPolicy([]Cmder{plain, zc})
-	if noRetry == nil {
-		t.Fatal("mixed batch was not split: a zero-copy read would disable retries for its batchmates")
+	// Uniform batches: no split at all, so no extra dispatch and no allocation.
+	if runs := splitRetryRuns([]Cmder{mk("a"), mk("b"), mk("c")}); runs != nil {
+		t.Errorf("all-retryable batch was split into %d runs, want no split", len(runs))
 	}
-	if len(retryable) != 1 || retryable[0] != Cmder(plain) {
-		t.Errorf("retryable group = %v, want just the plain command", retryable)
-	}
-	if len(noRetry) != 1 || noRetry[0] != Cmder(zc) {
-		t.Errorf("no-retry group = %v, want just the zero-copy command", noRetry)
-	}
-	if cmdsContainNoRetry(retryable) {
-		t.Error("retryable group still reports a no-retry member")
+	if runs := splitRetryRuns([]Cmder{mkZC("a"), mkZC("b")}); runs != nil {
+		t.Errorf("all-no-retry batch was split into %d runs, want no split", len(runs))
 	}
 
-	// Uniform batches are returned untouched — no split, no allocation.
-	only := []Cmder{plain, NewStatusCmd(ctx, "set", "split:c", "v")}
-	if r, nr := splitByRetryPolicy(only); nr != nil || len(r) != 2 {
-		t.Errorf("all-retryable batch was split: r=%d nr=%v", len(r), nr)
+	// Mixed: contiguous runs, each policy-uniform, concatenating back to the
+	// ORIGINAL order.
+	zc, s1, s2, zc2 := mkZC("zc1"), mk("s1"), mk("s2"), mkZC("zc2")
+	original := []Cmder{zc, s1, s2, zc2}
+	runs := splitRetryRuns(original)
+	if len(runs) != 3 {
+		t.Fatalf("got %d runs, want 3 (noRetry | retryable,retryable | noRetry)", len(runs))
 	}
-	allZC := []Cmder{zc, NewZeroCopyStringCmd(ctx, make([]byte, 16), "get", "split:d")}
-	if r, nr := splitByRetryPolicy(allZC); nr != nil || len(r) != 2 {
-		t.Errorf("all-no-retry batch was split: r=%d nr=%v", len(r), nr)
+	var flat []Cmder
+	for _, run := range runs {
+		if len(run) == 0 {
+			t.Fatal("empty run")
+		}
+		policy := run[0].NoRetry()
+		for _, cmd := range run {
+			if cmd.NoRetry() != policy {
+				t.Error("run mixes retry policies: cmdsContainNoRetry would leak across callers")
+			}
+		}
+		flat = append(flat, run...)
+	}
+	if len(flat) != len(original) {
+		t.Fatalf("runs cover %d commands, want %d", len(flat), len(original))
+	}
+	for i := range original {
+		if flat[i] != original[i] {
+			t.Fatalf("ORDER VIOLATION at %d: runs reorder the batch, so a later write could execute before an earlier read", i)
+		}
+	}
+}
+
+// TestNoRetryOrderObservedEndToEnd is the behavioral version of the ordering
+// half: a zero-copy read submitted BEFORE a write to the same key must observe
+// the OLD value on the ordered deferred face.
+func TestNoRetryOrderObservedEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Set(ctx, "order:zc", "old-value", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize:  32,
+		MaxFlushDelay: 25 * time.Millisecond, // one drain holds both commands
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	buf := make([]byte, 32)
+	read := ap.GetToBuffer(ctx, "order:zc", buf) // submitted FIRST
+	write := ap.Set(ctx, "order:zc", "new-value", 0)
+	if err := write.Err(); err != nil {
+		t.Fatal(err)
+	}
+	n, err := read.Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(buf[:n]); got != "old-value" {
+		t.Fatalf("zero-copy read saw %q, want %q — the write submitted AFTER it executed first", got, "old-value")
 	}
 }
 
@@ -1187,5 +1243,151 @@ func TestNoRetrySplitExecutesEveryCommand(t *testing.T) {
 	}
 	if got := string(buf[:n]); got != "zerocopy-value" {
 		t.Fatalf("zero-copy buffer = %q, want %q", got, "zerocopy-value")
+	}
+}
+
+// cacheHook serves the batch itself: it fills in every command's value and
+// returns nil WITHOUT calling next — what a caching or mocking hook does, and
+// what plain Pipeline hooks are allowed to do.
+type cacheHook struct {
+	armed *atomic.Bool
+	value string
+	calls *atomic.Int32
+}
+
+func (h cacheHook) DialHook(next DialHook) DialHook { return next }
+func (h cacheHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		if !h.armed.Load() {
+			return next(ctx, cmd)
+		}
+		h.calls.Add(1)
+		if sc, ok := cmd.(*StringCmd); ok {
+			sc.SetVal(h.value)
+		}
+		return nil
+	}
+}
+func (h cacheHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		if !h.armed.Load() {
+			return next(ctx, cmds)
+		}
+		h.calls.Add(1)
+		for _, cmd := range cmds {
+			if sc, ok := cmd.(*StringCmd); ok {
+				sc.SetVal(h.value)
+			}
+		}
+		return nil
+	}
+}
+
+// TestSuccessfulHookShortCircuitIsHonored pins hook parity with plain
+// pipelines: a hook that supplies results and returns nil without calling next
+// has succeeded, and the engine must not overwrite that with an error. It used
+// to synthesize one, so a caching hook that works on Pipeline made every
+// autopipelined batch fail (codex on #3942).
+func TestSuccessfulHookShortCircuitIsHonored(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	var armed atomic.Bool
+	var calls atomic.Int32
+	client.AddHook(cacheHook{armed: &armed, value: "from-cache", calls: &calls})
+
+	// Baseline: a plain pipeline accepts the successful short-circuit.
+	armed.Store(true)
+	pipe := client.Pipeline()
+	pg := pipe.Get(ctx, "sc:key")
+	if _, err := pipe.Exec(ctx); err != nil {
+		t.Fatalf("plain pipeline rejected a successful short-circuit: %v", err)
+	}
+	if v, err := pg.Result(); err != nil || v != "from-cache" {
+		t.Fatalf("plain pipeline: v=%q err=%v, want the cached value", v, err)
+	}
+	armed.Store(false)
+
+	for _, tc := range []struct {
+		name  string
+		build func() (*AutoPipeliner, error)
+	}{
+		{"async", func() (*AutoPipeliner, error) { return client.AsyncAutoPipeline() }},
+		{"blocking", func() (*AutoPipeliner, error) { return client.AutoPipeline() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ap, err := tc.build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			armed.Store(true)
+			defer armed.Store(false)
+			// Several commands so the batched path (not just the solo one) runs.
+			gets := make([]*StringCmd, 4)
+			for i := range gets {
+				gets[i] = ap.Get(ctx, "sc:key:"+strconv.Itoa(i))
+			}
+			for i, g := range gets {
+				v, err := g.Result()
+				if err != nil {
+					t.Fatalf("cmd %d: err = %v, want nil — a successful short-circuit was rewritten to an error", i, err)
+				}
+				if v != "from-cache" {
+					t.Fatalf("cmd %d: v = %q, want the value the hook supplied", i, v)
+				}
+			}
+		})
+	}
+	if calls.Load() == 0 {
+		t.Error("the hook never ran; the test proved nothing")
+	}
+}
+
+// TestMustDivertKeepsCommandOffTheBatchPath pins the hook cluster wiring uses
+// for commands whose routing is not slot-derived (ReqSpecial, e.g. FT.CURSOR
+// READ): batched, mapCmdsByNode would route them by slot and reach the wrong
+// shard, so they must leave the batching path entirely (codex on #3942).
+func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize:  64,
+		MaxFlushDelay: time.Hour, // nothing batched can execute during this test
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap.setMustDivert(func(_ context.Context, cmd Cmder) bool { return cmd.Name() == "echo" })
+
+	// Diverted: executes despite the hour-long flush window.
+	done := make(chan error, 1)
+	go func() { done <- ap.Do(ctx, "echo", "diverted").Err() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("diverted command failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("mustDivert command was batched: it waited on the flush window instead of running on its own connection")
+	}
+
+	// Control: a batchable command is still held by the window.
+	held := ap.Get(ctx, "mustdivert:control")
+	select {
+	case <-time.After(200 * time.Millisecond):
+	default:
+	}
+	if held.rawErr() != nil {
+		t.Fatalf("control command should still be queued, got %v", held.rawErr())
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 }
