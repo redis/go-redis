@@ -1114,26 +1114,43 @@ func (c *baseClient) withPipelineConn(
 		if err := c.opt.Limiter.Allow(); err != nil {
 			return err
 		}
-		defer func() { c.opt.Limiter.ReportResult(retErr) }()
 	}
 
-	cn, err := c.pipelinePool.Get(ctx)
-	if err != nil {
-		return err
+	// One deferred exit for both concerns, because their ORDER is part of the
+	// contract: releaseConn reports the result BEFORE the connection becomes
+	// available again, so a limiter or circuit breaker observes the failure
+	// before it can admit the next operation. Two separate defers would run
+	// LIFO and release first, letting another pipelined operation through
+	// against a breaker that has not seen the failure yet (review finding by
+	// codex on #3942). cn is nil on the acquire/init failure paths, which still
+	// must report.
+	var cn *pool.Conn
+	var fnErr error
+	defer func() {
+		if c.opt.Limiter != nil {
+			c.opt.Limiter.ReportResult(retErr)
+		}
+		if cn != nil {
+			c.releaseConnToPool(ctx, c.pipelinePool, cn, fnErr)
+		}
+	}()
+
+	cn, retErr = c.pipelinePool.Get(ctx)
+	if retErr != nil {
+		cn = nil // nothing acquired: no release, but still report above
+		return retErr
 	}
 
 	if err := c.initPooledConn(ctx, c.pipelinePool, cn); err != nil {
-		return err
+		// initPooledConn already removed the conn from the pool on failure.
+		cn = nil
+		retErr = err
+		return retErr
 	}
 
-	var fnErr error
-	defer func() {
-		retErr = fnErr
-		c.releaseConnToPool(ctx, c.pipelinePool, cn, fnErr)
-	}()
-
 	fnErr = fn(ctx, cn)
-	return fnErr
+	retErr = fnErr
+	return retErr
 }
 
 func (c *baseClient) dial(ctx context.Context, network, addr string) (net.Conn, error) {

@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -767,4 +769,143 @@ func TestCloseWaitsForDivertedCommand(t *testing.T) {
 		t.Fatalf("Close returned after %v, before the ~1s diverted BLPOP finished — its pooled connection was still in flight", elapsed)
 	}
 	_ = fut.Wait()
+}
+
+// TestSharedClosedRejectsEveryEntryPoint pins that ALL command entry points
+// honor the shared pool-set closed flag, not just the batched ones: a
+// WithTimeout clone's Close sets only that flag, and a guard reading
+// ap.closed alone would accept work against pools that are already gone and
+// surface pool-closed errors instead of ErrClosed (found by cursor on #3942
+// for Do/DoRaw/DoRawWriteTo; IsClosed had the same gap while promising the
+// opposite in its doc).
+func TestSharedClosedRejectsEveryEntryPoint(t *testing.T) {
+	ctx := context.Background()
+	parent := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer parent.Close()
+	if err := parent.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := parent.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ap.Set(ctx, "sharedclosed:pre", "v", 0).Err(); err != nil {
+		t.Fatalf("pre-close set: %v", err)
+	}
+
+	// Closing an ordinary clone closes the SHARED pools; ap.closed stays false.
+	if err := parent.WithTimeout(5 * time.Second).Close(); err != nil {
+		t.Fatalf("clone close: %v", err)
+	}
+	if ap.closed.Load() {
+		t.Fatal("precondition broken: ap.closed is set, so this would not exercise the shared flag")
+	}
+
+	if !ap.IsClosed() {
+		t.Error("IsClosed() = false after the shared pools closed, want true (its doc promises the owning client's close counts)")
+	}
+	for name, err := range map[string]error{
+		"typed":         ap.Set(ctx, "sharedclosed:post", "v", 0).Err(),
+		"Do":            ap.Do(ctx, "get", "sharedclosed:post").Err(),
+		"DoRaw":         ap.DoRaw(ctx, "get", "sharedclosed:post").Err(),
+		"DoRawWriteTo":  ap.DoRawWriteTo(ctx, io.Discard, "get", "sharedclosed:post").Err(),
+		"diverted(Do)":  ap.Do(ctx, "client", "id").Err(),
+		"blockingDiver": ap.Submit(ctx, NewCmd(ctx, "blpop", "sharedclosed:missing", 1)).Wait(),
+	} {
+		if err != ErrClosed {
+			t.Errorf("%s after shared close = %v, want ErrClosed", name, err)
+		}
+	}
+}
+
+// TestBlockingDetectionNormalizesArgTypes pins that the BLOCK token is matched
+// the way the encoder renders it: a raw Cmder may carry RESP keywords as
+// []byte or *string, and a string-only type switch would let those be batched
+// onto a shared connection (codex on #3942).
+func TestBlockingDetectionNormalizesArgTypes(t *testing.T) {
+	ctx := context.Background()
+	blockStr := "BLOCK"
+	for _, args := range [][]interface{}{
+		{"xread", []byte("BLOCK"), 0, "STREAMS", "s", "$"},
+		{"xread", &blockStr, 0, "STREAMS", "s", "$"},
+		{"xread", []byte("block"), 0, "STREAMS", "s", "$"},
+		{"xreadgroup", "GROUP", "g", "c", []byte("BLOCK"), 0, "STREAMS", "s", ">"},
+	} {
+		if !isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = false, want true", args)
+		}
+	}
+	// A []byte that is not the token must not trigger the divert.
+	if isBlockingCmd(NewCmd(ctx, "xread", []byte("COUNT"), 10, "STREAMS", "s", "0")) {
+		t.Error("non-BLOCK []byte token classified as blocking")
+	}
+}
+
+// TestDivertRegistrationRacesClose hammers the window between a diverted
+// command's closed check and its registration against Close: every submitted
+// command must end with a definite outcome, and Close must never report
+// success while a diverted command is still executing. Run with -race.
+func TestDivertRegistrationRacesClose(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	for round := 0; round < 40; round++ {
+		ap, err := client.AsyncAutoPipeline()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		var accepted atomic.Int32
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				// "client id" is diverted (connection-hostile), so it takes the
+				// same registration gate as a blocking command but returns fast.
+				if err := ap.Do(ctx, "client", "id").Err(); err == nil {
+					accepted.Add(1)
+				}
+			}()
+		}
+		if err := ap.Close(); err != nil {
+			t.Fatalf("round %d: close: %v", round, err)
+		}
+		wg.Wait()
+		// Every command either ran (counted) or was rejected — no hangs, and
+		// -race would flag an Add racing the Wait.
+		_ = accepted.Load()
+	}
+}
+
+// TestDivertedClusterWideCommandsSkipPreflight pins that a command which will
+// be DIVERTED is not rejected by the cluster preflight: the preflight exists to
+// keep fan-out-policy commands out of shared pipelines, but a diverted command
+// goes through ClusterClient.Process, where the cluster-wide aggregation works.
+// Before the ordering fix, typed WAIT/WAITAOF were rejected on a cluster with
+// command policies enabled (codex on #3942).
+func TestDivertedClusterWideCommandsSkipPreflight(t *testing.T) {
+	ctx := context.Background()
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+	defer cc.Close()
+	if err := cc.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+	ap, err := cc.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	// WAIT has a fan-out request policy; diverted, it must execute rather than
+	// be rejected as non-pipelineable.
+	if err := ap.Wait(ctx, 0, time.Second).Err(); err != nil {
+		t.Errorf("ap.Wait on cluster = %v, want it to execute (diverted, not preflight-rejected)", err)
+	}
+	// A genuinely batched fan-out command must still be rejected.
+	if err := ap.DBSize(ctx).Err(); err != nil {
+		t.Errorf("ap.DBSize should be delegated cluster-wide, got %v", err)
+	}
 }

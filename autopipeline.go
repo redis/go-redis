@@ -609,6 +609,13 @@ type AutoPipeliner struct {
 	// and connection-hostile ones, which never enter a batch). Close waits on
 	// it exactly like batchWg so a diverted command's pooled connection is not
 	// left in flight after Close returns — bounded, see Close.
+	//
+	// divertMu serializes "observe not-closed, then register" against Close's
+	// "mark closed, then wait": without it a diverted command could pass the
+	// closed check, Close could see a zero counter and return, and only then
+	// would the goroutine register — leaving an accepted command holding a
+	// pooled connection past Close (and racing WaitGroup Add against Wait).
+	divertMu sync.Mutex
 	divertWg sync.WaitGroup
 	closed   atomic.Bool
 }
@@ -862,7 +869,7 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 		cmd.SetErr(errDoNoArgs)
 		return cmd
 	}
-	if ap.closed.Load() {
+	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
@@ -887,12 +894,38 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // in-flight command on a closing client.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
 	if ap.blocking {
+		// The blocking face runs it inline, so the caller's own goroutine holds
+		// the connection; still take the gate so Close cannot decide "nothing
+		// in flight" while this command is executing.
+		ap.divertMu.Lock()
+		if ap.isClosed() {
+			ap.divertMu.Unlock()
+			cmd.SetErr(ErrClosed)
+			return completedBatch
+		}
+		ap.divertWg.Add(1)
+		ap.divertMu.Unlock()
+		defer ap.divertWg.Done()
 		_ = ap.pipeliner.Process(ctx, cmd)
+		return completedBatch
+	}
+	// Register under divertMu with a closed re-check, so registration and the
+	// close transition cannot interleave (see the divertMu comment). A command
+	// that loses the race is rejected here rather than running after Close.
+	// The gate comes BEFORE setReady: publishing the fresh batch first and then
+	// rejecting would leave the command gated on a batch nobody ever closes,
+	// hanging every accessor.
+	ap.divertMu.Lock()
+	if ap.isClosed() {
+		ap.divertMu.Unlock()
+		cmd.SetErr(ErrClosed)
+		cmd.setReady(completedBatch)
 		return completedBatch
 	}
 	b := newAPBatch()
 	cmd.setReady(b)
 	ap.divertWg.Add(1)
+	ap.divertMu.Unlock()
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
@@ -927,7 +960,7 @@ func (ap *AutoPipeliner) DoRaw(ctx context.Context, args ...interface{}) *RawCmd
 		cmd.SetErr(errDoNoArgs)
 		return cmd
 	}
-	if ap.closed.Load() {
+	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
@@ -944,7 +977,7 @@ func (ap *AutoPipeliner) DoRawWriteTo(ctx context.Context, w io.Writer, args ...
 		cmd.SetErr(errDoNoArgs)
 		return cmd
 	}
-	if ap.closed.Load() {
+	if ap.isClosed() {
 		cmd.SetErr(ErrClosed)
 		return cmd
 	}
@@ -1192,12 +1225,35 @@ func isBlockingCmd(cmd Cmder) bool {
 	if name != "xread" && name != "xreadgroup" {
 		return false
 	}
+	// Match the token the way the encoder does: a raw Cmder may carry RESP
+	// tokens as []byte or *string (see baseCmd.stringArg), and a type switch on
+	// string alone would let NewCmd(ctx, "xread", []byte("BLOCK"), 0, ...) be
+	// batched onto a shared connection.
 	for _, arg := range cmd.Args() {
-		if s, ok := arg.(string); ok && internal.ToLower(s) == "block" {
+		if internal.ToLower(blockingArgString(arg)) == "block" {
 			return true
 		}
 	}
 	return false
+}
+
+// blockingArgString renders a command argument as the string the encoder will
+// write for the token comparisons above. Only the forms that can carry a RESP
+// keyword are handled; anything else cannot be the BLOCK token.
+func blockingArgString(arg interface{}) string {
+	switch v := arg.(type) {
+	case string:
+		return v
+	case []byte:
+		return string(v)
+	case *string:
+		if v == nil {
+			return ""
+		}
+		return *v
+	default:
+		return ""
+	}
 }
 
 // submit queues a command without blocking and returns its completion future.
@@ -1215,13 +1271,21 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		}
 		return f
 	}
-	if ap.preflight != nil {
+	// Decide DIVERSION first. The cluster preflight rejects commands whose
+	// request policy cannot ride a pipeline (ReqAllNodes/ReqAllShards), but a
+	// diverted command never rides one: it goes through the underlying
+	// Client/ClusterClient.Process, which performs the normal cluster-wide
+	// fan-out and aggregation. Running the preflight first therefore rejected
+	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
+	// command policies enabled (review finding by codex on #3942).
+	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd)
+	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
-	if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) {
+	if diverted {
 		// Blocking commands (and the conn-hostile ones above) are executed
 		// directly, outside the pipeline — via runOutsidePipeline, which
 		// keeps each face's call shape: the blocking face runs the command
@@ -1342,6 +1406,13 @@ var completedBatch = func() *apBatch {
 // returns the already-closed batch.
 // isClosed reports whether this pipeliner (or the shared pool set it rides
 // on) has been closed. Two atomic loads; no locks.
+//
+// EVERY closed check that gates accepting new work must go through this, not
+// ap.closed directly: a WithTimeout clone's Close sets only the shared flag,
+// so a guard reading ap.closed alone would accept commands against pools that
+// are already gone and surface pool-closed errors instead of ErrClosed.
+// (Close's own CompareAndSwap on ap.closed is the one deliberate direct use:
+// it claims the shutdown for this instance.)
 func (ap *AutoPipeliner) isClosed() bool {
 	return ap.closed.Load() || (ap.sharedClosed != nil && ap.sharedClosed.Load())
 }
@@ -1431,7 +1502,7 @@ func (ap *AutoPipeliner) Config() AutoPipelineOptions { return *ap.config }
 // explicit Close or by closing the owning client. A closed AutoPipeliner
 // rejects new commands with ErrClosed.
 func (ap *AutoPipeliner) IsClosed() bool {
-	return ap.closed.Load()
+	return ap.isClosed()
 }
 
 // numShards reports how many shards this autopipeliner runs.
@@ -1473,6 +1544,14 @@ func (ap *AutoPipeliner) Close() error {
 	for _, s := range ap.shards {
 		s.wake()
 	}
+
+	// Pass through the divert gate once: after the CompareAndSwap above, any
+	// registration either completed before this (so the counter already sees
+	// it) or will observe closed==true and reject. Without this handshake the
+	// wait below could read a zero counter while a diverted command was
+	// between its closed check and its Add.
+	ap.divertMu.Lock()
+	ap.divertMu.Unlock() //nolint:staticcheck // handshake, not a critical section
 
 	// Wait for flushers to finish
 	ap.wg.Wait()
