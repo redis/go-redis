@@ -532,11 +532,13 @@ func putQueueSlice(slice []Cmder) {
 // AutoPipeline() call on the client builds a fresh one. Closing the CLIENT also
 // stops it, but permanently: the getters then return ErrClosed.
 //
-// Formatting: String()/%v on a PENDING async command is not synchronized with
-// execution — String() deliberately does not wait (a hook formatting a
-// command mid-dispatch would deadlock), so it can race the dispatcher
-// populating the result. Read Err()/Val()/Result() (which do wait) before
-// formatting a command issued on the deferred face.
+// Formatting: String()/%v on a command issued by the deferred face WAITS for
+// execution, exactly like Err()/Val()/Result() — formatting reads the result
+// fields, and reading them unsynchronized would race the dispatcher populating
+// them. The one exception is a hook formatting a command from the batch's own
+// dispatch goroutine: that returns the not-yet-executed view instead of
+// self-deadlocking. Use Name()/Args() if you need to log a submission without
+// waiting for it.
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 type AutoPipeliner struct {
@@ -1389,7 +1391,19 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 	// that reads the command before that store lands sees a nil ready — the
 	// non-blocking not-yet-executed view — while the caller always sees its
 	// own store before any await.
-	_ = ap.submit(ctx, cmd)
+	f := ap.submit(ctx, cmd)
+	// Report SUBMIT-time rejections (a closed pipeliner, a cluster preflight
+	// refusal): those paths set the error on the command and hand back the
+	// shared completed batch without queueing anything, so returning nil made
+	// Process claim success for a command that will never run — and callers
+	// reaching the engine through UniversalClient.Process see only this return
+	// value (review finding by codex on #3942). Execution errors are NOT
+	// reported here: the deferred face's contract is that this call does not
+	// wait, so those stay on the command for its accessors. rawErr keeps the
+	// check non-blocking.
+	if f.batch == completedBatch {
+		return cmd.rawErr()
+	}
 	return nil
 }
 
@@ -1992,9 +2006,7 @@ func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, tot
 	// findings by codex on #3942; the grouping bug was introduced by the first
 	// fix for the retry leak).
 	if runs := splitRetryRuns(cmds); runs != nil {
-		for _, run := range runs {
-			ap.dispatchCmds(ctx, [][]Cmder{run}, len(run))
-		}
+		ap.dispatchSequential(ctx, runs)
 		if len(queues) > 1 {
 			putQueueSlice(cmds)
 		}
@@ -2058,41 +2070,60 @@ func (ap *AutoPipeliner) dispatchCmdsMaybeChunked(ctx context.Context, queues []
 		merged = true
 	}
 
-	// abortErr, once set, fails every remaining command instead of
-	// dispatching further chunks: the unchunked path fails or retries the
-	// batch as a UNIT, so in the ordered stream later commands must not
-	// overtake a prefix that died on a transport-class failure (retries
-	// exhausted, hook abort). Per-command redis errors (WRONGTYPE, nil) are
-	// normal chunk outcomes and do not abort.
-	var abortErr error
-	dispatchChunk := func(chunk []Cmder) {
-		if abortErr != nil {
-			setCmdsErr(chunk, abortErr)
-			return
-		}
-		ap.dispatchCmds(ctx, [][]Cmder{chunk}, len(chunk))
-		for _, cmd := range chunk {
-			if err := cmd.rawErr(); err != nil && !isRedisError(err) {
-				abortErr = err
-				break
-			}
-		}
-	}
+	// Cut the byte-bounded chunks, then hand the ordered sequence to the shared
+	// dispatcher — which stops after a chunk dies on a transport-class failure,
+	// so later commands cannot overtake a failed prefix (see
+	// dispatchSequential; the retry-policy runs go through the same helper).
+	chunks := make([][]Cmder, 0, 4)
 	start := 0
 	var chunkBytes int64
 	for i, cmd := range cmds {
 		chunkBytes += cmdApproxBytes(cmd)
 		if chunkBytes >= limit && i+1 > start {
-			dispatchChunk(cmds[start : i+1])
+			chunks = append(chunks, cmds[start:i+1])
 			start = i + 1
 			chunkBytes = 0
 		}
 	}
 	if start < len(cmds) {
-		dispatchChunk(cmds[start:])
+		chunks = append(chunks, cmds[start:])
 	}
+	ap.dispatchSequential(ctx, chunks)
 	if merged {
 		putQueueSlice(cmds)
+	}
+}
+
+// dispatchSequential dispatches an ORDERED sequence of sub-batches, stopping
+// once one of them dies on a transport-class failure and failing the rest with
+// that error.
+//
+// The stop is the same contract the unchunked path has: it fails or retries the
+// batch as a UNIT, so in an ordered stream later commands must never overtake a
+// prefix that died (retries exhausted, hook abort). Per-command redis errors
+// (WRONGTYPE, nil) are normal outcomes and do not stop the sequence.
+//
+// Both callers that break a batch into ordered pieces — the MaxBatchBytes
+// chunker and the retry-policy runs — go through here, because the first
+// version of each got this wrong independently (review findings by codex on
+// #3942).
+func (ap *AutoPipeliner) dispatchSequential(ctx context.Context, groups [][]Cmder) {
+	var abortErr error
+	for _, group := range groups {
+		if len(group) == 0 {
+			continue
+		}
+		if abortErr != nil {
+			setCmdsErr(group, abortErr)
+			continue
+		}
+		ap.dispatchCmds(ctx, [][]Cmder{group}, len(group))
+		for _, cmd := range group {
+			if err := cmd.rawErr(); err != nil && !isRedisError(err) {
+				abortErr = err
+				break
+			}
+		}
 	}
 }
 

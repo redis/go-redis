@@ -1391,3 +1391,80 @@ func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 }
+
+// TestRetryRunsStopAfterFailedPrefix pins the ordered-stream contract for the
+// retry-policy runs, the same rule the byte chunker follows: once a run dies on
+// a transport-class failure, later runs must NOT be dispatched — they would
+// overtake a failed prefix — and must carry that error. Both paths now share
+// dispatchSequential precisely because each got this wrong on its own (codex on
+// #3942).
+func TestRetryRunsStopAfterFailedPrefix(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	var dispatches atomic.Int32
+	client.AddHook(chunkBreakerHook{dispatches: &dispatches})
+
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Mixed batch -> several runs. The first run must fail and stop the rest.
+	zc := NewZeroCopyStringCmd(ctx, make([]byte, 8), "get", "runs:zc")
+	cmds := []Cmder{
+		zc,
+		NewStatusCmd(ctx, "set", "runs:a", "v"),
+		NewStatusCmd(ctx, "set", "runs:b", "v"),
+		NewZeroCopyStringCmd(ctx, make([]byte, 8), "get", "runs:zc2"),
+	}
+	ap.dispatchCmds(ctx, [][]Cmder{cmds}, len(cmds))
+
+	if n := dispatches.Load(); n != 1 {
+		t.Fatalf("hook saw %d run dispatches, want exactly 1 (later runs must not overtake a failed prefix)", n)
+	}
+	for i, cmd := range cmds {
+		err := cmd.rawErr()
+		if err == nil || !strings.Contains(err.Error(), "chunk breaker") {
+			t.Fatalf("cmd %d: err = %v, want the prefix failure on every command", i, err)
+		}
+	}
+}
+
+// TestAsyncProcessReportsSubmitRejection pins that the deferred face's Process
+// returns SUBMIT-time errors. Callers reaching the engine through
+// UniversalClient.Process only see this return value, so swallowing a rejection
+// made Process claim success for a command that would never run (codex on
+// #3942). Execution errors must still NOT be reported here — that would make
+// the call wait.
+func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Accepted submission: Process returns nil without waiting for execution.
+	if err := ap.Process(ctx, NewStatusCmd(ctx, "set", "procrej:ok", "v")); err != nil {
+		t.Fatalf("Process on an accepted command = %v, want nil", err)
+	}
+	// A command that fails at EXECUTION must still not surface here (no wait).
+	bad := NewStatusCmd(ctx, "set") // wrong arity: fails server-side
+	if err := ap.Process(ctx, bad); err != nil {
+		t.Fatalf("Process reported an execution error (%v); the deferred face must not wait", err)
+	}
+
+	if err := ap.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Rejected at submit: the error must be RETURNED, not only stored.
+	if err := ap.Process(ctx, NewStatusCmd(ctx, "set", "procrej:closed", "v")); err != ErrClosed {
+		t.Fatalf("Process after Close = %v, want ErrClosed", err)
+	}
+}
