@@ -18,7 +18,9 @@ type JSONGetTestStruct struct {
 
 var _ = Describe("JSON Commands", Label("json"), func() {
 	ctx := context.TODO()
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
 		opt := &redis.Options{
@@ -33,16 +35,23 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			// Flush through the SUBJECT: on the async face the flush is
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 
 	protocols := []int{2, 3}
 	for _, protocol := range protocols {
 		BeforeEach(func() {
-			client = setupRedisClient(protocol)
-			Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+			rawClient = setupRedisClient(protocol)
+			client, closeSubject = newUniversalSubject(rawClient)
+			Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 		})
 
 		Describe("arrays", Label("arrays"), func() {
@@ -785,7 +794,9 @@ var _ = Describe("JSON Commands", Label("json"), func() {
 })
 
 var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
-	var client *redis.Client
+	var client redis.UniversalClient
+	var rawClient *redis.Client
+	var closeSubject func() error
 	var ctx = context.Background()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
@@ -801,8 +812,14 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 
 	AfterEach(func() {
 		if client != nil {
-			client.FlushDB(ctx)
-			client.Close()
+			// Flush through the SUBJECT: on the async face the flush is
+			// ordered after any queued writes, and awaiting Err() forces it to
+			// execute — so no late fire-and-forget command can survive the
+			// flush, and the flush itself runs on a live client. Both steps
+			// are asserted so a failed teardown cannot silently leak state
+			// into later specs.
+			Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+			Expect(closeSubject()).NotTo(HaveOccurred())
 		}
 	})
 
@@ -812,7 +829,8 @@ var _ = Describe("Go-Redis Advanced JSON and RediSearch Tests", func() {
 		for _, protocol := range protocols {
 			When("using protocol version", func() {
 				BeforeEach(func() {
-					client = setupRedisClient(protocol)
+					rawClient = setupRedisClient(protocol)
+					client, closeSubject = newUniversalSubject(rawClient)
 				})
 
 				It("should perform complex JSON and RediSearch operations", func() {

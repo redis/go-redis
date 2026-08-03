@@ -621,10 +621,33 @@ func (r *Reader) ReadStringInto(buf []byte) (int, error) {
 		// bufio.Reader.Read first drains its internal buffer, then for
 		// remaining data larger than its buffer size reads directly from the
 		// underlying reader (socket) — effectively zero-copy.
+		//
+		// Fast path: when the caller VISIBLY hands over room for the trailing
+		// CRLF too (len(buf) >= n+2), read the payload and the CRLF in a
+		// single io.ReadFull. For large values this is one direct socket read
+		// instead of a big read followed by a tiny separate Discard(2) read,
+		// which is what makes GetToBuffer beat a regular Get (no payload
+		// allocation and the same number of reads). The 2 trailing bytes land
+		// past the returned length and are ignored.
+		//
+		// The gate is on len, NOT cap: a sub-slice of a larger buffer (e.g.
+		// packed segments big[i*slot:(i+1)*slot]) exposes trailing capacity
+		// that belongs to the caller's NEXT segment — writing the CRLF there
+		// would silently corrupt caller-owned memory outside the slice they
+		// passed. Callers who want the fast path pass len == payload+2 (the
+		// returned length is still the payload length).
+		if len(buf) >= n+2 {
+			full := buf[:n+2]
+			if _, err := io.ReadFull(r.rd, full); err != nil {
+				return 0, err
+			}
+			return n, nil
+		}
+		// Slow path: buffer is exactly large enough for the payload only, so
+		// read the payload into it and discard the CRLF separately.
 		if _, err := io.ReadFull(r.rd, buf[:n]); err != nil {
 			return 0, err
 		}
-		// Discard trailing \r\n.
 		if _, err := r.rd.Discard(2); err != nil {
 			return 0, err
 		}

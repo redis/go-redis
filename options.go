@@ -188,6 +188,86 @@ type Options struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// ReadBufferSize buffers.
+	//
+	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
+	// on the READ side: a batch's replies arrive as one large stream, and a bigger
+	// buffer consumes them in fewer syscalls instead of refilling repeatedly
+	// mid-batch. Size it to roughly the reply volume of a typical batch — which
+	// for read-heavy pipelines is dominated by value sizes, not command count.
+	// (The write-side counterpart, sizing to the outgoing wire bytes so the batch
+	// flushes without overflowing mid-write, belongs to PipelineWriteBufferSize.)
+	// Benchmarks show throughput climbs from the 32 KiB default up to ~64 KiB and
+	// then plateaus; going beyond ~128 KiB gives no further gain and very large
+	// buffers (≥512 KiB) can regress throughput and waste memory. Bigger is not
+	// better.
+	//
+	// Example:
+	//   client := redis.NewClient(&redis.Options{
+	//       Addr:                    "localhost:6379",
+	//       ReadBufferSize:          32 * 1024,   // 32 KiB for regular commands
+	//       PipelineReadBufferSize:  128 * 1024,  // 128 KiB for pipelining
+	//       PipelineWriteBufferSize: 128 * 1024,
+	//   })
+	//
+	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
+	//   - Without pipeline pool: 100 conns × 128 KiB = 12.8 MB (if all use 128 KiB buffers)
+	//   - With pipeline pool: (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
+	//
+	// default: 0 (use ReadBufferSize)
+	PipelineReadBufferSize int
+
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// WriteBufferSize buffers.
+	//
+	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
+	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
+	// gains nothing beyond ~128 KiB; very large buffers (≥512 KiB) can regress it.
+	// See PipelineReadBufferSize for the full rationale.
+	//
+	// default: 0 (use WriteBufferSize)
+	PipelineWriteBufferSize int
+
+	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
+	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	//
+	// Pipelining typically needs fewer connections than regular operations because
+	// batching reduces connection contention. A smaller pool saves memory while
+	// maintaining high throughput.
+	//
+	// If not set (0), defaults to 10 connections.
+	//
+	// default: 10
+	PipelinePoolSize int
+
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
+	// AutoPipeline and AsyncAutoPipeline use it when called without an
+	// explicit config, falling back to their per-face defaults
+	// (DefaultBlockingAutoPipelineOptions / DefaultAutoPipelineOptions) when it
+	// is nil. Pass a config to either method to override. Commands issued
+	// through an autopipeliner are batched into pipelines to cut round-trips
+	// and raise throughput.
+	//
+	// EXPERIMENTAL: this API is subject to change, use with caution.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	// PoolFIFO type of connection pool.
 	//
 	//	- true for FIFO pool

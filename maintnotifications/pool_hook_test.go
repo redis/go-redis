@@ -833,10 +833,13 @@ func TestConnectionHook(t *testing.T) {
 			t.Error("Connection should be pooled after failed handoff attempt")
 		}
 
-		// Wait for handoff to be attempted and fail
-		time.Sleep(100 * time.Millisecond)
-
-		// Verify that the connection was removed from the pool
+		// Wait for the handoff to be attempted, retried (MaxHandoffRetries:3
+		// with backoff), and finally fail: a fixed sleep loses that race on
+		// loaded runners, so poll until the removal lands.
+		deadline := time.Now().Add(5 * time.Second)
+		for !mockPool.WasRemoved(conn.GetID()) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
 		if !mockPool.WasRemoved(conn.GetID()) {
 			t.Errorf("conn[%d] should have been removed from pool after handoff failure", conn.GetID())
 		}

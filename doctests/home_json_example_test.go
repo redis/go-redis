@@ -107,6 +107,10 @@ func ExampleClient_search_json() {
 	}
 	// STEP_END
 
+	// REMOVE_START
+	waitForIndexedDocs(ctx, rdb, "idx:users", 3)
+	// REMOVE_END
+
 	// STEP_START query1
 	findPaulResult, err := rdb.FTSearch(
 		ctx,
@@ -312,6 +316,10 @@ func ExampleClient_search_hash() {
 		panic(err)
 	}
 	// STEP_END
+
+	// REMOVE_START
+	waitForIndexedDocs(ctx, rdb, "hash-idx:users", 3)
+	// REMOVE_END
 
 	// STEP_START query1_hash
 	findPaulHashResult, err := rdb.FTSearch(

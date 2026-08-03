@@ -29,17 +29,24 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 		protocol := protocol // capture loop variable for each context
 
 		Context(fmt.Sprintf("with protocol version %d", protocol), func() {
-			var client *redis.Client
+			var client redis.UniversalClient
+			var rawClient *redis.Client
+			var closeSubject func() error
 
 			BeforeEach(func() {
-				client = setupRedisClient(protocol)
-				Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+				rawClient = setupRedisClient(protocol)
+				client, closeSubject = newUniversalSubject(rawClient)
+				Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 			})
 
 			AfterEach(func() {
 				if client != nil {
-					client.FlushDB(ctx)
-					client.Close()
+					// Flush through the SUBJECT: ordered after queued writes
+					// (see json_test.go); awaiting Err() forces it to execute, and
+					// both steps are asserted so a failed teardown cannot silently
+					// leak state into later specs.
+					Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+					Expect(closeSubject()).NotTo(HaveOccurred())
 				}
 			})
 
@@ -243,7 +250,11 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 						client.BFLoadChunk(ctx, "testbfsd1", e.Iter, e.Data)
 					}
 					infAfter := client.BFInfoSize(ctx, "testbfsd1")
-					Expect(infBefore).To(BeEquivalentTo(infAfter))
+					// Compare values, not command structs: on the async
+					// autopipeline face each command carries its own batch
+					// pointer, so struct equality is always false there (and
+					// Val() awaits the result).
+					Expect(infBefore.Val()).To(BeEquivalentTo(infAfter.Val()))
 				})
 
 				It("should BFReserveWithArgs", Label("bloom", "bfreserveargs"), func() {
@@ -368,7 +379,8 @@ var _ = Describe("Probabilistic commands", Label("probabilistic"), func() {
 						client.CFLoadChunk(ctx, "testcfsd1", e.Iter, e.Data)
 					}
 					infAfter := client.CFInfo(ctx, "testcfsd1")
-					Expect(infBefore).To(BeEquivalentTo(infAfter))
+					// Compare values, not command structs (see BFScanDump above).
+					Expect(infBefore.Val()).To(BeEquivalentTo(infAfter.Val()))
 				})
 
 				It("should CFInfo and CFReserveWithArgs", Label("cuckoo", "cfinfo", "cfreserveargs"), func() {

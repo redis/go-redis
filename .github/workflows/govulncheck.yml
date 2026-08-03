@@ -3,7 +3,7 @@ name: govulncheck
 
 on:
   pull_request:
-    branches: [master, v9, v9.7, v9.8, "ndyakov/**", "ofekshenawa/**", "ce/**"]
+    branches: [master, v9, v9.7, v9.8, "ndyakov/**", "ofekshenawa/**", "ce/**", "feature/**"]
   push:
     branches: [master, v9, "v9.*"]
   schedule:
