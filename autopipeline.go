@@ -1497,7 +1497,18 @@ func (s *apShard) wake() {
 func (ap *AutoPipeliner) IsBlocking() bool { return ap.blocking }
 
 // Config returns a copy of the effective configuration (defaults filled in).
-func (ap *AutoPipeliner) Config() AutoPipelineOptions { return *ap.config }
+func (ap *AutoPipeliner) Config() AutoPipelineOptions {
+	cfg := *ap.config
+	// Strip internal-only fields. contentSharded is set by cluster wiring and
+	// tells Validate that shards are slot-routed, so same-key commands cannot
+	// be reordered — which exempts the config from the NumShards>1 ordering
+	// requirement. Handing that bit back to a caller who copies this config
+	// into a STANDALONE async autopipeliner would silence that check for
+	// round-robin shards, which really do flush concurrently and really do
+	// break submit order (review finding by codex on #3942).
+	cfg.contentSharded = false
+	return cfg
+}
 
 // IsClosed reports whether the AutoPipeliner has been closed, either by an
 // explicit Close or by closing the owning client. A closed AutoPipeliner

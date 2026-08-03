@@ -38,8 +38,8 @@ func TestPipelineBufferSizes(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
-	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
+	cleanupBufferTestKeys(t, client)
 
 	// Test that regular commands work
 	err := client.Set(ctx, "test_key", "test_value", 0).Err()
@@ -94,8 +94,8 @@ func TestNoPipelinePool(t *testing.T) {
 		// No PipelineReadBufferSize or PipelineWriteBufferSize
 	})
 	defer client.Close()
-	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
+	cleanupBufferTestKeys(t, client)
 
 	// Test that pipeline still works (using regular pool)
 	pipe := client.Pipeline()
@@ -138,8 +138,8 @@ func TestPipelinePoolStats(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
-	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
+	cleanupBufferTestKeys(t, client)
 
 	// Execute some pipeline commands
 	pipe := client.Pipeline()
@@ -187,8 +187,8 @@ func TestNoPipelinePoolStats(t *testing.T) {
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 	})
 	defer client.Close()
-	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
+	cleanupBufferTestKeys(t, client)
 
 	// Execute some commands
 	err := client.Set(ctx, "test_key", "test_value", 0).Err()
@@ -218,6 +218,10 @@ func TestNoPipelinePoolStats(t *testing.T) {
 // "test_key" is also used by autopipeline_test.go), so leaving state behind
 // makes results order-dependent — the same class of leak that produced a real
 // CI flake in the search suite (Copilot review on #3942).
+//
+// Call it AFTER skipWithoutRedis: it talks to the server, so running it first
+// turns a no-Redis environment into a hard failure instead of the intended
+// skip (also Copilot, on the first cut of this cleanup).
 func cleanupBufferTestKeys(t *testing.T, client *redis.Client) {
 	t.Helper()
 	keys := []string{

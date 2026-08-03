@@ -978,3 +978,92 @@ func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessP
 		return next(ctx, cmds)
 	}
 }
+
+// TestConfigDoesNotLeakInternalSharding pins that the exported effective config
+// carries no internal-only bits: a cluster autopipeliner sets contentSharded to
+// tell Validate its shards are slot-routed, and copying that config into a
+// STANDALONE async autopipeliner would silence the NumShards>1 ordering
+// requirement for round-robin shards, which really do reorder (codex on #3942).
+func TestConfigDoesNotLeakInternalSharding(t *testing.T) {
+	ctx := context.Background()
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
+	defer cc.Close()
+	if err := cc.Ping(ctx).Err(); err != nil {
+		t.Skipf("no cluster: %v", err)
+	}
+	clusterAP, err := cc.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clusterAP.Close()
+
+	cfg := clusterAP.Config()
+	if cfg.contentSharded {
+		t.Error("Config() exposes the internal contentSharded flag")
+	}
+
+	// The round-trip must be rejected: many shards, ordered, deferred face.
+	cfg.NumShards = 4
+	cfg.Unordered = false
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if _, err := client.AsyncAutoPipelineWithOptions(&cfg); err == nil {
+		t.Error("standalone async autopipeliner accepted NumShards>1 without Unordered, " +
+			"via a config copied from a cluster autopipeliner — the ordering check was bypassed")
+	}
+}
+
+// TestEvalDoesNotAwaitOnAsyncFace pins the deferred contract for the Eval
+// family: the NOSCRIPT normalization must not read the result while it is still
+// pending, or every ap.Eval/EvalSha becomes synchronous (codex on #3942).
+func TestEvalDoesNotAwaitOnAsyncFace(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	gate := make(chan struct{})
+	var armed atomic.Bool
+	client.AddHook(dispatchGateHook{gate: gate, armed: &armed})
+
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ap.Eval(ctx, "return 1", nil)
+		ap.EvalSha(ctx, "ffffffffffffffffffffffffffffffffffffffff", nil)
+		ap.EvalRO(ctx, "return 1", nil)
+		ap.EvalShaRO(ctx, "ffffffffffffffffffffffffffffffffffffffff", nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		armed.Store(false)
+		close(gate)
+		t.Fatal("Eval family blocked on the deferred face: the NOSCRIPT normalization awaited the result")
+	}
+	armed.Store(false)
+	close(gate)
+	_ = ap.Close()
+}
+
+// TestScriptRunFallbackAcceptsRawNoScript pins the other half: since the Eval
+// wrappers skip normalization while a result is pending, Script.Run's fallback
+// must recognize the server's raw NOSCRIPT error too.
+func TestScriptRunFallbackAcceptsRawNoScript(t *testing.T) {
+	if !isNoScriptErr(ErrNoScript) {
+		t.Error("normalized ErrNoScript not recognized")
+	}
+	if !isNoScriptErr(proto.RedisError("NOSCRIPT No matching script")) {
+		t.Error("raw server NOSCRIPT error not recognized")
+	}
+	if isNoScriptErr(nil) || isNoScriptErr(proto.RedisError("WRONGTYPE nope")) {
+		t.Error("unrelated error treated as NOSCRIPT")
+	}
+}
