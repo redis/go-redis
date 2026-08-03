@@ -1208,10 +1208,21 @@ func runsOutsidePipeline(name string) bool {
 // hand — NewCmd(ctx, "blpop", key, 0) via Submit/Process/Do — carries no such
 // marker, so without this set it would be queued onto a shared pipeline
 // connection and hold the whole batch for the block duration.
+// Derived from the typed helpers rather than guessed: every cmdable method that
+// calls cmd.setReadTimeout parks the connection, so
+//
+//	grep -rn 'setReadTimeout' --include='*.go' . | grep -v _test
+//
+// enumerates exactly the wire names that belong here (the arg-driven ones are
+// handled in isBlockingCmd instead). Re-run that grep when adding a blocking
+// command.
 var blockingCommands = map[string]struct{}{
-	"blpop": {}, "brpop": {}, "brpoplpush": {}, "blmove": {}, "blmpop": {},
+	"blpop": {}, "brpop": {}, "brpoplpush": {},
+	"blmove": {}, "blmovem": {}, "blmpop": {},
 	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {},
 	"wait": {}, "waitaof": {},
+	// MIGRATE blocks the source instance for up to its timeout.
+	"migrate": {},
 }
 
 // isBlockingCmd reports whether cmd parks the connection. XREAD/XREADGROUP are
@@ -1223,7 +1234,10 @@ func isBlockingCmd(cmd Cmder) bool {
 	if _, ok := blockingCommands[name]; ok {
 		return true
 	}
-	if name != "xread" && name != "xreadgroup" {
+	// Arg-driven: these block only in their BLOCK form, and blanket-diverting
+	// the far more common non-blocking form would drop it out of batching for
+	// nothing. TS.READ takes BLOCK the same way (see TSReadWithArgs).
+	if name != "xread" && name != "xreadgroup" && name != "ts.read" {
 		return false
 	}
 	// Match the token the way the encoder does: a raw Cmder may carry RESP
@@ -1957,6 +1971,23 @@ func (ap *AutoPipeliner) dispatchCmds(ctx context.Context, queues [][]Cmder, tot
 			cmds = append(cmds, queues[i]...)
 		}
 	}
+	// A command that forbids retries (today: the zero-copy reads, whose reply
+	// decodes into a caller buffer that a retry could not un-write) disables
+	// retries for the WHOLE slice it is dispatched in — see cmdsContainNoRetry.
+	// In a shared batch that would silently strip retries from unrelated
+	// callers' ordinary commands, so split the batch and dispatch each policy
+	// group on its own. Both groups still ride real pipelines; only the mixed
+	// case pays a second dispatch (review finding by codex on #3942).
+	if retryable, noRetry := splitByRetryPolicy(cmds); noRetry != nil {
+		ap.dispatchCmds(ctx, [][]Cmder{retryable}, len(retryable))
+		ap.dispatchCmds(ctx, [][]Cmder{noRetry}, len(noRetry))
+		putQueueSlice(retryable)
+		putQueueSlice(noRetry)
+		if len(queues) > 1 {
+			putQueueSlice(cmds)
+		}
+		return
+	}
 	executed := false
 	chainErr := ap.pipeliner.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
 		executed = true
@@ -2048,6 +2079,32 @@ func (ap *AutoPipeliner) dispatchCmdsMaybeChunked(ctx context.Context, queues []
 	if merged {
 		putQueueSlice(cmds)
 	}
+}
+
+// splitByRetryPolicy partitions cmds into the retry-allowed and retry-forbidden
+// groups. It returns (cmds, nil) unchanged — no allocation, no copy — unless the
+// slice is genuinely MIXED, which is the only case that needs splitting: a batch
+// that is entirely one policy already has consistent semantics.
+func splitByRetryPolicy(cmds []Cmder) (retryable, noRetry []Cmder) {
+	n := 0
+	for _, cmd := range cmds {
+		if cmd.NoRetry() {
+			n++
+		}
+	}
+	if n == 0 || n == len(cmds) {
+		return cmds, nil
+	}
+	retryable = getQueueSlice(len(cmds) - n)
+	noRetry = getQueueSlice(n)
+	for _, cmd := range cmds {
+		if cmd.NoRetry() {
+			noRetry = append(noRetry, cmd)
+		} else {
+			retryable = append(retryable, cmd)
+		}
+	}
+	return retryable, noRetry
 }
 
 // recoverDispatchPanic converts a panic on a dispatch goroutine (a hook or

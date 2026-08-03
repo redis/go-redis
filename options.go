@@ -199,13 +199,17 @@ type Options struct {
 	// If not set (0), pipeline operations will use the regular connection pool with
 	// ReadBufferSize buffers.
 	//
-	// Recommended: 64–128 KiB for high-throughput pipelining. The only benefit is
-	// making the buffer large enough to hold a typical batch's wire bytes, so the
-	// batch flushes in one syscall instead of overflowing mid-write. Size it to
-	// roughly MaxBatchSize × average-command-bytes, rounded up. Benchmarks show
-	// throughput climbs from the 32 KiB default up to ~64 KiB and then plateaus;
-	// going beyond ~128 KiB gives no further gain and very large buffers (≥512 KiB)
-	// can regress throughput and waste memory. Bigger is not better.
+	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
+	// on the READ side: a batch's replies arrive as one large stream, and a bigger
+	// buffer consumes them in fewer syscalls instead of refilling repeatedly
+	// mid-batch. Size it to roughly the reply volume of a typical batch — which
+	// for read-heavy pipelines is dominated by value sizes, not command count.
+	// (The write-side counterpart, sizing to the outgoing wire bytes so the batch
+	// flushes without overflowing mid-write, belongs to PipelineWriteBufferSize.)
+	// Benchmarks show throughput climbs from the 32 KiB default up to ~64 KiB and
+	// then plateaus; going beyond ~128 KiB gives no further gain and very large
+	// buffers (≥512 KiB) can regress throughput and waste memory. Bigger is not
+	// better.
 	//
 	// Example:
 	//   client := redis.NewClient(&redis.Options{

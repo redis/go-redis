@@ -1067,3 +1067,125 @@ func TestScriptRunFallbackAcceptsRawNoScript(t *testing.T) {
 		t.Error("unrelated error treated as NOSCRIPT")
 	}
 }
+
+// TestBlockingSetCoversEveryReadTimeoutHelper pins the raw-blocking allowlist
+// against the typed helpers it mirrors. Every cmdable method that calls
+// setReadTimeout parks the connection, so its wire name must be recognized for
+// RAW Cmders too (a hand-built NewCmd carries no timeout marker). Derive the
+// list with:
+//
+//	grep -rn 'setReadTimeout' --include='*.go' . | grep -v _test
+//
+// and add any new name here and in blockingCommands (codex found blmovem,
+// migrate and ts.read missing on #3942).
+func TestBlockingSetCoversEveryReadTimeoutHelper(t *testing.T) {
+	ctx := context.Background()
+	byName := []string{
+		"blpop", "brpop", "brpoplpush", "blmove", "blmovem", "blmpop",
+		"bzpopmin", "bzpopmax", "bzmpop", "wait", "waitaof", "migrate",
+	}
+	for _, name := range byName {
+		if !isBlockingCmd(NewCmd(ctx, name, "k", 0)) {
+			t.Errorf("isBlockingCmd(%q) = false, want true", name)
+		}
+	}
+	byArg := [][]interface{}{
+		{"xread", "BLOCK", 0, "STREAMS", "s", "$"},
+		{"xreadgroup", "GROUP", "g", "c", "BLOCK", 0, "STREAMS", "s", ">"},
+		{"ts.read", "k", "BLOCK", 0},
+	}
+	for _, args := range byArg {
+		if !isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = false, want true", args)
+		}
+	}
+	// The non-blocking forms of the arg-driven commands must stay batched.
+	for _, args := range [][]interface{}{
+		{"ts.read", "k", "COUNT", 5},
+		{"xread", "COUNT", 10, "STREAMS", "s", "0"},
+	} {
+		if isBlockingCmd(NewCmd(ctx, args...)) {
+			t.Errorf("isBlockingCmd(%v) = true, want false", args)
+		}
+	}
+}
+
+// TestNoRetryDoesNotLeakToBatchmates pins per-command retry isolation: a
+// zero-copy read forbids retries because its reply decodes into a caller
+// buffer, and cmdsContainNoRetry applies that to a whole dispatched slice — so
+// in a shared batch it would strip retries from unrelated callers. The engine
+// splits mixed batches by policy instead.
+func TestNoRetryDoesNotLeakToBatchmates(t *testing.T) {
+	ctx := context.Background()
+	plain := NewStatusCmd(ctx, "set", "split:a", "v")
+	zc := NewZeroCopyStringCmd(ctx, make([]byte, 16), "get", "split:b")
+	if !zc.NoRetry() {
+		t.Fatal("precondition: zero-copy read should forbid retries")
+	}
+
+	// Mixed batch: split, and every command lands in exactly one group.
+	retryable, noRetry := splitByRetryPolicy([]Cmder{plain, zc})
+	if noRetry == nil {
+		t.Fatal("mixed batch was not split: a zero-copy read would disable retries for its batchmates")
+	}
+	if len(retryable) != 1 || retryable[0] != Cmder(plain) {
+		t.Errorf("retryable group = %v, want just the plain command", retryable)
+	}
+	if len(noRetry) != 1 || noRetry[0] != Cmder(zc) {
+		t.Errorf("no-retry group = %v, want just the zero-copy command", noRetry)
+	}
+	if cmdsContainNoRetry(retryable) {
+		t.Error("retryable group still reports a no-retry member")
+	}
+
+	// Uniform batches are returned untouched — no split, no allocation.
+	only := []Cmder{plain, NewStatusCmd(ctx, "set", "split:c", "v")}
+	if r, nr := splitByRetryPolicy(only); nr != nil || len(r) != 2 {
+		t.Errorf("all-retryable batch was split: r=%d nr=%v", len(r), nr)
+	}
+	allZC := []Cmder{zc, NewZeroCopyStringCmd(ctx, make([]byte, 16), "get", "split:d")}
+	if r, nr := splitByRetryPolicy(allZC); nr != nil || len(r) != 2 {
+		t.Errorf("all-no-retry batch was split: r=%d nr=%v", len(r), nr)
+	}
+}
+
+// TestNoRetrySplitExecutesEveryCommand pins the split end to end: both groups
+// must actually execute and get their own results.
+func TestNoRetrySplitExecutesEveryCommand(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Set(ctx, "split:zc", "zerocopy-value", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		MaxBatchSize:  64,
+		MaxFlushDelay: 20 * time.Millisecond, // hold the window so both land in one drain
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	buf := make([]byte, 64)
+	sets := make([]*StatusCmd, 8)
+	for i := range sets {
+		sets[i] = ap.Set(ctx, "split:plain:"+strconv.Itoa(i), "v", 0)
+	}
+	zc := ap.GetToBuffer(ctx, "split:zc", buf)
+	for i, c := range sets {
+		if err := c.Err(); err != nil {
+			t.Fatalf("plain %d: %v", i, err)
+		}
+	}
+	n, err := zc.Result()
+	if err != nil {
+		t.Fatalf("zero-copy read: %v", err)
+	}
+	if got := string(buf[:n]); got != "zerocopy-value" {
+		t.Fatalf("zero-copy buffer = %q, want %q", got, "zerocopy-value")
+	}
+}
