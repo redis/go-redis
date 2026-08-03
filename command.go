@@ -442,6 +442,24 @@ func (cmd *baseCmd) rawErr() error { return cmd.err }
 // goroutines as executors of every batch they carry.
 func (cmd *baseCmd) readyBatch() *apBatch { return cmd.ready.Load() }
 
+// resultReady reports whether the command's result can be read WITHOUT
+// blocking: either it never rode the deferred autopipeline face (no gating
+// batch) or that batch has already completed. Post-execution bookkeeping in
+// the command wrappers — the OTel metric emissions — consults it so that
+// enabling telemetry cannot turn a deferred submission into a blocking call.
+func (cmd *baseCmd) resultReady() bool {
+	b := cmd.ready.Load()
+	if b == nil {
+		return true
+	}
+	select {
+	case <-b.done:
+		return true
+	default:
+		return false
+	}
+}
+
 var _ Cmder = (*Cmd)(nil)
 
 func (cmd *baseCmd) Name() string {

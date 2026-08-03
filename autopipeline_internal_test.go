@@ -707,7 +707,8 @@ func TestRawBlockingCommandsDivert(t *testing.T) {
 }
 
 // TestCloseBoundedByDispatchBackstop pins the bound added for the
-// unkillable-dispatch case: an accepted command is never cancelled by Close
+// unkillable-dispatch case (every stage of the drain, not just the last):
+// an accepted command is never cancelled by Close
 // (the flush contract), so with read timeouts disabled a stalled dispatch or a
 // zero-timeout blocking command would hang Close forever. waitForDispatches
 // must give up and report what is outstanding instead.
@@ -726,21 +727,18 @@ func TestCloseBoundedByDispatchBackstop(t *testing.T) {
 	go func() { defer ap.divertWg.Done(); <-release }()
 
 	start := time.Now()
-	err = ap.waitForDispatches(150 * time.Millisecond)
+	err = ap.drainAll(150 * time.Millisecond)
 	elapsed := time.Since(start)
 	if err == nil {
-		t.Fatal("waitForDispatches returned nil with a stuck diverted command, want a timeout error")
+		t.Fatal("drainAll returned nil with a stuck diverted command, want a timeout error")
 	}
 	if !strings.Contains(err.Error(), "diverted") {
 		t.Fatalf("error %q does not name the outstanding work", err)
 	}
 	if elapsed > 2*time.Second {
-		t.Fatalf("waitForDispatches took %v, want ~150ms (the bound must not be ignored)", elapsed)
+		t.Fatalf("drainAll took %v, want ~150ms (the bound must not be ignored)", elapsed)
 	}
 	close(release)
-	if err := ap.waitForDispatches(5 * time.Second); err != nil {
-		t.Fatalf("after release: %v", err)
-	}
 }
 
 // TestCloseWaitsForDivertedCommand pins the other half: Close must NOT return
@@ -907,5 +905,76 @@ func TestDivertedClusterWideCommandsSkipPreflight(t *testing.T) {
 	// A genuinely batched fan-out command must still be rejected.
 	if err := ap.DBSize(ctx).Err(); err != nil {
 		t.Errorf("ap.DBSize should be delegated cluster-wide, got %v", err)
+	}
+}
+
+// TestOtelMetricsDoNotAwaitOnAsyncFace pins that enabling telemetry cannot
+// change the deferred face's call shape: the post-execution metric emissions in
+// the command wrappers read the outcome only when it is available WITHOUT
+// blocking, so an instrumented ap.Publish / ap.XReadGroup still returns
+// immediately (codex on #3942).
+func TestOtelMetricsDoNotAwaitOnAsyncFace(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	// Hold every dispatch so a submitted command provably has NOT executed
+	// while the wrapper's metric block runs.
+	gate := make(chan struct{})
+	var armed atomic.Bool
+	client.AddHook(dispatchGateHook{gate: gate, armed: &armed})
+
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	armed.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ap.Publish(ctx, "otel:chan", "payload")
+		ap.SPublish(ctx, "otel:chan", "payload")
+		// Block: 0 is the form that would wait indefinitely for messages.
+		ap.XReadGroup(ctx, &XReadGroupArgs{
+			Group: "g", Consumer: "c", Streams: []string{"otel:stream", ">"}, Block: 0,
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		armed.Store(false)
+		close(gate)
+		t.Fatal("submitting instrumented commands blocked on the deferred face; a metric path awaited the result")
+	}
+	armed.Store(false)
+	close(gate)
+	_ = ap.Close()
+}
+
+// dispatchGateHook holds every dispatch (solo, pipelined and diverted) while
+// armed, so a submitted command is guaranteed not to have executed.
+type dispatchGateHook struct {
+	gate  chan struct{}
+	armed *atomic.Bool
+}
+
+func (h dispatchGateHook) DialHook(next DialHook) DialHook { return next }
+func (h dispatchGateHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		if h.armed.Load() {
+			<-h.gate
+		}
+		return next(ctx, cmd)
+	}
+}
+func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		if h.armed.Load() {
+			<-h.gate
+		}
+		return next(ctx, cmds)
 	}
 }

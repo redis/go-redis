@@ -381,11 +381,15 @@ func (c cmdable) XReadGroup(ctx context.Context, a *XReadGroupArgs) *XStreamSlic
 	cmd.SetFirstKeyPos(keyPos)
 	_ = c(ctx, cmd)
 
-	// Record stream lag for each message (if command succeeded).
-	// Enabled-gated: reading the result awaits execution on the async
-	// autopipeline face, needlessly blocking the caller when no recorder is
-	// installed.
-	if otel.Enabled() && cmd.Err() == nil {
+	// Record stream lag for each message (if command succeeded). Gated on the
+	// result being readable WITHOUT blocking: this command carries a
+	// read-timeout marker, so on the deferred autopipeline face it is diverted
+	// and still running when we get here — and the default Block: 0 form can
+	// wait indefinitely for messages, so reading the outcome would block the
+	// submit call instead of returning a future (review finding by codex on
+	// #3942). Skipped for a submission that has not executed yet; emitting
+	// this from the execution path is a follow-up in the OTel wiring.
+	if otel.Enabled() && cmd.resultReady() && cmd.rawErr() == nil {
 		streams := cmd.Val()
 		for _, stream := range streams {
 			for _, msg := range stream.Messages {

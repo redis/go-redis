@@ -1671,10 +1671,6 @@ func (p *ConnPool) IdleLen() int {
 	return int(n)
 }
 
-// Size returns the maximum pool size (capacity).
-//
-// This is used by the streaming credentials manager to size the re-auth worker pool,
-// ensuring that re-auth operations don't exhaust the connection pool.
 // Name returns the pool's configured name, which is stamped on every
 // connection it creates (Conn.PoolName). Callers holding a Pooler can type
 // assert to interface{ Name() string } to find which pool owns a connection —
@@ -1682,6 +1678,10 @@ func (p *ConnPool) IdleLen() int {
 // conn's pool rather than always the primary one.
 func (p *ConnPool) Name() string { return p.cfg.Name }
 
+// Size returns the maximum pool size (capacity).
+//
+// This is used by the streaming credentials manager to size the re-auth worker pool,
+// ensuring that re-auth operations don't exhaust the connection pool.
 func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }

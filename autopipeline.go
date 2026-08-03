@@ -7,6 +7,7 @@ import (
 	"io"
 	"runtime"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -874,10 +875,10 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 		return cmd
 	}
 
-	if ap.blocking {
-		_ = ap.pipeliner.Process(ctx, cmd)
-		return cmd
-	}
+	// Both faces go through runOutsidePipeline: it applies the divert
+	// registration gate, so Close cannot conclude "nothing in flight" while an
+	// accepted raw command — a blocking one on the blocking face runs inline on
+	// the caller's goroutine — is still holding a pooled connection.
 	_ = ap.runOutsidePipeline(ctx, cmd)
 	return cmd
 }
@@ -889,9 +890,9 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // goroutine and a ready batch makes its result accessors block until it
 // completes. The batch completes at the innermost seam (under the user
 // hooks) so a ProcessHook reading the result cannot self-deadlock; the
-// deferred close is the panic backstop. Not tracked by batchWg — a call
-// racing Close simply fails with a closed-pool error like any other
-// in-flight command on a closing client.
+// deferred close is the panic backstop. Tracked by divertWg under divertMu,
+// so Close waits for accepted diverted work (bounded — see Close) instead of
+// returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
 	if ap.blocking {
 		// The blocking face runs it inline, so the caller's own goroutine holds
@@ -1553,47 +1554,60 @@ func (ap *AutoPipeliner) Close() error {
 	ap.divertMu.Lock()
 	ap.divertMu.Unlock() //nolint:staticcheck // handshake, not a critical section
 
-	// Wait for flushers to finish
-	ap.wg.Wait()
-
-	// Final sweep: a command can pass enqueue's under-lock closed-recheck just
-	// before Close's CompareAndSwap and append to a shard AFTER that shard's
-	// flusher has already drained and exited — leaving its batch.done unclosed
-	// and the caller's accessor blocked forever. With the flushers provably gone
-	// (wg.Wait above), drain each shard once more under its lock. This pairs with
-	// the closed-recheck in enqueue: s.mu serializes the two, so either the late
-	// enqueue appends first and this sweep flushes it, or the sweep runs first
-	// and the enqueue then observes closed==true and rejects with ErrClosed.
-	for _, s := range ap.shards {
-		s.flushBatchSliceShutdown()
-	}
-
-	// Wait for the batch and diverted execution goroutines to finish, BOUNDED.
+	// Drain everything that remains, BOUNDED AS ONE UNIT: the flusher exit, the
+	// final shard sweep, and the batch/diverted dispatch waits.
 	//
-	// Neither wait can be cancelled: commands taken from a queue (or accepted
-	// for diverted execution) were already ACCEPTED, and Close's contract is to
+	// None of it can be cancelled: commands taken from a queue (or accepted for
+	// diverted execution) were already ACCEPTED, and Close's contract is to
 	// flush them, so ap.cancel() deliberately does not reach an in-flight
 	// dispatch. With ReadTimeout disabled — a supported configuration — a
 	// stalled read against a dead peer, or a diverted BLPOP with a zero
-	// timeout, therefore has nothing to end it, and an unconditional wait would
-	// hang Close forever. Bound it and report what is still outstanding
-	// instead of blocking the caller indefinitely: the
-	// engine is already closed to new work, the leaked goroutines end when the
-	// server or the OS eventually breaks the connection. See
-	// autoPipelineCloseBackstop for why the bound is generous, not snappy.
-	if err := ap.waitForDispatches(autoPipelineCloseBackstop); err != nil {
-		return err
-	}
-
-	return nil
+	// timeout, has nothing to end it. Bounding only the LAST wait would not
+	// help: the wedged dispatch can just as easily sit in a flusher that
+	// ap.wg.Wait() is waiting for, or in the shutdown sweep's own dispatch, so
+	// Close would hang before ever reaching the bound it documents (review
+	// finding by codex on #3942). On expiry, report what is still outstanding
+	// instead of blocking the caller: the engine is already closed to new work,
+	// and the leaked goroutines end when the server or the OS breaks the
+	// connection. See autoPipelineCloseBackstop for why the bound is generous.
+	return ap.drainAll(autoPipelineCloseBackstop)
 }
 
-// waitForDispatches waits for the batch and diverted dispatch goroutines,
-// giving up after timeout with an error naming what was still running. Split
+// drainAll runs Close's whole drain tail under a single bound and returns an
+// error naming every stage that was still outstanding when it expired. Split
 // out of Close so the bound is testable without a real stalled connection.
-func (ap *AutoPipeliner) waitForDispatches(timeout time.Duration) error {
+//
+// The stages are ordered as Close needs them — the shard sweep must not start
+// before the flushers are provably gone — but they are waited on
+// CONCURRENTLY with the timer, which is the whole point: any stage can be the
+// one that never finishes.
+func (ap *AutoPipeliner) drainAll(timeout time.Duration) error {
+	flushers := make(chan struct{})
+	go func() { defer close(flushers); ap.wg.Wait() }()
+
+	// swept: after the flushers are gone, drain each shard once more under its
+	// lock. A command can pass enqueue's under-lock closed-recheck just before
+	// Close's CompareAndSwap and append to a shard AFTER that shard's flusher
+	// has already drained and exited — leaving its batch.done unclosed and the
+	// caller's accessor blocked forever. s.mu serializes the two, so either the
+	// late enqueue appends first and this sweep flushes it, or the sweep runs
+	// first and the enqueue then observes closed==true and rejects.
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		<-flushers
+		for _, s := range ap.shards {
+			s.flushBatchSliceShutdown()
+		}
+	}()
+
 	batches := make(chan struct{})
-	go func() { defer close(batches); ap.batchWg.Wait() }()
+	go func() {
+		defer close(batches)
+		<-swept
+		ap.batchWg.Wait()
+	}()
+
 	diverted := make(chan struct{})
 	go func() { defer close(diverted); ap.divertWg.Wait() }()
 
@@ -1609,17 +1623,30 @@ func (ap *AutoPipeliner) waitForDispatches(timeout time.Duration) error {
 			divertedDone = true
 			diverted = nil
 		case <-timer.C:
-			what := "batch dispatches"
-			if batchesDone {
-				what = "diverted (blocking) commands"
-			} else if !divertedDone {
-				what = "batch dispatches and diverted (blocking) commands"
+			var outstanding []string
+			if !batchesDone {
+				// Name the precise stage: a wedged flusher and a wedged batch
+				// dispatch need different operator responses.
+				select {
+				case <-flushers:
+					select {
+					case <-swept:
+						outstanding = append(outstanding, "batch dispatches")
+					default:
+						outstanding = append(outstanding, "the shutdown flush")
+					}
+				default:
+					outstanding = append(outstanding, "the flusher drain")
+				}
+			}
+			if !divertedDone {
+				outstanding = append(outstanding, "diverted (blocking) commands")
 			}
 			return fmt.Errorf(
 				"redis: autopipeline: Close timed out after %s with %s still in flight; "+
 					"they hold pooled connections until the server or the OS ends them "+
 					"(most often a blocking command with no timeout, or ReadTimeout disabled)",
-				timeout, what)
+				timeout, strings.Join(outstanding, " and "))
 		}
 	}
 	return nil

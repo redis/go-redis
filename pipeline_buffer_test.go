@@ -38,6 +38,7 @@ func TestPipelineBufferSizes(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
+	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
 
 	// Test that regular commands work
@@ -93,6 +94,7 @@ func TestNoPipelinePool(t *testing.T) {
 		// No PipelineReadBufferSize or PipelineWriteBufferSize
 	})
 	defer client.Close()
+	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
 
 	// Test that pipeline still works (using regular pool)
@@ -136,6 +138,7 @@ func TestPipelinePoolStats(t *testing.T) {
 		PipelinePoolSize:        5,          // Small pool for pipelining
 	})
 	defer client.Close()
+	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
 
 	// Execute some pipeline commands
@@ -184,6 +187,7 @@ func TestNoPipelinePoolStats(t *testing.T) {
 		WriteBufferSize: 64 * 1024, // 64 KiB for all connections
 	})
 	defer client.Close()
+	cleanupBufferTestKeys(t, client)
 	skipWithoutRedis(t, ctx, client)
 
 	// Execute some commands
@@ -207,4 +211,23 @@ func TestNoPipelinePoolStats(t *testing.T) {
 		stats.TotalConns, stats.IdleConns, stats.Hits, stats.Misses)
 
 	t.Log("PoolStats works correctly without pipeline pool")
+}
+
+// cleanupBufferTestKeys removes this file's fixed test keys before and after a
+// test. These tests share a Redis instance with the rest of the package (and
+// "test_key" is also used by autopipeline_test.go), so leaving state behind
+// makes results order-dependent — the same class of leak that produced a real
+// CI flake in the search suite (Copilot review on #3942).
+func cleanupBufferTestKeys(t *testing.T, client *redis.Client) {
+	t.Helper()
+	keys := []string{
+		"test_key", "stats_key",
+		"pipe_key1", "pipe_key2",
+		"no_pipe_pool_key1", "no_pipe_pool_key2",
+	}
+	ctx := context.Background()
+	if err := client.Del(ctx, keys...).Err(); err != nil {
+		t.Fatalf("cleanup keys: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Del(ctx, keys...).Err() })
 }
