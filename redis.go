@@ -981,6 +981,19 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 		c.opt.Limiter.ReportResult(err)
 	}
 
+	// If the command finished with a context error and drain-on-timeout is
+	// enabled, try to consume the outstanding reply and restore protocol
+	// alignment before re-pooling the connection. The original context error is
+	// still preserved for the caller.
+	if c.shouldDrainOnContextTimeout(err) {
+		if c.drainConnOnContextTimeout(ctx, cn) {
+			c.connPool.Put(ctx, cn)
+			return
+		}
+		c.connPool.Remove(ctx, cn, err)
+		return
+	}
+
 	if isBadConn(err, false, c.opt.Addr) {
 		c.connPool.Remove(ctx, cn, err)
 	} else {
@@ -1003,6 +1016,44 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 		}
 		c.connPool.Put(ctx, cn)
 	}
+}
+
+func (c *baseClient) shouldDrainOnContextTimeout(err error) bool {
+	// Only activate this path for explicit opt-in behavior and for context
+	// deadline or cancellation errors, which are the cases where a bounded drain
+	// is still safe to attempt.
+	return c.opt != nil && c.opt.DrainOnContextTimeout && isContextError(err)
+}
+
+func (c *baseClient) drainConnOnContextTimeout(ctx context.Context, cn *pool.Conn) bool {
+	if c.opt == nil || cn == nil || cn.IsClosed() {
+		return false
+	}
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), c.opt.ContextTimeoutDrainTimeout)
+	defer cancel()
+
+	readErr := cn.WithReader(drainCtx, c.opt.ContextTimeoutDrainTimeout, func(rd *proto.Reader) error {
+		// RESP3 connections may already have pending push frames buffered ahead
+		// of the reply. Process them with the configured push processor so the
+		// stream remains aligned before we read the command reply.
+		if c.opt.Protocol == 3 && c.pushProcessor != nil {
+			if err := c.processPendingPushNotificationWithReader(drainCtx, cn, rd); err != nil {
+				return err
+			}
+		}
+		_, err := rd.ReadReply()
+		if err == nil || err == proto.Nil {
+			return nil
+		}
+		return err
+	})
+
+	if readErr != nil {
+		internal.Logger.Printf(ctx, "redis: context timeout drain failed for conn[%d]: %v", cn.GetID(), readErr)
+		return false
+	}
+	return true
 }
 
 func (c *baseClient) withConn(

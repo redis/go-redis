@@ -110,9 +110,11 @@ type ClusterOptions struct {
 	// See Options.DialerRetryBackoff for details.
 	DialerRetryBackoff func(attempt int) time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
-	ContextTimeoutEnabled bool
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ContextTimeoutEnabled      bool
+	DrainOnContextTimeout      bool
+	ContextTimeoutDrainTimeout time.Duration
 
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
@@ -443,7 +445,9 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ReadTimeout:        opt.ReadTimeout,
 		WriteTimeout:       opt.WriteTimeout,
 
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      opt.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      opt.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: opt.ContextTimeoutDrainTimeout,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,
