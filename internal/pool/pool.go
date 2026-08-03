@@ -1675,6 +1675,13 @@ func (p *ConnPool) IdleLen() int {
 //
 // This is used by the streaming credentials manager to size the re-auth worker pool,
 // ensuring that re-auth operations don't exhaust the connection pool.
+// Name returns the pool's configured name, which is stamped on every
+// connection it creates (Conn.PoolName). Callers holding a Pooler can type
+// assert to interface{ Name() string } to find which pool owns a connection —
+// used by maintnotifications to route a handoff to the hook that owns the
+// conn's pool rather than always the primary one.
+func (p *ConnPool) Name() string { return p.cfg.Name }
+
 func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }

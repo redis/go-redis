@@ -195,6 +195,34 @@ func (hm *Manager) InitPoolHookForPool(p pool.Pooler, baseDialer func(context.Co
 	p.AddPoolHook(hook)
 }
 
+// hookForConn returns the pool hook that owns cn's pool: an additional hook
+// when the connection came from a secondary pool (e.g. a client's dedicated
+// pipeline pool), the primary hook otherwise. Handoffs must be queued through
+// the owning hook — the HandoffRequest carries that hook's pool, and a failed
+// handoff removes the connection from it, so queuing a pipeline-pool
+// connection on the primary hook would close the connection without freeing
+// its slot in the pipeline pool's bookkeeping.
+func (hm *Manager) hookForConn(cn *pool.Conn) *PoolHook {
+	if cn == nil {
+		return hm.poolHooksRef
+	}
+	name := cn.PoolName()
+	if name == "" {
+		return hm.poolHooksRef
+	}
+	hm.hooksMu.RLock()
+	defer hm.hooksMu.RUnlock()
+	for _, ah := range hm.additionalPoolHooks {
+		// Pooler does not expose the name; the concrete pool does. A Pooler
+		// implementation without it simply never matches and falls through to
+		// the primary hook — the pre-existing behavior.
+		if np, ok := ah.pool.(interface{ Name() string }); ok && np.Name() == name {
+			return ah.hook
+		}
+	}
+	return hm.poolHooksRef
+}
+
 // setupPushNotifications sets up push notification handling by registering with the client's processor.
 func (hm *Manager) setupPushNotifications() error {
 	processor := hm.client.GetPushProcessor()

@@ -128,6 +128,20 @@ type AutoPipelineOptions struct {
 // a background context bounded only by this backstop.
 const autoPipelinePermitBackstop = 30 * time.Second
 
+// autoPipelineCloseBackstop bounds Close's wait for in-flight dispatches. It
+// deliberately carries the same value as the permit backstop but its OWN name:
+// the two answer different questions, and this one may want tuning on its own.
+//
+// Why it is generous rather than snappy: the bound is only ever REACHED when a
+// dispatch cannot end by itself — a blocking command with no timeout, or a
+// stalled read with ReadTimeout disabled. In every other configuration the
+// read timeout ends the dispatch and Close returns the moment it does, well
+// under this value. A tighter bound would not speed up healthy shutdowns; it
+// would instead make Close report failure while legitimate work is still
+// finishing (a large final batch, or a maintnotifications relaxed window
+// during a failover), turning a correct slow drain into a spurious error.
+const autoPipelineCloseBackstop = 30 * time.Second
+
 // numAutoPipelineShards is the shard-count default used by CLUSTER wiring,
 // where commands are routed to shards by slot so different nodes' batches
 // queue independently (every shard keeps at least one concurrency permit, so
@@ -591,7 +605,12 @@ type AutoPipeliner struct {
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup // Tracks flusher goroutines
 	batchWg sync.WaitGroup // Tracks batch execution goroutines
-	closed  atomic.Bool
+	// divertWg tracks the goroutines that execute DIVERTED commands (blocking
+	// and connection-hostile ones, which never enter a batch). Close waits on
+	// it exactly like batchWg so a diverted command's pooled connection is not
+	// left in flight after Close returns — bounded, see Close.
+	divertWg sync.WaitGroup
+	closed   atomic.Bool
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -873,7 +892,9 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	}
 	b := newAPBatch()
 	cmd.setReady(b)
+	ap.divertWg.Add(1)
 	go func() {
+		defer ap.divertWg.Done()
 		defer b.close()
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
@@ -981,6 +1002,24 @@ func (ap *AutoPipeliner) ScriptFlush(ctx context.Context) *StatusCmd {
 // on ClusterClient).
 func (ap *AutoPipeliner) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
 	return ap.pipeliner.ScriptExists(ctx, hashes...)
+}
+
+// HImportPrepare, HImportDiscard and HImportDiscardAll are the remaining
+// cluster-wide overrides (see the delegation note above): ClusterClient fans
+// them out to every master and updates the shared fieldset registry, so
+// running them on a single routed node would let a later HImportSet for a key
+// on another master fail with "no such fieldset". TestAPDelegatesClusterWideOverrides
+// fails if a future ClusterClient override is added without a delegate here.
+func (ap *AutoPipeliner) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
+	return ap.pipeliner.HImportPrepare(ctx, fieldsetName, fields...)
+}
+
+func (ap *AutoPipeliner) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
+	return ap.pipeliner.HImportDiscard(ctx, fieldsetName)
+}
+
+func (ap *AutoPipeliner) HImportDiscardAll(ctx context.Context) *IntCmd {
+	return ap.pipeliner.HImportDiscardAll(ctx)
 }
 
 // Watch runs a transactional function on the underlying client (not batched).
@@ -1129,6 +1168,38 @@ func runsOutsidePipeline(name string) bool {
 	return ok
 }
 
+// blockingCommands are commands that park on the server until data arrives or
+// their own timeout expires. The TYPED helpers set a per-command read timeout
+// (see cmdable.BLPop), which submit already diverts on; a RAW Cmder built by
+// hand — NewCmd(ctx, "blpop", key, 0) via Submit/Process/Do — carries no such
+// marker, so without this set it would be queued onto a shared pipeline
+// connection and hold the whole batch for the block duration.
+var blockingCommands = map[string]struct{}{
+	"blpop": {}, "brpop": {}, "brpoplpush": {}, "blmove": {}, "blmpop": {},
+	"bzpopmin": {}, "bzpopmax": {}, "bzmpop": {},
+	"wait": {}, "waitaof": {},
+}
+
+// isBlockingCmd reports whether cmd parks the connection. XREAD/XREADGROUP are
+// decided by ARGUMENTS, not by name: only the BLOCK form blocks, and
+// blanket-diverting the (far more common) non-blocking form would drop it out
+// of batching for nothing.
+func isBlockingCmd(cmd Cmder) bool {
+	name := cmd.Name()
+	if _, ok := blockingCommands[name]; ok {
+		return true
+	}
+	if name != "xread" && name != "xreadgroup" {
+		return false
+	}
+	for _, arg := range cmd.Args() {
+		if s, ok := arg.(string); ok && internal.ToLower(s) == "block" {
+			return true
+		}
+	}
+	return false
+}
+
 // submit queues a command without blocking and returns its completion future.
 func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// finish marks the command ready on the deferred face so its result
@@ -1150,7 +1221,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
-	if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) {
+	if cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) {
 		// Blocking commands (and the conn-hostile ones above) are executed
 		// directly, outside the pipeline — via runOutsidePipeline, which
 		// keeps each face's call shape: the blocking face runs the command
@@ -1366,9 +1437,16 @@ func (ap *AutoPipeliner) IsClosed() bool {
 // numShards reports how many shards this autopipeliner runs.
 func (ap *AutoPipeliner) numShards() int { return len(ap.shards) }
 
-// setShardFn installs a content-based shard selector (cluster mode routes by
-// slot so each shard's batch stays on one node). Must be called before the
-// autopipeliner is used. Not safe to change concurrently with enqueues.
+// setShardFn installs a content-based shard selector. In cluster mode it maps
+// a command's SLOT to a shard, which is a batch-depth heuristic, not an
+// invariant: slot ranges are assigned to shards proportionally, so when a
+// node's slots are non-contiguous one shard's batch can still span nodes and
+// mapCmdsByNode splits it (correctness is unaffected — that router resolves
+// every command's own slot — but those per-node pipelines are shallower).
+// What the mapping DOES guarantee is that a given key always lands on the same
+// shard, so a caller's relative order for that key is preserved regardless of
+// how the shard's batch is split. Must be called before the autopipeliner is
+// used. Not safe to change concurrently with enqueues.
 func (ap *AutoPipeliner) setShardFn(fn func(Cmder) int) { ap.shardFn = fn }
 
 // setPreflight installs a submit-time command filter (cluster wiring rejects
@@ -1411,9 +1489,60 @@ func (ap *AutoPipeliner) Close() error {
 		s.flushBatchSliceShutdown()
 	}
 
-	// Wait for all batch execution goroutines to finish
-	ap.batchWg.Wait()
+	// Wait for the batch and diverted execution goroutines to finish, BOUNDED.
+	//
+	// Neither wait can be cancelled: commands taken from a queue (or accepted
+	// for diverted execution) were already ACCEPTED, and Close's contract is to
+	// flush them, so ap.cancel() deliberately does not reach an in-flight
+	// dispatch. With ReadTimeout disabled — a supported configuration — a
+	// stalled read against a dead peer, or a diverted BLPOP with a zero
+	// timeout, therefore has nothing to end it, and an unconditional wait would
+	// hang Close forever. Bound it and report what is still outstanding
+	// instead of blocking the caller indefinitely: the
+	// engine is already closed to new work, the leaked goroutines end when the
+	// server or the OS eventually breaks the connection. See
+	// autoPipelineCloseBackstop for why the bound is generous, not snappy.
+	if err := ap.waitForDispatches(autoPipelineCloseBackstop); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// waitForDispatches waits for the batch and diverted dispatch goroutines,
+// giving up after timeout with an error naming what was still running. Split
+// out of Close so the bound is testable without a real stalled connection.
+func (ap *AutoPipeliner) waitForDispatches(timeout time.Duration) error {
+	batches := make(chan struct{})
+	go func() { defer close(batches); ap.batchWg.Wait() }()
+	diverted := make(chan struct{})
+	go func() { defer close(diverted); ap.divertWg.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	batchesDone, divertedDone := false, false
+	for !batchesDone || !divertedDone {
+		select {
+		case <-batches:
+			batchesDone = true
+			batches = nil // a closed channel is always ready; stop selecting it
+		case <-diverted:
+			divertedDone = true
+			diverted = nil
+		case <-timer.C:
+			what := "batch dispatches"
+			if batchesDone {
+				what = "diverted (blocking) commands"
+			} else if !divertedDone {
+				what = "batch dispatches and diverted (blocking) commands"
+			}
+			return fmt.Errorf(
+				"redis: autopipeline: Close timed out after %s with %s still in flight; "+
+					"they hold pooled connections until the server or the OS ends them "+
+					"(most often a blocking command with no timeout, or ReadTimeout disabled)",
+				timeout, what)
+		}
+	}
 	return nil
 }
 

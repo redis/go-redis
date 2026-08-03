@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -634,4 +635,136 @@ func TestConnStateClusterCommandsRunOutsidePipeline(t *testing.T) {
 			t.Errorf("runsOutsidePipeline(%q) = false, want true", name)
 		}
 	}
+}
+
+// TestAPDelegatesClusterWideOverrides is the guard for the recurring
+// "AutoPipeliner shadows a ClusterClient override" class: every EXPORTED
+// method that ClusterClient defines itself AND cmdable also provides is a
+// cluster-wide override (DBSize, the SCRIPT admin trio, the HIMPORT admin
+// trio) — reaching it through the AutoPipeliner's embedded cmdable would run
+// it on one routed node instead of fanning out. Each must therefore have an
+// explicit delegate on AutoPipeliner. Found by review twice; this fails on
+// the third occurrence instead.
+func TestAPDelegatesClusterWideOverrides(t *testing.T) {
+	ccT := reflect.TypeOf(&ClusterClient{})
+	apT := reflect.TypeOf(&AutoPipeliner{})
+	cmdableT := reflect.TypeOf(cmdable(nil))
+
+	for i := 0; i < ccT.NumMethod(); i++ {
+		name := ccT.Method(i).Name
+		if _, isCmdable := cmdableT.MethodByName(name); !isCmdable {
+			continue // not a shadowing override, just a ClusterClient API
+		}
+		if _, ok := apT.MethodByName(name); !ok {
+			t.Errorf("ClusterClient.%s overrides the generic cmdable implementation "+
+				"(cluster-wide fan-out) but AutoPipeliner has no delegate, so the "+
+				"embedded cmdable would run it on a single routed node; add "+
+				"func (ap *AutoPipeliner) %s(...) { return ap.pipeliner.%s(...) }",
+				name, name, name)
+		}
+	}
+}
+
+// TestRawBlockingCommandsDivert pins that RAW blocking Cmders — which carry no
+// per-command read timeout, unlike the typed helpers — are recognized as
+// blocking and therefore diverted off the shared pipeline connection.
+func TestRawBlockingCommandsDivert(t *testing.T) {
+	ctx := context.Background()
+	blocking := [][]interface{}{
+		{"blpop", "k", 0},
+		{"brpop", "k", 0},
+		{"brpoplpush", "a", "b", 0},
+		{"blmove", "a", "b", "LEFT", "RIGHT", 0},
+		{"blmpop", 0, 1, "k", "LEFT"},
+		{"bzpopmin", "k", 0},
+		{"bzpopmax", "k", 0},
+		{"bzmpop", 0, 1, "k", "MIN"},
+		{"wait", 1, 0},
+		{"waitaof", 1, 0, 0},
+		{"xread", "BLOCK", 0, "STREAMS", "s", "$"},
+		{"xreadgroup", "GROUP", "g", "c", "BLOCK", 0, "STREAMS", "s", ">"},
+	}
+	for _, args := range blocking {
+		if cmd := NewCmd(ctx, args...); !isBlockingCmd(cmd) {
+			t.Errorf("isBlockingCmd(%v) = false, want true (would ride a shared pipeline conn)", args[0])
+		}
+	}
+	// The non-blocking forms must stay batched: diverting them would drop the
+	// common case out of pipelining for nothing.
+	nonBlocking := [][]interface{}{
+		{"xread", "COUNT", 10, "STREAMS", "s", "0"},
+		{"xreadgroup", "GROUP", "g", "c", "STREAMS", "s", ">"},
+		{"lpop", "k"},
+		{"get", "k"},
+	}
+	for _, args := range nonBlocking {
+		if cmd := NewCmd(ctx, args...); isBlockingCmd(cmd) {
+			t.Errorf("isBlockingCmd(%v) = true, want false (must stay batched)", args)
+		}
+	}
+}
+
+// TestCloseBoundedByDispatchBackstop pins the bound added for the
+// unkillable-dispatch case: an accepted command is never cancelled by Close
+// (the flush contract), so with read timeouts disabled a stalled dispatch or a
+// zero-timeout blocking command would hang Close forever. waitForDispatches
+// must give up and report what is outstanding instead.
+func TestCloseBoundedByDispatchBackstop(t *testing.T) {
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ap.Close()
+
+	// Simulate a diverted blocking command that never returns.
+	release := make(chan struct{})
+	ap.divertWg.Add(1)
+	go func() { defer ap.divertWg.Done(); <-release }()
+
+	start := time.Now()
+	err = ap.waitForDispatches(150 * time.Millisecond)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("waitForDispatches returned nil with a stuck diverted command, want a timeout error")
+	}
+	if !strings.Contains(err.Error(), "diverted") {
+		t.Fatalf("error %q does not name the outstanding work", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("waitForDispatches took %v, want ~150ms (the bound must not be ignored)", elapsed)
+	}
+	close(release)
+	if err := ap.waitForDispatches(5 * time.Second); err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+}
+
+// TestCloseWaitsForDivertedCommand pins the other half: Close must NOT return
+// while a diverted command is still executing (its pooled connection is still
+// in use). Before the divert goroutines were tracked, Close raced past them.
+func TestCloseWaitsForDivertedCommand(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{Addr: internalTestRedisAddr()})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// BLPOP with a short timeout: diverted, still running when Close is called.
+	fut := ap.Submit(ctx, NewCmd(ctx, "blpop", "closewait:missing", 1))
+	time.Sleep(20 * time.Millisecond)
+	start := time.Now()
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 500*time.Millisecond {
+		t.Fatalf("Close returned after %v, before the ~1s diverted BLPOP finished — its pooled connection was still in flight", elapsed)
+	}
+	_ = fut.Wait()
 }
