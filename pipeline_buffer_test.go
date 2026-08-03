@@ -233,5 +233,16 @@ func cleanupBufferTestKeys(t *testing.T, client *redis.Client) {
 	if err := client.Del(ctx, keys...).Err(); err != nil {
 		t.Fatalf("cleanup keys: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Del(ctx, keys...).Err() })
+	// The post-test sweep gets its OWN client: t.Cleanup runs after the test
+	// function's defers, and every caller here defers client.Close(), so a
+	// cleanup issued on the passed-in client would land on a closed one and
+	// silently do nothing — leaving exactly the keys this helper exists to
+	// remove (Copilot review on #3942).
+	t.Cleanup(func() {
+		c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+		defer c.Close()
+		if err := c.Del(context.Background(), keys...).Err(); err != nil {
+			t.Errorf("post-test key cleanup failed, later tests may see stale keys: %v", err)
+		}
+	})
 }

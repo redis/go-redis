@@ -279,8 +279,11 @@ func (noopRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, stri
 // is the optional dedicated pipeline connection pool (nil when not configured);
 // it is registered as a regular pool under a "_pipeline" name suffix.
 func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler, addr string) {
-	// Check if the global recorder implements PoolRegistrar
-	if registrar, ok := globalRecorder.(PoolRegistrar); ok {
+	// Check if the global recorder implements PoolRegistrar. Read it through
+	// getRecorder: SetGlobalRecorder writes globalRecorder under recorderMu, and
+	// clients are created (and closed) concurrently with telemetry being
+	// installed, so an unlocked read here is a data race -race reports.
+	if registrar, ok := getRecorder().(PoolRegistrar); ok {
 		// Generate a unique ID for this client's pools
 		uniqueID := generateUniqueID()
 
@@ -302,8 +305,9 @@ func RegisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool p
 // UnregisterPools removes connection pools from the global recorder. pipelinePool
 // is the optional dedicated pipeline connection pool (nil when not configured).
 func UnregisterPools(connPool pool.Pooler, pubSubPool PubSubPooler, pipelinePool pool.Pooler) {
-	// Check if the global recorder implements PoolRegistrar
-	if registrar, ok := globalRecorder.(PoolRegistrar); ok {
+	// Check if the global recorder implements PoolRegistrar (see RegisterPools
+	// for why this goes through getRecorder rather than reading directly).
+	if registrar, ok := getRecorder().(PoolRegistrar); ok {
 		if connPool != nil {
 			registrar.UnregisterPool(connPool)
 		}
