@@ -1046,20 +1046,19 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 // tracking is on. Limiter accounting stays with the callers, whose shapes
 // differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
 func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
-  
 	// If the command finished with a context error and drain-on-timeout is
 	// enabled, try to consume the outstanding reply and restore protocol
 	// alignment before re-pooling the connection. The original context error is
 	// still preserved for the caller.
-	if p.shouldDrainOnContextTimeout(err) {
-		if p.drainConnOnContextTimeout(ctx, cn) {
-			p.connPool.Put(ctx, cn)
+	if c.shouldDrainOnContextTimeout(err) {
+		if c.drainConnOnContextTimeout(ctx, cn) {
+			p.Put(ctx, cn)
 			return
 		}
-		p.connPool.Remove(ctx, cn, err)
+		p.Remove(ctx, cn, err)
 		return
 	}
-  
+
 	if isBadConn(err, false, c.opt.Addr) {
 		p.Remove(ctx, cn, err)
 		return
