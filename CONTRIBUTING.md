@@ -72,7 +72,14 @@ that you are using supported versions of Docker and go.
 ### Security Vulnerabilities
 
 **NOTE**: If you find a security vulnerability, do NOT open an issue.
-Email [Redis Open Source (<oss@redis.com>)](mailto:oss@redis.com) instead.
+
+If you believe you have found a security vulnerability, to ensure proper
+review and assessment, we kindly ask vulnerability reports be submitted
+through our
+[Redis Vulnerability Disclosure Program](https://redis.io/redis-responsible-vulnerability-disclosure/).
+Alternatively reach out via email to
+[security@redis.com](mailto:security@redis.com). See
+[SECURITY.md](SECURITY.md) for the full policy.
 
 In order to determine whether you are dealing with a security issue, ask
 yourself these two questions:
@@ -83,8 +90,8 @@ yourself these two questions:
 
 If the answer to either of those two questions are *yes*, then you're
 probably dealing with a security issue. Note that even if you answer
-*no*  to both questions, you may still be dealing with a security
-issue, so if you're unsure, just email [us](mailto:oss@redis.com).
+*no* to both questions, you may still be dealing with a security
+issue, so if you're unsure, report it through the channels above.
 
 ### Everything Else
 
