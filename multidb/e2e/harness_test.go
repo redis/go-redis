@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,12 +81,19 @@ func (f *proxyFarm) Unpause(i int) {
 // RestoreAll brings every member back to a running, listening state.
 func (f *proxyFarm) RestoreAll() {
 	for i, m := range f.members {
-		// unpause fails when not paused, start is a no-op when running —
-		// ignore errors and verify by dialing.
-		_ = f.docker("unpause", m.Container)
+		// unpause fails when not paused and start is a no-op when running —
+		// those are benign. A missing container means the compose profile is
+		// not up: fail fast instead of a 30s dial timeout per member.
+		if err := f.docker("unpause", m.Container); err != nil && isMissingContainer(err) {
+			f.t.Fatalf("proxy container %s does not exist — start the stack with `docker compose --profile multidb up -d`: %v", m.Container, err)
+		}
 		_ = f.docker("start", m.Container)
 		f.awaitListening(i, 30*time.Second)
 	}
+}
+
+func isMissingContainer(err error) bool {
+	return strings.Contains(err.Error(), "No such container")
 }
 
 func (f *proxyFarm) awaitListening(i int, timeout time.Duration) {
