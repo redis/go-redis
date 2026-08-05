@@ -2,6 +2,7 @@ package circuitbreaker
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -461,6 +462,82 @@ func TestCircuitBreaker_HalfOpenCountersAreCleanOnReentry(t *testing.T) {
 	cb.RecordSuccess()
 	if s := cb.Stats().Successes; s != 1 {
 		t.Errorf("first success in HalfOpen must be 1, got %d", s)
+	}
+}
+
+func TestCircuitBreaker_FailureCounterClearedBeforeCloseIsPublished(t *testing.T) {
+	config := Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		OpenTimeout:      50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	// A failure that lands the instant Closed becomes visible (here: from
+	// the HalfOpen -> Closed callback, which runs while the state is already
+	// Closed) must count against a fresh failure counter. If the counter
+	// still holds the count that opened the circuit, this single failure
+	// re-opens it immediately.
+	cb.OnStateChange(func(oldState, newState State) {
+		if oldState == StateHalfOpen && newState == StateClosed {
+			cb.RecordFailure()
+		}
+	})
+
+	cb.RecordFailure()
+	cb.RecordFailure() // -> Open, failures == FailureThreshold
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState()    // -> HalfOpen
+	cb.RecordSuccess() // -> Closed; callback records one failure
+
+	if got := cb.State(); got != StateClosed {
+		t.Errorf("one failure right after recovery re-opened the circuit: state = %v", got)
+	}
+}
+
+func TestCircuitBreaker_HalfOpenAdmissionNotErasedByTransition(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    2,
+		MaxHalfOpenRequests: 1,
+		OpenTimeout:         time.Nanosecond,
+	}
+	cb := New(config)
+
+	// Reservations taken the moment HalfOpen becomes visible must not be
+	// erased by the transition's own counter maintenance: that would admit
+	// more than MaxHalfOpenRequests concurrent probes. Hammer the
+	// open -> half-open edge and watch the concurrent-admission gauge.
+	const rounds = 5000
+	workers := 8
+	var overrun atomic.Bool
+
+	for r := 0; r < rounds && !overrun.Load(); r++ {
+		cb.RecordFailure() // (re-)open; OpenTimeout of 1ns has already elapsed
+
+		var inFlight atomic.Int32
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if cb.IsAllowed() {
+					if inFlight.Add(1) > int32(config.MaxHalfOpenRequests) {
+						overrun.Store(true)
+					}
+					inFlight.Add(-1)
+					cb.ReleaseHalfOpen()
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+	}
+
+	if overrun.Load() {
+		t.Error("more concurrent requests admitted than MaxHalfOpenRequests")
 	}
 }
 

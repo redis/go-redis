@@ -94,6 +94,10 @@ type CircuitBreaker struct {
 	requests    atomic.Int32 // Request count in half-open state
 	lastFailure atomic.Int64 // Unix nano timestamp
 
+	// transitionMu serializes the open -> half-open transition so the
+	// half-open counters can be cleared before the new state is published.
+	transitionMu sync.Mutex
+
 	mu        sync.RWMutex
 	callbacks []StateChangeCallback
 }
@@ -124,12 +128,23 @@ func (cb *CircuitBreaker) CheckState() State {
 		// treat the Unix epoch as the last failure and transition immediately.
 		lastFailure := cb.lastFailure.Load()
 		if lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
-			if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+			// Clear the half-open counters BEFORE half-open becomes visible:
+			// clearing after a CAS would erase reservations and successes
+			// recorded by requests that observe the new state in between.
+			// The mutex keeps a second (stale) transition attempt from
+			// re-clearing counters that live probes are already using; while
+			// the state is still Open no request touches these counters, so
+			// clearing here is race-free.
+			cb.transitionMu.Lock()
+			if State(cb.state.Load()) == StateOpen {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
+				cb.state.Store(int32(StateHalfOpen))
+				cb.transitionMu.Unlock()
 				cb.notifyCallbacks(StateOpen, StateHalfOpen)
 				return StateHalfOpen
 			}
+			cb.transitionMu.Unlock()
 		}
 	}
 
@@ -186,11 +201,15 @@ func (cb *CircuitBreaker) RecordSuccess() {
 			return
 		}
 		if int(successes) >= cb.config.SuccessThreshold {
+			// Clear the failure counter BEFORE Closed becomes visible: it
+			// still holds the count that opened the circuit, and a failure
+			// recorded between the state swap and a later reset would
+			// immediately re-open the circuit off that stale count.
+			cb.failures.Store(0)
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
-				// Notify callbacks before resetting counters so they observe
-				// the success count that triggered the transition.
+				// Notify callbacks before resetting the half-open counters so
+				// they observe the success count that triggered the transition.
 				cb.notifyCallbacks(StateHalfOpen, StateClosed)
-				cb.failures.Store(0)
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 			}

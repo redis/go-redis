@@ -2,7 +2,14 @@ package multidb
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/url"
 	"testing"
@@ -148,6 +155,9 @@ func TestLagAwareHealthCheck(t *testing.T) {
 		if hc.bdbMatchesHost(bdb, "redis.example.com", 12001) {
 			t.Error("expected bdbMatchesHost to reject a same-host different-port database")
 		}
+		if !hc.bdbMatchesHost(bdb, "Redis.EXAMPLE.com", 12000) {
+			t.Error("expected bdbMatchesHost to match DNS name case-insensitively")
+		}
 		if !hc.bdbMatchesHost(bdb, "10.0.0.1", 12000) {
 			t.Error("expected bdbMatchesHost to match address")
 		}
@@ -251,6 +261,68 @@ func TestLagAwareTLSConfigOptionIsCloned(t *testing.T) {
 	}
 	if hc.tlsConfig == caller {
 		t.Error("expected health check to hold a clone, not the caller's TLS config")
+	}
+}
+
+// genTestCAPEM builds a throwaway self-signed CA certificate at runtime so
+// tests can exercise real PEM parsing without a checked-in fixture.
+func genTestCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "multidb-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestLagAwareTLSConfigDoesNotAliasCallerPool(t *testing.T) {
+	// tls.Config.Clone is shallow: RootCAs is a shared *x509.CertPool. A CA
+	// appended by a later option must land in the health check's own pool,
+	// never in the caller's.
+	callerPool := x509.NewCertPool()
+	caller := &tls.Config{RootCAs: callerPool}
+	hc := NewLagAwareHealthCheck(
+		WithLagAwareTLSConfig(caller),
+		WithLagAwareRootCAs(genTestCAPEM(t)),
+	)
+	if hc.configErr != nil {
+		t.Fatalf("unexpected config error: %v", hc.configErr)
+	}
+	if !callerPool.Equal(x509.NewCertPool()) {
+		t.Error("appending root CAs after WithLagAwareTLSConfig mutated the caller's RootCAs pool")
+	}
+	if hc.tlsConfig.RootCAs.Equal(x509.NewCertPool()) {
+		t.Error("expected the appended CA to land in the health check's own pool")
+	}
+}
+
+func TestLagAwareTLSConfigDoesNotAliasCallerCertificates(t *testing.T) {
+	// The shallow clone also shares the Certificates backing array; with
+	// spare capacity, a later append would write into the caller's array.
+	caller := &tls.Config{Certificates: make([]tls.Certificate, 1, 4)}
+	caller.Certificates[0] = tls.Certificate{Certificate: [][]byte{[]byte("caller")}}
+	hidden := caller.Certificates[:2]
+
+	hc := NewLagAwareHealthCheck(WithLagAwareTLSConfig(caller))
+	hc.tlsConfig.Certificates = append(hc.tlsConfig.Certificates, tls.Certificate{
+		Certificate: [][]byte{[]byte("healthcheck")},
+	})
+
+	if hidden[1].Certificate != nil {
+		t.Error("appending a certificate wrote into the caller's Certificates backing array")
 	}
 }
 

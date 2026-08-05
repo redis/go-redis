@@ -87,7 +87,21 @@ func WithLagAwareBasicAuth(username, password string) LagAwareHealthCheckOption 
 // later options (and the health check itself) never mutate the caller's value.
 // A nil config clears any previously set TLS configuration.
 func WithLagAwareTLSConfig(cfg *tls.Config) LagAwareHealthCheckOption {
-	return func(h *LagAwareHealthCheck) { h.tlsConfig = cfg.Clone() } // Clone(nil) returns nil
+	return func(h *LagAwareHealthCheck) {
+		c := cfg.Clone() // Clone(nil) returns nil
+		if c != nil {
+			// Clone is shallow for RootCAs and shares the Certificates
+			// backing array; copy both so later options that append CAs or
+			// client certificates cannot reach the caller's values.
+			if c.RootCAs != nil {
+				c.RootCAs = c.RootCAs.Clone()
+			}
+			if c.Certificates != nil {
+				c.Certificates = append([]tls.Certificate(nil), c.Certificates...)
+			}
+		}
+		h.tlsConfig = c
+	}
 }
 
 // WithLagAwareInsecureSkipVerify disables TLS certificate verification.
@@ -358,7 +372,9 @@ func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int)
 		if port != 0 && ep.Port != 0 && ep.Port != port {
 			continue
 		}
-		if ep.DNSName == host {
+		// DNS resolution is case-insensitive, so the configured host must
+		// match the REST API's dns_name regardless of case.
+		if strings.EqualFold(ep.DNSName, host) {
 			return true
 		}
 		for _, addr := range ep.Addr {
