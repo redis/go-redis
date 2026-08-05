@@ -86,7 +86,8 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		attempts = 1
 	}
 
-	for attempt := 0; attempt < attempts; attempt++ {
+	attempt := 0
+	for attempt < attempts {
 		if err := ctx.Err(); err != nil {
 			setCmdsErr(cmds, err)
 			return err
@@ -102,15 +103,17 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 				setCmdsErr(cmds, err)
 				return err
 			}
-			db, _ = c.activeSnapshot()
-			if db == nil {
-				continue
-			}
+			// Re-enter the gate on the newly selected database — mirroring
+			// the single-command path: its breaker may be half-open and the
+			// IsAllowed call above is what reserves the bounded probe slot.
+			// Re-gating does not consume a retry attempt.
+			continue
 		}
 
 		if attempt > 0 {
 			resetCmds(cmds)
 		}
+		attempt++
 		err := db.processPipelineHook(ctx, cmds)
 		transportFailures := c.recordBatchOutcomes(db, cmds)
 
@@ -136,6 +139,14 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
 	}
+	// A context that is already done must not reach the failover gate: with
+	// ProbeTargetBeforeFailover the doomed probes would damage candidate
+	// breakers and advance the escalation state, and without it the active
+	// database could be switched for an operation that cannot run anyway.
+	if err := ctx.Err(); err != nil {
+		setCmdsErr(cmds, err)
+		return err
+	}
 	db, idx := c.activeSnapshot()
 	if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
 		if err := c.tryFailover(ctx, idx); err != nil {
@@ -143,8 +154,12 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 			setCmdsErr(cmds, err)
 			return err
 		}
+		// Re-run the admission gate on the newly selected database: its
+		// breaker may be half-open, and executing without IsAllowed would
+		// bypass the bounded probe-slot accounting. Transactions run at
+		// most once, so a denied slot fails the call rather than looping.
 		db, _ = c.activeSnapshot()
-		if db == nil {
+		if db == nil || !db.cb.IsAllowed() {
 			err := ErrTemporarilyNotAvailable
 			resetCmds(cmds)
 			setCmdsErr(cmds, err)
@@ -228,6 +243,14 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 	pipe := Pipeline{
 		exec: func(ctx context.Context, cmds []Cmder) error {
 			cmds = wrapMultiExec(ctx, cmds)
+			// Suppress the member client's own retry loop for the wrapped
+			// batch (cmdsContainNoRetry): EXEC may have committed before a
+			// transport error surfaced, and at-most-once must hold for the
+			// whole stack, not only the MultiDB retry layer. The marker
+			// rides on the synthetic MULTI so user commands stay untouched.
+			if multi, ok := cmds[0].(*StatusCmd); ok {
+				multi.setNoRetry(true)
+			}
 			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
@@ -257,6 +280,10 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	if c.core.closed.Load() {
 		return ErrClosed
 	}
+	// A done context must not reach the failover gate (see processTxPipeline).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// selectable (non-reserving) rather than IsAllowed: the WATCH path does
 	// not feed the breaker, so it must not consume a bounded half-open probe
 	// slot it would never record or release.
@@ -266,7 +293,7 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 			return err
 		}
 		db, _ = c.core.activeSnapshot()
-		if db == nil {
+		if db == nil || !db.selectable() {
 			return ErrTemporarilyNotAvailable
 		}
 	}
