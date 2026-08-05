@@ -104,12 +104,14 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 	farm.Stop(1)
 	farm.Stop(2)
 
+	// Keep polling until the escalation reaches the terminal error: stopping
+	// at the first temporary error would let a regression that never
+	// increments the attempt budget pass unnoticed.
 	sawTemporary := false
-	eventually(t, 20*time.Second, "unavailability error surfacing", func() bool {
+	eventually(t, 30*time.Second, "escalation to permanent unavailability", func() bool {
 		err := mdb.Set(ctx, "e2e:esc", "x", 0).Err()
 		if errors.Is(err, redis.ErrTemporarilyNotAvailable) {
 			sawTemporary = true
-			return true
 		}
 		return errors.Is(err, redis.ErrPermanentlyNotAvailable)
 	})
@@ -169,7 +171,12 @@ func TestPubSubFollowsActive(t *testing.T) {
 
 	sub := mdb.Subscribe(ctx, "e2e:channel")
 	t.Cleanup(func() { _ = sub.Close() })
-	if _, err := sub.Receive(ctx); err != nil { // wait for the subscription
+	// Bound the subscription handshake: a hung proxy must fail the scenario
+	// promptly, not stall until the package timeout.
+	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+	_, err := sub.Receive(rctx)
+	rcancel()
+	if err != nil {
 		t.Fatalf("subscribe receive: %v", err)
 	}
 	msgs := sub.Channel()
