@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/failuredetector"
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -101,6 +102,12 @@ type multidbCore struct {
 	detector MultiDBFailureDetector
 	strategy MultiDBFailoverStrategy
 
+	// fallbackInterval is the normalized auto-fallback cadence: always
+	// positive so SetAutoFallback(true) works even when the client was
+	// constructed with a negative AutoFallbackInterval (which only sets the
+	// initial disabled state).
+	fallbackInterval time.Duration
+
 	// failoverMu serializes failover attempts and guards the escalation state.
 	failoverMu           sync.Mutex
 	failoverAttempts     int
@@ -122,6 +129,18 @@ func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 		strategy: opts.FailoverStrategy,
 		pubsubs:  make(map[*PubSub]struct{}),
 		stopCh:   make(chan struct{}),
+	}
+	// A stateful default detector must be per-client: writing it back into
+	// the caller's options would share one sliding failure window across
+	// every client built from the same MultiDBOptions value.
+	if core.detector == nil {
+		core.detector = failuredetector.NewCommandFailureDetector(
+			failuredetector.DefaultCommandFailureDetectorConfig(),
+		)
+	}
+	core.fallbackInterval = opts.AutoFallbackInterval
+	if core.fallbackInterval <= 0 {
+		core.fallbackInterval = defaultMultiDBAutoFallback
 	}
 	core.active.Store(-1)
 	core.autoFallbackDisabled.Store(opts.AutoFallbackInterval < 0)
@@ -217,16 +236,36 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 		}
 	}
 
+	// Reconcile breaker state with the final probe pass, which is the
+	// definitive startup signal:
+	//  - a member that just passed its probe gets a fresh (closed) breaker,
+	//    even if earlier retries of a blocking init opened it — otherwise a
+	//    recovered member could not be selected until the grace period ends;
+	//  - a member that failed its probe gets its breaker opened, so automatic
+	//    failover cannot switch to a database already known to be down before
+	//    the background checks have had a chance to open it organically.
+	for i, db := range c.dbs {
+		if probeHealthy[i] {
+			if db.cb.CheckState() != imultidb.CircuitClosed {
+				db.cb.Reset()
+			}
+			continue
+		}
+		for f := 0; f < db.cb.Config().FailureThreshold; f++ {
+			db.cb.RecordFailure()
+		}
+	}
+
 	// Select the highest-weight database among those that passed the final
 	// probe pass. Circuit state alone is not enough here: with the default
-	// FailureThreshold a database that failed its only startup probe still
-	// has a closed breaker and must not be chosen as the initial active.
+	// FailureThreshold a database that failed its only startup probe would
+	// otherwise still look selectable.
 	cands := make([]MultiDBDatabaseState, 0, len(c.dbs))
 	for i, db := range c.dbs {
 		cands = append(cands, MultiDBDatabaseState{
 			Index:   i,
 			Weight:  db.weight,
-			Allowed: probeHealthy[i] && db.cb.IsAllowed(),
+			Allowed: probeHealthy[i],
 		})
 	}
 	best := c.strategy.Select(cands)
@@ -296,6 +335,10 @@ func (c *multidbCore) dbAt(index int) *multidbDatabase {
 // the command, and records the outcome on both the breaker and the aggregate
 // failure detector. Failures can trigger failover before the next attempt.
 func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
+	if c.closed.Load() {
+		cmd.SetErr(ErrClosed)
+		return ErrClosed
+	}
 	attempts := c.opts.CommandRetries + 1
 	var lastErr error
 
@@ -330,7 +373,10 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			return err
 		case outcomeNeutral:
 			// Not a database-health signal: return to the caller without
-			// recording a failure or failing over.
+			// recording a failure or failing over. Give back the half-open
+			// probe slot that IsAllowed may have reserved above — recording
+			// nothing would otherwise leak it.
+			db.cb.ReleaseHalfOpen()
 			return err
 		case outcomeFailure:
 			db.cb.RecordFailure()
@@ -513,11 +559,13 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
 			return ErrTargetUnhealthy
 		}
-		// The operator asked for this database and a fresh probe just passed:
-		// reset its breaker so a still-open circuit (recovered before the
-		// grace period elapsed) does not immediately fail the switch away.
-		db.cb.Reset()
 	}
+	// The operator explicitly selected this database — either a fresh probe
+	// just passed, or ForceActiveIndex is an unconditional override. Reset
+	// its breaker in both cases so a still-open circuit does not immediately
+	// fail the switch away; a genuinely dead forced target re-opens it
+	// organically on the next failures.
+	db.cb.Reset()
 	from := int(c.active.Load())
 	if from == index {
 		return nil
@@ -637,8 +685,8 @@ func (c *multidbCore) startBackgroundLoop() {
 				_ = c.tryFailover(ctx, idx)
 			}
 
-			if c.opts.AutoFallbackInterval > 0 && !c.autoFallbackDisabled.Load() &&
-				time.Since(lastFallbackCheck) >= c.opts.AutoFallbackInterval {
+			if !c.autoFallbackDisabled.Load() &&
+				time.Since(lastFallbackCheck) >= c.fallbackInterval {
 				lastFallbackCheck = time.Now()
 				c.tryFallbackToPrimary(ctx)
 			}

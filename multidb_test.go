@@ -644,6 +644,92 @@ func TestMultiDBManualFailoverResetsBreaker(t *testing.T) {
 	}
 }
 
+func TestMultiDBProcessAfterClose(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+
+	opts := baseOptions()
+	opts.Clients = append(opts.Clients, db1.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := mdb.Set(context.Background(), "k", "v", 0).Err(); !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("Set after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBFailoverSkipsStartupUnhealthyMember(t *testing.T) {
+	// db2 fails its startup probe. When the active db1 dies, failover must
+	// escalate rather than switch to the member already known to be down.
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, false)
+
+	opts := baseOptions()
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+	opts.CommandRetries = 1
+	opts.MaxFailoverAttempts = 2
+	opts.FailoverAttemptDelay = 5 * time.Millisecond
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	db1.hook.fail.Store(true)
+
+	sawUnavailable := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		err := mdb.Set(ctx, "k", "v", 0).Err()
+		if errors.Is(err, redis.ErrTemporarilyNotAvailable) || errors.Is(err, redis.ErrPermanentlyNotAvailable) {
+			sawUnavailable = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !sawUnavailable {
+		t.Error("failover selected the startup-unhealthy member instead of escalating")
+	}
+	if db2.hook.commands.Load() != 0 {
+		t.Errorf("startup-unhealthy db2 received %d commands", db2.hook.commands.Load())
+	}
+}
+
+func TestMultiDBForceActiveIndexThroughOpenBreaker(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	// Open db2's breaker organically.
+	db2.hook.fail.Store(true)
+	_ = mdb.ForceActiveIndex(ctx, 1)
+	_ = mdb.Set(ctx, "k", "v", 0).Err() // fails on db2, opens breaker, fails over back
+
+	// db2 recovers; the forced override must reset the open breaker so the
+	// switch sticks instead of failing away on the next command.
+	db2.hook.fail.Store(false)
+	if err := mdb.ForceActiveIndex(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveIndex: %v", err)
+	}
+	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set on forced member: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("forced switch did not stick; active = %d", got)
+	}
+}
+
 func TestMultiDBValidation(t *testing.T) {
 	ctx := context.Background()
 
