@@ -34,21 +34,32 @@ func resetCmds(cmds []Cmder) {
 // batch being completed and wedge the dispatcher.
 func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder) int {
 	transportFailures := 0
+	recorded := 0
 	for _, cmd := range cmds {
 		err := cmd.rawErr()
-		switch classifyOutcome(err) {
+		// Pipelines mirror the plain pipeline retry rule (shouldRetry with
+		// retryTimeout=true), matching *Client/*ClusterClient batch paths.
+		switch classifyOutcome(err, true) {
 		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
+			recorded++
 		case outcomeFailure:
 			db.cb.RecordFailure()
 			c.detector.RecordFailure(err)
 			transportFailures++
+			recorded++
 		case outcomeNeutral:
 			// Not a database-health signal (client-side error or a locally
 			// synthesized Redis error such as ErrCrossSlot); surfaced to the
 			// caller as-is.
 		}
+	}
+	if recorded == 0 {
+		// The whole batch was neutral (e.g. a local ErrCrossSlot rejection):
+		// nothing was recorded on the breaker, so give back the half-open
+		// probe slot the caller's IsAllowed gate may have reserved.
+		db.cb.ReleaseHalfOpen()
 	}
 	return transportFailures
 }
@@ -62,6 +73,10 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder) int
 func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	if len(cmds) == 0 {
 		return nil
+	}
+	if c.closed.Load() {
+		setCmdsErr(cmds, ErrClosed)
+		return ErrClosed
 	}
 	attempts := c.opts.CommandRetries + 1
 	// A batch containing a non-retryable command (e.g. a streaming
@@ -116,6 +131,10 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error {
 	if len(cmds) == 0 {
 		return nil
+	}
+	if c.closed.Load() {
+		setCmdsErr(cmds, ErrClosed)
+		return ErrClosed
 	}
 	db, idx := c.activeSnapshot()
 	if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
@@ -235,8 +254,14 @@ func (c *MultiDBClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 // the Tx runs on the member client, so install member-level hooks via
 // AddDatabaseHook when WATCH traffic must be instrumented.
 func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
+	if c.core.closed.Load() {
+		return ErrClosed
+	}
+	// selectable (non-reserving) rather than IsAllowed: the WATCH path does
+	// not feed the breaker, so it must not consume a bounded half-open probe
+	// slot it would never record or release.
 	db, idx := c.core.activeSnapshot()
-	if db == nil || !db.cb.IsAllowed() || c.core.detector.ShouldFailover() {
+	if db == nil || !db.selectable() || c.core.detector.ShouldFailover() {
 		if err := c.core.tryFailover(ctx, idx); err != nil {
 			return err
 		}
