@@ -521,8 +521,20 @@ func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
 	return c.core.setActiveDatabase(ctx, id, false)
 }
 
-// AddDatabase implements MultiDBCtrl.
+// AddDatabase implements MultiDBCtrl. Adding a cluster member is refused
+// while an autopipeliner instance exists: the cached autopipeliner was built
+// without the cluster-specific safeguards and a later failover onto the new
+// member would route merged batches around them. Close the autopipeliners
+// first, add the member, then recreate them.
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
+	if cfg.ClusterOptions != nil {
+		c.autopipelinerMu.Lock()
+		hasAP := c.autopipeliner != nil || c.asyncAutopipeliner != nil
+		c.autopipelinerMu.Unlock()
+		if hasAP {
+			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
+		}
+	}
 	return c.core.addDatabase(ctx, cfg)
 }
 

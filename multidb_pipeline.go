@@ -36,18 +36,19 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder) int
 	transportFailures := 0
 	for _, cmd := range cmds {
 		err := cmd.rawErr()
-		if err == nil || isRedisReplyError(err) {
+		switch classifyOutcome(err) {
+		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
-			continue
+		case outcomeFailure:
+			db.cb.RecordFailure()
+			c.detector.RecordFailure(err)
+			transportFailures++
+		case outcomeNeutral:
+			// Not a database-health signal (client-side error or a locally
+			// synthesized Redis error such as ErrCrossSlot); surfaced to the
+			// caller as-is.
 		}
-		if !shouldRetry(err, true) {
-			// Not a database-health signal; surfaced to the caller as-is.
-			continue
-		}
-		db.cb.RecordFailure()
-		c.detector.RecordFailure(err)
-		transportFailures++
 	}
 	return transportFailures
 }
@@ -79,6 +80,10 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		db, idx := c.activeSnapshot()
 		if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
 			if err := c.tryFailover(ctx, idx); err != nil {
+				// Overwrite any prior attempt's transport errors so callers
+				// see the availability error, not a stale EOF (setCmdsErr
+				// only fills empty error slots).
+				resetCmds(cmds)
 				setCmdsErr(cmds, err)
 				return err
 			}
@@ -115,12 +120,14 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	db, idx := c.activeSnapshot()
 	if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
 		if err := c.tryFailover(ctx, idx); err != nil {
+			resetCmds(cmds)
 			setCmdsErr(cmds, err)
 			return err
 		}
 		db, _ = c.activeSnapshot()
 		if db == nil {
 			err := ErrTemporarilyNotAvailable
+			resetCmds(cmds)
 			setCmdsErr(cmds, err)
 			return err
 		}
