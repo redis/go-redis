@@ -50,11 +50,15 @@ func (hc *fakeHealthCheck) CheckClusterHealth(ctx context.Context, client *redis
 	return hc.healthy.Load(), nil
 }
 
+// customErr lets a test inject an arbitrary error from the hook.
+type customErr struct{ err error }
+
 // hookedDB is a process hook that short-circuits every command (never dials),
 // recording the commands it saw and failing while `fail` is set.
 type hookedDB struct {
 	name     string
 	fail     atomic.Bool
+	custom   atomic.Pointer[customErr]
 	commands atomic.Int64
 }
 
@@ -63,6 +67,10 @@ func (h *hookedDB) DialHook(next redis.DialHook) redis.DialHook { return next }
 func (h *hookedDB) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		h.commands.Add(1)
+		if ce := h.custom.Load(); ce != nil {
+			cmd.SetErr(ce.err)
+			return ce.err
+		}
 		if h.fail.Load() {
 			// Wrap io.EOF so the failure classifies as a transport error
 			// (the kind that records on the breaker/detector and retries).
@@ -537,6 +545,102 @@ func TestMultiDBClientSideErrorsDoNotFailOver(t *testing.T) {
 	// The database is still healthy and serving.
 	if err := mdb.Set(context.Background(), "k", "v", 0).Err(); err != nil {
 		t.Fatalf("Set after canceled ctx: %v", err)
+	}
+}
+
+func TestMultiDBLocalRedisErrorIsNeutral(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	// A locally synthesized Redis error (no round trip) must surface to the
+	// caller without failover and without being recorded as a success.
+	db1.hook.custom.Store(&customErr{err: redis.ErrCrossSlot})
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrCrossSlot) {
+		t.Fatalf("Get: err = %v, want ErrCrossSlot", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("local error caused failover; active = %d", got)
+	}
+	if got := db1.hook.commands.Load(); got != 1 {
+		t.Fatalf("local error was retried; attempts = %d, want 1", got)
+	}
+}
+
+func TestMultiDBNoRetryCommandNotReplayed(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	db1.hook.fail.Store(true)
+
+	cmd := redis.NewRawWriteToCmd(ctx, io.Discard, "get", "k")
+	if err := mdb.Process(ctx, cmd); err == nil {
+		t.Fatal("NoRetry command should surface the transport failure")
+	}
+	// One attempt only: replaying a command that streams into caller-owned
+	// buffers could corrupt output.
+	if got := db1.hook.commands.Load(); got != 1 {
+		t.Fatalf("NoRetry command executed %d times, want 1", got)
+	}
+	if db2.hook.commands.Load() != 0 {
+		t.Error("NoRetry command was replayed on another member")
+	}
+}
+
+func TestMultiDBManualFailoverResetsBreaker(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour, // breaker stays open without a reset
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	// Open db2's breaker: force it active while failing, let a command fail.
+	db2.hook.fail.Store(true)
+	if err := mdb.ForceActiveIndex(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveIndex: %v", err)
+	}
+	_ = mdb.Set(ctx, "k", "v", 0).Err() // opens db2's breaker, fails over back to db1
+
+	// db2 recovers before the grace period; the manual probe passes and must
+	// reset the still-open breaker, or the switch would immediately fail away.
+	db2.hook.fail.Store(false)
+	if err := mdb.SetActiveIndex(ctx, 1); err != nil {
+		t.Fatalf("SetActiveIndex after recovery: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("active = %d, want 1", got)
+	}
+	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set on manually selected member: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("switch did not stick; active = %d", got)
 	}
 }
 
