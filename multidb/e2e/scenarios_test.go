@@ -37,6 +37,14 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 
 	farm.Stop(0)
 
+	// The value written through member 0 must be visible through the new
+	// active member BEFORE this test overwrites it (shared backend behind
+	// every proxy ≈ a converged CRDB).
+	eventually(t, 15*time.Second, "pre-failover data visible via the new active", func() bool {
+		val, err := mdb.Get(ctx, "e2e:failover").Result()
+		return err == nil && val == "before" && mdb.ActiveIndex() == 1
+	})
+
 	// Keep issuing commands; they must succeed again once failover lands.
 	eventually(t, 15*time.Second, "commands succeeding on the new active", func() bool {
 		return mdb.Set(ctx, "e2e:failover", "after", 0).Err() == nil && mdb.ActiveIndex() == 1
