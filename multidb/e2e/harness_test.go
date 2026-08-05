@@ -145,6 +145,10 @@ func memberOptions(f *proxyFarm, i int) *redis.Options {
 		// Fail fast inside a single command attempt so MultiDB's own retry
 		// and failover logic drives recovery, not the per-client retries.
 		MaxRetries: -1,
+		// Let the probe context cut socket waits short: without this a
+		// paused (hung) proxy stalls health checks for the full read
+		// timeout instead of the intended HealthCheckTimeout.
+		ContextTimeoutEnabled: true,
 	}
 }
 

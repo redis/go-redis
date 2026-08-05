@@ -159,10 +159,14 @@ func TestManualFailover(t *testing.T) {
 		t.Fatalf("active = %d, want 1", got)
 	}
 
-	// Force onto the dead member: allowed, and the next commands drive an
-	// automatic failover away again.
+	// Force onto the dead member: the switch must happen unconditionally
+	// (asserted before any traffic can fail it back over), and the next
+	// commands then drive an automatic failover away again.
 	if err := mdb.ForceActiveIndex(ctx, 2); err != nil {
 		t.Fatalf("ForceActiveIndex: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 2 {
+		t.Fatalf("active = %d immediately after ForceActiveIndex(2)", got)
 	}
 	eventually(t, 15*time.Second, "automatic failover away from the forced dead member", func() bool {
 		return mdb.Set(ctx, "e2e:manual", "x", 0).Err() == nil && mdb.ActiveIndex() != 2
