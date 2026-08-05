@@ -7,7 +7,6 @@ import (
 	"net"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal/failuredetector"
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
@@ -265,11 +264,10 @@ func (opt *MultiDBOptions) init() error {
 	if opt.FailoverAttemptDelay <= 0 {
 		opt.FailoverAttemptDelay = defaultMultiDBFailoverDelay
 	}
-	if opt.FailureDetector == nil {
-		opt.FailureDetector = failuredetector.NewCommandFailureDetector(
-			failuredetector.DefaultCommandFailureDetectorConfig(),
-		)
-	}
+	// Note: the default FailureDetector is deliberately NOT filled in here.
+	// It is stateful, and writing it back into the caller's options would
+	// share one sliding failure window across every client built from the
+	// same MultiDBOptions value; newMultidbCore allocates it per client.
 	if opt.FailoverStrategy == nil {
 		opt.FailoverStrategy = WeightBasedFailoverStrategy{}
 	}
