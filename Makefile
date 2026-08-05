@@ -122,6 +122,13 @@ test.e2e.docker:
 	$(MAKE) docker.e2e.stop
 	@echo "Docker E2E tests completed!"
 
+test.multidb.e2e:
+	@echo "Running MultiDB e2e tests (per-member proxies)..."
+	docker compose --profile multidb up -d
+	@E2E_MULTIDB_TESTS=true go test -v -race -count=1 -timeout 15m ./multidb/e2e/... || (docker compose --profile multidb down && exit 1)
+	docker compose --profile multidb down
+	@echo "MultiDB e2e tests completed!"
+
 test.e2e.logic:
 	@echo "Running E2E logic tests (no proxy required)..."
 	@E2E_SCENARIO_TESTS=true \
