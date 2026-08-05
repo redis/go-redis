@@ -48,8 +48,8 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	if err != nil || val != "after" {
 		t.Fatalf("Get after failover: %q, %v", val, err)
 	}
-	if failoverTo.Load() != 1 {
-		t.Errorf("OnFailover to = %d, want 1", failoverTo.Load())
+	if failoverFrom.Load() != 0 || failoverTo.Load() != 1 {
+		t.Errorf("OnFailover(from=%d, to=%d), want (0, 1)", failoverFrom.Load(), failoverTo.Load())
 	}
 }
 
@@ -182,7 +182,11 @@ func TestPubSubFollowsActive(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
-			_ = pub.Publish(ctx, "e2e:channel", tag).Err()
+			if err := pub.Publish(ctx, "e2e:channel", tag).Err(); err != nil {
+				// The publisher uses a member that stays up; a publish error
+				// is a real problem, not an expected failover artifact.
+				t.Logf("publish error (will retry): %v", err)
+			}
 			select {
 			case m := <-msgs:
 				if m.Payload == tag {

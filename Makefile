@@ -137,7 +137,7 @@ test.e2e.logic:
 		go test -v -run "TestCreateTestFaultInjectorLogic|TestFaultInjectorClientCreation" ./maintnotifications/e2e/
 	@echo "Logic tests completed!"
 
-.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic docker.e2e.start docker.e2e.stop
+.PHONY: all test test.ci test.ci.skip-vectorsets test.autopipeline-subjects bench fmt test.e2e test.e2e.logic test.multidb.e2e docker.e2e.start docker.e2e.stop
 
 build:
 	export RE_CLUSTER=$(RE_CLUSTER) && \
