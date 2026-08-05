@@ -194,7 +194,14 @@ func (cb *CircuitBreaker) RecordSuccess() {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 			}
+			return
 		}
+		// The probe completed but the circuit is still half-open: give its
+		// admission slot back, so MaxHalfOpenRequests bounds CONCURRENT
+		// probes rather than a lifetime budget. Without this, a
+		// MaxHalfOpenRequests lower than SuccessThreshold could never
+		// accumulate enough successes to close the circuit.
+		cb.ReleaseHalfOpen()
 	case StateClosed:
 		// Reset failure count on success
 		cb.failures.Store(0)

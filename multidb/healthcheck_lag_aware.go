@@ -219,18 +219,19 @@ func NewLagAwareHealthCheck(opts ...LagAwareHealthCheckOption) *LagAwareHealthCh
 
 func (h *LagAwareHealthCheck) Config() HealthCheckConfig { return h.config }
 
-// hostFromAddr extracts the host from a Redis address, stripping the port and
-// any IPv6 brackets. It reports false for unix-socket addresses, which cannot
-// be used to derive an HTTPS REST API base URL.
-func hostFromAddr(addr string) (string, bool) {
+// hostPortFromAddr is hostFromAddr plus the numeric Redis port (0 when the
+// address carries none). The port disambiguates Redis Enterprise databases
+// that share a DNS name but listen on different ports.
+func hostPortFromAddr(addr string) (string, int, bool) {
 	if addr == "" {
-		return "", false
+		return "", 0, false
 	}
 	if strings.HasPrefix(addr, "/") || strings.HasPrefix(addr, "unix://") {
-		return "", false
+		return "", 0, false
 	}
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return host, true
+	if host, portStr, err := net.SplitHostPort(addr); err == nil {
+		port, _ := strconv.Atoi(portStr)
+		return host, port, true
 	}
 	// No port present; treat the whole value as the host. Strip any surrounding
 	// IPv6 brackets (e.g. "[::1]") so callers can re-bracket the host via
@@ -238,7 +239,7 @@ func hostFromAddr(addr string) (string, bool) {
 	if strings.HasPrefix(addr, "[") && strings.HasSuffix(addr, "]") {
 		addr = addr[1 : len(addr)-1]
 	}
-	return addr, true
+	return addr, 0, true
 }
 
 // CheckHealth performs a single REST API health check probe. It returns
@@ -248,11 +249,11 @@ func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Cli
 	if h.configErr != nil {
 		return false, h.configErr
 	}
-	host, ok := hostFromAddr(client.Options().Addr)
+	host, port, ok := hostPortFromAddr(client.Options().Addr)
 	if !ok {
 		return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", client.Options().Addr)
 	}
-	return h.checkLagHealth(ctx, host)
+	return h.checkLagHealth(ctx, host, port)
 }
 
 // CheckClusterHealth performs a single REST API health check probe.
@@ -264,14 +265,14 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 	if len(opts.Addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
 	}
-	host, ok := hostFromAddr(opts.Addrs[0])
+	host, port, ok := hostPortFromAddr(opts.Addrs[0])
 	if !ok {
 		return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", opts.Addrs[0])
 	}
-	return h.checkLagHealth(ctx, host)
+	return h.checkLagHealth(ctx, host, port)
 }
 
-func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string) (bool, error) {
+func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string, dbPort int) (bool, error) {
 	baseURL := strings.TrimRight(h.baseURL, "/")
 	if baseURL == "" {
 		// net.JoinHostPort brackets IPv6 literals so the URL is valid
@@ -286,7 +287,7 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string)
 	var uid int
 	found := false
 	for _, bdb := range bdbs {
-		if h.bdbMatchesHost(bdb, dbHost) {
+		if h.bdbMatchesHost(bdb, dbHost, dbPort) {
 			uid = bdb.UID
 			found = true
 			break
@@ -323,6 +324,7 @@ type bdbInfo struct {
 type bdbEndpoint struct {
 	DNSName string   `json:"dns_name"`
 	Addr    []string `json:"addr"`
+	Port    int      `json:"port"`
 }
 
 func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInfo, error) {
@@ -348,8 +350,14 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	return bdbs, nil
 }
 
-func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string) bool {
+// bdbMatchesHost reports whether a database endpoint matches the client's
+// host and, when both sides carry one, its Redis port — several Redis
+// Enterprise databases can share a DNS name and differ only by port.
+func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int) bool {
 	for _, ep := range bdb.Endpoints {
+		if port != 0 && ep.Port != 0 && ep.Port != port {
+			continue
+		}
 		if ep.DNSName == host {
 			return true
 		}

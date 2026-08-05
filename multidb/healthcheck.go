@@ -109,6 +109,11 @@ func runChecks(ctx context.Context, checks []redis.MultiDBHealthCheck, probe pro
 	if len(checks) == 0 {
 		return true
 	}
+	// Cancelable so an early failure stops the remaining workers instead of
+	// letting a slow probe run to its own timeout.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Buffered to the number of checks so a worker never blocks on send even
 	// when we return early, preventing goroutine leaks.
 	results := make(chan bool, len(checks))

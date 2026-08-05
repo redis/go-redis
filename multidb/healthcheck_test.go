@@ -135,17 +135,23 @@ func TestLagAwareHealthCheck(t *testing.T) {
 		bdb := bdbInfo{
 			UID: 1,
 			Endpoints: []bdbEndpoint{
-				{DNSName: "redis.example.com", Addr: []string{"10.0.0.1"}},
+				{DNSName: "redis.example.com", Addr: []string{"10.0.0.1"}, Port: 12000},
 			},
 		}
 
-		if !hc.bdbMatchesHost(bdb, "redis.example.com") {
-			t.Error("expected bdbMatchesHost to match DNS name")
+		if !hc.bdbMatchesHost(bdb, "redis.example.com", 0) {
+			t.Error("expected bdbMatchesHost to match DNS name without a port")
 		}
-		if !hc.bdbMatchesHost(bdb, "10.0.0.1") {
+		if !hc.bdbMatchesHost(bdb, "redis.example.com", 12000) {
+			t.Error("expected bdbMatchesHost to match DNS name with matching port")
+		}
+		if hc.bdbMatchesHost(bdb, "redis.example.com", 12001) {
+			t.Error("expected bdbMatchesHost to reject a same-host different-port database")
+		}
+		if !hc.bdbMatchesHost(bdb, "10.0.0.1", 12000) {
 			t.Error("expected bdbMatchesHost to match address")
 		}
-		if hc.bdbMatchesHost(bdb, "other.example.com") {
+		if hc.bdbMatchesHost(bdb, "other.example.com", 0) {
 			t.Error("expected bdbMatchesHost to not match different host")
 		}
 	})
@@ -185,29 +191,30 @@ H8PD6BY8JK7P5K8K0K8K0K8K0K8K0K8K0K8K0A==
 	})
 }
 
-func TestLagAwareHostFromAddr(t *testing.T) {
+func TestLagAwareHostPortFromAddr(t *testing.T) {
 	tests := []struct {
 		addr     string
 		wantHost string
+		wantPort int
 		wantOK   bool
 	}{
-		{"localhost:6379", "localhost", true},
-		{"10.0.0.1:6379", "10.0.0.1", true},
-		{"redis.example.com:9443", "redis.example.com", true},
-		{"[::1]:6379", "::1", true},
-		{"[2001:db8::1]:6379", "2001:db8::1", true},
-		{"localhost", "localhost", true},
-		{"[::1]", "::1", true},
-		{"[2001:db8::1]", "2001:db8::1", true},
-		{"", "", false},
-		{"/tmp/redis.sock", "", false},
-		{"unix:///tmp/redis.sock", "", false},
+		{"localhost:6379", "localhost", 6379, true},
+		{"10.0.0.1:6379", "10.0.0.1", 6379, true},
+		{"redis.example.com:9443", "redis.example.com", 9443, true},
+		{"[::1]:6379", "::1", 6379, true},
+		{"[2001:db8::1]:6379", "2001:db8::1", 6379, true},
+		{"localhost", "localhost", 0, true},
+		{"[::1]", "::1", 0, true},
+		{"[2001:db8::1]", "2001:db8::1", 0, true},
+		{"", "", 0, false},
+		{"/tmp/redis.sock", "", 0, false},
+		{"unix:///tmp/redis.sock", "", 0, false},
 	}
 	for _, tc := range tests {
-		host, ok := hostFromAddr(tc.addr)
-		if ok != tc.wantOK || host != tc.wantHost {
-			t.Errorf("hostFromAddr(%q) = (%q, %v), want (%q, %v)",
-				tc.addr, host, ok, tc.wantHost, tc.wantOK)
+		host, port, ok := hostPortFromAddr(tc.addr)
+		if ok != tc.wantOK || host != tc.wantHost || port != tc.wantPort {
+			t.Errorf("hostPortFromAddr(%q) = (%q, %d, %v), want (%q, %d, %v)",
+				tc.addr, host, port, ok, tc.wantHost, tc.wantPort, tc.wantOK)
 		}
 	}
 }
