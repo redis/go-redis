@@ -117,9 +117,11 @@ type RingOptions struct {
 	// See Options.DialerRetryBackoff for details.
 	DialerRetryBackoff func(attempt int) time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
-	ContextTimeoutEnabled bool
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ContextTimeoutEnabled      bool
+	DrainOnContextTimeout      bool
+	ContextTimeoutDrainTimeout time.Duration
 
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
@@ -239,13 +241,15 @@ func (opt *RingOptions) clientOptions() *Options {
 
 		MaxRetries: -1,
 
-		DialTimeout:           opt.DialTimeout,
-		DialerRetries:         opt.DialerRetries,
-		DialerRetryTimeout:    opt.DialerRetryTimeout,
-		DialerRetryBackoff:    opt.DialerRetryBackoff,
-		ReadTimeout:           opt.ReadTimeout,
-		WriteTimeout:          opt.WriteTimeout,
-		ContextTimeoutEnabled: opt.ContextTimeoutEnabled,
+		DialTimeout:                opt.DialTimeout,
+		DialerRetries:              opt.DialerRetries,
+		DialerRetryTimeout:         opt.DialerRetryTimeout,
+		DialerRetryBackoff:         opt.DialerRetryBackoff,
+		ReadTimeout:                opt.ReadTimeout,
+		WriteTimeout:               opt.WriteTimeout,
+		ContextTimeoutEnabled:      opt.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      opt.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: opt.ContextTimeoutDrainTimeout,
 
 		PoolFIFO:              opt.PoolFIFO,
 		PoolSize:              opt.PoolSize,

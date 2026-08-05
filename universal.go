@@ -70,9 +70,11 @@ type UniversalOptions struct {
 	// default: 100 milliseconds
 	DialerRetryTimeout time.Duration
 
-	ReadTimeout           time.Duration
-	WriteTimeout          time.Duration
-	ContextTimeoutEnabled bool
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	ContextTimeoutEnabled      bool
+	DrainOnContextTimeout      bool
+	ContextTimeoutDrainTimeout time.Duration
 
 	// ReadBufferSize is the size of the bufio.Reader buffer for each connection.
 	// Larger buffers can improve performance for commands that return large responses.
@@ -210,7 +212,9 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
@@ -277,7 +281,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
@@ -338,7 +344,9 @@ func (o *UniversalOptions) Simple() *Options {
 		ReadTimeout:        o.ReadTimeout,
 		WriteTimeout:       o.WriteTimeout,
 
-		ContextTimeoutEnabled: o.ContextTimeoutEnabled,
+		ContextTimeoutEnabled:      o.ContextTimeoutEnabled,
+		DrainOnContextTimeout:      o.DrainOnContextTimeout,
+		ContextTimeoutDrainTimeout: o.ContextTimeoutDrainTimeout,
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
