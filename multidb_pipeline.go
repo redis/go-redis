@@ -51,6 +51,12 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		return nil
 	}
 	attempts := c.opts.CommandRetries + 1
+	// A batch containing a non-retryable command (e.g. a streaming
+	// RawWriteToCmd) must be executed at most once: retrying it after a
+	// transport failure could duplicate execution or corrupt a partial write.
+	if cmdsContainNoRetry(cmds) {
+		attempts = 1
+	}
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -180,9 +186,11 @@ func (c *MultiDBClient) TxPipelined(ctx context.Context, fn func(Pipeliner) erro
 }
 
 // Watch runs a WATCH/MULTI/EXEC transaction on the database that is active
-// when Watch is called. WATCH state is connection-bound: a failover while the
-// transaction is open aborts it with an error, and it is never automatically
-// retried on another database.
+// when Watch is called. The transaction is bound to that member for its whole
+// lifetime: it does NOT follow a MultiDB failover, and it is never
+// automatically retried on another database. If the bound member fails while
+// the transaction is open, the transaction errors like it would on a plain
+// client; MultiDB moves only subsequent operations to the new active member.
 func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	db, _ := c.core.activeSnapshot()
 	if db == nil {
