@@ -42,7 +42,11 @@ func newProxyFarm(t *testing.T) *proxyFarm {
 }
 
 func (f *proxyFarm) docker(args ...string) error {
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	// Bounded: a stuck docker daemon must fail the scenario, not hang the
+	// whole suite until the package timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker %v: %v: %s", args, err, out)
 	}
