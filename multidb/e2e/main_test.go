@@ -10,14 +10,15 @@
 package e2e
 
 import (
-	"log"
 	"os"
 	"testing"
 )
 
 func TestMain(m *testing.M) {
 	if os.Getenv("E2E_MULTIDB_TESTS") != "true" {
-		log.Println("Skipping MultiDB e2e tests, E2E_MULTIDB_TESTS is not set")
+		// Silent gated skip: the suite only runs when explicitly requested
+		// (make test.multidb.e2e), and direct logging is against repository
+		// conventions.
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
