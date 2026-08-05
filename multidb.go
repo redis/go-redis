@@ -539,6 +539,13 @@ func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig
 		if hasLiveAP {
 			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
 		}
+		// Known narrow window: AutoPipeliner.Close flips its closed flag
+		// before draining already-accepted batches, so an AddDatabase racing
+		// a direct ap.Close() can pass this check while the drain is still
+		// flushing. Those batches only reach the new cluster member if a
+		// failover selects it during that same drain. For strict guarantees,
+		// let Close return before calling AddDatabase (MultiDBClient.Close
+		// already serializes both on autopipelinerMu).
 	}
 	return c.core.addDatabase(ctx, cfg)
 }
