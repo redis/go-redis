@@ -185,10 +185,12 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	required := c.requiredAvailableCount()
 	_, hasDeadline := ctx.Deadline()
 
+	probeHealthy := make([]bool, len(c.dbs))
 	for {
 		healthy := 0
-		for _, db := range c.dbs {
-			if db.probe(ctx, c.opts.HealthCheckTimeout) {
+		for i, db := range c.dbs {
+			probeHealthy[i] = db.probe(ctx, c.opts.HealthCheckTimeout)
+			if probeHealthy[i] {
 				healthy++
 			}
 		}
@@ -205,8 +207,19 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 		}
 	}
 
-	// Select the highest-weight database whose circuit allows traffic.
-	best := c.strategy.Select(c.candidates(-1))
+	// Select the highest-weight database among those that passed the final
+	// probe pass. Circuit state alone is not enough here: with the default
+	// FailureThreshold a database that failed its only startup probe still
+	// has a closed breaker and must not be chosen as the initial active.
+	cands := make([]MultiDBDatabaseState, 0, len(c.dbs))
+	for i, db := range c.dbs {
+		cands = append(cands, MultiDBDatabaseState{
+			Index:   i,
+			Weight:  db.weight,
+			Allowed: probeHealthy[i] && db.cb.IsAllowed(),
+		})
+	}
+	best := c.strategy.Select(cands)
 	if best < 0 {
 		return fmt.Errorf("%w: no selectable database", ErrInsufficientHealthyDatabases)
 	}
@@ -305,6 +318,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// redis.Nil — proves the database is reachable and healthy.
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
+			return err
+		}
+		if !shouldRetry(err, true) {
+			// Client-side errors (context cancellation, deterministic local
+			// rejections) are not database-health signals: return them to
+			// the caller without recording a failure or failing over.
 			return err
 		}
 
@@ -429,6 +448,13 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 // probe-then-switch path (SetActiveIndex); with probe=false it is the
 // unconditional operator override (ForceActiveIndex).
 func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool) error {
+	// Hold failoverMu across the whole operation — lookup, probe and switch.
+	// Membership changes (RemoveDatabase) also serialize on it, so the probed
+	// database cannot be removed and the slice cannot shift between the probe
+	// and the switch. The probe is bounded by HealthCheckTimeout.
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+
 	db := c.dbAt(index)
 	if db == nil {
 		return fmt.Errorf("redis: multidb: database index %d out of range", index)
@@ -439,11 +465,6 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 			return ErrTargetUnhealthy
 		}
 	}
-	// The active index only moves under failoverMu (automatic failover,
-	// fallback, membership changes and manual selection all hold it), so the
-	// snapshot below cannot go stale before switchActive runs.
-	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
 	from := int(c.active.Load())
 	if from == index {
 		return nil
@@ -713,12 +734,19 @@ func (c *multidbCore) close() error {
 	close(c.stopCh)
 	c.wg.Wait()
 
+	// Snapshot and clear the registry first, close outside the lock:
+	// PubSub.Close fires onClose (which calls removePubSub → pubsubMu), so
+	// closing under pubsubMu would self-deadlock.
 	c.pubsubMu.Lock()
+	subs := make([]*PubSub, 0, len(c.pubsubs))
 	for ps := range c.pubsubs {
-		_ = ps.Close()
+		subs = append(subs, ps)
 	}
 	c.pubsubs = map[*PubSub]struct{}{}
 	c.pubsubMu.Unlock()
+	for _, ps := range subs {
+		_ = ps.Close()
+	}
 
 	return c.closeAll()
 }

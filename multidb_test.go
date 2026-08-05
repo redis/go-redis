@@ -3,6 +3,8 @@ package redis_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,7 +64,9 @@ func (h *hookedDB) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		h.commands.Add(1)
 		if h.fail.Load() {
-			err := errors.New("hooked: " + h.name + " down")
+			// Wrap io.EOF so the failure classifies as a transport error
+			// (the kind that records on the breaker/detector and retries).
+			err := fmt.Errorf("hooked: %s down: %w", h.name, io.EOF)
 			cmd.SetErr(err)
 			return err
 		}
@@ -460,6 +464,79 @@ func TestMultiDBAutoFallback(t *testing.T) {
 	}
 	if activeChanges.Load() < 2 {
 		t.Errorf("OnActiveDatabaseChanged fired %d times, want >= 2", activeChanges.Load())
+	}
+}
+
+func TestMultiDBInitSelectsProbeHealthyDatabase(t *testing.T) {
+	// The highest-weight member fails its startup probe; its breaker is still
+	// closed (one failure < threshold), so selection must key off the probe
+	// result, not the circuit state.
+	db1 := newTestDB("db1", "127.0.0.1:1", 3.0, false) // unhealthy, highest weight
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+	mdb := newTestMultiDB(t, opts, db1, db2)
+
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("initial active = %d, want 1 (the probe-healthy member)", got)
+	}
+}
+
+func TestMultiDBCloseWithOpenPubSub(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1.0, true)
+
+	opts := baseOptions()
+	opts.Clients = append(opts.Clients, db1.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+
+	sub := mdb.Subscribe(context.Background()) // registered, never closed by the caller
+	_ = sub
+
+	// Close must not deadlock on the pubsub registry (onClose re-enters it).
+	done := make(chan error, 1)
+	go func() { done <- mdb.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close deadlocked with an open PubSub")
+	}
+}
+
+func TestMultiDBClientSideErrorsDoNotFailOver(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+
+	// A canceled caller context is a client-side error: no retry, no
+	// failover, no breaker damage.
+	cctx, ccancel := context.WithCancel(context.Background())
+	ccancel()
+	if err := mdb.Set(cctx, "k", "v", 0).Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Set with canceled ctx: err = %v, want context.Canceled", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("client-side error caused failover; active = %d", got)
+	}
+	// The database is still healthy and serving.
+	if err := mdb.Set(context.Background(), "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set after canceled ctx: %v", err)
 	}
 }
 
