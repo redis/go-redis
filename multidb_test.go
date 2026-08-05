@@ -63,6 +63,7 @@ type hookedDB struct {
 	fail     atomic.Bool
 	custom   atomic.Pointer[customErr]
 	commands atomic.Int64
+	batches  atomic.Int64
 }
 
 func (h *hookedDB) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -86,7 +87,18 @@ func (h *hookedDB) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 }
 
 func (h *hookedDB) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return next
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.commands.Add(int64(len(cmds)))
+		h.batches.Add(1)
+		if h.fail.Load() {
+			err := errors.New("hooked: " + h.name + " down")
+			for _, cmd := range cmds {
+				cmd.SetErr(err)
+			}
+			return err
+		}
+		return nil
+	}
 }
 
 // testDB bundles one fake database: config + hook + health check.
