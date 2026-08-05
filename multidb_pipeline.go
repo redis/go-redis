@@ -314,12 +314,17 @@ func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	if c.core.hasClusterMember() {
-		return nil, errMultiDBAutoPipelineCluster
-	}
+	// The cluster-member check runs inside the build function, under
+	// autopipelinerMu: AddDatabase performs its cluster-vs-autopipeliner
+	// check under the same mutex, so the two cannot interleave.
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultBlockingAutoPipelineOptions,
-		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			if c.core.hasClusterMember() {
+				return nil, errMultiDBAutoPipelineCluster
+			}
+			return newAutoPipeliner(c, cfg, true)
+		})
 }
 
 // AsyncAutoPipeline returns the deferred autopipeliner for this MultiDB
@@ -334,10 +339,12 @@ func (c *MultiDBClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	if c.core.hasClusterMember() {
-		return nil, errMultiDBAutoPipelineCluster
-	}
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultAutoPipelineOptions,
-		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			if c.core.hasClusterMember() {
+				return nil, errMultiDBAutoPipelineCluster
+			}
+			return newAutoPipeliner(c, cfg, false)
+		})
 }
