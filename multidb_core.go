@@ -12,6 +12,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/maintnotifications"
+	"github.com/redis/go-redis/v9/push"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
@@ -133,9 +135,15 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		disableMaintNotificationsIfUnset(&opt)
 		db.c = NewClient(&opt)
 	case cfg.FailoverOptions != nil:
+		// FailoverOptions does not carry a maintnotifications config (not
+		// supported for failover clients), so there is nothing to disable.
 		db.c = NewFailoverClient(cfg.FailoverOptions)
 	case cfg.ClusterOptions != nil:
-		db.cc = NewClusterClient(cfg.ClusterOptions)
+		opt := *cfg.ClusterOptions
+		if opt.MaintNotificationsConfig == nil {
+			opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+		}
+		db.cc = NewClusterClient(&opt)
 	}
 
 	db.cb = imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
@@ -286,6 +294,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			}
 		}
 
+		if attempt > 0 {
+			// Clear the previous attempt's error so a successful retry does
+			// not leave the command in a stale error state.
+			cmd.SetErr(nil)
+		}
 		err := db.process(ctx, cmd)
 		if err == nil || isRedisReplyError(err) {
 			// A server reply — including error replies like WRONGTYPE and
@@ -420,20 +433,27 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	if db == nil {
 		return fmt.Errorf("redis: multidb: database index %d out of range", index)
 	}
+	start := time.Now()
 	if probe {
 		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
 			return ErrTargetUnhealthy
 		}
 	}
+	// The active index only moves under failoverMu (automatic failover,
+	// fallback, membership changes and manual selection all hold it), so the
+	// snapshot below cannot go stale before switchActive runs.
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
 	from := int(c.active.Load())
 	if from == index {
 		return nil
 	}
-	start := time.Now()
-	c.failoverMu.Lock()
 	c.failoverAttempts = 0
-	c.switchActive(ctx, from, index, failoverReasonManual, time.Since(start))
-	c.failoverMu.Unlock()
+	if !c.switchActive(ctx, from, index, failoverReasonManual, time.Since(start)) {
+		return errors.New("redis: multidb: active database changed concurrently, retry")
+	}
+	// A fresh window on the new database, same as automatic failover.
+	c.detector.Reset()
 	return nil
 }
 
@@ -459,6 +479,10 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 }
 
 func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
+	// Hold failoverMu so the active-index adjustment below cannot race a
+	// concurrent switchActive (all active transitions happen under it).
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
 	c.dbMu.Lock()
 	if index < 0 || index >= len(c.dbs) {
 		c.dbMu.Unlock()
@@ -597,10 +621,11 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 // active database: every (re-)dial resolves the active snapshot, and
 // notifyPubSubs forces a re-dial on every active-database change.
 func (c *multidbCore) newPubSub() *PubSub {
-	var firstClient *Client
-	if db, _ := c.activeSnapshot(); db != nil && db.c != nil {
-		firstClient = db.c
-	}
+	// Connections may be dialed against different members over the PubSub's
+	// lifetime; remember each connection's owner so closeConn can untrack it
+	// on the right member's pool.
+	var ownersMu sync.Mutex
+	owners := make(map[*pool.Conn]*Client)
 
 	pubsub := &PubSub{
 		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
@@ -620,25 +645,49 @@ func (c *multidbCore) newPubSub() *PubSub {
 				return nil, err
 			}
 			db.c.pubSubPool.TrackConn(cn)
+			ownersMu.Lock()
+			owners[cn] = db.c
+			ownersMu.Unlock()
 			return cn, nil
 		},
 		closeConn: func(cn *pool.Conn) error {
-			// The connection may belong to a previously active database;
-			// closing without pool untracking is safe because TrackConn only
-			// maintains statistics.
+			ownersMu.Lock()
+			owner := owners[cn]
+			delete(owners, cn)
+			ownersMu.Unlock()
+			if owner != nil {
+				owner.pubSubPool.UntrackConn(cn)
+			}
 			return cn.Close()
 		},
 	}
-	if firstClient != nil {
-		pubsub.opt = firstClient.opt
-		pubsub.pushProcessor = firstClient.pushProcessor
+
+	// opt must always be non-nil (PubSub reads it unconditionally). Clone the
+	// active standalone member's options rather than sharing the pointer: the
+	// owning client mutates its own opt (e.g. maintnotifications handoffs).
+	if db, _ := c.activeSnapshot(); db != nil && db.c != nil {
+		optCopy := *db.c.opt
+		pubsub.opt = &optCopy
+		pubsub.pushProcessor = db.c.pushProcessor
+	} else {
+		pubsub.opt = &Options{}
+		pubsub.pushProcessor = push.NewVoidProcessor()
 	}
+	pubsub.onClose = func() { c.removePubSub(pubsub) }
 	pubsub.init()
 
 	c.pubsubMu.Lock()
 	c.pubsubs[pubsub] = struct{}{}
 	c.pubsubMu.Unlock()
 	return pubsub
+}
+
+// removePubSub deregisters a subscription closed by the caller so the
+// registry does not grow unbounded and notifyPubSubs stops touching it.
+func (c *multidbCore) removePubSub(ps *PubSub) {
+	c.pubsubMu.Lock()
+	delete(c.pubsubs, ps)
+	c.pubsubMu.Unlock()
 }
 
 // notifyPubSubs forces every registered subscription to re-dial so it lands
