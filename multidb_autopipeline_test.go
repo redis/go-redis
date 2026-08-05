@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -369,5 +370,121 @@ func TestMultiDBDo(t *testing.T) {
 	}
 	if db1.hook.commands.Load() == 0 {
 		t.Error("Do did not reach the active database")
+	}
+}
+
+func TestMultiDBTxPipelineNotRetriedByMemberClient(t *testing.T) {
+	var dials atomic.Int64
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Weight: 1,
+		Options: &redis.Options{
+			Addr:          "127.0.0.1:1",
+			MaxRetries:    2, // member-level retries that must NOT apply to transactions
+			DialerRetries: 1, // exactly one dial per member pipeline attempt
+			DialTimeout:   200 * time.Millisecond,
+			Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dials.Add(1)
+				return nil, io.EOF
+			},
+		},
+		HealthChecks: []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	_, err = mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected the transaction to fail (no server behind the dialer)")
+	}
+	// EXEC may have committed before a transport error surfaced: the member
+	// client must not replay the transaction either — at-most-once holds for
+	// the whole stack, not only the MultiDB retry layer.
+	if got := dials.Load(); got != 1 {
+		t.Errorf("transaction dialed %d times, want 1 (member retries must be suppressed)", got)
+	}
+}
+
+func TestMultiDBBatchRegatesAfterFailover(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // MaxHalfOpenRequests defaults to this: one probe slot
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// B: open its breaker, wait out the grace period, then occupy the only
+	// half-open probe slot — a recovering member whose probe budget a
+	// concurrent request is already using.
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(50 * time.Millisecond)
+	if !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Fatal("setup: expected to reserve B's half-open probe slot")
+	}
+
+	// Trip the gate: the batch fails over from A, and the strategy picks
+	// half-open B. With B's only probe slot taken, the batch must re-enter
+	// the admission gate (landing back on closed A) rather than execute on
+	// B without a reservation.
+	det.tripped.Store(true)
+	if _, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	}); err != nil {
+		t.Fatalf("Pipelined: %v", err)
+	}
+
+	if got := dbB.hook.batches.Load(); got != 0 {
+		t.Errorf("batch executed on B without a half-open slot (batches = %d)", got)
+	}
+	if got := dbA.hook.batches.Load(); got != 1 {
+		t.Errorf("batches on A = %d, want 1", got)
+	}
+}
+
+func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// With the detector tripped, a done context must be reported as the
+	// caller's own error BEFORE the failover gate runs: failing over (and
+	// resetting the detector) for an operation that cannot execute would
+	// mutate availability state for nothing.
+	det.tripped.Store(true)
+	if _, err := mdb.TxPipelined(canceled, func(p redis.Pipeliner) error {
+		p.Set(canceled, "k", "v", 0)
+		return nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Errorf("TxPipelined with canceled ctx: err = %v, want context.Canceled", err)
+	}
+	if err := mdb.Watch(canceled, func(tx *redis.Tx) error { return nil }, "k"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Watch with canceled ctx: err = %v, want context.Canceled", err)
+	}
+	if got := det.resets.Load(); got != 0 {
+		t.Errorf("canceled operations advanced failover state: detector resets = %d", got)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("canceled operations switched the active database: active = %d", got)
 	}
 }
