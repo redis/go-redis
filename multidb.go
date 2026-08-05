@@ -381,12 +381,12 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	for i := range opts.Clients {
 		cfg := &opts.Clients[i]
 		if err := cfg.validate(); err != nil {
-			core.closeAll()
+			_ = core.closeAll()
 			return nil, err
 		}
 		db, err := core.buildDatabase(cfg)
 		if err != nil {
-			core.closeAll()
+			_ = core.closeAll()
 			return nil, err
 		}
 		db.idx.Store(int32(len(core.dbs)))
@@ -394,7 +394,7 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 
 	if err := core.initialize(ctx); err != nil {
-		core.closeAll()
+		_ = core.closeAll()
 		return nil, err
 	}
 	core.startBackgroundLoop()
