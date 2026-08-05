@@ -789,3 +789,238 @@ func TestMultiDBConcurrentProcess(t *testing.T) {
 		t.Fatalf("active index = %d after concurrent failover, want 1", got)
 	}
 }
+
+// fakeDetector is a controllable failure detector: ShouldFailover reports the
+// trip flag, Reset counts and clears it.
+type fakeDetector struct {
+	tripped atomic.Bool
+	resets  atomic.Int64
+}
+
+func (d *fakeDetector) RecordSuccess()       {}
+func (d *fakeDetector) RecordFailure(error)  {}
+func (d *fakeDetector) ShouldFailover() bool { return d.tripped.Load() }
+func (d *fakeDetector) Reset() {
+	d.resets.Add(1)
+	d.tripped.Store(false)
+}
+
+// ctxHealthCheck fails when the probe context is already done and reports
+// healthy otherwise — like a real network check would.
+type ctxHealthCheck struct{}
+
+func (ctxHealthCheck) CheckHealth(ctx context.Context, client *redis.Client) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (ctxHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func TestMultiDBOptionsNotMutatedByConstruction(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	_ = newTestMultiDB(t, opts, dbA)
+
+	// The caller's options value must stay untouched: a second client built
+	// from it would otherwise see the normalized 0 and "default" it to 2,
+	// silently re-enabling retries — also for the first client, which still
+	// reads the shared struct.
+	if opts.CommandRetries != redis.CommandRetriesNone {
+		t.Fatalf("NewMultiDBClient mutated the caller's options: CommandRetries = %d", opts.CommandRetries)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb2, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("second NewMultiDBClient: %v", err)
+	}
+	defer mdb2.Close()
+	installHooks(t, mdb2, dbA)
+
+	dbA.hook.fail.Store(true)
+	before := dbA.hook.commands.Load()
+	_ = mdb2.Get(context.Background(), "k").Err()
+	if got := dbA.hook.commands.Load() - before; got != 1 {
+		t.Errorf("client with CommandRetriesNone made %d attempts, want 1", got)
+	}
+}
+
+func TestMultiDBAddDatabaseAfterClose(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	dbB := newTestDB("b", "db-b:6379", 1, true)
+	if _, err := mdb.AddDatabase(context.Background(), dbB.cfg); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("AddDatabase after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBRecoveredActiveClearsTrippedDetector(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Single member, detector tripped, breaker closed (health checks fine):
+	// the command path must stay on the recovered active and clear the
+	// detector instead of escalating unavailability forever.
+	det.tripped.Store(true)
+	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
+		t.Fatalf("command on recovered single-member client: %v", err)
+	}
+	if det.resets.Load() == 0 {
+		t.Error("expected the detector to be reset after staying on the recovered active")
+	}
+}
+
+func TestMultiDBAddDatabaseCallbackSeesNewIndex(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+
+	var mu sync.Mutex
+	var indexes []int
+	opts := baseOptions()
+	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+		mu.Lock()
+		indexes = append(indexes, dbIndex)
+		mu.Unlock()
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Adding an unhealthy member opens its breaker during the initial probe;
+	// the state-change callback must report the member's real index, not the
+	// zero default.
+	dbB := newTestDB("b", "db-b:6379", 1, false)
+	idx, err := mdb.AddDatabase(context.Background(), dbB.cfg)
+	if err != nil {
+		t.Fatalf("AddDatabase: %v", err)
+	}
+	if idx != 1 {
+		t.Fatalf("AddDatabase index = %d, want 1", idx)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		got := append([]int(nil), indexes...)
+		mu.Unlock()
+		if len(got) > 0 {
+			for _, i := range got {
+				if i != 1 {
+					t.Fatalf("circuit state callback reported index %d, want 1 (all: %v)", i, got)
+				}
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no circuit state change callback for the added unhealthy member")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbB := newTestDB("b", "db-b:6379", 1, true)
+
+	var mdbRef atomic.Pointer[redis.MultiDBClient]
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+		if mdb := mdbRef.Load(); mdb != nil {
+			// Any control API that serializes on the failover lock.
+			_ = mdb.RemoveDatabase(context.Background(), 99)
+		}
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	mdbRef.Store(mdb)
+
+	// Open A's breaker: one failing command fails over to B.
+	dbA.hook.fail.Store(true)
+	_ = mdb.Get(context.Background(), "k").Err()
+	dbA.hook.fail.Store(false)
+
+	// Manual switch back to A: the probe passes and the open breaker is
+	// reset, firing the state callback. A callback that re-enters a control
+	// API must not deadlock the switch.
+	done := make(chan error, 1)
+	go func() { done <- mdb.SetActiveIndex(context.Background(), 0) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SetActiveIndex: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SetActiveIndex deadlocked with a re-entrant circuit state callback")
+	}
+}
+
+func TestMultiDBSubscribeAfterCloseReturnsErrClosed(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// pool.ErrClosed is the only error the PubSub channel loop treats as
+	// terminal; anything else makes a post-close subscription retry forever.
+	sub := mdb.Subscribe(context.Background(), "ch")
+	defer sub.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := sub.Receive(ctx); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("Receive after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "db-b:6379"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{ctxHealthCheck{}},
+		},
+	}
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// Operator calls with an already-canceled context: the error must be the
+	// context's own, and B's breaker must stay undamaged.
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 3; i++ {
+		if err := mdb.SetActiveIndex(canceled, 1); !errors.Is(err, context.Canceled) {
+			t.Fatalf("SetActiveIndex with canceled ctx: err = %v, want context.Canceled", err)
+		}
+	}
+
+	// B must still be selectable: failing A must move traffic onto B.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Set(context.Background(), "k", "v", 0).Err(); err != nil {
+		t.Fatalf("command after failover: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Errorf("active = %d, want 1", got)
+	}
+}
