@@ -18,6 +18,7 @@ type SearchCmdable interface {
 	FTAggregateWithArgs(ctx context.Context, index string, query string, options *FTAggregateOptions) *AggregateCmd
 	FTAliasAdd(ctx context.Context, index string, alias string) *StatusCmd
 	FTAliasDel(ctx context.Context, alias string) *StatusCmd
+	FTAliasList(ctx context.Context, index string) *StringSliceCmd
 	FTAliasUpdate(ctx context.Context, index string, alias string) *StatusCmd
 	FTAlter(ctx context.Context, index string, skipInitialScan bool, definition []interface{}) *StatusCmd
 	FTConfigGet(ctx context.Context, option string) *MapMapStringInterfaceCmd
@@ -107,6 +108,13 @@ type FTHNSWOptions struct {
 	MaxAllowedEdgesPerNode int
 	EFRunTime              int
 	Epsilon                float64
+	// Rerank toggles the exact re-scoring pass over approximate candidates on
+	// disk-backed HNSW indexes (Redis 8.10+), where the server requires it to
+	// be set explicitly. Rerank=true emits RERANK TRUE on its own; to emit
+	// RERANK FALSE, set HasRerank=true with Rerank=false, so that an explicit
+	// false can be distinguished from unset (omitted).
+	Rerank    bool
+	HasRerank bool
 }
 
 type FTVamanaOptions struct {
@@ -157,6 +165,12 @@ const (
 	SearchToList
 	SearchFirstValue
 	SearchRandomSample
+	// SearchCollect is the COLLECT reducer for FT.AGGREGATE. Within each
+	// GROUPBY group it projects a chosen set of fields from every row and
+	// emits them as an array of per-entry maps under the reducer alias.
+	// Requires Redis 8.8+ with unstable features enabled
+	// (CONFIG SET search-enable-unstable-features yes).
+	SearchCollect
 )
 
 func (a SearchAggregator) String() string {
@@ -187,6 +201,8 @@ func (a SearchAggregator) String() string {
 		return "FIRST_VALUE"
 	case SearchRandomSample:
 		return "RANDOM_SAMPLE"
+	case SearchCollect:
+		return "COLLECT"
 	default:
 		return ""
 	}
@@ -408,16 +424,25 @@ const (
 type FTHybridVectorExpression struct {
 	VectorField string
 	VectorData  Vector
-	// VectorParamName specifies the parameter name for passing vector data via PARAMS mechanism.
-	// REQUIRED for Redis 8.6+ (inline vector blobs are not supported in 8.6+).
-	// Optional for Redis 8.4-8.5 (both inline and PARAMS are supported).
-	// When set, the vector blob will be passed as: VSIM @field $VectorParamName PARAMS ... VectorParamName <blob>
-	// When empty, the vector blob will be inlined: VSIM @field <blob> (fails on Redis 8.6+)
+	// VectorParamName optionally specifies the parameter name used to pass the
+	// vector data via the PARAMS mechanism.
+	// Vector data is always passed via PARAMS because inline vector blobs are no
+	// longer supported by Redis. When left empty, the library generates a unique
+	// parameter name automatically (e.g. "__vector_param_0") without mutating
+	// FTHybridOptions.Params and without colliding with any explicit names.
+	// The vector blob is passed as: VSIM @field $VectorParamName ... PARAMS ... VectorParamName <blob>
 	VectorParamName string
 	Method          FTHybridVectorMethod
 	MethodParams    []interface{}
-	Filter          string
-	YieldScoreAs    string
+	// ShardKRatio controls how many results each shard returns relative to the
+	// requested KNN K, trading recall for latency in Redis cluster setups.
+	// Valid range: 0.1 - 1.0. The zero value means "unset" and falls back to
+	// the server default of 1.0 (no per-shard reduction). Has no effect on
+	// standalone Redis, and only applies to the KNN method. Requires Redis 8.8+.
+	// See https://redis.io/docs/latest/develop/ai/search-and-query/query/vector-search/
+	ShardKRatio  float64
+	Filter       string
+	YieldScoreAs string
 }
 
 // FTHybridCombineOptions represents options for result fusion
@@ -485,8 +510,10 @@ type FTSynDumpCmd struct {
 // FTAggregateResult represents the result of an aggregate operation
 // NOTE: For RESP3 Total is not reliable (before Redis 8.8)
 type FTAggregateResult struct {
-	Total    int
-	Rows     []AggregateRow
+	Total int
+	Rows  []AggregateRow
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -617,8 +644,10 @@ type SpellCheckSuggestion struct {
 }
 
 type FTSearchResult struct {
-	Total    int
-	Docs     []Document
+	Total int
+	Docs  []Document
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict). RESP3 only; the fail policy returns an error instead.
 	Warnings []string
 }
 
@@ -934,22 +963,27 @@ func (cmd *AggregateCmd) SetVal(val *FTAggregateResult) {
 }
 
 func (cmd *AggregateCmd) Val() *FTAggregateResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *AggregateCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
 func (cmd *AggregateCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1266,6 +1300,20 @@ func (c cmdable) FTAliasDel(ctx context.Context, alias string) *StatusCmd {
 	return cmd
 }
 
+// FTAliasList - Lists all aliases associated with an index.
+// The 'index' parameter specifies the index whose aliases are listed; it must
+// be the name of an index created with FT.CREATE, not an alias.
+// The reply is an unordered collection of alias names, already deduplicated
+// by the server; an index with no aliases yields an empty result, not an
+// error. Available since Redis 8.10.
+// For more information, please refer to the Redis documentation:
+// [FT.ALIASLIST]: (https://redis.io/commands/ft.aliaslist/)
+func (c cmdable) FTAliasList(ctx context.Context, index string) *StringSliceCmd {
+	cmd := NewStringSliceCmd(ctx, "FT.ALIASLIST", index)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 // FTAliasUpdate - Updates an alias to an index.
 // The 'index' parameter specifies the index to which the alias is updated, and the 'alias' parameter specifies the alias.
 // If the alias already exists for a different index, it updates the alias to point to the specified index instead.
@@ -1482,6 +1530,13 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 				if schema.VectorArgs.HNSWOptions.Epsilon > 0 {
 					hnswArgs = append(hnswArgs, "EPSILON", schema.VectorArgs.HNSWOptions.Epsilon)
 				}
+				if schema.VectorArgs.HNSWOptions.Rerank || schema.VectorArgs.HNSWOptions.HasRerank {
+					rerank := "FALSE"
+					if schema.VectorArgs.HNSWOptions.Rerank {
+						rerank = "TRUE"
+					}
+					hnswArgs = append(hnswArgs, "RERANK", rerank)
+				}
 				args = append(args, len(hnswArgs))
 				args = append(args, hnswArgs...)
 			}
@@ -1562,7 +1617,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
-
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -2125,6 +2179,7 @@ func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
 }
 
 func (cmd *FTInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2133,20 +2188,25 @@ func (cmd *FTInfoCmd) SetVal(val FTInfoResult) {
 }
 
 func (cmd *FTInfoCmd) Result() (FTInfoResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTInfoCmd) Val() FTInfoResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTInfoCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
+
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	readType, err := rd.PeekReplyType()
 	if err != nil {
@@ -2327,6 +2387,7 @@ func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckC
 }
 
 func (cmd *FTSpellCheckCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2335,18 +2396,22 @@ func (cmd *FTSpellCheckCmd) SetVal(val []SpellCheckResult) {
 }
 
 func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2643,6 +2708,7 @@ func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...inter
 }
 
 func (cmd *FTSearchCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2651,18 +2717,22 @@ func (cmd *FTSearchCmd) SetVal(val FTSearchResult) {
 }
 
 func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSearchCmd) Val() FTSearchResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSearchCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2888,8 +2958,10 @@ func (cmd *FTSearchCmd) Clone() Cmder {
 
 // FTHybridResult represents the result of a hybrid search operation
 type FTHybridResult struct {
-	TotalResults  int
-	Results       []map[string]interface{}
+	TotalResults int
+	Results      []map[string]interface{}
+	// Warnings holds server warnings for a partial result (search-on-timeout
+	// return/return-strict), on RESP2 and RESP3; the fail policy returns an error.
 	Warnings      []string
 	ExecutionTime float64
 }
@@ -2924,6 +2996,7 @@ func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...inter
 }
 
 func (cmd *FTHybridCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2932,26 +3005,32 @@ func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
 }
 
 func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	cmd.await()
 	return cmd.cursorVal, cmd.err
 }
 
 func (cmd *FTHybridCmd) Val() FTHybridResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	cmd.await()
 	return cmd.cursorVal
 }
 
 func (cmd *FTHybridCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -3032,9 +3111,13 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 		results = append(results, itemMap)
 	}
 
-	// Parse warnings (optional field)
+	// Optional warnings; accept both "warning" (as FT.SEARCH/FT.AGGREGATE) and "warnings".
 	var warnings []string
-	if warningsData, ok := resultMap["warnings"].([]interface{}); ok {
+	warningsData, ok := resultMap["warning"].([]interface{})
+	if !ok {
+		warningsData, ok = resultMap["warnings"].([]interface{})
+	}
+	if ok {
 		warnings = make([]string, 0, len(warningsData))
 		for _, w := range warningsData {
 			if ws, ok := w.(string); ok {
@@ -3458,6 +3541,7 @@ func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
 }
 
 func (cmd *FTSynDumpCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3466,18 +3550,22 @@ func (cmd *FTSynDumpCmd) SetVal(val []FTSynDumpResult) {
 }
 
 func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -3700,8 +3788,32 @@ func hybridVectorBytes(blob []byte) ([]byte, error) {
 	return blob, nil
 }
 
+// generateVectorParamName returns a parameter name that is not already present
+// in params. It is used to pass vector data via the PARAMS mechanism when the
+// caller does not provide a VectorParamName, since inline vector blobs are no
+// longer supported by Redis.
+func generateVectorParamName(params map[string]interface{}) string {
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("__vector_param_%d", i)
+		if _, ok := params[name]; !ok {
+			return name
+		}
+	}
+}
+
 // FTHybridWithArgs - Executes a hybrid search with advanced options
 // FTHybridWithArgs is still experimental, the command behaviour and signature may change
+//
+// Vector data is always sent through the PARAMS mechanism, because inline vector
+// blobs are no longer supported by Redis. For every vector expression whose
+// VectorParamName is empty, a unique name is generated (e.g. "__vector_param_0")
+// and the corresponding blob is passed via PARAMS.
+//
+// options.Params is never mutated: the command is built from a local copy that
+// combines the caller-provided params with any generated vector parameters. This
+// makes it safe to reuse the same *FTHybridOptions across multiple calls. Generated
+// names are also reserved against all explicit VectorParamName values, so they never
+// collide with explicit names (even those following the "__vector_param_N" pattern).
 func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FTHybridOptions) *FTHybridCmd {
 	args := []interface{}{"FT.HYBRID", index}
 
@@ -3722,6 +3834,23 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 			}
 		}
 
+		// Vector data is always passed via the PARAMS mechanism (inline vector blobs
+		// are no longer supported by Redis). When vectors are present, build a local
+		// copy of the caller-provided params so options.Params is never mutated, and
+		// pre-reserve any explicit VectorParamName values so generated names never
+		// collide with them.
+		params := options.Params
+		if len(options.VectorExpressions) > 0 {
+			params = make(map[string]interface{}, len(options.Params)+len(options.VectorExpressions))
+			for k, v := range options.Params {
+				params[k] = v
+			}
+			for _, vectorExpr := range options.VectorExpressions {
+				if vectorExpr.VectorParamName != "" {
+					params[vectorExpr.VectorParamName] = nil
+				}
+			}
+		}
 		// Add vector expressions
 		for _, vectorExpr := range options.VectorExpressions {
 			args = append(args, "VSIM", "@"+vectorExpr.VectorField)
@@ -3733,19 +3862,15 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 				return cmd
 			}
 
-			// If VectorParamName is provided, use PARAMS mechanism (required for Redis 8.6+)
-			// If not provided, inline the vector blob (works on Redis 8.4/8.5, fails on 8.6+)
-			if vectorExpr.VectorParamName != "" {
-				// Use PARAMS mechanism
-				args = append(args, "$"+vectorExpr.VectorParamName)
-				if options.Params == nil {
-					options.Params = make(map[string]interface{})
-				}
-				options.Params[vectorExpr.VectorParamName] = vectorBlob
-			} else {
-				// Inline the vector blob (deprecated in Redis 8.6+)
-				args = append(args, vectorBlob)
+			// When VectorParamName is not provided, generate a unique name. Generated
+			// names are tracked only in the local params map, never written back to
+			// options.Params.
+			paramName := vectorExpr.VectorParamName
+			if paramName == "" {
+				paramName = generateVectorParamName(params)
 			}
+			args = append(args, "$"+paramName)
+			params[paramName] = vectorBlob
 
 			if vectorExpr.Method != "" {
 				args = append(args, vectorExpr.Method)
@@ -3754,6 +3879,22 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 					args = append(args, len(vectorExpr.MethodParams))
 					args = append(args, vectorExpr.MethodParams...)
 				}
+			}
+
+			// SHARD_K_RATIO applies to the KNN method only (Redis 8.8+, cluster only).
+			// Zero means "unset" and falls back to the server default of 1.0.
+			if vectorExpr.ShardKRatio > 0 {
+				if vectorExpr.Method != "KNN" {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO requires KNN method"))
+					return cmd
+				}
+				if vectorExpr.ShardKRatio < 0.1 || vectorExpr.ShardKRatio > 1.0 {
+					cmd := newFTHybridCmd(ctx, options, args...)
+					cmd.SetErr(fmt.Errorf("FT.HYBRID: SHARD_K_RATIO must be between 0.1 and 1.0"))
+					return cmd
+				}
+				args = append(args, "SHARD_K_RATIO", vectorExpr.ShardKRatio)
 			}
 
 			if vectorExpr.Filter != "" {
@@ -3856,11 +3997,13 @@ func (c cmdable) FTHybridWithArgs(ctx context.Context, index string, options *FT
 		}
 
 		// Add PARAMS
-		if len(options.Params) > 0 {
-			args = append(args, "PARAMS", len(options.Params)*2)
-			for key, value := range options.Params {
-				// Parameter keys should already have '$' prefix from the user
-				// Don't add it again if it's already there
+		// Emit from the local params map, which contains the caller-provided params
+		// plus any generated vector parameter names. options.Params is left untouched.
+		if len(params) > 0 {
+			args = append(args, "PARAMS", len(params)*2)
+			for key, value := range params {
+				// PARAMS entries are passed without a '$' prefix; they are referenced in
+				// the query and clauses using "$<name>".
 				args = append(args, key, value)
 			}
 		}

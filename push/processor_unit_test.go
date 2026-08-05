@@ -3,7 +3,11 @@ package push
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TestProcessorCreation tests processor creation and initialization
@@ -395,4 +399,89 @@ func TestErrorWrapping(t *testing.T) {
 			t.Errorf("IsHandlerNilError should return false for non-matching error")
 		}
 	})
+}
+
+// chunkedReader3839 reproduces the exact bufio fill boundary from issue #3839:
+// the underlying connection delivers chunks of a fixed size, and the chunk
+// boundary lands in the middle of a RESP3 "message" push frame header. Before
+// the fix, PeekPushNotificationName silently returned the truncated name
+// (e.g. "messa") and ProcessPendingNotifications consumed the frame via
+// ReadReply, dropping the message.
+type chunkedReader3839 struct {
+	data      []byte
+	chunkSize int
+	off       int
+}
+
+func (r *chunkedReader3839) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.chunkSize
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.off+n > len(r.data) {
+		n = len(r.data) - r.off
+	}
+	copy(p, r.data[r.off:r.off+n])
+	r.off += n
+	return n, nil
+}
+
+// TestProcessPendingNotifications_RESP3PubSubMessageLossRegression is the
+// reporter's exact reproducer for issue #3839. It drives the same code path
+// PubSub.ReceiveTimeout runs on every Receive:
+//
+//	processor.ProcessPendingNotifications(ctx, handlerCtx, rd) // drain out-of-band pushes
+//	rd.ReadReply()                                              // read the actual message
+//
+// A burst of identical RESP3 "message" push frames is fed through a chunked
+// reader so that at every bufio fill boundary, only the beginning of a frame
+// is buffered. With the bug, fewer messages are delivered than published.
+// With the fix, all messages are delivered.
+func TestProcessPendingNotifications_RESP3PubSubMessageLossRegression(t *testing.T) {
+	const frame = ">3\r\n$7\r\nmessage\r\n$7\r\nchannel\r\n$5\r\nhello\r\n"
+	const frameLen = len(frame)
+	const numFrames = 1000
+
+	stream := strings.Repeat(frame, numFrames)
+
+	// 4072 % 41 = 13, leaving the prefix ">3\r\n$7\r\nmessa" buffered at each
+	// fill boundary - the exact failure mode from #3839.
+	const chunkSize = 4072
+	if rem := chunkSize % frameLen; rem < 9 || rem > 16 {
+		t.Fatalf("test setup error: chunkSize %% frameLen = %d, want 9..16", rem)
+	}
+
+	rd := proto.NewReader(&chunkedReader3839{data: []byte(stream), chunkSize: chunkSize})
+	processor := NewProcessor()
+	ctx := context.Background()
+	handlerCtx := NotificationHandlerContext{IsBlocking: true}
+
+	delivered := 0
+	for {
+		if err := processor.ProcessPendingNotifications(ctx, handlerCtx, rd); err != nil {
+			t.Fatalf("ProcessPendingNotifications after %d delivered: %v", delivered, err)
+		}
+		reply, err := rd.ReadReply()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadReply after %d delivered: %v", delivered, err)
+		}
+		arr, ok := reply.([]interface{})
+		if !ok || len(arr) == 0 || arr[0] != "message" {
+			t.Fatalf("unexpected reply after %d delivered: %#v", delivered, reply)
+		}
+		delivered++
+	}
+
+	if delivered != numFrames {
+		t.Fatalf(
+			"#3839 regressed: published %d messages but only %d delivered (%d dropped)",
+			numFrames, delivered, numFrames-delivered,
+		)
+	}
 }

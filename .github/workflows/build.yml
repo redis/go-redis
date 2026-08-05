@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         redis-version:
-          - "8.8.x" # Redis CE 8.8
+          - "8.10.x" # Redis CE 8.10
           - "8.6.x" # Redis CE 8.6
           - "8.4.x" # Redis CE 8.4
           - "8.2.x" # Redis CE 8.2
@@ -30,12 +30,12 @@ jobs:
 
     steps:
       - name: Set up ${{ matrix.go-version }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Test environment
         env:
@@ -47,7 +47,7 @@ jobs:
           
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.8.x"]="8.8.0"
+            ["8.10.x"]="8.10.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
@@ -79,7 +79,7 @@ jobs:
         fail-fast: false
         matrix:
           redis-version:
-            - "8.8.x" # Redis CE 8.8
+            - "8.10.x" # Redis CE 8.10
             - "8.6.x" # Redis CE 8.6
             - "8.4.x" # Redis CE 8.4
             - "8.2.x" # Redis CE 8.2
@@ -91,7 +91,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Run tests
         uses: ./.github/actions/run-tests
@@ -100,8 +100,32 @@ jobs:
           redis-version: ${{ matrix.redis-version }}
 
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.txt
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  test-autopipeline-subjects:
+    name: test-autopipeline-subjects
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        redis-version:
+          - "8.10.x" # Redis CE 8.10
+        go-version:
+          - "stable"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Replay the command integration suite through the AutoPipeliner Cmdable
+      # faces (blocking + async) so every command is verified to behave the same
+      # batched as on a plain client.
+      - name: Run command suite through AutoPipeliner faces
+        uses: ./.github/actions/run-tests
+        with:
+          go-version: ${{ matrix.go-version }}
+          redis-version: ${{ matrix.redis-version }}
+          make-target: test.autopipeline-subjects
 

@@ -1,9 +1,12 @@
 package redis_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,6 +156,218 @@ func BenchmarkRedisSetGetBytes(b *testing.B) {
 		}
 	})
 }
+
+// benchmarkRedisGet runs the classic Get-into-string path so it can be
+// compared head-to-head with benchmarkRedisGetToBuffer for the same value
+// size. The key is populated once up front and read in a parallel loop.
+func benchmarkRedisGet(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	value := bytes.Repeat([]byte{'x'}, size)
+	if err := client.Set(ctx, "key", value, 0).Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			got, err := client.Get(ctx, "key").Bytes()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if len(got) != size {
+				b.Fatalf("got len %d, want %d", len(got), size)
+			}
+		}
+	})
+}
+
+// benchmarkRedisGetToBuffer reads the value into a per-goroutine reusable
+// buffer via GetToBuffer, exercising the zero-copy receive path.
+func benchmarkRedisGetToBuffer(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	value := bytes.Repeat([]byte{'x'}, size)
+	if err := client.Set(ctx, "key", value, 0).Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		buf := make([]byte, size)
+		for pb.Next() {
+			n, err := client.GetToBuffer(ctx, "key", buf).Result()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if n != size {
+				b.Fatalf("n = %d, want %d", n, size)
+			}
+		}
+	})
+}
+
+// benchmarkRedisSetGetBuffer round-trips a payload through SetFromBuffer
+// and GetToBuffer, exercising both zero-copy paths on a shared buffer.
+func benchmarkRedisSetGetBuffer(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	value := bytes.Repeat([]byte{'x'}, size)
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		buf := make([]byte, size)
+		for pb.Next() {
+			if err := client.SetFromBuffer(ctx, "key", value).Err(); err != nil {
+				b.Fatal(err)
+			}
+			n, err := client.GetToBuffer(ctx, "key", buf).Result()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if n != size {
+				b.Fatalf("n = %d, want %d", n, size)
+			}
+		}
+	})
+}
+
+// benchmarkRedisSet runs Set with a []byte value, the closest existing
+// peer of SetFromBuffer for direct comparison.
+func benchmarkRedisSet(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	value := bytes.Repeat([]byte{'x'}, size)
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.Set(ctx, "key", value, 0).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// benchmarkRedisSetFromBuffer is the zero-copy counterpart of benchmarkRedisSet.
+func benchmarkRedisSetFromBuffer(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 10)
+	defer client.Close()
+
+	value := bytes.Repeat([]byte{'x'}, size)
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if err := client.SetFromBuffer(ctx, "key", value).Err(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// benchmarkRedisGetRawSocket bypasses go-redis entirely. It opens a raw TCP
+// connection per goroutine, sends GET key directly, and reads the bulk-string
+// reply into a pre-allocated buffer via io.ReadFull on the net.Conn (with a
+// small bufio.Reader used only to parse the header line). It is the floor for
+// what a Go client can extract from this network path — no command struct,
+// no hooks, no pool. If GetToBuffer is close to this number, our code path
+// is already near-optimal.
+func benchmarkRedisGetRawSocket(b *testing.B, size int) {
+	ctx := context.Background()
+	client := benchmarkRedisClient(ctx, 1)
+	defer client.Close()
+	if err := client.Set(ctx, "key", bytes.Repeat([]byte{'x'}, size), 0).Err(); err != nil {
+		b.Fatal(err)
+	}
+
+	req := []byte("*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n")
+
+	b.SetBytes(int64(size))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		conn, err := net.Dial("tcp", "127.0.0.1:6379")
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer conn.Close()
+		rd := bufio.NewReaderSize(conn, 32*1024)
+		buf := make([]byte, size)
+
+		for pb.Next() {
+			if _, err := conn.Write(req); err != nil {
+				b.Fatal(err)
+			}
+			// Header: $<len>\r\n
+			hdr, err := rd.ReadSlice('\n')
+			if err != nil {
+				b.Fatal(err)
+			}
+			if hdr[0] != '$' {
+				b.Fatalf("unexpected reply prefix %q", hdr)
+			}
+			n, err := strconv.Atoi(string(hdr[1 : len(hdr)-2]))
+			if err != nil || n != size {
+				b.Fatalf("bad header %q (n=%d, err=%v)", hdr, n, err)
+			}
+			// Payload + trailing \r\n.
+			if _, err := io.ReadFull(rd, buf[:n]); err != nil {
+				b.Fatal(err)
+			}
+			var crlf [2]byte
+			if _, err := io.ReadFull(rd, crlf[:]); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// CI-friendly benchmark wrappers. Sizes are capped at 64 KiB so the matrix
+// (5 Redis versions × 3 Go versions, full docker-compose stack on a 7 GiB
+// runner) stays well under the test-binary timeout and runner memory.
+// Larger payload behaviour is covered by integration tests
+// ("should SetFromBuffer and GetToBuffer with 10 MiB payload") and the
+// detailed report in docs/zero-copy-buffer-benchmarks.md. To reproduce
+// the 1 MiB / larger numbers locally, invoke the benchmark* helpers
+// directly with the size you want.
+func BenchmarkRedisGetRawSocket_4KiB(b *testing.B)   { benchmarkRedisGetRawSocket(b, 4*1024) }
+func BenchmarkRedisGetRawSocket_64KiB(b *testing.B)  { benchmarkRedisGetRawSocket(b, 64*1024) }
+func BenchmarkRedisGet_4KiB(b *testing.B)            { benchmarkRedisGet(b, 4*1024) }
+func BenchmarkRedisGet_64KiB(b *testing.B)           { benchmarkRedisGet(b, 64*1024) }
+func BenchmarkRedisGetToBuffer_4KiB(b *testing.B)    { benchmarkRedisGetToBuffer(b, 4*1024) }
+func BenchmarkRedisGetToBuffer_64KiB(b *testing.B)   { benchmarkRedisGetToBuffer(b, 64*1024) }
+func BenchmarkRedisSet_4KiB(b *testing.B)            { benchmarkRedisSet(b, 4*1024) }
+func BenchmarkRedisSet_64KiB(b *testing.B)           { benchmarkRedisSet(b, 64*1024) }
+func BenchmarkRedisSetFromBuffer_4KiB(b *testing.B)  { benchmarkRedisSetFromBuffer(b, 4*1024) }
+func BenchmarkRedisSetFromBuffer_64KiB(b *testing.B) { benchmarkRedisSetFromBuffer(b, 64*1024) }
+func BenchmarkRedisSetGetBuffer_4KiB(b *testing.B)   { benchmarkRedisSetGetBuffer(b, 4*1024) }
+func BenchmarkRedisSetGetBuffer_64KiB(b *testing.B)  { benchmarkRedisSetGetBuffer(b, 64*1024) }
 
 func BenchmarkRedisMGet(b *testing.B) {
 	ctx := context.Background()

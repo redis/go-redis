@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -37,6 +38,12 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 
 	t.Run("FTInfo", func(t *testing.T) {
 		// Create index
+		// Hermetic keyspace: earlier subtests drop only the index, and their
+		// leftover hashes would be re-indexed here (a third doc with its own
+		// score made the aggregate row sets protocol-timing-dependent).
+		if err := client2.FlushDB(ctx).Err(); err != nil {
+			t.Fatalf("FlushDB failed: %v", err)
+		}
 		_, err := client2.FTCreate(ctx, "test-idx",
 			&redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText, Sortable: true},
@@ -118,9 +125,9 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 		// the data is silently lost. Assert both that the RESP3 value is
 		// non-empty and that it matches the RESP2 value.
 		avgFields := []struct {
-			name        string
-			resp2Val    string
-			resp3Val    string
+			name     string
+			resp2Val string
+			resp3Val string
 		}{
 			{"BytesPerRecordAvg", info2.BytesPerRecordAvg, info3.BytesPerRecordAvg},
 			{"RecordsPerDocAvg", info2.RecordsPerDocAvg, info3.RecordsPerDocAvg},
@@ -148,7 +155,7 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 		// (see src/fork_gc/fork_gc.c statsCb) but typed as int in GCStats.
 		// Compare each individually so a regression surfaces with a precise message.
 		gcFields := []struct {
-			name             string
+			name         string
 			resp2, resp3 int
 		}{
 			{"BytesCollected", info2.GCStats.BytesCollected, info3.GCStats.BytesCollected},
@@ -167,6 +174,12 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 
 	t.Run("FTSearch", func(t *testing.T) {
 		// Create index
+		// Hermetic keyspace: earlier subtests drop only the index, and their
+		// leftover hashes would be re-indexed here (a third doc with its own
+		// score made the aggregate row sets protocol-timing-dependent).
+		if err := client2.FlushDB(ctx).Err(); err != nil {
+			t.Fatalf("FlushDB failed: %v", err)
+		}
 		_, err := client2.FTCreate(ctx, "test-idx",
 			&redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText},
@@ -217,6 +230,12 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 
 	t.Run("FTAggregate", func(t *testing.T) {
 		// Create index
+		// Hermetic keyspace: earlier subtests drop only the index, and their
+		// leftover hashes would be re-indexed here (a third doc with its own
+		// score made the aggregate row sets protocol-timing-dependent).
+		if err := client2.FlushDB(ctx).Err(); err != nil {
+			t.Fatalf("FlushDB failed: %v", err)
+		}
 		_, err := client2.FTCreate(ctx, "test-idx",
 			&redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText},
@@ -282,6 +301,12 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 
 	t.Run("FTSpellCheck", func(t *testing.T) {
 		// Create index
+		// Hermetic keyspace: earlier subtests drop only the index, and their
+		// leftover hashes would be re-indexed here (a third doc with its own
+		// score made the aggregate row sets protocol-timing-dependent).
+		if err := client2.FlushDB(ctx).Err(); err != nil {
+			t.Fatalf("FlushDB failed: %v", err)
+		}
 		_, err := client2.FTCreate(ctx, "test-idx",
 			&redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText},
@@ -320,6 +345,12 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 
 	t.Run("FTSynDump", func(t *testing.T) {
 		// Create index
+		// Hermetic keyspace: earlier subtests drop only the index, and their
+		// leftover hashes would be re-indexed here (a third doc with its own
+		// score made the aggregate row sets protocol-timing-dependent).
+		if err := client2.FlushDB(ctx).Err(); err != nil {
+			t.Fatalf("FlushDB failed: %v", err)
+		}
 		_, err := client2.FTCreate(ctx, "test-idx",
 			&redis.FTCreateOptions{},
 			&redis.FieldSchema{FieldName: "title", FieldType: redis.SearchFieldTypeText},
@@ -364,9 +395,16 @@ func waitForIndexing(t *testing.T, client *redis.Client, index string, expectedD
 		if err != nil {
 			t.Fatalf("FTInfo failed: %v", err)
 		}
-		if info.NumDocs >= expectedDocs {
+		// Exact count AND ingestion settled: the subtests query RESP2 and
+		// RESP3 back to back and compare, so a doc landing (or a reindex
+		// finishing) between the two queries skews one side — seen on a slow
+		// CI runner as an extra transient empty row in the RESP3 aggregate.
+		// The loop also SLEPT nowhere before, burning its 100 tries in
+		// microseconds while the indexer had not even started.
+		if info.NumDocs == expectedDocs && info.Indexing == 0 {
 			return
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("Timeout waiting for indexing")
 }

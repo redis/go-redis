@@ -804,6 +804,49 @@ var _ = Describe("Ring Tx timeout", func() {
 	})
 })
 
+var _ = Describe("Ring Publish/Subscribe sharding", func() {
+	var ring *redis.Ring
+
+	BeforeEach(func() {
+		ring = redis.NewRing(redisRingOptions())
+	})
+
+	AfterEach(func() {
+		Expect(ring.Close()).NotTo(HaveOccurred())
+	})
+
+	It("routes Publish to the same shard as Subscribe for a given channel", func() {
+		// Use many channels to test to make sure there isn't flakiness in the case this would fail.
+		// Because the default sharding (Ring.sharding.Random) is determined by a random function,
+		// we want to make sure there isn't an inconsistency in the failure case
+		const numChannels = 20
+
+		for i := 0; i < numChannels; i++ {
+			channel := fmt.Sprintf("ring-pubsub-test-channel-%d", i)
+
+			pubsub := ring.Subscribe(ctx, channel)
+
+			_, err := pubsub.Receive(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			n, err := ring.Publish(ctx, channel, "hello").Result()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(n).To(Equal(int64(1)), "channel %s: message should reach the subscriber's shard", channel)
+
+			Eventually(func() interface{} {
+				msg, _ := pubsub.ReceiveTimeout(ctx, time.Second)
+				m, _ := msg.(*redis.Message)
+				if m == nil {
+					return nil
+				}
+				return m.Payload
+			}, 5*time.Second).Should(Equal("hello"))
+
+			Expect(pubsub.Close()).NotTo(HaveOccurred())
+		}
+	})
+})
+
 var _ = Describe("Ring GetShardClients and GetShardClientForKey", func() {
 	var ring *redis.Ring
 

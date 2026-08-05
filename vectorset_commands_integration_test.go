@@ -35,12 +35,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 	ctx := context.TODO()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	protocols := []int{2, 3}
@@ -48,22 +50,29 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 		protocol := protocol
 
 		Context(fmt.Sprintf("with protocol version %d", protocol), func() {
-			var client *redis.Client
+			var client redis.UniversalClient
+			var rawClient *redis.Client
+			var closeSubject func() error
 
 			BeforeEach(func() {
-				client = setupRedisClient(protocol)
-				Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+				rawClient = setupRedisClient(protocol)
+				client, closeSubject = newUniversalSubject(rawClient)
+				Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 			})
 
 			AfterEach(func() {
 				if client != nil {
-					client.FlushDB(ctx)
-					client.Close()
+					// Flush through the SUBJECT: ordered after queued writes
+					// (see json_test.go); awaiting Err() forces it to execute, and
+					// both steps are asserted so a failed teardown cannot silently
+					// leak state into later specs.
+					Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+					Expect(closeSubject()).NotTo(HaveOccurred())
 				}
 			})
 
 			It("basic", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "basic"
 				val := &redis.VectorValues{
 					Val: []float64{1.5, 2.4, 3.3, 4.2},
@@ -98,7 +107,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("basic similarity", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "basic_similarity"
 
 				ok, err := client.VAdd(ctx, vecName, "k1", &redis.VectorValues{
@@ -132,7 +141,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("dimension operation", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "dimension_op"
 				originalDim := 100
 				reducedDim := 50
@@ -167,7 +176,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("remove", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "remove"
 				v1 := generateRandomVector(5)
 				ok, err := client.VAdd(ctx, vecName, "k1", &v1).Result()
@@ -188,7 +197,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("all operations", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "commands"
 				vals := []struct {
 					name string
@@ -258,7 +267,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectNil(err)
 				expectEqual(len(res), len(vals))
 
-				if RedisVersion >= 8.4 {
+				if redisVersionAtLeast("8.4") {
 					res, err = client.VRange(ctx, vecName, "[k1", "[k2", -1).Result()
 					expectNil(err)
 					expectEqual(len(res), 2)
@@ -355,7 +364,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 				expectEqual(simScores[0].Name, vals[0].name)
 				expectEqual(simScores[0].Score, float64(1))
 
-				if RedisVersion >= 8.2 {
+				if redisVersionAtLeast("8.2") {
 					// test withattribs
 					simAttribs, err := client.VSimWithArgsWithAttribs(ctx, vecName, &vals[0].v, &redis.VSimArgs{
 						Filter: `.age < 30 or .age > 35`,
@@ -414,7 +423,7 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 			})
 
 			It("vlinks with single element", func() {
-				SkipBeforeRedisVersion(8.0, "Redis 8.0 introduces support for VectorSet")
+				SkipBeforeRedisVersion("8.0", "Redis 8.0 introduces support for VectorSet")
 				vecName := "vlinks_single"
 
 				// Add only one vector

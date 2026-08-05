@@ -82,7 +82,7 @@ var _ = Describe("PubSub", func() {
 	})
 
 	It("should receive hash field subkey notifications", Label("hash-expiration", "NonRedisEnterprise"), func() {
-		SkipBeforeRedisVersion(8.8, "subkeyspace notifications require Redis 8.8")
+		SkipBeforeRedisVersion("8.8", "subkeyspace notifications require Redis 8.8")
 
 		config, err := client.ConfigGet(ctx, "notify-keyspace-events").Result()
 		Expect(err).NotTo(HaveOccurred())

@@ -2,6 +2,7 @@ package redisotel
 
 import (
 	"reflect"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -51,4 +52,45 @@ func Test_poolStatsAttrs(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Test_poolStatsAttrs_race reproduces issue #3880: attribute.NewSet sorts and
+// de-duplicates its input slice in place, so poolStatsAttrs mutates the shared
+// conf.attrs backing array. That array is aliased by every metricsHook.attrs
+// and read concurrently while MinIdleConns pre-warms connections in the
+// background, producing a data race. Must be run with -race.
+func Test_poolStatsAttrs_race(t *testing.T) {
+	conf := newConfig()
+	conf.attrs = append(conf.attrs,
+		attribute.String("pool.name", "pool1"),
+		attribute.String("foo1", "bar1"),
+		attribute.String("foo2", "bar2"),
+	)
+
+	// A metricsHook aliases conf.attrs, mirroring addMetricsHook.
+	mh := &metricsHook{attrs: conf.attrs}
+
+	const n = 50
+	var wg sync.WaitGroup
+	wg.Add(2 * n)
+
+	// Readers: mirror metricsHook.DialHook reading mh.attrs during a dial.
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			attrs := make([]attribute.KeyValue, 0, len(mh.attrs)+2)
+			attrs = append(attrs, mh.attrs...)
+			_ = attribute.NewSet(attrs...)
+		}()
+	}
+
+	// Writers: registerClient calling poolStatsAttrs for each cluster node.
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			poolStatsAttrs(conf)
+		}()
+	}
+
+	wg.Wait()
 }

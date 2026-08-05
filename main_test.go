@@ -4,19 +4,23 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/logging"
 )
 
@@ -80,17 +84,104 @@ var RCEDocker = false
 // This can be used before we change the bsm fork of ginkgo for one,
 // which have support for label sets, so we can filter tests per redis version.
 var RedisVersion float64 = 8.4
+var redisMajorVersion = 8
+var redisMinorVersion = 4
 
-func SkipBeforeRedisVersion(version float64, msg string) {
-	if RedisVersion < version {
-		Skip(fmt.Sprintf("(redis version < %f) %s", version, msg))
+// parseRedisVersionStr splits "major.minor" into two ints. Minor defaults to 0.
+func parseRedisVersionStr(v string) (int, int) {
+	parts := strings.SplitN(v, ".", 2)
+	major, _ := strconv.Atoi(parts[0])
+	if len(parts) < 2 {
+		return major, 0
+	}
+	minor, _ := strconv.Atoi(parts[1])
+	return major, minor
+}
+
+// redisVersionAtLeast returns true when the running Redis is >= major.minor.
+func redisVersionAtLeast(version string) bool {
+	major, minor := parseRedisVersionStr(version)
+	return redisMajorVersion > major || (redisMajorVersion == major && redisMinorVersion >= minor)
+}
+
+func SkipBeforeRedisVersion(version string, msg string) {
+	major, minor := parseRedisVersionStr(version)
+	if redisMajorVersion < major || (redisMajorVersion == major && redisMinorVersion < minor) {
+		Skip(fmt.Sprintf("(redis version < %s) %s", version, msg))
 	}
 }
 
-func SkipAfterRedisVersion(version float64, msg string) {
-	if RedisVersion > version {
-		Skip(fmt.Sprintf("(redis version > %f) %s", version, msg))
+func SkipAfterRedisVersion(version string, msg string) {
+	major, minor := parseRedisVersionStr(version)
+	if redisMajorVersion > major || (redisMajorVersion == major && redisMinorVersion > minor) {
+		Skip(fmt.Sprintf("(redis version > %s) %s", version, msg))
 	}
+}
+
+func isClientTrackingUnavailable(err error) bool {
+	var redisErr redis.Error
+	if !errors.As(err, &redisErr) {
+		return false
+	}
+
+	msg := strings.ToLower(strings.TrimPrefix(redisErr.Error(), "ERR "))
+	return strings.HasPrefix(msg, "noperm") ||
+		strings.HasPrefix(msg, "unknown command") ||
+		strings.HasPrefix(msg, "unknown subcommand") ||
+		strings.HasPrefix(msg, "command 'client|tracking' is not allowed")
+}
+
+func TestIsClientTrackingUnavailable(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{proto.RedisError("NOPERM this user has no permissions"), true},
+		{proto.RedisError("ERR unknown command 'client'"), true},
+		{proto.RedisError("ERR Unknown subcommand or wrong number of arguments for 'tracking'"), true},
+		{proto.RedisError("ERR command 'client|tracking' is not allowed"), true},
+		{proto.RedisError("LOADING Redis is loading the dataset"), false},
+		{proto.RedisError("MASTERDOWN Link with MASTER is down"), false},
+		{fmt.Errorf("unknown command: connection failed"), false},
+	}
+
+	for _, tt := range tests {
+		if got := isClientTrackingUnavailable(tt.err); got != tt.want {
+			t.Errorf("isClientTrackingUnavailable(%q) = %t, want %t", tt.err, got, tt.want)
+		}
+	}
+}
+
+// probeClientTracking checks whether Redis accepts CLIENT TRACKING on a
+// dedicated connection. unavailable is true only for known unsupported or
+// permission responses; other server, connection, and cleanup errors fail.
+func probeClientTracking(ctx context.Context, client *redis.Client) (unavailable bool, err error) {
+	conn := client.Conn()
+	if err := conn.ClientTrackingOn(ctx, nil).Err(); err != nil {
+		if closeErr := conn.Close(); closeErr != nil {
+			return false, fmt.Errorf("close CLIENT TRACKING probe connection: %w", closeErr)
+		}
+
+		return isClientTrackingUnavailable(err), err
+	}
+
+	offErr := conn.ClientTrackingOff(ctx).Err()
+	closeErr := conn.Close()
+	if offErr != nil {
+		return false, fmt.Errorf("disable CLIENT TRACKING after probe: %w", offErr)
+	}
+	if closeErr != nil {
+		return false, fmt.Errorf("close CLIENT TRACKING probe connection: %w", closeErr)
+	}
+	return false, nil
+}
+
+func skipIfClientTrackingUnavailable(ctx context.Context, client *redis.Client) {
+	unavailable, err := probeClientTracking(ctx, client)
+	if unavailable {
+		Skip(fmt.Sprintf("CLIENT TRACKING is unavailable: %v", err))
+	}
+	Expect(err).NotTo(HaveOccurred())
 }
 
 var _ = BeforeSuite(func() {
@@ -103,24 +194,36 @@ var _ = BeforeSuite(func() {
 	RECluster, _ = strconv.ParseBool(os.Getenv("RE_CLUSTER"))
 	RCEDocker, _ = strconv.ParseBool(os.Getenv("RCE_DOCKER"))
 
-	RedisVersion, _ = strconv.ParseFloat(strings.Trim(os.Getenv("REDIS_VERSION"), "\""), 64)
+	vStr := strings.Trim(os.Getenv("REDIS_VERSION"), "\"")
+	if vStr != "" {
+		redisMajorVersion, redisMinorVersion = parseRedisVersionStr(vStr)
+		RedisVersion, _ = strconv.ParseFloat(vStr, 64)
+	}
 
-	if RedisVersion == 0 {
+	if redisMajorVersion == 0 {
+		redisMajorVersion = 8
+		redisMinorVersion = 4
 		RedisVersion = 8.4
 	}
 
 	fmt.Printf("RECluster: %v\n", RECluster)
 	fmt.Printf("RCEDocker: %v\n", RCEDocker)
-	fmt.Printf("REDIS_VERSION: %.1f\n", RedisVersion)
+	fmt.Printf("REDIS_VERSION: %d.%d\n", redisMajorVersion, redisMinorVersion)
 	fmt.Printf("CLIENT_LIBS_TEST_IMAGE: %v\n", os.Getenv("CLIENT_LIBS_TEST_IMAGE"))
 	logging.Disable()
 
-	if RedisVersion < 7.0 || RedisVersion > 9 {
+	if redisMajorVersion < 7 || redisMajorVersion > 9 {
 		panic("incorrect or not supported redis version")
 	}
 
 	redisPort = redisStackPort
 	redisAddr = redisStackAddr
+	if RECluster && os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") != "" {
+		reConn, err = loadREConnection()
+		Expect(err).NotTo(HaveOccurred())
+		redisAddr = reConn.Addr
+		fmt.Printf("RE endpoint: %s (tls=%v)\n", reConn.Addr, reConn.TLS)
+	}
 	if !RECluster {
 		ringShard1, err = connectTo(ringShard1Port)
 		Expect(err).NotTo(HaveOccurred())
@@ -179,7 +282,7 @@ func TestGinkgoSuite(t *testing.T) {
 
 func redisOptions() *redis.Options {
 	if RECluster {
-		return &redis.Options{
+		opt := &redis.Options{
 			Addr: redisAddr,
 			DB:   0,
 
@@ -194,6 +297,8 @@ func redisOptions() *redis.Options {
 			PoolTimeout:     30 * time.Second,
 			ConnMaxIdleTime: time.Minute,
 		}
+		applyREConnection(opt)
+		return opt
 	}
 	return &redis.Options{
 		Addr: redisAddr,
@@ -357,6 +462,23 @@ type badConn struct {
 	readErr, writeErr     error
 }
 
+// flakyWriteConn wraps a real, healthy connection and fails exactly one Write
+// when armed. Unlike seeding a broken conn into the idle pool (which the
+// pool's health check filters out before use), a wire-level failure on a
+// live conn genuinely reaches the pipeline write path — so retry tests using
+// it actually exercise the retry loop.
+type flakyWriteConn struct {
+	net.Conn
+	fail *atomic.Bool // arm with Store(true); consumed by the next Write
+}
+
+func (c *flakyWriteConn) Write(b []byte) (int, error) {
+	if c.fail.CompareAndSwap(true, false) {
+		return 0, io.EOF
+	}
+	return c.Conn.Write(b)
+}
+
 var _ net.Conn = &badConn{}
 
 func (cn *badConn) SetReadDeadline(t time.Time) error {
@@ -489,4 +611,52 @@ func initializeTLSCluster(ctx context.Context) error {
 // cleanupTLSCluster cleans up TLS cluster resources
 func cleanupTLSCluster() {
 	// TLS cluster is auto-managed by the container, no cleanup needed
+}
+
+// newUniversalSubject returns the redis.UniversalClient that a parametrized
+// command suite runs against, selected by the GOREDIS_TEST_SUBJECT env var so a
+// whole suite can be replayed through the autopipeliner without touching each
+// spec:
+//
+//	(unset)|client -> the *redis.Client itself (default; unchanged behavior)
+//	ap-blocking     -> client.AutoPipeline()      (synchronous drop-in face)
+//	ap-async        -> client.AsyncAutoPipeline()  (deferred face; result reads block)
+//
+// It returns the subject plus a single closer that closes the autopipeliner (if
+// any) and then the underlying *redis.Client — so callers just defer/AfterEach
+// one call. Admin/connection-only calls not on UniversalClient (FlushDB,
+// Config*, Ping, Info, Conn, ...) should use the underlying client directly.
+func newUniversalSubject(c *redis.Client) (redis.UniversalClient, func() error) {
+	// closeWith closes the optional autopipeliner then the underlying client,
+	// returning the first error.
+	closeWith := func(ap *redis.AutoPipeliner) func() error {
+		return func() error {
+			var firstErr error
+			if ap != nil {
+				if err := ap.Close(); err != nil {
+					firstErr = err
+				}
+			}
+			if err := c.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			return firstErr
+		}
+	}
+	switch os.Getenv("GOREDIS_TEST_SUBJECT") {
+	case "ap-blocking":
+		ap, err := c.AutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxBatchSize: 300})
+		if err != nil {
+			panic(err)
+		}
+		return ap, closeWith(ap)
+	case "ap-async":
+		ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxBatchSize: 300})
+		if err != nil {
+			panic(err)
+		}
+		return ap, closeWith(ap)
+	default:
+		return c, closeWith(nil)
+	}
 }

@@ -1,6 +1,7 @@
 package redis_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -11,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/internal/hashtag"
 	"github.com/redis/go-redis/v9/internal/routing"
@@ -255,6 +258,170 @@ func slotEqual(s1, s2 redis.ClusterSlot) bool {
 		}
 	}
 	return true
+}
+
+// txWriteRecorder captures, per node addr, each Write payload that carries a
+// MULTI/EXEC transaction. txWriteCount uses it to prove whether the client
+// retried a transaction (e.g. after a transient write/read failure or an ASK).
+type txWriteRecorder struct {
+	mu     sync.Mutex
+	writes map[string][][]byte // addr -> tx write payloads
+}
+
+func newTxWriteRecorder() *txWriteRecorder {
+	return &txWriteRecorder{writes: map[string][][]byte{}}
+}
+
+func (r *txWriteRecorder) record(addr string, b []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.writes[addr] = append(r.writes[addr], bytes.Clone(b))
+}
+
+// txWriteCount returns the number of tx writes (MULTI-containing batches) sent
+// to addr. Used to prove whether the client retried a transaction.
+func (r *txWriteRecorder) txWriteCount(addr string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, b := range r.writes[addr] {
+		if countRespCmd(b, "MULTI") > 0 {
+			n++
+		}
+	}
+	return n
+}
+
+// countRespCmd counts occurrences of a RESP command name (e.g. "MULTI") within a
+// raw Write payload by matching the bulk-string framing "$<len>\r\n<NAME>\r\n".
+// Matching is case-insensitive: go-redis writes tx commands in lower case
+// ("multi"/"exec") but other commands may differ.
+func countRespCmd(b []byte, cmd string) int {
+	needle := []byte("$" + strconv.Itoa(len(cmd)) + "\r\n" + strings.ToUpper(cmd) + "\r\n")
+	return bytes.Count(bytes.ToUpper(b), needle)
+}
+
+// txFaultConn wraps a real redis connection. Non-tx traffic is forwarded
+// unchanged so the cluster client can still load topology; tx writes (those
+// containing MULTI) are always recorded. When failOnce is non-nil
+// (transient-retry test), the first MULTI write across all sharing conns
+// fails with io.EOF and subsequent ones are forwarded, so the client must retry the
+// whole tx and then succeed.
+type txFaultConn struct {
+	net.Conn
+	addr     string
+	rec      *txWriteRecorder
+	failOnce *atomic.Int32
+	// failAddr, when set, restricts failOnce to writes whose addr matches; an
+	// empty failAddr (the default) fires on the first MULTI write to any addr.
+	failAddr string
+	// failRead makes reads return io.EOF once a MULTI write has been seen on
+	// this conn, so the tx batch is committed server-side but the client cannot
+	// read the reply. Used to prove a post-commit read failure is not retried.
+	failRead bool
+	sawMulti atomic.Bool
+}
+
+func (c *txFaultConn) Write(b []byte) (int, error) {
+	if countRespCmd(b, "MULTI") > 0 {
+		c.sawMulti.Store(true)
+		c.rec.record(c.addr, b)
+		if c.failOnce != nil && (c.failAddr == "" || c.addr == c.failAddr) &&
+			c.failOnce.CompareAndSwap(0, 1) {
+			return 0, io.EOF
+		}
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *txFaultConn) Read(b []byte) (int, error) {
+	if c.failRead && c.sawMulti.Load() {
+		return 0, io.EOF
+	}
+	return c.Conn.Read(b)
+}
+
+// slotMasterPort returns the port of the master owning `slot` in the test
+// cluster's fixed distribution (0-5460 -> 16600, 5461-10922 -> 16601,
+// 10923-16383 -> 16602), matching clusterScenario.slots().
+func slotMasterPort(slot int) string {
+	switch {
+	case slot < 5461:
+		return cluster.ports[0]
+	case slot < 10923:
+		return cluster.ports[1]
+	default:
+		return cluster.ports[2]
+	}
+}
+
+// slotOtherMasterPort returns the port of a master that does NOT own `slot`,
+// matching the migration target that setupAskMigration picks (the first master
+// port != the slot's owner).
+func slotOtherMasterPort(slot int) string {
+	src := slotMasterPort(slot)
+	for _, p := range cluster.ports[:3] {
+		if p != src {
+			return p
+		}
+	}
+	return ""
+}
+
+// resetSlot restores `slot` to a clean, fully-owned state on its master and
+// deletes `keys` from all masters. It is idempotent and best-effort, used to
+// recover from a prior run that left the slot migrating/importing.
+func resetSlot(ctx context.Context, slot int, keys ...string) {
+	srcPort := slotMasterPort(slot)
+	srcCli := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + srcPort})
+	srcID, _ := srcCli.ClusterMyID(ctx).Result()
+	_ = srcCli.Close()
+	for _, p := range cluster.ports[:3] {
+		c := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + p})
+		_ = c.Do(ctx, "cluster", "setslot", slot, "node", srcID).Err()
+		for _, k := range keys {
+			_ = c.Del(ctx, k).Err()
+		}
+		_ = c.Close()
+	}
+}
+
+// setupAskMigration puts `slot` into MIGRATING on its owner (source) and IMPORTING
+// on a different master (target), leaving the slot's keys absent from both. The
+// source then returns -ASK for any absent key in the slot. The returned cleanup
+// restores slot ownership on all masters.
+func setupAskMigration(ctx context.Context, slot int) func() {
+	resetSlot(ctx, slot)
+	srcPort := slotMasterPort(slot)
+	tgtPort := ""
+	for _, p := range cluster.ports[:3] {
+		if p != srcPort {
+			tgtPort = p
+			break
+		}
+	}
+	srcCli := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + srcPort})
+	tgtCli := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + tgtPort})
+
+	srcID, err := srcCli.ClusterMyID(ctx).Result()
+	Expect(err).NotTo(HaveOccurred())
+	dstID, err := tgtCli.ClusterMyID(ctx).Result()
+	Expect(err).NotTo(HaveOccurred())
+
+	Expect(srcCli.Do(ctx, "cluster", "setslot", slot, "migrating", dstID).Err()).
+		NotTo(HaveOccurred())
+	Expect(tgtCli.Do(ctx, "cluster", "setslot", slot, "importing", srcID).Err()).
+		NotTo(HaveOccurred())
+
+	return func() {
+		for _, p := range cluster.ports[:3] {
+			c := redis.NewClient(&redis.Options{Addr: "127.0.0.1:" + p})
+			_ = c.Do(ctx, "cluster", "setslot", slot, "node", srcID).Err()
+			_ = c.Close()
+		}
+		_ = srcCli.Close()
+		_ = tgtCli.Close()
+	}
 }
 
 // ------------------------------------------------------------------------------
@@ -859,8 +1026,198 @@ var _ = Describe("ClusterClient", func() {
 			Expect(client.Close()).NotTo(HaveOccurred())
 		})
 
+		// A TxPipeline whose slot is initially routed at a replica gets -MOVED on
+		// the write; the client must follow the redirect and run the whole tx on
+		// the real master, with the written values visible afterwards.
+		It("should follow MOVED redirect for TxPipeline", func() {
+			// {s} hashtag forces a single-slot, single-node transaction.
+			_, err := client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "A{s}", "1", 0)
+				pipe.Set(ctx, "B{s}", "2", 0)
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Route the slot at a replica so the write tx is MOVED back to the real master.
+			Eventually(func() error {
+				return client.SwapNodes(ctx, "A{s}")
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			_, err = client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "A{s}", "11", 0)
+				pipe.Set(ctx, "B{s}", "22", 0)
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// The MOVED triggers a topology reload that un-swaps the state, so
+			// reads eventually land on the real master with the new values.
+			Eventually(func() string {
+				return client.Get(ctx, "A{s}").Val()
+			}, 30*time.Second).Should(Equal("11"))
+			Eventually(func() string {
+				return client.Get(ctx, "B{s}").Val()
+			}, 30*time.Second).Should(Equal("22"))
+		})
+
+		// When a queued command fails with a non-redirect error (here GET with
+		// wrong arity), Redis aborts the tx with -EXECABORT. The surfaced error
+		// should name the triggering command's error ("wrong number of
+		// arguments"), not a generic parse error.
+		It("should surface the triggering error on TxPipeline EXECABORT instead of 'expected'", func() {
+			_, err := client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "A{s}", "1", 0)
+				pipe.Do(ctx, "GET", "A{s}", "extra")
+				pipe.Set(ctx, "B{s}", "2", 0)
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).NotTo(ContainSubstring("expected '*'"))
+			Expect(err.Error()).To(ContainSubstring("wrong number of arguments"))
+		})
+
+		// With redirects disabled (MaxRedirects = -1), a TxPipeline that hits
+		// -MOVED must surface a MOVED error so the caller can tell it was a
+		// redirect, not a generic parse error.
+		It("should return MOVED (not 'expected') for TxPipeline when redirects are exhausted", func() {
+			opt := redisClusterOptions()
+			opt.MaxRedirects = -1
+			redirectClient := cluster.newClusterClient(ctx, opt)
+			defer func() { Expect(redirectClient.Close()).NotTo(HaveOccurred()) }()
+
+			Eventually(func() error {
+				return redirectClient.SwapNodes(ctx, "A{s}")
+			}, 30*time.Second).ShouldNot(HaveOccurred())
+
+			_, err := redirectClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "A{s}", "1", 0)
+				pipe.Set(ctx, "B{s}", "2", 0)
+				return nil
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("MOVED"))
+			Expect(err.Error()).NotTo(ContainSubstring("expected '*'"))
+		})
+
+		// A transient write failure during a tx must be retried as a whole
+		// transaction and ultimately succeed, with both values actually written.
+		// The first tx write is failed with io.EOF and the retry is let through.
+		It("retries the whole tx after a transient write failure and succeeds", func() {
+			rec := newTxWriteRecorder()
+			var failOnce atomic.Int32 // first MULTI write fails, subsequent ones forward
+			opt := redisClusterOptions()
+			opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				var d net.Dialer
+				cn, err := d.DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				return &txFaultConn{Conn: cn, addr: addr, rec: rec, failOnce: &failOnce}, nil
+			}
+			retryClient := cluster.newClusterClient(ctx, opt)
+			defer func() { Expect(retryClient.Close()).NotTo(HaveOccurred()) }()
+
+			_, err := retryClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "retry1{s}", "1", 0)
+				pipe.Set(ctx, "retry2{s}", "2", 0)
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred(),
+				"a transient write failure should be retried as a whole tx and succeed")
+
+			// The retried tx must have executed: both values are present on the
+			// slot master.
+			Expect(retryClient.Get(ctx, "retry1{s}").Val()).To(Equal("1"))
+			Expect(retryClient.Get(ctx, "retry2{s}").Val()).To(Equal("2"))
+
+			// The slot master received more than one tx write, so the first
+			// attempt really failed and the tx was retried.
+			srcAddr := "127.0.0.1:" + slotMasterPort(hashtag.Slot("retry1{s}"))
+			Expect(rec.txWriteCount(srcAddr)).To(BeNumerically(">=", 2),
+				"the first tx write failed and the client should have retried the whole tx")
+		})
+
+		// During an ASK redirect, a transient connection failure to the
+		// importing target must be retried with the ASKING flag preserved, so the
+		// tx still executes on the target.
+		It("preserves ASKING when retrying a conn failure on the ASK target", func() {
+			key := "askretry{s}"
+			slot := hashtag.Slot(key)
+			defer resetSlot(ctx, slot, key)
+			cleanup := setupAskMigration(ctx, slot)
+			defer cleanup()
+
+			tgtAddr := "127.0.0.1:" + slotOtherMasterPort(slot)
+			rec := newTxWriteRecorder()
+			var failOnce atomic.Int32 // first MULTI write to the target fails, then forwards
+			opt := redisClusterOptions()
+			opt.MaxRedirects = 2 // source-ASK (0) + target-connfail (1) + target-success (2)
+			opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				var d net.Dialer
+				cn, err := d.DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				return &txFaultConn{Conn: cn, addr: addr, rec: rec, failOnce: &failOnce, failAddr: tgtAddr}, nil
+			}
+			askClient := cluster.newClusterClient(ctx, opt)
+			defer func() { Expect(askClient.Close()).NotTo(HaveOccurred()) }()
+
+			_, err := askClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, key, "v", 0)
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred(),
+				"a transient write failure on the ASK target should be retried with ASKING preserved and succeed")
+
+			// The tx executed on the target (with ASKING); a Get follows the
+			// ASK back to the target and reads the value.
+			Expect(askClient.Get(ctx, key).Val()).To(Equal("v"))
+
+			// The target received >=2 tx writes: the failed first attempt and
+			// the successful retry, both with a leading ASKING.
+			Expect(rec.txWriteCount(tgtAddr)).To(BeNumerically(">=", 2))
+		})
+
+		// A read failure after the tx batch was written must not be retried: the
+		// server may have committed the transaction, and re-sending the batch
+		// would double-execute non-idempotent commands. The batch should be sent
+		// exactly once.
+		It("does not retry a read failure after the tx batch is written", func() {
+			rec := newTxWriteRecorder()
+			opt := redisClusterOptions()
+			opt.MaxRedirects = 3
+			opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				var d net.Dialer
+				cn, err := d.DialContext(ctx, network, addr)
+				if err != nil {
+					return nil, err
+				}
+				// failRead returns EOF from every read once a MULTI write has
+				// been seen on the conn: the batch is committed server-side but
+				// the client cannot read the reply.
+				return &txFaultConn{Conn: cn, addr: addr, rec: rec, failRead: true}, nil
+			}
+			readClient := cluster.newClusterClient(ctx, opt)
+			defer func() { Expect(readClient.Close()).NotTo(HaveOccurred()) }()
+
+			_, err := readClient.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.Set(ctx, "rdretry1{s}", "1", 0)
+				pipe.Set(ctx, "rdretry2{s}", "2", 0)
+				return nil
+			})
+			Expect(err).To(HaveOccurred(),
+				"a read failure after the batch was written should surface an error")
+
+			// The batch was written exactly once: the read failure is fatal, so
+			// the tx is not re-sent (no double-execution).
+			srcAddr := "127.0.0.1:" + slotMasterPort(hashtag.Slot("rdretry1{s}"))
+			Expect(rec.txWriteCount(srcAddr)).To(Equal(1),
+				"a post-commit read failure must not re-send the tx batch")
+		})
+
 		It("should call fn for every master node", func() {
-			for i := 0; i < 10; i++ {
+			for i := range 10 {
 				Expect(client.Set(ctx, strconv.Itoa(i), "", 0).Err()).NotTo(HaveOccurred())
 			}
 
@@ -1766,7 +2123,7 @@ var _ = Describe("Command Tips tests", func() {
 	})
 
 	It("should verify COMMAND tips match router policy types", func() {
-		SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+		SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 		expectedPolicies := map[string]struct {
 			RequestPolicy  string
 			ResponsePolicy string
@@ -1801,7 +2158,7 @@ var _ = Describe("Command Tips tests", func() {
 
 	Describe("Explicit Routing Policy Tests", func() {
 		It("should test explicit routing policy for TOUCH", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify TOUCH command has multi_shard policy
 			cmds, err := client.Command(ctx).Result()
@@ -1825,7 +2182,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for FLUSHALL", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FLUSHALL command has all_shards policy
 			cmds, err := client.Command(ctx).Result()
@@ -1853,7 +2210,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for PING", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify PING command has all_shards policy
 			cmds, err := client.Command(ctx).Result()
@@ -1870,7 +2227,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test explicit routing policy for DBSIZE", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify DBSIZE command has all_shards policy with agg_sum response
 			cmds, err := client.Command(ctx).Result()
@@ -1902,7 +2259,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test DDL commands routing policy for FT.CREATE", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FT.CREATE command routing policy
 			cmds, err := client.Command(ctx).Result()
@@ -1941,7 +2298,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should test DDL commands routing policy for FT.ALTER", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Verify FT.ALTER command routing policy
 			cmds, err := client.Command(ctx).Result()
@@ -1979,7 +2336,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should route keyed commands to correct shard based on hash slot", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2055,7 +2412,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should aggregate responses according to explicit aggregation policies", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2216,7 +2573,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should verify command aggregation policies", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			cmds, err := client.Command(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -2246,7 +2603,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should properly aggregate responses from keyless commands executed on multiple shards", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2322,7 +2679,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should properly aggregate responses from keyed commands executed on multiple shards", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 			type masterNode struct {
 				client *redis.Client
 				addr   string
@@ -2418,7 +2775,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should propagate coordinator errors to client without modification", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			type masterNode struct {
 				client *redis.Client
@@ -2545,7 +2902,7 @@ var _ = Describe("Command Tips tests", func() {
 
 		Describe("Routing Policies Comprehensive Test Suite", func() {
 			It("should test MGET command with multi-slot routing and key order preservation", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up test data across multiple shards
 				testData := map[string]string{
@@ -2590,7 +2947,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET with non-existent keys across multiple shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up some keys
 				Expect(client.Set(ctx, "mget_exists_1111", "value1", 0).Err()).NotTo(HaveOccurred())
@@ -2618,7 +2975,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test TOUCH command with multi-slot routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up keys across multiple shards
 				keys := []string{
@@ -2648,7 +3005,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DEL command with multi-slot routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set up keys across multiple shards
 				keys := []string{
@@ -2683,7 +3040,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DBSIZE command with agg_sum aggregation across all shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Set keys across multiple shards
 				keys := []string{
@@ -2709,7 +3066,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test PING command with all_shards routing", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// PING should be sent to all shards and return one successful response
 				result := client.Ping(ctx)
@@ -2718,7 +3075,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET with single shard optimization", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Use hash tags to ensure all keys are on the same shard
 				keys := []string{
@@ -2750,7 +3107,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test empty MGET command returns error", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// MGET with no keys should return an error
 				result := client.MGet(ctx)
@@ -2759,7 +3116,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test MGET integration with MSET across multiple shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create test data
 				testData := map[string]string{
@@ -2801,7 +3158,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test multi-shard commands cannot be used in pipeline", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create keys across multiple shards
 				keys := []string{
@@ -2827,7 +3184,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test DisableRoutingPolicies option disables routing policies", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Test 1: With routing policies enabled (default), MGET should work across slots
 				testData := map[string]string{
@@ -2872,7 +3229,7 @@ var _ = Describe("Command Tips tests", func() {
 			})
 
 			It("should test large MGET with many keys across all shards", func() {
-				SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+				SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 				// Create many keys to ensure coverage across all shards
 				numKeys := 100
@@ -2909,7 +3266,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should route keyless commands to arbitrary shards using round robin", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			var numMasters int
 			var numMastersMu sync.Mutex
@@ -3170,7 +3527,7 @@ var _ = Describe("Command Tips tests", func() {
 		})
 
 		It("should distribute keyless commands randomly across shards using random shard picker", func() {
-			SkipBeforeRedisVersion(7.9, "The tips are included from Redis 8")
+			SkipBeforeRedisVersion("7.9", "The tips are included from Redis 8")
 
 			// Create a cluster client with random shard picker
 			opt := redisClusterOptions()

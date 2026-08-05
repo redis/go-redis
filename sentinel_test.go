@@ -44,7 +44,10 @@ var _ = Describe("Sentinel PROTO 2", func() {
 
 var _ = Describe("Sentinel resolution", func() {
 	It("should resolve master without context exhaustion", func() {
-		shortCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		// Wide enough for a loaded CI runner (sentinel query + master dial +
+		// handshake over docker networking routinely needs >500ms there),
+		// while still far below the retry-storm exhaustion this test pins.
+		shortCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
 
 		client := redis.NewFailoverClient(&redis.FailoverOptions{
