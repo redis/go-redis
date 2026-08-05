@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
@@ -377,7 +378,15 @@ var _ MultiDBCtrl = (*MultiDBClient)(nil)
 // See the Active-Active client design for details.
 type MultiDBClient struct {
 	cmdable
+	hooksMixin
+
 	core *multidbCore
+
+	// Cached autopipeliner instances, mirroring *Client (see Client.AutoPipeline).
+	autopipelinerMu     *sync.Mutex
+	autopipeliner       *AutoPipeliner
+	asyncAutopipeliner  *AutoPipeliner
+	autopipelinerClosed bool
 }
 
 // NewMultiDBClient creates a MultiDBClient for the configured member
@@ -435,21 +444,45 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 	core.startBackgroundLoop()
 
-	c := &MultiDBClient{core: core}
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
 	c.cmdable = c.Process
+	c.initHooks(hooks{
+		process:    core.process,
+		pipeline:   core.processPipeline,
+		txPipeline: core.processTxPipeline,
+	})
 	return c, nil
 }
 
 // Process routes the command to the active database, feeding the circuit
 // breaker and failure detector, and retrying against the newly selected
-// database after a failover.
+// database after a failover. MultiDB-level hooks (AddHook) wrap this path.
 func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.core.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
-// Close stops the background loop and closes every underlying client.
+// Close stops the autopipeliners, the background loop, and every underlying
+// client.
 func (c *MultiDBClient) Close() error {
-	return c.core.close()
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerClosed = true
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.core.close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // ActiveIndex implements MultiDBCtrl.
