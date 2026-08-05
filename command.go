@@ -384,6 +384,10 @@ type baseCmd struct {
 	// other point in the command's life.
 	slotCache uint16
 
+	// noRetry marks the command as never-retryable (see NoRetry). It is set
+	// before the command is handed to an execution path, never concurrently.
+	noRetry bool
+
 	// ready, when non-nil, is the batch whose done channel closes once the
 	// command has executed. It is set only by the deferred (async)
 	// autopipeliner, which hands the command back to the caller before it
@@ -568,7 +572,14 @@ func (cmd *baseCmd) readRawReply(rd *proto.Reader) (err error) {
 // io.Writer (like RawWriteToCmd) should override this to return true since
 // partial writes cannot be undone on retry.
 func (cmd *baseCmd) NoRetry() bool {
-	return false
+	return cmd.noRetry
+}
+
+// setNoRetry marks the command as never-retryable, e.g. the synthetic MULTI
+// of a MultiDB transaction whose batch must not be replayed by the member
+// client's retry loop.
+func (cmd *baseCmd) setNoRetry(v bool) {
+	cmd.noRetry = v
 }
 
 func (cmd *baseCmd) GetCmdType() CmdType {
@@ -595,6 +606,7 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		noRetry:      cmd.noRetry,
 	}
 }
 
