@@ -434,6 +434,138 @@ func TestIsReadOnlyErrorWithLuaScriptErrors(t *testing.T) {
 	}
 }
 
+// TestNewErrorConstructors tests that the New*Error constructors preserve the
+// message and produce errors that are detected by their matching helper.
+func TestNewErrorConstructors(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		msg       string
+		checkFunc func(error) bool
+	}{
+		{"NewLoadingError", NewLoadingError("LOADING Redis is loading"), "LOADING Redis is loading", IsLoadingError},
+		{"NewReadOnlyError", NewReadOnlyError("READONLY You can't write"), "READONLY You can't write", IsReadOnlyError},
+		{"NewClusterDownError", NewClusterDownError("CLUSTERDOWN The cluster is down"), "CLUSTERDOWN The cluster is down", IsClusterDownError},
+		{"NewTryAgainError", NewTryAgainError("TRYAGAIN try again"), "TRYAGAIN try again", IsTryAgainError},
+		{"NewMasterDownError", NewMasterDownError("MASTERDOWN master down"), "MASTERDOWN master down", IsMasterDownError},
+		{"NewMaxClientsError", NewMaxClientsError("ERR max number of clients reached"), "ERR max number of clients reached", IsMaxClientsError},
+		{"NewAuthError", NewAuthError("NOAUTH Authentication required"), "NOAUTH Authentication required", IsAuthError},
+		{"NewPermissionError", NewPermissionError("NOPERM no permission"), "NOPERM no permission", IsPermissionError},
+		{"NewExecAbortError", NewExecAbortError("EXECABORT Transaction discarded"), "EXECABORT Transaction discarded", IsExecAbortError},
+		{"NewOOMError", NewOOMError("OOM out of memory"), "OOM out of memory", IsOOMError},
+		{"NewNoReplicasError", NewNoReplicasError("NOREPLICAS not enough replicas"), "NOREPLICAS not enough replicas", IsNoReplicasError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.err.Error() != tt.msg {
+				t.Errorf("Error() = %q, want %q", tt.err.Error(), tt.msg)
+			}
+			if !tt.checkFunc(tt.err) {
+				t.Errorf("Helper function did not detect constructed error %q", tt.msg)
+			}
+		})
+	}
+
+	// MOVED/ASK constructors also carry the target address.
+	m := NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381")
+	if m.Error() != "MOVED 3999 127.0.0.1:6381" || m.Addr() != "127.0.0.1:6381" {
+		t.Errorf("NewMovedError: Error() = %q, Addr() = %q", m.Error(), m.Addr())
+	}
+	a := NewAskError("ASK 3999 127.0.0.1:6382", "127.0.0.1:6382")
+	if a.Error() != "ASK 3999 127.0.0.1:6382" || a.Addr() != "127.0.0.1:6382" {
+		t.Errorf("NewAskError: Error() = %q, Addr() = %q", a.Error(), a.Addr())
+	}
+}
+
+// TestExtractAddrWithoutSpace tests that extractAddr returns an empty string
+// for a message without any space (nothing to extract).
+func TestExtractAddrWithoutSpace(t *testing.T) {
+	if got := extractAddr("MOVED"); got != "" {
+		t.Errorf("extractAddr(%q) = %q, want empty string", "MOVED", got)
+	}
+}
+
+// TestErrorCheckersWithNilError tests that all error check helpers return false for nil errors
+func TestErrorCheckersWithNilError(t *testing.T) {
+	predicates := []struct {
+		name string
+		fn   func(error) bool
+	}{
+		{"IsLoadingError", IsLoadingError},
+		{"IsReadOnlyError", IsReadOnlyError},
+		{"IsClusterDownError", IsClusterDownError},
+		{"IsTryAgainError", IsTryAgainError},
+		{"IsMasterDownError", IsMasterDownError},
+		{"IsMaxClientsError", IsMaxClientsError},
+		{"IsAuthError", IsAuthError},
+		{"IsPermissionError", IsPermissionError},
+		{"IsExecAbortError", IsExecAbortError},
+		{"IsOOMError", IsOOMError},
+		{"IsNoReplicasError", IsNoReplicasError},
+	}
+
+	for _, tt := range predicates {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.fn(nil) {
+				t.Errorf("%s(nil) = true, want false", tt.name)
+			}
+		})
+	}
+
+	if _, ok := IsMovedError(nil); ok {
+		t.Error("IsMovedError(nil) = true, want false")
+	}
+	if _, ok := IsAskError(nil); ok {
+		t.Error("IsAskError(nil) = true, want false")
+	}
+}
+
+// TestErrorCheckersWithPlainRedisError tests that the error check helpers also
+// match plain RedisError string errors (not the typed errors).
+func TestErrorCheckersWithPlainRedisError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		checkFunc func(error) bool
+	}{
+		{"LOADING", RedisError("LOADING Redis is loading"), IsLoadingError},
+		{"READONLY", RedisError("READONLY You can't write"), IsReadOnlyError},
+		{"CLUSTERDOWN", RedisError("CLUSTERDOWN The cluster is down"), IsClusterDownError},
+		{"TRYAGAIN", RedisError("TRYAGAIN try again"), IsTryAgainError},
+		{"MASTERDOWN", RedisError("MASTERDOWN master down"), IsMasterDownError},
+		{"Max clients", RedisError("ERR max number of clients reached"), IsMaxClientsError},
+		{"NOAUTH", RedisError("NOAUTH Authentication required"), IsAuthError},
+		{"WRONGPASS", RedisError("WRONGPASS invalid password"), IsAuthError},
+		{"NOPERM", RedisError("NOPERM no permission"), IsPermissionError},
+		{"EXECABORT", RedisError("EXECABORT Transaction discarded"), IsExecAbortError},
+		{"OOM", RedisError("OOM out of memory"), IsOOMError},
+		{"NOREPLICAS", RedisError("NOREPLICAS not enough replicas"), IsNoReplicasError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.checkFunc(tt.err) {
+				t.Errorf("Helper function did not match plain RedisError %q", tt.err.Error())
+			}
+		})
+	}
+
+	// MOVED/ASK plain string errors are parsed, including the address.
+	if m, ok := IsMovedError(RedisError("MOVED 3999 127.0.0.1:6381")); !ok || m.Addr() != "127.0.0.1:6381" {
+		t.Errorf("IsMovedError(plain string) = %v, %v", m, ok)
+	}
+	if _, ok := IsMovedError(RedisError("ERR something else")); ok {
+		t.Error("IsMovedError(non-MOVED plain string) = true, want false")
+	}
+	if a, ok := IsAskError(RedisError("ASK 3999 127.0.0.1:6381")); !ok || a.Addr() != "127.0.0.1:6381" {
+		t.Errorf("IsAskError(plain string) = %v, %v", a, ok)
+	}
+	if _, ok := IsAskError(RedisError("ERR something else")); ok {
+		t.Error("IsAskError(non-ASK plain string) = true, want false")
+	}
+}
+
 // TestBackwardCompatibility tests that error messages remain unchanged
 func TestBackwardCompatibility(t *testing.T) {
 	// This test ensures that the error messages are exactly the same as before
