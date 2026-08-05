@@ -53,6 +53,16 @@ func (db *multidbDatabase) closeClient() error {
 	return db.c.Close()
 }
 
+// selectable reports whether the database's circuit permits selecting it,
+// WITHOUT reserving a half-open probe slot. IsAllowed consumes one of the
+// breaker's bounded half-open requests, so it must only be called right
+// before actually executing a command; candidate snapshots, background
+// checks and failover re-checks use this instead, or repeated selections
+// would exhaust a recovering database's probe budget without ever probing it.
+func (db *multidbDatabase) selectable() bool {
+	return db.cb.CheckState() != imultidb.CircuitOpen
+}
+
 // probe runs the database's health checks under the configured policy,
 // bounded by HealthCheckTimeout, and feeds the result into the circuit
 // breaker and the OTel recorder.
@@ -252,7 +262,7 @@ func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
 		out = append(out, MultiDBDatabaseState{
 			Index:   i,
 			Weight:  db.weight,
-			Allowed: db.cb.IsAllowed(),
+			Allowed: db.selectable(),
 		})
 	}
 	return out
@@ -313,23 +323,26 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			cmd.SetErr(nil)
 		}
 		err := db.process(ctx, cmd)
-		if err == nil || isRedisReplyError(err) {
-			// A server reply — including error replies like WRONGTYPE and
-			// redis.Nil — proves the database is reachable and healthy.
+		switch classifyOutcome(err) {
+		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
 			return err
-		}
-		if !shouldRetry(err, true) {
-			// Client-side errors (context cancellation, deterministic local
-			// rejections) are not database-health signals: return them to
-			// the caller without recording a failure or failing over.
+		case outcomeNeutral:
+			// Not a database-health signal: return to the caller without
+			// recording a failure or failing over.
 			return err
+		case outcomeFailure:
+			db.cb.RecordFailure()
+			c.detector.RecordFailure(err)
+			lastErr = err
+			if cmd.NoRetry() {
+				// Commands that stream into caller-owned writers/buffers
+				// must never be replayed after a partial read: the failure
+				// is recorded, but the error goes straight to the caller.
+				return err
+			}
 		}
-
-		db.cb.RecordFailure()
-		c.detector.RecordFailure(err)
-		lastErr = err
 	}
 	return lastErr
 }
@@ -339,6 +352,42 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 func isRedisReplyError(err error) bool {
 	var redisErr proto.RedisError
 	return errors.As(err, &redisErr)
+}
+
+// outcomeKind classifies a command outcome for breaker/detector recording.
+type outcomeKind int
+
+const (
+	// outcomeSuccess proves the database served the request (including
+	// definitive error replies like WRONGTYPE or redis.Nil).
+	outcomeSuccess outcomeKind = iota
+	// outcomeFailure is an availability signal: transport-level failures and
+	// retryable server replies (LOADING, READONLY, CLUSTERDOWN, ...).
+	outcomeFailure
+	// outcomeNeutral is not a database-health signal at all: client-side
+	// errors (context cancellation, deterministic local rejections) and
+	// locally synthesized Redis errors such as ErrCrossSlot.
+	outcomeNeutral
+)
+
+// classifyOutcome decides how a command outcome feeds the circuit breaker
+// and the failure detector. Order matters: retryable server replies (LOADING,
+// READONLY, ...) are availability failures even though they are RedisErrors,
+// and locally synthesized RedisErrors (ErrCrossSlot) must not count as proof
+// of a healthy server because no round trip happened.
+func classifyOutcome(err error) outcomeKind {
+	switch {
+	case err == nil:
+		return outcomeSuccess
+	case shouldRetry(err, true):
+		return outcomeFailure
+	case errors.Is(err, ErrCrossSlot):
+		return outcomeNeutral
+	case isRedisReplyError(err):
+		return outcomeSuccess
+	default:
+		return outcomeNeutral
+	}
 }
 
 const (
@@ -357,7 +406,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 
 	// Re-check under the lock: a concurrent failover may already have fixed
 	// the active database.
-	if db, idx := c.activeSnapshot(); db != nil && idx != from && db.cb.IsAllowed() {
+	if db, idx := c.activeSnapshot(); db != nil && idx != from && db.selectable() {
 		return nil
 	}
 
@@ -464,6 +513,10 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
 			return ErrTargetUnhealthy
 		}
+		// The operator asked for this database and a fresh probe just passed:
+		// reset its breaker so a still-open circuit (recovered before the
+		// grace period elapsed) does not immediately fail the switch away.
+		db.cb.Reset()
 	}
 	from := int(c.active.Load())
 	if from == index {
@@ -580,7 +633,7 @@ func (c *multidbCore) startBackgroundLoop() {
 
 			// Background-driven failover: the active index must move even
 			// with no command traffic.
-			if db, idx := c.activeSnapshot(); db != nil && !db.cb.IsAllowed() {
+			if db, idx := c.activeSnapshot(); db != nil && !db.selectable() {
 				_ = c.tryFailover(ctx, idx)
 			}
 
@@ -610,8 +663,13 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 }
 
 // tryFallbackToPrimary switches back to a strictly-higher-weight database
-// whose circuit is closed again.
+// whose circuit is closed again. Selection and switch happen under
+// failoverMu so a concurrent RemoveDatabase (which also holds it) cannot
+// remove the selected member or shift the slice in between.
 func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+
 	active, idx := c.activeSnapshot()
 	if active == nil {
 		return
@@ -633,9 +691,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	if best < 0 {
 		return
 	}
-	c.failoverMu.Lock()
 	c.switchActive(ctx, idx, best, failoverReasonFallback, 0)
-	c.failoverMu.Unlock()
 }
 
 // newPubSub creates a PubSub whose connections always target the currently
