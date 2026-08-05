@@ -5084,7 +5084,7 @@ func NewGeoSearchLocationCmd(
 	return &GeoSearchLocationCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    geoSearchLocationArgs(opt, args),
+			args:    args,
 			cmdType: CmdTypeGeoSearchLocation,
 		},
 		opt: opt,
