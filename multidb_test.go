@@ -91,7 +91,8 @@ func (h *hookedDB) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Pro
 		h.commands.Add(int64(len(cmds)))
 		h.batches.Add(1)
 		if h.fail.Load() {
-			err := errors.New("hooked: " + h.name + " down")
+			// Wrap io.EOF so the failure classifies as a transport error.
+			err := fmt.Errorf("hooked: %s down: %w", h.name, io.EOF)
 			for _, cmd := range cmds {
 				cmd.SetErr(err)
 			}

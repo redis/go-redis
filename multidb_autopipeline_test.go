@@ -177,6 +177,60 @@ func TestMultiDBTxPipelineNotRetried(t *testing.T) {
 	}
 }
 
+func TestMultiDBTxPipelineRecordsOnlyUserCommands(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	det := &countingDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 100,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	db1.hook.fail.Store(true)
+	pipe := mdb.TxPipeline()
+	pipe.Set(ctx, "a", "1", 0)
+	_, _ = pipe.Exec(ctx)
+
+	// One user command — one failure record, not three (MULTI/EXEC excluded).
+	if got := det.failures.Load(); got != 1 {
+		t.Errorf("detector failures = %d, want 1 (synthetic MULTI/EXEC must not count)", got)
+	}
+}
+
+func TestMultiDBAutoPipelineRefusesClusterMembers(t *testing.T) {
+	standalone := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	clusterCheck := newFakeHealthCheck(true)
+
+	opts := baseOptions()
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+	opts.Clients = append(opts.Clients, standalone.cfg, redis.MultiDBClientConfig{
+		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
+		Weight:         1.0,
+		HealthChecks:   []redis.MultiDBHealthCheck{clusterCheck},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	if _, err := mdb.AutoPipeline(); err == nil {
+		t.Error("AutoPipeline with a cluster member should be refused")
+	}
+	if _, err := mdb.AsyncAutoPipeline(); err == nil {
+		t.Error("AsyncAutoPipeline with a cluster member should be refused")
+	}
+}
+
 func TestMultiDBAutoPipelineRoutesAndFailsOver(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
