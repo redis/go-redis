@@ -29,7 +29,7 @@ func TestPingHealthCheck(t *testing.T) {
 
 	t.Run("CheckHealth returns false for unreachable client", func(t *testing.T) {
 		client := redis.NewClient(&redis.Options{
-			Addr:        "localhost:59999", // unlikely to be running
+			Addr:        "localhost:0", // port 0: dial fails deterministically
 			DialTimeout: 100 * time.Millisecond,
 		})
 		defer client.Close()
@@ -49,7 +49,7 @@ func TestPingHealthCheck(t *testing.T) {
 		// healthy: CheckClusterHealth must return (false, err) rather than
 		// (true, nil) when no shard was actually pinged.
 		client := redis.NewClusterClient(&redis.ClusterOptions{
-			Addrs:       []string{"localhost:59999"},
+			Addrs:       []string{"localhost:0"},
 			DialTimeout: 100 * time.Millisecond,
 		})
 		defer client.Close()
@@ -372,6 +372,7 @@ func (c *configReturningCheck) Config() HealthCheckConfig { return c.cfg }
 func (c *configReturningCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
 	return true, nil
 }
+
 func (c *configReturningCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
 	return true, nil
 }
@@ -387,6 +388,7 @@ func (c *countingCheck) CheckHealth(context.Context, *redis.Client) (bool, error
 	c.calls++
 	return true, nil
 }
+
 func (c *countingCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
 	c.calls++
 	return true, nil
@@ -575,6 +577,7 @@ type panicHealthCheck struct{}
 func (panicHealthCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
 	panic("panicHealthCheck: boom")
 }
+
 func (panicHealthCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
 	panic("panicHealthCheck: boom")
 }

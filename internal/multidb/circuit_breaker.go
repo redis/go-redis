@@ -51,7 +51,19 @@ type CircuitBreaker struct {
 }
 
 // NewCircuitBreaker creates a new circuit breaker with the given configuration.
+// Zero-valued fields are replaced with their defaults before the config is
+// stored, so Config() always reports the values the breaker actually runs with.
 func NewCircuitBreaker(config CircuitBreakerConfig) *CircuitBreaker {
+	def := DefaultCircuitBreakerConfig()
+	if config.FailureThreshold <= 0 {
+		config.FailureThreshold = def.FailureThreshold
+	}
+	if config.SuccessThreshold <= 0 {
+		config.SuccessThreshold = def.SuccessThreshold
+	}
+	if config.GracePeriod <= 0 {
+		config.GracePeriod = def.GracePeriod
+	}
 	return &CircuitBreaker{
 		CircuitBreaker: circuitbreaker.New(circuitbreaker.Config{
 			FailureThreshold:    config.FailureThreshold,

@@ -85,8 +85,9 @@ func WithLagAwareBasicAuth(username, password string) LagAwareHealthCheckOption 
 
 // WithLagAwareTLSConfig sets a custom TLS configuration. The config is cloned so
 // later options (and the health check itself) never mutate the caller's value.
+// A nil config clears any previously set TLS configuration.
 func WithLagAwareTLSConfig(cfg *tls.Config) LagAwareHealthCheckOption {
-	return func(h *LagAwareHealthCheck) { h.tlsConfig = cfg.Clone() }
+	return func(h *LagAwareHealthCheck) { h.tlsConfig = cfg.Clone() } // Clone(nil) returns nil
 }
 
 // WithLagAwareInsecureSkipVerify disables TLS certificate verification.
