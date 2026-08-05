@@ -310,11 +310,13 @@ func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
 func (c *multidbCore) activeIndex() int { return int(c.active.Load()) }
 
 // activeSnapshot returns the active database, or nil when none is selected or
-// the index is stale after a removal.
+// the index is stale after a removal. The index is loaded under dbMu so it is
+// coherent with the slice: RemoveDatabase shifts both under the write lock,
+// and reading the index first could otherwise resolve to a shifted neighbor.
 func (c *multidbCore) activeSnapshot() (*multidbDatabase, int) {
-	idx := int(c.active.Load())
 	c.dbMu.RLock()
 	defer c.dbMu.RUnlock()
+	idx := int(c.active.Load())
 	if idx < 0 || idx >= len(c.dbs) {
 		return nil, idx
 	}
@@ -340,9 +342,14 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		return ErrClosed
 	}
 	attempts := c.opts.CommandRetries + 1
+	// Blocking commands (BLPOP, XREAD BLOCK, WAIT, ...) carry their own read
+	// timeout; a local read deadline on those must not be retried because
+	// replaying can duplicate blocking side effects — same rule as *Client.
+	retryTimeout := cmd.readTimeout() == nil
 	var lastErr error
 
-	for attempt := 0; attempt < attempts; attempt++ {
+	attempt := 0
+	for attempt < attempts {
 		if err := ctx.Err(); err != nil {
 			cmd.SetErr(err)
 			return err
@@ -354,10 +361,10 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				cmd.SetErr(err)
 				return err
 			}
-			db, _ = c.activeSnapshot()
-			if db == nil {
-				continue
-			}
+			// Re-enter the gate on the newly selected database: its breaker
+			// may be half-open and IsAllowed above is what reserves the
+			// probe slot. Re-gating does not consume a retry attempt.
+			continue
 		}
 
 		if attempt > 0 {
@@ -365,8 +372,9 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// not leave the command in a stale error state.
 			cmd.SetErr(nil)
 		}
+		attempt++
 		err := db.process(ctx, cmd)
-		switch classifyOutcome(err) {
+		switch classifyOutcome(err, retryTimeout) {
 		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
@@ -420,12 +428,14 @@ const (
 // and the failure detector. Order matters: retryable server replies (LOADING,
 // READONLY, ...) are availability failures even though they are RedisErrors,
 // and locally synthesized RedisErrors (ErrCrossSlot) must not count as proof
-// of a healthy server because no round trip happened.
-func classifyOutcome(err error) outcomeKind {
+// of a healthy server because no round trip happened. retryTimeout mirrors
+// the *Client rule: false for commands with their own read timeout, whose
+// local deadlines must not be treated as retryable failures.
+func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 	switch {
 	case err == nil:
 		return outcomeSuccess
-	case shouldRetry(err, true):
+	case shouldRetry(err, retryTimeout):
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
 		return outcomeNeutral
@@ -448,7 +458,15 @@ const (
 // double-count.
 func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
+	// announce runs AFTER the unlock: user callbacks may call control APIs
+	// that take failoverMu themselves.
+	var announce func()
+	defer func() {
+		c.failoverMu.Unlock()
+		if announce != nil {
+			announce()
+		}
+	}()
 
 	// Re-check under the lock: a concurrent failover may already have fixed
 	// the active database.
@@ -472,7 +490,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			}
 		}
 		c.failoverAttempts = 0
-		c.switchActive(ctx, from, best, failoverReasonAutomatic, time.Since(start))
+		announce = c.switchActive(ctx, from, best, failoverReasonAutomatic, time.Since(start))
 		c.detector.Reset()
 		return nil
 	}
@@ -508,10 +526,13 @@ func (c *multidbCore) recordFailedFailoverLocked() error {
 // switchActive is the single transition point for every active-index change:
 // automatic failover, auto-fallback and manual selection all funnel through
 // it, so callbacks, metrics and PubSub notifications fire exactly once per
-// real change.
-func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason string, took time.Duration) bool {
+// real change. It returns a non-nil announce closure when the switch
+// happened; callers MUST invoke it AFTER releasing failoverMu — user
+// callbacks may re-enter control APIs (SetActiveIndex, RemoveDatabase, ...)
+// that take the same lock, and invoking them under it would self-deadlock.
+func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason string, took time.Duration) (announce func()) {
 	if !c.active.CompareAndSwap(int32(from), int32(to)) {
-		return false
+		return nil
 	}
 
 	fromFQDN, toFQDN := "", ""
@@ -525,18 +546,19 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	internal.Logger.Printf(ctx, "multidb: active database changed %d (%s) -> %d (%s), reason=%s",
 		from, fromFQDN, to, toFQDN, reason)
 
-	otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
-	if reason == failoverReasonAutomatic || reason == failoverReasonManual {
-		otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
-		if c.opts.OnFailover != nil {
-			c.opts.OnFailover(ctx, from, to)
+	return func() {
+		otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
+		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
+			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
+			if c.opts.OnFailover != nil {
+				c.opts.OnFailover(ctx, from, to)
+			}
 		}
+		if c.opts.OnActiveDatabaseChanged != nil {
+			c.opts.OnActiveDatabaseChanged(from, to)
+		}
+		c.notifyPubSubs(ctx)
 	}
-	if c.opts.OnActiveDatabaseChanged != nil {
-		c.opts.OnActiveDatabaseChanged(from, to)
-	}
-	c.notifyPubSubs(ctx)
-	return true
 }
 
 // setActiveIndex implements manual failover. With probe=true it is the safe
@@ -548,7 +570,13 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	// database cannot be removed and the slice cannot shift between the probe
 	// and the switch. The probe is bounded by HealthCheckTimeout.
 	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
+	var announce func()
+	defer func() {
+		c.failoverMu.Unlock()
+		if announce != nil {
+			announce()
+		}
+	}()
 
 	db := c.dbAt(index)
 	if db == nil {
@@ -566,16 +594,18 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	// fail the switch away; a genuinely dead forced target re-opens it
 	// organically on the next failures.
 	db.cb.Reset()
+	// A fresh detector window as well: after an explicit operator selection
+	// a previously tripped detector must not immediately fail away — also
+	// when the selected database is already the active one.
+	c.detector.Reset()
 	from := int(c.active.Load())
 	if from == index {
 		return nil
 	}
 	c.failoverAttempts = 0
-	if !c.switchActive(ctx, from, index, failoverReasonManual, time.Since(start)) {
+	if announce = c.switchActive(ctx, from, index, failoverReasonManual, time.Since(start)); announce == nil {
 		return errors.New("redis: multidb: active database changed concurrently, retry")
 	}
-	// A fresh window on the new database, same as automatic failover.
-	c.detector.Reset()
 	return nil
 }
 
@@ -589,8 +619,15 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	}
 	// The initial probe result never blocks membership; it only seeds the
 	// circuit breaker (and is skipped entirely with SkipInitialHealthCheck).
+	// A failed probe opens the breaker outright — one recorded failure would
+	// leave the member selectable under the default threshold, letting
+	// failover pick a database already known to be down.
 	if !cfg.SkipInitialHealthCheck {
-		db.probe(ctx, c.opts.HealthCheckTimeout)
+		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
+			for f := 0; f < db.cb.Config().FailureThreshold; f++ {
+				db.cb.RecordFailure()
+			}
+		}
 	}
 	c.dbMu.Lock()
 	c.dbs = append(c.dbs, db)
@@ -716,7 +753,13 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 // remove the selected member or shift the slice in between.
 func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
+	var announce func()
+	defer func() {
+		c.failoverMu.Unlock()
+		if announce != nil {
+			announce()
+		}
+	}()
 
 	active, idx := c.activeSnapshot()
 	if active == nil {
@@ -739,7 +782,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	if best < 0 {
 		return
 	}
-	c.switchActive(ctx, idx, best, failoverReasonFallback, 0)
+	announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0)
 }
 
 // newPubSub creates a PubSub whose connections always target the currently
@@ -882,11 +925,17 @@ func (defaultPingHealthCheck) CheckHealth(ctx context.Context, client *Client) (
 }
 
 func (defaultPingHealthCheck) CheckClusterHealth(ctx context.Context, client *ClusterClient) (bool, error) {
+	var shards atomic.Int32
 	err := client.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
+		shards.Add(1)
 		return shard.Ping(ctx).Err()
 	})
 	if err != nil {
 		return false, err
+	}
+	if shards.Load() == 0 {
+		// An empty topology pinged nothing: that is not proof of health.
+		return false, errors.New("redis: multidb: cluster reported no shards to health-check")
 	}
 	return true, nil
 }

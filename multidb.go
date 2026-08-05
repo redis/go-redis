@@ -149,7 +149,11 @@ type MultiDBOptions struct {
 	// HealthCheckInterval is the cadence of the background health checks.
 	// Default: 5s.
 	HealthCheckInterval time.Duration
-	// HealthCheckTimeout bounds one health-check pass against one database.
+	// HealthCheckTimeout bounds one health-check pass against one database
+	// via the probe context. Note that with the default PING check the
+	// member client applies its own dial/read/write timeouts to the socket
+	// unless ContextTimeoutEnabled is set on the member options — enable it
+	// there when the probe deadline must also cut socket waits short.
 	// Default: 3s; clamped to HealthCheckInterval/2 when >= interval.
 	HealthCheckTimeout time.Duration
 	// HealthChecks run against every database (see MultiDBClientConfig.HealthChecks
