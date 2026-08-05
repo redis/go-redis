@@ -3,6 +3,7 @@ package redis_test
 import (
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,6 +127,30 @@ func TestMultiDBPipelinePerCommandRecording(t *testing.T) {
 	_, _ = pipe.Exec(ctx)
 	if got := det.successes.Load(); got != 3 {
 		t.Errorf("detector successes = %d, want 3", got)
+	}
+}
+
+func TestMultiDBPipelineNoRetryCommandDisablesRetry(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 3 // must be ignored when the batch has a NoRetry command
+	opts.CircuitBreakerConfig = fastBreaker()
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	db1.hook.fail.Store(true)
+
+	pipe := mdb.Pipeline()
+	pipe.Get(ctx, "k")
+	_ = pipe.Process(ctx, redis.NewRawWriteToCmd(ctx, io.Discard, "get", "k"))
+	_, err := pipe.Exec(ctx)
+	if err == nil {
+		t.Fatal("batch with a NoRetry command should surface the failure, not retry")
+	}
+	if db2.hook.batches.Load() != 0 {
+		t.Error("batch containing a NoRetry command was retried on db2")
 	}
 }
 
