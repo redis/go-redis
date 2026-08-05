@@ -38,6 +38,47 @@ type multidbDatabase struct {
 
 	checks []MultiDBHealthCheck
 	policy MultiDBHealthCheckPolicy
+
+	// cbq delivers user circuit-state callbacks asynchronously (FIFO).
+	cbq callbackQueue
+}
+
+// callbackQueue runs user callbacks on their own goroutine, in FIFO order.
+// Breaker state changes fire deep inside locked sections (failoverMu is held
+// during manual selection, pre-failover probes and AddDatabase probes);
+// invoking a user callback there would self-deadlock the moment the callback
+// touches a control API that takes the same lock.
+type callbackQueue struct {
+	mu       sync.Mutex
+	queue    []func()
+	draining bool
+}
+
+func (q *callbackQueue) dispatch(fn func()) {
+	q.mu.Lock()
+	q.queue = append(q.queue, fn)
+	if q.draining {
+		q.mu.Unlock()
+		return
+	}
+	q.draining = true
+	q.mu.Unlock()
+	go q.drain()
+}
+
+func (q *callbackQueue) drain() {
+	for {
+		q.mu.Lock()
+		if len(q.queue) == 0 {
+			q.draining = false
+			q.mu.Unlock()
+			return
+		}
+		fn := q.queue[0]
+		q.queue = q.queue[1:]
+		q.mu.Unlock()
+		fn()
+	}
 }
 
 func (db *multidbDatabase) process(ctx context.Context, cmd Cmder) error {
@@ -67,8 +108,8 @@ func (db *multidbDatabase) selectable() bool {
 // probe runs the database's health checks under the configured policy,
 // bounded by HealthCheckTimeout, and feeds the result into the circuit
 // breaker and the OTel recorder.
-func (db *multidbDatabase) probe(ctx context.Context, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	start := time.Now()
@@ -77,6 +118,14 @@ func (db *multidbDatabase) probe(ctx context.Context, timeout time.Duration) boo
 		healthy = db.policy.ExecuteCluster(ctx, db.checks, db.cc)
 	} else {
 		healthy = db.policy.Execute(ctx, db.checks, db.c)
+	}
+
+	if !healthy && parent.Err() != nil {
+		// The caller's own context was canceled or expired mid-probe: the
+		// failure says nothing about the database. Record nothing on the
+		// breaker — mirroring the command path's neutral outcome — but still
+		// report unhealthy so callers do not treat it as a pass.
+		return false
 	}
 
 	// CheckState first so an Open circuit past its grace period transitions
@@ -199,7 +248,12 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		otel.RecordMultiDBCircuitStateChange(context.Background(), dbRef.fqdn,
 			oldState.String(), newState.String())
 		if stateCallback != nil {
-			stateCallback(int(dbRef.idx.Load()), oldState.String(), newState.String())
+			// Deliver asynchronously (FIFO per database): state changes fire
+			// under internal locks, and a callback that calls a control API
+			// would otherwise self-deadlock.
+			idx := int(dbRef.idx.Load())
+			from, to := oldState.String(), newState.String()
+			dbRef.cbq.dispatch(func() { stateCallback(idx, from, to) })
 		}
 	})
 
@@ -479,6 +533,18 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	for {
 		best := c.strategy.Select(cands)
 		if best < 0 {
+			// No alternate candidate. If the active database itself is fully
+			// available again (health checks closed its breaker after the
+			// failure burst that tripped the detector), stay on it and clear
+			// the tripped state: escalating here would strand the client in
+			// *NotAvailable forever, because no command can succeed to reset
+			// the detector. Closed only — a half-open breaker must keep being
+			// escalated or the gate would spin on exhausted probe slots.
+			if db := c.dbAt(from); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
+				c.failoverAttempts = 0
+				c.detector.Reset()
+				return nil
+			}
 			return c.recordFailedFailoverLocked()
 		}
 		if c.opts.ProbeTargetBeforeFailover {
@@ -565,6 +631,12 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 // probe-then-switch path (SetActiveIndex); with probe=false it is the
 // unconditional operator override (ForceActiveIndex).
 func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool) error {
+	// An already-done context must not reach the probe below: a probe that
+	// fails only because the caller's context ended would otherwise record
+	// breaker failures against a perfectly healthy target.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Hold failoverMu across the whole operation — lookup, probe and switch.
 	// Membership changes (RemoveDatabase) also serialize on it, so the probed
 	// database cannot be removed and the slice cannot shift between the probe
@@ -585,6 +657,11 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	start := time.Now()
 	if probe {
 		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
+			if err := ctx.Err(); err != nil {
+				// The context ended mid-probe: report the caller's error,
+				// not a verdict about the target's health.
+				return err
+			}
 			return ErrTargetUnhealthy
 		}
 	}
@@ -613,10 +690,28 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	if err := cfg.validate(); err != nil {
 		return -1, err
 	}
+	if c.closed.Load() {
+		return -1, ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return -1, err
+	}
 	db, err := c.buildDatabase(&cfg)
 	if err != nil {
 		return -1, err
 	}
+	// Serialize with the other membership paths (RemoveDatabase, manual
+	// failover), which also hold failoverMu: the new member's index is then
+	// stable before the initial probe runs, so breaker state-change
+	// callbacks fired by the probe report the real index instead of 0.
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+
+	c.dbMu.RLock()
+	idx := len(c.dbs)
+	c.dbMu.RUnlock()
+	db.idx.Store(int32(idx))
+
 	// The initial probe result never blocks membership; it only seeds the
 	// circuit breaker (and is skipped entirely with SkipInitialHealthCheck).
 	// A failed probe opens the breaker outright — one recorded failure would
@@ -624,15 +719,29 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// failover pick a database already known to be down.
 	if !cfg.SkipInitialHealthCheck {
 		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
+			if err := ctx.Err(); err != nil {
+				// The caller's context ended mid-probe: no health signal.
+				// Fail the call rather than registering a member whose
+				// state is unknown.
+				_ = db.closeClient()
+				return -1, err
+			}
 			for f := 0; f < db.cb.Config().FailureThreshold; f++ {
 				db.cb.RecordFailure()
 			}
 		}
 	}
+
 	c.dbMu.Lock()
+	if c.closed.Load() {
+		// Close ran while the member was being prepared: closeAll has
+		// already drained c.dbs, so appending here would leak the client
+		// (nothing would ever close it).
+		c.dbMu.Unlock()
+		_ = db.closeClient()
+		return -1, ErrClosed
+	}
 	c.dbs = append(c.dbs, db)
-	idx := len(c.dbs) - 1
-	db.idx.Store(int32(idx))
 	c.dbMu.Unlock()
 	return idx, nil
 }
@@ -797,6 +906,12 @@ func (c *multidbCore) newPubSub() *PubSub {
 
 	pubsub := &PubSub{
 		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
+			if c.closed.Load() {
+				// ErrClosed (== pool.ErrClosed) is the only error the PubSub
+				// channel loop treats as terminal; anything else would make
+				// a post-close subscription retry forever.
+				return nil, ErrClosed
+			}
 			db, _ := c.activeSnapshot()
 			if db == nil {
 				return nil, ErrTemporarilyNotAvailable

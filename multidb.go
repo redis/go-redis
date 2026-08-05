@@ -213,7 +213,10 @@ type MultiDBOptions struct {
 	// including auto-fallback.
 	OnActiveDatabaseChanged func(from, to int)
 	// OnCircuitStateChanged is called when any database's circuit breaker
-	// changes state ("closed", "open", "half-open").
+	// changes state ("closed", "open", "half-open"). It is delivered
+	// asynchronously (FIFO per database), so it is safe to call control APIs
+	// (SetActiveIndex, RemoveDatabase, ...) from the callback; do not rely
+	// on it running synchronously with the transition that triggered it.
 	OnCircuitStateChanged func(dbIndex int, from, to string)
 }
 
@@ -375,6 +378,14 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	if opts == nil {
 		return nil, errors.New("redis: multidb: nil options")
 	}
+	// Work on a private copy: init() normalizes fields in place, and writing
+	// them back into the caller's value would leak into other clients built
+	// from the same options (e.g. CommandRetriesNone normalizes to 0, which
+	// a second construction would then treat as "unset" and default to 2 —
+	// re-enabling retries for a running client that reads the shared struct).
+	private := *opts
+	private.Clients = append([]MultiDBClientConfig(nil), opts.Clients...)
+	opts = &private
 	if err := opts.init(); err != nil {
 		return nil, err
 	}
