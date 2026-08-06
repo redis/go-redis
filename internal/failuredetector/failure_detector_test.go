@@ -145,6 +145,33 @@ func TestCommandFailureDetector_IgnoresPoolSaturation(t *testing.T) {
 	}
 }
 
+func TestCommandFailureDetector_TreatsTxFailedAsSuccess(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// An optimistic-locking abort (WATCH saw a concurrent write) is a
+	// well-formed server reply: contended workloads must not trip failover.
+	txFailed := proto.RedisError("redis: transaction failed")
+	for i := 0; i < 10; i++ {
+		fd.RecordFailure(txFailed)
+	}
+
+	successes, failures := fd.Stats()
+	if failures != 0 {
+		t.Errorf("expected 0 failures for tx aborts, got %d", failures)
+	}
+	if successes != 10 {
+		t.Errorf("expected tx aborts to count as success, got %d", successes)
+	}
+	if fd.ShouldFailover() {
+		t.Error("should not failover on optimistic-locking contention")
+	}
+}
+
 func TestCommandFailureDetector_TreatsRedisNilAsSuccess(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         1,

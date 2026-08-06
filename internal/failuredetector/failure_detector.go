@@ -13,6 +13,11 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
+// txFailedErr mirrors redis.TxFailedErr (the root package cannot be imported
+// from internal packages): the sentinel Exec returns when WATCH detected a
+// concurrent write.
+const txFailedErr = proto.RedisError("redis: transaction failed")
+
 // FailureDetector decides when failover should be triggered based on a stream
 // of command outcomes observed by the caller.
 type FailureDetector interface {
@@ -181,10 +186,11 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		// client must not drive failover.
 		return
 	}
-	if errors.Is(err, proto.Nil) {
-		// redis.Nil is a well-formed server reply (key missing) — proof of a
-		// healthy database. Count it as a success so miss-heavy workloads
-		// cannot trip the failure rate.
+	if errors.Is(err, proto.Nil) || errors.Is(err, txFailedErr) {
+		// redis.Nil (key missing) and an optimistic-locking transaction
+		// abort are well-formed server replies — proof of a healthy
+		// database. Count them as successes so miss-heavy or contended
+		// workloads cannot trip the failure rate.
 		d.bucketFor(d.now().UnixNano()).successes.Add(1)
 		return
 	}
