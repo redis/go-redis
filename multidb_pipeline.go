@@ -32,11 +32,18 @@ func resetCmds(cmds []Cmder) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder) int {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error) int {
 	transportFailures := 0
 	recorded := 0
 	for _, cmd := range cmds {
 		err := cmd.rawErr()
+		if err == nil {
+			// An unstamped command in a failed batch (e.g. a member hook
+			// aborting before execution): nil rawErr is no proof the server
+			// answered. Classify the batch-level error instead — a local
+			// abort then records nothing rather than phantom successes.
+			err = batchErr
+		}
 		// Pipelines mirror the plain pipeline retry rule (shouldRetry with
 		// retryTimeout=true), matching *Client/*ClusterClient batch paths.
 		switch classifyOutcome(err, true) {
@@ -89,12 +96,20 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	attempt := 0
 	for attempt < attempts {
 		if err := ctx.Err(); err != nil {
+			// Overwrite any prior attempt's transport errors: callers that
+			// inspect per-command results must see the context error, not a
+			// stale EOF from the failed attempt (setCmdsErr fills only
+			// empty slots).
+			resetCmds(cmds)
 			setCmdsErr(cmds, err)
 			return err
 		}
 
+		// Detector before IsAllowed: IsAllowed reserves a bounded half-open
+		// probe slot, and a tripped detector routes to failover without
+		// executing the batch — the reservation would leak.
 		db, idx := c.activeSnapshot()
-		if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
+		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
 			if err := c.tryFailover(ctx, idx); err != nil {
 				// Overwrite any prior attempt's transport errors so callers
 				// see the availability error, not a stale EOF (setCmdsErr
@@ -115,7 +130,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		}
 		attempt++
 		err := db.processPipelineHook(ctx, cmds)
-		transportFailures := c.recordBatchOutcomes(db, cmds)
+		transportFailures := c.recordBatchOutcomes(db, cmds, err)
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
@@ -147,8 +162,10 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		setCmdsErr(cmds, err)
 		return err
 	}
+	// Detector before IsAllowed, as in the other gates: a tripped detector
+	// routes to failover, and a probe slot reserved on the way out would leak.
 	db, idx := c.activeSnapshot()
-	if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
+	if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
 		if err := c.tryFailover(ctx, idx); err != nil {
 			resetCmds(cmds)
 			setCmdsErr(cmds, err)
@@ -175,7 +192,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) >= 3 {
 		user = cmds[1 : len(cmds)-1]
 	}
-	c.recordBatchOutcomes(db, user)
+	c.recordBatchOutcomes(db, user, err)
 	return err
 }
 
@@ -246,10 +263,14 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 			// Suppress the member client's own retry loop for the wrapped
 			// batch (cmdsContainNoRetry): EXEC may have committed before a
 			// transport error surfaced, and at-most-once must hold for the
-			// whole stack, not only the MultiDB retry layer. The marker
-			// rides on the synthetic MULTI so user commands stay untouched.
-			if multi, ok := cmds[0].(*StatusCmd); ok {
-				multi.setNoRetry(true)
+			// whole stack, not only the MultiDB retry layer. Every command
+			// is marked — cluster members trim the MULTI/EXEC envelope
+			// before their retry check, so a marker only on the synthetic
+			// MULTI would be lost there.
+			for _, cmd := range cmds {
+				if bc, ok := cmd.(interface{ setNoRetry(bool) }); ok {
+					bc.setNoRetry(true)
+				}
 			}
 			return c.processTxPipelineHook(ctx, cmds)
 		},
