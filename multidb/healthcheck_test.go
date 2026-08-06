@@ -211,6 +211,7 @@ func TestLagAwareHostPortFromAddr(t *testing.T) {
 		wantOK   bool
 	}{
 		{"localhost:6379", "localhost", 6379, true},
+		{":6379", "localhost", 6379, true},
 		{"10.0.0.1:6379", "10.0.0.1", 6379, true},
 		{"redis.example.com:9443", "redis.example.com", 9443, true},
 		{"[::1]:6379", "::1", 6379, true},

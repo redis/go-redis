@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -246,6 +247,11 @@ func hostPortFromAddr(addr string) (string, int, bool) {
 	}
 	if host, portStr, err := net.SplitHostPort(addr); err == nil {
 		port, _ := strconv.Atoi(portStr)
+		if host == "" {
+			// The ":6379" shorthand means localhost; an empty host would
+			// otherwise produce an unusable https://:9443 REST base URL.
+			host = "localhost"
+		}
 		return host, port, true
 	}
 	// No port present; treat the whole value as the host. Strip any surrounding
@@ -271,19 +277,42 @@ func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Cli
 	return h.checkLagHealth(ctx, host, port)
 }
 
-// CheckClusterHealth performs a single REST API health check probe. Every
-// configured seed address is tried in order: the cluster can be healthy while
-// the first seed is unreachable or no longer part of the topology.
+// CheckClusterHealth performs a single REST API health check probe. The
+// cluster's currently discovered shard addresses are tried first, then the
+// configured seeds: the cluster can be healthy and routing through live
+// nodes while the (possibly stale) startup seeds are unreachable.
 func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	if h.configErr != nil {
 		return false, h.configErr
 	}
 	opts := client.Options()
-	if len(opts.Addrs) == 0 {
+
+	var mu sync.Mutex
+	var addrs []string
+	seen := map[string]bool{}
+	add := func(addr string) {
+		mu.Lock()
+		if !seen[addr] {
+			seen[addr] = true
+			addrs = append(addrs, addr)
+		}
+		mu.Unlock()
+	}
+	// Best effort: with no loaded cluster state this errors and the seeds
+	// below are the only candidates. ForEachShard runs concurrently.
+	_ = client.ForEachShard(ctx, func(_ context.Context, shard *redis.Client) error {
+		add(shard.Options().Addr)
+		return nil
+	})
+	for _, addr := range opts.Addrs {
+		add(addr)
+	}
+	if len(addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
 	}
+
 	var lastErr error
-	for _, addr := range opts.Addrs {
+	for _, addr := range addrs {
 		host, port, ok := hostPortFromAddr(addr)
 		if !ok {
 			lastErr = fmt.Errorf("multidb: cannot derive REST API host from address %q", addr)
