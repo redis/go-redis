@@ -282,10 +282,13 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 	db.cb.OnStateChange(func(oldState, newState imultidb.CircuitState) {
 		otel.RecordMultiDBCircuitStateChange(context.Background(), dbRef.fqdn,
 			oldState.String(), newState.String())
-		if stateCallback != nil {
+		if stateCallback != nil && !dbRef.removed.Load() {
 			// Deliver asynchronously (FIFO per database): state changes fire
 			// under internal locks, and a callback that calls a control API
-			// would otherwise self-deadlock.
+			// would otherwise self-deadlock. Removed members are filtered at
+			// dispatch time too — a stale probe snapshot may record an
+			// outcome after the removal, and its index no longer means
+			// anything to the user.
 			idx := int(dbRef.idx.Load())
 			from, to := oldState.String(), newState.String()
 			dbRef.cbq.dispatch(func() { stateCallback(idx, from, to) })
@@ -821,6 +824,13 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// callbacks fired by the probe report the real index instead of 0.
 	c.failoverMu.Lock()
 	defer c.failoverMu.Unlock()
+	// Re-check after the lock wait: with SkipInitialHealthCheck there is no
+	// probe, so this is the last chance to notice that the caller's context
+	// expired while the call queued behind another control operation.
+	if err := ctx.Err(); err != nil {
+		_ = db.closeClient()
+		return -1, err
+	}
 
 	c.dbMu.RLock()
 	idx := len(c.dbs)
@@ -863,10 +873,18 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 }
 
 func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Hold failoverMu so the active-index adjustment below cannot race a
 	// concurrent switchActive (all active transitions happen under it).
 	c.failoverMu.Lock()
 	defer c.failoverMu.Unlock()
+	// Re-check after the lock wait: an operator request whose context died
+	// while queued must not still delete a member.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.dbMu.Lock()
 	if index < 0 || index >= len(c.dbs) {
 		c.dbMu.Unlock()
