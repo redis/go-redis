@@ -56,12 +56,16 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 		// successes for the untouched commands.
 		setCmdsErr(cmds, batchErr)
 	}
+	// Blocking commands carry their own read timeout; their local deadlines
+	// are not retryable transport failures — the same per-command rule the
+	// single-command path applies (cmd.readTimeout() == nil).
+	classify := func(cmd Cmder) outcomeKind {
+		return classifyOutcome(cmd.rawErr(), cmd.readTimeout() == nil)
+	}
 	transportFailures := 0
 	recorded := 0
 	recordOne := func(cmd Cmder) {
-		// Errors are classified with retryTimeout=true, mirroring the plain
-		// pipeline retry rule of *Client/*ClusterClient batch paths.
-		switch classifyOutcome(cmd.rawErr(), true) {
+		switch classify(cmd) {
 		case outcomeSuccess:
 			if !executed {
 				// A nil (or reply-class) error fabricated by an aborting
@@ -76,6 +80,13 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			c.successSinceFailover.Store(true)
 			recorded++
 		case outcomeFailure:
+			// Failures record regardless of the execution marker — unlike
+			// successes: a dial failure (the canonical down-member signal)
+			// happens BEFORE the marker flips, and it is indistinguishable
+			// from a pre-execution hook abort. Guarding failures on the
+			// marker would leave breakers closed through real outages on
+			// batch-only workloads. Successes are the asymmetric case: a
+			// genuine reply cannot exist without execution.
 			db.cb.RecordFailure()
 			c.detector.RecordFailure(cmd.rawErr())
 			transportFailures++
@@ -93,12 +104,12 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 		// sequential single commands, where a success resets the closed
 		// state's failure count before a later failure increments it.
 		for _, cmd := range cmds {
-			if classifyOutcome(cmd.rawErr(), true) == outcomeFailure {
+			if classify(cmd) == outcomeFailure {
 				recordOne(cmd)
 			}
 		}
 		for _, cmd := range cmds {
-			if classifyOutcome(cmd.rawErr(), true) != outcomeFailure {
+			if classify(cmd) != outcomeFailure {
 				recordOne(cmd)
 			}
 		}
@@ -144,6 +155,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
 	}
+	var himportErr error
 	if cmdsContainHImport(cmds) {
 		// Reject only the HIMPORT commands themselves: the autopipeliner
 		// coalesces unrelated callers into one flush, and poisoning the
@@ -160,6 +172,10 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			return errMultiDBHImport
 		}
 		cmds = kept
+		// The batch as a whole still failed partially: callers relying on
+		// the Exec/Pipelined error must see it even when every kept command
+		// succeeds.
+		himportErr = errMultiDBHImport
 	}
 	attempts := c.opts.CommandRetries + 1
 	// A batch containing a non-retryable command (e.g. a streaming
@@ -230,10 +246,16 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
 			// user-level outcome is.
+			if err == nil && himportErr != nil {
+				return himportErr
+			}
 			return err
 		}
 	}
-	return cmdsFirstErr(cmds)
+	if err := cmdsFirstErr(cmds); err != nil {
+		return err
+	}
+	return himportErr
 }
 
 // processTxPipeline executes a MULTI/EXEC pipeline against the active
