@@ -1314,16 +1314,16 @@ func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	opts.Clients = append(opts.Clients, dbA.cfg, dbB.cfg, dbC.cfg)
 
 	// C's startup probe dies with the caller's context after quorum (A, B)
-	// is already met: initialization succeeds, and C — never actually
-	// probed — must not start life with an open breaker.
+	// is already met: a canceled construction must not return a live client
+	// (a probe reporting healthy after the deadline is no basis to start
+	// background goroutines the caller already gave up on).
 	mdb, err := redis.NewMultiDBClient(parent, opts)
-	if err != nil {
-		t.Fatalf("NewMultiDBClient: %v", err)
+	if err == nil {
+		_ = mdb.Close()
+		t.Fatal("NewMultiDBClient succeeded although its context was canceled mid-probe")
 	}
-	defer mdb.Close()
-
-	if !mdb.TestBreakerReserveHalfOpen(2) {
-		t.Error("canceled startup probe opened the unprobed member's breaker")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("NewMultiDBClient = %v, want context.Canceled", err)
 	}
 }
 
