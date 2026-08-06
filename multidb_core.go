@@ -39,6 +39,11 @@ type multidbDatabase struct {
 	checks []MultiDBHealthCheck
 	policy MultiDBHealthCheckPolicy
 
+	// removed is set (under core.failoverMu) when the database leaves the
+	// membership; a stale probe snapshot must stop recording outcomes and
+	// firing callbacks for it.
+	removed atomic.Bool
+
 	// cbq delivers user circuit-state callbacks asynchronously (FIFO).
 	cbq callbackQueue
 }
@@ -127,6 +132,12 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 		// report unhealthy so callers do not treat it as a pass.
 		return false
 	}
+	if db.removed.Load() {
+		// The database left the membership while this probe was in flight
+		// (background snapshot racing RemoveDatabase): its index is stale
+		// and its client is closed, so record nothing and fire no callbacks.
+		return healthy
+	}
 
 	// CheckState first so an Open circuit past its grace period transitions
 	// to HalfOpen and can be closed by the success below.
@@ -162,6 +173,12 @@ type multidbCore struct {
 	failoverAttempts     int
 	lastFailoverAttempt  time.Time
 	autoFallbackDisabled atomic.Bool
+
+	// successSinceFailover breaks the "consecutive failed failover attempts"
+	// chain: any successful command sets it, and the next failed failover
+	// starts escalating from zero instead of a stale count left over from an
+	// earlier, already-recovered outage.
+	successSinceFailover atomic.Bool
 
 	pubsubMu sync.Mutex
 	pubsubs  map[*PubSub]struct{}
@@ -409,8 +426,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
+		// Detector before IsAllowed: IsAllowed reserves a bounded half-open
+		// probe slot, and a tripped detector routes to failover without
+		// executing anything — the reservation would leak and eventually
+		// starve the recovering active's probe budget.
 		db, idx := c.activeSnapshot()
-		if db == nil || !db.cb.IsAllowed() || c.detector.ShouldFailover() {
+		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
 			if err := c.tryFailover(ctx, idx); err != nil {
 				cmd.SetErr(err)
 				return err
@@ -432,6 +453,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
+			c.successSinceFailover.Store(true)
 			return err
 		case outcomeNeutral:
 			// Not a database-health signal: return to the caller without
@@ -549,6 +571,14 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 		}
 		if c.opts.ProbeTargetBeforeFailover {
 			if db := c.dbAt(best); db != nil && !db.probe(ctx, c.opts.HealthCheckTimeout) {
+				if err := ctx.Err(); err != nil {
+					// The caller's context ended mid-probe: the candidate was
+					// never proven unhealthy. Surface the context error
+					// without dropping the candidate or charging a failover
+					// attempt — short command deadlines must not escalate
+					// toward ErrPermanentlyNotAvailable.
+					return err
+				}
 				// The probe recorded the failure on the candidate's breaker;
 				// drop it from this round and re-select.
 				cands = removeCandidate(cands, best)
@@ -578,6 +608,12 @@ func removeCandidate(cands []MultiDBDatabaseState, index int) []MultiDBDatabaseS
 // MaxFailoverAttempts consecutive attempts have failed, then the terminal
 // ErrPermanentlyNotAvailable. failoverMu must be held.
 func (c *multidbCore) recordFailedFailoverLocked() error {
+	if c.successSinceFailover.Swap(false) {
+		// Successful traffic since the last failed attempt: the chain of
+		// consecutive failures is broken, so a fresh outage escalates from
+		// zero instead of a stale count.
+		c.failoverAttempts = 0
+	}
 	now := time.Now()
 	if c.lastFailoverAttempt.IsZero() || now.Sub(c.lastFailoverAttempt) >= c.opts.FailoverAttemptDelay {
 		c.failoverAttempts++
@@ -761,6 +797,9 @@ func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
 		return errors.New("redis: multidb: cannot remove the active database")
 	}
 	db := c.dbs[index]
+	// Mark before the client is closed: a background probe holding a stale
+	// snapshot must stop recording outcomes for this member.
+	db.removed.Store(true)
 	c.dbs = append(c.dbs[:index], c.dbs[index+1:]...)
 	for i := index; i < len(c.dbs); i++ {
 		c.dbs[i].idx.Store(int32(i))
@@ -891,7 +930,26 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	if best < 0 {
 		return
 	}
-	announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0)
+	if announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0); announce != nil {
+		// The detector window still holds outcomes recorded against the old
+		// active; left tripped, the very next command would immediately fail
+		// away from the just-recovered primary. Clear it, as the automatic
+		// and manual failover paths do.
+		c.detector.Reset()
+	}
+}
+
+// hasStandaloneMember reports whether any member database is served by a
+// standalone (or sentinel) client, i.e. whether PubSub can ever be dialed.
+func (c *multidbCore) hasStandaloneMember() bool {
+	c.dbMu.RLock()
+	defer c.dbMu.RUnlock()
+	for _, db := range c.dbs {
+		if db.c != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // newPubSub creates a PubSub whose connections always target the currently
@@ -917,6 +975,15 @@ func (c *multidbCore) newPubSub() *PubSub {
 				return nil, ErrTemporarilyNotAvailable
 			}
 			if db.c == nil {
+				// A cluster member is active. Without any standalone member
+				// in the configuration the subscription can never be served:
+				// return the terminal ErrClosed so Channel loops exit. In
+				// mixed configurations the error is transient — a later
+				// failover/fallback to a standalone member lets the re-dial
+				// succeed.
+				if !c.hasStandaloneMember() {
+					return nil, ErrClosed
+				}
 				return nil, errors.New("redis: multidb: PubSub requires a standalone or sentinel active database")
 			}
 			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)

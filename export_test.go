@@ -130,3 +130,27 @@ func NewTestSentinelFailover(opt *FailoverOptions, sentinelAddrs []string) *sent
 func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
 	return c.replicaAddrs(ctx, false)
 }
+
+// TestBreakerRecordFailure records one failure on the indexed member's
+// circuit breaker. Exported for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerRecordFailure(index int) {
+	c.core.dbAt(index).cb.RecordFailure()
+}
+
+// TestBreakerReserveHalfOpen runs the indexed member's breaker admission
+// check, reserving one half-open probe slot when the breaker is half-open.
+// Exported for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerReserveHalfOpen(index int) bool {
+	return c.core.dbAt(index).cb.IsAllowed()
+}
+
+// TestProbeRacingRemoval reproduces the background health-check loop racing a
+// concurrent RemoveDatabase: the member is snapshotted (as the loop does),
+// removed, and then probed through the stale snapshot.
+func (c *MultiDBClient) TestProbeRacingRemoval(index int) {
+	db := c.core.dbAt(index)
+	if err := c.core.removeDatabase(context.Background(), index); err != nil {
+		panic(err)
+	}
+	db.probe(context.Background(), c.core.opts.HealthCheckTimeout)
+}
