@@ -82,8 +82,20 @@ func (q *callbackQueue) drain() {
 		fn := q.queue[0]
 		q.queue = q.queue[1:]
 		q.mu.Unlock()
-		fn()
+		runCallbackSafely(fn)
 	}
+}
+
+// runCallbackSafely keeps a panicking user callback from crashing the process
+// (callbacks run on a library-owned goroutine) and from wedging the queue in
+// the draining state.
+func runCallbackSafely(fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "multidb: circuit state callback panicked: %v", r)
+		}
+	}()
+	fn()
 }
 
 func (db *multidbDatabase) process(ctx context.Context, cmd Cmder) error {
