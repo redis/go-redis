@@ -738,6 +738,11 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 // probe-then-switch path (SetActiveIndex); with probe=false it is the
 // unconditional operator override (ForceActiveIndex).
 func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool) error {
+	if c.closed.Load() {
+		// Consistent with the command paths: the drained membership would
+		// otherwise surface as a misleading out-of-range error.
+		return ErrClosed
+	}
 	// An already-done context must not reach the probe below: a probe that
 	// fails only because the caller's context ended would otherwise record
 	// breaker failures against a perfectly healthy target.
@@ -793,11 +798,14 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	// a previously tripped detector must not immediately fail away — also
 	// when the selected database is already the active one.
 	c.detector.Reset()
+	// The operator explicitly selected a healthy member: the chain of failed
+	// failover attempts is over — also when no index change happens, or a
+	// later unrelated outage would escalate from the stale count.
+	c.failoverAttempts = 0
 	from := int(c.active.Load())
 	if from == index {
 		return nil
 	}
-	c.failoverAttempts = 0
 	if announce = c.switchActive(ctx, from, index, failoverReasonManual, time.Since(start)); announce == nil {
 		return errors.New("redis: multidb: active database changed concurrently, retry")
 	}
