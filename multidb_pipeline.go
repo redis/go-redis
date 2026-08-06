@@ -21,6 +21,16 @@ func resetCmds(cmds []Cmder) {
 	}
 }
 
+// cmdsHaveAnyErr reports whether at least one command carries an error.
+func cmdsHaveAnyErr(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if cmd.rawErr() != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // recordBatchOutcomes records one breaker/detector outcome per command,
 // mirroring the single-command path: an error reply from the server proves
 // the database is reachable and counts as a success; transport-level errors
@@ -33,23 +43,31 @@ func resetCmds(cmds []Cmder) {
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
 func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error) int {
+	// An executed batch always stamps at least the failing command (reply
+	// errors land on their command, transport errors are stamped on every
+	// command). A batch whose batch-level call failed while NO command
+	// carries an error therefore never reached execution — e.g. a member
+	// hook aborted before calling next. Only then does the batch error
+	// stand in for the commands, and it is stamped so callers see it.
+	// Substituting it per-command when some nil errors are successfully
+	// read replies would turn a successful prefix into phantom transport
+	// failures and replay it.
+	if batchErr != nil && !cmdsHaveAnyErr(cmds) {
+		setCmdsErr(cmds, batchErr)
+	}
 	transportFailures := 0
 	recorded := 0
 	for _, cmd := range cmds {
 		err := cmd.rawErr()
-		if err == nil {
-			// An unstamped command in a failed batch (e.g. a member hook
-			// aborting before execution): nil rawErr is no proof the server
-			// answered. Classify the batch-level error instead — a local
-			// abort then records nothing rather than phantom successes.
-			err = batchErr
-		}
 		// Pipelines mirror the plain pipeline retry rule (shouldRetry with
 		// retryTimeout=true), matching *Client/*ClusterClient batch paths.
 		switch classifyOutcome(err, true) {
 		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
+			// Recovery traffic breaks the consecutive-failed-failover chain
+			// for batch-only workloads too (see recordFailedFailoverLocked).
+			c.successSinceFailover.Store(true)
 			recorded++
 		case outcomeFailure:
 			db.cb.RecordFailure()

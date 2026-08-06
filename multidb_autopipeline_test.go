@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // MultiDBClient must be usable everywhere a UniversalClient is expected —
@@ -573,7 +574,7 @@ func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 	mdb.TestBreakerRecordFailure(0)
 	time.Sleep(50 * time.Millisecond)
 
-	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+	cmds, _ := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
 		p.Set(context.Background(), "k", "v", 0)
 		return nil
 	})
@@ -583,6 +584,111 @@ func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 	}
 	if mdb.TestBreakerReserveHalfOpen(0) {
 		t.Error("breaker closed (or slot accounting lost) after a hook-aborted batch: unlimited admissions")
+	}
+	// The abort must also be visible on the commands themselves: leaving
+	// them nil makes per-command inspection (and cmdsFirstErr once retries
+	// are exhausted) report success for a batch that never executed.
+	for i, cmd := range cmds {
+		if cmd.Err() == nil {
+			t.Errorf("cmd %d has a nil error after a hook-aborted batch", i)
+		}
+	}
+}
+
+func TestMultiDBBatchSuccessResetsFailoverEscalation(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.MaxFailoverAttempts = 2
+	opts.FailoverAttemptDelay = time.Millisecond
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+	ctx := context.Background()
+
+	// Outage one: open A's breaker and consume one failover attempt.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("first outage: err = %v, want ErrTemporarilyNotAvailable", err)
+	}
+
+	// Recovery through BATCH traffic only: a pipeline-only workload must
+	// break the consecutive-failed-attempts chain exactly like the
+	// single-command path does.
+	dbA.hook.fail.Store(false)
+	time.Sleep(50 * time.Millisecond)
+	if _, err := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "k", "v", 0)
+		return nil
+	}); err != nil {
+		t.Fatalf("recovery batch: %v", err)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("second outage: err = %v, want ErrTemporarilyNotAvailable (stale escalation state)", err)
+	}
+}
+
+// partialReplyHook simulates an executed batch with a successful prefix: the
+// first command's nil error is a successfully-read reply, a later command got
+// a retryable server reply that is also the batch-level error.
+type partialReplyHook struct{}
+
+func (partialReplyHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (partialReplyHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (partialReplyHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		err := proto.RedisError("LOADING Redis is loading the dataset in memory")
+		if len(cmds) > 1 {
+			cmds[len(cmds)-1].SetErr(err)
+		}
+		return err
+	}
+}
+
+func TestMultiDBExecutedBatchKeepsSuccessfulPrefix(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, partialReplyHook{}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// One executed batch: first command succeeded (nil), second got a
+	// retryable LOADING reply which is also the batch error. Only ONE
+	// failure may be recorded — substituting the batch error for the
+	// successful prefix would open the breaker (threshold 2) off a single
+	// partially-failed batch.
+	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k1", "v", 0)
+		p.Set(context.Background(), "k2", "v", 0)
+		return nil
+	})
+
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("successful prefix was recorded as failures: breaker opened off one partial batch")
 	}
 }
 
