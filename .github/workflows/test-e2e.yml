@@ -98,10 +98,8 @@ jobs:
           go test -v -race -count=1 ./multidb/e2e/ -timeout 15m
         continue-on-error: false
 
-      - name: Stop Docker services
-        if: always()
-        run: docker compose --profile multidb down
-
+      # Logs BEFORE the compose down below: `down` removes the containers,
+      # which would leave the diagnostics step with nothing to read.
       - name: Show Docker logs on failure
         if: failure()
         run: |
@@ -111,4 +109,8 @@ jobs:
             echo "=== $c logs ==="
             docker logs "$c" 2>&1 | tail -100
           done
+
+      - name: Stop Docker services
+        if: always()
+        run: docker compose --profile multidb down
 
