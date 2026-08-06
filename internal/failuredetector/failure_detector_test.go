@@ -145,6 +145,33 @@ func TestCommandFailureDetector_IgnoresPoolSaturation(t *testing.T) {
 	}
 }
 
+func TestCommandFailureDetector_TreatsReplyErrorsAsSuccess(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// Application-level replies prove the database processed the command;
+	// availability replies prove it cannot serve. Only the latter count as
+	// failures.
+	for _, e := range []string{"WRONGTYPE Operation against a key", "BUSYGROUP Consumer Group name already exists", "NOSCRIPT No matching script"} {
+		fd.RecordFailure(proto.RedisError(e))
+	}
+	if _, failures := fd.Stats(); failures != 0 {
+		t.Errorf("expected 0 failures for application replies, got %d", failures)
+	}
+	if fd.ShouldFailover() {
+		t.Error("should not failover on application-level reply errors")
+	}
+
+	fd.RecordFailure(proto.RedisError("LOADING Redis is loading the dataset in memory"))
+	if _, failures := fd.Stats(); failures != 1 {
+		t.Errorf("expected 1 failure for the LOADING reply, got %d", failures)
+	}
+}
+
 func TestCommandFailureDetector_TreatsTxFailedAsSuccess(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         1,

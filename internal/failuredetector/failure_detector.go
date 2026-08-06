@@ -6,6 +6,7 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -194,7 +195,32 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		d.bucketFor(d.now().UnixNano()).successes.Add(1)
 		return
 	}
+	var redisErr proto.RedisError
+	if errors.As(err, &redisErr) && !isAvailabilityReply(redisErr.Error()) {
+		// Any other well-formed server reply (WRONGTYPE, BUSYGROUP,
+		// NOSCRIPT, ...) is an application-level error from a database that
+		// processed the command: proof of health, not a failure — except
+		// the availability replies (LOADING, CLUSTERDOWN, ...) that signal
+		// a database unable to serve.
+		d.bucketFor(d.now().UnixNano()).successes.Add(1)
+		return
+	}
 	d.bucketFor(d.now().UnixNano()).failures.Add(1)
+}
+
+// isAvailabilityReply matches server replies that indicate the database
+// cannot currently serve traffic (mirroring the root package's retryable
+// reply classification, which cannot be imported from here).
+func isAvailabilityReply(s string) bool {
+	for _, prefix := range []string{
+		"LOADING ", "READONLY ", "CLUSTERDOWN ", "TRYAGAIN ",
+		"MASTERDOWN ", "NOREPLICAS ", "ERR max number of clients",
+	} {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ShouldFailover returns true when the outcomes observed within the trailing
