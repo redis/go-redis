@@ -1501,6 +1501,44 @@ func TestMultiDBCanceledHealthyProbeDoesNotSwitch(t *testing.T) {
 	}
 }
 
+func TestMultiDBCanceledHealthyPreFailoverProbeDoesNotSwitch(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	check := &cancelingHealthyCheck{cancel: cancel}
+
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	opts.ProbeTargetBeforeFailover = true
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	check.armed.Store(true)
+
+	// A's failure opens its breaker; the failover gate probes candidate B,
+	// the probe passes — but the caller's context died while it ran. The
+	// canceled attempt must surface context.Canceled WITHOUT switching the
+	// active database.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(parent, "k").Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get = %v, want context.Canceled", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("canceled attempt switched the active database to %d", got)
+	}
+}
+
 func TestMultiDBPoolTimeoutIsNeutral(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
 	opts := baseOptions()
