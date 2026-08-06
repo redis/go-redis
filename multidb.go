@@ -495,6 +495,80 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 	return pubsub
 }
 
+// DBSize delegates to the active member so a cluster member keeps its
+// fan-out semantics (summing across masters) instead of counting a single
+// arbitrary shard.
+func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
+	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+		return db.cc.DBSize(ctx)
+	}
+	return c.cmdable.DBSize(ctx)
+}
+
+// ScriptLoad delegates to the active member so a cluster member loads the
+// script on every shard — a single-shard load would make later EVALSHA calls
+// fail with NOSCRIPT on the other shards.
+func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
+	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+		return db.cc.ScriptLoad(ctx, script)
+	}
+	return c.cmdable.ScriptLoad(ctx, script)
+}
+
+// ScriptFlush delegates to the active member (cluster members flush every
+// shard).
+func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
+	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+		return db.cc.ScriptFlush(ctx)
+	}
+	return c.cmdable.ScriptFlush(ctx)
+}
+
+// ScriptExists delegates to the active member (cluster members AND the
+// per-shard answers so a script only counts as present when every shard has
+// it).
+func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
+	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
+		return db.cc.ScriptExists(ctx, hashes...)
+	}
+	return c.cmdable.ScriptExists(ctx, hashes...)
+}
+
+// errMultiDBHImport rejects the HIMPORT command family: fieldset
+// registrations live in each member client's own registry, so a fieldset
+// prepared on the active member is silently missing on the member a failover
+// switches to. Until registrations fan out across members (tracked as
+// follow-up work in the design doc), rejecting loudly beats half-working.
+var errMultiDBHImport = errors.New("redis: multidb: HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
+
+// HImportPrepare is not supported on MultiDBClient; see errMultiDBHImport.
+func (c *MultiDBClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
+	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
+	cmd.SetErr(errMultiDBHImport)
+	return &cmd.StatusCmd
+}
+
+// HImportSet is not supported on MultiDBClient; see errMultiDBHImport.
+func (c *MultiDBClient) HImportSet(ctx context.Context, key, fieldsetName string, values ...interface{}) *StatusCmd {
+	cmd := NewHImportSetCmd(ctx, key, fieldsetName, values...)
+	cmd.SetErr(errMultiDBHImport)
+	return &cmd.StatusCmd
+}
+
+// HImportDiscard is not supported on MultiDBClient; see errMultiDBHImport.
+func (c *MultiDBClient) HImportDiscard(ctx context.Context, fieldsetName string) *IntCmd {
+	cmd := NewHImportDiscardCmd(ctx, fieldsetName)
+	cmd.SetErr(errMultiDBHImport)
+	return &cmd.IntCmd
+}
+
+// HImportDiscardAll is not supported on MultiDBClient; see errMultiDBHImport.
+func (c *MultiDBClient) HImportDiscardAll(ctx context.Context) *IntCmd {
+	cmd := NewHImportDiscardAllCmd(ctx)
+	cmd.SetErr(errMultiDBHImport)
+	return &cmd.IntCmd
+}
+
 // disableMaintNotificationsIfUnset turns Smart Client Handoff (maintenance
 // notifications) off for a MultiDB member database unless the user configured
 // it explicitly: MultiDB owns endpoint transitions itself.
