@@ -1709,6 +1709,59 @@ func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
 	}
 }
 
+func TestMultiDBManualSelectionAfterClose(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Consistent with the command paths: after Close, control APIs report
+	// ErrClosed rather than an out-of-range error from the drained slice.
+	if err := mdb.SetActiveIndex(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("SetActiveIndex after Close: err = %v, want ErrClosed", err)
+	}
+	if err := mdb.ForceActiveIndex(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ForceActiveIndex after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBSameIndexManualSelectionResetsEscalation(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.MaxFailoverAttempts = 2
+	opts.FailoverAttemptDelay = time.Millisecond
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+	ctx := context.Background()
+
+	// Outage one: consume one failover attempt.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("first outage: err = %v, want ErrTemporarilyNotAvailable", err)
+	}
+
+	// Operator forces the already-active member (its breaker resets): an
+	// explicit healthy selection ends the failed-failover chain even when
+	// no index change happens.
+	dbA.hook.fail.Store(false)
+	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveIndex: %v", err)
+	}
+
+	// A fresh outage must escalate from a clean slate.
+	time.Sleep(5 * time.Millisecond)
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("second outage: err = %v, want ErrTemporarilyNotAvailable (stale escalation)", err)
+	}
+}
+
 // panickyCheck panics on every probe — the worst-case custom health check.
 type panickyCheck struct{}
 
