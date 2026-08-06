@@ -30,9 +30,11 @@ func newProxyFarm(t *testing.T) *proxyFarm {
 	f := &proxyFarm{
 		t: t,
 		members: []memberProxy{
-			{Container: "cae-proxy-db0", Addr: "localhost:17100"},
-			{Container: "cae-proxy-db1", Addr: "localhost:17101"},
-			{Container: "cae-proxy-db2", Addr: "localhost:17102"},
+			// 127.0.0.1, not localhost: docker publishes on IPv4, and hosts
+			// that resolve localhost to ::1 first would dial the wrong stack.
+			{Container: "cae-proxy-db0", Addr: "127.0.0.1:17100"},
+			{Container: "cae-proxy-db1", Addr: "127.0.0.1:17101"},
+			{Container: "cae-proxy-db2", Addr: "127.0.0.1:17102"},
 		},
 	}
 	// Whatever a test did, the next one starts from "everything running".
@@ -72,13 +74,6 @@ func (f *proxyFarm) Pause(i int) {
 	f.t.Helper()
 	if err := f.docker("pause", f.members[i].Container); err != nil {
 		f.t.Fatalf("pause member %d: %v", i, err)
-	}
-}
-
-func (f *proxyFarm) Unpause(i int) {
-	f.t.Helper()
-	if err := f.docker("unpause", f.members[i].Container); err != nil {
-		f.t.Fatalf("unpause member %d: %v", i, err)
 	}
 }
 
