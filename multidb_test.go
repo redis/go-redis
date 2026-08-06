@@ -1724,6 +1724,110 @@ func TestMultiDBManualSelectionAfterClose(t *testing.T) {
 	if err := mdb.ForceActiveIndex(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("ForceActiveIndex after Close: err = %v, want ErrClosed", err)
 	}
+	if err := mdb.RemoveDatabase(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("RemoveDatabase after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBConnectionResetRecordsOnBreaker(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// A connection reset mid-read (member crash) IS recorded: shouldRetry
+	// matches every net.OpError via its Timeout() method, so the failure
+	// classifies as an availability signal, opens the breaker (threshold 1)
+	// and — with no other member — escalates to temporary unavailability.
+	// This pins the behavior a review bot claimed was missing.
+	reset := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
+	dbA.hook.custom.Store(&customErr{err: reset})
+	if err := mdb.Get(context.Background(), "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("Get = %v, want ErrTemporarilyNotAvailable (reset recorded, breaker opened)", err)
+	}
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a mid-read connection reset left the breaker closed")
+	}
+}
+
+func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.OnFailover = func(context.Context, int, int) { panic("panicky OnFailover") }
+	opts.OnActiveDatabaseChanged = func(int, int) { panic("panicky OnActiveDatabaseChanged") }
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// The announce closure also runs on the library-owned background loop:
+	// panicking user callbacks must be recovered, and the failover itself
+	// must complete.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
+		t.Fatalf("Get across failover: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("active = %d, want 1", got)
+	}
+}
+
+func TestMultiDBProcessRejectsRawHImportCmd(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+
+	// A hand-built HIMPORT command through Process must be rejected like
+	// the typed methods: routing it would register a fieldset on a single
+	// member and break after failover.
+	cmd := redis.NewHImportPrepareCmd(context.Background(), "fs", "f1")
+	if err := mdb.Process(context.Background(), cmd); err == nil {
+		t.Error("Process accepted a raw HIMPORT command")
+	}
+	if cmd.Err() == nil {
+		t.Error("raw HIMPORT command left without an error")
+	}
+}
+
+func TestMultiDBClusterOverridesAfterClose(t *testing.T) {
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}},
+		Weight:         1,
+		HealthChecks:   []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The cluster fan-out overrides bypass core.process; they need their
+	// own closed guard or they run against members being torn down.
+	if err := mdb.DBSize(context.Background()).Err(); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("DBSize after Close: err = %v, want ErrClosed", err)
+	}
+	if err := mdb.ScriptLoad(context.Background(), "return 1").Err(); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ScriptLoad after Close: err = %v, want ErrClosed", err)
+	}
+	if err := mdb.ScriptFlush(context.Background()).Err(); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ScriptFlush after Close: err = %v, want ErrClosed", err)
+	}
+	if err := mdb.ScriptExists(context.Background(), "abc").Err(); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ScriptExists after Close: err = %v, want ErrClosed", err)
+	}
 }
 
 func TestMultiDBSameIndexManualSelectionResetsEscalation(t *testing.T) {
