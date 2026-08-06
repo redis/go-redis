@@ -154,3 +154,8 @@ func (c *MultiDBClient) TestProbeRacingRemoval(index int) {
 	}
 	db.probe(context.Background(), c.core.opts.HealthCheckTimeout)
 }
+
+// TestRunHealthChecksOnce runs one synchronous background health-check pass.
+func (c *MultiDBClient) TestRunHealthChecksOnce() {
+	c.core.runHealthChecksOnce(context.Background())
+}

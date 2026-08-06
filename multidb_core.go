@@ -143,7 +143,9 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 	// to HalfOpen and can be closed by the success below.
 	db.cb.CheckState()
 	if healthy {
-		db.cb.RecordSuccess()
+		// External: probes are not admitted through IsAllowed, so a success
+		// must not release a half-open slot a real command probe is holding.
+		db.cb.RecordExternalSuccess()
 	} else {
 		db.cb.RecordFailure()
 	}
