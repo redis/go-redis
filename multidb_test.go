@@ -1417,6 +1417,60 @@ func TestMultiDBHealthCheckSuccessKeepsCommandSlots(t *testing.T) {
 	}
 }
 
+func TestMultiDBPoolTimeoutIsNeutral(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Local pool saturation never reached the database: it must surface to
+	// the caller but record nothing on the breaker — capacity pressure on a
+	// busy client must not open the circuit of a healthy member.
+	dbA.hook.custom.Store(&customErr{err: redis.ErrPoolTimeout})
+	if err := mdb.Get(context.Background(), "k").Err(); !errors.Is(err, redis.ErrPoolTimeout) {
+		t.Fatalf("Get = %v, want ErrPoolTimeout", err)
+	}
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a pool timeout opened the member's circuit breaker")
+	}
+}
+
+func TestMultiDBAllHalfOpenFullReturnsUnavailable(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one probe slot per member
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// Every member half-open with its probe budget exhausted: the gate
+	// rejects each candidate, and failover keeps finding "selectable"
+	// half-open members. This must surface ErrTemporarilyNotAvailable, not
+	// ping-pong the active index in a busy loop until the context dies.
+	mdb.TestBreakerRecordFailure(0)
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(50 * time.Millisecond)
+	if !mdb.TestBreakerReserveHalfOpen(0) || !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Fatal("setup: expected to reserve both members' probe slots")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := mdb.Get(ctx, "k").Err()
+	if !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("Get = %v after %v, want ErrTemporarilyNotAvailable", err, time.Since(start))
+	}
+}
+
 // panickyCheck panics on every probe — the worst-case custom health check.
 type panickyCheck struct{}
 
