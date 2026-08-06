@@ -1327,6 +1327,96 @@ func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	}
 }
 
+func TestMultiDBRejectsHImportCommands(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	ctx := context.Background()
+
+	// HIMPORT fieldset registrations live in each member client's own
+	// registry: prepared on the active member, they are silently absent on
+	// the member a failover switches to. Until registrations fan out across
+	// members, the command family must be rejected loudly, not half-work.
+	if err := mdb.HImportPrepare(ctx, "fs", "f1").Err(); err == nil {
+		t.Error("HImportPrepare must be rejected on MultiDBClient")
+	}
+	if err := mdb.HImportSet(ctx, "k", "fs", "v1").Err(); err == nil {
+		t.Error("HImportSet must be rejected on MultiDBClient")
+	}
+	if err := mdb.HImportDiscard(ctx, "fs").Err(); err == nil {
+		t.Error("HImportDiscard must be rejected on MultiDBClient")
+	}
+	if err := mdb.HImportDiscardAll(ctx).Err(); err == nil {
+		t.Error("HImportDiscardAll must be rejected on MultiDBClient")
+	}
+}
+
+func TestMultiDBClusterCommandsDelegateToActiveClusterClient(t *testing.T) {
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		ClusterOptions: &redis.ClusterOptions{
+			Addrs:       []string{"127.0.0.1:1"},
+			DialTimeout: 100 * time.Millisecond,
+			MaxRetries:  -1,
+		},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	// DBSize/ScriptLoad/... have cluster-specific fan-out overrides. Routed
+	// through the generic single-command path they would run on a single
+	// arbitrary shard — observable here because the generic path records the
+	// (expected, serverless) transport failure on the MultiDB breaker, while
+	// the delegated fan-out talks to the member client directly.
+	_ = mdb.DBSize(context.Background()).Err()
+	_ = mdb.ScriptLoad(context.Background(), "return 1").Err()
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("cluster fan-out commands were routed through the generic command path (breaker recorded their failures)")
+	}
+}
+
+func TestMultiDBHealthCheckSuccessKeepsCommandSlots(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 3, // MaxHalfOpenRequests defaults to this: 3 slots
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Half-open member with every command probe slot in use.
+	mdb.TestBreakerRecordFailure(0)
+	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 3; i++ {
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Fatalf("setup: could not reserve half-open slot %d", i)
+		}
+	}
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Fatal("setup: expected all half-open slots to be taken")
+	}
+
+	// A successful background health check never reserved a slot, so it
+	// must not free one either — that would let a fourth command through to
+	// the recovering member.
+	mdb.TestRunHealthChecksOnce()
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a background health-check success released a command probe's slot")
+	}
+}
+
 // panickyCheck panics on every probe — the worst-case custom health check.
 type panickyCheck struct{}
 
