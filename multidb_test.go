@@ -1795,6 +1795,13 @@ func TestMultiDBProcessRejectsRawHImportCmd(t *testing.T) {
 	if cmd.Err() == nil {
 		t.Error("raw HIMPORT command left without an error")
 	}
+
+	// Same for a generic Cmd spelled by name (Do-style): the typed marker
+	// interface alone would miss it.
+	raw := redis.NewCmd(context.Background(), "HIMPORT", "PREPARE", "fs", "f1")
+	if err := mdb.Process(context.Background(), raw); err == nil {
+		t.Error("Process accepted a name-spelled HIMPORT command")
+	}
 }
 
 func TestMultiDBClusterOverridesAfterClose(t *testing.T) {

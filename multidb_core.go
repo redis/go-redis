@@ -419,6 +419,15 @@ func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
 	return out
 }
 
+// isHImportCmd matches the rejected HIMPORT family both by the typed marker
+// interface and by command name, so raw Do/NewCmd submissions are covered.
+func isHImportCmd(cmd Cmder) bool {
+	if _, ok := cmd.(interface{ himportCmd() }); ok {
+		return true
+	}
+	return cmd.Name() == "himport"
+}
+
 // selectCandidate runs the failover strategy with panic recovery: strategies
 // are user code and also run on the library-owned background loop, where an
 // escaped panic would crash the process. A panicking strategy selects
@@ -474,11 +483,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		cmd.SetErr(ErrClosed)
 		return ErrClosed
 	}
-	if _, ok := cmd.(interface{ himportCmd() }); ok {
+	if isHImportCmd(cmd) {
 		// The typed HImport* methods are overridden to reject the family,
-		// but a hand-built HImport*Cmd through Process would bypass them
-		// and register a fieldset on a single member — the exact failover
-		// hazard the rejection prevents.
+		// but a hand-built HImport*Cmd — or a raw Do(ctx, "himport", ...) —
+		// through Process would bypass them and register a fieldset on a
+		// single member: the exact failover hazard the rejection prevents.
 		cmd.SetErr(errMultiDBHImport)
 		return errMultiDBHImport
 	}
@@ -604,6 +613,12 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		// Local pool saturation: the command never reached the database, so
 		// this is capacity pressure on the client, not a health signal —
 		// the same classification the failure detector applies.
+		return outcomeNeutral
+	case errors.Is(err, errMultiDBHImport):
+		// Locally synthesized rejection (a RedisError only so batch
+		// machinery treats it per-command): no round trip happened, so it
+		// must not count as proof of a healthy server. Defensive — the
+		// rejection paths all skip outcome recording anyway.
 		return outcomeNeutral
 	case shouldRetry(err, retryTimeout):
 		// Includes broken transport of every flavor: shouldRetry matches
