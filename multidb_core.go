@@ -608,14 +608,17 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	for {
 		best := c.strategy.Select(cands)
 		if best < 0 {
-			// No alternate candidate. If the active database itself is fully
+			// No alternate candidate. If the CURRENT active database is fully
 			// available again (health checks closed its breaker after the
 			// failure burst that tripped the detector), stay on it and clear
 			// the tripped state: escalating here would strand the client in
 			// *NotAvailable forever, because no command can succeed to reset
 			// the detector. Closed only — a half-open breaker must keep being
-			// escalated or the gate would spin on exhausted probe slots.
-			if db := c.dbAt(from); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
+			// escalated or the gate would spin on exhausted probe slots. The
+			// live index is used, not the caller's snapshot: `from` can be
+			// stale after a concurrent switch, and the verdict must be about
+			// the database traffic actually lands on.
+			if db, _ := c.activeSnapshot(); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
 				c.failoverAttempts = 0
 				c.detector.Reset()
 				return nil
@@ -637,9 +640,21 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 				cands = removeCandidate(cands, best)
 				continue
 			}
+			if err := ctx.Err(); err != nil {
+				// The probe passed, but the caller's context died while it
+				// ran: a canceled attempt must not switch the active state.
+				return err
+			}
+		}
+		if announce = c.switchActive(ctx, from, best, failoverReasonAutomatic, time.Since(start)); announce == nil {
+			// The CAS lost against a concurrent switch (the caller's `from`
+			// went stale): nothing changed, so nothing may be reset — the
+			// caller re-enters its gate against the new active. Escalation
+			// state stays untouched too; the concurrent switch's own path
+			// already maintains it.
+			return nil
 		}
 		c.failoverAttempts = 0
-		announce = c.switchActive(ctx, from, best, failoverReasonAutomatic, time.Since(start))
 		c.detector.Reset()
 		return nil
 	}
@@ -738,6 +753,12 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 			announce()
 		}
 	}()
+	// Re-check after the lock wait: the operator's context may have expired
+	// while this call queued behind another failover/membership operation,
+	// and the probe-less force path has no later chance to notice.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	db := c.dbAt(index)
 	if db == nil {

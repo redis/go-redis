@@ -166,6 +166,11 @@ type MultiDBOptions struct {
 	// FailureDetector aggregates command outcomes; when it trips, traffic is
 	// moved even before the active breaker fully opens. Default: a
 	// sliding-window detector (1000 failures AND 10% failure rate within 2s).
+	//
+	// A non-nil detector is used as-is and is stateful: do NOT share one
+	// options value carrying a custom detector across multiple clients, or
+	// outcomes recorded by one client will trip failover on the others.
+	// Leave nil to get an independent default detector per client.
 	FailureDetector MultiDBFailureDetector
 	// CircuitBreakerConfig configures every database's circuit breaker.
 	CircuitBreakerConfig *MultiDBCircuitBreakerConfig
