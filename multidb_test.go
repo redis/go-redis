@@ -1417,6 +1417,56 @@ func TestMultiDBHealthCheckSuccessKeepsCommandSlots(t *testing.T) {
 	}
 }
 
+// cancelingHealthyCheck, once armed, cancels the caller's context mid-probe
+// but still reports healthy — a probe whose PING succeeded right as the
+// caller's deadline expired.
+type cancelingHealthyCheck struct {
+	armed  atomic.Bool
+	cancel context.CancelFunc
+}
+
+func (c *cancelingHealthyCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	if c.armed.Load() {
+		c.cancel()
+	}
+	return true, nil
+}
+
+func (c *cancelingHealthyCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	if c.armed.Load() {
+		c.cancel()
+	}
+	return true, nil
+}
+
+func TestMultiDBCanceledHealthyProbeDoesNotSwitch(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	check := &cancelingHealthyCheck{cancel: cancel}
+
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	check.armed.Store(true)
+
+	// The probe reports healthy, but the caller's context died while it ran:
+	// a canceled control operation must not mutate the active state.
+	if err := mdb.SetActiveIndex(parent, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SetActiveIndex = %v, want context.Canceled", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("canceled SetActiveIndex switched the active database to %d", got)
+	}
+}
+
 func TestMultiDBPoolTimeoutIsNeutral(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
 	opts := baseOptions()

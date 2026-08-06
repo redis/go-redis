@@ -234,7 +234,11 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 	case cfg.FailoverOptions != nil:
 		// FailoverOptions does not carry a maintnotifications config (not
 		// supported for failover clients), so there is nothing to disable.
-		db.c = NewFailoverClient(cfg.FailoverOptions)
+		// Private copy, like the standalone and cluster members: the sentinel
+		// machinery keeps reading these options on its dial path, and a
+		// caller mutating the shared value would change a running member.
+		opt := *cfg.FailoverOptions
+		db.c = NewFailoverClient(&opt)
 	case cfg.ClusterOptions != nil:
 		opt := *cfg.ClusterOptions
 		if opt.MaintNotificationsConfig == nil {
@@ -737,6 +741,11 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 			}
 			return ErrTargetUnhealthy
 		}
+		if err := ctx.Err(); err != nil {
+			// The probe passed, but the caller's context died while it ran:
+			// a canceled control operation must not switch the active state.
+			return err
+		}
 	}
 	// The operator explicitly selected this database — either a fresh probe
 	// just passed, or ForceActiveIndex is an unconditional override. Reset
@@ -791,14 +800,15 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// leave the member selectable under the default threshold, letting
 	// failover pick a database already known to be down.
 	if !cfg.SkipInitialHealthCheck {
-		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
-			if err := ctx.Err(); err != nil {
-				// The caller's context ended mid-probe: no health signal.
-				// Fail the call rather than registering a member whose
-				// state is unknown.
-				_ = db.closeClient()
-				return -1, err
-			}
+		healthy := db.probe(ctx, c.opts.HealthCheckTimeout)
+		if err := ctx.Err(); err != nil {
+			// The caller's context ended while the probe ran (whatever the
+			// verdict): a canceled control operation must not mutate the
+			// membership.
+			_ = db.closeClient()
+			return -1, err
+		}
+		if !healthy {
 			for f := 0; f < db.cb.Config().FailureThreshold; f++ {
 				db.cb.RecordFailure()
 			}
