@@ -529,6 +529,67 @@ func TestMultiDBBatchDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
 	})
 }
 
+// mixedResultHook simulates an executed batch on a recovering member: early
+// commands succeeded, the last one hit a transport error (which is also the
+// batch-level error).
+type mixedResultHook struct{}
+
+func (mixedResultHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (mixedResultHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (mixedResultHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) > 0 {
+			cmds[len(cmds)-1].SetErr(io.EOF)
+		}
+		return io.EOF
+	}
+}
+
+func TestMultiDBFailedBatchDoesNotCloseHalfOpenBreaker(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1, // one successful probe would close the circuit
+		GracePeriod:      30 * time.Millisecond,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, mixedResultHook{}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// Half-open member admits one probe batch whose early command succeeds
+	// but whose later command fails at transport level: the batch FAILED as
+	// a recovery probe, so it must not close the circuit — failures must be
+	// recorded before successes.
+	mdb.TestBreakerRecordFailure(0)
+	mdb.TestBreakerRecordFailure(0) // -> open (threshold 2)
+	time.Sleep(50 * time.Millisecond)
+
+	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k1", "v", 0)
+		p.Set(context.Background(), "k2", "v", 0)
+		return nil
+	})
+
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a failed recovery batch closed (or left admitting) the half-open breaker")
+	}
+}
+
 // abortHook aborts every batch with an error WITHOUT stamping the commands
 // and without calling next — the worst-case instrumentation hook.
 type abortHook struct{}
