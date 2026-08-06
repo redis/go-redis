@@ -104,6 +104,31 @@ func TestRecordBatchOutcomesFailuresBeforeSuccesses(t *testing.T) {
 	}
 }
 
+func TestRecordBatchOutcomesClosedStateKeepsArrivalOrder(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+	})}
+	db.cb.RecordFailure() // one stale failure below the threshold
+
+	// Closed breaker: the batch's successful reply arrived BEFORE its EOF,
+	// exactly like sequential single commands, whose ordering would reset
+	// the stale failure count. Failure-first recording here would combine
+	// the stale failure with the batch failure and open a healthy member's
+	// circuit; that ordering is only for half-open recovery probes.
+	cmds := []Cmder{
+		NewStatusCmd(context.Background(), "set", "k1", "v"),
+		NewStatusCmd(context.Background(), "set", "k2", "v"),
+	}
+	cmds[1].SetErr(io.EOF)
+	core.recordBatchOutcomes(db, cmds, io.EOF, true)
+
+	if got := db.cb.State(); got != imultidb.CircuitClosed {
+		t.Errorf("breaker state = %v, want closed (stale failure must be reset by the earlier success)", got)
+	}
+}
+
 func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{

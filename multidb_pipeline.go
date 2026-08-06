@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync/atomic"
+
+	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
 
 // This file makes MultiDBClient a full UniversalClient and wires pipelines
@@ -54,25 +56,19 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 		// successes for the untouched commands.
 		setCmdsErr(cmds, batchErr)
 	}
-	// Failures first, successes second: on a half-open breaker a batch's
-	// early successful replies could otherwise close the circuit before its
-	// own later failure is recorded, marking a failed recovery probe as a
-	// recovered database.
 	transportFailures := 0
 	recorded := 0
-	for _, cmd := range cmds {
+	recordOne := func(cmd Cmder) {
 		// Errors are classified with retryTimeout=true, mirroring the plain
 		// pipeline retry rule of *Client/*ClusterClient batch paths.
-		if classifyOutcome(cmd.rawErr(), true) == outcomeFailure {
-			db.cb.RecordFailure()
-			c.detector.RecordFailure(cmd.rawErr())
-			transportFailures++
-			recorded++
-		}
-	}
-	for _, cmd := range cmds {
 		switch classifyOutcome(cmd.rawErr(), true) {
 		case outcomeSuccess:
+			if !executed {
+				// A nil (or reply-class) error fabricated by an aborting
+				// hook is no proof the database answered: surface it to the
+				// caller, record nothing.
+				return
+			}
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
 			// Recovery traffic breaks the consecutive-failed-failover chain
@@ -80,11 +76,35 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			c.successSinceFailover.Store(true)
 			recorded++
 		case outcomeFailure:
-			// Recorded in the first pass.
+			db.cb.RecordFailure()
+			c.detector.RecordFailure(cmd.rawErr())
+			transportFailures++
+			recorded++
 		case outcomeNeutral:
 			// Not a database-health signal (client-side error or a locally
 			// synthesized Redis error such as ErrCrossSlot); surfaced to the
 			// caller as-is.
+		}
+	}
+	if db.cb.State() == imultidb.CircuitHalfOpen {
+		// Recovery probe: record failures BEFORE successes, so a batch that
+		// ultimately failed cannot close the circuit off its own successful
+		// prefix. Everywhere else the arrival order stands — mirroring
+		// sequential single commands, where a success resets the closed
+		// state's failure count before a later failure increments it.
+		for _, cmd := range cmds {
+			if classifyOutcome(cmd.rawErr(), true) == outcomeFailure {
+				recordOne(cmd)
+			}
+		}
+		for _, cmd := range cmds {
+			if classifyOutcome(cmd.rawErr(), true) != outcomeFailure {
+				recordOne(cmd)
+			}
+		}
+	} else {
+		for _, cmd := range cmds {
+			recordOne(cmd)
 		}
 	}
 	if recorded == 0 {
@@ -94,6 +114,20 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 		db.cb.ReleaseHalfOpen()
 	}
 	return transportFailures
+}
+
+// errMultiDBHImportCmd matches the HIMPORT command family, which is rejected
+// on MultiDBClient (see errMultiDBHImport): the direct methods are overridden,
+// and the batch paths below must reject them too — pipeline builders dispatch
+// through their own cmdable and would otherwise hand the command to a single
+// member's registry.
+func cmdsContainHImport(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if _, ok := cmd.(interface{ himportCmd() }); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // processPipeline is the batch analogue of process: an attempt loop bounded
@@ -109,6 +143,10 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	if c.closed.Load() {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
+	}
+	if cmdsContainHImport(cmds) {
+		setCmdsErr(cmds, errMultiDBHImport)
+		return errMultiDBHImport
 	}
 	attempts := c.opts.CommandRetries + 1
 	// A batch containing a non-retryable command (e.g. a streaming
@@ -197,6 +235,10 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if c.closed.Load() {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
+	}
+	if cmdsContainHImport(cmds) {
+		setCmdsErr(cmds, errMultiDBHImport)
+		return errMultiDBHImport
 	}
 	// A context that is already done must not reach the failover gate: with
 	// ProbeTargetBeforeFailover the doomed probes would damage candidate
