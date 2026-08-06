@@ -114,9 +114,22 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 	farm.Stop(1)
 	farm.Stop(2)
 
-	// Keep polling until the escalation reaches the terminal error: stopping
-	// at the first temporary error would let a regression that never
-	// increments the attempt budget pass unnoticed.
+	// Phase 1 — temporary unavailability, and recovery FROM the temporary
+	// phase: "temporary" promises callers that retrying can still succeed,
+	// so a member restarted during it must bring the client back without
+	// ever reaching the terminal error.
+	eventually(t, 20*time.Second, "temporary unavailability with all members down", func() bool {
+		return errors.Is(mdb.Set(ctx, "e2e:esc", "x", 0).Err(), redis.ErrTemporarilyNotAvailable)
+	})
+	farm.Start(1)
+	eventually(t, 20*time.Second, "recovery during the temporary phase", func() bool {
+		return mdb.Set(ctx, "e2e:esc", "y", 0).Err() == nil
+	})
+
+	// Phase 2 — escalation to the terminal error: with everything down
+	// again, the attempt budget must run out and report permanent
+	// unavailability (observing the temporary phase again on the way).
+	farm.Stop(1)
 	sawTemporary := false
 	eventually(t, 30*time.Second, "escalation to permanent unavailability", func() bool {
 		err := mdb.Set(ctx, "e2e:esc", "x", 0).Err()
@@ -131,7 +144,8 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 		t.Error("escalated straight to permanent without ever reporting ErrTemporarilyNotAvailable")
 	}
 
-	// Recovery: one member back is enough for one_available-style operation.
+	// Recovery: one member back is enough for one_available-style operation
+	// even after the terminal error was reported.
 	farm.Start(1)
 	eventually(t, 20*time.Second, "recovery after restart of member 1", func() bool {
 		return mdb.Set(ctx, "e2e:esc", "y", 0).Err() == nil
