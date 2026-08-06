@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 )
 
 // This file makes MultiDBClient a full UniversalClient and wires pipelines
@@ -42,26 +43,37 @@ func cmdsHaveAnyErr(cmds []Cmder) bool {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error) int {
-	// An executed batch always stamps at least the failing command (reply
-	// errors land on their command, transport errors are stamped on every
-	// command). A batch whose batch-level call failed while NO command
-	// carries an error therefore never reached execution — e.g. a member
-	// hook aborted before calling next. Only then does the batch error
-	// stand in for the commands, and it is stamped so callers see it.
-	// Substituting it per-command when some nil errors are successfully
-	// read replies would turn a successful prefix into phantom transport
-	// failures and replay it.
-	if batchErr != nil && !cmdsHaveAnyErr(cmds) {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed bool) int {
+	// A batch whose batch-level call failed while execution never started
+	// (the marker was not flipped — e.g. a member hook aborted before
+	// calling next) has no per-command verdicts: the batch error stands in
+	// for the commands and is stamped so callers see it. `executed` comes
+	// from the execution marker, not from inspecting command state: an
+	// executed all-success batch whose error was injected by a post-exec
+	// hook looks identical on the commands, and stamping it would turn
+	// already-applied writes into phantom transport failures and replay
+	// them.
+	if batchErr != nil && !executed && !cmdsHaveAnyErr(cmds) {
 		setCmdsErr(cmds, batchErr)
 	}
+	// Failures first, successes second: on a half-open breaker a batch's
+	// early successful replies could otherwise close the circuit before its
+	// own later failure is recorded, marking a failed recovery probe as a
+	// recovered database.
 	transportFailures := 0
 	recorded := 0
 	for _, cmd := range cmds {
-		err := cmd.rawErr()
-		// Pipelines mirror the plain pipeline retry rule (shouldRetry with
-		// retryTimeout=true), matching *Client/*ClusterClient batch paths.
-		switch classifyOutcome(err, true) {
+		// Errors are classified with retryTimeout=true, mirroring the plain
+		// pipeline retry rule of *Client/*ClusterClient batch paths.
+		if classifyOutcome(cmd.rawErr(), true) == outcomeFailure {
+			db.cb.RecordFailure()
+			c.detector.RecordFailure(cmd.rawErr())
+			transportFailures++
+			recorded++
+		}
+	}
+	for _, cmd := range cmds {
+		switch classifyOutcome(cmd.rawErr(), true) {
 		case outcomeSuccess:
 			db.cb.RecordSuccess()
 			c.detector.RecordSuccess()
@@ -70,10 +82,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			c.successSinceFailover.Store(true)
 			recorded++
 		case outcomeFailure:
-			db.cb.RecordFailure()
-			c.detector.RecordFailure(err)
-			transportFailures++
-			recorded++
+			// Recorded in the first pass.
 		case outcomeNeutral:
 			// Not a database-health signal (client-side error or a locally
 			// synthesized Redis error such as ErrCrossSlot); surfaced to the
@@ -147,8 +156,12 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			resetCmds(cmds)
 		}
 		attempt++
-		err := db.processPipelineHook(ctx, cmds)
-		transportFailures := c.recordBatchOutcomes(db, cmds, err)
+		// The marker tells recordBatchOutcomes whether execution started
+		// (fresh per attempt): command state alone cannot distinguish a
+		// pre-execution hook abort from a post-execution hook error.
+		executed := new(atomic.Bool)
+		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
+		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load())
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
@@ -202,7 +215,8 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		}
 	}
 
-	err := db.processTxPipelineHook(ctx, cmds)
+	executed := new(atomic.Bool)
+	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 	// Record outcomes only for the user's commands: cmds arrives wrapped by
 	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
 	// would advance the breaker by three per single-command transaction.
@@ -210,7 +224,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) >= 3 {
 		user = cmds[1 : len(cmds)-1]
 	}
-	c.recordBatchOutcomes(db, user, err)
+	c.recordBatchOutcomes(db, user, err, executed.Load())
 	return err
 }
 
