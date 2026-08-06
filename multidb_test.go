@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1220,6 +1221,141 @@ func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
 	mu.Unlock()
 	if len(got) != 0 {
 		t.Errorf("stale probe of a removed member fired callbacks: indexes %v", got)
+	}
+}
+
+func TestMultiDBFailoverNotBlockedByPubSubReconnect(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	// B's dialer blocks: a PubSub reconnect onto B must not run on the
+	// command path that triggered the failover.
+	dbB.cfg.Options.DialerRetries = 1
+	dbB.cfg.Options.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		select {
+		case <-time.After(1500 * time.Millisecond):
+		case <-ctx.Done():
+		}
+		return nil, io.EOF
+	}
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	sub := mdb.Subscribe(context.Background(), "ch")
+	defer sub.Close()
+
+	dbA.hook.fail.Store(true)
+	start := time.Now()
+	_ = mdb.Get(context.Background(), "k").Err()
+	if elapsed := time.Since(start); elapsed > 750*time.Millisecond {
+		t.Errorf("command blocked %v on PubSub reconnect work during failover", elapsed)
+	}
+}
+
+func TestMultiDBRejectsUnsupportedSentinelRouting(t *testing.T) {
+	mk := func(mutate func(*redis.FailoverOptions)) error {
+		fo := &redis.FailoverOptions{
+			MasterName:    "mymaster",
+			SentinelAddrs: []string{"127.0.0.1:26379"},
+		}
+		mutate(fo)
+		opts := baseOptions()
+		opts.Clients = []redis.MultiDBClientConfig{{
+			FailoverOptions: fo,
+			Weight:          1,
+			HealthChecks:    []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+		}}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		mdb, err := redis.NewMultiDBClient(ctx, opts)
+		if err == nil {
+			_ = mdb.Close()
+		}
+		return err
+	}
+
+	// NewFailoverClient panics for these options; a bad member config must
+	// surface as a constructor error, never a crash.
+	if err := mk(func(fo *redis.FailoverOptions) { fo.RouteByLatency = true }); err == nil {
+		t.Error("RouteByLatency member accepted, want a validation error")
+	}
+	if err := mk(func(fo *redis.FailoverOptions) { fo.RouteRandomly = true }); err == nil {
+		t.Error("RouteRandomly member accepted, want a validation error")
+	}
+}
+
+func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	dbA := newTestDB("a", "127.0.0.1:1", 3, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 2, true)
+	cancelCheck := &armableCancelCheck{cancel: cancel}
+	cancelCheck.armed.Store(true)
+	dbC := &testDB{
+		hook: &hookedDB{name: "c"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:3"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{cancelCheck},
+		},
+	}
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.Clients = append(opts.Clients, dbA.cfg, dbB.cfg, dbC.cfg)
+
+	// C's startup probe dies with the caller's context after quorum (A, B)
+	// is already met: initialization succeeds, and C — never actually
+	// probed — must not start life with an open breaker.
+	mdb, err := redis.NewMultiDBClient(parent, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	if !mdb.TestBreakerReserveHalfOpen(2) {
+		t.Error("canceled startup probe opened the unprobed member's breaker")
+	}
+}
+
+// panickyCheck panics on every probe — the worst-case custom health check.
+type panickyCheck struct{}
+
+func (panickyCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	panic("panicky health check")
+}
+
+func (panickyCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	panic("panicky health check")
+}
+
+func TestMultiDBDefaultPolicySurvivesPanickyCheck(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{panickyCheck{}},
+		},
+	}
+	opts := baseOptions()
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+
+	// A panicking custom check under the default policy must mark the member
+	// unhealthy, not crash initialization or the background loop.
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("active = %d, want 0 (the member with the panicking check is unhealthy)", got)
 	}
 }
 
