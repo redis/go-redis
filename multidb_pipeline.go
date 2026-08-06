@@ -145,8 +145,21 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		return ErrClosed
 	}
 	if cmdsContainHImport(cmds) {
-		setCmdsErr(cmds, errMultiDBHImport)
-		return errMultiDBHImport
+		// Reject only the HIMPORT commands themselves: the autopipeliner
+		// coalesces unrelated callers into one flush, and poisoning the
+		// whole batch would fail innocent commands that merely shared it.
+		kept := make([]Cmder, 0, len(cmds))
+		for _, cmd := range cmds {
+			if _, ok := cmd.(interface{ himportCmd() }); ok {
+				cmd.SetErr(errMultiDBHImport)
+				continue
+			}
+			kept = append(kept, cmd)
+		}
+		if len(kept) == 0 {
+			return errMultiDBHImport
+		}
+		cmds = kept
 	}
 	attempts := c.opts.CommandRetries + 1
 	// A batch containing a non-retryable command (e.g. a streaming
@@ -248,26 +261,37 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		setCmdsErr(cmds, err)
 		return err
 	}
-	// Detector before IsAllowed, as in the other gates: a tripped detector
-	// routes to failover, and a probe slot reserved on the way out would leak.
-	db, idx := c.activeSnapshot()
-	if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
-		if err := c.tryFailover(ctx, idx); err != nil {
+	// The gate loops like the other paths (detector before IsAllowed; a
+	// denied member triggers another failover, bounded by the rejection
+	// cap) — only the EXECUTION below stays single-shot, so at-most-once
+	// holds: no MULTI/EXEC has been sent while the gate is still choosing.
+	gateRejections := 0
+	maxGateRejections := c.memberCount() + 1
+	var db *multidbDatabase
+	for {
+		if err := ctx.Err(); err != nil {
 			resetCmds(cmds)
 			setCmdsErr(cmds, err)
 			return err
 		}
-		// Re-run the admission gate on the newly selected database: its
-		// breaker may be half-open, and executing without IsAllowed would
-		// bypass the bounded probe-slot accounting. Transactions run at
-		// most once, so a denied slot fails the call rather than looping.
-		db, _ = c.activeSnapshot()
-		if db == nil || !db.cb.IsAllowed() {
-			err := ErrTemporarilyNotAvailable
-			resetCmds(cmds)
-			setCmdsErr(cmds, err)
-			return err
+		var idx int
+		db, idx = c.activeSnapshot()
+		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+			gateRejections++
+			if gateRejections > maxGateRejections {
+				err := ErrTemporarilyNotAvailable
+				resetCmds(cmds)
+				setCmdsErr(cmds, err)
+				return err
+			}
+			if err := c.tryFailover(ctx, idx); err != nil {
+				resetCmds(cmds)
+				setCmdsErr(cmds, err)
+				return err
+			}
+			continue
 		}
+		break
 	}
 
 	executed := new(atomic.Bool)
