@@ -95,7 +95,7 @@ jobs:
         env:
           E2E_MULTIDB_TESTS: "true"
         run: |
-          go test -v -race -count=1 ./multidb/e2e/ -timeout 15m
+          go test -v -race -count=1 -timeout 15m ./multidb/e2e/...
         continue-on-error: false
 
       # Logs BEFORE the compose down below: `down` removes the containers,
