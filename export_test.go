@@ -159,3 +159,14 @@ func (c *MultiDBClient) TestProbeRacingRemoval(index int) {
 func (c *MultiDBClient) TestRunHealthChecksOnce() {
 	c.core.runHealthChecksOnce(context.Background())
 }
+
+// TestStaleRecordAfterRemoval simulates a probe that passed its removed-check
+// just before the member was removed: the breaker outcome lands after the
+// removal completed.
+func (c *MultiDBClient) TestStaleRecordAfterRemoval(index int) {
+	db := c.core.dbAt(index)
+	if err := c.core.removeDatabase(context.Background(), index); err != nil {
+		panic(err)
+	}
+	db.cb.RecordFailure()
+}

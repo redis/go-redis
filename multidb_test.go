@@ -1593,6 +1593,122 @@ func TestMultiDBAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 	}
 }
 
+func TestMultiDBStaleBreakerRecordAfterRemovalFiresNoCallback(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+
+	var mu sync.Mutex
+	var events []int
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+		mu.Lock()
+		events = append(events, dbIndex)
+		mu.Unlock()
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// A breaker outcome that lands AFTER the member was removed (the probe
+	// passed its removed-check just before the removal) must not surface a
+	// user callback: the recorded index is stale after the slice shift.
+	mdb.TestStaleRecordAfterRemoval(1)
+
+	time.Sleep(300 * time.Millisecond) // callbacks are delivered asynchronously
+	mu.Lock()
+	got := append([]int(nil), events...)
+	mu.Unlock()
+	if len(got) != 0 {
+		t.Errorf("stale breaker record on a removed member fired callbacks: indexes %v", got)
+	}
+}
+
+// armableBlockingCheck reports healthy immediately until armed; once armed it
+// blocks on its gate, letting a test hold the failover lock (via a probing
+// control operation) at will.
+type armableBlockingCheck struct {
+	armed atomic.Bool
+	gate  chan struct{}
+}
+
+func (c *armableBlockingCheck) CheckHealth(context.Context, *redis.Client) (bool, error) {
+	if c.armed.Load() {
+		<-c.gate
+	}
+	return true, nil
+}
+
+func (c *armableBlockingCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	if c.armed.Load() {
+		<-c.gate
+	}
+	return true, nil
+}
+
+func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
+	check := &armableBlockingCheck{gate: make(chan struct{})}
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	opts.HealthCheckTimeout = time.Hour // the blocking probe holds failoverMu until released
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	check.armed.Store(true)
+
+	// Hold failoverMu: SetActiveIndex probes B, and B's blocking check stalls
+	// with the lock held.
+	holderDone := make(chan struct{})
+	go func() {
+		defer close(holderDone)
+		_ = mdb.SetActiveIndex(context.Background(), 1)
+	}()
+	time.Sleep(100 * time.Millisecond) // let the holder acquire the lock
+
+	// Queue control operations whose context dies while they wait: neither
+	// may mutate membership once it finally gets the lock.
+	canceled, cancel := context.WithCancel(context.Background())
+	addDone := make(chan error, 1)
+	removeDone := make(chan error, 1)
+	go func() {
+		_, err := mdb.AddDatabase(canceled, redis.MultiDBClientConfig{
+			Options:                &redis.Options{Addr: "127.0.0.1:3"},
+			Weight:                 1,
+			HealthChecks:           []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+			SkipInitialHealthCheck: true, // no probe: the post-probe ctx check never runs
+		})
+		addDone <- err
+	}()
+	go func() { removeDone <- mdb.RemoveDatabase(canceled, 1) }()
+	time.Sleep(100 * time.Millisecond) // both queued behind the lock
+	cancel()
+	check.armed.Store(false)
+	close(check.gate) // release the lock holder
+
+	if err := <-addDone; !errors.Is(err, context.Canceled) {
+		t.Errorf("AddDatabase after canceled lock wait: err = %v, want context.Canceled", err)
+	}
+	if err := <-removeDone; !errors.Is(err, context.Canceled) {
+		t.Errorf("RemoveDatabase after canceled lock wait: err = %v, want context.Canceled", err)
+	}
+	<-holderDone
+
+	// Membership unchanged: B still present, no third member.
+	if err := mdb.SetWeight(1, 1.5); err != nil {
+		t.Errorf("member 1 disappeared after a canceled RemoveDatabase: %v", err)
+	}
+	if err := mdb.SetWeight(2, 1.5); err == nil {
+		t.Error("a member was added by a canceled AddDatabase")
+	}
+}
+
 // panickyCheck panics on every probe — the worst-case custom health check.
 type panickyCheck struct{}
 
