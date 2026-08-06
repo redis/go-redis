@@ -310,7 +310,13 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string,
 	if !found {
 		return false, fmt.Errorf("multidb: no matching bdb found for host %q", dbHost)
 	}
-	url := fmt.Sprintf("%s/v1/bdbs/%d/availability?extend_check=lag&availability_lag_tolerance_ms=%d",
+	// Endpoint-level, not database-level, availability: without the OSS
+	// cluster API the database check reports healthy while ANY endpoint is
+	// up, which can mask an outage of the endpoint this member uses. The
+	// /v1/local/ form is answered by the node the request reaches (the
+	// member's own host unless a custom base URL points elsewhere) and does
+	// not redirect to the primary node.
+	url := fmt.Sprintf("%s/v1/local/bdbs/%d/endpoint/availability?extend_check=lag&availability_lag_tolerance_ms=%d",
 		baseURL, uid, h.lagTolerance)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

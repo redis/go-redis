@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // withFakeClock returns the detector with a hand-driven clock so tests can
@@ -115,6 +117,33 @@ func TestCommandFailureDetector_IgnoresNilError(t *testing.T) {
 	}
 	if fd.ShouldFailover() {
 		t.Error("should not failover when only nil errors were recorded")
+	}
+}
+
+func TestCommandFailureDetector_TreatsRedisNilAsSuccess(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// redis.Nil (proto.Nil) is a well-formed server reply — a cache miss is
+	// proof of a healthy database. A miss-heavy workload must not trip the
+	// detector.
+	for i := 0; i < 10; i++ {
+		fd.RecordFailure(proto.Nil)
+	}
+
+	successes, failures := fd.Stats()
+	if failures != 0 {
+		t.Errorf("expected 0 failures for redis.Nil, got %d", failures)
+	}
+	if successes != 10 {
+		t.Errorf("expected redis.Nil to count as success, got %d", successes)
+	}
+	if fd.ShouldFailover() {
+		t.Error("should not failover on a miss-heavy workload")
 	}
 }
 

@@ -9,9 +9,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -349,6 +351,50 @@ type urlCapturingHTTPClient struct {
 func (c *urlCapturingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	c.urls = append(c.urls, req.URL.String())
 	return nil, context.DeadlineExceeded
+}
+
+// scriptedHTTPClient records URLs and plays back canned responses in order,
+// failing any request beyond the script.
+type scriptedHTTPClient struct {
+	urls      []string
+	responses []*http.Response
+}
+
+func (c *scriptedHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	c.urls = append(c.urls, req.URL.String())
+	if len(c.responses) == 0 {
+		return nil, context.DeadlineExceeded
+	}
+	resp := c.responses[0]
+	c.responses = c.responses[1:]
+	return resp, nil
+}
+
+func TestLagAwareChecksLocalEndpointAvailability(t *testing.T) {
+	bdbList := `[{"uid": 7, "endpoints": [{"dns_name": "redis.example.com", "addr": ["10.0.0.1"], "port": 6379}]}]`
+	capture := &scriptedHTTPClient{responses: []*http.Response{
+		{StatusCode: 200, Body: io.NopCloser(strings.NewReader(bdbList))},
+		{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`))},
+	}}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(capture))
+	client := redis.NewClient(&redis.Options{Addr: "redis.example.com:6379"})
+	defer client.Close()
+
+	ok, err := hc.CheckHealth(context.Background(), client)
+	if !ok || err != nil {
+		t.Fatalf("CheckHealth = (%v, %v), want healthy", ok, err)
+	}
+	if len(capture.urls) != 2 {
+		t.Fatalf("expected 2 REST calls, got %v", capture.urls)
+	}
+	// The availability probe must target the LOCAL ENDPOINT of the matched
+	// database: the database-level check reports healthy as long as ANY
+	// endpoint is up (without the OSS cluster API), which can mask an outage
+	// of the endpoint this member actually uses.
+	want := "https://redis.example.com:9443/v1/local/bdbs/7/endpoint/availability?extend_check=lag&availability_lag_tolerance_ms=5000"
+	if got := capture.urls[1]; got != want {
+		t.Errorf("availability URL = %q, want %q", got, want)
+	}
 }
 
 func TestLagAwareIPv6BaseURL(t *testing.T) {

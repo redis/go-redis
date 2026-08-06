@@ -8,6 +8,8 @@ import (
 	"errors"
 	"sync/atomic"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // FailureDetector decides when failover should be triggered based on a stream
@@ -170,6 +172,13 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if errors.Is(err, proto.Nil) {
+		// redis.Nil is a well-formed server reply (key missing) — proof of a
+		// healthy database. Count it as a success so miss-heavy workloads
+		// cannot trip the failure rate.
+		d.bucketFor(d.now().UnixNano()).successes.Add(1)
 		return
 	}
 	d.bucketFor(d.now().UnixNano()).failures.Add(1)

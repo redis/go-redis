@@ -139,10 +139,14 @@ func (cb *CircuitBreaker) CheckState() State {
 			if State(cb.state.Load()) == StateOpen {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
-				cb.state.Store(int32(StateHalfOpen))
-				cb.transitionMu.Unlock()
-				cb.notifyCallbacks(StateOpen, StateHalfOpen)
-				return StateHalfOpen
+				// CAS, not Store: a concurrent Reset may have just published
+				// Closed, and overwriting it with HalfOpen would silently
+				// undo the reset.
+				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+					cb.transitionMu.Unlock()
+					cb.notifyCallbacks(StateOpen, StateHalfOpen)
+					return StateHalfOpen
+				}
 			}
 			cb.transitionMu.Unlock()
 		}

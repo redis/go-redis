@@ -541,3 +541,32 @@ func TestCircuitBreaker_HalfOpenAdmissionNotErasedByTransition(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_ResetNotLostDuringHalfOpenTransition(t *testing.T) {
+	config := Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		OpenTimeout:      time.Nanosecond,
+	}
+
+	// Reset racing the open -> half-open transition must never be
+	// overwritten: whatever the interleaving, the breaker must not end up
+	// half-open after a Reset (either the Reset lands last, or the
+	// transition saw Closed and did nothing).
+	for i := 0; i < 5000; i++ {
+		cb := New(config)
+		cb.RecordFailure() // -> Open; the 1ns timeout has already elapsed
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; cb.CheckState() }()
+		go func() { defer wg.Done(); <-start; cb.Reset() }()
+		close(start)
+		wg.Wait()
+
+		if s := cb.State(); s == StateHalfOpen {
+			t.Fatalf("round %d: Reset lost — breaker half-open after Reset", i)
+		}
+	}
+}
+
