@@ -109,7 +109,13 @@ func TestAutoFallbackToHigherWeight(t *testing.T) {
 // Spec: test_all_databases_unreachable_error + escalation chain.
 func TestEscalationWhenAllMembersDown(t *testing.T) {
 	farm := newProxyFarm(t)
-	mdb := newE2EClient(t, fastMultiDBOptions(farm))
+	opts := fastMultiDBOptions(farm)
+	// A larger attempt budget than the harness default: the temporary phase
+	// must comfortably outlast a docker start (~1-2s), or the strict
+	// no-permanent-during-recovery assertion below flakes on the legitimate
+	// budget-exhaustion boundary (4 x 500ms was too tight).
+	opts.MaxFailoverAttempts = 10
+	mdb := newE2EClient(t, opts)
 	ctx := context.Background()
 
 	farm.Stop(0)
@@ -354,8 +360,10 @@ func TestSetWeightSteersFallback(t *testing.T) {
 	ctx := context.Background()
 
 	farm.Stop(0)
-	eventually(t, 15*time.Second, "failover away from member 0", func() bool {
-		return mdb.Set(ctx, "e2e:weight", "x", 0).Err() == nil && mdb.ActiveIndex() != 0
+	// The failover must land on member 1 (next weight): only then does the
+	// later switch to member 2 prove the runtime weight change steered it.
+	eventually(t, 15*time.Second, "failover to member 1", func() bool {
+		return mdb.Set(ctx, "e2e:weight", "x", 0).Err() == nil && mdb.ActiveIndex() == 1
 	})
 
 	// Member 2 becomes the heaviest healthy member: the next fallback pass

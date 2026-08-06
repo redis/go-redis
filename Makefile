@@ -125,6 +125,10 @@ test.e2e.docker:
 test.multidb.e2e:
 	@echo "Running MultiDB e2e tests (per-member proxies)..."
 	docker compose --profile multidb up -d
+	@echo "Waiting for the per-member proxies to be ready..."
+	@for port in 18120 18121 18122; do \
+		timeout 30 bash -c "until curl -s http://localhost:$$port/stats > /dev/null; do sleep 1; done" || (docker compose --profile multidb down && exit 1); \
+	done
 	@E2E_MULTIDB_TESTS=true go test -v -race -count=1 -timeout 15m ./multidb/e2e/... || (docker compose --profile multidb down && exit 1)
 	docker compose --profile multidb down
 	@echo "MultiDB e2e tests completed!"
