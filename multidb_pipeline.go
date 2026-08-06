@@ -22,16 +22,6 @@ func resetCmds(cmds []Cmder) {
 	}
 }
 
-// cmdsHaveAnyErr reports whether at least one command carries an error.
-func cmdsHaveAnyErr(cmds []Cmder) bool {
-	for _, cmd := range cmds {
-		if cmd.rawErr() != nil {
-			return true
-		}
-	}
-	return false
-}
-
 // recordBatchOutcomes records one breaker/detector outcome per command,
 // mirroring the single-command path: an error reply from the server proves
 // the database is reachable and counts as a success; transport-level errors
@@ -44,16 +34,24 @@ func cmdsHaveAnyErr(cmds []Cmder) bool {
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
 func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed bool) int {
-	// A batch whose batch-level call failed while execution never started
-	// (the marker was not flipped — e.g. a member hook aborted before
-	// calling next) has no per-command verdicts: the batch error stands in
-	// for the commands and is stamped so callers see it. `executed` comes
-	// from the execution marker, not from inspecting command state: an
-	// executed all-success batch whose error was injected by a post-exec
-	// hook looks identical on the commands, and stamping it would turn
-	// already-applied writes into phantom transport failures and replay
-	// them.
-	if batchErr != nil && !executed && !cmdsHaveAnyErr(cmds) {
+	// `executed` comes from the execution marker, not from inspecting
+	// command state: an executed all-success batch whose error was injected
+	// by a post-exec hook looks identical on the commands, and stamping it
+	// would turn already-applied writes into phantom transport failures and
+	// replay them.
+	if !executed {
+		if batchErr == nil {
+			// A member hook served the batch locally (returned nil without
+			// calling next): the results are valid for the caller, but
+			// nothing reached Redis — record no health signal and give the
+			// gate's probe slot back.
+			db.cb.ReleaseHalfOpen()
+			return 0
+		}
+		// Execution never started: the batch error stands in for every
+		// command the aborting hook did not stamp itself (setCmdsErr fills
+		// only empty slots), so a partially-stamped abort cannot fabricate
+		// successes for the untouched commands.
 		setCmdsErr(cmds, batchErr)
 	}
 	// Failures first, successes second: on a half-open breaker a batch's
@@ -121,6 +119,13 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	}
 
 	attempt := 0
+	// Bound consecutive gate rejections, mirroring the single-command path:
+	// with every selectable member half-open and probe budgets exhausted,
+	// failover keeps handing back members the gate rejects — surface
+	// unavailability instead of busy-looping the active index.
+	gateRejections := 0
+	maxGateRejections := c.memberCount() + 1
+
 	for attempt < attempts {
 		if err := ctx.Err(); err != nil {
 			// Overwrite any prior attempt's transport errors: callers that
@@ -137,6 +142,13 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// executing the batch — the reservation would leak.
 		db, idx := c.activeSnapshot()
 		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+			gateRejections++
+			if gateRejections > maxGateRejections {
+				err := ErrTemporarilyNotAvailable
+				resetCmds(cmds)
+				setCmdsErr(cmds, err)
+				return err
+			}
 			if err := c.tryFailover(ctx, idx); err != nil {
 				// Overwrite any prior attempt's transport errors so callers
 				// see the availability error, not a stale EOF (setCmdsErr
@@ -151,6 +163,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// Re-gating does not consume a retry attempt.
 			continue
 		}
+		gateRejections = 0
 
 		if attempt > 0 {
 			resetCmds(cmds)
