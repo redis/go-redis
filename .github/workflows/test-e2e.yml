@@ -60,3 +60,55 @@ jobs:
           echo "=== proxy-fault-injector logs ==="
           docker logs proxy-fault-injector 2>&1 | tail -100
 
+  test-multidb-e2e:
+    name: MultiDB E2E Tests (Per-Member Proxies)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version:
+          - stable
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Start Docker services for MultiDB E2E tests
+        run: docker compose --profile multidb up -d
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for Redis to be ready..."
+          timeout 30 bash -c 'until docker exec redis-standalone redis-cli ping 2>/dev/null; do sleep 1; done'
+          echo "Waiting for the per-member proxies to be ready..."
+          for port in 18120 18121 18122; do
+            timeout 30 bash -c "until curl -s http://localhost:$port/stats > /dev/null; do sleep 1; done"
+          done
+          echo "All services are ready!"
+
+      - name: Run MultiDB E2E tests
+        env:
+          E2E_MULTIDB_TESTS: "true"
+        run: |
+          go test -v -race -count=1 ./multidb/e2e/ -timeout 15m
+        continue-on-error: false
+
+      - name: Stop Docker services
+        if: always()
+        run: docker compose --profile multidb down
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: |
+          echo "=== Redis logs ==="
+          docker logs redis-standalone 2>&1 | tail -100
+          for c in cae-proxy-db0 cae-proxy-db1 cae-proxy-db2; do
+            echo "=== $c logs ==="
+            docker logs "$c" 2>&1 | tail -100
+          done
+
