@@ -124,8 +124,15 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 		return errors.Is(mdb.Set(ctx, "e2e:esc", "x", 0).Err(), redis.ErrTemporarilyNotAvailable)
 	})
 	farm.Start(1)
+	// Recovery must complete WITHIN the temporary phase: reaching the
+	// terminal error while a member is already back means the attempt
+	// budget was exhausted during the documented keep-retrying window.
 	eventually(t, 20*time.Second, "recovery during the temporary phase", func() bool {
-		return mdb.Set(ctx, "e2e:esc", "y", 0).Err() == nil
+		err := mdb.Set(ctx, "e2e:esc", "y", 0).Err()
+		if errors.Is(err, redis.ErrPermanentlyNotAvailable) {
+			t.Fatalf("escalated to permanent during the temporary-phase recovery window")
+		}
+		return err == nil
 	})
 
 	// Phase 2 — escalation to the terminal error: with everything down
