@@ -9,6 +9,7 @@ import (
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -645,7 +646,11 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // prepared on the active member is silently missing on the member a failover
 // switches to. Until registrations fan out across members (tracked as
 // follow-up work in the design doc), rejecting loudly beats half-working.
-var errMultiDBHImport = errors.New("redis: multidb: HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
+// A RedisError, not a plain error: the autopipeliner's sequential dispatch
+// treats a non-Redis error from one sub-batch as a fatal abort for the groups
+// behind it, and a rejected HIMPORT must fail only itself — never unrelated
+// commands that happened to be queued after it.
+var errMultiDBHImport = proto.RedisError("MULTIDB HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
 
 // HImportPrepare is not supported on MultiDBClient; see errMultiDBHImport.
 func (c *MultiDBClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
