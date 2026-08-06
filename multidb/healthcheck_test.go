@@ -353,8 +353,8 @@ func (c *urlCapturingHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return nil, context.DeadlineExceeded
 }
 
-// scriptedHTTPClient records URLs and plays back canned responses in order,
-// failing any request beyond the script.
+// scriptedHTTPClient records URLs and plays back canned responses in order —
+// a nil entry means a transport error — failing any request beyond the script.
 type scriptedHTTPClient struct {
 	urls      []string
 	responses []*http.Response
@@ -367,7 +367,67 @@ func (c *scriptedHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	}
 	resp := c.responses[0]
 	c.responses = c.responses[1:]
+	if resp == nil {
+		return nil, context.DeadlineExceeded
+	}
 	return resp, nil
+}
+
+// drainTrackingBody reports whether the response body was read to EOF before
+// being closed — the precondition for HTTP keep-alive connection reuse.
+type drainTrackingBody struct {
+	r      *strings.Reader
+	sawEOF bool
+}
+
+func (b *drainTrackingBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		b.sawEOF = true
+	}
+	return n, err
+}
+
+func (b *drainTrackingBody) Close() error { return nil }
+
+func TestLagAwareClusterTriesAllSeedAddresses(t *testing.T) {
+	bdbList := `[{"uid": 3, "endpoints": [{"dns_name": "seed2.example.com", "addr": [], "port": 6379}]}]`
+	capture := &scriptedHTTPClient{responses: []*http.Response{
+		nil, // seed1's REST API is unreachable
+		{StatusCode: 200, Body: io.NopCloser(strings.NewReader(bdbList))},
+		{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`))},
+	}}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(capture))
+	cc := redis.NewClusterClient(&redis.ClusterOptions{
+		Addrs: []string{"seed1.example.com:6379", "seed2.example.com:6379"},
+	})
+	defer cc.Close()
+
+	// The cluster can be perfectly healthy while the first seed is down; the
+	// lag check must try the remaining seeds instead of failing on Addrs[0].
+	ok, err := hc.CheckClusterHealth(context.Background(), cc)
+	if !ok || err != nil {
+		t.Fatalf("CheckClusterHealth = (%v, %v), want healthy via the second seed", ok, err)
+	}
+}
+
+func TestLagAwareDrainsAvailabilityBody(t *testing.T) {
+	bdbList := `[{"uid": 7, "endpoints": [{"dns_name": "redis.example.com", "addr": [], "port": 6379}]}]`
+	avail := &drainTrackingBody{r: strings.NewReader(`{"status":"ok"}`)}
+	capture := &scriptedHTTPClient{responses: []*http.Response{
+		{StatusCode: 200, Body: io.NopCloser(strings.NewReader(bdbList))},
+		{StatusCode: 200, Body: avail},
+	}}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(capture))
+	client := redis.NewClient(&redis.Options{Addr: "redis.example.com:6379"})
+	defer client.Close()
+
+	if ok, err := hc.CheckHealth(context.Background(), client); !ok || err != nil {
+		t.Fatalf("CheckHealth = (%v, %v), want healthy", ok, err)
+	}
+	if !avail.sawEOF {
+		t.Error("availability response body not drained before close: the keep-alive connection cannot be reused")
+	}
 }
 
 func TestLagAwareChecksLocalEndpointAvailability(t *testing.T) {

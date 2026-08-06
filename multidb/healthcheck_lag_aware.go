@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -270,7 +271,9 @@ func (h *LagAwareHealthCheck) CheckHealth(ctx context.Context, client *redis.Cli
 	return h.checkLagHealth(ctx, host, port)
 }
 
-// CheckClusterHealth performs a single REST API health check probe.
+// CheckClusterHealth performs a single REST API health check probe. Every
+// configured seed address is tried in order: the cluster can be healthy while
+// the first seed is unreachable or no longer part of the topology.
 func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	if h.configErr != nil {
 		return false, h.configErr
@@ -279,11 +282,23 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 	if len(opts.Addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")
 	}
-	host, port, ok := hostPortFromAddr(opts.Addrs[0])
-	if !ok {
-		return false, fmt.Errorf("multidb: cannot derive REST API host from address %q", opts.Addrs[0])
+	var lastErr error
+	for _, addr := range opts.Addrs {
+		host, port, ok := hostPortFromAddr(addr)
+		if !ok {
+			lastErr = fmt.Errorf("multidb: cannot derive REST API host from address %q", addr)
+			continue
+		}
+		healthy, err := h.checkLagHealth(ctx, host, port)
+		if healthy {
+			return true, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			break
+		}
 	}
-	return h.checkLagHealth(ctx, host, port)
+	return false, lastErr
 }
 
 func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string, dbPort int) (bool, error) {
@@ -330,6 +345,10 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string,
 		return false, err
 	}
 	defer resp.Body.Close()
+	// Drain the (small) body so the keep-alive connection is reusable: this
+	// check runs on every health-check tick, and an undrained body forces a
+	// fresh TCP/TLS handshake per probe. Bounded in case a proxy misbehaves.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return false, fmt.Errorf("multidb: availability check returned status %d", resp.StatusCode)
 	}
@@ -367,6 +386,8 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	if err := json.NewDecoder(resp.Body).Decode(&bdbs); err != nil {
 		return nil, err
 	}
+	// Drain any trailing bytes so the keep-alive connection is reusable.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	return bdbs, nil
 }
 

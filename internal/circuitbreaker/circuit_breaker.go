@@ -172,6 +172,16 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 			cb.requests.Add(-1) // Revert
 			return false
 		}
+		// Re-check after reserving: a probe failure may have re-opened the
+		// circuit in between (zeroing the counter), and admitting here would
+		// both send a request to the endpoint that just failed its recovery
+		// probe and leave a phantom reservation behind.
+		if State(cb.state.Load()) != StateHalfOpen {
+			if cb.requests.Add(-1) < 0 {
+				cb.requests.Store(0)
+			}
+			return false
+		}
 		return true
 	default:
 		return false
@@ -290,11 +300,16 @@ func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State) {
 // Reset resets the circuit breaker to closed state.
 // If the circuit was not already closed, callbacks are notified.
 func (cb *CircuitBreaker) Reset() {
-	oldState := State(cb.state.Swap(int32(StateClosed)))
+	// Clear the counters BEFORE Closed becomes visible: a failure recorded
+	// right after the swap must count against a fresh counter — off the
+	// stale one it could immediately re-open the circuit, and the
+	// lastFailure wipe below would then wedge it open past the
+	// zero-timestamp guard in CheckState.
 	cb.failures.Store(0)
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)
+	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
 		cb.notifyCallbacks(oldState, StateClosed)
 	}

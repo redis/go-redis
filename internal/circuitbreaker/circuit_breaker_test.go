@@ -570,3 +570,85 @@ func TestCircuitBreaker_ResetNotLostDuringHalfOpenTransition(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_ResetClearsCountersBeforePublishingClosed(t *testing.T) {
+	config := Config{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		OpenTimeout:      time.Hour,
+	}
+
+	// A failure racing Reset must count against a fresh counter: if Closed
+	// becomes visible while the counter still holds the count that opened
+	// the circuit, one failure re-opens it — and Reset then zeroes
+	// lastFailure, wedging the breaker open past its timeout guard.
+	const threshold = 20
+	config.FailureThreshold = threshold
+	for i := 0; i < 5000; i++ {
+		cb := New(config)
+		for f := 0; f < threshold; f++ {
+			cb.RecordFailure() // -> Open, failures == FailureThreshold
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; cb.Reset() }()
+		go func() {
+			defer wg.Done()
+			<-start
+			// Far fewer failures than the threshold: only the stale
+			// pre-reset count can push the breaker over the edge.
+			for f := 0; f < threshold/2; f++ {
+				cb.RecordFailure()
+			}
+		}()
+		close(start)
+		wg.Wait()
+
+		if s := cb.State(); s != StateClosed {
+			t.Fatalf("round %d: %d post-Reset failures (threshold %d) re-opened the circuit (state %v)",
+				i, threshold/2, threshold, s)
+		}
+	}
+}
+
+func TestCircuitBreaker_NoReservationSurvivesHalfOpenReopen(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    2,
+		MaxHalfOpenRequests: 2,
+		OpenTimeout:         time.Nanosecond,
+	}
+
+	// A reservation racing the half-open -> open transition must not stick:
+	// the transition zeroes the counter, and a late Add would both admit a
+	// request to the endpoint that just failed its probe and pollute the
+	// counter for the next half-open epoch.
+	for i := 0; i < 5000; i++ {
+		cb := New(config)
+		cb.RecordFailure()
+		cb.CheckState() // -> HalfOpen
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for g := 0; g < 4; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				cb.IsAllowed()
+			}()
+		}
+		wg.Add(1)
+		go func() { defer wg.Done(); <-start; cb.RecordFailure() }() // re-opens
+		close(start)
+		wg.Wait()
+
+		if State(cb.state.Load()) == StateOpen {
+			if r := cb.Stats().Requests; r > 0 {
+				t.Fatalf("round %d: reservation survived the half-open -> open transition (requests = %d)", i, r)
+			}
+		}
+	}
+}
+
