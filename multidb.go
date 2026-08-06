@@ -396,6 +396,14 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	// re-enabling retries for a running client that reads the shared struct).
 	private := *opts
 	private.Clients = append([]MultiDBClientConfig(nil), opts.Clients...)
+	if opts.CircuitBreakerConfig != nil {
+		// Nested mutable state: AddDatabase builds later members from this
+		// config, and a caller mutating the shared pointer after
+		// construction would give runtime-added members different breaker
+		// thresholds than the initial ones.
+		cbc := *opts.CircuitBreakerConfig
+		private.CircuitBreakerConfig = &cbc
+	}
 	opts = &private
 	if err := opts.init(); err != nil {
 		return nil, err

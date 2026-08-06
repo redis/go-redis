@@ -285,13 +285,20 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		if stateCallback != nil && !dbRef.removed.Load() {
 			// Deliver asynchronously (FIFO per database): state changes fire
 			// under internal locks, and a callback that calls a control API
-			// would otherwise self-deadlock. Removed members are filtered at
-			// dispatch time too — a stale probe snapshot may record an
-			// outcome after the removal, and its index no longer means
-			// anything to the user.
-			idx := int(dbRef.idx.Load())
+			// would otherwise self-deadlock. The removed flag and the index
+			// are (re-)read at DELIVERY time: a removal that lands while the
+			// callback is queued would otherwise surface a stale index that
+			// now points at a different member. A removal racing the final
+			// reads keeps an unavoidable instant-wide window — carrying the
+			// member identity (fqdn) in the callback is the follow-up API
+			// that closes it entirely.
 			from, to := oldState.String(), newState.String()
-			dbRef.cbq.dispatch(func() { stateCallback(idx, from, to) })
+			dbRef.cbq.dispatch(func() {
+				if dbRef.removed.Load() {
+					return
+				}
+				stateCallback(int(dbRef.idx.Load()), from, to)
+			})
 		}
 	})
 
@@ -307,17 +314,19 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	_, hasDeadline := ctx.Deadline()
 
 	probeHealthy := make([]bool, len(c.dbs))
-	probeNeutral := make([]bool, len(c.dbs))
 	for {
 		healthy := 0
 		for i, db := range c.dbs {
 			probeHealthy[i] = db.probe(ctx, c.opts.HealthCheckTimeout)
-			// A probe that failed because the caller's context ended is no
-			// verdict on the member (probe recorded nothing either).
-			probeNeutral[i] = !probeHealthy[i] && ctx.Err() != nil
 			if probeHealthy[i] {
 				healthy++
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			// A probe may report healthy even after the constructor's
+			// context expired (checks that notice cancellation late): a
+			// canceled construction must not return a live client.
+			return err
 		}
 		if healthy >= required {
 			break
@@ -340,13 +349,10 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	//  - a member that failed its probe gets its breaker opened, so automatic
 	//    failover cannot switch to a database already known to be down before
 	//    the background checks have had a chance to open it organically.
+	// The context check above guarantees the loop only breaks with a live
+	// context, so every probe verdict here is real (a canceled pass returns
+	// before this reconciliation).
 	for i, db := range c.dbs {
-		if probeNeutral[i] {
-			// Never actually probed (the caller's context ended first):
-			// leave the breaker untouched — the background checks will
-			// establish the member's real state.
-			continue
-		}
 		if probeHealthy[i] {
 			if db.cb.CheckState() != imultidb.CircuitClosed {
 				db.cb.Reset()
@@ -599,6 +605,12 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			announce()
 		}
 	}()
+	// Re-check after the lock wait: a command whose context expired while
+	// queued behind another failover must not still switch the active
+	// database (without pre-failover probes there is no later check).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Re-check under the lock: a concurrent failover may already have fixed
 	// the active database.
@@ -1040,7 +1052,10 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		// The detector window still holds outcomes recorded against the old
 		// active; left tripped, the very next command would immediately fail
 		// away from the just-recovered primary. Clear it, as the automatic
-		// and manual failover paths do.
+		// and manual failover paths do — and end the failed-failover chain:
+		// a successful fallback IS a recovery, and a later unrelated outage
+		// must escalate from a clean slate.
+		c.failoverAttempts = 0
 		c.detector.Reset()
 	}
 }
