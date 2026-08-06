@@ -396,6 +396,10 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	// re-enabling retries for a running client that reads the shared struct).
 	private := *opts
 	private.Clients = append([]MultiDBClientConfig(nil), opts.Clients...)
+	// AddDatabase merges the global checks into later members: a private
+	// slice keeps runtime-added members consistent with the initial ones
+	// even when the caller mutates its slice after construction.
+	private.HealthChecks = append([]MultiDBHealthCheck(nil), opts.HealthChecks...)
 	if opts.CircuitBreakerConfig != nil {
 		// Nested mutable state: AddDatabase builds later members from this
 		// config, and a caller mutating the shared pointer after
@@ -512,6 +516,11 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // fan-out semantics (summing across masters) instead of counting a single
 // arbitrary shard.
 func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
+	if c.core.closed.Load() {
+		cmd := NewIntCmd(ctx, "dbsize")
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		return db.cc.DBSize(ctx)
 	}
@@ -522,6 +531,11 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 // script on every shard — a single-shard load would make later EVALSHA calls
 // fail with NOSCRIPT on the other shards.
 func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCmd {
+	if c.core.closed.Load() {
+		cmd := NewStringCmd(ctx, "script", "load", script)
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		return db.cc.ScriptLoad(ctx, script)
 	}
@@ -531,6 +545,11 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 // ScriptFlush delegates to the active member (cluster members flush every
 // shard).
 func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
+	if c.core.closed.Load() {
+		cmd := NewStatusCmd(ctx, "script", "flush")
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		return db.cc.ScriptFlush(ctx)
 	}
@@ -541,6 +560,16 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 // per-shard answers so a script only counts as present when every shard has
 // it).
 func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *BoolSliceCmd {
+	if c.core.closed.Load() {
+		args := make([]interface{}, 2, 2+len(hashes))
+		args[0], args[1] = "script", "exists"
+		for _, h := range hashes {
+			args = append(args, h)
+		}
+		cmd := NewBoolSliceCmd(ctx, args...)
+		cmd.SetErr(ErrClosed)
+		return cmd
+	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
 		return db.cc.ScriptExists(ctx, hashes...)
 	}
