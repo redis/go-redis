@@ -2586,6 +2586,11 @@ func (c *ClusterClient) readTxPipelineReplies(
 			setCmdsErr(cmds, parseErr)
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
 		}
+		if n < 0 {
+			negErr := fmt.Errorf("redis: invalid EXEC array length %d", n)
+			setCmdsErr(cmds, negErr)
+			return &txOutcome{kind: txFatal, err: negErr, unreadReplies: true}
+		}
 		hasHImport := false
 		himportedIndexes := make(map[int]struct{})
 		for _, cmd := range cmds {
@@ -2632,6 +2637,11 @@ func (c *ClusterClient) readTxPipelineReplies(
 			parseErr := fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
 			setCmdsErr(cmds, parseErr)
 			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
+		}
+		if n < 0 {
+			negErr := fmt.Errorf("redis: invalid EXEC array length %d", n)
+			setCmdsErr(cmds, negErr)
+			return &txOutcome{kind: txFatal, err: negErr, unreadReplies: true}
 		}
 		for i := 0; i < n; i++ {
 			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {

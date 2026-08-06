@@ -1,5 +1,10 @@
 package redis
 
+// Tests for TxPipeline queued-command error handling. See issue #3800:
+// when Redis (or a proxy) rejects a queued tx command, the EXEC reply may
+// be a short/error array or never arrive, so the queued error must be
+// surfaced instead of an i/o timeout.
+
 import (
 	"bufio"
 	"bytes"
@@ -1154,6 +1159,60 @@ func TestTxPipelineExecQueuedErrorRejectsNegativeExecArrayLen(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid EXEC array length") {
 		t.Fatalf("Exec() error = %q, want invalid EXEC array length", err.Error())
+	}
+}
+
+func TestClusterTxPipelineQueuedErrorRejectsNegativeExecArrayLen(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.execReply = "*-2\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+	}
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if outcome.err == nil {
+		t.Fatal("outcome.err = nil, want malformed EXEC array error")
+	}
+	if !strings.Contains(outcome.err.Error(), "invalid EXEC array length") {
+		t.Fatalf("outcome.err = %q, want invalid EXEC array length", outcome.err.Error())
 	}
 }
 
