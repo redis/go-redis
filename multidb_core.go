@@ -392,6 +392,13 @@ func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
 
 func (c *multidbCore) activeIndex() int { return int(c.active.Load()) }
 
+// memberCount returns the current number of member databases.
+func (c *multidbCore) memberCount() int {
+	c.dbMu.RLock()
+	defer c.dbMu.RUnlock()
+	return len(c.dbs)
+}
+
 // activeSnapshot returns the active database, or nil when none is selected or
 // the index is stale after a removal. The index is loaded under dbMu so it is
 // coherent with the slice: RemoveDatabase shifts both under the write lock,
@@ -432,6 +439,13 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	var lastErr error
 
 	attempt := 0
+	// Bound consecutive gate rejections: when every selectable member is
+	// half-open with a full probe budget, failover keeps handing back
+	// members the gate then rejects — without a bound this ping-pongs the
+	// active index in a busy loop instead of surfacing unavailability.
+	gateRejections := 0
+	maxGateRejections := c.memberCount() + 1
+
 	for attempt < attempts {
 		if err := ctx.Err(); err != nil {
 			cmd.SetErr(err)
@@ -444,6 +458,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		// starve the recovering active's probe budget.
 		db, idx := c.activeSnapshot()
 		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+			gateRejections++
+			if gateRejections > maxGateRejections {
+				cmd.SetErr(ErrTemporarilyNotAvailable)
+				return ErrTemporarilyNotAvailable
+			}
 			if err := c.tryFailover(ctx, idx); err != nil {
 				cmd.SetErr(err)
 				return err
@@ -453,6 +472,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// probe slot. Re-gating does not consume a retry attempt.
 			continue
 		}
+		gateRejections = 0
 
 		if attempt > 0 {
 			// Clear the previous attempt's error so a successful retry does
@@ -523,6 +543,11 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 	switch {
 	case err == nil:
 		return outcomeSuccess
+	case errors.Is(err, pool.ErrPoolTimeout) || errors.Is(err, pool.ErrPoolExhausted):
+		// Local pool saturation: the command never reached the database, so
+		// this is capacity pressure on the client, not a health signal —
+		// the same classification the failure detector applies.
+		return outcomeNeutral
 	case shouldRetry(err, retryTimeout):
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
