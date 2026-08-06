@@ -456,6 +456,202 @@ func TestMultiDBBatchRegatesAfterFailover(t *testing.T) {
 	}
 }
 
+func TestMultiDBTxPipelineMarksAllCmdsNoRetry(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+
+	cmds, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		p.Get(context.Background(), "k")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("TxPipelined: %v", err)
+	}
+	// The cluster tx path trims the MULTI/EXEC envelope before running its
+	// retry check on the remaining user commands, so the at-most-once
+	// marker must ride on every command — a marker only on the synthetic
+	// MULTI lets a cluster member replay the transaction.
+	for i, cmd := range cmds {
+		if !cmd.NoRetry() {
+			t.Errorf("cmd %d (%s) not marked NoRetry — a cluster member could replay the transaction", i, cmd.Name())
+		}
+	}
+}
+
+func TestMultiDBBatchDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
+	newClient := func(t *testing.T, det *fakeDetector) (*redis.MultiDBClient, *testDB, *testDB) {
+		dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+		dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+		opts := baseOptions()
+		opts.FailureDetector = det
+		opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1, // one bounded half-open probe slot
+			GracePeriod:      30 * time.Millisecond,
+		}
+		mdb := newTestMultiDB(t, opts, dbA, dbB)
+		// A: half-open (recovering) with its single probe slot free.
+		mdb.TestBreakerRecordFailure(0)
+		time.Sleep(50 * time.Millisecond)
+		det.tripped.Store(true)
+		return mdb, dbA, dbB
+	}
+
+	// Detector-tripped batches must fail over without reserving the old
+	// active's half-open probe slot — nothing would record or release it.
+	t.Run("pipeline", func(t *testing.T) {
+		det := &fakeDetector{}
+		mdb, _, _ := newClient(t, det)
+		if _, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+			p.Set(context.Background(), "k", "v", 0)
+			return nil
+		}); err != nil {
+			t.Fatalf("Pipelined: %v", err)
+		}
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("pipeline detector failover leaked A's half-open probe slot")
+		}
+	})
+	t.Run("tx", func(t *testing.T) {
+		det := &fakeDetector{}
+		mdb, _, _ := newClient(t, det)
+		if _, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
+			p.Set(context.Background(), "k", "v", 0)
+			return nil
+		}); err != nil {
+			t.Fatalf("TxPipelined: %v", err)
+		}
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("tx detector failover leaked A's half-open probe slot")
+		}
+	})
+}
+
+// abortHook aborts every batch with an error WITHOUT stamping the commands
+// and without calling next — the worst-case instrumentation hook.
+type abortHook struct{}
+
+func (abortHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (abortHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (abortHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		return errors.New("aborted by hook")
+	}
+}
+
+func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one half-open probe slot; one success closes
+		GracePeriod:      30 * time.Millisecond,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, abortHook{}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// Half-open member: a batch aborted by a local hook (error returned,
+	// commands never stamped, Redis never contacted) must not be recorded
+	// as per-command successes — that would close the breaker off a purely
+	// client-side failure.
+	mdb.TestBreakerRecordFailure(0)
+	time.Sleep(50 * time.Millisecond)
+
+	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	})
+
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Fatal("setup: expected the breaker to still hand out its half-open slot")
+	}
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("breaker closed (or slot accounting lost) after a hook-aborted batch: unlimited admissions")
+	}
+}
+
+// cancelingFailHook fails every batch AND cancels the given context, so the
+// retry loop's next iteration sees a canceled context while the commands
+// still carry the previous attempt's transport errors.
+type cancelingFailHook struct{ cancel context.CancelFunc }
+
+func (h *cancelingFailHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *cancelingFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *cancelingFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.cancel()
+		err := io.EOF
+		for _, cmd := range cmds {
+			cmd.SetErr(err)
+		}
+		return err
+	}
+}
+
+func TestMultiDBPipelineContextErrorOverwritesStaleErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 10, // stay closed so the retry stays on this member
+		SuccessThreshold: 1,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, &cancelingFailHook{cancel: cancel}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// Attempt one fails at transport level and cancels the caller's context;
+	// the retry loop then returns the context error. The commands must carry
+	// that context error too — not the stale EOF of the failed attempt.
+	cmds, err := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "k", "v", 0)
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Pipelined err = %v, want context.Canceled", err)
+	}
+	for i, cmd := range cmds {
+		if !errors.Is(cmd.Err(), context.Canceled) {
+			t.Errorf("cmd %d error = %v, want context.Canceled (stale transport error kept)", i, cmd.Err())
+		}
+	}
+}
+
 func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
