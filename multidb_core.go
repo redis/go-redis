@@ -253,6 +253,10 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		db.c = NewFailoverClient(&opt)
 	case cfg.ClusterOptions != nil:
 		opt := *cfg.ClusterOptions
+		// The cluster client keeps the options pointer and reads Addrs on
+		// topology reloads: a private slice keeps a caller mutating its
+		// seed list from changing a running member.
+		opt.Addrs = append([]string(nil), cfg.ClusterOptions.Addrs...)
 		if opt.MaintNotificationsConfig == nil {
 			opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 		}
@@ -456,6 +460,14 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		cmd.SetErr(ErrClosed)
 		return ErrClosed
 	}
+	if _, ok := cmd.(interface{ himportCmd() }); ok {
+		// The typed HImport* methods are overridden to reject the family,
+		// but a hand-built HImport*Cmd through Process would bypass them
+		// and register a fieldset on a single member — the exact failover
+		// hazard the rejection prevents.
+		cmd.SetErr(errMultiDBHImport)
+		return errMultiDBHImport
+	}
 	attempts := c.opts.CommandRetries + 1
 	// Blocking commands (BLPOP, XREAD BLOCK, WAIT, ...) carry their own read
 	// timeout; a local read deadline on those must not be retried because
@@ -574,6 +586,10 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		// the same classification the failure detector applies.
 		return outcomeNeutral
 	case shouldRetry(err, retryTimeout):
+		// Includes broken transport of every flavor: shouldRetry matches
+		// any error carrying a Timeout() method (all net.OpErrors — resets,
+		// broken pipes) via isTimeoutError, not only io.EOF, so a hard
+		// member crash mid-read is recorded and drives failover.
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
 		return outcomeNeutral
@@ -736,11 +752,15 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
 			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
 			if c.opts.OnFailover != nil {
-				c.opts.OnFailover(ctx, from, to)
+				// Recovered like the circuit-state callbacks: announce also
+				// runs on the library-owned background loop (health-check
+				// driven failover, auto-fallback), where a panicking user
+				// callback would crash the process.
+				runCallbackSafely(func() { c.opts.OnFailover(ctx, from, to) })
 			}
 		}
 		if c.opts.OnActiveDatabaseChanged != nil {
-			c.opts.OnActiveDatabaseChanged(from, to)
+			runCallbackSafely(func() { c.opts.OnActiveDatabaseChanged(from, to) })
 		}
 		c.notifyPubSubs(ctx)
 	}
@@ -848,6 +868,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// probe, so this is the last chance to notice that the caller's context
 	// expired while the call queued behind another control operation.
 	if err := ctx.Err(); err != nil {
+		db.removed.Store(true)
 		_ = db.closeClient()
 		return -1, err
 	}
@@ -867,7 +888,9 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 		if err := ctx.Err(); err != nil {
 			// The caller's context ended while the probe ran (whatever the
 			// verdict): a canceled control operation must not mutate the
-			// membership.
+			// membership. Mark it removed first: the probe may already have
+			// queued circuit callbacks for an index that was never added.
+			db.removed.Store(true)
 			_ = db.closeClient()
 			return -1, err
 		}
@@ -884,6 +907,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 		// already drained c.dbs, so appending here would leak the client
 		// (nothing would ever close it).
 		c.dbMu.Unlock()
+		db.removed.Store(true)
 		_ = db.closeClient()
 		return -1, ErrClosed
 	}
@@ -893,6 +917,11 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 }
 
 func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
+	if c.closed.Load() {
+		// Consistent with the other control paths: the drained membership
+		// would otherwise surface as a misleading out-of-range error.
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
