@@ -676,19 +676,22 @@ func TestMultiDBBatchRejectsHImport(t *testing.T) {
 	// The direct HImport* overrides reject the family, but pipeline and tx
 	// builders dispatch through their own cmdable — the batch paths must
 	// reject HIMPORT commands too, or registrations would land in a single
-	// member's registry and break after failover.
-	cmds, err := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+	// member's registry and break after failover. In plain pipelines only
+	// the HIMPORT command itself fails (see the poisoning test below); a
+	// transaction is atomic, so the whole tx is rejected.
+	cmds, _ := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
 		p.HImportPrepare(ctx, "fs", "f1")
 		p.Set(ctx, "k", "v", 0)
 		return nil
 	})
-	if err == nil {
-		t.Error("Pipelined with HIMPORT succeeded, want rejection")
+	if len(cmds) != 2 {
+		t.Fatalf("got %d cmds, want 2", len(cmds))
 	}
-	for i, cmd := range cmds {
-		if cmd.Err() == nil {
-			t.Errorf("pipeline cmd %d has nil error in a rejected batch", i)
-		}
+	if cmds[0].Err() == nil {
+		t.Error("pipelined HIMPORT command not rejected")
+	}
+	if err := cmds[1].Err(); err != nil {
+		t.Errorf("innocent pipelined command rejected: %v", err)
 	}
 
 	if _, err := mdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
@@ -860,6 +863,74 @@ func TestMultiDBPartiallyStampedAbortDoesNotFabricateSuccesses(t *testing.T) {
 		if cmd.Err() == nil {
 			t.Errorf("cmd %d left without an error after an aborted batch", i)
 		}
+	}
+}
+
+func TestMultiDBBatchHImportDoesNotPoisonOtherCommands(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	ctx := context.Background()
+
+	// An unsupported HIMPORT command in a batch (e.g. coalesced by the
+	// autopipeliner with unrelated callers' commands) must fail ONLY itself:
+	// poisoning the whole flush would fail innocent commands that merely
+	// shared the batch.
+	cmds, _ := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "k1", "v", 0)
+		p.HImportPrepare(ctx, "fs", "f1")
+		p.Set(ctx, "k2", "v", 0)
+		return nil
+	})
+	if len(cmds) != 3 {
+		t.Fatalf("got %d cmds, want 3", len(cmds))
+	}
+	if err := cmds[0].Err(); err != nil {
+		t.Errorf("innocent cmd 0 poisoned by the HIMPORT rejection: %v", err)
+	}
+	if err := cmds[1].Err(); err == nil {
+		t.Error("HIMPORT command not rejected")
+	}
+	if err := cmds[2].Err(); err != nil {
+		t.Errorf("innocent cmd 2 poisoned by the HIMPORT rejection: %v", err)
+	}
+}
+
+func TestMultiDBTxRetriesAnotherMemberWhenHalfOpenFull(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one probe slot
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// B: half-open with its only probe slot taken; A: healthy and closed.
+	// A detector-tripped transaction fails over to B, is denied a probe
+	// slot — and must then fail over again (back to closed A) rather than
+	// reject the transaction: no MULTI/EXEC was sent yet, so another
+	// failover cannot violate at-most-once.
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(50 * time.Millisecond)
+	if !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Fatal("setup: expected to reserve B's probe slot")
+	}
+
+	det.tripped.Store(true)
+	if _, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	}); err != nil {
+		t.Fatalf("TxPipelined = %v, want success on the closed member", err)
+	}
+	if got := dbA.hook.batches.Load(); got != 1 {
+		t.Errorf("batches on A = %d, want 1 (transaction should land back on the closed member)", got)
+	}
+	if got := dbB.hook.batches.Load(); got != 0 {
+		t.Errorf("batches on B = %d, want 0 (no probe slot available)", got)
 	}
 }
 
