@@ -2367,6 +2367,45 @@ func TestReleaseConnRemovesConnectionAfterPartialPushRead(t *testing.T) {
 	}
 }
 
+func TestReleaseConnRemovesConnectionAfterReaderBufferedPartialPushRead(t *testing.T) {
+	cp := &releaseRecordingPool{}
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		connPool:      cp,
+		pushProcessor: push.NewProcessor(),
+	}
+
+	cn, cleanup := newReaderBufferedPushConn(t, []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$3\r\nfo"))
+	defer cleanup()
+
+	c.releaseConn(context.Background(), cn, nil)
+
+	if cp.removes != 1 || cp.puts != 0 {
+		t.Fatalf("reader-buffered partial push read must remove, not re-pool, the connection: removes=%d puts=%d",
+			cp.removes, cp.puts)
+	}
+}
+
+func TestReleaseConnRemovesConnectionAfterCustomProcessorError(t *testing.T) {
+	cp := &releaseRecordingPool{}
+	proc := erroringProcessor{push.NewProcessor(), proto.NewOOMError("OOM custom processor failure")}
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		connPool:      cp,
+		pushProcessor: proc,
+	}
+
+	cn, cleanup := newReaderBufferedPushConn(t, invalidateFrame("foo"))
+	defer cleanup()
+
+	c.releaseConn(context.Background(), cn, nil)
+
+	if cp.removes != 1 || cp.puts != 0 {
+		t.Fatalf("custom-processor drain error must remove, not re-pool, the connection: removes=%d puts=%d",
+			cp.removes, cp.puts)
+	}
+}
+
 // bufferedNetConn models a wrapper such as tls.Conn: bytes may already be
 // buffered inside the wrapper while NetConn's raw socket is empty.
 type bufferedNetConn struct {

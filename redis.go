@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1050,15 +1051,12 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		p.Remove(ctx, cn, err)
 		return
 	}
-	// process any pending push notifications before returning the connection to the pool
-	if err := c.processPushNotifications(ctx, cn); err != nil {
+	// Release-time draining keeps the caller's handler context/client identity,
+	// but any drain error is still treated as connection-fatal.
+	if _, err := c.drainPushNotificationsOnRelease(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before releasing connection: %v", err)
-		if isBadConn(err, false, c.opt.Addr) {
-			// A mid-frame read failure may leave the reply stream
-			// desynchronized, so the connection cannot be reused.
-			p.Remove(ctx, cn, err)
-			return
-		}
+		p.Remove(ctx, cn, err)
+		return
 	}
 	if c.cscTrackingRequested() {
 		// A TLS-like wrapper can retain decrypted bytes after the command
@@ -1068,6 +1066,53 @@ func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *p
 		cn.MarkCscReadPending()
 	}
 	p.Put(ctx, cn)
+}
+
+func (c *baseClient) drainPushNotificationsOnRelease(ctx context.Context, cn *pool.Conn) (processorSucceeded bool, err error) {
+	if c.opt.Protocol != 3 || c.pushProcessor == nil {
+		return false, nil
+	}
+	readPending := cn.TakeCscReadPending()
+	periodicReadPending := cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval)
+	socketData, socketErr := cn.CheckForData()
+	if socketErr != nil {
+		return false, socketErr
+	}
+	hasData := cn.HasBufferedData() || socketData
+	if !readPending && !periodicReadPending && !hasData {
+		return false, nil
+	}
+	if !hasData {
+		err := cn.WithReaderHardDeadline(cscDrainProbeReadCap, func(rd *proto.Reader) error {
+			_, err := rd.Peek(1)
+			return err
+		})
+		if err != nil {
+			if isTimeout, hasTimeoutFlag := isTimeoutError(err); isTimeout && hasTimeoutFlag {
+				return false, nil
+			}
+			return false, err
+		}
+	}
+
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+		if processor, ok := c.pushProcessor.(*push.Processor); ok {
+			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+		}
+		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	})
+	if err != nil {
+		if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+			if isBadConn(err, false, c.opt.Addr) {
+				return true, err
+			}
+			return true, nil
+		}
+		internal.Logger.Printf(context.Background(), "csc: drain: custom push processor error (removing conn): %v", err)
+		return true, err
+	}
+	return true, nil
 }
 
 func (c *baseClient) withConn(
@@ -1829,6 +1874,32 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
+			var execArrayErr *txQueuedExecArrayError
+			if errors.As(err, &execArrayErr) && len(execArrayErr.himportedIndexes) > 0 {
+				filtered := make([]Cmder, len(trimmedCmds))
+				for i, cmd := range trimmedCmds {
+					if _, ok := cmd.(himportCmder); !ok {
+						filtered[i] = cmd
+						continue
+					}
+					if _, ok := execArrayErr.himportedIndexes[i]; ok {
+						filtered[i] = cmd
+					}
+				}
+				c.himportAfterBatch(cn, injected, filtered)
+			}
+			if errors.As(err, &execArrayErr) {
+				setCmdsErr(cmds[:1], err)
+				for i := 0; i < execArrayErr.readCount; i++ {
+					if _, ok := execArrayErr.himportedIndexes[i]; ok {
+						continue
+					}
+					setCmdsErr(trimmedCmds[i:i+1], err)
+				}
+				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
+				setCmdsErr(cmds[len(cmds)-1:], err)
+				return err
+			}
 			setCmdsErr(cmds, err)
 			return err
 		}
@@ -1846,6 +1917,63 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, nil
 }
 
+type txQueuedExecAbortError struct {
+	queuedErr error
+	execErr   error
+}
+
+type txQueuedExecArrayError struct {
+	queuedErr        error
+	himportedIndexes map[int]struct{}
+	readCount        int
+}
+
+type txQueuedReadError struct {
+	queuedErr error
+	readErr   error
+	forceBad  bool
+}
+
+func (e *txQueuedExecAbortError) Error() string {
+	return fmt.Sprintf("%v (exec: %v)", e.queuedErr, e.execErr)
+}
+
+func (e *txQueuedExecAbortError) Unwrap() []error {
+	return []error{e.queuedErr, e.execErr}
+}
+
+func (e *txQueuedExecArrayError) Error() string {
+	return e.queuedErr.Error()
+}
+
+func (e *txQueuedExecArrayError) Unwrap() error {
+	return e.queuedErr
+}
+
+func (e *txQueuedReadError) Error() string {
+	return fmt.Sprintf("%v (queued command failed: %v)", e.readErr, e.queuedErr)
+}
+
+func (e *txQueuedReadError) Unwrap() []error {
+	return []error{e.queuedErr, e.readErr}
+}
+
+func discardExecResult(rd *proto.Reader) error {
+	for {
+		line, err := rd.ReadLine()
+		if err != nil {
+			return err
+		}
+		if line[0] == proto.RespAttr {
+			if err := rd.Discard(line); err != nil {
+				return err
+			}
+			continue
+		}
+		return rd.Discard(line)
+	}
+}
+
 // txPipelineReadQueued reads queued replies from the Redis server.
 // It returns an error if the server returns an error or if the number of replies does not match the number of commands.
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
@@ -1859,21 +1987,33 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
+	var queuedErr error
 	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			if queuedErr != nil {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+			}
+			return err
 		}
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
 			if !isRedisError(err) {
+				if queuedErr != nil {
+					return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+				}
 				return err
+			}
+			if queuedErr == nil {
+				queuedErr = err
 			}
 		}
 	}
-
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		if queuedErr != nil {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+		}
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse number of replies.
@@ -1882,11 +2022,59 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if err == Nil {
 			err = TxFailedErr
 		}
+		if queuedErr != nil && !isRedisError(err) {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+		}
+		if queuedErr != nil && isRedisError(err) {
+			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}
+		}
 		return err
 	}
 
 	if line[0] != proto.RespArray {
 		return fmt.Errorf("redis: expected '*', but got line %q", line)
+	}
+
+	if queuedErr != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			return fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+		}
+		if n < 0 {
+			return fmt.Errorf("redis: invalid EXEC array length %d", n)
+		}
+		hasHImport := false
+		himportedIndexes := make(map[int]struct{})
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+			}
+			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					himportedIndexes[i] = struct{}{}
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+					}
+					continue
+				}
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+			}
+		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes, readCount: readCount}
 	}
 
 	return nil

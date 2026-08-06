@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2206,11 +2207,13 @@ const (
 // when the read loop exited before consuming all N+2 replies, leaving bytes
 // on the wire.
 type txOutcome struct {
-	kind          txOutcomeKind
-	err           error
-	addr          string
-	execErr       error
-	unreadReplies bool
+	kind             txOutcomeKind
+	err              error
+	addr             string
+	execErr          error
+	himportedIndexes map[int]struct{}
+	readCount        int
+	unreadReplies    bool
 }
 
 // txRedirect records the first queue-stage redirect (MOVED/ASK/TRYAGAIN) seen
@@ -2463,8 +2466,18 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return nil
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
-		if outcome != nil && outcome.kind == txSuccess {
-			node.Client.himportAfterBatch(cn, injected, cmds)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			filtered := make([]Cmder, len(cmds))
+			for i, cmd := range cmds {
+				if _, ok := cmd.(himportCmder); !ok {
+					filtered[i] = cmd
+					continue
+				}
+				if _, ok := outcome.himportedIndexes[i]; ok {
+					filtered[i] = cmd
+				}
+			}
+			node.Client.himportAfterBatch(cn, injected, filtered)
 		}
 		return nil
 	})
@@ -2541,6 +2554,19 @@ func (c *ClusterClient) readTxPipelineReplies(
 	line, err := rd.ReadLine()
 	if err != nil {
 		if !isRedisError(err) {
+			if firstFatal != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+			}
+			if firstRedirect != nil {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}, unreadReplies: true}
+				}
+			}
 			return c.txReadFatal(err) // IO error
 		}
 		return c.classifyExecError(err, firstRedirect, firstFatal)
@@ -2553,17 +2579,136 @@ func (c *ClusterClient) readTxPipelineReplies(
 		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 	}
 
+	if firstFatal != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			parseErr := fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+			setCmdsErr(cmds, parseErr)
+			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
+		}
+		if n < 0 {
+			negErr := fmt.Errorf("redis: invalid EXEC array length %d", n)
+			setCmdsErr(cmds, negErr)
+			return &txOutcome{kind: txFatal, err: negErr, unreadReplies: true}
+		}
+		hasHImport := false
+		himportedIndexes := make(map[int]struct{})
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
+			}
+			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					himportedIndexes[i] = struct{}{}
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
+					}
+					continue
+				}
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true}, unreadReplies: true}
+			}
+		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		for i := 0; i < readCount; i++ {
+			if _, ok := himportedIndexes[i]; ok {
+				continue
+			}
+			setCmdsErr(cmds[i:i+1], firstFatal)
+		}
+		setCmdsErr(cmds[readCount:], firstFatal)
+		return &txOutcome{kind: txFatal, err: firstFatal, himportedIndexes: himportedIndexes, readCount: readCount}
+	}
+	if firstRedirect != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			parseErr := fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err)
+			setCmdsErr(cmds, parseErr)
+			return &txOutcome{kind: txFatal, err: parseErr, unreadReplies: true}
+		}
+		if n < 0 {
+			negErr := fmt.Errorf("redis: invalid EXEC array length %d", n)
+			setCmdsErr(cmds, negErr)
+			return &txOutcome{kind: txFatal, err: negErr, unreadReplies: true}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, unreadReplies: true}
+				}
+				return c.txReadFatal(err)
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true}, unreadReplies: true}
+				}
+				return c.txReadFatal(err)
+			}
+		}
+		switch {
+		case firstRedirect.moved:
+			return &txOutcome{kind: txRetryMoved, err: firstRedirect.err, addr: firstRedirect.addr}
+		case firstRedirect.ask:
+			return &txOutcome{kind: txRetryAsk, err: firstRedirect.err, addr: firstRedirect.addr}
+		case firstRedirect.tryAgain:
+			return &txOutcome{kind: txRetryTryAgain, err: firstRedirect.err}
+		default:
+			return &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx redirect outcome missing after draining EXEC array"), unreadReplies: true}
+		}
+	}
+
 	// Success: read the N command results.
+	hasHImport := false
+	himportedIndexes := make(map[int]struct{})
+	for _, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); ok {
+			hasHImport = true
+			break
+		}
+	}
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
 		return c.txReadFatal(err) // IO error mid-results
 	}
-	return &txOutcome{kind: txSuccess}
+	if hasHImport {
+		for i, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				himportedIndexes[i] = struct{}{}
+			}
+		}
+	}
+	return &txOutcome{kind: txSuccess, himportedIndexes: himportedIndexes, readCount: len(cmds)}
 }
 
 func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {
 	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
+}
+
+func (c *ClusterClient) txProcessPushErr(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) error {
+	return node.Client.processPendingPushNotificationWithReader(ctx, cn, rd)
 }
 
 // txReadFatal classifies a read-phase IO error. The MULTI..EXEC batch was
