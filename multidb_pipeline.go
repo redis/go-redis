@@ -155,7 +155,11 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		setCmdsErr(cmds, ErrClosed)
 		return ErrClosed
 	}
-	var himportErr error
+	// orig keeps the caller's slice for the final error: rejected HIMPORT
+	// commands stay in it, so cmdsFirstErr reports the POSITIONALLY first
+	// failure like Pipeline.Exec would.
+	orig := cmds
+	himportRejected := false
 	if cmdsContainHImport(cmds) {
 		// Reject only the HIMPORT commands themselves: the autopipeliner
 		// coalesces unrelated callers into one flush, and poisoning the
@@ -172,10 +176,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			return errMultiDBHImport
 		}
 		cmds = kept
-		// The batch as a whole still failed partially: callers relying on
-		// the Exec/Pipelined error must see it even when every kept command
-		// succeeds.
-		himportErr = errMultiDBHImport
+		himportRejected = true
 	}
 	attempts := c.opts.CommandRetries + 1
 	// A batch containing a non-retryable command (e.g. a streaming
@@ -245,17 +246,18 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
-			// user-level outcome is.
-			if err == nil && himportErr != nil {
-				return himportErr
+			// user-level outcome is. With a rejected HIMPORT in the batch
+			// the positionally first error over the ORIGINAL slice wins,
+			// like Pipeline.Exec reports it.
+			if himportRejected {
+				if ferr := cmdsFirstErr(orig); ferr != nil {
+					return ferr
+				}
 			}
 			return err
 		}
 	}
-	if err := cmdsFirstErr(cmds); err != nil {
-		return err
-	}
-	return himportErr
+	return cmdsFirstErr(orig)
 }
 
 // processTxPipeline executes a MULTI/EXEC pipeline against the active
@@ -461,15 +463,27 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 // call time. Unlike Subscribe/PSubscribe, sharded subscriptions do not follow
 // the active database across failovers yet.
 func (c *MultiDBClient) SSubscribe(ctx context.Context, channels ...string) *PubSub {
-	db, _ := c.core.activeSnapshot()
-	if db != nil && db.cc != nil {
-		return db.cc.SSubscribe(ctx, channels...)
+	// The closed check keeps a Close race from delegating to a member that
+	// is being torn down: the MultiDB PubSub path below fails dials with
+	// the terminal ErrClosed instead.
+	if !c.core.closed.Load() {
+		db, _ := c.core.activeSnapshot()
+		if db != nil && db.cc != nil {
+			return db.cc.SSubscribe(ctx, channels...)
+		}
+		if db != nil {
+			return db.c.SSubscribe(ctx, channels...)
+		}
 	}
-	if db != nil {
-		return db.c.SSubscribe(ctx, channels...)
+	// No active database (or closed): return a PubSub that fails to
+	// connect — with the requested channels registered, like Subscribe and
+	// PSubscribe, so the failure surfaces on use instead of silently
+	// subscribing to nothing.
+	pubsub := c.core.newPubSub()
+	if len(channels) > 0 {
+		_ = pubsub.SSubscribe(ctx, channels...)
 	}
-	// No active database: return a PubSub that fails to connect.
-	return c.core.newPubSub()
+	return pubsub
 }
 
 // PoolStats returns the connection pool statistics of the active database.
