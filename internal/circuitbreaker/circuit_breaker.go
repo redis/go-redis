@@ -203,8 +203,23 @@ func (cb *CircuitBreaker) ReleaseHalfOpen() {
 	}
 }
 
-// RecordSuccess records a successful operation.
+// RecordSuccess records a successful operation that was admitted through
+// IsAllowed. In half-open state the completed probe's admission slot is
+// released when the circuit does not close.
 func (cb *CircuitBreaker) RecordSuccess() {
+	cb.recordSuccess(true)
+}
+
+// RecordExternalSuccess records a successful operation that was NOT admitted
+// through IsAllowed (e.g. an out-of-band health check). It counts toward
+// closing a half-open circuit but never releases an admission slot it did
+// not hold — releasing one would let more than MaxHalfOpenRequests requests
+// reach a recovering service.
+func (cb *CircuitBreaker) RecordExternalSuccess() {
+	cb.recordSuccess(false)
+}
+
+func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 	state := State(cb.state.Load())
 
 	switch state {
@@ -229,12 +244,14 @@ func (cb *CircuitBreaker) RecordSuccess() {
 			}
 			return
 		}
-		// The probe completed but the circuit is still half-open: give its
-		// admission slot back, so MaxHalfOpenRequests bounds CONCURRENT
-		// probes rather than a lifetime budget. Without this, a
-		// MaxHalfOpenRequests lower than SuccessThreshold could never
-		// accumulate enough successes to close the circuit.
-		cb.ReleaseHalfOpen()
+		if heldSlot {
+			// The probe completed but the circuit is still half-open: give
+			// its admission slot back, so MaxHalfOpenRequests bounds
+			// CONCURRENT probes rather than a lifetime budget. Without this,
+			// a MaxHalfOpenRequests lower than SuccessThreshold could never
+			// accumulate enough successes to close the circuit.
+			cb.ReleaseHalfOpen()
+		}
 	case StateClosed:
 		// Reset failure count on success
 		cb.failures.Store(0)

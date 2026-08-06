@@ -570,6 +570,38 @@ func TestCircuitBreaker_ResetNotLostDuringHalfOpenTransition(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_ExternalSuccessDoesNotReleaseCommandSlots(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    3,
+		MaxHalfOpenRequests: 1,
+		OpenTimeout:         time.Nanosecond,
+	}
+	cb := New(config)
+	cb.RecordFailure()
+	cb.CheckState() // -> HalfOpen
+
+	if !cb.IsAllowed() {
+		t.Fatal("setup: expected to reserve the only half-open slot")
+	}
+
+	// An out-of-band success (e.g. a background health check) never held an
+	// admission slot, so it must not release the one a real command probe is
+	// still using — that would let more than MaxHalfOpenRequests hit a
+	// recovering database.
+	cb.RecordExternalSuccess()
+	if cb.IsAllowed() {
+		t.Error("external success released a command probe's half-open slot")
+	}
+
+	// It still counts toward closing the circuit.
+	cb.RecordExternalSuccess()
+	cb.RecordExternalSuccess() // successes reach SuccessThreshold
+	if got := cb.State(); got != StateClosed {
+		t.Errorf("state = %v after SuccessThreshold external successes, want Closed", got)
+	}
+}
+
 func TestCircuitBreaker_ResetClearsCountersBeforePublishingClosed(t *testing.T) {
 	config := Config{
 		FailureThreshold: 2,
