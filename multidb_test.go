@@ -988,6 +988,241 @@ func TestMultiDBSubscribeAfterCloseReturnsErrClosed(t *testing.T) {
 	}
 }
 
+func TestMultiDBDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one bounded half-open probe slot
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// A: open its breaker and wait out the grace period, so the active is
+	// half-open (recovering) with its single probe slot free.
+	mdb.TestBreakerRecordFailure(0)
+	time.Sleep(50 * time.Millisecond)
+
+	// A detector-tripped command fails over to B. It must not reserve A's
+	// half-open probe slot on the way out: nothing would ever record or
+	// release it, and repeated calls would exhaust MaxHalfOpenRequests and
+	// block A's recovery probes.
+	det.tripped.Store(true)
+	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("detector failover leaked A's half-open probe slot")
+	}
+}
+
+// armableCancelCheck reports healthy until armed; once armed it cancels the
+// caller's context mid-probe and reports the cancellation — simulating a
+// command deadline expiring while a pre-failover target probe runs.
+type armableCancelCheck struct {
+	armed  atomic.Bool
+	cancel context.CancelFunc
+}
+
+func (c *armableCancelCheck) CheckHealth(ctx context.Context, _ *redis.Client) (bool, error) {
+	if c.armed.Load() {
+		c.cancel()
+		return false, context.Canceled
+	}
+	return true, nil
+}
+
+func (c *armableCancelCheck) CheckClusterHealth(ctx context.Context, _ *redis.ClusterClient) (bool, error) {
+	if c.armed.Load() {
+		c.cancel()
+		return false, context.Canceled
+	}
+	return true, nil
+}
+
+func TestMultiDBCanceledPreFailoverProbeNotChargedAsAttempt(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	check := &armableCancelCheck{cancel: cancel}
+
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	opts.ProbeTargetBeforeFailover = true
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// A's failure opens its breaker; the retry's failover gate probes
+	// candidate B and the caller's context dies mid-probe. The command must
+	// surface context.Canceled — not consume a failover attempt and report
+	// an availability verdict that was never established.
+	check.armed.Store(true)
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(parent, "k").Err(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get = %v, want context.Canceled", err)
+	}
+}
+
+func TestMultiDBSuccessResetsFailoverEscalation(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.MaxFailoverAttempts = 2
+	opts.FailoverAttemptDelay = time.Millisecond
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+	ctx := context.Background()
+
+	// Outage one: open A's breaker and consume one failover attempt.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("first outage: err = %v, want ErrTemporarilyNotAvailable", err)
+	}
+
+	// Recovery: the grace period elapses and a successful command closes
+	// the breaker again.
+	dbA.hook.fail.Store(false)
+	time.Sleep(50 * time.Millisecond)
+	if err := mdb.Get(ctx, "k").Err(); err != nil {
+		t.Fatalf("recovery command: %v", err)
+	}
+
+	// A fresh outage well past FailoverAttemptDelay must start escalating
+	// from a clean slate — the successful traffic in between broke the
+	// "consecutive failed attempts" chain.
+	time.Sleep(5 * time.Millisecond)
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("second outage: err = %v, want ErrTemporarilyNotAvailable (stale escalation state)", err)
+	}
+}
+
+func TestMultiDBSubscribeOnClusterOnlyClientTerminates(t *testing.T) {
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}},
+		Weight:         1,
+		HealthChecks:   []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	// No standalone member exists, so the subscription can never be served:
+	// the dial must fail with the terminal ErrClosed (the only error the
+	// PubSub channel loop treats as final) instead of retrying forever.
+	sub := mdb.Subscribe(context.Background(), "ch")
+	defer sub.Close()
+	rctx, rcancel := context.WithTimeout(context.Background(), time.Second)
+	defer rcancel()
+	if _, err := sub.Receive(rctx); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("Receive on cluster-only client: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBFallbackResetsDetector(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.HealthCheckInterval = 50 * time.Millisecond
+	opts.AutoFallbackInterval = 120 * time.Millisecond
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      100 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	ctx := context.Background()
+
+	// Fail A over to B.
+	dbA.hook.fail.Store(true)
+	_ = mdb.Get(ctx, "k").Err()
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("active = %d, want 1 after failover", got)
+	}
+
+	// A recovers; the background checks close its breaker and auto-fallback
+	// switches back. A detector window still tripped from the outage must
+	// be cleared by the fallback — otherwise the very next command fails
+	// straight back over to the lower-weight member.
+	dbA.hook.fail.Store(false)
+	det.tripped.Store(true)
+	deadline := time.Now().Add(3 * time.Second)
+	for mdb.ActiveIndex() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("auto-fallback to member 0 never happened")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := mdb.Get(ctx, "k").Err(); err != nil {
+		t.Fatalf("Get after fallback: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("tripped detector failed away from the just-recovered primary: active = %d", got)
+	}
+}
+
+func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+
+	var mu sync.Mutex
+	var events []int
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+		mu.Lock()
+		events = append(events, dbIndex)
+		mu.Unlock()
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// Reproduce the background-loop race deterministically: snapshot B like
+	// runHealthChecksOnce does, remove it, then run the stale probe. The
+	// removed member's breaker transition must not fire a user callback —
+	// its recorded index is stale after the slice shift.
+	dbB.check.healthy.Store(false)
+	mdb.TestProbeRacingRemoval(1)
+
+	time.Sleep(300 * time.Millisecond) // callbacks are delivered asynchronously
+	mu.Lock()
+	got := append([]int(nil), events...)
+	mu.Unlock()
+	if len(got) != 0 {
+		t.Errorf("stale probe of a removed member fired callbacks: indexes %v", got)
+	}
+}
+
 func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
 	dbA := newTestDB("a", "db-a:6379", 2, true)
 	dbB := &testDB{
