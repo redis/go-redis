@@ -286,10 +286,14 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	_, hasDeadline := ctx.Deadline()
 
 	probeHealthy := make([]bool, len(c.dbs))
+	probeNeutral := make([]bool, len(c.dbs))
 	for {
 		healthy := 0
 		for i, db := range c.dbs {
 			probeHealthy[i] = db.probe(ctx, c.opts.HealthCheckTimeout)
+			// A probe that failed because the caller's context ended is no
+			// verdict on the member (probe recorded nothing either).
+			probeNeutral[i] = !probeHealthy[i] && ctx.Err() != nil
 			if probeHealthy[i] {
 				healthy++
 			}
@@ -316,6 +320,12 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	//    failover cannot switch to a database already known to be down before
 	//    the background checks have had a chance to open it organically.
 	for i, db := range c.dbs {
+		if probeNeutral[i] {
+			// Never actually probed (the caller's context ended first):
+			// leave the breaker untouched — the background checks will
+			// establish the member's real state.
+			continue
+		}
 		if probeHealthy[i] {
 			if db.cb.CheckState() != imultidb.CircuitClosed {
 				db.cb.Reset()
@@ -1015,6 +1025,16 @@ func (c *multidbCore) newPubSub() *PubSub {
 	// opt must always be non-nil (PubSub reads it unconditionally). Clone the
 	// active standalone member's options rather than sharing the pointer: the
 	// owning client mutates its own opt (e.g. maintnotifications handoffs).
+	//
+	// These fields are captured ONCE, from the member active at Subscribe
+	// time, and deliberately not refreshed on failover: PubSub reads opt
+	// outside its mutex (e.g. the RESP3 push gate on the receive path), so
+	// swapping it at re-dial time would be a data race. Each connection is
+	// still initialized through the owning member's own initConn/handshake;
+	// only PubSub-level knobs (write timeout on subscribe frames, the
+	// Protocol gate for push processing) keep the creation-time values —
+	// configure members with matching Protocol when mixing them under one
+	// MultiDB client.
 	if db, _ := c.activeSnapshot(); db != nil && db.c != nil {
 		optCopy := *db.c.opt
 		pubsub.opt = &optCopy
@@ -1050,10 +1070,22 @@ func (c *multidbCore) notifyPubSubs(ctx context.Context) {
 		subs = append(subs, ps)
 	}
 	c.pubsubMu.Unlock()
-
-	for _, ps := range subs {
-		ps.Reconnect(ctx, errors.New("multidb: active database changed"))
+	if len(subs) == 0 {
+		return
 	}
+
+	// Reconnect dials and resubscribes synchronously; running it inline
+	// would bill every subscription's recovery to whichever command
+	// happened to trigger the failover. Detach: each reconnect resolves the
+	// active member at dial time, so a late notification still lands on the
+	// current active. The triggering command's context must not cancel
+	// PubSub recovery, only its values are kept.
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		for _, ps := range subs {
+			ps.Reconnect(ctx, errors.New("multidb: active database changed"))
+		}
+	}()
 }
 
 func (c *multidbCore) close() error {
@@ -1126,9 +1158,23 @@ func (defaultPingHealthCheck) CheckClusterHealth(ctx context.Context, client *Cl
 // evaluated once. Probe/delay-aware policies live in the multidb package.
 type defaultMultiDBPolicy struct{}
 
+// runCheckSafely evaluates one health check, treating a panic in a custom
+// check as unhealthy: probes run during initialization and on the background
+// goroutine, where an escaped panic would crash the process.
+func runCheckSafely(ctx context.Context, run func() (bool, error)) (healthy bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(ctx, "multidb: health check panicked: %v", r)
+			healthy = false
+		}
+	}()
+	ok, _ := run()
+	return ok
+}
+
 func (defaultMultiDBPolicy) Execute(ctx context.Context, checks []MultiDBHealthCheck, client *Client) bool {
 	for _, hc := range checks {
-		if ok, _ := hc.CheckHealth(ctx, client); !ok {
+		if !runCheckSafely(ctx, func() (bool, error) { return hc.CheckHealth(ctx, client) }) {
 			return false
 		}
 	}
@@ -1137,7 +1183,7 @@ func (defaultMultiDBPolicy) Execute(ctx context.Context, checks []MultiDBHealthC
 
 func (defaultMultiDBPolicy) ExecuteCluster(ctx context.Context, checks []MultiDBHealthCheck, client *ClusterClient) bool {
 	for _, hc := range checks {
-		if ok, _ := hc.CheckClusterHealth(ctx, client); !ok {
+		if !runCheckSafely(ctx, func() (bool, error) { return hc.CheckClusterHealth(ctx, client) }) {
 			return false
 		}
 	}

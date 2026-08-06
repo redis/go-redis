@@ -306,6 +306,12 @@ func (cfg *MultiDBClientConfig) validate() error {
 	if set != 1 {
 		return fmt.Errorf("redis: multidb: exactly one of Options, FailoverOptions or ClusterOptions must be set per database (got %d)", set)
 	}
+	if cfg.FailoverOptions != nil && (cfg.FailoverOptions.RouteByLatency || cfg.FailoverOptions.RouteRandomly) {
+		// NewFailoverClient panics for these options (they require the
+		// failover cluster client); reject them here so a bad member config
+		// surfaces as a constructor error instead of a crash.
+		return errors.New("redis: multidb: RouteByLatency/RouteRandomly are not supported for sentinel member databases")
+	}
 	return nil
 }
 
