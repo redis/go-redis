@@ -195,6 +195,13 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	maxGateRejections := c.memberCount() + 1
 
 	for attempt < attempts {
+		if c.closed.Load() {
+			// Close landed mid-retry: report the terminal state instead of
+			// escalating through the drained membership.
+			resetCmds(cmds)
+			setCmdsErr(cmds, ErrClosed)
+			return ErrClosed
+		}
 		if err := ctx.Err(); err != nil {
 			// Overwrite any prior attempt's transport errors: callers that
 			// inspect per-command results must see the context error, not a
@@ -293,6 +300,11 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	maxGateRejections := c.memberCount() + 1
 	var db *multidbDatabase
 	for {
+		if c.closed.Load() {
+			resetCmds(cmds)
+			setCmdsErr(cmds, ErrClosed)
+			return ErrClosed
+		}
 		if err := ctx.Err(); err != nil {
 			resetCmds(cmds)
 			setCmdsErr(cmds, err)
