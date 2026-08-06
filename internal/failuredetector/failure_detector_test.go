@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -117,6 +118,30 @@ func TestCommandFailureDetector_IgnoresNilError(t *testing.T) {
 	}
 	if fd.ShouldFailover() {
 		t.Error("should not failover when only nil errors were recorded")
+	}
+}
+
+func TestCommandFailureDetector_IgnoresPoolSaturation(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// Pool timeouts/exhaustion are client-side saturation, not a verdict on
+	// the database: a busy client with an undersized pool must not trigger
+	// failover away from a healthy member.
+	for i := 0; i < 10; i++ {
+		fd.RecordFailure(pool.ErrPoolTimeout)
+		fd.RecordFailure(pool.ErrPoolExhausted)
+	}
+
+	if _, failures := fd.Stats(); failures != 0 {
+		t.Errorf("expected 0 failures for pool saturation errors, got %d", failures)
+	}
+	if fd.ShouldFailover() {
+		t.Error("should not failover on local pool saturation")
 	}
 }
 

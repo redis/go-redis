@@ -411,6 +411,25 @@ func TestLagAwareClusterTriesAllSeedAddresses(t *testing.T) {
 	}
 }
 
+func TestLagAwareDrainsErrorResponseBody(t *testing.T) {
+	// Repeated failing probes (401/503 loops) must also reuse the REST
+	// connection: error bodies need draining exactly like success bodies.
+	body := &drainTrackingBody{r: strings.NewReader(`{"error_code":"unauthorized"}`)}
+	capture := &scriptedHTTPClient{responses: []*http.Response{
+		{StatusCode: 401, Body: body},
+	}}
+	hc := NewLagAwareHealthCheck(WithLagAwareHTTPClient(capture))
+	client := redis.NewClient(&redis.Options{Addr: "redis.example.com:6379"})
+	defer client.Close()
+
+	if ok, err := hc.CheckHealth(context.Background(), client); ok || err == nil {
+		t.Fatalf("CheckHealth = (%v, %v), want unhealthy with an error", ok, err)
+	}
+	if !body.sawEOF {
+		t.Error("non-2xx response body not drained before return")
+	}
+}
+
 func TestLagAwareDrainsAvailabilityBody(t *testing.T) {
 	bdbList := `[{"uid": 7, "endpoints": [{"dns_name": "redis.example.com", "addr": [], "port": 6379}]}]`
 	avail := &drainTrackingBody{r: strings.NewReader(`{"status":"ok"}`)}
@@ -473,9 +492,11 @@ func TestLagAwareIPv6BaseURL(t *testing.T) {
 		t.Fatal("expected at least one REST API request")
 	}
 	got := capture.urls[0]
-	wantPrefix := "https://[::1]:9443/v1/bdbs"
-	if got != wantPrefix {
-		t.Errorf("IPv6 base URL = %q, want %q", got, wantPrefix)
+	// fields keeps frequent probes cheap: the matcher only needs uid and
+	// endpoints, not full database configs.
+	want := "https://[::1]:9443/v1/bdbs?fields=uid,endpoints"
+	if got != want {
+		t.Errorf("IPv6 base URL = %q, want %q", got, want)
 	}
 	// The URL must be parseable and round-trip the IPv6 host with brackets.
 	u, err := url.Parse(got)

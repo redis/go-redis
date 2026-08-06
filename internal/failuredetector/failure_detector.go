@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -172,6 +173,12 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	if errors.Is(err, pool.ErrPoolTimeout) || errors.Is(err, pool.ErrPoolExhausted) {
+		// Local pool saturation: the command never reached the database, so
+		// this is no verdict on its health — an undersized pool on a busy
+		// client must not drive failover.
 		return
 	}
 	if errors.Is(err, proto.Nil) {

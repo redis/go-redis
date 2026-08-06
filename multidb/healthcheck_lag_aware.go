@@ -309,7 +309,9 @@ func (h *LagAwareHealthCheck) checkLagHealth(ctx context.Context, dbHost string,
 		hostPort := net.JoinHostPort(dbHost, strconv.Itoa(h.restAPIPort))
 		baseURL = fmt.Sprintf("https://%s", hostPort)
 	}
-	bdbs, err := h.getBDBs(ctx, fmt.Sprintf("%s/v1/bdbs", baseURL))
+	// fields keeps frequent probes cheap: matching only needs uid and
+	// endpoints, not full database configs.
+	bdbs, err := h.getBDBs(ctx, fmt.Sprintf("%s/v1/bdbs?fields=uid,endpoints", baseURL))
 	if err != nil {
 		return false, err
 	}
@@ -380,6 +382,9 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Drain the error body too: failing probe loops (401/503) must not
+		// burn a TCP/TLS handshake per attempt.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return nil, fmt.Errorf("multidb: REST API returned status %d", resp.StatusCode)
 	}
 	var bdbs []bdbInfo
