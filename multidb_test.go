@@ -1866,6 +1866,192 @@ func TestMultiDBSameIndexManualSelectionResetsEscalation(t *testing.T) {
 	}
 }
 
+func TestMultiDBControlOpsClosedWhileWaitingForLock(t *testing.T) {
+	check := &armableBlockingCheck{gate: make(chan struct{})}
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	opts.HealthCheckTimeout = time.Hour
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	check.armed.Store(true)
+
+	// Hold failoverMu via a probing control operation.
+	holderDone := make(chan struct{})
+	go func() {
+		defer close(holderDone)
+		_ = mdb.SetActiveIndex(context.Background(), 1)
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// Queue control operations with LIVE contexts, then Close: once they
+	// finally acquire the lock the client is closed — they must report
+	// ErrClosed, not mutate the drained membership or report bogus indexes.
+	setDone := make(chan error, 1)
+	removeDone := make(chan error, 1)
+	go func() { setDone <- mdb.ForceActiveIndex(context.Background(), 1) }()
+	go func() { removeDone <- mdb.RemoveDatabase(context.Background(), 1) }()
+	time.Sleep(100 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- mdb.Close() }()
+	time.Sleep(100 * time.Millisecond)
+	check.armed.Store(false)
+	close(check.gate) // release the lock holder
+
+	if err := <-setDone; !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ForceActiveIndex after Close during lock wait: err = %v, want ErrClosed", err)
+	}
+	if err := <-removeDone; !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("RemoveDatabase after Close during lock wait: err = %v, want ErrClosed", err)
+	}
+	<-holderDone
+	if err := <-closeDone; err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// blockingFailHook blocks each command on a gate, then fails it with a
+// transport error — long enough for a concurrent Close to land mid-loop.
+type blockingFailHook struct{ gate chan struct{} }
+
+func (h *blockingFailHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *blockingFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		<-h.gate
+		err := fmt.Errorf("blocking hook: %w", io.EOF)
+		cmd.SetErr(err)
+		return err
+	}
+}
+
+func (h *blockingFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func TestMultiDBProcessNoticesCloseMidRetry(t *testing.T) {
+	hook := &blockingFailHook{gate: make(chan struct{})}
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	if err := mdb.AddDatabaseHook(0, hook); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// The command blocks in the hook; Close completes meanwhile; the
+	// released attempt fails and the retry loop must notice the closed
+	// client instead of escalating through an empty membership.
+	getDone := make(chan error, 1)
+	go func() { getDone <- mdb.Get(context.Background(), "k").Err() }()
+	time.Sleep(100 * time.Millisecond)
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(hook.gate)
+
+	if err := <-getDone; !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("Get across Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestMultiDBCanceledHealthyProbeDoesNotTouchBreaker(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	check := &cancelingHealthyCheck{cancel: cancel}
+
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := &testDB{
+		hook: &hookedDB{name: "b"},
+		cfg: redis.MultiDBClientConfig{
+			Options:      &redis.Options{Addr: "127.0.0.1:2"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		},
+	}
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // a single recorded success would close the circuit
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// B: half-open. A canceled operator probe that reports healthy must not
+	// record that success — the caller discards the verdict, so the breaker
+	// must not act on it either.
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(50 * time.Millisecond)
+	check.armed.Store(true)
+	if err := mdb.SetActiveIndex(parent, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SetActiveIndex = %v, want context.Canceled", err)
+	}
+
+	if !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Fatal("expected the breaker to still hand out its half-open slot")
+	}
+	if mdb.TestBreakerReserveHalfOpen(1) {
+		t.Error("canceled healthy probe was recorded (circuit closed: unlimited admissions)")
+	}
+}
+
+// panickyStrategy, once armed, panics on every selection — the worst-case
+// custom strategy (unarmed it behaves like the default, so construction
+// succeeds).
+type panickyStrategy struct{ armed atomic.Bool }
+
+func (s *panickyStrategy) Select(cands []redis.MultiDBDatabaseState) int {
+	if s.armed.Load() {
+		panic("panicky strategy")
+	}
+	return redis.WeightBasedFailoverStrategy{}.Select(cands)
+}
+
+func TestMultiDBPanickyStrategyDoesNotCrash(t *testing.T) {
+	strategy := &panickyStrategy{}
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.FailoverStrategy = strategy
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+	strategy.armed.Store(true)
+
+	// The strategy also runs on the background loop: a panic must be
+	// recovered and treated as "no candidate", surfacing unavailability
+	// instead of crashing the process.
+	dbA.hook.fail.Store(true)
+	if err := mdb.Get(context.Background(), "k").Err(); !errors.Is(err, redis.ErrTemporarilyNotAvailable) {
+		t.Fatalf("Get = %v, want ErrTemporarilyNotAvailable", err)
+	}
+}
+
 // panickyCheck panics on every probe — the worst-case custom health check.
 type panickyCheck struct{}
 

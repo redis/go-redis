@@ -137,11 +137,11 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 		healthy = db.policy.Execute(ctx, db.checks, db.c)
 	}
 
-	if !healthy && parent.Err() != nil {
-		// The caller's own context was canceled or expired mid-probe: the
-		// failure says nothing about the database. Record nothing on the
-		// breaker — mirroring the command path's neutral outcome — but still
-		// report unhealthy so callers do not treat it as a pass.
+	if parent.Err() != nil {
+		// The caller's own context was canceled or expired mid-probe: every
+		// caller discards the verdict, so the breaker must not act on it
+		// either — a late healthy result could otherwise close an open
+		// circuit for an operation that returns context.Canceled.
 		return false
 	}
 	if db.removed.Load() {
@@ -380,7 +380,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			Allowed: probeHealthy[i],
 		})
 	}
-	best := c.strategy.Select(cands)
+	best := c.selectCandidate(cands)
 	if best < 0 {
 		return fmt.Errorf("%w: no selectable database", ErrInsufficientHealthyDatabases)
 	}
@@ -417,6 +417,20 @@ func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
 		})
 	}
 	return out
+}
+
+// selectCandidate runs the failover strategy with panic recovery: strategies
+// are user code and also run on the library-owned background loop, where an
+// escaped panic would crash the process. A panicking strategy selects
+// nothing (logged), which surfaces as temporary unavailability.
+func (c *multidbCore) selectCandidate(cands []MultiDBDatabaseState) (best int) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "multidb: failover strategy panicked: %v", r)
+			best = -1
+		}
+	}()
+	return c.strategy.Select(cands)
 }
 
 func (c *multidbCore) activeIndex() int { return int(c.active.Load()) }
@@ -484,6 +498,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	maxGateRejections := c.memberCount() + 1
 
 	for attempt < attempts {
+		if c.closed.Load() {
+			// Close landed mid-retry: report the terminal state instead of
+			// escalating through the drained membership.
+			cmd.SetErr(ErrClosed)
+			return ErrClosed
+		}
 		if err := ctx.Err(); err != nil {
 			cmd.SetErr(err)
 			return err
@@ -623,7 +643,11 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	}()
 	// Re-check after the lock wait: a command whose context expired while
 	// queued behind another failover must not still switch the active
-	// database (without pre-failover probes there is no later check).
+	// database (without pre-failover probes there is no later check) — and
+	// a client closed while this call queued must not mutate anything.
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -637,7 +661,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	start := time.Now()
 	cands := c.candidates(from)
 	for {
-		best := c.strategy.Select(cands)
+		best := c.selectCandidate(cands)
 		if best < 0 {
 			// No alternate candidate. If the CURRENT active database is fully
 			// available again (health checks closed its breaker after the
@@ -793,9 +817,13 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 			announce()
 		}
 	}()
-	// Re-check after the lock wait: the operator's context may have expired
-	// while this call queued behind another failover/membership operation,
-	// and the probe-less force path has no later chance to notice.
+	// Re-check after the lock wait: the client may have closed and the
+	// operator's context may have expired while this call queued behind
+	// another failover/membership operation, and the probe-less force path
+	// has no later chance to notice.
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -929,8 +957,11 @@ func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
 	// concurrent switchActive (all active transitions happen under it).
 	c.failoverMu.Lock()
 	defer c.failoverMu.Unlock()
-	// Re-check after the lock wait: an operator request whose context died
-	// while queued must not still delete a member.
+	// Re-check after the lock wait: a client closed or an operator request
+	// whose context died while queued must not still delete a member.
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
