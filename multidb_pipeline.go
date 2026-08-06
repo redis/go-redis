@@ -134,7 +134,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 // member's registry.
 func cmdsContainHImport(cmds []Cmder) bool {
 	for _, cmd := range cmds {
-		if _, ok := cmd.(interface{ himportCmd() }); ok {
+		if isHImportCmd(cmd) {
 			return true
 		}
 	}
@@ -166,7 +166,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// whole batch would fail innocent commands that merely shared it.
 		kept := make([]Cmder, 0, len(cmds))
 		for _, cmd := range cmds {
-			if _, ok := cmd.(interface{ himportCmd() }); ok {
+			if isHImportCmd(cmd) {
 				cmd.SetErr(errMultiDBHImport)
 				continue
 			}
@@ -452,19 +452,21 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// selectable (non-reserving) rather than IsAllowed: the WATCH path does
-	// not feed the breaker, so it must not consume a bounded half-open probe
-	// slot it would never record or release.
+	// IsAllowed (reserving) so a half-open member's MaxHalfOpenRequests
+	// bounds concurrent WATCH transactions too; the slot is released after
+	// the call because the WATCH outcome deliberately never records on the
+	// breaker.
 	db, idx := c.core.activeSnapshot()
-	if db == nil || !db.selectable() || c.core.detector.ShouldFailover() {
+	if db == nil || c.core.detector.ShouldFailover() || !db.cb.IsAllowed() {
 		if err := c.core.tryFailover(ctx, idx); err != nil {
 			return err
 		}
 		db, _ = c.core.activeSnapshot()
-		if db == nil || !db.selectable() {
+		if db == nil || !db.cb.IsAllowed() {
 			return ErrTemporarilyNotAvailable
 		}
 	}
+	defer db.cb.ReleaseHalfOpen()
 	if db.cc != nil {
 		return db.cc.Watch(ctx, fn, keys...)
 	}
