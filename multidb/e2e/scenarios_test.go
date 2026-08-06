@@ -376,6 +376,13 @@ func TestConcurrentTrafficAcrossFailover(t *testing.T) {
 	var stop atomic.Bool
 	var postFailover [workers]atomic.Int64
 	var wg sync.WaitGroup
+	// Deferred (not just at the happy end): an eventually() failure calls
+	// t.Fatal, and workers still running while t.Cleanup closes the client
+	// would race the teardown.
+	defer func() {
+		stop.Store(true)
+		wg.Wait()
+	}()
 	for g := 0; g < workers; g++ {
 		wg.Add(1)
 		go func(g int) {
