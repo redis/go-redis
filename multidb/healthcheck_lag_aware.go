@@ -299,8 +299,17 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		mu.Unlock()
 	}
 	// Best effort: with no loaded cluster state this errors and the seeds
-	// below are the only candidates. ForEachShard runs concurrently.
-	_ = client.ForEachShard(ctx, func(_ context.Context, shard *redis.Client) error {
+	// below are the only candidates. ForEachShard runs concurrently, and it
+	// may attempt a synchronous topology reload first — bound it to a slice
+	// of the probe budget so a hung reload through a dead node cannot spend
+	// the whole health-check context before the REST calls run.
+	shardCtx := ctx
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		shardCtx, cancel = context.WithDeadline(ctx, time.Now().Add(time.Until(deadline)/4))
+		defer cancel()
+	}
+	_ = client.ForEachShard(shardCtx, func(_ context.Context, shard *redis.Client) error {
 		add(shard.Options().Addr)
 		return nil
 	})

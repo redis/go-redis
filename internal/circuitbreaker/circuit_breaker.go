@@ -136,7 +136,13 @@ func (cb *CircuitBreaker) CheckState() State {
 			// the state is still Open no request touches these counters, so
 			// clearing here is race-free.
 			cb.transitionMu.Lock()
-			if State(cb.state.Load()) == StateOpen {
+			// Re-read lastFailure under the lock: a failure recorded after
+			// the check above (e.g. from a request admitted before the
+			// circuit opened) must restart the grace period — transitioning
+			// off the stale timestamp would probe the endpoint early.
+			lastFailure = cb.lastFailure.Load()
+			if State(cb.state.Load()) == StateOpen &&
+				lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 				// CAS, not Store: a concurrent Reset may have just published

@@ -579,7 +579,8 @@ func TestCircuitBreaker_ExternalSuccessDoesNotReleaseCommandSlots(t *testing.T) 
 	}
 	cb := New(config)
 	cb.RecordFailure()
-	cb.CheckState() // -> HalfOpen
+	time.Sleep(time.Millisecond) // let the 1ns OpenTimeout provably elapse
+	cb.CheckState()              // -> HalfOpen
 
 	if !cb.IsAllowed() {
 		t.Fatal("setup: expected to reserve the only half-open slot")
