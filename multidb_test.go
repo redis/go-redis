@@ -1417,6 +1417,40 @@ func TestMultiDBHealthCheckSuccessKeepsCommandSlots(t *testing.T) {
 	}
 }
 
+func TestMultiDBPanickyCircuitCallbackDoesNotStallQueue(t *testing.T) {
+	var delivered atomic.Int64
+	var panicked atomic.Bool
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+		if panicked.CompareAndSwap(false, true) {
+			panic("panicky circuit callback")
+		}
+		delivered.Add(1)
+	}
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Callbacks run on a library-owned goroutine: the first delivery panics,
+	// which must neither crash the process nor wedge the queue — the next
+	// transition's callback must still be delivered.
+	mdb.TestBreakerRecordFailure(0) // closed -> open: first callback panics
+	if err := mdb.ForceActiveIndex(context.Background(), 0); err != nil {
+		t.Fatalf("ForceActiveIndex: %v", err) // resets the breaker: open -> closed
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for delivered.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("callback after the panicking one was never delivered: queue stalled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // cancelingHealthyCheck, once armed, cancels the caller's context mid-probe
 // but still reports healthy — a probe whose PING succeeded right as the
 // caller's deadline expired.
