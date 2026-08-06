@@ -122,6 +122,10 @@ func fastMultiDBOptions(f *proxyFarm) *redis.MultiDBOptions {
 			{Options: memberOptions(f, 1), Weight: 2},
 			{Options: memberOptions(f, 2), Weight: 1},
 		},
+		// Every proxy must be genuinely healthy at startup: with the default
+		// majority policy a mis-wired member could slip through and scenarios
+		// that stop member 0 would silently test the wrong topology.
+		InitialDBState:      redis.InitialDBStateAllAvailable,
 		HealthCheckInterval: 500 * time.Millisecond,
 		HealthCheckTimeout:  250 * time.Millisecond,
 		CircuitBreakerConfig: &redis.MultiDBCircuitBreakerConfig{

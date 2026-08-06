@@ -56,9 +56,11 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	if err != nil || val != "after" {
 		t.Fatalf("Get after failover: %q, %v", val, err)
 	}
-	if failoverFrom.Load() != 0 || failoverTo.Load() != 1 {
-		t.Errorf("OnFailover(from=%d, to=%d), want (0, 1)", failoverFrom.Load(), failoverTo.Load())
-	}
+	// The callback runs after the active index is published (announce fires
+	// outside the failover lock), so poll rather than assert immediately.
+	eventually(t, 5*time.Second, "OnFailover(0 -> 1) callback", func() bool {
+		return failoverFrom.Load() == 0 && failoverTo.Load() == 1
+	})
 }
 
 // TestBackgroundDrivenFailover: NO command traffic; a paused (hung) active
@@ -124,7 +126,9 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 		return errors.Is(err, redis.ErrPermanentlyNotAvailable)
 	})
 	if !sawTemporary {
-		t.Log("note: escalated straight to permanent (attempt budget consumed by background loop)")
+		// The escalation contract is temporary-then-permanent; skipping the
+		// temporary phase means callers never got the "keep retrying" signal.
+		t.Error("escalated straight to permanent without ever reporting ErrTemporarilyNotAvailable")
 	}
 
 	// Recovery: one member back is enough for one_available-style operation.
