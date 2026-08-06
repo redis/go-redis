@@ -668,6 +668,99 @@ func TestMultiDBHookAbortedBatchNotRecordedAsSuccess(t *testing.T) {
 // multidb_pipeline_internal_test.go, where the execution marker can be set
 // directly.)
 
+func TestMultiDBBatchRejectsHImport(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	ctx := context.Background()
+
+	// The direct HImport* overrides reject the family, but pipeline and tx
+	// builders dispatch through their own cmdable — the batch paths must
+	// reject HIMPORT commands too, or registrations would land in a single
+	// member's registry and break after failover.
+	cmds, err := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.HImportPrepare(ctx, "fs", "f1")
+		p.Set(ctx, "k", "v", 0)
+		return nil
+	})
+	if err == nil {
+		t.Error("Pipelined with HIMPORT succeeded, want rejection")
+	}
+	for i, cmd := range cmds {
+		if cmd.Err() == nil {
+			t.Errorf("pipeline cmd %d has nil error in a rejected batch", i)
+		}
+	}
+
+	if _, err := mdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.HImportSet(ctx, "k", "fs", "v")
+		return nil
+	}); err == nil {
+		t.Error("TxPipelined with HIMPORT succeeded, want rejection")
+	}
+}
+
+// nilStampAbortHook aborts before next but stamps redis.Nil (a well-formed
+// server reply sentinel) on the last command — e.g. a cache hook answering a
+// read locally while failing the rest of the batch.
+type nilStampAbortHook struct{}
+
+func (nilStampAbortHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (nilStampAbortHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (nilStampAbortHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if len(cmds) > 0 {
+			cmds[len(cmds)-1].SetErr(redis.Nil)
+		}
+		return errors.New("aborted by hook")
+	}
+}
+
+func TestMultiDBUnexecutedBatchRecordsNoSuccesses(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CommandRetries = redis.CommandRetriesNone
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one fabricated success would close the circuit
+		GracePeriod:      30 * time.Millisecond,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, nilStampAbortHook{}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// Half-open member; the hook aborts before execution but stamped
+	// redis.Nil (success-class) on one command. Nothing reached Redis, so
+	// no database success may be recorded off hook-fabricated replies.
+	mdb.TestBreakerRecordFailure(0)
+	time.Sleep(50 * time.Millisecond)
+
+	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Get(context.Background(), "k1")
+		p.Set(context.Background(), "k2", "v", 0)
+		return nil
+	})
+
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Fatal("expected the breaker to still be half-open with its slot free")
+	}
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("hook-fabricated reply was recorded as a database success (circuit closed or slot lost)")
+	}
+}
+
 func TestMultiDBHookServedBatchIsNeutral(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
 	opts := baseOptions()
