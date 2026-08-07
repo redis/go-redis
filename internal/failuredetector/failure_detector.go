@@ -118,14 +118,22 @@ func (c *CommandFailureDetectorConfig) applyDefaults() {
 // sliding window. All fields are accessed atomically so the detector is
 // lock-free on the hot path.
 //
-// epochNano is the start time of the bucket's current "lap" around the ring,
-// expressed in nanoseconds since the Unix epoch. When the ring wraps around
-// and a writer revisits a bucket whose epochNano belongs to a previous lap,
-// the writer claims the bucket via CompareAndSwap on epochNano and then
-// zeroes the counters. Readers ignore any bucket whose epochNano falls
-// outside the current window.
+// Each slot holds a pointer to an immutable-epoch bucketState. When the ring
+// wraps around and a writer revisits a slot whose state belongs to a previous
+// lap, the writer installs a fresh zeroed bucketState via CompareAndSwap on
+// the pointer. Readers ignore any state whose epoch falls outside the current
+// window.
 type bucket struct {
-	epochNano atomic.Int64
+	state atomic.Pointer[bucketState]
+}
+
+// bucketState is one lap of a ring slot: a fixed epoch plus the counters
+// recorded during that lap. Lap transitions swap the whole state pointer, so
+// a writer that obtained a previous lap's state can only increment that stale
+// lap (which readers already ignore) — no increment is ever zeroed away, as
+// could happen with the earlier claim-then-zero in-place design.
+type bucketState struct {
+	epochNano int64
 	successes atomic.Uint64
 	failures  atomic.Uint64
 }
@@ -268,10 +276,7 @@ func (d *CommandFailureDetector) ShouldFailover() bool {
 // the reset, which is acceptable for a failure detector.
 func (d *CommandFailureDetector) Reset() {
 	for i := range d.buckets {
-		b := &d.buckets[i]
-		b.epochNano.Store(0)
-		b.successes.Store(0)
-		b.failures.Store(0)
+		d.buckets[i].state.Store(nil)
 	}
 }
 
@@ -285,28 +290,26 @@ func (d *CommandFailureDetector) Stats() (successes, failures uint64) {
 // bucketFor returns the bucket that owns the supplied nanosecond timestamp,
 // initialising it (resetting counters and stamping the new epoch) if a
 // previous lap of the ring left stale data in that slot.
-func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucket {
+func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 	bucketStart := nowNano - (nowNano % d.bucketWidthNano)
 	idx := (bucketStart / d.bucketWidthNano) % int64(len(d.buckets))
 	b := &d.buckets[idx]
 
 	for {
-		current := b.epochNano.Load()
-		if current == bucketStart {
-			return b
+		st := b.state.Load()
+		if st != nil {
+			if st.epochNano == bucketStart {
+				return st
+			}
+			if st.epochNano > bucketStart {
+				// Clock skew or a concurrent writer already moved this slot
+				// past the current instant; tolerate it.
+				return st
+			}
 		}
-		if current > bucketStart {
-			// Clock skew or a concurrent writer already moved this bucket
-			// past the current instant; tolerate it.
-			return b
-		}
-		if b.epochNano.CompareAndSwap(current, bucketStart) {
-			// We claimed the stale bucket. Zero the counters so concurrent
-			// writers that race past the epoch update only contribute to
-			// the new lap.
-			b.successes.Store(0)
-			b.failures.Store(0)
-			return b
+		fresh := &bucketState{epochNano: bucketStart}
+		if b.state.CompareAndSwap(st, fresh) {
+			return fresh
 		}
 		// Another writer won the race; reload and decide again.
 	}
@@ -325,10 +328,10 @@ func (d *CommandFailureDetector) snapshot() (successes, failures uint64) {
 	nowNano := d.now().UnixNano()
 	cutoff := nowNano - d.windowNano - d.bucketWidthNano
 	for i := range d.buckets {
-		b := &d.buckets[i]
-		if b.epochNano.Load() > cutoff {
-			successes += b.successes.Load()
-			failures += b.failures.Load()
+		st := d.buckets[i].state.Load()
+		if st != nil && st.epochNano > cutoff {
+			successes += st.successes.Load()
+			failures += st.failures.Load()
 		}
 	}
 	return successes, failures
