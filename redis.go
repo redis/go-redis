@@ -1699,9 +1699,24 @@ func (c *baseClient) generalProcessPipeline(
 	return lastErr
 }
 
+// pipelineExecutedKey carries an *atomic.Bool that execution paths flip the
+// moment a batch may have reached the server. MultiDBClient uses it to
+// distinguish "a hook aborted before execution" from "the batch executed and
+// a hook then replaced the error": command state alone cannot tell those
+// apart, and confusing them either fabricates phantom outcomes or replays
+// writes that already applied.
+type pipelineExecutedKey struct{}
+
+func markPipelineExecuted(ctx context.Context) {
+	if flag, ok := ctx.Value(pipelineExecutedKey{}).(*atomic.Bool); ok {
+		flag.Store(true)
+	}
+}
+
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
+	markPipelineExecuted(ctx)
 	// Process any pending push notifications before executing the pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
@@ -1794,6 +1809,7 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
+	markPipelineExecuted(ctx)
 	// Process any pending push notifications before executing the transaction pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
