@@ -517,12 +517,16 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			return err
 		}
 
-		// Detector before IsAllowed: IsAllowed reserves a bounded half-open
-		// probe slot, and a tripped detector routes to failover without
-		// executing anything — the reservation would leak and eventually
-		// starve the recovering active's probe budget.
+		// Detector before the breaker admission: a half-open admission
+		// reserves a bounded probe slot, and a tripped detector routes to
+		// failover without executing anything — the reservation would leak
+		// and eventually starve the recovering active's probe budget.
 		db, idx := c.activeSnapshot()
-		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+		admitted, reserved := false, false
+		if db != nil && !c.detector.ShouldFailover() {
+			admitted, reserved = db.cb.Allow()
+		}
+		if !admitted {
 			gateRejections++
 			if gateRejections > maxGateRejections {
 				cmd.SetErr(ErrTemporarilyNotAvailable)
@@ -533,7 +537,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				return err
 			}
 			// Re-enter the gate on the newly selected database: its breaker
-			// may be half-open and IsAllowed above is what reserves the
+			// may be half-open and the Allow above is what reserves the
 			// probe slot. Re-gating does not consume a retry attempt.
 			continue
 		}
@@ -548,16 +552,26 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		err := db.process(ctx, cmd)
 		switch classifyOutcome(err, retryTimeout) {
 		case outcomeSuccess:
-			db.cb.RecordSuccess()
+			// Settle by reservation: a closed-state admission holds no
+			// half-open slot, and a command that outlives a later open ->
+			// half-open transition must not free the slot a real recovery
+			// probe is holding — its success still counts toward closing.
+			if reserved {
+				db.cb.RecordSuccess()
+			} else {
+				db.cb.RecordExternalSuccess()
+			}
 			c.detector.RecordSuccess()
 			c.successSinceFailover.Store(true)
 			return err
 		case outcomeNeutral:
 			// Not a database-health signal: return to the caller without
 			// recording a failure or failing over. Give back the half-open
-			// probe slot that IsAllowed may have reserved above — recording
-			// nothing would otherwise leak it.
-			db.cb.ReleaseHalfOpen()
+			// probe slot the admission reserved — recording nothing would
+			// otherwise leak it.
+			if reserved {
+				db.cb.ReleaseHalfOpen()
+			}
 			return err
 		case outcomeFailure:
 			db.cb.RecordFailure()
