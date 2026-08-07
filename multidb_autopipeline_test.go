@@ -934,6 +934,44 @@ func TestMultiDBTxRetriesAnotherMemberWhenHalfOpenFull(t *testing.T) {
 	}
 }
 
+func TestMultiDBWatchRegatesAfterFailover(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one probe slot
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// B: half-open with its only probe slot taken; A: healthy and closed.
+	// A detector-tripped Watch fails over to B, is denied a probe slot — and
+	// must then fail over again (back to closed A) like the batch gates do,
+	// rather than reject the transaction while a healthy member is still
+	// selectable: no WATCH was sent yet, so another failover is safe.
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(50 * time.Millisecond)
+	if !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Fatal("setup: expected to reserve B's probe slot")
+	}
+
+	det.tripped.Store(true)
+	if err := mdb.Watch(context.Background(), func(tx *redis.Tx) error {
+		return nil
+	}, "k"); err != nil {
+		t.Fatalf("Watch = %v, want success on the closed member", err)
+	}
+	if got := dbA.hook.commands.Load(); got == 0 {
+		t.Error("no commands on A — Watch should land back on the closed member")
+	}
+	if got := dbB.hook.commands.Load(); got != 0 {
+		t.Errorf("commands on B = %d, want 0 (no probe slot available)", got)
+	}
+}
+
 func TestMultiDBBatchAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
