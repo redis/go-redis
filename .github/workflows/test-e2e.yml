@@ -86,8 +86,11 @@ jobs:
           echo "Waiting for Redis to be ready..."
           timeout 30 bash -c 'until docker exec redis-standalone redis-cli ping 2>/dev/null; do sleep 1; done'
           echo "Waiting for the per-member proxies to be ready..."
+          # 127.0.0.1, not localhost: the e2e harness dials 127.0.0.1 because
+          # IPv6-first hosts resolve localhost to ::1 and can miss Docker's
+          # IPv4-published ports — the readiness probe must match.
           for port in 18120 18121 18122; do
-            timeout 30 bash -c "until curl -s http://localhost:$port/stats > /dev/null; do sleep 1; done"
+            timeout 30 bash -c "until curl -s http://127.0.0.1:$port/stats > /dev/null; do sleep 1; done"
           done
           echo "All services are ready!"
 
