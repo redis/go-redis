@@ -515,6 +515,13 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // DBSize delegates to the active member so a cluster member keeps its
 // fan-out semantics (summing across masters) instead of counting a single
 // arbitrary shard.
+//
+// Like Watch, the cluster delegation runs on the member client directly:
+// MultiDB-level hooks (AddHook) do not wrap it — the member's own hooks
+// apply, so install hooks via AddDatabaseHook when this traffic must be
+// instrumented. Against a non-cluster member the command takes the regular
+// hook-wrapped path. The same holds for ScriptLoad, ScriptFlush and
+// ScriptExists.
 func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 	if c.core.closed.Load() {
 		cmd := NewIntCmd(ctx, "dbsize")
