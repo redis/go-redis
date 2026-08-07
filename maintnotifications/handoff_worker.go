@@ -367,8 +367,13 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 	// Use circuit breaker to protect against failing endpoints
 	circuitBreaker := hwm.circuitBreakerManager.GetCircuitBreaker(newEndpoint)
 
-	// Check if circuit breaker is open before attempting handoff
-	if circuitBreaker.IsOpen() {
+	// Gate the handoff on the circuit breaker. A half-open admission reserves
+	// a probe slot so that, once OpenTimeout elapses, concurrent handoffs to a
+	// recovering endpoint stay bounded by MaxHalfOpenRequests instead of all
+	// being admitted at once; a closed admission reserves nothing, and the
+	// settle paths below must not release a slot this handoff never held.
+	allowed, reserved := circuitBreaker.allowRequest()
+	if !allowed {
 		internal.Logger.Printf(ctx, logs.CircuitBreakerOpen(connID, newEndpoint))
 		return false, ErrCircuitBreakerOpen // Don't retry when circuit breaker is open
 	}
@@ -378,15 +383,20 @@ func (hwm *handoffWorkerManager) performConnectionHandoff(ctx context.Context, c
 
 	// Update circuit breaker based on result
 	if err != nil {
-		// Only track dial/network errors in circuit breaker, not initialization errors
+		// Only track dial/network errors in circuit breaker, not initialization errors.
 		if shouldRetry {
 			circuitBreaker.recordFailure()
+		} else if reserved {
+			// Initialization error: not a dial/network failure, so it neither
+			// opens nor closes the breaker. Release the reserved half-open slot
+			// so it does not starve future recovery probes.
+			circuitBreaker.releaseRequest()
 		}
 		return shouldRetry, err
 	}
 
 	// Success - record in circuit breaker
-	circuitBreaker.recordSuccess()
+	circuitBreaker.recordSuccess(reserved)
 	return false, nil
 }
 
