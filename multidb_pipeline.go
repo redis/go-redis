@@ -194,13 +194,27 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	gateRejections := 0
 	maxGateRejections := c.memberCount() + 1
 
+	// exitErr picks the batch error for every exit: with a rejected HIMPORT
+	// in the batch the positionally first error over the ORIGINAL slice wins,
+	// like Pipeline.Exec reports it — including early gate exits, whose
+	// stamped error would otherwise displace a rejection that precedes the
+	// stamped commands positionally.
+	exitErr := func(err error) error {
+		if himportRejected {
+			if ferr := cmdsFirstErr(orig); ferr != nil {
+				return ferr
+			}
+		}
+		return err
+	}
+
 	for attempt < attempts {
 		if c.closed.Load() {
 			// Close landed mid-retry: report the terminal state instead of
 			// escalating through the drained membership.
 			resetCmds(cmds)
 			setCmdsErr(cmds, ErrClosed)
-			return ErrClosed
+			return exitErr(ErrClosed)
 		}
 		if err := ctx.Err(); err != nil {
 			// Overwrite any prior attempt's transport errors: callers that
@@ -209,7 +223,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// empty slots).
 			resetCmds(cmds)
 			setCmdsErr(cmds, err)
-			return err
+			return exitErr(err)
 		}
 
 		// Detector before IsAllowed: IsAllowed reserves a bounded half-open
@@ -222,7 +236,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 				err := ErrTemporarilyNotAvailable
 				resetCmds(cmds)
 				setCmdsErr(cmds, err)
-				return err
+				return exitErr(err)
 			}
 			if err := c.tryFailover(ctx, idx); err != nil {
 				// Overwrite any prior attempt's transport errors so callers
@@ -230,7 +244,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 				// only fills empty error slots).
 				resetCmds(cmds)
 				setCmdsErr(cmds, err)
-				return err
+				return exitErr(err)
 			}
 			// Re-enter the gate on the newly selected database — mirroring
 			// the single-command path: its breaker may be half-open and the
@@ -253,15 +267,8 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
-			// user-level outcome is. With a rejected HIMPORT in the batch
-			// the positionally first error over the ORIGINAL slice wins,
-			// like Pipeline.Exec reports it.
-			if himportRejected {
-				if ferr := cmdsFirstErr(orig); ferr != nil {
-					return ferr
-				}
-			}
-			return err
+			// user-level outcome is.
+			return exitErr(err)
 		}
 	}
 	return cmdsFirstErr(orig)
@@ -452,17 +459,18 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The gate loops like the batch paths (detector before IsAllowed; a
-	// denied member triggers another failover, bounded by the rejection cap),
-	// so a half-open candidate with an exhausted probe budget does not fail
-	// the call while a healthy member is still selectable — no WATCH has been
-	// sent while the gate is still choosing. IsAllowed reserves, so a
-	// half-open member's MaxHalfOpenRequests bounds concurrent WATCH
-	// transactions too; the slot is released after the call because the WATCH
-	// outcome deliberately never records on the breaker.
+	// The gate loops like the batch paths (detector before the breaker
+	// admission; a denied member triggers another failover, bounded by the
+	// rejection cap), so a half-open candidate with an exhausted probe budget
+	// does not fail the call while a healthy member is still selectable — no
+	// WATCH has been sent while the gate is still choosing. A half-open
+	// admission reserves a probe slot, so MaxHalfOpenRequests bounds
+	// concurrent WATCH transactions too; the slot is released after the call
+	// because the WATCH outcome deliberately never records on the breaker.
 	gateRejections := 0
 	maxGateRejections := c.core.memberCount() + 1
 	var db *multidbDatabase
+	var reserved bool
 	for {
 		if c.core.closed.Load() {
 			return ErrClosed
@@ -472,7 +480,11 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 		var idx int
 		db, idx = c.core.activeSnapshot()
-		if db == nil || c.core.detector.ShouldFailover() || !db.cb.IsAllowed() {
+		admitted := false
+		if db != nil && !c.core.detector.ShouldFailover() {
+			admitted, reserved = db.cb.Allow()
+		}
+		if !admitted {
 			gateRejections++
 			if gateRejections > maxGateRejections {
 				return ErrTemporarilyNotAvailable
@@ -484,7 +496,13 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 		break
 	}
-	defer db.cb.ReleaseHalfOpen()
+	if reserved {
+		// Only a half-open admission holds a probe slot. A closed-state
+		// admission must not release later: the transaction can outlive an
+		// open -> half-open transition, and the release would free a slot a
+		// real recovery probe is holding.
+		defer db.cb.ReleaseHalfOpen()
+	}
 	if db.cc != nil {
 		return db.cc.Watch(ctx, fn, keys...)
 	}
