@@ -48,22 +48,26 @@ func (h *PingHealthCheck) CheckHealth(ctx context.Context, client *redis.Client)
 	return true, nil
 }
 
-// CheckClusterHealth performs a single PING probe against ALL nodes in the
-// cluster. It returns (false, err) with the first shard's PING error when the
-// probe fails. An empty topology (no shards pinged) is reported as unhealthy
-// rather than trivially healthy, matching LagAwareHealthCheck which fails when
-// the cluster has no addresses.
+// CheckClusterHealth performs a single PING probe against every MASTER in
+// the cluster. Replicas are deliberately not probed: MultiDB rejects the
+// replica-routing options (RouteByLatency/RouteRandomly), so member traffic
+// only ever reaches masters — a dead replica must not fail the member and
+// trigger a failover away from a cluster that is serving normally. It
+// returns (false, err) with the first master's PING error when the probe
+// fails. An empty topology (no masters pinged) is reported as unhealthy
+// rather than trivially healthy, matching LagAwareHealthCheck which fails
+// when the cluster has no addresses.
 func (h *PingHealthCheck) CheckClusterHealth(ctx context.Context, client *redis.ClusterClient) (bool, error) {
 	var pinged int64
-	err := client.ForEachShard(ctx, func(ctx context.Context, shard *redis.Client) error {
+	err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
 		atomic.AddInt64(&pinged, 1)
-		return shard.Ping(ctx).Err()
+		return master.Ping(ctx).Err()
 	})
 	if err != nil {
 		return false, err
 	}
 	if atomic.LoadInt64(&pinged) == 0 {
-		return false, fmt.Errorf("multidb: cluster has no shards to ping")
+		return false, fmt.Errorf("multidb: cluster has no masters to ping")
 	}
 	return true, nil
 }
