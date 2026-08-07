@@ -1327,6 +1327,70 @@ func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	}
 }
 
+// midflightHook runs an armable callback inside command execution and then
+// serves the command locally (nil error) without dialing.
+type midflightHook struct{ fn atomic.Pointer[func()] }
+
+func (h *midflightHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *midflightHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		if f := h.fn.Load(); f != nil {
+			(*f)()
+		}
+		return nil
+	}
+}
+
+func (h *midflightHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error { return nil }
+}
+
+func TestMultiDBCommandClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 2, // one success must not close the circuit
+		GracePeriod:      30 * time.Millisecond,
+	}
+	opts.Clients = append(opts.Clients, dbA.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	hook := &midflightHook{}
+	if err := mdb.AddDatabaseHook(0, hook); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// The command is admitted while A's breaker is CLOSED — no probe slot is
+	// reserved. While it executes, a failure opens the breaker, the grace
+	// period elapses, and recovery probes reserve every half-open slot
+	// (MaxHalfOpenRequests defaults to SuccessThreshold, so there are two).
+	// The command's success must count toward closing WITHOUT freeing a
+	// probe's slot.
+	fn := func() {
+		mdb.TestBreakerRecordFailure(0)
+		time.Sleep(50 * time.Millisecond)
+		if !mdb.TestBreakerReserveHalfOpen(0) || !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("setup: expected to reserve both half-open probe slots")
+		}
+	}
+	hook.fn.Store(&fn)
+	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	hook.fn.Store(nil)
+
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a second half-open reservation succeeded — the command released a slot it never reserved")
+	}
+}
+
 func TestMultiDBRejectsHImportCommands(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
 	mdb := newTestMultiDB(t, baseOptions(), dbA)
