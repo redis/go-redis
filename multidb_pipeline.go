@@ -452,19 +452,37 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// IsAllowed (reserving) so a half-open member's MaxHalfOpenRequests
-	// bounds concurrent WATCH transactions too; the slot is released after
-	// the call because the WATCH outcome deliberately never records on the
-	// breaker.
-	db, idx := c.core.activeSnapshot()
-	if db == nil || c.core.detector.ShouldFailover() || !db.cb.IsAllowed() {
-		if err := c.core.tryFailover(ctx, idx); err != nil {
+	// The gate loops like the batch paths (detector before IsAllowed; a
+	// denied member triggers another failover, bounded by the rejection cap),
+	// so a half-open candidate with an exhausted probe budget does not fail
+	// the call while a healthy member is still selectable — no WATCH has been
+	// sent while the gate is still choosing. IsAllowed reserves, so a
+	// half-open member's MaxHalfOpenRequests bounds concurrent WATCH
+	// transactions too; the slot is released after the call because the WATCH
+	// outcome deliberately never records on the breaker.
+	gateRejections := 0
+	maxGateRejections := c.core.memberCount() + 1
+	var db *multidbDatabase
+	for {
+		if c.core.closed.Load() {
+			return ErrClosed
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		db, _ = c.core.activeSnapshot()
-		if db == nil || !db.cb.IsAllowed() {
-			return ErrTemporarilyNotAvailable
+		var idx int
+		db, idx = c.core.activeSnapshot()
+		if db == nil || c.core.detector.ShouldFailover() || !db.cb.IsAllowed() {
+			gateRejections++
+			if gateRejections > maxGateRejections {
+				return ErrTemporarilyNotAvailable
+			}
+			if err := c.core.tryFailover(ctx, idx); err != nil {
+				return err
+			}
+			continue
 		}
+		break
 	}
 	defer db.cb.ReleaseHalfOpen()
 	if db.cc != nil {
