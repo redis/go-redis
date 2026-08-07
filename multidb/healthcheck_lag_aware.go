@@ -60,7 +60,13 @@ func WithLagAwareHealthCheckConfig(opts ...HealthCheckOption) LagAwareHealthChec
 	}
 }
 
-// WithLagAwareBaseURL sets the base URL for the REST API.
+// WithLagAwareBaseURL sets the base URL for the REST API. By default the
+// check derives it from the member's own database host, which the local
+// endpoint-availability probe relies on: the /v1/local/ API answers for the
+// node that serves the request. A custom base URL must therefore point at
+// (or resolve to) the cluster node hosting this member's endpoint — routing
+// it through a shared admin address, proxy, or load balancer makes the check
+// report the availability of whichever node the URL happens to reach.
 func WithLagAwareBaseURL(baseURL string) LagAwareHealthCheckOption {
 	return func(h *LagAwareHealthCheck) { h.baseURL = baseURL }
 }

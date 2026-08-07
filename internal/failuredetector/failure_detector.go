@@ -195,8 +195,8 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		d.bucketFor(d.now().UnixNano()).successes.Add(1)
 		return
 	}
-	var redisErr proto.RedisError
-	if errors.As(err, &redisErr) && !isAvailabilityReply(redisErr.Error()) {
+	var reply redisReply
+	if errors.As(err, &reply) && !isAvailabilityReply(reply.Error()) {
 		// Any other well-formed server reply (WRONGTYPE, BUSYGROUP,
 		// NOSCRIPT, ...) is an application-level error from a database that
 		// processed the command: proof of health, not a failure — except
@@ -206,6 +206,17 @@ func (d *CommandFailureDetector) RecordFailure(err error) {
 		return
 	}
 	d.bucketFor(d.now().UnixNano()).failures.Add(1)
+}
+
+// redisReply matches any well-formed server error reply. The concrete
+// proto.RedisError string only covers replies the reader does not recognize:
+// known prefixes are parsed into typed structs (*proto.LoadingError,
+// *proto.AuthError, *proto.MovedError, ...) that share just the RedisError()
+// marker — matching the concrete string type alone would misclassify every
+// typed reply as a transport failure.
+type redisReply interface {
+	error
+	RedisError()
 }
 
 // isAvailabilityReply matches server replies that indicate the database
@@ -220,7 +231,10 @@ func isAvailabilityReply(s string) bool {
 			return true
 		}
 	}
-	return false
+	// A write script hitting a read-only replica embeds READONLY inside the
+	// script error instead of at the prefix; mirror the root classifier's
+	// substring match so EVAL-heavy workloads see the same verdict.
+	return strings.Contains(s, "-READONLY You can't write against a read only replica")
 }
 
 // ShouldFailover returns true when the outcomes observed within the trailing

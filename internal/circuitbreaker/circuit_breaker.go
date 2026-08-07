@@ -274,6 +274,13 @@ func (cb *CircuitBreaker) RecordFailure() {
 		failures := cb.failures.Add(1)
 		if int(failures) >= cb.config.FailureThreshold {
 			if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
+				// A Reset that completed between the timestamp store above and
+				// this CAS wiped lastFailure; repair it (CAS so a concurrent
+				// newer failure's timestamp is kept), or the zero-timestamp
+				// guard in CheckState would wedge the circuit open. A Reset
+				// that wipes after this repair also publishes Closed after,
+				// so the circuit does not stay Open with a zero timestamp.
+				cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
 				// Notify callbacks before clearing the half-open counters so
 				// observers see the failure count that triggered the
 				// transition, matching the half-open -> closed/open paths.
@@ -291,6 +298,8 @@ func (cb *CircuitBreaker) RecordFailure() {
 	case StateHalfOpen:
 		// Any failure in half-open state opens the circuit.
 		if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
+			// Same timestamp repair as the closed -> open transition above.
+			cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
 			// Notify callbacks before resetting counters so they observe the
 			// counts that triggered the transition, matching the half-open ->
 			// closed path in RecordSuccess.

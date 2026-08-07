@@ -172,6 +172,64 @@ func TestCommandFailureDetector_TreatsReplyErrorsAsSuccess(t *testing.T) {
 	}
 }
 
+func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// The proto reader parses recognized reply prefixes into typed structs
+	// (*proto.AuthError, *proto.MovedError, ...) rather than the concrete
+	// proto.RedisError string — they are still well-formed server replies and
+	// must classify exactly like their string forms: application-level
+	// replies as successes, availability replies as failures.
+	for _, e := range []error{
+		proto.NewAuthError("NOAUTH Authentication required"),
+		proto.NewPermissionError("NOPERM this user has no permissions"),
+		proto.NewExecAbortError("EXECABORT Transaction discarded because of previous errors"),
+		proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"),
+	} {
+		fd.RecordFailure(e)
+	}
+	successes, failures := fd.Stats()
+	if failures != 0 {
+		t.Errorf("expected 0 failures for typed application replies, got %d", failures)
+	}
+	if successes != 4 {
+		t.Errorf("expected typed application replies to count as successes, got %d", successes)
+	}
+
+	fd.RecordFailure(proto.NewLoadingError("LOADING Redis is loading the dataset in memory"))
+	fd.RecordFailure(proto.NewClusterDownError("CLUSTERDOWN The cluster is down"))
+	if _, failures := fd.Stats(); failures != 2 {
+		t.Errorf("expected 2 failures for typed availability replies, got %d", failures)
+	}
+}
+
+func TestCommandFailureDetector_TreatsLuaReadOnlyAsFailure(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// A write script hitting a read-only replica embeds -READONLY inside the
+	// script error rather than at the prefix; the root retry classifier
+	// matches that substring, and the detector must agree — a member serving
+	// EVAL writes from a replica is an availability problem, not proof of
+	// health.
+	fd.RecordFailure(proto.RedisError(
+		"ERR Error running script (call to f_6b1bf486c81ceb7edf3c093f0fb1291d6438a1cc): " +
+			"@user_script:1: @user_script: 1: -READONLY You can't write against a read only replica.",
+	))
+	if _, failures := fd.Stats(); failures != 1 {
+		t.Errorf("expected 1 failure for the Lua-embedded READONLY reply, got %d", failures)
+	}
+}
+
 func TestCommandFailureDetector_TreatsTxFailedAsSuccess(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         1,

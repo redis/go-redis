@@ -685,3 +685,36 @@ func TestCircuitBreaker_NoReservationSurvivesHalfOpenReopen(t *testing.T) {
 	}
 }
 
+// TestRecordFailureResetRaceKeepsTimestamp hammers RecordFailure against
+// Reset: when Reset fully completes between RecordFailure's timestamp store
+// and its CAS into Open, the circuit must not end up Open with a zero
+// lastFailure — CheckState's zero-timestamp guard would then never allow the
+// open -> half-open transition, wedging the breaker open for callers with no
+// out-of-band probe traffic.
+func TestRecordFailureResetRaceKeepsTimestamp(t *testing.T) {
+	for round := 0; round < 5000; round++ {
+		cb := New(Config{
+			FailureThreshold:    1,
+			SuccessThreshold:    1,
+			MaxHalfOpenRequests: 1,
+			OpenTimeout:         time.Minute,
+		})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; i < 200; i++ {
+				cb.Reset()
+			}
+		}()
+		for i := 0; i < 200; i++ {
+			cb.RecordFailure()
+		}
+		<-done
+
+		// Quiescent: whatever interleaving happened, an Open circuit must
+		// carry a non-zero timestamp or it can never leave Open.
+		if State(cb.state.Load()) == StateOpen && cb.lastFailure.Load() == 0 {
+			t.Fatalf("round %d: circuit open with lastFailure == 0 — wedged past the zero-timestamp guard", round)
+		}
+	}
+}
