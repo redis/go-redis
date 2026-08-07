@@ -685,6 +685,38 @@ func TestCircuitBreaker_NoReservationSurvivesHalfOpenReopen(t *testing.T) {
 	}
 }
 
+// TestAllowReportsReservation pins the Allow contract: a closed-state
+// admission reserves nothing, a half-open admission reserves one bounded
+// probe slot, and a denied request reserves nothing — callers use the
+// reserved flag to decide whether a later ReleaseHalfOpen is theirs to call,
+// so a closed-state admission that outlives a later open -> half-open
+// transition cannot free a slot a real recovery probe is holding.
+func TestAllowReportsReservation(t *testing.T) {
+	cb := New(Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    1,
+		MaxHalfOpenRequests: 1,
+		OpenTimeout:         30 * time.Millisecond,
+	})
+
+	if allowed, reserved := cb.Allow(); !allowed || reserved {
+		t.Fatalf("closed: Allow() = (%v, %v), want (true, false)", allowed, reserved)
+	}
+
+	cb.RecordFailure()
+	if allowed, reserved := cb.Allow(); allowed || reserved {
+		t.Fatalf("open: Allow() = (%v, %v), want (false, false)", allowed, reserved)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	if allowed, reserved := cb.Allow(); !allowed || !reserved {
+		t.Fatalf("half-open: Allow() = (%v, %v), want (true, true)", allowed, reserved)
+	}
+	if allowed, reserved := cb.Allow(); allowed || reserved {
+		t.Fatalf("half-open budget exhausted: Allow() = (%v, %v), want (false, false)", allowed, reserved)
+	}
+}
+
 // TestRecordFailureResetRaceKeepsTimestamp hammers RecordFailure against
 // Reset: when Reset fully completes between RecordFailure's timestamp store
 // and its CAS into Open, the circuit must not end up Open with a zero

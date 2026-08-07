@@ -164,19 +164,30 @@ func (cb *CircuitBreaker) CheckState() State {
 // IsAllowed returns true if a request should be allowed through.
 // This is a convenience method that combines CheckState with half-open request limiting.
 func (cb *CircuitBreaker) IsAllowed() bool {
+	allowed, _ := cb.Allow()
+	return allowed
+}
+
+// Allow reports whether a request may proceed and whether the admission
+// reserved a bounded half-open probe slot. Closed-state admissions reserve
+// nothing, so callers whose operation may outlive a later open -> half-open
+// transition (for example a WATCH transaction) must consult reserved before
+// calling ReleaseHalfOpen — an unconditional release would free a slot a
+// real recovery probe is holding.
+func (cb *CircuitBreaker) Allow() (allowed, reserved bool) {
 	state := cb.CheckState()
 
 	switch state {
 	case StateClosed:
-		return true
+		return true, false
 	case StateOpen:
-		return false
+		return false, false
 	case StateHalfOpen:
 		// Limit requests in half-open state
 		requests := cb.requests.Add(1)
 		if int(requests) > cb.config.MaxHalfOpenRequests {
 			cb.requests.Add(-1) // Revert
-			return false
+			return false, false
 		}
 		// Re-check after reserving: a probe failure may have re-opened the
 		// circuit in between (zeroing the counter), and admitting here would
@@ -186,11 +197,11 @@ func (cb *CircuitBreaker) IsAllowed() bool {
 			if cb.requests.Add(-1) < 0 {
 				cb.requests.Store(0)
 			}
-			return false
+			return false, false
 		}
-		return true
+		return true, true
 	default:
-		return false
+		return false, false
 	}
 }
 
