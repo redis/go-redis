@@ -203,6 +203,18 @@ H8PD6BY8JK7P5K8K0K8K0K8K0K8K0K8K0K8K0A==
 	})
 }
 
+func TestLagAwareIsFailbackOnly(t *testing.T) {
+	// The lag-aware REST check may only gate routing traffic TO a member
+	// (candidate probes, auto-fallback, initial selection): replication lag
+	// on the member already serving traffic is not an eviction signal, so
+	// the client's background loop must be able to identify the check and
+	// skip it for the current active. Failover rides on traffic signals.
+	hc := NewLagAwareHealthCheck()
+	if !hc.FailbackOnly() {
+		t.Error("LagAwareHealthCheck.FailbackOnly() = false, want true")
+	}
+}
+
 func TestLagAwareHostPortFromAddr(t *testing.T) {
 	tests := []struct {
 		addr     string

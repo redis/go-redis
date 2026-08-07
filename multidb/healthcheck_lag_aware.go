@@ -241,6 +241,18 @@ func NewLagAwareHealthCheck(opts ...LagAwareHealthCheckOption) *LagAwareHealthCh
 
 func (h *LagAwareHealthCheck) Config() HealthCheckConfig { return h.config }
 
+// FailbackOnly reports that this check's verdict may only gate routing
+// traffic TO a member — candidate probes before failover, auto-fallback and
+// initial selection — and must never evict the current active. Replication
+// lag is a fail-back criterion (a recovered member must not take traffic
+// back before it has caught up); on the member already serving traffic it
+// is not an availability signal, and the REST API may itself be unreachable
+// precisely when the member is failing. Failover decisions ride on traffic
+// signals (the failure detector and circuit breaker) and liveness checks.
+// The MultiDB background health loop skips FailbackOnly checks when probing
+// the active member.
+func (h *LagAwareHealthCheck) FailbackOnly() bool { return true }
+
 // hostPortFromAddr is hostFromAddr plus the numeric Redis port (0 when the
 // address carries none). The port disambiguates Redis Enterprise databases
 // that share a DNS name but listen on different ports.
