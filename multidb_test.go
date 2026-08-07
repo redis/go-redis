@@ -1327,6 +1327,58 @@ func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	}
 }
 
+// failbackOnlyCheck is a fakeHealthCheck that reports FailbackOnly, like the
+// lag-aware REST check: its verdict may only gate routing traffic TO a
+// member and must never evict the current active.
+type failbackOnlyCheck struct{ fakeHealthCheck }
+
+func newFailbackOnlyCheck(healthy bool) *failbackOnlyCheck {
+	c := &failbackOnlyCheck{}
+	c.healthy.Store(healthy)
+	return c
+}
+
+func (c *failbackOnlyCheck) FailbackOnly() bool { return true }
+
+func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	// Both members carry a fail-back-only check (the lag-aware shape) next
+	// to their healthy liveness check; the lag breach starts AFTER the
+	// client is up, like a replication backlog building on a live pair.
+	fbA := newFailbackOnlyCheck(true)
+	fbB := newFailbackOnlyCheck(true)
+	dbA.cfg.HealthChecks = append(dbA.cfg.HealthChecks, fbA)
+	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	fbA.healthy.Store(false)
+	fbB.healthy.Store(false)
+	mdb.TestRunHealthChecksOnce()
+
+	// The ACTIVE member must not be evicted by the lag verdict: its breaker
+	// stays closed and traffic keeps flowing.
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("active index = %d, want 0 (lag must not evict the active)", got)
+	}
+	if err := mdb.Ping(context.Background()).Err(); err != nil {
+		t.Errorf("Ping after health pass: %v (active breaker must stay closed)", err)
+	}
+
+	// A NON-active member is a fail-back candidate: the same failing check
+	// must open its breaker so fallback cannot route traffic back to a
+	// member that has not caught up.
+	if mdb.TestBreakerReserveHalfOpen(1) {
+		t.Error("candidate member's breaker still admits — the fail-back-only check must gate re-entry")
+	}
+}
+
 // midflightHook runs an armable callback inside command execution and then
 // serves the command locally (nil error) without dialing.
 type midflightHook struct{ fn atomic.Pointer[func()] }

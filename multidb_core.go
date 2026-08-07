@@ -121,19 +121,54 @@ func (db *multidbDatabase) selectable() bool {
 	return db.cb.CheckState() != imultidb.CircuitOpen
 }
 
+// failbackOnlyHealthCheck marks health checks whose verdict may only gate
+// routing traffic TO a member (candidate probes, auto-fallback, initial
+// selection) and must never evict the current active — the lag-aware REST
+// check is the canonical case: replication lag on the member already
+// serving traffic is not an availability signal, and failover rides on
+// traffic signals instead. Satisfied structurally (multidb.LagAwareHealthCheck
+// and custom checks alike).
+type failbackOnlyHealthCheck interface {
+	FailbackOnly() bool
+}
+
 // probe runs the database's health checks under the configured policy,
 // bounded by HealthCheckTimeout, and feeds the result into the circuit
 // breaker and the OTel recorder.
 func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) bool {
+	return db.probeWith(parent, timeout, db.checks)
+}
+
+// probeAsActive probes the CURRENTLY ACTIVE member: fail-back-only checks
+// are excluded, so a lag breach cannot open the active's breaker and evict
+// the member traffic is flowing through. With no applicable checks left the
+// probe records nothing — a vacuously healthy pass would pump external
+// successes into a breaker that real traffic failures opened.
+func (db *multidbDatabase) probeAsActive(parent context.Context, timeout time.Duration) {
+	checks := db.checks
+	filtered := make([]MultiDBHealthCheck, 0, len(checks))
+	for _, check := range checks {
+		if fb, ok := check.(failbackOnlyHealthCheck); ok && fb.FailbackOnly() {
+			continue
+		}
+		filtered = append(filtered, check)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	db.probeWith(parent, timeout, filtered)
+}
+
+func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Duration, checks []MultiDBHealthCheck) bool {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	start := time.Now()
 	var healthy bool
 	if db.cc != nil {
-		healthy = db.policy.ExecuteCluster(ctx, db.checks, db.cc)
+		healthy = db.policy.ExecuteCluster(ctx, checks, db.cc)
 	} else {
-		healthy = db.policy.Execute(ctx, db.checks, db.c)
+		healthy = db.policy.Execute(ctx, checks, db.c)
 	}
 
 	if parent.Err() != nil {
@@ -1094,11 +1129,19 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 	copy(dbs, c.dbs)
 	c.dbMu.RUnlock()
 
+	activeDB, _ := c.activeSnapshot()
 	for _, db := range dbs {
 		select {
 		case <-c.stopCh:
 			return
 		default:
+		}
+		if db == activeDB {
+			// The active is probed without fail-back-only checks (e.g. the
+			// lag-aware REST check): their verdicts gate routing traffic TO
+			// a member, never evicting the one traffic flows through.
+			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
+			continue
 		}
 		db.probe(ctx, c.opts.HealthCheckTimeout)
 	}
