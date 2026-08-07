@@ -895,6 +895,32 @@ func TestMultiDBBatchHImportDoesNotPoisonOtherCommands(t *testing.T) {
 	}
 }
 
+func TestMultiDBBatchEarlyExitKeepsPositionalFirstError(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// A rejected HIMPORT followed by a command whose gate exits early (the
+	// context is already canceled, so the batch never executes): Exec must
+	// still report the POSITIONALLY first error over the original slice —
+	// the HIMPORT rejection — exactly like the executed path does.
+	cmds, err := mdb.Pipelined(canceled, func(p redis.Pipeliner) error {
+		p.HImportPrepare(canceled, "fs", "f1")
+		p.Set(canceled, "k", "v", 0)
+		return nil
+	})
+	if len(cmds) != 2 {
+		t.Fatalf("got %d cmds, want 2", len(cmds))
+	}
+	if want := cmds[0].Err(); want == nil || !errors.Is(err, want) {
+		t.Errorf("Exec = %v, want the positionally first error %v", err, want)
+	}
+	if !errors.Is(cmds[1].Err(), context.Canceled) {
+		t.Errorf("cmd 1 err = %v, want context.Canceled", cmds[1].Err())
+	}
+}
+
 func TestMultiDBTxRetriesAnotherMemberWhenHalfOpenFull(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
@@ -969,6 +995,38 @@ func TestMultiDBWatchRegatesAfterFailover(t *testing.T) {
 	}
 	if got := dbB.hook.commands.Load(); got != 0 {
 		t.Errorf("commands on B = %d, want 0 (no probe slot available)", got)
+	}
+}
+
+func TestMultiDBWatchDoesNotReleaseUnreservedSlot(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1, // one bounded half-open probe slot
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	// Watch is admitted while A's breaker is CLOSED — no probe slot is
+	// reserved. While the transaction is open, other traffic opens the
+	// breaker, the grace period moves it to half-open, and a recovery probe
+	// takes the only slot. Watch's deferred release must not free that
+	// probe's slot: it never reserved one.
+	err := mdb.Watch(context.Background(), func(tx *redis.Tx) error {
+		mdb.TestBreakerRecordFailure(0)
+		time.Sleep(50 * time.Millisecond)
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Fatal("setup: expected to reserve the half-open probe slot")
+		}
+		return nil
+	}, "k")
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a second half-open reservation succeeded — Watch released a slot it never reserved")
 	}
 }
 
