@@ -216,6 +216,11 @@ func TestLagAwareHostPortFromAddr(t *testing.T) {
 		{"redis.example.com:9443", "redis.example.com", 9443, true},
 		{"[::1]:6379", "::1", 6379, true},
 		{"[2001:db8::1]:6379", "2001:db8::1", 6379, true},
+		// Service-name ports are valid dial targets; they must resolve (via
+		// the local services database) instead of degrading to the port-0
+		// wildcard, which would defeat port disambiguation for Enterprise
+		// endpoints sharing one DNS name.
+		{"redis.example.com:https", "redis.example.com", 443, true},
 		{"localhost", "localhost", 0, true},
 		{"[::1]", "::1", 0, true},
 		{"[2001:db8::1]", "2001:db8::1", 0, true},

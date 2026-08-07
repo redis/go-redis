@@ -252,7 +252,17 @@ func hostPortFromAddr(addr string) (string, int, bool) {
 		return "", 0, false
 	}
 	if host, portStr, err := net.SplitHostPort(addr); err == nil {
-		port, _ := strconv.Atoi(portStr)
+		port, aerr := strconv.Atoi(portStr)
+		if aerr != nil {
+			// Service-name ports ("redis.example.com:redis") are valid dial
+			// targets; resolve them through the local services database so
+			// Enterprise endpoints sharing one DNS name still disambiguate
+			// by port. An unresolvable name degrades to 0 (host-only match),
+			// as before.
+			if p, lerr := net.LookupPort("tcp", portStr); lerr == nil {
+				port = p
+			}
+		}
 		if host == "" {
 			// The ":6379" shorthand means localhost; an empty host would
 			// otherwise produce an unusable https://:9443 REST base URL.
