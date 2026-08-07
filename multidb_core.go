@@ -12,7 +12,6 @@ import (
 	"github.com/redis/go-redis/v9/internal/failuredetector"
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 
@@ -576,9 +575,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 }
 
 // isRedisReplyError reports whether err is an error reply from the server
-// rather than a transport-level failure.
+// rather than a transport-level failure. It matches the Error marker
+// interface, not the concrete proto.RedisError string: the reader parses
+// recognized reply prefixes into typed structs (*proto.AuthError,
+// *proto.MovedError, ...) that only share the marker.
 func isRedisReplyError(err error) bool {
-	var redisErr proto.RedisError
+	var redisErr Error
 	return errors.As(err, &redisErr)
 }
 
