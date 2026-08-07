@@ -35,19 +35,24 @@ func resetCmds(cmds []Cmder) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed bool) int {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed, reserved bool) int {
 	// `executed` comes from the execution marker, not from inspecting
 	// command state: an executed all-success batch whose error was injected
 	// by a post-exec hook looks identical on the commands, and stamping it
 	// would turn already-applied writes into phantom transport failures and
-	// replay them.
+	// replay them. `reserved` is the gate admission's half-open reservation:
+	// a closed-state admission holds no probe slot, and a batch outliving a
+	// later open -> half-open transition must not free the slot a real
+	// recovery probe is holding.
 	if !executed {
 		if batchErr == nil {
 			// A member hook served the batch locally (returned nil without
 			// calling next): the results are valid for the caller, but
 			// nothing reached Redis — record no health signal and give the
-			// gate's probe slot back.
-			db.cb.ReleaseHalfOpen()
+			// gate's probe slot back if it reserved one.
+			if reserved {
+				db.cb.ReleaseHalfOpen()
+			}
 			return 0
 		}
 		// Execution never started: the batch error stands in for every
@@ -73,7 +78,13 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 				// caller, record nothing.
 				return
 			}
-			db.cb.RecordSuccess()
+			if reserved {
+				db.cb.RecordSuccess()
+			} else {
+				// Unreserved admission: the success counts toward closing,
+				// but must not release a half-open slot the batch never held.
+				db.cb.RecordExternalSuccess()
+			}
 			c.detector.RecordSuccess()
 			// Recovery traffic breaks the consecutive-failed-failover chain
 			// for batch-only workloads too (see recordFailedFailoverLocked).
@@ -118,10 +129,10 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			recordOne(cmd)
 		}
 	}
-	if recorded == 0 {
+	if recorded == 0 && reserved {
 		// The whole batch was neutral (e.g. a local ErrCrossSlot rejection):
 		// nothing was recorded on the breaker, so give back the half-open
-		// probe slot the caller's IsAllowed gate may have reserved.
+		// probe slot the gate admission reserved.
 		db.cb.ReleaseHalfOpen()
 	}
 	return transportFailures
@@ -226,11 +237,15 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			return exitErr(err)
 		}
 
-		// Detector before IsAllowed: IsAllowed reserves a bounded half-open
-		// probe slot, and a tripped detector routes to failover without
-		// executing the batch — the reservation would leak.
+		// Detector before the breaker admission: a half-open admission
+		// reserves a bounded probe slot, and a tripped detector routes to
+		// failover without executing the batch — the reservation would leak.
 		db, idx := c.activeSnapshot()
-		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+		admitted, reserved := false, false
+		if db != nil && !c.detector.ShouldFailover() {
+			admitted, reserved = db.cb.Allow()
+		}
+		if !admitted {
 			gateRejections++
 			if gateRejections > maxGateRejections {
 				err := ErrTemporarilyNotAvailable
@@ -248,7 +263,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			}
 			// Re-enter the gate on the newly selected database — mirroring
 			// the single-command path: its breaker may be half-open and the
-			// IsAllowed call above is what reserves the bounded probe slot.
+			// Allow call above is what reserves the bounded probe slot.
 			// Re-gating does not consume a retry attempt.
 			continue
 		}
@@ -263,7 +278,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// pre-execution hook abort from a post-execution hook error.
 		executed := new(atomic.Bool)
 		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
-		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load())
+		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), reserved)
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
@@ -306,6 +321,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	gateRejections := 0
 	maxGateRejections := c.memberCount() + 1
 	var db *multidbDatabase
+	var reserved bool
 	for {
 		if c.closed.Load() {
 			resetCmds(cmds)
@@ -319,7 +335,11 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		}
 		var idx int
 		db, idx = c.activeSnapshot()
-		if db == nil || c.detector.ShouldFailover() || !db.cb.IsAllowed() {
+		admitted := false
+		if db != nil && !c.detector.ShouldFailover() {
+			admitted, reserved = db.cb.Allow()
+		}
+		if !admitted {
 			gateRejections++
 			if gateRejections > maxGateRejections {
 				err := ErrTemporarilyNotAvailable
@@ -346,7 +366,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) >= 3 {
 		user = cmds[1 : len(cmds)-1]
 	}
-	c.recordBatchOutcomes(db, user, err, executed.Load())
+	c.recordBatchOutcomes(db, user, err, executed.Load(), reserved)
 	return err
 }
 
