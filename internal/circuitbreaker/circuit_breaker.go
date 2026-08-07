@@ -387,7 +387,8 @@ func (cb *CircuitBreaker) Stats() Stats {
 // Execute runs the given function with circuit breaker protection.
 // Returns ErrCircuitOpen if the circuit is open and not ready for testing.
 func (cb *CircuitBreaker) Execute(fn func() error) error {
-	if !cb.IsAllowed() {
+	allowed, reserved := cb.Allow()
+	if !allowed {
 		return ErrCircuitOpen
 	}
 
@@ -397,7 +398,15 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 		return err
 	}
 
-	cb.RecordSuccess()
+	if reserved {
+		cb.RecordSuccess()
+	} else {
+		// Admitted while closed: no slot was reserved, so the success must
+		// not release one — fn can outlive a later open -> half-open
+		// transition, and RecordSuccess would free a slot a real recovery
+		// probe is holding.
+		cb.RecordExternalSuccess()
+	}
 	return nil
 }
 

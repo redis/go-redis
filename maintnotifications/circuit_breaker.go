@@ -95,13 +95,16 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	return cb.inner.CheckState() == circuitbreaker.StateOpen
 }
 
-// allowRequest reports whether a request should be allowed through, reserving a
-// half-open probe slot when in the half-open state so concurrent callers are
-// bounded by MaxHalfOpenRequests. A reserved slot must be settled with a
-// subsequent recordSuccess/recordFailure, or released via releaseRequest when
-// the operation produced neither outcome.
-func (cb *CircuitBreaker) allowRequest() bool {
-	return cb.inner.IsAllowed()
+// allowRequest reports whether a request should be allowed through and
+// whether the admission reserved a half-open probe slot (half-open
+// admissions are bounded by MaxHalfOpenRequests; closed admissions reserve
+// nothing). A reserved slot must be settled with a subsequent
+// recordSuccess/recordFailure, or released via releaseRequest when the
+// operation produced neither outcome — callers must consult reserved first,
+// or a handoff admitted while closed that outlives a later open -> half-open
+// transition would free a slot a real recovery probe is holding.
+func (cb *CircuitBreaker) allowRequest() (allowed, reserved bool) {
+	return cb.inner.Allow()
 }
 
 // releaseRequest returns a half-open slot reserved by allowRequest when the
@@ -130,10 +133,17 @@ func (cb *CircuitBreaker) recordFailure() {
 	cb.inner.RecordFailure()
 }
 
-// recordSuccess records a success (for external use when not using Execute)
-func (cb *CircuitBreaker) recordSuccess() {
+// recordSuccess records a success (for external use when not using Execute).
+// reserved must be the flag allowRequest returned for this operation's
+// admission: a closed-state admission holds no half-open slot, so its
+// success must count toward closing without releasing one.
+func (cb *CircuitBreaker) recordSuccess(reserved bool) {
 	cb.lastSuccessTime.Store(time.Now().Unix())
-	cb.inner.RecordSuccess()
+	if reserved {
+		cb.inner.RecordSuccess()
+	} else {
+		cb.inner.RecordExternalSuccess()
+	}
 }
 
 // GetState returns the current state of the circuit breaker

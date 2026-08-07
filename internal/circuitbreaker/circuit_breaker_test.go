@@ -717,6 +717,39 @@ func TestAllowReportsReservation(t *testing.T) {
 	}
 }
 
+// TestExecuteClosedAdmissionDoesNotFreeProbeSlot pins Execute's slot
+// accounting: work admitted while the breaker is CLOSED reserves no
+// half-open slot, so when it finishes after other failures moved the
+// breaker to half-open, its success must count toward closing WITHOUT
+// releasing the slot a real recovery probe is holding.
+func TestExecuteClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
+	cb := New(Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    2, // one success does not close the circuit
+		MaxHalfOpenRequests: 1,
+		OpenTimeout:         30 * time.Millisecond,
+	})
+
+	err := cb.Execute(func() error {
+		// While the closed-admitted work runs: a failure opens the circuit,
+		// the grace period elapses, and a recovery probe reserves the only
+		// half-open slot.
+		cb.RecordFailure()
+		time.Sleep(50 * time.Millisecond)
+		if allowed, reserved := cb.Allow(); !allowed || !reserved {
+			t.Fatal("setup: expected to reserve the half-open probe slot")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if cb.IsAllowed() {
+		t.Error("a second half-open admission succeeded — Execute released a slot it never reserved")
+	}
+}
+
 // TestRecordFailureResetRaceKeepsTimestamp hammers RecordFailure against
 // Reset: when Reset fully completes between RecordFailure's timestamp store
 // and its CAS into Open, the circuit must not end up Open with a zero
