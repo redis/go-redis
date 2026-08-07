@@ -23,7 +23,7 @@ func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	// Executed batch, every reply read fine, then a post-exec hook injected
 	// a retryable error without stamping the commands: the commands are
 	// authoritative — no phantom failures, no stamping, no replay signal.
-	if got := core.recordBatchOutcomes(db, cmds, io.EOF, true); got != 0 {
+	if got := core.recordBatchOutcomes(db, cmds, io.EOF, true, true); got != 0 {
 		t.Errorf("transportFailures = %d for an executed all-success batch, want 0", got)
 	}
 	if err := cmds[0].Err(); err != nil {
@@ -33,7 +33,7 @@ func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	// Not executed (hook aborted before next): the batch error stands in
 	// for the commands and is stamped so callers see it.
 	resetCmds(cmds)
-	if got := core.recordBatchOutcomes(db, cmds, io.EOF, false); got != 1 {
+	if got := core.recordBatchOutcomes(db, cmds, io.EOF, false, true); got != 1 {
 		t.Errorf("transportFailures = %d for an unexecuted batch, want 1", got)
 	}
 	if err := cmds[0].Err(); err == nil {
@@ -69,7 +69,7 @@ func TestRecordBatchOutcomesExecutedBatchKeepsSuccessfulPrefix(t *testing.T) {
 	}
 	cmds[1].SetErr(loading)
 
-	if got := core.recordBatchOutcomes(db, cmds, loading, true); got != 1 {
+	if got := core.recordBatchOutcomes(db, cmds, loading, true, true); got != 1 {
 		t.Errorf("transportFailures = %d, want 1 (prefix must not count)", got)
 	}
 	if err := cmds[0].Err(); err != nil {
@@ -97,7 +97,7 @@ func TestRecordBatchOutcomesFailuresBeforeSuccesses(t *testing.T) {
 		NewStatusCmd(context.Background(), "set", "k2", "v"),
 	}
 	cmds[1].SetErr(io.EOF)
-	core.recordBatchOutcomes(db, cmds, io.EOF, true)
+	core.recordBatchOutcomes(db, cmds, io.EOF, true, true)
 
 	if got := db.cb.State(); got != imultidb.CircuitOpen {
 		t.Errorf("breaker state = %v after a failed recovery batch, want open", got)
@@ -122,7 +122,7 @@ func TestRecordBatchOutcomesClosedStateKeepsArrivalOrder(t *testing.T) {
 		NewStatusCmd(context.Background(), "set", "k2", "v"),
 	}
 	cmds[1].SetErr(io.EOF)
-	core.recordBatchOutcomes(db, cmds, io.EOF, true)
+	core.recordBatchOutcomes(db, cmds, io.EOF, true, true)
 
 	if got := db.cb.State(); got != imultidb.CircuitClosed {
 		t.Errorf("breaker state = %v, want closed (stale failure must be reset by the earlier success)", got)
@@ -139,7 +139,7 @@ func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
 	// An executed batch success is recovery traffic: it breaks the
 	// consecutive-failed-failover escalation chain.
 	cmds := []Cmder{NewStatusCmd(context.Background(), "set", "k", "v")}
-	core.recordBatchOutcomes(db, cmds, nil, true)
+	core.recordBatchOutcomes(db, cmds, nil, true, true)
 	if !core.successSinceFailover.Load() {
 		t.Error("executed batch success did not mark recovery traffic")
 	}
@@ -147,7 +147,7 @@ func TestRecordBatchOutcomesSuccessSinceFailover(t *testing.T) {
 	// A hook-served batch (nil without execution) is not.
 	core.successSinceFailover.Store(false)
 	resetCmds(cmds)
-	core.recordBatchOutcomes(db, cmds, nil, false)
+	core.recordBatchOutcomes(db, cmds, nil, false, true)
 	if core.successSinceFailover.Load() {
 		t.Error("hook-served batch counted as recovery traffic")
 	}

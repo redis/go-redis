@@ -1030,6 +1030,72 @@ func TestMultiDBWatchDoesNotReleaseUnreservedSlot(t *testing.T) {
 	}
 }
 
+// midflightBatchHook runs an armable callback inside batch execution and
+// then serves the batch locally (nil error, no wire I/O).
+type midflightBatchHook struct{ fn atomic.Pointer[func()] }
+
+func (h *midflightBatchHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *midflightBatchHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error { return nil }
+}
+
+func (h *midflightBatchHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		if f := h.fn.Load(); f != nil {
+			(*f)()
+		}
+		return nil
+	}
+}
+
+func TestMultiDBBatchClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 2, // MaxHalfOpenRequests defaults to this: two probe slots
+		GracePeriod:      30 * time.Millisecond,
+	}
+	opts.Clients = append(opts.Clients, dbA.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+	hook := &midflightBatchHook{}
+	if err := mdb.AddDatabaseHook(0, hook); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// The batch is admitted while A's breaker is CLOSED — no probe slot is
+	// reserved. While it executes, a failure opens the breaker, the grace
+	// period elapses, and recovery probes reserve both half-open slots. The
+	// hook serves the batch locally (nil, no wire I/O), which lands in the
+	// unexecuted-clean settle path — it must not free a probe's slot.
+	fn := func() {
+		mdb.TestBreakerRecordFailure(0)
+		time.Sleep(50 * time.Millisecond)
+		if !mdb.TestBreakerReserveHalfOpen(0) || !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("setup: expected to reserve both half-open probe slots")
+		}
+	}
+	hook.fn.Store(&fn)
+	if _, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	}); err != nil {
+		t.Fatalf("Pipelined: %v", err)
+	}
+	hook.fn.Store(nil)
+
+	if mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("a second half-open reservation succeeded — the batch released a slot it never reserved")
+	}
+}
+
 func TestMultiDBBatchAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
