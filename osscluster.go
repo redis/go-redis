@@ -433,17 +433,6 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		maintNotificationsConfig = &configClone
 	}
 
-	// Node clients don't inherit AutoPipelineOptions (the cluster autopipeliner
-	// lives at cluster level and dispatches into the node clients' pipeline
-	// hooks), so the "autopipelining declares pipeline-heavy usage" default from
-	// Options.init cannot fire on them. Apply it here instead: a cluster
-	// configured for autopipelining gets dedicated pipeline pools on every node
-	// client. Explicit sizes win; negative opts out (see Options.PipelinePoolSize).
-	pipelinePoolSize := opt.PipelinePoolSize
-	if opt.AutoPipelineOptions != nil && pipelinePoolSize == 0 {
-		pipelinePoolSize = DefaultPipelinePoolSize
-	}
-
 	return &Options{
 		ClientName: opt.ClientName,
 		Dialer:     opt.Dialer,
@@ -484,7 +473,7 @@ func (opt *ClusterOptions) clientOptions() *Options {
 
 		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
 		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
-		PipelinePoolSize:        pipelinePoolSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
 		DisableIdentity:         opt.DisableIdentity,
 		DisableIndentity:        opt.DisableIndentity,
 		IdentitySuffix:          opt.IdentitySuffix,

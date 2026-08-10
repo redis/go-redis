@@ -253,21 +253,20 @@ type Options struct {
 	// batching reduces connection contention. A smaller pool saves memory while
 	// maintaining high throughput.
 	//
-	// When AutoPipelineOptions is set, this defaults to DefaultPipelinePoolSize
-	// (autopipelining is declared pipeline-heavy usage, so batches get their own
-	// connections instead of competing with regular commands for the main pool).
-	// The same default applies lazily when an autopipeliner is created at
-	// runtime (AutoPipeline / AsyncAutoPipeline) on a client that has no
-	// pipeline pool. Set to a negative value to opt out of the dedicated pool
-	// explicitly — it disables both the config-time and the lazy creation.
+	// The dedicated pipeline pool is created unconditionally at NewClient —
+	// like the pubsub pool — so pipelines never compete with regular commands
+	// for main-pool connections. It never pre-dials (MinIdleConns is forced
+	// to 0 on it), so the size is a cap on burst capacity, not a standing
+	// footprint: an unused pipeline pool holds zero connections. A burst of
+	// concurrent pipelines wider than the cap spills back to the main pool
+	// instead of queueing. Its connections use DefaultPipelineBufferSize
+	// buffers unless the pipeline buffer sizes are set explicitly.
 	//
-	// The pipeline pool never pre-dials: MinIdleConns is forced to 0 on it,
-	// so the size is a cap on burst capacity, not a standing footprint. Its
-	// connections use DefaultPipelineBufferSize buffers unless the pipeline
-	// buffer sizes are set explicitly.
+	// Set to a negative value to opt out of the dedicated pool entirely:
+	// pipelines then run on the main pool, as they did before the pool
+	// existed.
 	//
-	// default: 0 (no dedicated pool), or DefaultPipelinePoolSize when
-	// AutoPipelineOptions is set or an autopipeliner is created
+	// default: 0 (= DefaultPipelinePoolSize connections)
 	PipelinePoolSize int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
@@ -465,14 +464,12 @@ const (
 	CSCStrategySharedTracking CSCStrategy = iota
 )
 
-// DefaultPipelinePoolSize is the pipeline pool size used when the dedicated
-// pipeline pool is created without an explicit PipelinePoolSize: either a
-// pipeline buffer size was set, or autopipelining was configured (via
-// AutoPipelineOptions or a runtime AutoPipeline/AsyncAutoPipeline call).
-// Pipelining batches many commands per round trip, so it needs far fewer
-// connections than regular traffic. The pool is pure burst capacity: it never
-// pre-dials idle connections (MinIdleConns is forced to 0 on it), so an
-// unused pipeline pool holds no connections at all and the size is only a cap.
+// DefaultPipelinePoolSize is the pipeline pool size used when
+// PipelinePoolSize is not set. Pipelining batches many commands per round
+// trip, so it needs far fewer connections than regular traffic. The pool is
+// pure burst capacity: it never pre-dials idle connections (MinIdleConns is
+// forced to 0 on it), so an unused pipeline pool holds no connections at all
+// and the size is only a cap — bursts wider than it spill to the main pool.
 const DefaultPipelinePoolSize = 10
 
 // DefaultPipelineBufferSize is the per-connection read/write buffer size for
@@ -529,14 +526,7 @@ func (opt *Options) init() {
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
 	}
-	// Configuring the autopipeliner on the client declares pipeline-heavy usage,
-	// so default the dedicated pipeline pool in: without it every batch competes
-	// with regular commands for main-pool connections. Explicit sizes win, and a
-	// negative PipelinePoolSize opts out of the dedicated pool entirely (the
-	// creation gate only fires on values > 0).
-	if opt.AutoPipelineOptions != nil && opt.PipelinePoolSize == 0 {
-		opt.PipelinePoolSize = DefaultPipelinePoolSize
-	}
+
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
 	} else if opt.MaxConcurrentDials > opt.PoolSize {

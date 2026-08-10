@@ -561,11 +561,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	rdb := &Client{
 		baseClient: &baseClient{
-			apClosed:     &atomic.Bool{},
-			opt:          opt,
-			onClose:      &onCloseHooks{},
-			himport:      newHImportRegistry(),
-			pipelinePool: &atomic.Pointer[pipelinePoolRef]{},
+			apClosed: &atomic.Bool{},
+			opt:      opt,
+			onClose:  &onCloseHooks{},
+			himport:  newHImportRegistry(),
 		},
 	}
 	rdb.init()
@@ -589,18 +588,14 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	// Optionally create a separate connection pool for pipelining, mirroring
-	// NewClient via the shared buildPipelinePool helper. This block previously
-	// duplicated the construction AND still used the pre-fix gate (buffer sizes
-	// only), so PipelinePoolSize alone — and the AutoPipelineOptions default —
-	// silently created no pipeline pool on failover clients.
-	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 ||
-		opt.PipelinePoolSize > 0 {
+	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
+	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
+	if opt.PipelinePoolSize >= 0 {
 		ref, err := rdb.buildPipelinePool(mainPoolName + "_pipeline")
 		if err != nil {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
 		}
-		rdb.pipelinePool.Store(ref)
+		rdb.pipelinePool = ref
 	}
 
 	// Register pools for OTel async gauge metrics, matching NewClient (the
