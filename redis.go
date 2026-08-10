@@ -350,6 +350,17 @@ func (h *onCloseHooks) run() error {
 	return firstErr
 }
 
+// pipelinePoolRef bundles the dedicated pipeline pool with the pool name its
+// connections carry (pool.Conn.PoolName()), so poolForConn can route a
+// connection back to the pool that owns it — e.g. streaming-credentials
+// re-auth must close/account a failed pipeline connection against the
+// pipeline pool, not connPool. Bundling keeps the pair consistent under the
+// single atomic publication in baseClient.pipelinePool.
+type pipelinePoolRef struct {
+	pool *pool.ConnPool
+	name string
+}
+
 type baseClient struct {
 	// apClosed flips when the shared pools begin closing; every wrapper and
 	// every clone SHARING those pools refuses to build a new autopipeliner
@@ -362,15 +373,20 @@ type baseClient struct {
 	connPool   pool.Pooler
 	pubSubPool *pool.PubSubPool
 	// pipelinePool is an optional separate connection pool for pipelining
-	// operations, used when PipelineReadBufferSize/PipelineWriteBufferSize is
-	// set so pipelines can use large buffers without bloating the main pool.
-	// nil means pipelines use connPool.
-	pipelinePool pool.Pooler
-	// pipelinePoolName is the pool name assigned to pipelinePool's connections
-	// (pool.Conn.PoolName()). It lets poolForConn route a connection back to the
-	// pool that owns it — e.g. so streaming-credentials re-auth closes/accounts a
-	// failed pipeline connection against pipelinePool, not connPool.
-	pipelinePoolName string
+	// operations: created at NewClient when any pipeline option (or
+	// AutoPipelineOptions) is set, or lazily by ensurePipelinePool when an
+	// autopipeliner is first built on a client with no pipeline config. A nil
+	// ref means pipelines use connPool.
+	//
+	// It is a POINTER to an atomic slot, for two reasons:
+	//   - lazy creation publishes the pool while concurrent Pipelined callers
+	//     read it on the hot path (withPipelineConn) — a plain field write
+	//     would be a data race;
+	//   - WithTimeout clones copy the pointer and therefore SHARE the slot
+	//     with the parent (they already share the underlying pools), so a
+	//     lazy creation through any sharer is visible to all of them and two
+	//     sharers cannot end up with two different pipeline pools.
+	pipelinePool *atomic.Pointer[pipelinePoolRef]
 	hooksMixin
 
 	// onClose holds named callbacks invoked when the client is closed.
@@ -443,11 +459,13 @@ func (c *baseClient) clone() *baseClient {
 	c.maintNotificationsManagerLock.RUnlock()
 
 	clone := &baseClient{
-		apClosed:                    c.apClosed,
-		opt:                         c.opt,
-		connPool:                    c.connPool,
+		apClosed: c.apClosed,
+		opt:      c.opt,
+		connPool: c.connPool,
+		// Pointer copy on purpose: the clone shares the parent's pipeline-pool
+		// SLOT, so a lazy creation through either is visible to both and they
+		// cannot build two different pipeline pools over one shared pool set.
 		pipelinePool:                c.pipelinePool,
-		pipelinePoolName:            c.pipelinePoolName,
 		pubSubPool:                  c.pubSubPool,
 		onClose:                     c.onClose,
 		pushProcessor:               c.pushProcessor,
@@ -560,15 +578,111 @@ func (c *baseClient) initPooledConn(ctx context.Context, p pool.Pooler, cn *pool
 	return nil
 }
 
+// loadPipelinePool returns the current pipeline-pool ref, or nil when
+// pipelines use the main pool. Safe against a concurrent lazy creation.
+func (c *baseClient) loadPipelinePool() *pipelinePoolRef {
+	if c.pipelinePool == nil {
+		return nil
+	}
+	return c.pipelinePool.Load()
+}
+
+// getPipelinePool returns the dedicated pipeline pool as a pool.Pooler, or a
+// true nil interface when there is none. Callers must use this rather than
+// wrapping loadPipelinePool().pool themselves where a pool.Pooler is expected:
+// a typed-nil *pool.ConnPool inside the interface would defeat `!= nil` checks.
+func (c *baseClient) getPipelinePool() pool.Pooler {
+	if ref := c.loadPipelinePool(); ref != nil {
+		return ref.pool
+	}
+	return nil
+}
+
 // poolForConn returns the pool that owns cn — the dedicated pipeline pool when
 // cn was dialed there, otherwise the main pool. Re-auth close/accounting must
 // target the owning pool so a failed pipeline connection is removed from the
 // pipeline pool's books, not the main pool's.
 func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
-	if c.pipelinePool != nil && c.pipelinePoolName != "" && cn.PoolName() == c.pipelinePoolName {
-		return c.pipelinePool
+	if ref := c.loadPipelinePool(); ref != nil && cn.PoolName() == ref.name {
+		return ref.pool
 	}
 	return c.connPool
+}
+
+// buildPipelinePool constructs the dedicated pipeline pool from the client's
+// options: pipeline buffer sizes when set (with the same RESP3 minimum clamp
+// Options.init applies to the main pool), the regular buffers otherwise, and
+// PipelinePoolSize (or DefaultPipelinePoolSize) connections. Shared by the
+// NewClient creation path and the lazy ensurePipelinePool path so the two
+// cannot drift.
+func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error) {
+	opt := c.opt
+	pipelineOpt := opt.clone()
+	if opt.PipelineReadBufferSize > 0 {
+		pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
+		// Same clamp Options.init applies to the main pool: RESP3 push
+		// parsing needs a minimum read buffer, and a tiny pipeline reader
+		// would break push-notification handling on pipeline conns.
+		if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+			pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
+		}
+	}
+	if opt.PipelineWriteBufferSize > 0 {
+		pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
+	}
+	if opt.PipelinePoolSize > 0 {
+		pipelineOpt.PoolSize = opt.PipelinePoolSize
+	} else {
+		pipelineOpt.PoolSize = DefaultPipelinePoolSize
+	}
+	p, err := newConnPool(pipelineOpt, c.dialHook, poolName)
+	if err != nil {
+		return nil, err
+	}
+	return &pipelinePoolRef{pool: p, name: poolName}, nil
+}
+
+// ensurePipelinePool lazily creates the dedicated pipeline pool for a client
+// that was constructed without any pipeline option. It is called when an
+// autopipeliner is built: autopipelining is pipeline-heavy by definition, and
+// without the dedicated pool every batch would compete with regular commands
+// for main-pool connections. No-ops when the pool already exists, when the
+// client type never allocated the slot (Conn/Tx/Sentinel — pipelines there
+// use the main pool by design), and when PipelinePoolSize is negative (the
+// documented opt-out).
+//
+// Publication is a CAS on the shared slot: WithTimeout clones share it, so
+// two sharers racing here cannot install two different pools — the loser
+// closes its candidate. Hooks are attached before publication so no consumer
+// can Get a connection from a half-wired pool; the otel registration happens
+// only for the winner.
+func (c *baseClient) ensurePipelinePool() error {
+	if c.pipelinePool == nil || c.opt.PipelinePoolSize < 0 {
+		return nil
+	}
+	if c.pipelinePool.Load() != nil {
+		return nil
+	}
+	ref, err := c.buildPipelinePool(c.opt.Addr + "_" + generateUniqueID() + "_pipeline")
+	if err != nil {
+		return err
+	}
+	if c.streamingCredentialsManager != nil {
+		ref.pool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+	}
+	c.maintNotificationsManagerLock.RLock()
+	manager := c.maintNotificationsManager
+	c.maintNotificationsManagerLock.RUnlock()
+	if manager != nil {
+		manager.InitPoolHookForPool(ref.pool, c.dialHook)
+	}
+	if !c.pipelinePool.CompareAndSwap(nil, ref) {
+		// Another sharer published first; theirs is already wired.
+		_ = ref.pool.Close()
+		return nil
+	}
+	otel.RegisterPools(nil, nil, ref.pool, c.opt.Addr)
+	return nil
 }
 
 func (c *baseClient) reAuthConnection() func(poolCn *pool.Conn, credentials auth.Credentials) error {
@@ -1101,9 +1215,13 @@ func (c *baseClient) withPipelineConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) (retErr error) {
 	// Use pipeline pool if available, otherwise fall back to regular pool.
-	if c.pipelinePool == nil {
+	// Load the ref once: a lazy ensurePipelinePool may publish concurrently,
+	// and every use below must see the same pool.
+	ref := c.loadPipelinePool()
+	if ref == nil {
 		return c.withConn(ctx, fn)
 	}
+	pipelinePool := ref.pool
 
 	// Honor the Limiter on the dedicated pipeline-pool path too, mirroring
 	// getConn/releaseConn: Allow() before acquiring and ReportResult() on every
@@ -1131,17 +1249,17 @@ func (c *baseClient) withPipelineConn(
 			c.opt.Limiter.ReportResult(retErr)
 		}
 		if cn != nil {
-			c.releaseConnToPool(ctx, c.pipelinePool, cn, fnErr)
+			c.releaseConnToPool(ctx, pipelinePool, cn, fnErr)
 		}
 	}()
 
-	cn, retErr = c.pipelinePool.Get(ctx)
+	cn, retErr = pipelinePool.Get(ctx)
 	if retErr != nil {
 		cn = nil // nothing acquired: no release, but still report above
 		return retErr
 	}
 
-	if err := c.initPooledConn(ctx, c.pipelinePool, cn); err != nil {
+	if err := c.initPooledConn(ctx, pipelinePool, cn); err != nil {
 		// initPooledConn already removed the conn from the pool on failure.
 		cn = nil
 		retErr = err
@@ -1503,8 +1621,8 @@ func (c *baseClient) enableMaintNotificationsUpgrades() error {
 	// maintnotifications hook to it as well. Otherwise autopipelined/pipelined
 	// commands run on pipeline-pool connections that never receive MOVING/
 	// MIGRATING handoff handling.
-	if c.pipelinePool != nil {
-		manager.InitPoolHookForPool(c.pipelinePool, c.dialHook)
+	if pp := c.getPipelinePool(); pp != nil {
+		manager.InitPoolHookForPool(pp, c.dialHook)
 	}
 	return nil
 }
@@ -1564,15 +1682,15 @@ func (c *baseClient) closeResources() error {
 	}
 
 	// Unregister pools from OTel before closing them
-	otel.UnregisterPools(c.connPool, c.pubSubPool, c.pipelinePool)
+	otel.UnregisterPools(c.connPool, c.pubSubPool, c.getPipelinePool())
 
 	if c.connPool != nil {
 		if err := c.connPool.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	if c.pipelinePool != nil {
-		if err := c.pipelinePool.Close(); err != nil && firstErr == nil {
+	if pp := c.getPipelinePool(); pp != nil {
+		if err := pp.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -1928,10 +2046,11 @@ func NewClient(opt *Options) *Client {
 
 	c := Client{
 		baseClient: &baseClient{
-			apClosed: &atomic.Bool{},
-			opt:      opt,
-			onClose:  &onCloseHooks{},
-			himport:  newHImportRegistry(),
+			apClosed:     &atomic.Bool{},
+			opt:          opt,
+			onClose:      &onCloseHooks{},
+			himport:      newHImportRegistry(),
+			pipelinePool: &atomic.Pointer[pipelinePoolRef]{},
 		},
 	}
 	c.init()
@@ -1960,40 +2079,24 @@ func NewClient(opt *Options) *Client {
 
 	// Optionally create a separate connection pool for pipelining, with its own
 	// (typically larger) buffers, so pipelines can use big buffers without
-	// bloating the main pool. Enabled when either pipeline buffer size is set.
+	// bloating the main pool. Enabled when any pipeline option is set (or when
+	// Options.init defaulted PipelinePoolSize in because AutoPipelineOptions
+	// declared autopipelining). A client with none of these can still get the
+	// pool lazily from ensurePipelinePool when an autopipeliner is built.
 	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 ||
 		opt.PipelinePoolSize > 0 {
-		pipelineOpt := opt.clone()
-		if opt.PipelineReadBufferSize > 0 {
-			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
-			// Same clamp Options.init applies to the main pool: RESP3 push
-			// parsing needs a minimum read buffer, and a tiny pipeline reader
-			// would break push-notification handling on pipeline conns.
-			if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
-				pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
-			}
-		}
-		if opt.PipelineWriteBufferSize > 0 {
-			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
-		}
-		if opt.PipelinePoolSize > 0 {
-			pipelineOpt.PoolSize = opt.PipelinePoolSize
-		} else {
-			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
-		}
-		pipelinePoolName := opt.Addr + "_" + uniqueID + "_pipeline"
-		c.pipelinePoolName = pipelinePoolName
-		c.pipelinePool, err = newConnPool(pipelineOpt, c.dialHook, pipelinePoolName)
+		ref, err := c.buildPipelinePool(opt.Addr + "_" + uniqueID + "_pipeline")
 		if err != nil {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
 		}
+		c.pipelinePool.Store(ref)
 	}
 
 	if opt.StreamingCredentialsProvider != nil {
 		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
-		if c.pipelinePool != nil {
-			c.pipelinePool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
+		if pp := c.getPipelinePool(); pp != nil {
+			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 		}
 	}
 
@@ -2039,7 +2142,7 @@ func NewClient(opt *Options) *Client {
 
 	// Register pools with OTel recorder if it supports pool registration
 	// This allows async gauge metrics to pull stats from pools periodically
-	otel.RegisterPools(c.connPool, c.pubSubPool, c.pipelinePool, opt.Addr)
+	otel.RegisterPools(c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
 
 	return &c
 }
@@ -2211,8 +2314,8 @@ type PoolStats pool.Stats
 func (c *Client) PoolStats() *PoolStats {
 	stats := c.connPool.Stats()
 	stats.PubSubStats = *c.pubSubPool.Stats()
-	if c.pipelinePool != nil {
-		stats.PipelineStats = c.pipelinePool.Stats()
+	if pp := c.getPipelinePool(); pp != nil {
+		stats.PipelineStats = pp.Stats()
 	}
 	return (*PoolStats)(stats)
 }
@@ -2263,7 +2366,16 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 			}
 			return DefaultBlockingAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			// Autopipelining is pipeline-heavy by definition: make sure the
+			// dedicated pipeline pool exists before the first batch, so batches
+			// never compete with regular commands for main-pool connections.
+			// (Runs under autopipelinerMu via getOrCreateAutoPipeliner.)
+			if err := c.baseClient.ensurePipelinePool(); err != nil {
+				return nil, err
+			}
+			return newAutoPipeliner(c, cfg, true)
+		})
 }
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
@@ -2299,7 +2411,14 @@ func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*Aut
 			}
 			return DefaultAutoPipelineOptions()
 		},
-		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			// See AutoPipelineWithOptions: the pipeline pool must exist before
+			// the first batch.
+			if err := c.baseClient.ensurePipelinePool(); err != nil {
+				return nil, err
+			}
+			return newAutoPipeliner(c, cfg, false)
+		})
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

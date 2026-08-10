@@ -253,9 +253,16 @@ type Options struct {
 	// batching reduces connection contention. A smaller pool saves memory while
 	// maintaining high throughput.
 	//
-	// If not set (0), defaults to 10 connections.
+	// When AutoPipelineOptions is set, this defaults to DefaultPipelinePoolSize
+	// (autopipelining is declared pipeline-heavy usage, so batches get their own
+	// connections instead of competing with regular commands for the main pool).
+	// The same default applies lazily when an autopipeliner is created at
+	// runtime (AutoPipeline / AsyncAutoPipeline) on a client that has no
+	// pipeline pool. Set to a negative value to opt out of the dedicated pool
+	// explicitly — it disables both the config-time and the lazy creation.
 	//
-	// default: 10
+	// default: 0 (no dedicated pool), or DefaultPipelinePoolSize when
+	// AutoPipelineOptions is set or an autopipeliner is created
 	PipelinePoolSize int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
@@ -453,6 +460,13 @@ const (
 	CSCStrategySharedTracking CSCStrategy = iota
 )
 
+// DefaultPipelinePoolSize is the pipeline pool size used when the dedicated
+// pipeline pool is created without an explicit PipelinePoolSize: either a
+// pipeline buffer size was set, or AutoPipelineOptions declared autopipelining.
+// Pipelining batches many commands per round trip, so it needs far fewer
+// connections than regular traffic.
+const DefaultPipelinePoolSize = 10
+
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
@@ -497,6 +511,14 @@ func (opt *Options) init() {
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
+	}
+	// Configuring the autopipeliner on the client declares pipeline-heavy usage,
+	// so default the dedicated pipeline pool in: without it every batch competes
+	// with regular commands for main-pool connections. Explicit sizes win, and a
+	// negative PipelinePoolSize opts out of the dedicated pool entirely (the
+	// creation gate only fires on values > 0).
+	if opt.AutoPipelineOptions != nil && opt.PipelinePoolSize == 0 {
+		opt.PipelinePoolSize = DefaultPipelinePoolSize
 	}
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
