@@ -1961,7 +1961,8 @@ func NewClient(opt *Options) *Client {
 	// Optionally create a separate connection pool for pipelining, with its own
 	// (typically larger) buffers, so pipelines can use big buffers without
 	// bloating the main pool. Enabled when either pipeline buffer size is set.
-	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 {
+	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 ||
+		opt.PipelinePoolSize > 0 {
 		pipelineOpt := opt.clone()
 		if opt.PipelineReadBufferSize > 0 {
 			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize

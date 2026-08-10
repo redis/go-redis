@@ -246,7 +246,8 @@ type Options struct {
 	PipelineWriteBufferSize int
 
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
-	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	// Setting this alone is enough to create the dedicated pipeline pool; the
+	// pipeline buffer sizes then default to ReadBufferSize/WriteBufferSize.
 	//
 	// Pipelining typically needs fewer connections than regular operations because
 	// batching reduces connection contention. A smaller pool saves memory while
