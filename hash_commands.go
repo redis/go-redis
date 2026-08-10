@@ -12,6 +12,7 @@ type HashCmdable interface {
 	HExists(ctx context.Context, key, field string) *BoolCmd
 	HGet(ctx context.Context, key, field string) *StringCmd
 	HGetAll(ctx context.Context, key string) *MapStringStringCmd
+	HGetAllWithCustomReader(ctx context.Context, key string, customReader func(*Reader) error) *CustomCmd
 	HGetDel(ctx context.Context, key string, fields ...string) *StringSliceCmd
 	HGetEX(ctx context.Context, key string, fields ...string) *StringSliceCmd
 	HGetEXWithArgs(ctx context.Context, key string, options *HGetEXOptions, fields ...string) *StringSliceCmd
@@ -84,6 +85,17 @@ func (c cmdable) HGet(ctx context.Context, key, field string) *StringCmd {
 // See https://redis.io/commands/hgetall/
 func (c cmdable) HGetAll(ctx context.Context, key string) *MapStringStringCmd {
 	cmd := NewMapStringStringCmd(ctx, "hgetall", key)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// HGetAllWithCustomReader executes HGETALL and delegates reply parsing to
+// customReader, avoiding the map allocation of HGetAll. Use
+// Reader.ReadMapLen to obtain the field count — it accepts both the RESP3
+// map reply and the RESP2 flat array reply. See CustomCmd for the contract
+// the reader function must honour.
+func (c cmdable) HGetAllWithCustomReader(ctx context.Context, key string, customReader func(*Reader) error) *CustomCmd {
+	cmd := NewCustomCmd(ctx, customReader, "hgetall", key)
 	_ = c(ctx, cmd)
 	return cmd
 }

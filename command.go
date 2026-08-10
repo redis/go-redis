@@ -1140,6 +1140,82 @@ func (cmd *ZeroCopyStringCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// CustomCmd delegates reply parsing to a user-provided reader function,
+// allowing the raw RESP reply to be decoded directly into caller-owned
+// structures without the intermediate allocations of the typed commands.
+//
+// The reader function must consume the entire reply, exactly: the
+// proto.Reader belongs to a pooled connection, and any bytes left unread
+// (or read beyond the reply) desynchronise the connection for subsequent
+// commands.
+type CustomCmd struct {
+	baseCmd
+	customReader func(rd *proto.Reader) error
+	cloned       bool // set by Clone(); causes readReply to drain + error
+}
+
+var _ Cmder = (*CustomCmd)(nil)
+
+// NewCustomCmd returns a CustomCmd whose reply is parsed by customReader.
+func NewCustomCmd(ctx context.Context, customReader func(rd *proto.Reader) error, args ...interface{}) *CustomCmd {
+	return &CustomCmd{
+		baseCmd: baseCmd{
+			ctx:  ctx,
+			args: args,
+		},
+		customReader: customReader,
+	}
+}
+
+// Result returns any error the command failed with; the parsed value is
+// whatever the reader function produced in caller-owned state.
+func (cmd *CustomCmd) Result() error {
+	cmd.await()
+	return cmd.err
+}
+
+func (cmd *CustomCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, nil)
+}
+
+func (cmd *CustomCmd) readReply(rd *proto.Reader) error {
+	if cmd.cloned {
+		// A cloned CustomCmd has no usable reader function (see Clone for
+		// the rationale). Drain the network reply so the connection stays
+		// aligned for the next command, then surface a clear error rather
+		// than silently dropping the reply.
+		if err := rd.DiscardNext(); err != nil {
+			return err
+		}
+		return fmt.Errorf("redis: CustomCmd cannot be cloned (reader function writes into caller-owned state)")
+	}
+	return cmd.customReader(rd)
+}
+
+// NoRetry returns true because the reader function typically writes into
+// caller-owned state. A retry would invoke it a second time, potentially
+// duplicating whatever a failed first attempt already produced, so the
+// caller must handle retries explicitly if needed.
+func (cmd *CustomCmd) NoRetry() bool {
+	return true
+}
+
+// Clone returns a clone that is intentionally non-functional, for the same
+// reason as ZeroCopyStringCmd: the reader function writes into caller-owned
+// state, which sibling clones can neither share safely nor replace. The
+// clone's readReply drains the network reply (keeping the connection
+// aligned) and fails with a clear error. See ZeroCopyStringCmd.Clone for
+// why this path is unreachable through normal client flows.
+func (cmd *CustomCmd) Clone() Cmder {
+	return &CustomCmd{
+		baseCmd: cmd.cloneBaseCmd(),
+		cloned:  true,
+	}
+}
+
+//------------------------------------------------------------------------------
+
 type SliceCmd struct {
 	baseCmd
 

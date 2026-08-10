@@ -13,7 +13,19 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// Reader is exposed to library users in order to parse raw redis replies on
+// their own, via the *WithCustomReader command variants. See CustomCmd for
+// the contract a custom reader function must honour.
+type Reader = proto.Reader
+
+// NewReader is exposed along with Reader so custom reader functions can be
+// exercised in tests without a live connection.
+func NewReader(rd io.Reader) *Reader {
+	return proto.NewReader(rd)
+}
 
 // KeepTTL is a Redis KEEPTTL option to keep existing TTL, it requires your redis-server version >= 6.0,
 // otherwise you will receive an error: (error) ERR syntax error.

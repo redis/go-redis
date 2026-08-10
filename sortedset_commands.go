@@ -34,11 +34,13 @@ type SortedSetCmdable interface {
 	ZPopMin(ctx context.Context, key string, count ...int64) *ZSliceCmd
 	ZRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd
 	ZRangeWithScores(ctx context.Context, key string, start, stop int64) *ZSliceCmd
+	ZRangeWithScoresWithCustomReader(ctx context.Context, key string, start, stop int64, customReader func(*Reader) error) *CustomCmd
 	ZRangeByScore(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRangeByLex(ctx context.Context, key string, opt *ZRangeBy) *StringSliceCmd
 	ZRangeByScoreWithScores(ctx context.Context, key string, opt *ZRangeBy) *ZSliceCmd
 	ZRangeArgs(ctx context.Context, z ZRangeArgs) *StringSliceCmd
 	ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSliceCmd
+	ZRangeArgsWithScoresWithCustomReader(ctx context.Context, z ZRangeArgs, customReader func(*Reader) error) *CustomCmd
 	ZRangeStore(ctx context.Context, dst string, z ZRangeArgs) *IntCmd
 	ZRank(ctx context.Context, key, member string) *IntCmd
 	ZRankWithScore(ctx context.Context, key, member string) *RankWithScoreCmd
@@ -457,6 +459,22 @@ func (c cmdable) ZRangeArgsWithScores(ctx context.Context, z ZRangeArgs) *ZSlice
 	return cmd
 }
 
+// ZRangeArgsWithScoresWithCustomReader executes ZRANGE ... WITHSCORES and
+// delegates reply parsing to customReader, avoiding the []Z allocation of
+// ZRangeArgsWithScores. Note the reply shape differs by protocol: RESP2
+// returns a flat array of member,score pairs, RESP3 an array of two-element
+// member,score arrays. See CustomCmd for the contract the reader function
+// must honour.
+func (c cmdable) ZRangeArgsWithScoresWithCustomReader(ctx context.Context, z ZRangeArgs, customReader func(*Reader) error) *CustomCmd {
+	args := make([]interface{}, 0, 10)
+	args = append(args, "zrange")
+	args = z.appendArgs(args)
+	args = append(args, "withscores")
+	cmd := NewCustomCmd(ctx, customReader, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
 func (c cmdable) ZRange(ctx context.Context, key string, start, stop int64) *StringSliceCmd {
 	return c.ZRangeArgs(ctx, ZRangeArgs{
 		Key:   key,
@@ -471,6 +489,16 @@ func (c cmdable) ZRangeWithScores(ctx context.Context, key string, start, stop i
 		Start: start,
 		Stop:  stop,
 	})
+}
+
+// ZRangeWithScoresWithCustomReader is the ZRangeWithScores analogue of
+// ZRangeArgsWithScoresWithCustomReader.
+func (c cmdable) ZRangeWithScoresWithCustomReader(ctx context.Context, key string, start, stop int64, customReader func(*Reader) error) *CustomCmd {
+	return c.ZRangeArgsWithScoresWithCustomReader(ctx, ZRangeArgs{
+		Key:   key,
+		Start: start,
+		Stop:  stop,
+	}, customReader)
 }
 
 type ZRangeBy struct {
