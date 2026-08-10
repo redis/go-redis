@@ -2122,6 +2122,64 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// errClientTrackingOnPooledClient and errClientMaintNotificationsOnPooledClient
+// reject the per-connection commands on pooled clients. Both commands mutate
+// connection state: issued through a pool they would land on an arbitrary
+// connection that is immediately returned to the pool, so the flag applies to
+// a connection the caller cannot address again (and, for CLIENT TRACKING, the
+// invalidation pushes arrive on a connection nothing is reading). The methods
+// exist on the pooled clients only to keep the Cmdable interface intact; they
+// fail with guidance instead of silently misconfiguring one random connection.
+var (
+	errClientTrackingOnPooledClient = errors.New(
+		"redis: CLIENT TRACKING is per-connection state and cannot be applied through a connection pool; " +
+			"use a dedicated connection (Client.Conn) or a Pipeline/Tx, " +
+			"or configure the built-in client-side cache (Options.ClientSideCacheConfig) instead")
+	errClientMaintNotificationsOnPooledClient = errors.New(
+		"redis: CLIENT MAINT_NOTIFICATIONS is per-connection state and cannot be applied through a connection pool; " +
+			"set Options.MaintNotificationsConfig to enable it on every connection automatically, " +
+			"or use a dedicated connection (Client.Conn) for manual control")
+)
+
+// pooledConnStateCmd builds the pre-failed StatusCmd the pooled-client
+// variants of the per-connection commands return. The args mirror the real
+// command so instrumentation that inspects command names still sees them.
+func pooledConnStateCmd(ctx context.Context, err error, args ...interface{}) *StatusCmd {
+	cmd := NewStatusCmd(ctx, args...)
+	cmd.SetErr(err)
+	return cmd
+}
+
+// ClientTracking on a pooled client fails with guidance: CLIENT TRACKING is
+// per-connection state. Use Client.Conn, a Pipeline/Tx, or the built-in
+// client-side cache. See the statefulCmdable method for the working variant.
+func (c *Client) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	arg := "off"
+	if on {
+		arg = "on"
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+}
+
+// ClientTrackingOn on a pooled client fails with guidance; see ClientTracking.
+func (c *Client) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+}
+
+// ClientTrackingOff on a pooled client fails with guidance; see ClientTracking.
+func (c *Client) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+// ClientMaintNotifications on a pooled client fails with guidance: the
+// supported way to enable maintenance notifications for a whole client is
+// Options.MaintNotificationsConfig, which applies it to every connection
+// during connection init. See the statefulCmdable method for the working
+// per-connection variant.
+func (c *Client) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+}
+
 func (c *Client) Conn() *Conn {
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them

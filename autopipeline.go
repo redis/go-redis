@@ -1065,6 +1065,35 @@ func (ap *AutoPipeliner) HImportDiscardAll(ctx context.Context) *IntCmd {
 }
 
 // Watch runs a transactional function on the underlying client (not batched).
+// ClientTracking and friends are per-connection commands (statefulCmdable);
+// through the autopipeliner they fail with guidance exactly as on the
+// underlying pooled client — a batch executes on an arbitrary pool
+// connection. Use a dedicated connection (Client.Conn), a Pipeline/Tx, or
+// the built-in client-side cache.
+func (ap *AutoPipeliner) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	arg := "off"
+	if on {
+		arg = "on"
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+}
+
+// ClientTrackingOn through the autopipeliner fails with guidance; see ClientTracking.
+func (ap *AutoPipeliner) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+}
+
+// ClientTrackingOff through the autopipeliner fails with guidance; see ClientTracking.
+func (ap *AutoPipeliner) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+// ClientMaintNotifications through the autopipeliner fails with guidance;
+// set Options.MaintNotificationsConfig instead.
+func (ap *AutoPipeliner) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+}
+
 func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	return ap.pipeliner.Watch(ctx, fn, keys...)
 }
