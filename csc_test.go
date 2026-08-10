@@ -957,25 +957,27 @@ func TestIsClientTrackingCmd(t *testing.T) {
 	}
 }
 
-// TestClientTrackingRejectedWithCSC: on a client with the built-in cache
-// configured, CLIENT TRACKING must be rejected before it reaches a connection —
-// it would flip an arbitrary pool conn's tracking state and leave it filling
-// the cache with entries the server never invalidates. The guard fires without
-// dialing, so no server is needed.
+// TestClientTrackingRejectedWithCSC: CLIENT TRACKING on a CSC client is
+// rejected in two layers, and this pins both. The pooled-client methods are
+// rejected FIRST as per-connection state (they would flip an arbitrary pool
+// conn's tracking state regardless of CSC); the CSC-specific guard remains the
+// backstop on the paths that actually reach a connection — the raw Do escape
+// hatch here, and pipelines in the _Pipeline test below. Both guards fire
+// without dialing, so no server is needed.
 func TestClientTrackingRejectedWithCSC(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{
-		Addr:                  "localhost:1", // never dialed: the guard fires first
+		Addr:                  "localhost:1", // never dialed: the guards fire first
 		Protocol:              3,
 		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 16},
 	})
 	t.Cleanup(func() { _ = c.Close() })
 
-	if err := c.ClientTrackingOff(ctx).Err(); !errors.Is(err, errClientTrackingWithCSC) {
-		t.Fatalf("ClientTrackingOff must be rejected with CSC enabled, got %v", err)
+	if err := c.ClientTrackingOff(ctx).Err(); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("pooled ClientTrackingOff must be rejected as per-connection state, got %v", err)
 	}
-	if err := c.ClientTrackingOn(ctx, nil).Err(); !errors.Is(err, errClientTrackingWithCSC) {
-		t.Fatalf("ClientTrackingOn must be rejected with CSC enabled, got %v", err)
+	if err := c.ClientTrackingOn(ctx, nil).Err(); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("pooled ClientTrackingOn must be rejected as per-connection state, got %v", err)
 	}
 	// The raw escape hatch is caught too: the guard matches leading args.
 	// (Non-tracking CLIENT subcommands are covered by TestIsClientTrackingCmd's
