@@ -1,6 +1,6 @@
 module github.com/redis/go-redis/v9
 
-go 1.24
+go 1.25.0
 
 require (
 	github.com/bsm/ginkgo/v2 v2.12.0
@@ -8,7 +8,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/zeebo/xxh3 v1.1.0
 	go.uber.org/atomic v1.11.0
-	golang.org/x/sys v0.30.0
+	golang.org/x/sys v0.47.0
 )
 
 require github.com/klauspost/cpuid/v2 v2.2.10 // indirect
