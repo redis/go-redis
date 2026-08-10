@@ -261,6 +261,11 @@ type Options struct {
 	// pipeline pool. Set to a negative value to opt out of the dedicated pool
 	// explicitly — it disables both the config-time and the lazy creation.
 	//
+	// The pipeline pool never pre-dials: MinIdleConns is forced to 0 on it,
+	// so the size is a cap on burst capacity, not a standing footprint. Its
+	// connections use DefaultPipelineBufferSize buffers unless the pipeline
+	// buffer sizes are set explicitly.
+	//
 	// default: 0 (no dedicated pool), or DefaultPipelinePoolSize when
 	// AutoPipelineOptions is set or an autopipeliner is created
 	PipelinePoolSize int
@@ -462,10 +467,22 @@ const (
 
 // DefaultPipelinePoolSize is the pipeline pool size used when the dedicated
 // pipeline pool is created without an explicit PipelinePoolSize: either a
-// pipeline buffer size was set, or AutoPipelineOptions declared autopipelining.
+// pipeline buffer size was set, or autopipelining was configured (via
+// AutoPipelineOptions or a runtime AutoPipeline/AsyncAutoPipeline call).
 // Pipelining batches many commands per round trip, so it needs far fewer
-// connections than regular traffic.
+// connections than regular traffic. The pool is pure burst capacity: it never
+// pre-dials idle connections (MinIdleConns is forced to 0 on it), so an
+// unused pipeline pool holds no connections at all and the size is only a cap.
 const DefaultPipelinePoolSize = 10
+
+// DefaultPipelineBufferSize is the per-connection read/write buffer size for
+// the dedicated pipeline pool when no explicit pipeline buffer size is set
+// (the larger of this and the regular buffer size is used). Pipeline
+// connections move whole batches per round trip, so they earn bigger buffers
+// than regular per-command traffic: measured on the autopipeline engine,
+// throughput plateaus around 64 KiB and gains nothing past ~128 KiB, while
+// very large buffers (>=512 KiB) can regress it.
+const DefaultPipelineBufferSize = 64 * 1024
 
 func (opt *Options) init() {
 	if opt.Addr == "" {

@@ -51,23 +51,70 @@ func TestPipelinePoolSizeAloneCreatesThePool(t *testing.T) {
 	}
 }
 
-// TestPipelinePoolSizeAloneInheritsBuffers: enabling by size must inherit the regular
-// buffer sizes rather than build the pool with unusable ones.
-func TestPipelinePoolSizeAloneInheritsBuffers(t *testing.T) {
-	c := NewClient(&Options{
-		Addr:             "127.0.0.1:0",
-		ReadBufferSize:   48 * 1024,
-		WriteBufferSize:  48 * 1024,
-		PipelinePoolSize: 4,
+// TestPipelinePoolOptionsResolution pins the rules the dedicated pool is built
+// with. The three that matter:
+//
+//   - buffers default to DefaultPipelineBufferSize (not the regular 32 KiB) —
+//     pipeline connections move whole batches per round trip — but never
+//     SHRINK a larger explicitly-configured regular buffer;
+//   - MinIdleConns is forced to 0: the pool is burst capacity, and inheriting
+//     the main pool's MinIdleConns would pre-dial that many pipeline
+//     connections at creation, silently doubling the client's idle footprint;
+//   - the regular buffers and pool size of the MAIN pool are never touched.
+func TestPipelinePoolOptionsResolution(t *testing.T) {
+	t.Run("buffers default to DefaultPipelineBufferSize", func(t *testing.T) {
+		opt := &Options{Addr: "127.0.0.1:0", PipelinePoolSize: 4}
+		opt.init()
+		po := pipelinePoolOptions(opt)
+		if po.ReadBufferSize != DefaultPipelineBufferSize || po.WriteBufferSize != DefaultPipelineBufferSize {
+			t.Fatalf("pipeline buffers = %d/%d, want %d each",
+				po.ReadBufferSize, po.WriteBufferSize, DefaultPipelineBufferSize)
+		}
+		if po.PoolSize != 4 {
+			t.Fatalf("pipeline PoolSize = %d, want 4", po.PoolSize)
+		}
 	})
-	defer c.Close()
-	if c.baseClient.loadPipelinePool() == nil {
-		t.Fatal("no pipeline pool")
-	}
-	if c.opt.ReadBufferSize != 48*1024 || c.opt.WriteBufferSize != 48*1024 {
-		t.Fatalf("regular buffers = %d/%d; want 49152 each",
-			c.opt.ReadBufferSize, c.opt.WriteBufferSize)
-	}
+
+	t.Run("larger regular buffers are kept, not shrunk", func(t *testing.T) {
+		opt := &Options{Addr: "127.0.0.1:0", PipelinePoolSize: 4,
+			ReadBufferSize: 128 * 1024, WriteBufferSize: 128 * 1024}
+		opt.init()
+		po := pipelinePoolOptions(opt)
+		if po.ReadBufferSize != 128*1024 || po.WriteBufferSize != 128*1024 {
+			t.Fatalf("pipeline buffers = %d/%d, want 131072 each (never shrink)",
+				po.ReadBufferSize, po.WriteBufferSize)
+		}
+	})
+
+	t.Run("explicit pipeline buffers always win", func(t *testing.T) {
+		opt := &Options{Addr: "127.0.0.1:0",
+			PipelineReadBufferSize: 96 * 1024, PipelineWriteBufferSize: 96 * 1024}
+		opt.init()
+		po := pipelinePoolOptions(opt)
+		if po.ReadBufferSize != 96*1024 || po.WriteBufferSize != 96*1024 {
+			t.Fatalf("pipeline buffers = %d/%d, want 98304 each",
+				po.ReadBufferSize, po.WriteBufferSize)
+		}
+	})
+
+	t.Run("MinIdleConns is never inherited", func(t *testing.T) {
+		opt := &Options{Addr: "127.0.0.1:0", PipelinePoolSize: 4, MinIdleConns: 8}
+		opt.init()
+		if po := pipelinePoolOptions(opt); po.MinIdleConns != 0 {
+			t.Fatalf("pipeline MinIdleConns = %d, want 0: the pipeline pool is burst "+
+				"capacity and must not pre-dial", po.MinIdleConns)
+		}
+	})
+
+	t.Run("main pool options are untouched", func(t *testing.T) {
+		opt := &Options{Addr: "127.0.0.1:0", PipelinePoolSize: 4, MinIdleConns: 8}
+		opt.init()
+		_ = pipelinePoolOptions(opt)
+		if opt.ReadBufferSize != 32*1024 || opt.MinIdleConns != 8 {
+			t.Fatalf("main options mutated: ReadBufferSize=%d MinIdleConns=%d",
+				opt.ReadBufferSize, opt.MinIdleConns)
+		}
+	})
 }
 
 // TestAutoPipelineOptionsDefaultsThePipelinePool: configuring the autopipeliner on the

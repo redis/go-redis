@@ -609,33 +609,55 @@ func (c *baseClient) poolForConn(cn *pool.Conn) pool.Pooler {
 	return c.connPool
 }
 
-// buildPipelinePool constructs the dedicated pipeline pool from the client's
-// options: pipeline buffer sizes when set (with the same RESP3 minimum clamp
-// Options.init applies to the main pool), the regular buffers otherwise, and
-// PipelinePoolSize (or DefaultPipelinePoolSize) connections. Shared by the
-// NewClient creation path and the lazy ensurePipelinePool path so the two
-// cannot drift.
-func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error) {
-	opt := c.opt
+// pipelinePoolOptions resolves the Options the dedicated pipeline pool is
+// built with. Pure function of the client options, so the resolution rules are
+// testable without dialing anything:
+//
+//   - Buffers: the explicit pipeline buffer size when set; otherwise the
+//     LARGER of the regular buffer size and DefaultPipelineBufferSize.
+//     Pipelines move whole batches per round trip, so their connections earn
+//     bigger buffers than regular per-command traffic (measured: throughput
+//     plateaus around 64 KiB and very large buffers can regress it). The
+//     RESP3 minimum clamp applies as on the main pool.
+//   - PoolSize: PipelinePoolSize when set, DefaultPipelinePoolSize otherwise.
+//   - MinIdleConns: always 0. The pipeline pool is burst capacity — its
+//     connections dial on demand and there is nothing to keep warm before
+//     the first pipeline runs. Without this the clone would inherit the
+//     main pool's MinIdleConns and pre-dial that many pipeline connections
+//     at creation, silently doubling a client's idle footprint.
+func pipelinePoolOptions(opt *Options) *Options {
 	pipelineOpt := opt.clone()
 	if opt.PipelineReadBufferSize > 0 {
 		pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
-		// Same clamp Options.init applies to the main pool: RESP3 push
-		// parsing needs a minimum read buffer, and a tiny pipeline reader
-		// would break push-notification handling on pipeline conns.
-		if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
-			pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
-		}
+	} else if pipelineOpt.ReadBufferSize < DefaultPipelineBufferSize {
+		pipelineOpt.ReadBufferSize = DefaultPipelineBufferSize
+	}
+	// Same clamp Options.init applies to the main pool: RESP3 push parsing
+	// needs a minimum read buffer, and a tiny pipeline reader would break
+	// push-notification handling on pipeline conns.
+	if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+		pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
 	}
 	if opt.PipelineWriteBufferSize > 0 {
 		pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
+	} else if pipelineOpt.WriteBufferSize < DefaultPipelineBufferSize {
+		pipelineOpt.WriteBufferSize = DefaultPipelineBufferSize
 	}
 	if opt.PipelinePoolSize > 0 {
 		pipelineOpt.PoolSize = opt.PipelinePoolSize
 	} else {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
-	p, err := newConnPool(pipelineOpt, c.dialHook, poolName)
+	pipelineOpt.MinIdleConns = 0
+	return pipelineOpt
+}
+
+// buildPipelinePool constructs the dedicated pipeline pool from the client's
+// options as resolved by pipelinePoolOptions. Shared by the NewClient and
+// NewFailoverClient creation paths and the lazy ensurePipelinePool path so
+// they cannot drift.
+func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error) {
+	p, err := newConnPool(pipelinePoolOptions(c.opt), c.dialHook, poolName)
 	if err != nil {
 		return nil, err
 	}
