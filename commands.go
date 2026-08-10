@@ -554,14 +554,6 @@ func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 
 // ClientMaintNotifications enables or disables maintenance notifications for maintenance upgrades.
 // When enabled, the client will receive push notifications about Redis maintenance events.
-//
-// TODO(v10): move to statefulCmdable — CLIENT MAINT_NOTIFICATIONS is
-// per-connection state, exactly like CLIENT TRACKING above: on a pooled
-// client the flag lands on an arbitrary connection. The library enables it
-// itself during connection init (maintnotifications), which is the correct
-// per-connection place; the pooled-client method exists for compatibility
-// and moves in v10 (see the TODO on ClientTracking for why it cannot move
-// earlier).
 func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
 	args := []interface{}{"client", "maint_notifications"}
 	if enabled {
@@ -599,16 +591,6 @@ type ClientTrackingOptions struct {
 // configured with Options.ClientSideCache or ClientSideCacheConfig this
 // command is rejected, because changing a pool connection's tracking state
 // would silently break the cache's invalidation.
-//
-// TODO(v10): move ClientTracking/ClientTrackingOn/ClientTrackingOff to
-// statefulCmdable, next to ClientSetName/ClientSetInfo. CLIENT TRACKING is
-// per-connection state: on a pooled client it lands on an arbitrary pool
-// connection that is immediately returned to the pool, so subsequent reads
-// run on other connections and the invalidation pushes arrive on a
-// connection nothing is reading. The move is a breaking change (removes the
-// methods from Client/UniversalClient/Cmdable, and defining them on both
-// sides makes every Pipeline selector ambiguous), so it must wait for v10.
-// Until then, call these on a Conn or inside a pinned pipeline.
 func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
 	if !on {
 		return c.ClientTrackingOff(ctx)
