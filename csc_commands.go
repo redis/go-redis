@@ -306,6 +306,9 @@ func extractRedisKeys(cmd Cmder) []string {
 	argsLen := len(cmd.Args())
 
 	switch meta.extract {
+	case cscKeyExtractNone:
+		return nil
+
 	case cscKeyExtractRange:
 		first, step := int(meta.firstKey), int(meta.step)
 		last := int(meta.lastKey)
