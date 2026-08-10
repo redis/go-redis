@@ -266,7 +266,7 @@ type Options struct {
 	// pipelines then run on the main pool, as they did before the pool
 	// existed.
 	//
-	// default: 0 (= DefaultPipelinePoolSize connections)
+	// default: DefaultPipelinePoolSize (10) connections
 	PipelinePoolSize int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
