@@ -78,6 +78,16 @@ type invalidateHandler struct {
 	cache     Cache
 	keyPrefix string
 	users     int
+
+	// refresh, when set, receives evicted-but-hot entries for immediate refetch.
+	// Feeding it must never block the invalidation-delivery path.
+	refresh *cscRefreshQueue
+}
+
+func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
+	h.mu.Lock()
+	h.refresh = q
+	h.mu.Unlock()
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
@@ -86,7 +96,7 @@ func (h *invalidateHandler) HandlePushNotification(
 	_ context.Context, _ push.NotificationHandlerContext, notification []interface{},
 ) error {
 	h.mu.RLock()
-	cache, keyPrefix := h.cache, h.keyPrefix
+	cache, keyPrefix, refresh := h.cache, h.keyPrefix, h.refresh
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -96,6 +106,9 @@ func (h *invalidateHandler) HandlePushNotification(
 	case nil:
 		cache.Flush()
 	case []interface{}:
+		var hot []cscRefreshTarget
+		lc, canRefresh := cache.(*LocalCache)
+		canRefresh = canRefresh && refresh != nil
 		for _, k := range payload {
 			var name string
 			switch v := k.(type) {
@@ -106,7 +119,15 @@ func (h *invalidateHandler) HandlePushNotification(
 			default:
 				continue
 			}
-			cache.DeleteByRedisKey(cscNamespacedKey(keyPrefix, name))
+			nsKey := cscNamespacedKey(keyPrefix, name)
+			if !canRefresh {
+				cache.DeleteByRedisKey(nsKey)
+				continue
+			}
+			hot = lc.deleteByRedisKeyCollectingHot(nsKey, refresh.sinceToken.Load(), hot[:0])
+			for i := range hot {
+				refresh.offer(hot[i])
+			}
 		}
 	}
 	return nil
@@ -279,6 +300,8 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
+	c.startCSCRefresher()
+	c.startCSCMissCoalescer()
 }
 
 // cscHook returns the shared evict-on-remove hook, nil when CSC is off.
@@ -489,6 +512,12 @@ type cscFetchCapture struct {
 	raw     []byte
 	connID  uint64
 	initGen uint64
+
+	// key/token: the reservation a background refetch (refresh or miss-coalesce)
+	// must fulfil. Unused by the single-command path, which passes them to
+	// fulfillCached explicitly.
+	key   string
+	token uint64
 }
 
 // cscConnInitGen returns connID's CSC init generation, captured by _process at
@@ -752,6 +781,8 @@ func (c *baseClient) stopBackgroundDrainer() {
 		return
 	}
 	h.teardownOnce.Do(func() {
+		c.stopCSCRefresher()
+		c.stopCSCMissCoalescer()
 		// Stop serving cache hits on any clone before the drainer is gone.
 		if c.cscActive != nil {
 			c.cscActive.Store(false)
@@ -846,6 +877,10 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		c.csc.DeleteByCacheKey(key)
 	}
 
+	// Demand trigger: a miss for a key still in the refresher's collection window
+	// flushes that window now (no-op when refresh/coalescing is off).
+	c.cscRefreshQueue.signalDemand(key)
+
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)
 	if !shouldFetch {
 		// Another goroutine is fetching; Get below waits until it completes.
@@ -861,6 +896,11 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		// Original fetcher cancelled or its value was invalidated; try to take
 		// over so later waiters still benefit from the cache.
 		token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
+	}
+
+	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when off).
+	if shouldFetch && c.cscMissCoalescer != nil {
+		return c.cscMissCoalescer.fetch(ctx, cmd, key, token)
 	}
 
 	var fc cscFetchCapture

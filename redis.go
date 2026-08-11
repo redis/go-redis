@@ -403,6 +403,11 @@ type baseClient struct {
 	// identity. It is computed once during attachment and copied with the cache.
 	cscKeyPrefix string
 
+	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
+	cscRefreshQueue  *cscRefreshQueue
+	cscRefreshHandle *cscRevalidateHandle
+	cscMissCoalescer *cscMissCoalescer
+
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
 	// process and generalProcessPipeline). Set only on initConn's internal conn
 	// wrapper, whose init pipeline legitimately issues CLIENT TRACKING ON;

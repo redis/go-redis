@@ -223,6 +223,10 @@ type LocalCache struct {
 	nextToken atomic.Uint64
 	hits      atomic.Uint64
 	misses    atomic.Uint64
+
+	// Invalidation-push accounting for refresh-on-invalidate (InvalidationStats).
+	invalidations     atomic.Uint64
+	invalidationsNoop atomic.Uint64
 }
 
 var _ Cache = (*LocalCache)(nil)

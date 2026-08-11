@@ -433,6 +433,10 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
+	// their invalidation arrives, instead of waiting for a reader to miss.
+	ClientSideCacheRefreshOnInvalidate bool
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via
