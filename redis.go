@@ -1088,6 +1088,15 @@ func (c *baseClient) withConn(
 	return fnErr
 }
 
+// getPipelinePool returns the dedicated pipeline connection pool as a
+// pool.Pooler, or nil when the client has none. AutoPipeliner reads it (via an
+// in-package interface assertion on its underlying client) so the straggler
+// hold can gate on live pipeline-pool occupancy; without this accessor that
+// assertion fails and the gate silently degrades to the conservative long hold.
+func (c *baseClient) getPipelinePool() pool.Pooler {
+	return c.pipelinePool
+}
+
 // withPipelineConn executes fn with a connection from the pipeline pool when
 // one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
 // otherwise it falls back to the regular pool via withConn.
