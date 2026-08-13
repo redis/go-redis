@@ -1519,38 +1519,52 @@ func (c *ClusterClient) ForEachShard(
 // PoolStats returns accumulated connection pool stats.
 func (c *ClusterClient) PoolStats() *PoolStats {
 	var acc PoolStats
+	var pipe pool.Stats
+	havePipe := false
 
 	state, _ := c.state.Get(context.TODO())
 	if state == nil {
 		return &acc
 	}
 
+	foldNode := func(client *Client) {
+		s := client.connPool.Stats()
+		acc.Hits += s.Hits
+		acc.Misses += s.Misses
+		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
+
+		acc.TotalConns += s.TotalConns
+		acc.IdleConns += s.IdleConns
+		acc.StaleConns += s.StaleConns
+
+		// The dedicated pipeline pool is now created per node by default; fold its
+		// stats into acc.PipelineStats so cluster monitoring reflects it too.
+		if pp := client.getPipelinePool(); pp != nil {
+			ps := pp.Stats()
+			pipe.Hits += ps.Hits
+			pipe.Misses += ps.Misses
+			pipe.Timeouts += ps.Timeouts
+			pipe.WaitCount += ps.WaitCount
+			pipe.WaitDurationNs += ps.WaitDurationNs
+			pipe.TotalConns += ps.TotalConns
+			pipe.IdleConns += ps.IdleConns
+			pipe.StaleConns += ps.StaleConns
+			havePipe = true
+		}
+	}
+
 	for _, node := range state.Masters {
-		s := node.Client.connPool.Stats()
-		acc.Hits += s.Hits
-		acc.Misses += s.Misses
-		acc.Timeouts += s.Timeouts
-		acc.WaitCount += s.WaitCount
-		acc.WaitDurationNs += s.WaitDurationNs
-
-		acc.TotalConns += s.TotalConns
-		acc.IdleConns += s.IdleConns
-		acc.StaleConns += s.StaleConns
+		foldNode(node.Client)
 	}
-
 	for _, node := range state.Slaves {
-		s := node.Client.connPool.Stats()
-		acc.Hits += s.Hits
-		acc.Misses += s.Misses
-		acc.Timeouts += s.Timeouts
-		acc.WaitCount += s.WaitCount
-		acc.WaitDurationNs += s.WaitDurationNs
-
-		acc.TotalConns += s.TotalConns
-		acc.IdleConns += s.IdleConns
-		acc.StaleConns += s.StaleConns
+		foldNode(node.Client)
 	}
 
+	if havePipe {
+		acc.PipelineStats = &pipe
+	}
 	return &acc
 }
 

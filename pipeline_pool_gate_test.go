@@ -209,7 +209,23 @@ func TestPipelinePoolSpillsToMainPool(t *testing.T) {
 			return nil
 		})
 	}()
-	time.Sleep(100 * time.Millisecond) // let the blocker acquire the pipeline conn
+	// Wait until the blocker has actually taken the pipeline pool's only
+	// connection (1 total, 0 idle) instead of a fixed sleep, which can flake on
+	// slow/contended CI.
+	pp := c.getPipelinePool()
+	if pp == nil {
+		t.Fatal("no pipeline pool")
+	}
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		st := pp.Stats()
+		if st.TotalConns >= 1 && st.IdleConns == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("blocker did not acquire the pipeline conn (total=%d idle=%d)", st.TotalConns, st.IdleConns)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 
 	// A second pipeline must not wait out the blocker: it spills to the main
 	// pool after PoolTimeout (100ms) and completes well under the 1s the

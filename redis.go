@@ -1256,36 +1256,46 @@ func (c *baseClient) withPipelineConn(
 		}
 	}()
 
+	// Acquire+init from the pipeline pool; SPILL to the main pool when the
+	// pipeline pool cannot serve this pipeline. Acquire the main pool DIRECTLY
+	// (not via withConn, which would call Limiter.Allow()/ReportResult() a second
+	// time on top of the outer pair above — the #3959 double-count, which could
+	// also spuriously reject the spill); the outer Allow accounts this op and the
+	// deferred ReportResult reports it once. Spill on:
+	//   - pool saturation: ErrPoolTimeout (its short PoolTimeout elapsed) or
+	//     ErrPoolExhausted (a per-pool MaxActiveConns cap; defensive, since
+	//     pipelinePoolOptions resets MaxActiveConns to 0), and
+	//   - a pipeline-conn init failure (e.g. a fresh dial refused with maxclients)
+	//     — the main pool may have an idle conn and avoid it.
+	// Do NOT spill on a non-saturation Get error (ctx cancelled, pool closed):
+	// the main pool would fail the same way. Spilled pipelines run with the
+	// regular buffer sizes (a throughput detail).
+	spill := false
 	cn, retErr = pipelinePool.Get(ctx)
 	if retErr != nil {
-		cn = nil // nothing acquired from the pipeline pool
-		// The pipeline pool is small burst capacity. When it is saturated — its
-		// short PoolTimeout elapsed (ErrPoolTimeout; the live case) or it hit a
-		// MaxActiveConns cap (ErrPoolExhausted; defensive — pipelinePoolOptions
-		// resets MaxActiveConns to 0 so the pipeline pool does not currently
-		// produce this, but a future per-pool cap would) — SPILL to the main pool
-		// instead of failing. Acquire from the main pool DIRECTLY rather than via
-		// withConn: withConn would call Limiter.Allow()/ReportResult() a second
-		// time on top of the outer pair above (the #3959 double-count, which could
-		// also spuriously reject the spill). The outer Allow already accounts this
-		// operation and the deferred ReportResult reports it once. Spilled
-		// pipelines run with the regular buffer sizes (a throughput detail).
+		cn = nil
 		if !errors.Is(retErr, pool.ErrPoolTimeout) && !errors.Is(retErr, pool.ErrPoolExhausted) {
 			return retErr
 		}
+		spill = true
+	} else if err := c.initPooledConn(ctx, pipelinePool, cn); err != nil {
+		cn = nil // initPooledConn already removed it from the pipeline pool
+		retErr = err
+		spill = true
+	}
+
+	if spill {
 		cn, retErr = c.connPool.Get(ctx)
 		if retErr != nil {
 			cn = nil
 			return retErr
 		}
 		connPool = c.connPool
-	}
-
-	if err := c.initPooledConn(ctx, connPool, cn); err != nil {
-		// initPooledConn already removed the conn from its pool on failure.
-		cn = nil
-		retErr = err
-		return retErr
+		if err := c.initPooledConn(ctx, c.connPool, cn); err != nil {
+			cn = nil // initPooledConn already removed it from the main pool
+			retErr = err
+			return retErr
+		}
 	}
 
 	fnErr = fn(ctx, cn)

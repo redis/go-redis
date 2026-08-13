@@ -148,10 +148,10 @@ type RingOptions struct {
 	WriteBufferSize int
 
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure an optional separate connection pool used for pipelining on
-	// each shard, with its own (typically larger) buffers. See the same-named
-	// fields on Options for details. Setting any of the three creates the pool
-	// on each shard client.
+	// configure the separate connection pool used for pipelining on each shard,
+	// with its own (typically larger) buffers. See the same-named fields on
+	// Options for details. Each shard client (a NewClient) creates this pool by
+	// default; set PipelinePoolSize < 0 to opt out (pipelines run on the main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
@@ -690,6 +690,8 @@ func (c *Ring) PoolStats() *PoolStats {
 	// note: `c.List()` return a shadow copy of `[]*ringShard`.
 	shards := c.sharding.List()
 	var acc PoolStats
+	var pipe pool.Stats
+	havePipe := false
 	for _, shard := range shards {
 		s := shard.Client.connPool.Stats()
 		acc.Hits += s.Hits
@@ -697,6 +699,21 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.Timeouts += s.Timeouts
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
+
+		// Each shard now creates the dedicated pipeline pool by default; fold its
+		// stats into acc.PipelineStats so ring monitoring reflects it too.
+		if pp := shard.Client.getPipelinePool(); pp != nil {
+			ps := pp.Stats()
+			pipe.Hits += ps.Hits
+			pipe.Misses += ps.Misses
+			pipe.Timeouts += ps.Timeouts
+			pipe.TotalConns += ps.TotalConns
+			pipe.IdleConns += ps.IdleConns
+			havePipe = true
+		}
+	}
+	if havePipe {
+		acc.PipelineStats = &pipe
 	}
 	return &acc
 }

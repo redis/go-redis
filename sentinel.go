@@ -126,10 +126,10 @@ type FailoverOptions struct {
 	WriteBufferSize int
 
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure an optional separate connection pool used for pipelining, with
-	// its own (typically larger) buffers. See the same-named fields on Options
-	// for details. Setting any of the three creates the pool; it also defaults
-	// in when AutoPipelineOptions is set.
+	// configure the separate connection pool used for pipelining, with its own
+	// (typically larger) buffers. See the same-named fields on Options for
+	// details. NewFailoverClient creates this pool by default; set
+	// PipelinePoolSize < 0 to opt out (pipelines then run on the main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
