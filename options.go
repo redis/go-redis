@@ -437,6 +437,40 @@ type Options struct {
 	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
 	// their invalidation arrives, instead of waiting for a reader to miss.
 	ClientSideCacheRefreshOnInvalidate bool
+
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses of the same
+	// key so they share one fetch instead of each taking a connection: the missed
+	// commands are pipelined onto a small set of tracked connections, cutting pool
+	// contention (and the churn p99 tail) at a small pool.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+
+	// ClientSideCacheCoalesceMode selects the miss-coalescing engine; it is read
+	// only when ClientSideCacheCoalesceMisses is set. "" or "workers" (default)
+	// runs a small pinned pool of workers, each holding one tracked connection for
+	// a half-duplex batch; "fullduplex" holds a single connection with a
+	// concurrent writer+reader pair so many commands stream in flight on one
+	// socket.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMode string
+
+	// ClientSideCacheCoalesceWorkers sets the worker count for the "workers"
+	// coalescing mode. 0 (default) uses the built-in default. Ignored by other
+	// modes and when ClientSideCacheCoalesceMisses is unset.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceWorkers int
+
+	// ClientSideCacheInvalidationBatchWindow coalesces invalidation-driven cache
+	// deletes into windowed background batches instead of applying them inline on
+	// the connection reader. 0 (default) applies invalidations inline. Set it no
+	// larger than the cache MaxStaleness: deferring a delete by up to the window
+	// lets a reader see the pre-invalidation value for up to that long.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via

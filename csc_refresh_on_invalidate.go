@@ -2,8 +2,6 @@ package redis
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,9 +52,9 @@ import (
 // operation — withPipelineConn takes whichever is free. Noted as a follow-up; it
 // is a robustness question, not a correctness or invalidation-count one.
 
-// cscNoRefreshOnInvalidate force-disables the feature so a benchmark can A/B it
-// against the same binary.
-var cscNoRefreshOnInvalidate = os.Getenv("GOREDIS_CSC_NO_REFRESH_ON_INVAL") != ""
+// cscNoRefreshOnInvalidate force-disables the feature. The gate is
+// Options.ClientSideCacheRefreshOnInvalidate; this stays constant false.
+const cscNoRefreshOnInvalidate = false
 
 const (
 	// cscRefreshQueueDepth bounds the pending-refresh backlog. Bounded, and it
@@ -83,8 +81,9 @@ const (
 // window is flushed early by demand (a reader touching a collected key) or by the
 // size cap; whichever comes first. Longer window = fewer, larger round trips (the
 // point: it lets refresh work at a small pipeline pool) at the cost of staleness
-// bounded by the window for keys nobody reads.
-var cscRefreshWindow = envDurationMs("GOREDIS_CSC_REFRESH_WINDOW_MS", 500*time.Millisecond)
+// bounded by the window for keys nobody reads. A var (not const) so a test can
+// take the timer out of the picture.
+var cscRefreshWindow = 500 * time.Millisecond
 
 // cscRefreshWindowMaxKeys flushes the window early once this many distinct keys
 // have collected, so a burst cannot outrun the window ahead of the queue's own
@@ -95,8 +94,8 @@ const cscRefreshWindowMaxKeys = 4 * cscRefreshBatchMax
 // sitting in the window flushes the whole window immediately, so an actively-read
 // batch refreshes in ~one RTT instead of waiting out the window, while an idle
 // batch waits the full window (and nobody is reading it, so the wait is free).
-// Off: window + size cap only — kept as an A/B knob to price the trigger.
-var cscDemandRefresh = os.Getenv("GOREDIS_CSC_REFRESH_DEMAND") != "0"
+// Off: window + size cap only. On by default.
+const cscDemandRefresh = true
 
 // cscRefreshCooldown optionally suppresses a refresh for an entry published within
 // this window. DEFAULT 0, meaning off — measurement said to leave it off.
@@ -124,23 +123,8 @@ var cscDemandRefresh = os.Getenv("GOREDIS_CSC_REFRESH_DEMAND") != "0"
 // (93.6% -> 93.0%). Doing the extra work was cheaper than skipping some of the
 // useful part.
 //
-// Left as a tunable (GOREDIS_CSC_REFRESH_COOLDOWN_MS) for a deployment that would
-// rather cap refresh traffic than maximise the hit rate.
-var cscRefreshCooldown = envDurationMs("GOREDIS_CSC_REFRESH_COOLDOWN_MS", 0)
-
-// envDurationMs reads a millisecond count from the environment, so the cooldown
-// can be swept (including to 0, which disables dedup) without a rebuild.
-func envDurationMs(name string, def time.Duration) time.Duration {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return def
-	}
-	return time.Duration(n) * time.Millisecond
-}
+// Left defaulted to 0 (off); measurement said to leave it off.
+var cscRefreshCooldown time.Duration
 
 // cscRefreshTarget is one entry to re-fetch: the cache key doubles as the wire
 // form of the command that produced it, and redisKeys are already namespaced, so
@@ -471,7 +455,12 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 	}()
 
 	published := 0
-	err := c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+	// Publish on the MAIN pool (tracked). On this base the dedicated pipeline pool
+	// is deliberately EXCLUDED from CLIENT TRACKING (PR #3959), so a refetch
+	// published via withPipelineConn would be un-invalidatable and serve stale
+	// until TTL. withConn lands on a CLIENT TRACKING ON connection, same as the
+	// miss-coalescer.
+	err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		connID := cn.GetID()
 		// Coverage generation captured BEFORE the reads: if this conn loses
 		// tracking mid-batch, every reply is discarded rather than published, the

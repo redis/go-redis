@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,21 +36,50 @@ import (
 // StaleTimeout.
 //
 // Tradeoff, same as the autopipeline path: a coalesced miss loses per-command
-// MaxRetries/backoff/LOADING handling. Prototype-only; behind GOREDIS_CSC_COALESCE_MISSES.
-
-var cscCoalesceMisses = os.Getenv("GOREDIS_CSC_COALESCE_MISSES") != ""
+// MaxRetries/backoff/LOADING handling. Behind Options.ClientSideCacheCoalesceMisses.
 
 const (
 	cscMissBatchMax   = 128
 	cscMissQueueDepth = 4096
-	// cscMissWorkers batchers run concurrently, each holding one main-pool
-	// (tracked) connection while it writes+reads its batch. Size it to the
-	// caching client's pool (env override): more workers than pool connections
-	// just makes workers block in the pool Get.
+	// cscMissWorkersDefault batchers run concurrently in the default "workers"
+	// mode, each holding one main-pool (tracked) connection while it writes+reads
+	// its batch. Size it to the caching client's pool (env override): more workers
+	// than pool connections just makes workers block in the pool Get.
 	cscMissWorkersDefault = 8
+	// cscFullDuplexDepth caps in-flight commands on the single-connection
+	// full-duplex engine (flow control for the writer).
+	cscFullDuplexDepth = 4096
 )
 
-var cscMissWorkers = envIntDefault("GOREDIS_CSC_COALESCE_WORKERS", cscMissWorkersDefault)
+// Engine selection + tuning come from the client's Options (ClientSideCacheCoalesce*)
+// and are read once, at coalescer construction (per client).
+func cscCoalesceMissesEnabled(opt *Options) bool {
+	return opt != nil && opt.ClientSideCacheCoalesceMisses
+}
+
+func cscMissWorkersCount(opt *Options) int {
+	if opt != nil && opt.ClientSideCacheCoalesceWorkers > 0 {
+		return opt.ClientSideCacheCoalesceWorkers
+	}
+	return cscMissWorkersDefault
+}
+
+// cscCoalesceMode selects the flush engine: "workers" (default, N pool conns,
+// half-duplex batches), "pinned" (1 held conn, serial half-duplex batches), or
+// "fullduplex" (1 held conn, concurrent writer+reader, deep pipeline).
+func cscCoalesceMode(opt *Options) string {
+	if opt == nil {
+		return "workers"
+	}
+	switch opt.ClientSideCacheCoalesceMode {
+	case "pinned":
+		return "pinned"
+	case "fullduplex":
+		return "fullduplex"
+	default:
+		return "workers"
+	}
+}
 
 // cscMissReq is one caller waiting for its missed key. done carries the fetch
 // result back (the reply is already applied to cmd by the time done fires).
@@ -67,6 +95,7 @@ type cscMissCoalescer struct {
 	ch   chan *cscMissReq
 	stop chan struct{}
 	wg   sync.WaitGroup
+	mode string // "workers" | "pinned" | "fullduplex"
 
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
@@ -74,10 +103,10 @@ type cscMissCoalescer struct {
 	maxBatchSz atomic.Uint64
 }
 
-// startCSCMissCoalescer launches the batcher goroutines. No-op unless the env
-// flag is set and CSC is active.
+// startCSCMissCoalescer launches the batcher goroutines. No-op unless
+// Options.ClientSideCacheCoalesceMisses is set and CSC is active.
 func (c *baseClient) startCSCMissCoalescer() {
-	if !cscCoalesceMisses || c.cscMissCoalescer != nil {
+	if !cscCoalesceMissesEnabled(c.opt) || c.cscMissCoalescer != nil {
 		return
 	}
 	if _, ok := c.csc.(*LocalCache); !ok {
@@ -87,15 +116,33 @@ func (c *baseClient) startCSCMissCoalescer() {
 		c:    c,
 		ch:   make(chan *cscMissReq, cscMissQueueDepth),
 		stop: make(chan struct{}),
+		mode: cscCoalesceMode(c.opt),
 	}
 	c.cscMissCoalescer = mc
-	n := cscMissWorkers
-	if n < 1 {
-		n = 1
-	}
-	for i := 0; i < n; i++ {
+	switch mc.mode {
+	case "pinned":
 		mc.wg.Add(1)
-		go mc.worker()
+		go mc.pinnedWorker()
+	case "fullduplex":
+		// N independent full-duplex sessions, each holding its own connection and
+		// pulling independent misses from the shared queue. Order-free: coalesced
+		// misses are standalone per-key fetches with no cross-request contract, and
+		// each session's per-conn reader still matches replies to requests. Sharding
+		// spreads the miss + invalidation-drain load off a single connection, which
+		// is what cuts the low-concurrency p99 tail.
+		for i := 0; i < cscFullDuplexConnsDefault; i++ {
+			mc.wg.Add(1)
+			go mc.fullDuplexLoop()
+		}
+	default:
+		n := cscMissWorkersCount(c.opt)
+		if n < 1 {
+			n = 1
+		}
+		for i := 0; i < n; i++ {
+			mc.wg.Add(1)
+			go mc.worker()
+		}
 	}
 }
 
@@ -173,105 +220,161 @@ func (mc *cscMissCoalescer) worker() {
 	}
 }
 
-// flush pipelines a batch of missed commands onto one tracked main-pool connection,
-// applies each reply to its caller's command, and publishes each to the cache.
-// Every req.done is sent exactly once and every token is settled.
+// flush (workers mode) acquires a fresh main-pool connection, pipelines the
+// batch onto it half-duplex (write all, then read all), and releases it. Every
+// req.done is sent exactly once and every token is settled.
+//
+// A published entry is only invalidatable if the connection that read it is
+// running CLIENT TRACKING, so this path must land on a tracked connection.
+// initConn issues CLIENT TRACKING ON for every pooled connection while CSC is
+// active (it is pool-agnostic), so the main pool is tracked and correct. The
+// main pool is used rather than the pipeline pool so the choice stays correct
+// even if a later change makes a dedicated pipeline pool deliberately untracked
+// (publishing a cache entry on an untracked connection would serve stale until
+// TTL). No contention cost: with the coalescer in front, reader misses are
+// handed to it, so the caching client's main pool has no other user.
 func (mc *cscMissCoalescer) flush(batch []*cscMissReq) {
 	c := mc.c
+	mc.countBatch(batch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cn, err := c.getConn(ctx)
+	if err != nil {
+		mc.settleAllErr(batch, 0, err)
+		return
+	}
+	settled, ferr := mc.flushBatch(ctx, cn, batch)
+	c.releaseConn(ctx, cn, ferr)
+	if ferr != nil {
+		// Write/read failure: settle every request not yet handled as an error so
+		// no caller hangs and no token is left IN_PROGRESS.
+		mc.settleAllErr(batch, settled, ferr)
+	}
+}
+
+// flushBatch writes batch on cn, then reads and settles replies in order.
+// Returns the number settled and any connection error; on error the caller
+// settles the remaining requests. Used by both the workers and pinned engines.
+func (mc *cscMissCoalescer) flushBatch(ctx context.Context, cn *pool.Conn, batch []*cscMissReq) (settled int, err error) {
+	c := mc.c
+	connID := cn.GetID()
+	// Coverage generation captured BEFORE the reads, same discipline as
+	// refreshInvalidatedBatch/fulfillCached: if this conn loses tracking
+	// mid-batch every reply is rejected by fulfillCached rather than published
+	// under lost coverage.
+	capturedGen := c.cscConnInitGen(connID)
+
+	if werr := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, req := range batch {
+			if e := writeCmd(wr, req.cmd); e != nil {
+				return e
+			}
+		}
+		return nil
+	}); werr != nil {
+		return 0, werr
+	}
+
+	rerr := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		for settled < len(batch) {
+			// Invalidation pushes share this connection with replies; drain them
+			// first so a push frame is not read as a value.
+			if e := c.processPendingPushNotificationWithReader(ctx, cn, rd); e != nil {
+				internal.Logger.Printf(ctx, "csc: miss-coalesce push drain: %v", e)
+			}
+			raw, e := rd.ReadRawReply()
+			if e != nil {
+				return e
+			}
+			mc.applyAndSettle(batch[settled], raw, connID, capturedGen)
+			settled++
+		}
+		return nil
+	})
+	return settled, rerr
+}
+
+// applyAndSettle applies raw to the caller's command, publishes to the cache
+// when cacheable (under the reading connection's tracking generation), and wakes
+// the caller. Sends req.done exactly once.
+func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, capturedGen uint64) {
+	c := mc.c
+	applyErr := applyCachedReply(req.cmd, raw)
+	if isCacheableReplyResult(applyErr) {
+		fc := &cscFetchCapture{
+			raw:     raw,
+			connID:  connID,
+			initGen: capturedGen,
+			key:     req.cacheKey,
+			token:   req.token,
+		}
+		c.fulfillCached(req.cacheKey, req.token, fc)
+	} else {
+		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
+		c.csc.Cancel(req.cacheKey, req.token)
+	}
+	req.done <- applyErr
+}
+
+// countBatch records batch-size accounting.
+func (mc *cscMissCoalescer) countBatch(batch []*cscMissReq) {
 	mc.batches.Add(1)
 	mc.batched.Add(uint64(len(batch)))
 	if n := uint64(len(batch)); n > mc.maxBatchSz.Load() {
 		mc.maxBatchSz.Store(n)
 	}
+}
 
-	settled := 0
-	settleRemainingErr := func(err error) {
-		for ; settled < len(batch); settled++ {
-			c.csc.Cancel(batch[settled].cacheKey, batch[settled].token)
-			batch[settled].done <- err
-			mc.failed.Add(1)
+// settleErr cancels the reservation and fails one waiting caller.
+func (mc *cscMissCoalescer) settleErr(req *cscMissReq, err error) {
+	mc.c.csc.Cancel(req.cacheKey, req.token)
+	req.done <- err
+	mc.failed.Add(1)
+}
+
+// settleAllErr fails every request in batch from index `from` onward.
+func (mc *cscMissCoalescer) settleAllErr(batch []*cscMissReq, from int, err error) {
+	for i := from; i < len(batch); i++ {
+		mc.settleErr(batch[i], err)
+	}
+}
+
+// drainQueueErr fails every request currently queued (non-blocking). Used when a
+// connection cannot be acquired, so a caller on a context without a deadline is
+// not blocked forever and no reservation is left IN_PROGRESS.
+func (mc *cscMissCoalescer) drainQueueErr(err error) {
+	for {
+		select {
+		case req := <-mc.ch:
+			mc.settleErr(req, err)
+		default:
+			return
 		}
 	}
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// Fetch on the MAIN pool. A published entry is only invalidatable if the
-	// connection that read it is running CLIENT TRACKING, so this path must land
-	// on a tracked connection. initConn issues CLIENT TRACKING ON for every
-	// pooled connection while CSC is active (it is pool-agnostic), so the main
-	// pool is tracked and correct. withConn is used rather than withPipelineConn
-	// so the choice stays correct even if a later change makes the dedicated
-	// pipeline pool deliberately untracked (pipelines never populate the cache):
-	// publishing a cache entry on an untracked connection would serve stale until
-	// TTL. No contention cost: with the coalescer in front, reader misses are
-	// handed to it, so the caching client's main pool has no other user (hits
-	// need no connection; writes and uncacheable reads go to the separate
-	// autopipelined client).
-	err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
-		connID := cn.GetID()
-		// Coverage generation captured BEFORE the reads, same discipline as
-		// refreshInvalidatedBatch/fulfillCached: if this conn loses tracking
-		// mid-batch every reply is rejected by fulfillCached rather than
-		// published under lost coverage.
-		capturedGen := c.cscConnInitGen(connID)
-
-		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
-			for _, req := range batch {
-				if err := writeCmd(wr, req.cmd); err != nil {
-					return err
-				}
-			}
-			return nil
-		}); err != nil {
-			return err
+// grabInto appends first plus whatever else is already queued (non-blocking, up
+// to cscMissBatchMax) into dst, reusing dst's backing array.
+func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) []*cscMissReq {
+	dst = append(dst, first)
+	for len(dst) < cscMissBatchMax {
+		select {
+		case more := <-mc.ch:
+			dst = append(dst, more)
+		default:
+			return dst
 		}
-
-		return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-			for settled < len(batch) {
-				req := batch[settled]
-				// Invalidation pushes share this connection with replies; drain
-				// them first so a push frame is not read as a value.
-				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-					internal.Logger.Printf(ctx, "csc: miss-coalesce push drain: %v", err)
-				}
-				raw, err := rd.ReadRawReply()
-				if err != nil {
-					return err
-				}
-				// Apply the reply to the caller's command first (so its Get()
-				// returns a value), then publish to the cache when cacheable.
-				applyErr := applyCachedReply(req.cmd, raw)
-				if isCacheableReplyResult(applyErr) {
-					fc := &cscFetchCapture{
-						raw:     raw,
-						connID:  connID,
-						initGen: capturedGen,
-						key:     req.cacheKey,
-						token:   req.token,
-					}
-					c.fulfillCached(req.cacheKey, req.token, fc)
-				} else {
-					// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
-					c.csc.Cancel(req.cacheKey, req.token)
-				}
-				req.done <- applyErr
-				settled++
-			}
-			return nil
-		})
-	})
-	if err != nil {
-		// Acquire/write/read failure: settle every request not yet handled as an
-		// error so no caller hangs and no token is left IN_PROGRESS.
-		settleRemainingErr(err)
 	}
+	return dst
 }
 
 // CSCMissCoalesceStats reports coalescer activity.
 //
 // Experimental: this API may change in a minor release.
 type CSCMissCoalesceStats struct {
+	Mode         string // "workers" | "pinned" | "fullduplex"
 	Batched      uint64 // misses served through a batch
 	Batches      uint64 // batches flushed
 	Failed       uint64 // misses settled as errors (connection failure)
@@ -285,6 +388,7 @@ func (c *Client) CSCMissCoalesceStats() CSCMissCoalesceStats {
 		return CSCMissCoalesceStats{}
 	}
 	return CSCMissCoalesceStats{
+		Mode:         mc.mode,
 		Batched:      mc.batched.Load(),
 		Batches:      mc.batches.Load(),
 		Failed:       mc.failed.Load(),

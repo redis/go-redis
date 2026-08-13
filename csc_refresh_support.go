@@ -1,24 +1,7 @@
 package redis
 
-import (
-	"os"
-	"strconv"
-)
-
 // Support shims for refresh-on-invalidate and reader-miss coalescing, kept in
 // one file so the feature is a clean addition over the CSC base.
-
-func envIntDefault(name string, def int) int {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return def
-	}
-	return n
-}
 
 // cscRevalidateHandle is the stop/join handle for a background CSC goroutine.
 type cscRevalidateHandle struct {

@@ -82,6 +82,36 @@ type invalidateHandler struct {
 	// refresh, when set, receives evicted-but-hot entries for immediate refetch.
 	// Feeding it must never block the invalidation-delivery path.
 	refresh *cscRefreshQueue
+
+	// batcher offloads invalidation cache-deletes to a windowed background
+	// goroutine (Options.ClientSideCacheInvalidationBatchWindow). Lazily started;
+	// nil when disabled. Not stopped here — it idles harmlessly after the binding
+	// is released (flush no-ops on a nil cache) and exits with the process.
+	batcher     *cscInvalBatcher
+	batcherOnce sync.Once
+
+	// invalBatchWindow is the coalescing window for the batcher above, threaded
+	// from the owning client's Options at attach time. 0 (default) deletes inline.
+	// Read under mu alongside cache/keyPrefix/refresh.
+	invalBatchWindow time.Duration
+}
+
+// setInvalBatchWindow records the invalidation-batch coalescing window from the
+// owning client's Options. Set before any push can arrive (attach time).
+func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
+	h.mu.Lock()
+	h.invalBatchWindow = w
+	h.mu.Unlock()
+}
+
+// ensureBatcher lazily starts the windowed invalidation batcher.
+func (h *invalidateHandler) ensureBatcher(w time.Duration) *cscInvalBatcher {
+	h.batcherOnce.Do(func() {
+		b := &cscInvalBatcher{h: h, window: w, ch: make(chan string, 8192)}
+		h.batcher = b
+		go b.run()
+	})
+	return h.batcher
 }
 
 func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
@@ -97,6 +127,7 @@ func (h *invalidateHandler) HandlePushNotification(
 ) error {
 	h.mu.RLock()
 	cache, keyPrefix, refresh := h.cache, h.keyPrefix, h.refresh
+	window := h.invalBatchWindow
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -106,6 +137,27 @@ func (h *invalidateHandler) HandlePushNotification(
 	case nil:
 		cache.Flush()
 	case []interface{}:
+		// Offload path: enqueue keys to the windowed background batcher instead of
+		// deleting inline, so invalidation work does not steal time from the
+		// coalescer's miss-reply reader (the low-concurrency churn p99 tail).
+		if window > 0 {
+			if _, ok := cache.(*LocalCache); ok {
+				b := h.ensureBatcher(window)
+				for _, k := range payload {
+					var name string
+					switch v := k.(type) {
+					case string:
+						name = v
+					case []byte:
+						name = string(v)
+					default:
+						continue
+					}
+					b.enqueue(cscNamespacedKey(keyPrefix, name))
+				}
+				return nil
+			}
+		}
 		var hot []cscRefreshTarget
 		lc, canRefresh := cache.(*LocalCache)
 		canRefresh = canRefresh && refresh != nil
@@ -296,6 +348,12 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.cscKeyPrefix); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
+	}
+	// Thread the invalidation-batch window from Options before any push can
+	// arrive, so the batcher (if enabled) sees the configured window on the very
+	// first invalidation rather than a zero default.
+	if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
+		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
@@ -894,7 +952,8 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			c.csc.DeleteByCacheKey(key)
 		}
 		// Original fetcher cancelled or its value was invalidated; try to take
-		// over so later waiters still benefit from the cache.
+		// over so later waiters still benefit from the cache. This is the 2x-RTT
+		// path under churn: we waited a round trip and still must fetch ourselves.
 		token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 	}
 
