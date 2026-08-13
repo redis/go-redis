@@ -1882,12 +1882,21 @@ func (ap *AutoPipeliner) silenceGap() time.Duration {
 // without blocking: an idle connection is ready, or the pool has not yet dialed
 // to capacity (the pipeline pool runs MinIdleConns=0, so it dials on demand up
 // to Size). When the pool is unknown (nil — e.g. a cluster client) it returns
-// false, so the straggler-hold keeps its conservative long hold. Two cheap
-// reads (a connsMu lock each); called only on a gap fire, not per command.
+// false, so the straggler-hold keeps its conservative long hold. Called only on
+// a gap fire, not per command.
+//
+// Prefer the pool's own HasFreeCapacity probe (all *ConnPool implement it): the
+// plain IdleLen()/Len()<Size() heuristic below ignores MaxActiveConns, so a pool
+// with MaxActiveConns < PoolSize and no idle conn would report free even though
+// the flush's Get would hit ErrPoolExhausted (codex #3962). The heuristic stays
+// as a fallback for any Pooler that does not implement the probe.
 func (ap *AutoPipeliner) pipelineHasFreeConn() bool {
 	p := ap.pipelinePool
 	if p == nil {
 		return false
+	}
+	if hc, ok := p.(interface{ HasFreeCapacity() bool }); ok {
+		return hc.HasFreeCapacity()
 	}
 	return p.IdleLen() > 0 || p.Len() < p.Size()
 }

@@ -1686,6 +1686,36 @@ func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }
 
+// HasFreeCapacity reports whether the pool likely has room to serve another
+// batch without contention: an idle connection is ready, or the pool has not
+// grown to PoolSize AND (when set) MaxActiveConns still permits a dial.
+//
+// It is a conservative, best-effort gate for the autopipeline straggler-hold,
+// NOT an admission check. In particular it keeps the pre-existing PoolSize term
+// verbatim (`Len() < Size()`), so it can report false when a non-pooled dial
+// would in fact still succeed — PoolSize does not hard-block dials, only
+// MaxActiveConns does (newConn returns ErrPoolExhausted once poolSize >=
+// MaxActiveConns). Reporting false only makes the straggler-hold stay long,
+// which costs latency, not correctness.
+//
+// The one term it adds over the plain `IdleLen()>0 || Len()<Size()` heuristic is
+// MaxActiveConns, checked against poolSize the way newConn gates dials: without
+// it a pool with MaxActiveConns < PoolSize and no idle connection reported free
+// even though the next Get would exhaust. With MaxActiveConns == 0 the result is
+// identical to the old heuristic.
+func (p *ConnPool) HasFreeCapacity() bool {
+	if p.IdleLen() > 0 {
+		return true
+	}
+	if p.Len() >= p.Size() {
+		return false
+	}
+	if m := p.cfg.MaxActiveConns; m > 0 && p.poolSize.Load() >= m {
+		return false
+	}
+	return true
+}
+
 func (p *ConnPool) Stats() *Stats {
 	return &Stats{
 		Hits:            atomic.LoadUint32(&p.stats.Hits),
