@@ -2544,11 +2544,16 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	if !cn.MaybeHasData() {
+	// Also drain when the reader already has buffered bytes (HasBufferedData),
+	// not just when the socket is readable (MaybeHasData): a reply and a trailing
+	// invalidation can arrive in one socket read, leaving the invalidation in the
+	// reader buffer with an empty socket — MaybeHasData alone would skip it and
+	// serve stale until the next miss/MaxStaleness (#3965).
+	if !cn.MaybeHasData() && !cn.HasBufferedData() {
 		return nil
 	}
 
-	// Short read timeout: MaybeHasData confirmed kernel-buffered bytes, so
+	// Short read timeout: MaybeHasData/HasBufferedData confirmed bytes, so
 	// the first read returns immediately — the deadline only needs to cover
 	// scheduler pauses, not network waits. 10us was routinely lost to
 	// scheduling on loaded machines: the peek then timed out with nothing

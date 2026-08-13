@@ -299,11 +299,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 				if e != nil {
 					return e
 				}
-				if cn.GetID() == connID && c.cscConnInitGen(connID) == gen {
-					mc.applyAndSettle(req, raw, connID, gen)
-				} else {
-					mc.settleErr(req, pool.ErrClosed)
-				}
+				// Deliver the reply the caller is waiting for and let applyAndSettle
+				// gate only the CACHE PUBLISH on the connection's id/generation
+				// (fulfillCached checks the captured gen) — matching the workers and
+				// pinned engines. Previously FD failed the caller with ErrClosed on a
+				// mid-flight id/gen change even though the reply was read fine, losing
+				// a good result (#3965).
+				mc.applyAndSettle(req, raw, connID, gen)
 				return nil
 			})
 			if rerr != nil {

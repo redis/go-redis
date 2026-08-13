@@ -448,10 +448,10 @@ type Options struct {
 
 	// ClientSideCacheCoalesceMode selects the miss-coalescing engine; it is read
 	// only when ClientSideCacheCoalesceMisses is set. "" or "workers" (default)
-	// runs a small pinned pool of workers, each holding one tracked connection for
-	// a half-duplex batch; "fullduplex" holds a single connection with a
-	// concurrent writer+reader pair so many commands stream in flight on one
-	// socket.
+	// runs a small pool of workers, each acquiring a tracked connection per
+	// half-duplex batch (it is not held across batches); "fullduplex" holds a
+	// single connection with a concurrent writer+reader pair so many commands
+	// stream in flight on one socket.
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMode string
