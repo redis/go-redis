@@ -1686,34 +1686,51 @@ func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }
 
-// HasFreeCapacity reports whether the pool likely has room to serve another
-// batch without contention: an idle connection is ready, or the pool has not
-// grown to PoolSize AND (when set) MaxActiveConns still permits a dial.
+// HasFreeCapacity reports whether the pool can likely serve another batch
+// without blocking. It is a best-effort, non-blocking probe for the autopipeline
+// straggler-hold gate (a false positive only costs a spill / short hold, never
+// correctness), refined per review (#3962) to three checks in order:
 //
-// It is a conservative, best-effort gate for the autopipeline straggler-hold,
-// NOT an admission check. In particular it keeps the pre-existing PoolSize term
-// verbatim (`Len() < Size()`), so it can report false when a non-pooled dial
-// would in fact still succeed — PoolSize does not hard-block dials, only
-// MaxActiveConns does (newConn returns ErrPoolExhausted once poolSize >=
-// MaxActiveConns). Reporting false only makes the straggler-hold stay long,
-// which costs latency, not correctness.
-//
-// The one term it adds over the plain `IdleLen()>0 || Len()<Size()` heuristic is
-// MaxActiveConns, checked against poolSize the way newConn gates dials: without
-// it a pool with MaxActiveConns < PoolSize and no idle connection reported free
-// even though the next Get would exhaust. With MaxActiveConns == 0 the result is
-// identical to the old heuristic.
+//  1. A USABLE idle connection is ready — served immediately. IdleLen() alone is
+//     not enough: an idle entry can be mid-handoff/re-auth (StateUnusable) and
+//     would be skipped by popIdle, so count only usable idle conns.
+//  2. Otherwise a fresh Get must take a pool turn and (usually) dial. If no turn
+//     is free the Get would block, so report no capacity. A free turn already
+//     accounts for both in-use conns and in-flight dials (each holds a token),
+//     which the old Len()<Size() term missed.
+//  3. A turn is free, so a dial is possible only while under PoolSize and (when
+//     set) MaxActiveConns — the latter is what newConn hard-gates dials on
+//     (ErrPoolExhausted once poolSize >= MaxActiveConns).
 func (p *ConnPool) HasFreeCapacity() bool {
-	if p.IdleLen() > 0 {
+	if p.usableIdleLen() > 0 {
 		return true
 	}
-	if p.Len() >= p.Size() {
+	if p.semaphore.Available() <= 0 {
 		return false
 	}
-	if m := p.cfg.MaxActiveConns; m > 0 && p.poolSize.Load() >= m {
+	size := p.poolSize.Load()
+	if size >= p.cfg.PoolSize {
+		return false
+	}
+	if m := p.cfg.MaxActiveConns; m > 0 && size >= m {
 		return false
 	}
 	return true
+}
+
+// usableIdleLen counts idle connections that are actually usable right now
+// (not mid-handoff or re-auth), unlike IdleLen() which counts every idle entry.
+// The idle slice is bounded by PoolSize, so the scan is cheap.
+func (p *ConnPool) usableIdleLen() int {
+	p.connsMu.Lock()
+	n := 0
+	for _, cn := range p.idleConns {
+		if cn.IsUsable() {
+			n++
+		}
+	}
+	p.connsMu.Unlock()
+	return n
 }
 
 func (p *ConnPool) Stats() *Stats {

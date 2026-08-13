@@ -2400,7 +2400,14 @@ func (s *apShard) flushBatchSlice() {
 			// deadlock-free via the dispGid guard stamped above.
 			// A successful short-circuit stays successful (see dispatchCmds).
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
-				return ap.pipeliner.process(ctx, cmd)
+				// Dispatch on the PIPELINE pool (as a one-command pipeline), not the
+				// main pool, so the flush uses the same pool the straggler-hold gate
+				// probes (codex #3962). processPipeline falls back to the main pool
+				// when no dedicated pipeline pool exists, so this is a no-op for
+				// default clients and only unifies the pools when one is configured.
+				// The solo goroutine dispatch (which is what avoids the 2xRTT
+				// flusher phase-lock) is unchanged.
+				return ap.pipeliner.processPipeline(ctx, []Cmder{cmd})
 			})
 			solo.SetErr(err)
 			ap.observeBatchExec(time.Since(execStart))

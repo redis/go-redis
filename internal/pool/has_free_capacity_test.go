@@ -81,14 +81,46 @@ func TestHasFreeCapacityWithoutMaxActiveConns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	// Grown to PoolSize (1), none idle: Len() >= Size() so the conservative gate
-	// reports false (matching the old heuristic), even though a second Get would
-	// still succeed non-pooled.
+	// Grown to PoolSize (1), no idle conn and no free turn (the one turn is held):
+	// the gate reports false.
 	if connPool.HasFreeCapacity() {
-		t.Fatal("at PoolSize with no idle conn: HasFreeCapacity() = true, want false (conservative)")
+		t.Fatal("at PoolSize with no idle conn / no free turn: HasFreeCapacity() = true, want false")
 	}
 	connPool.Put(ctx, cn)
 	if !connPool.HasFreeCapacity() {
-		t.Fatal("with an idle conn available: HasFreeCapacity() = false, want true")
+		t.Fatal("with a usable idle conn available: HasFreeCapacity() = false, want true")
+	}
+}
+
+// TestHasFreeCapacityExcludesUnusableIdle pins the refinement that an idle
+// connection which is not usable (mid handoff / re-auth) does NOT count as
+// capacity — the old IdleLen()>0 term would have wrongly reported free.
+func TestHasFreeCapacityExcludesUnusableIdle(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer:             dummyDialer,
+		PoolSize:           1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        time.Second,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+	ctx := context.Background()
+
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	connPool.Put(ctx, cn) // one usable idle conn
+	if !connPool.HasFreeCapacity() {
+		t.Fatal("usable idle conn: HasFreeCapacity() = false, want true")
+	}
+
+	// Mark the idle conn unusable (as a handoff / re-auth would). It is still in
+	// idleConns, so IdleLen()>0, but it cannot serve a Get; at PoolSize there is
+	// also nothing to dial, so capacity must read false.
+	cn.SetUsable(false)
+	if connPool.HasFreeCapacity() {
+		t.Fatal("idle conn is UNUSABLE and pool is at PoolSize: HasFreeCapacity() = true, want false")
 	}
 }
