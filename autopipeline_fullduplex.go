@@ -143,6 +143,8 @@ func (f *fdInflight) pushBatch(reqs []fdReq) {
 
 // peakLen returns the high-water mark of in-flight entries seen so far (test
 // observability for the backpressure bound).
+//
+//nolint:unused // used by the full-duplex backpressure tests; lint runs with tests:false.
 func (f *fdInflight) peakLen() int {
 	f.mu.Lock()
 	n := f.peak
@@ -377,7 +379,7 @@ func (fd *fdEngine) run() {
 			fd.drainQueue(ErrClosed)
 			return
 		}
-		unacked, aerr, result := fd.attempt(bg, carry)
+		unacked, result, aerr := fd.attempt(bg, carry)
 		switch result {
 		case fdGraceful:
 			return // Close: attempt drained written work; queue failed there.
@@ -422,23 +424,23 @@ func (fd *fdEngine) run() {
 // attempt acquires a connection, runs one full-duplex session (re-issuing carry
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
-func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, aerr error, result fdResult) {
+func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
 	cn, err := fd.pool.Get(bg)
 	if err != nil {
-		return carry, err, fdConnErr
+		return carry, fdConnErr, err
 	}
 	if !cn.IsInited() {
 		if e := fd.client.initConn(bg, cn); e != nil {
 			fd.pool.Remove(bg, cn, e)
-			return carry, e, fdConnErr
+			return carry, fdConnErr, e
 		}
 		if !cn.TryAcquire() {
 			fd.pool.Remove(bg, cn, errFDConnUnusable)
-			return carry, errFDConnUnusable, fdConnErr
+			return carry, fdConnErr, errFDConnUnusable
 		}
 	}
 
-	unacked, aerr, result = fd.session(bg, cn, carry)
+	unacked, result, aerr = fd.session(bg, cn, carry)
 
 	// Clean ends (graceful / idle / recycle) leave the conn at a RESP boundary —
 	// Put it back so the pool (and its hooks) own it again. ANY connection-error
@@ -452,12 +454,12 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	} else {
 		fd.pool.Put(bg, cn)
 	}
-	return unacked, aerr, result
+	return unacked, result, aerr
 }
 
 // session runs the writer (this goroutine) + reader (spawned) on one connection
 // until Close (graceful) or a connection error (returns the unacked tail).
-func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (unacked []fdReq, aerr error, result fdResult) {
+func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
 	inflight := newFDInflight()
 	fd.curInflight.Store(inflight) // test observability (peak in-flight)
 	readerDone := make(chan struct{})
@@ -624,9 +626,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// error so attempt() removes the conn. run() exits on its next loop
 			// (ctx is already done), so this does not retry.
 			fd.failReqs(inflight.takeRemaining(), sharedErr)
-			return nil, sharedErr, fdConnErr
+			return nil, fdConnErr, sharedErr
 		}
-		return nil, nil, fdGraceful
+		return nil, fdGraceful, nil
 	case fdIdle, fdRecycle:
 		// Clean return: no more pushes, reader drains remaining replies, then the
 		// conn is at a RESP boundary and safe to Put back to the pool.
@@ -637,9 +639,9 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// unacked tail for replay and report the error so the conn is removed
 			// instead of Put back poisoned. (Fixes the readerDone/clean-result
 			// race where a protocol error would otherwise Put a bad conn.)
-			return inflight.takeRemaining(), sharedErr, fdConnErr
+			return inflight.takeRemaining(), fdConnErr, sharedErr
 		}
-		return nil, nil, result
+		return nil, result, nil
 	default: // fdConnErr
 		// Stop the reader, wait for it to exit, THEN take the unacked tail — so
 		// the reader (which advances every command it completes) and this
@@ -652,7 +654,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		if sharedErr == nil {
 			sharedErr = errFDReaderGone
 		}
-		return unacked, sharedErr, fdConnErr
+		return unacked, fdConnErr, sharedErr
 	}
 }
 
