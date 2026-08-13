@@ -209,14 +209,30 @@ func (f *fdInflight) closeGraceful() {
 	f.mu.Unlock()
 }
 
-// closeRecover hard-stops the reader and returns the remaining unacked tail in
-// order for replay.
-func (f *fdInflight) closeRecover() []fdReq {
+// hardClose signals the reader to stop immediately (used on a connection error).
+// It deliberately does NOT take the queue: the caller must wait for the reader
+// to exit (<-readerDone) and THEN call takeRemaining, so the reader and the
+// recovery path never touch the queue concurrently. That ordering is what keeps
+// each entry owned by exactly one of {the reader completed it, recovery
+// replays/fails it}. A concurrent grab (the previous closeRecover) could scoop
+// an entry the reader had just completed but not yet advanced, handing an
+// already-executed command to the retry loop — double-executing it and, on the
+// hooked path, double-closing its hookDone channel (a panic).
+func (f *fdInflight) hardClose() {
 	f.mu.Lock()
 	f.hardClosed = true
+	f.cond.Broadcast()
+	f.mu.Unlock()
+}
+
+// takeRemaining returns the entries the reader left unacknowledged, in order,
+// and clears the queue. Call ONLY after the reader has exited (<-readerDone):
+// the reader advance()s every command it completes, so what remains is exactly
+// the unacked tail, and with the reader gone there is no concurrent access.
+func (f *fdInflight) takeRemaining() []fdReq {
+	f.mu.Lock()
 	rem := f.q
 	f.q = nil
-	f.cond.Broadcast()
 	f.mu.Unlock()
 	return rem
 }
@@ -233,6 +249,9 @@ type fdEngine struct {
 
 	recycles    atomic.Int64               // clean returns (idle + max-hold); observability/tests
 	curInflight atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
+
+	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
+	closed   bool         // set once run() is tearing down; submit then rejects new work
 }
 
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
@@ -287,12 +306,30 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		hookDone = make(chan struct{})
 		go fd.hostHook(ctx, cmd, b, hookDone)
 	}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone}
+
+	// Send under RLock and re-check closed so a send can never win the race with
+	// run()'s shutdown drain: drainQueue takes the WLock, sets closed, then
+	// drains fd.ch. The RWMutex serialises those two, so once the final drain has
+	// run no new req can land in fd.ch — otherwise a req enqueued after the drain
+	// would never be completed and its caller would hang forever. A send that is
+	// blocked on a full channel here is released by the ctx.Done() branch (Close
+	// cancels ap.ctx), so holding the RLock cannot wedge the WLock.
+	fd.submitMu.RLock()
+	if fd.closed {
+		fd.submitMu.RUnlock()
+		cmd.SetErr(ErrClosed)
+		req.complete()
+		return b
+	}
 	select {
-	case fd.ch <- fdReq{cmd: cmd, batch: b, hookDone: hookDone}:
+	case fd.ch <- req:
+		fd.submitMu.RUnlock()
 		return b
 	case <-fd.ap.ctx.Done():
+		fd.submitMu.RUnlock()
 		cmd.SetErr(ErrClosed)
-		fdReq{cmd: cmd, batch: b, hookDone: hookDone}.complete()
+		req.complete()
 		return b
 	}
 }
@@ -404,9 +441,13 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	unacked, aerr, result = fd.session(bg, cn, carry)
 
 	// Clean ends (graceful / idle / recycle) leave the conn at a RESP boundary —
-	// Put it back so the pool (and its hooks) own it again. Only a genuine
-	// connection error removes it.
-	if aerr != nil && isBadConn(aerr, false, fd.client.opt.Addr) {
+	// Put it back so the pool (and its hooks) own it again. ANY connection-error
+	// end (result==fdConnErr) leaves the conn desynced — an unread reply tail, a
+	// partial write, or a reader protocol error — so it MUST be removed; Put()ing
+	// it would poison the pool for the next caller. Keying on result (not
+	// isBadConn) is deliberate: errors like errFDReaderGone or a plain write
+	// timeout are not classified bad-conn, yet the conn is still unusable.
+	if result == fdConnErr {
 		fd.pool.Remove(bg, cn, aerr)
 	} else {
 		fd.pool.Put(bg, cn)
@@ -568,18 +609,6 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		failOnce(writeErr)
 		result = fdConnErr
 	}
-	// Reader may have exited on its own (a failure) racing the break above — e.g.
-	// ctx.Done and readerDone both ready. If so, force the connection-error path
-	// so the unacked tail is recovered and the bad conn is removed, not Put.
-	if result != fdConnErr {
-		select {
-		case <-readerDone:
-			if sharedErr != nil {
-				result = fdConnErr
-			}
-		default:
-		}
-	}
 
 	switch result {
 	case fdGraceful:
@@ -588,16 +617,38 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		inflight.closeGraceful()
 		fd.drainQueue(ErrClosed)
 		<-readerDone
+		if sharedErr != nil {
+			// The reader hit a connection error during the final drain: the
+			// in-flight tail it never reached would otherwise leave callers hung,
+			// and the conn is desynced. Fail the stranded tail and report the
+			// error so attempt() removes the conn. run() exits on its next loop
+			// (ctx is already done), so this does not retry.
+			fd.failReqs(inflight.takeRemaining(), sharedErr)
+			return nil, sharedErr, fdConnErr
+		}
 		return nil, nil, fdGraceful
 	case fdIdle, fdRecycle:
 		// Clean return: no more pushes, reader drains remaining replies, then the
 		// conn is at a RESP boundary and safe to Put back to the pool.
 		inflight.closeGraceful()
 		<-readerDone
+		if sharedErr != nil {
+			// Reader failed while draining for the clean return: recover the
+			// unacked tail for replay and report the error so the conn is removed
+			// instead of Put back poisoned. (Fixes the readerDone/clean-result
+			// race where a protocol error would otherwise Put a bad conn.)
+			return inflight.takeRemaining(), sharedErr, fdConnErr
+		}
 		return nil, nil, result
 	default: // fdConnErr
-		unacked = inflight.closeRecover()
+		// Stop the reader, wait for it to exit, THEN take the unacked tail — so
+		// the reader (which advances every command it completes) and this
+		// recovery never touch the deque at once. The <-readerDone wait is
+		// unchanged from before; only the take moved after it, closing the
+		// double-ownership race.
+		inflight.hardClose()
 		<-readerDone
+		unacked = inflight.takeRemaining()
 		if sharedErr == nil {
 			sharedErr = errFDReaderGone
 		}
@@ -639,7 +690,10 @@ func fdReqsNoRetry(reqs []fdReq) bool {
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 	for i := range reqs {
-		if reqs[i].cmd.Err() == nil {
+		// rawErr(), not Err(): this runs on the engine goroutine, and Err()
+		// awaits batch.done — the very channel complete() closes just below — so
+		// awaiting here would self-deadlock (the same trap hostHook documents).
+		if reqs[i].cmd.rawErr() == nil {
 			reqs[i].cmd.SetErr(err)
 		}
 		reqs[i].complete()
@@ -648,7 +702,21 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 
 // drainQueue fails everything currently queued (unwritten) with err, without
 // blocking. Used on Close for commands that never reached the wire.
+//
+// It first closes the submit gate: it takes the WLock (blocking until in-flight
+// submit sends finish — each either landed in fd.ch, drained below, or took its
+// ctx.Done() branch), sets closed, then drains. After this no submit can enqueue
+// new work, so nothing is left un-completed behind the drain.
+//
+// INVARIANT: every drainQueue call is a terminal shutdown drain — run() exits
+// right after, and every caller is past a ctx-cancel check. Never call it on a
+// non-close path: a submit blocked on a full channel is unwedged only by its
+// ctx.Done() branch, so without a cancelled ctx the WLock here would deadlock
+// against the RLock held across that send.
 func (fd *fdEngine) drainQueue(err error) {
+	fd.submitMu.Lock()
+	fd.closed = true
+	fd.submitMu.Unlock()
 	for {
 		select {
 		case r := <-fd.ch:

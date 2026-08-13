@@ -26,6 +26,7 @@ func (h *fdCountHook) OnGet(_ context.Context, _ *pool.Conn, _ bool) (bool, erro
 	h.gets.Add(1)
 	return true, nil
 }
+
 func (h *fdCountHook) OnPut(_ context.Context, _ *pool.Conn) (bool, bool, error) {
 	h.puts.Add(1)
 	return true, false, nil
@@ -533,6 +534,7 @@ func (h *fdProcessCounterHook) ProcessHook(next ProcessHook) ProcessHook {
 		return err
 	}
 }
+
 func (h *fdProcessCounterHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		h.pipeline.Add(1)
@@ -603,6 +605,7 @@ func (h *fdShortCircuitHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h *fdShortCircuitHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return next
 }
@@ -1108,5 +1111,139 @@ func TestFullDuplexNoGoroutineLeakOnClose(t *testing.T) {
 	}
 	if now > base+4 {
 		t.Fatalf("goroutine leak after 5 FD open/close cycles: base=%d now=%d (writer/reader not reaped)", base, now)
+	}
+}
+
+// TestFDFailReqsNoDeadlock covers the failReqs self-deadlock: failReqs runs on
+// the engine goroutine and must finalize each command WITHOUT awaiting its batch
+// (cmd.Err() blocks on the very done channel failReqs is about to close). Pure,
+// no server.
+func TestFDFailReqsNoDeadlock(t *testing.T) {
+	ctx := context.Background()
+	cmd := NewStatusCmd(ctx, "set", "k", "v")
+	b := newAPBatch()
+	cmd.setReady(b) // now cmd.Err()/await() would block until b closes
+
+	fd := &fdEngine{}
+	done := make(chan struct{})
+	go func() {
+		fd.failReqs([]fdReq{{cmd: cmd, batch: b}}, ErrClosed)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failReqs deadlocked: it awaited the batch.done it is responsible for closing")
+	}
+	if err := cmd.rawErr(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("cmd err = %v, want ErrClosed", err)
+	}
+	select {
+	case <-b.done:
+	default:
+		t.Fatal("failReqs did not close the batch")
+	}
+}
+
+// TestFDInflightHardCloseTakesUnackedTail covers the double-ownership fix: an
+// entry the reader has completed+advanced must NEVER also be returned by the
+// recovery path. hardClose stops the reader; takeRemaining (called after the
+// reader would have exited) returns exactly the un-advanced tail, in order — so
+// completed commands are not replayed/failed a second time. Pure, no server.
+func TestFDInflightHardCloseTakesUnackedTail(t *testing.T) {
+	ctx := context.Background()
+	f := newFDInflight()
+	all := make([]fdReq, 10)
+	for i := range all {
+		all[i] = fdReq{cmd: NewStatusCmd(ctx, "set", itoa(i), "v"), batch: newAPBatch()}
+	}
+	f.pushBatch(all)
+
+	// Reader snapshots the front and completes+advances the first 4.
+	buf, ok := f.frontBatch(nil)
+	if !ok || len(buf) != 10 {
+		t.Fatalf("frontBatch ok=%v n=%d, want ok=true n=10", ok, len(buf))
+	}
+	f.advance(4)
+
+	// Connection-error recovery: stop the reader, then take the tail.
+	f.hardClose()
+	if _, ok := f.frontBatch(nil); ok {
+		t.Fatal("frontBatch returned ok after hardClose — the reader would not exit")
+	}
+	rem := f.takeRemaining()
+	if len(rem) != 6 {
+		t.Fatalf("takeRemaining n=%d, want 6 (advanced entries must not reappear)", len(rem))
+	}
+	for i := 0; i < 6; i++ {
+		if rem[i].cmd != all[4+i].cmd {
+			t.Fatalf("tail[%d] mismatch — recovery order/ownership broken", i)
+		}
+	}
+	// Taking again yields nothing (queue cleared): no entry can be recovered twice.
+	if again := f.takeRemaining(); len(again) != 0 {
+		t.Fatalf("second takeRemaining n=%d, want 0", len(again))
+	}
+}
+
+// TestFDInflightOwnershipPartition pins the deque contract the Blocker-2 fix
+// relies on: with the correct usage (hardClose, then takeRemaining ONLY after
+// the reader has exited), every entry is owned by EXACTLY ONE side — advanced by
+// the reader OR returned by takeRemaining, never both and never neither. A
+// reader goroutine drains+advances while a second goroutine races a hardClose;
+// under -race this also proves advance/hardClose/takeRemaining are lock-clean.
+// (The session-level regression — that session() must take the tail only after
+// <-readerDone, not before as the old closeRecover did — is covered end-to-end
+// by TestFullDuplexRecoversFromConnKill.)
+func TestFDInflightOwnershipPartition(t *testing.T) {
+	ctx := context.Background()
+	for iter := 0; iter < 200; iter++ {
+		f := newFDInflight()
+		const n = 64
+		all := make([]fdReq, n)
+		for i := range all {
+			all[i] = fdReq{cmd: NewStatusCmd(ctx, "set", itoa(i), "v"), batch: newAPBatch()}
+		}
+		f.pushBatch(all)
+
+		advanced := make(map[Cmder]struct{}, n)
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			var buf []fdReq
+			for {
+				var ok bool
+				buf, ok = f.frontBatch(buf)
+				if !ok {
+					return // hardClose observed → reader exits (mirrors the real reader)
+				}
+				// Complete a slice of the snapshot, then advance exactly that many.
+				take := len(buf)/2 + 1
+				if take > len(buf) {
+					take = len(buf)
+				}
+				for i := 0; i < take; i++ {
+					advanced[buf[i].cmd] = struct{}{}
+				}
+				f.advance(take)
+			}
+		}()
+
+		// Race the hard close against the reader's progress.
+		f.hardClose()
+		<-readerDone // MUST wait before taking — that ordering is the fix
+		rem := f.takeRemaining()
+
+		// Partition check: advanced ⊎ remaining == all, disjoint, complete.
+		if len(advanced)+len(rem) != n {
+			t.Fatalf("iter %d: advanced=%d + remaining=%d != %d (entry lost or double-owned)",
+				iter, len(advanced), len(rem), n)
+		}
+		for _, r := range rem {
+			if _, dup := advanced[r.cmd]; dup {
+				t.Fatalf("iter %d: cmd both advanced AND in recovery tail — double-owned (would double-execute)", iter)
+			}
+		}
 	}
 }
