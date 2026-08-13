@@ -615,8 +615,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		}
 		// Drop stale pipeline-pool connections dialed to the demoted master too;
 		// otherwise pipelined traffic keeps using the old address after failover.
-		// Loaded through the atomic ref: the pool may have been created lazily
-		// by ensurePipelinePool after this callback was registered.
+		// The pipeline pool is created at construction (before this callback can
+		// fire), so the ref is simply read here.
 		if ref := rdb.loadPipelinePool(); ref != nil {
 			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr

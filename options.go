@@ -258,9 +258,15 @@ type Options struct {
 	// for main-pool connections. It never pre-dials (MinIdleConns is forced
 	// to 0 on it), so the size is a cap on burst capacity, not a standing
 	// footprint: an unused pipeline pool holds zero connections. A burst of
-	// concurrent pipelines wider than the cap spills back to the main pool
-	// instead of queueing. Its connections use DefaultPipelineBufferSize
-	// buffers unless the pipeline buffer sizes are set explicitly.
+	// concurrent pipelines wider than the cap spills to the main pool after a
+	// short wait (DefaultPipelinePoolTimeout) rather than queueing for the full
+	// PoolTimeout. Its connections use DefaultPipelineBufferSize buffers unless
+	// the pipeline buffer sizes are set explicitly. It does not inherit
+	// MaxActiveConns: rather than the ~2x total ceiling that inheriting it
+	// verbatim would allow, the pipeline pool adds at most PipelinePoolSize
+	// connections on top of the main pool's MaxActiveConns (so the effective
+	// ceiling is MaxActiveConns + PipelinePoolSize — a small, bounded addition),
+	// and the main pool the burst spills to still enforces MaxActiveConns.
 	//
 	// Set to a negative value to opt out of the dedicated pool entirely:
 	// pipelines then run on the main pool, as they did before the pool
@@ -480,6 +486,20 @@ const DefaultPipelinePoolSize = 10
 // throughput plateaus around 64 KiB and gains nothing past ~128 KiB, while
 // very large buffers (>=512 KiB) can regress it.
 const DefaultPipelineBufferSize = 64 * 1024
+
+// DefaultPipelinePoolTimeout bounds how long a pipeline waits for a pipeline-pool
+// connection before spilling to the main pool. The pipeline pool is burst
+// capacity, so when every one of its connections is busy a further pipeline
+// should fall back to the main pool promptly rather than queue for the full
+// (main) PoolTimeout, which can be tens of seconds. It is deliberately short:
+// staying under it costs a little extra latency on a saturated pipeline pool
+// (the spill), never correctness. See pipelinePoolOptions / withPipelineConn.
+//
+// Note: PoolTimeout is also the budget for a connection's drainer handoff
+// (maintnotifications), so a pipeline connection that needs a handoff gets this
+// short budget rather than the main pool's — acceptable because pipeline
+// connections are disposable burst capacity that a burst can spill past anyway.
+const DefaultPipelinePoolTimeout = 100 * time.Millisecond
 
 func (opt *Options) init() {
 	if opt.Addr == "" {

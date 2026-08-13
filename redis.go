@@ -354,8 +354,8 @@ func (h *onCloseHooks) run() error {
 // connections carry (pool.Conn.PoolName()), so poolForConn can route a
 // connection back to the pool that owns it — e.g. streaming-credentials
 // re-auth must close/account a failed pipeline connection against the
-// pipeline pool, not connPool. Bundling keeps the pair consistent under the
-// single atomic publication in baseClient.pipelinePool.
+// pipeline pool, not connPool. Bundling keeps the pair consistent: it is set
+// once in baseClient.pipelinePool before the client is visible, never mutated.
 type pipelinePoolRef struct {
 	pool *pool.ConnPool
 	name string
@@ -459,9 +459,8 @@ func (c *baseClient) clone() *baseClient {
 		apClosed: c.apClosed,
 		opt:      c.opt,
 		connPool: c.connPool,
-		// Pointer copy on purpose: the clone shares the parent's pipeline-pool
-		// SLOT, so a lazy creation through either is visible to both and they
-		// cannot build two different pipeline pools over one shared pool set.
+		// Pointer copy on purpose: the clone shares the parent's already-created
+		// pipeline pool over the one shared pool set, rather than building its own.
 		pipelinePool:                c.pipelinePool,
 		pubSubPool:                  c.pubSubPool,
 		onClose:                     c.onClose,
@@ -650,13 +649,26 @@ func pipelinePoolOptions(opt *Options) *Options {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
 	pipelineOpt.MinIdleConns = 0
+	// Do NOT inherit MaxActiveConns. Inheriting it verbatim would roughly DOUBLE
+	// the client's socket ceiling (e.g. MaxActiveConns 100 -> up to ~200 across
+	// the two pools). Reset to 0 so the pipeline pool is bounded only by its own
+	// PoolSize: the effective ceiling becomes MaxActiveConns + PipelinePoolSize —
+	// a small, bounded addition rather than a doubling, and the main pool a burst
+	// spills to still enforces MaxActiveConns. (Consequence: with MaxActiveConns
+	// 0 the pipeline pool never itself returns ErrPoolExhausted; a burst wider
+	// than PoolSize spills on ErrPoolTimeout instead — see withPipelineConn.)
+	pipelineOpt.MaxActiveConns = 0
+	// Spill, don't queue: when every pipeline connection is busy, fall back to the
+	// main pool after a short wait rather than blocking for the (main) PoolTimeout,
+	// which the clone would otherwise inherit (tens of seconds). withPipelineConn
+	// spills on the resulting ErrPoolTimeout.
+	pipelineOpt.PoolTimeout = DefaultPipelinePoolTimeout
 	return pipelineOpt
 }
 
 // buildPipelinePool constructs the dedicated pipeline pool from the client's
 // options as resolved by pipelinePoolOptions. Shared by the NewClient and
-// NewFailoverClient creation paths and the lazy ensurePipelinePool path so
-// they cannot drift.
+// NewFailoverClient creation paths so they cannot drift.
 func (c *baseClient) buildPipelinePool(poolName string) (*pipelinePoolRef, error) {
 	p, err := newConnPool(pipelinePoolOptions(c.opt), c.dialHook, poolName)
 	if err != nil {
@@ -1201,8 +1213,8 @@ func (c *baseClient) withPipelineConn(
 	ctx context.Context, fn func(context.Context, *pool.Conn) error,
 ) (retErr error) {
 	// Use pipeline pool if available, otherwise fall back to regular pool.
-	// Load the ref once: a lazy ensurePipelinePool may publish concurrently,
-	// and every use below must see the same pool.
+	// Read the ref once so every use below sees the same pool (it is set once at
+	// construction and never mutated, so a plain read is safe).
 	ref := c.loadPipelinePool()
 	if ref == nil {
 		return c.withConn(ctx, fn)
@@ -1229,34 +1241,48 @@ func (c *baseClient) withPipelineConn(
 	// codex on #3942). cn is nil on the acquire/init failure paths, which still
 	// must report.
 	var cn *pool.Conn
+	// connPool records which pool cn was acquired from — the pipeline pool
+	// normally, or the main pool on a spill — so the single deferred
+	// ReportResult+release below runs against the right pool, in report-before-
+	// release order, without re-entering the Limiter a second time.
+	var connPool pool.Pooler = pipelinePool
 	var fnErr error
 	defer func() {
 		if c.opt.Limiter != nil {
 			c.opt.Limiter.ReportResult(retErr)
 		}
 		if cn != nil {
-			c.releaseConnToPool(ctx, pipelinePool, cn, fnErr)
+			c.releaseConnToPool(ctx, connPool, cn, fnErr)
 		}
 	}()
 
 	cn, retErr = pipelinePool.Get(ctx)
 	if retErr != nil {
-		cn = nil // nothing acquired: no release, but still report above
-		if errors.Is(retErr, pool.ErrPoolTimeout) {
-			// The pipeline pool is a small burst-capacity pool; under a burst
-			// of concurrent pipelines wider than its cap, SPILL to the main
-			// pool instead of failing. Spilled pipelines run with the regular
-			// buffer sizes — a throughput detail, not a behavior change — and
-			// total connections stay bounded by PoolSize + PipelinePoolSize.
-			// This keeps the pre-pipeline-pool capacity for heavy concurrent
-			// Pipelined callers, who previously shared the main pool.
-			return c.withConn(ctx, fn)
+		cn = nil // nothing acquired from the pipeline pool
+		// The pipeline pool is small burst capacity. When it is saturated — its
+		// short PoolTimeout elapsed (ErrPoolTimeout; the live case) or it hit a
+		// MaxActiveConns cap (ErrPoolExhausted; defensive — pipelinePoolOptions
+		// resets MaxActiveConns to 0 so the pipeline pool does not currently
+		// produce this, but a future per-pool cap would) — SPILL to the main pool
+		// instead of failing. Acquire from the main pool DIRECTLY rather than via
+		// withConn: withConn would call Limiter.Allow()/ReportResult() a second
+		// time on top of the outer pair above (the #3959 double-count, which could
+		// also spuriously reject the spill). The outer Allow already accounts this
+		// operation and the deferred ReportResult reports it once. Spilled
+		// pipelines run with the regular buffer sizes (a throughput detail).
+		if !errors.Is(retErr, pool.ErrPoolTimeout) && !errors.Is(retErr, pool.ErrPoolExhausted) {
+			return retErr
 		}
-		return retErr
+		cn, retErr = c.connPool.Get(ctx)
+		if retErr != nil {
+			cn = nil
+			return retErr
+		}
+		connPool = c.connPool
 	}
 
-	if err := c.initPooledConn(ctx, pipelinePool, cn); err != nil {
-		// initPooledConn already removed the conn from the pool on failure.
+	if err := c.initPooledConn(ctx, connPool, cn); err != nil {
+		// initPooledConn already removed the conn from its pool on failure.
 		cn = nil
 		retErr = err
 		return retErr
