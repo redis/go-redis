@@ -3,6 +3,8 @@ package redis
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -328,6 +330,13 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	case fd.ch <- req:
 		fd.submitMu.RUnlock()
 		return b
+	case <-ctx.Done():
+		// Caller's context expired/cancelled while backpressured (window/channel
+		// full): honor it instead of blocking until room or Close (#3964).
+		fd.submitMu.RUnlock()
+		cmd.SetErr(ctx.Err())
+		req.complete()
+		return b
 	case <-fd.ap.ctx.Done():
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ErrClosed)
@@ -344,6 +353,19 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // result is honored before the waiter wakes. FD reports each command individually
 // (withProcessHook), not as a pipeline batch. Only started when hookCount()>0.
 func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
+	// A user ProcessHook runs on this goroutine; an unrecovered panic here would
+	// crash the process (and leave the caller blocked on b). Recover, fail the
+	// command, and close the batch so the waiter always wakes — mirroring the
+	// dispatch path's recoverDispatchPanic.
+	defer func() {
+		if r := recover(); r != nil {
+			if cmd.rawErr() == nil {
+				cmd.SetErr(fmt.Errorf("redis: autopipeline: panic in full-duplex process hook: %v", r))
+			}
+			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex hook panic: %v\n%s", r, debug.Stack())
+			b.close()
+		}
+	}()
 	nextCalled := false
 	err := fd.ap.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
 		nextCalled = true
@@ -400,7 +422,12 @@ func (fd *fdEngine) run() {
 			fd.recycles.Add(1)
 			carry, attempts = nil, 0
 		default: // fdConnErr — a real connection error occurred
-			if len(unacked) > 0 && shouldRetry(aerr, false) && !fdReqsNoRetry(unacked) &&
+			// retryTimeout=true: a read/write timeout is a retryable connection
+			// failure here (re-issue the unacked tail on a fresh conn), matching
+			// the cluster pipeline retry paths — otherwise a single WAN timeout
+			// fails the whole tail. The NoRetry guard below still protects
+			// non-idempotent writes, same as cmdsContainNoRetry.
+			if len(unacked) > 0 && shouldRetry(aerr, true) && !fdReqsNoRetry(unacked) &&
 				attempts < fd.client.opt.MaxRetries {
 				attempts++
 				fd.sleepBackoff(attempts)
@@ -425,7 +452,12 @@ func (fd *fdEngine) run() {
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
 func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	cn, err := fd.pool.Get(bg)
+	// Acquire under ap.ctx (not bg): if Close cancels ap.ctx while this Get is
+	// blocked on a saturated pool, it returns at once instead of waiting out
+	// PoolTimeout, so shutdown is not delayed (#3964). Everything after — init and
+	// the session's I/O — stays on bg so already-accepted commands still complete
+	// during Close (Close waits for run() via ap.wg).
+	cn, err := fd.pool.Get(fd.ap.ctx)
 	if err != nil {
 		return carry, fdConnErr, err
 	}
@@ -442,17 +474,22 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 
 	unacked, result, aerr = fd.session(bg, cn, carry)
 
-	// Clean ends (graceful / idle / recycle) leave the conn at a RESP boundary —
-	// Put it back so the pool (and its hooks) own it again. ANY connection-error
-	// end (result==fdConnErr) leaves the conn desynced — an unread reply tail, a
-	// partial write, or a reader protocol error — so it MUST be removed; Put()ing
-	// it would poison the pool for the next caller. Keying on result (not
-	// isBadConn) is deliberate: errors like errFDReaderGone or a plain write
-	// timeout are not classified bad-conn, yet the conn is still unusable.
+	// ANY connection-error end (result==fdConnErr) leaves the conn desynced — an
+	// unread reply tail, a partial write, or a reader protocol error — so it MUST
+	// be removed; Put()ing it would poison the pool for the next caller. Keying on
+	// result (not isBadConn) is deliberate: errors like errFDReaderGone or a plain
+	// write timeout are not classified bad-conn, yet the conn is still unusable.
+	//
+	// Clean ends (graceful / idle / recycle) leave the conn at a RESP boundary.
+	// Return it via the shared releaseConnToPool rather than a raw Put so pending
+	// push notifications (MOVING/failover) are drained BEFORE the conn goes back
+	// to the pool — otherwise a buffered push would sit until the next user, delaying
+	// handoff (#3964) — and the conn is Removed instead if the drain shows it is
+	// desynced. (Same path the main pool uses, so the two cannot drift.)
 	if result == fdConnErr {
 		fd.pool.Remove(bg, cn, aerr)
 	} else {
-		fd.pool.Put(bg, cn)
+		fd.client.releaseConnToPool(bg, fd.pool, cn, nil)
 	}
 	return unacked, result, aerr
 }
@@ -465,9 +502,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	readerDone := make(chan struct{})
 
 	readTimeout := fd.client.opt.ReadTimeout
-	if readTimeout <= 0 {
+	if readTimeout == 0 {
+		// Unset: keep a bound so the reader cannot block forever on a silent conn.
 		readTimeout = 30 * time.Second
 	}
+	// readTimeout < 0 (ReadTimeout explicitly disabled) flows through unchanged:
+	// WithReader/deadline() treats <= 0 as "no deadline", honoring the disabled
+	// timeout for slow scripts / module commands. A genuinely stuck read is still
+	// unblocked by the conn Close on the error path above (see the fdConnErr case).
 	var errOnce sync.Once
 	var sharedErr error
 	failOnce := func(e error) { errOnce.Do(func() { sharedErr = e }) }
@@ -496,8 +538,13 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				e := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
 					// Drain RESP3 push frames buffered ahead of this reply so a
 					// push is never misread as the command's reply (FIFO misalign).
+					// A push-drain error is logged and NOT propagated (matching the
+					// workers path in flushBatch): a custom push processor returning
+					// an error must not fail this unrelated in-flight command or kill
+					// the connection. A genuine transport error re-surfaces in the
+					// readReply below and is handled as the connection error it is.
 					if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
-						return perr
+						internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
 					}
 					return req.cmd.readReply(rd)
 				})
@@ -550,6 +597,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	writeErr := fd.writeBatch(bg, cn, inflight, carry)
 	if writeErr == nil {
 		scratch := make([]fdReq, 0, fd.maxBatch)
+		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	serve:
 		for {
 			// Backpressure: bound the in-flight (written-but-unacked) deque. Wait
@@ -572,11 +620,20 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			select {
 			case req := <-fd.ch:
 				batch := append(scratch[:0], req)
+				batchBytes := cmdApproxBytes(req.cmd)
 			drain:
 				for len(batch) < fd.maxBatch {
+					// Soft MaxBatchBytes cap (like the half-duplex path): stop
+					// accumulating once the payload reaches the limit, so one flush
+					// cannot buffer an unbounded write. The first command is always
+					// included, so a lone oversized command still goes.
+					if byteLimit > 0 && batchBytes >= byteLimit {
+						break drain
+					}
 					select {
 					case r := <-fd.ch:
 						batch = append(batch, r)
+						batchBytes += cmdApproxBytes(r.cmd)
 					default:
 						break drain
 					}
@@ -645,10 +702,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	default: // fdConnErr
 		// Stop the reader, wait for it to exit, THEN take the unacked tail — so
 		// the reader (which advances every command it completes) and this
-		// recovery never touch the deque at once. The <-readerDone wait is
-		// unchanged from before; only the take moved after it, closing the
-		// double-ownership race.
+		// recovery never touch the deque at once. The take moved after
+		// <-readerDone closes the double-ownership race.
+		//
+		// Close the connection before waiting: on a WRITE error the reader is
+		// typically blocked in WithReader awaiting a reply that will never arrive,
+		// and hardClose only wakes a reader parked in frontBatch — not one parked
+		// in a socket read. Closing makes that read return at once, so recovery
+		// does not stall up to the full read deadline (cursor #3964). attempt()
+		// removes this conn right after, so the close is safe and idempotent.
 		inflight.hardClose()
+		_ = cn.Close()
 		<-readerDone
 		unacked = inflight.takeRemaining()
 		if sharedErr == nil {
