@@ -64,18 +64,30 @@ func cscMissWorkersCount(opt *Options) int {
 	return cscMissWorkersDefault
 }
 
+// cscForcePinned lets a benchmark opt into the "pinned" PROTOTYPE engine, which
+// is otherwise NOT reachable from the public ClientSideCacheCoalesceMode option.
+// Pinned holds one connection with no idle invalidation drain, so it can serve
+// stale values after an invalidation (see #3965) and is unsafe for general use;
+// it is kept only for engine benchmark comparison.
+var cscForcePinned bool
+
 // cscCoalesceMode selects the flush engine: "workers" (default, N pool conns,
-// half-duplex batches), "pinned" (1 held conn, serial half-duplex batches), or
-// "fullduplex" (1 held conn, concurrent writer+reader, deep pipeline).
+// half-duplex batches) or "fullduplex" (1 held conn, concurrent writer+reader,
+// deep pipeline). The "pinned" engine is a benchmark-only PROTOTYPE and is NOT
+// selectable via the public option (it falls back to "workers"); it can only be
+// forced internally via cscForcePinned.
 func cscCoalesceMode(opt *Options) string {
 	if opt == nil {
 		return "workers"
 	}
 	switch opt.ClientSideCacheCoalesceMode {
-	case "pinned":
-		return "pinned"
 	case "fullduplex":
 		return "fullduplex"
+	case "pinned":
+		if cscForcePinned {
+			return "pinned"
+		}
+		return "workers"
 	default:
 		return "workers"
 	}

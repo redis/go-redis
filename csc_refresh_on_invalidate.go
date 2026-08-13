@@ -124,6 +124,8 @@ const cscDemandRefresh = true
 // useful part.
 //
 // Left defaulted to 0 (off); measurement said to leave it off.
+//
+//nolint:unused // deliberately-off, kept as a documented measured knob (see above) for the follow-up that wires cooldown; referencing it now would misrepresent the shipped behavior.
 var cscRefreshCooldown time.Duration
 
 // cscRefreshTarget is one entry to re-fetch: the cache key doubles as the wire

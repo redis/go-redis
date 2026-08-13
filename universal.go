@@ -174,6 +174,36 @@ type UniversalOptions struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
+	// their invalidation arrives. See Options.ClientSideCacheRefreshOnInvalidate.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheRefreshOnInvalidate bool
+
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses of the same
+	// key so they share one fetch. See Options.ClientSideCacheCoalesceMisses.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+
+	// ClientSideCacheCoalesceMode selects the miss-coalescing engine. See
+	// Options.ClientSideCacheCoalesceMode.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMode string
+
+	// ClientSideCacheCoalesceWorkers sets the worker count for "workers" mode. See
+	// Options.ClientSideCacheCoalesceWorkers.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceWorkers int
+
+	// ClientSideCacheInvalidationBatchWindow batches invalidation-driven deletes.
+	// See Options.ClientSideCacheInvalidationBatchWindow.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -366,6 +396,12 @@ func (o *UniversalOptions) Simple() *Options {
 		ClientSideCacheConfig:     o.ClientSideCacheConfig,
 		ClientSideCache:           o.ClientSideCache,
 		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
+
+		ClientSideCacheRefreshOnInvalidate:     o.ClientSideCacheRefreshOnInvalidate,
+		ClientSideCacheCoalesceMisses:          o.ClientSideCacheCoalesceMisses,
+		ClientSideCacheCoalesceMode:            o.ClientSideCacheCoalesceMode,
+		ClientSideCacheCoalesceWorkers:         o.ClientSideCacheCoalesceWorkers,
+		ClientSideCacheInvalidationBatchWindow: o.ClientSideCacheInvalidationBatchWindow,
 	}
 }
 

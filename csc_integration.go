@@ -84,11 +84,12 @@ type invalidateHandler struct {
 	refresh *cscRefreshQueue
 
 	// batcher offloads invalidation cache-deletes to a windowed background
-	// goroutine (Options.ClientSideCacheInvalidationBatchWindow). Lazily started;
-	// nil when disabled. Not stopped here — it idles harmlessly after the binding
-	// is released (flush no-ops on a nil cache) and exits with the process.
-	batcher     *cscInvalBatcher
-	batcherOnce sync.Once
+	// goroutine (Options.ClientSideCacheInvalidationBatchWindow). Lazily started
+	// (ensureBatcher) and nil when disabled; guarded by mu. Stopped and cleared
+	// when the last user releases (releaseLocked), so its goroutine does not live
+	// past the binding re-arming its timer forever; a later re-acquire starts a
+	// fresh one (picking up the successor's window).
+	batcher *cscInvalBatcher
 
 	// invalBatchWindow is the coalescing window for the batcher above, threaded
 	// from the owning client's Options at attach time. 0 (default) deletes inline.
@@ -104,13 +105,35 @@ func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.mu.Unlock()
 }
 
-// ensureBatcher lazily starts the windowed invalidation batcher.
+// ensureBatcher lazily starts the windowed invalidation batcher. The common
+// case (already started) is a shared RLock; only first-start takes the write
+// lock, so the hot invalidation path stays cheap.
 func (h *invalidateHandler) ensureBatcher(w time.Duration) *cscInvalBatcher {
-	h.batcherOnce.Do(func() {
-		b := &cscInvalBatcher{h: h, window: w, ch: make(chan string, 8192)}
-		h.batcher = b
-		go b.run()
-	})
+	h.mu.RLock()
+	b := h.batcher
+	h.mu.RUnlock()
+	if b != nil {
+		return b
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Do not start a batcher for a released binding. releaseLocked stops+nils the
+	// batcher under this same lock when users hits 0, so a push racing that last
+	// release must NOT resurrect a goroutine that nothing would ever stop (once
+	// users is 0, release() no longer runs). The caller falls back to the inline
+	// delete path when this returns nil.
+	if h.users == 0 {
+		return nil
+	}
+	if h.batcher == nil {
+		h.batcher = &cscInvalBatcher{
+			h:      h,
+			window: w,
+			ch:     make(chan string, 8192),
+			stopCh: make(chan struct{}),
+		}
+		go h.batcher.run()
+	}
 	return h.batcher
 }
 
@@ -142,20 +165,24 @@ func (h *invalidateHandler) HandlePushNotification(
 		// coalescer's miss-reply reader (the low-concurrency churn p99 tail).
 		if window > 0 {
 			if _, ok := cache.(*LocalCache); ok {
-				b := h.ensureBatcher(window)
-				for _, k := range payload {
-					var name string
-					switch v := k.(type) {
-					case string:
-						name = v
-					case []byte:
-						name = string(v)
-					default:
-						continue
+				// nil when the binding was just released (users==0): fall through
+				// to the inline delete path below rather than enqueue on a nil
+				// batcher (which would panic).
+				if b := h.ensureBatcher(window); b != nil {
+					for _, k := range payload {
+						var name string
+						switch v := k.(type) {
+						case string:
+							name = v
+						case []byte:
+							name = string(v)
+						default:
+							continue
+						}
+						b.enqueue(cscNamespacedKey(keyPrefix, name))
 					}
-					b.enqueue(cscNamespacedKey(keyPrefix, name))
+					return nil
 				}
-				return nil
 			}
 		}
 		var hot []cscRefreshTarget
@@ -198,6 +225,14 @@ func (h *invalidateHandler) releaseLocked() {
 	if h.users == 0 {
 		h.cache = nil
 		h.keyPrefix = ""
+		// Stop the windowed batcher so its goroutine does not outlive the binding
+		// (re-arming its timer forever). stop() only closes a channel — it never
+		// touches h.mu and does not wait — so it is safe under the lock. A later
+		// re-acquire starts a fresh batcher via ensureBatcher.
+		if h.batcher != nil {
+			h.batcher.stop()
+			h.batcher = nil
+		}
 	}
 }
 

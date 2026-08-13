@@ -151,16 +151,41 @@ func (mc *cscMissCoalescer) fullDuplexLoop() {
 func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 	c := mc.c
 
+	// Do not hold a pool connection while idle: wait for the first miss BEFORE
+	// acquiring. An eagerly-held session connection would, at a small pool
+	// (PoolSize:1), starve non-cacheable commands (PING/SET/uncached reads) until
+	// PoolTimeout while the session sat waiting for work. The pulled miss is
+	// written first by the writer below.
+	var first *cscMissReq
+	select {
+	case <-mc.stop:
+		return true
+	case first = <-mc.ch:
+	}
+
 	getCtx, getCancel := opCtx()
 	cn, err := c.getConn(getCtx)
 	getCancel()
 	if err != nil {
-		// No connection: fail everything queued so a caller on a deadline-less
-		// context is not blocked forever and no reservation leaks IN_PROGRESS
-		// (mirrors pinnedWorker's getConn-failure handling). The caller backs off
-		// and retries; requests arriving during backoff are failed on the next
-		// attempt's drain.
+		// No connection: fail the first miss plus everything queued so a caller on
+		// a deadline-less context is not blocked forever and no reservation leaks
+		// IN_PROGRESS (mirrors pinnedWorker's getConn-failure handling). The caller
+		// backs off and retries; requests arriving during backoff are failed on the
+		// next attempt's drain.
+		mc.settleErr(first, err)
 		mc.drainQueueErr(err)
+		return false
+	}
+	// CSC serving may have been disabled after the miss was queued (e.g. a HELLO 3
+	// downgrade or CLIENT TRACKING rejected during initConn). Holding the conn to
+	// wait for more misses would be pointless — none get routed here once serving
+	// is off — and could tie up a small pool. Release it cleanly and fail pending.
+	if a := c.cscActive; a != nil && !a.Load() {
+		relCtx, relCancel := opCtx()
+		c.releaseConn(relCtx, cn, nil)
+		relCancel()
+		mc.settleErr(first, pool.ErrClosed)
+		mc.drainQueueErr(pool.ErrClosed)
 		return false
 	}
 	connID := cn.GetID()
@@ -189,7 +214,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		return pool.ErrClosed
 	}
 
-	var recycle chan struct{} = make(chan struct{})
+	recycle := make(chan struct{})
 	var recycleOnce sync.Once
 	doRecycle := func() { recycleOnce.Do(func() { close(recycle) }) }
 	var stopFlag atomic.Bool
@@ -211,20 +236,25 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		defer swg.Done()
 		defer close(inflight)
 		buf := make([]*cscMissReq, 0, cscMissBatchMax)
+		pending := first // the miss that woke the session; write it before blocking
 		for {
-			var first *cscMissReq
-			select {
-			case <-recycle:
-				return
-			case <-mc.stop:
-				stopFlag.Store(true)
-				doRecycle()
-				return
-			case <-sctx.Done():
-				return
-			case first = <-mc.ch:
+			var req *cscMissReq
+			if pending != nil {
+				req, pending = pending, nil
+			} else {
+				select {
+				case <-recycle:
+					return
+				case <-mc.stop:
+					stopFlag.Store(true)
+					doRecycle()
+					return
+				case <-sctx.Done():
+					return
+				case req = <-mc.ch:
+				}
 			}
-			buf = mc.grabInto(buf[:0], first)
+			buf = mc.grabInto(buf[:0], req)
 			mc.countBatch(buf)
 
 			werr := cn.WithWriter(c.context(sctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {

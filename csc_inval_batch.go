@@ -1,6 +1,9 @@
 package redis
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 // Windowed background invalidation batcher.
 //
@@ -20,9 +23,18 @@ import "time"
 const cscInvalBatchMax = 4096 // size-cap flush regardless of the timer
 
 type cscInvalBatcher struct {
-	h      *invalidateHandler
-	window time.Duration
-	ch     chan string
+	h        *invalidateHandler
+	window   time.Duration
+	ch       chan string
+	stopCh   chan struct{}
+	stopOnce sync.Once
+}
+
+// stop signals run() to flush and exit; idempotent. It only closes a channel —
+// it never touches h.mu and does not wait for the goroutine — so it is safe to
+// call while holding the handler lock (see releaseLocked).
+func (b *cscInvalBatcher) stop() {
+	b.stopOnce.Do(func() { close(b.stopCh) })
 }
 
 // enqueue hands a namespaced key to the batcher without blocking the caller. On
@@ -77,6 +89,12 @@ func (b *cscInvalBatcher) run() {
 	}
 	for {
 		select {
+		case <-b.stopCh:
+			// Last user released the binding: flush what is pending (a no-op once
+			// the cache is nil) and exit so the goroutine does not live on
+			// re-arming the timer forever.
+			flush()
+			return
 		case k := <-b.ch:
 			if _, dup := seen[k]; !dup {
 				seen[k] = struct{}{}
