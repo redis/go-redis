@@ -494,7 +494,10 @@ var _ = Describe("Commands", func() {
 			Expect(client.ClientMaintNotifications(ctx, true, "none").Err()).
 				To(MatchError(ContainSubstring("per-connection state")))
 
-			// The dedicated-connection variant keeps working.
+			// The dedicated-connection variant keeps working — gated, since
+			// CLIENT TRACKING may be unavailable on RE/ACL-restricted targets
+			// (the pooled-rejection assertions above are client-side, no gate).
+			skipIfClientTrackingUnavailable(ctx, rawClient)
 			conn := rawClient.Conn()
 			defer conn.Close()
 			Expect(conn.ClientTrackingOn(ctx, nil).Err()).NotTo(HaveOccurred())
