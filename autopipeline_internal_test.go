@@ -1468,3 +1468,49 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 		t.Fatalf("Process after Close = %v, want ErrClosed", err)
 	}
 }
+
+// TestAutopipelineSoloRoutingGate pins #3962: a cacheable solo straggler is
+// routed through the cache-honoring Process path (main pool) ONLY when the
+// client has client-side caching active. A non-CSC client (the default) must
+// keep cacheable solos on the pipeline pool the straggler gate probed, so
+// ap.cscEnabled — the gate — must be false there and true for a CSC client.
+func TestAutopipelineSoloRoutingGate(t *testing.T) {
+	ctx := context.Background()
+
+	// Non-CSC client: dial-free and deterministic.
+	plain := NewClient(&Options{Addr: "localhost:1", Protocol: 3})
+	defer plain.Close()
+	ap, err := plain.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.cscEnabled {
+		t.Fatal("non-CSC client: ap.cscEnabled = true, want false — a cacheable solo would wrongly use the main pool instead of the pipeline pool")
+	}
+
+	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
+	if err := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3}).Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis for the CSC half: %v", err)
+	}
+	cscC := NewClient(&Options{
+		Addr:                  internalTestRedisAddr(),
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 128},
+	})
+	defer cscC.Close()
+	if err := cscC.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if !cscC.autopipelineCSCActive() {
+		t.Skip("client-side caching did not attach (server lacks CLIENT TRACKING?)")
+	}
+	apc, err := cscC.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline (csc): %v", err)
+	}
+	defer apc.Close()
+	if !apc.cscEnabled {
+		t.Fatal("CSC client: ap.cscEnabled = false, want true — cacheable solos must honor the cache")
+	}
+}

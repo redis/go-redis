@@ -1178,6 +1178,14 @@ func (c *baseClient) cscTrackingRequested() bool {
 	return c.opt.DB == 0
 }
 
+// autopipelineCSCActive reports whether client-side caching can serve this
+// client, so the autopipeliner routes a cacheable solo straggler through the
+// cache-honoring Process path only when it would actually help (#3962). Captured
+// once at autopipeliner construction via an in-package type assertion.
+func (c *baseClient) autopipelineCSCActive() bool {
+	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
+}
+
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 	opDurationCallback := otel.GetOperationDurationCallback()
 	if opDurationCallback == nil {
