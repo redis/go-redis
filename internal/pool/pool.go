@@ -326,6 +326,11 @@ type Stats struct {
 	PendingRequests uint32 // number of pending requests waiting for a connection
 
 	PubSubStats PubSubStats
+
+	// PipelineStats holds the stats of the separate pipeline connection pool
+	// when one is configured (PipelineReadBufferSize/PipelineWriteBufferSize).
+	// nil when pipelines share the main pool.
+	PipelineStats *Stats
 }
 
 type ConnRetirer interface {
@@ -1666,6 +1671,13 @@ func (p *ConnPool) IdleLen() int {
 	return int(n)
 }
 
+// Name returns the pool's configured name, which is stamped on every
+// connection it creates (Conn.PoolName). Callers holding a Pooler can type
+// assert to interface{ Name() string } to find which pool owns a connection —
+// used by maintnotifications to route a handoff to the hook that owns the
+// conn's pool rather than always the primary one.
+func (p *ConnPool) Name() string { return p.cfg.Name }
+
 // Size returns the maximum pool size (capacity).
 //
 // This is used by the streaming credentials manager to size the re-auth worker pool,
@@ -1993,12 +2005,19 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 			// before the OnGet state check rejects it.
 			if replyType, err := cn.PeekReplyTypeForCheck(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
-				// The client will process these notifications before using the connection
-				internal.Logger.Printf(
-					context.Background(),
-					"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
-					cn.GetID(),
-				)
+				// The client will process these notifications before using the connection.
+				// This is the normal healthy path for any client with server-side
+				// invalidation or maintenance notifications (client-side caching parks
+				// an invalidate frame on idle conns after every tracked write), so it
+				// logs at debug level only — at default level it would flood the log
+				// on every pool Get under a write-heavy tracked workload.
+				if internal.LogLevel.DebugOrAbove() {
+					internal.Logger.Printf(
+						context.Background(),
+						"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
+						cn.GetID(),
+					)
+				}
 
 				// Update timestamp for healthy connection
 				cn.SetUsedAtNs(nowNs)

@@ -41,7 +41,9 @@ type himportForEach func(ctx context.Context, fn func(ctx context.Context, clien
 // Bounded by the cluster pipeline's attempt budget.
 func (c *ClusterClient) himportRequeueFailedSets(ctx context.Context, cmds []Cmder, failedCmds *cmdsMap) {
 	for _, cmd := range cmds {
-		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.Err()) {
+		// rawErr: runs on the per-node execution goroutine, same
+		// self-deadlock rule as himportAfterBatch.
+		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.rawErr()) {
 			if _, registered := c.himport.lookup(set.fieldsetName); registered {
 				_ = c.mapCmdsByNode(ctx, failedCmds, []Cmder{set})
 			}

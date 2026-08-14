@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
@@ -223,11 +224,23 @@ type Cmder interface {
 	stepCount() int8
 	SetStepCount(int8)
 
+	// cachedSlot/setCachedSlot memoize the cluster slot so it is computed once
+	// (in the autopipeline shard router) and reused at pipeline-flush routing.
+	cachedSlot() (int, bool)
+	setCachedSlot(int)
+
 	readTimeout() *time.Duration
 	readReply(rd *proto.Reader) error
 	readRawReply(rd *proto.Reader) error
 	SetErr(error)
 	Err() error
+
+	// setReady marks a command as asynchronously pending (autopipeline async
+	// faces); await blocks the public accessors until it has executed; rawErr
+	// reads the error without awaiting (internal execution path).
+	setReady(*apBatch)
+	await()
+	rawErr() error
 
 	// NoRetry returns true if the command should not be retried on failure.
 	// Commands that write directly to an io.Writer should return true since
@@ -240,7 +253,8 @@ type Cmder interface {
 
 func setCmdsErr(cmds []Cmder, e error) {
 	for _, cmd := range cmds {
-		if cmd.Err() == nil {
+		// rawErr: this runs on the execution path; never await here.
+		if cmd.rawErr() == nil {
 			cmd.SetErr(e)
 		}
 	}
@@ -248,7 +262,8 @@ func setCmdsErr(cmds []Cmder, e error) {
 
 func cmdsFirstErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
-		if err := cmd.Err(); err != nil {
+		// rawErr: this runs on the execution path; never await here.
+		if err := cmd.rawErr(); err != nil {
 			return err
 		}
 	}
@@ -337,7 +352,7 @@ func cmdString(cmd Cmder, val interface{}) string {
 		b = internal.AppendArg(b, arg)
 	}
 
-	if err := cmd.Err(); err != nil {
+	if err := cmd.rawErr(); err != nil {
 		b = append(b, ": "...)
 		b = append(b, err.Error()...)
 	} else if val != nil {
@@ -359,6 +374,90 @@ type baseCmd struct {
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
+	// slotCache memoizes the cluster slot once computed, so the cluster
+	// autopipeline shard router and the pipeline flush router don't each
+	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
+	// distinguishable from unset. A plain field is safe by construction: it
+	// is written at most once, on the submitting goroutine BEFORE the command
+	// is published to a stripe queue (the stripe mutex is the happens-before
+	// edge to the flusher that later reads it). Do not write it from any
+	// other point in the command's life.
+	slotCache uint16
+
+	// ready, when non-nil, is the batch whose done channel closes once the
+	// command has executed. It is set only by the deferred (async)
+	// autopipeliner, which hands the command back to the caller before it
+	// runs. The public result accessors (Err/Val/Result/String) call await
+	// so they transparently block until execution; internal execution-path
+	// reads use rawErr to avoid awaiting the very batch they are producing
+	// (formatting included: cmdString reads rawErr and receives the value
+	// snapshot from its caller, so String methods await BEFORE reading their
+	// val field — otherwise formatting an in-flight async command would race
+	// with reply processing). ready stays
+	// nil for ordinary synchronous commands, whose accessors never block.
+	ready atomic.Pointer[apBatch]
+}
+
+// setReady publishes the batch gating this command's result accessors. The
+// field is atomic, NOT lock-ordered with the enqueue: a dispatch-side hook
+// racing this store simply reads nil and takes the non-blocking path — the
+// correct "not executed yet" view — while the setting goroutine always sees
+// its own store before it awaits.
+func (cmd *baseCmd) setReady(b *apBatch) { cmd.ready.Store(b) }
+
+// await blocks until an asynchronously-submitted command has executed. It is a
+// single nil-pointer load for synchronous commands, so the common path stays
+// allocation- and contention-free.
+func (cmd *baseCmd) await() {
+	b := cmd.ready.Load()
+	if b == nil {
+		return
+	}
+	select {
+	case <-b.done:
+		return
+	default:
+	}
+	if b.isExecutorGoroutine() {
+		// A hook on one of the batch's own executor goroutines (the
+		// dispatcher, or a cluster per-node executor) is reading this
+		// command's result BEFORE next() has executed it. Blocking would
+		// self-deadlock (the batch completes only after that goroutine
+		// returns); return the not-yet-executed state instead — the same
+		// view a plain pipeline hook has before next().
+		return
+	}
+	<-b.done
+}
+
+// rawErr returns the command error WITHOUT awaiting. The internal
+// execution/serialization path (setCmdsErr, cmdsFirstErr, and the cmdString
+// formatter — public String methods await before calling it) uses it so that
+// reading errors while a batch is being executed does not deadlock on the
+// batch's own completion signal.
+func (cmd *baseCmd) rawErr() error { return cmd.err }
+
+// readyBatch exposes the deferred-face batch gating this command (nil for
+// synchronous commands) to the cluster fan-out, which registers its per-node
+// goroutines as executors of every batch they carry.
+func (cmd *baseCmd) readyBatch() *apBatch { return cmd.ready.Load() }
+
+// resultReady reports whether the command's result can be read WITHOUT
+// blocking: either it never rode the deferred autopipeline face (no gating
+// batch) or that batch has already completed. Post-execution bookkeeping in
+// the command wrappers — the OTel metric emissions — consults it so that
+// enabling telemetry cannot turn a deferred submission into a blocking call.
+func (cmd *baseCmd) resultReady() bool {
+	b := cmd.ready.Load()
+	if b == nil {
+		return true
+	}
+	select {
+	case <-b.done:
+		return true
+	default:
+		return false
+	}
 }
 
 var _ Cmder = (*Cmd)(nil)
@@ -419,6 +518,21 @@ func (cmd *baseCmd) SetFirstKeyPos(keyPos int8) {
 	cmd.keyPos = keyPos
 }
 
+// cachedSlot returns the cached cluster slot and whether one was set.
+func (cmd *baseCmd) cachedSlot() (int, bool) {
+	if cmd.slotCache == 0 {
+		return 0, false
+	}
+	return int(cmd.slotCache - 1), true
+}
+
+// setCachedSlot stores the computed cluster slot (0..16383) for reuse.
+func (cmd *baseCmd) setCachedSlot(slot int) {
+	if slot >= 0 && slot < 16384 {
+		cmd.slotCache = uint16(slot + 1)
+	}
+}
+
 func (cmd *baseCmd) stepCount() int8 {
 	return cmd._stepCount
 }
@@ -432,6 +546,7 @@ func (cmd *baseCmd) SetErr(e error) {
 }
 
 func (cmd *baseCmd) Err() error {
+	cmd.await()
 	return cmd.err
 }
 
@@ -502,6 +617,7 @@ func NewCmd(ctx context.Context, args ...interface{}) *Cmd {
 }
 
 func (cmd *Cmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -510,14 +626,17 @@ func (cmd *Cmd) SetVal(val interface{}) {
 }
 
 func (cmd *Cmd) Val() interface{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *Cmd) Result() (interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *Cmd) Text() (string, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return "", cmd.err
 	}
@@ -535,6 +654,7 @@ func toString(val interface{}) (string, error) {
 }
 
 func (cmd *Cmd) Int() (int, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -550,6 +670,7 @@ func (cmd *Cmd) Int() (int, error) {
 }
 
 func (cmd *Cmd) Int64() (int64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -569,6 +690,7 @@ func toInt64(val interface{}) (int64, error) {
 }
 
 func (cmd *Cmd) Uint64() (uint64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -588,6 +710,7 @@ func toUint64(val interface{}) (uint64, error) {
 }
 
 func (cmd *Cmd) Float32() (float32, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -611,6 +734,7 @@ func toFloat32(val interface{}) (float32, error) {
 }
 
 func (cmd *Cmd) Float64() (float64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -630,6 +754,7 @@ func toFloat64(val interface{}) (float64, error) {
 }
 
 func (cmd *Cmd) Bool() (bool, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return false, cmd.err
 	}
@@ -651,6 +776,7 @@ func toBool(val interface{}) (bool, error) {
 }
 
 func (cmd *Cmd) Slice() ([]interface{}, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return nil, cmd.err
 	}
@@ -801,18 +927,22 @@ func (cmd *RawCmd) SetVal(val []byte) {
 }
 
 func (cmd *RawCmd) Val() []byte {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *RawCmd) Result() ([]byte, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *RawCmd) Bytes() ([]byte, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *RawCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -860,14 +990,17 @@ func (cmd *RawWriteToCmd) SetVal(written int64) {
 }
 
 func (cmd *RawWriteToCmd) Val() int64 {
+	cmd.await()
 	return cmd.written
 }
 
 func (cmd *RawWriteToCmd) Result() (int64, error) {
+	cmd.await()
 	return cmd.written, cmd.err
 }
 
 func (cmd *RawWriteToCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.written)
 }
 
@@ -928,20 +1061,24 @@ func (cmd *ZeroCopyStringCmd) SetVal(n int) {
 }
 
 func (cmd *ZeroCopyStringCmd) Val() int {
+	cmd.await()
 	return cmd.n
 }
 
 // Result returns the number of bytes read and any error.
 func (cmd *ZeroCopyStringCmd) Result() (int, error) {
+	cmd.await()
 	return cmd.n, cmd.err
 }
 
 // Bytes returns the slice of the user-provided buffer containing the read data.
 func (cmd *ZeroCopyStringCmd) Bytes() []byte {
+	cmd.await()
 	return cmd.buf[:cmd.n]
 }
 
 func (cmd *ZeroCopyStringCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.n)
 }
 
@@ -1026,20 +1163,24 @@ func (cmd *SliceCmd) SetVal(val []interface{}) {
 }
 
 func (cmd *SliceCmd) Val() []interface{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *SliceCmd) Result() ([]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *SliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
 func (cmd *SliceCmd) Scan(dst interface{}) error {
+	cmd.await()
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -1099,18 +1240,22 @@ func (cmd *StatusCmd) SetVal(val string) {
 }
 
 func (cmd *StatusCmd) Val() string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *StatusCmd) Result() (string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *StatusCmd) Bytes() ([]byte, error) {
+	cmd.await()
 	return util.StringToBytes(cmd.val), cmd.err
 }
 
 func (cmd *StatusCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1151,18 +1296,22 @@ func (cmd *IntCmd) SetVal(val int64) {
 }
 
 func (cmd *IntCmd) Val() int64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *IntCmd) Result() (int64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *IntCmd) Uint64() (uint64, error) {
+	cmd.await()
 	return uint64(cmd.val), cmd.err
 }
 
 func (cmd *IntCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1201,14 +1350,17 @@ func (cmd *UintCmd) SetVal(val uint64) {
 }
 
 func (cmd *UintCmd) Val() uint64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *UintCmd) Result() (uint64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *UintCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1261,14 +1413,17 @@ func (cmd *DigestCmd) SetVal(val uint64) {
 }
 
 func (cmd *DigestCmd) Val() uint64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *DigestCmd) Result() (uint64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *DigestCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1318,14 +1473,17 @@ func (cmd *IntSliceCmd) SetVal(val []int64) {
 }
 
 func (cmd *IntSliceCmd) Val() []int64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *IntSliceCmd) Result() ([]int64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *IntSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1383,14 +1541,17 @@ func (cmd *UintSliceCmd) SetVal(val []uint64) {
 }
 
 func (cmd *UintSliceCmd) Val() []uint64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *UintSliceCmd) Result() ([]uint64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *UintSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1452,14 +1613,17 @@ func (cmd *DurationCmd) SetVal(val time.Duration) {
 }
 
 func (cmd *DurationCmd) Val() time.Duration {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *DurationCmd) Result() (time.Duration, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *DurationCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1512,14 +1676,17 @@ func (cmd *TimeCmd) SetVal(val time.Time) {
 }
 
 func (cmd *TimeCmd) Val() time.Time {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *TimeCmd) Result() (time.Time, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TimeCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1571,14 +1738,17 @@ func (cmd *BoolCmd) SetVal(val bool) {
 }
 
 func (cmd *BoolCmd) Val() bool {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *BoolCmd) Result() (bool, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *BoolCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1626,18 +1796,22 @@ func (cmd *StringCmd) SetVal(val string) {
 }
 
 func (cmd *StringCmd) Val() string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *StringCmd) Result() (string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *StringCmd) Bytes() ([]byte, error) {
+	cmd.await()
 	return util.StringToBytes(cmd.val), cmd.err
 }
 
 func (cmd *StringCmd) Bool() (bool, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return false, cmd.err
 	}
@@ -1645,6 +1819,7 @@ func (cmd *StringCmd) Bool() (bool, error) {
 }
 
 func (cmd *StringCmd) Int() (int, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -1652,6 +1827,7 @@ func (cmd *StringCmd) Int() (int, error) {
 }
 
 func (cmd *StringCmd) Int64() (int64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -1659,6 +1835,7 @@ func (cmd *StringCmd) Int64() (int64, error) {
 }
 
 func (cmd *StringCmd) Uint64() (uint64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -1666,6 +1843,7 @@ func (cmd *StringCmd) Uint64() (uint64, error) {
 }
 
 func (cmd *StringCmd) Float32() (float32, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -1677,6 +1855,7 @@ func (cmd *StringCmd) Float32() (float32, error) {
 }
 
 func (cmd *StringCmd) Float64() (float64, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return 0, cmd.err
 	}
@@ -1684,6 +1863,7 @@ func (cmd *StringCmd) Float64() (float64, error) {
 }
 
 func (cmd *StringCmd) Time() (time.Time, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return time.Time{}, cmd.err
 	}
@@ -1691,6 +1871,7 @@ func (cmd *StringCmd) Time() (time.Time, error) {
 }
 
 func (cmd *StringCmd) Scan(val interface{}) error {
+	cmd.await()
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -1698,6 +1879,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 }
 
 func (cmd *StringCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1738,14 +1920,17 @@ func (cmd *FloatCmd) SetVal(val float64) {
 }
 
 func (cmd *FloatCmd) Val() float64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FloatCmd) Result() (float64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FloatCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1786,14 +1971,17 @@ func (cmd *FloatSliceCmd) SetVal(val []float64) {
 }
 
 func (cmd *FloatSliceCmd) Val() []float64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FloatSliceCmd) Result() ([]float64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FloatSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1854,18 +2042,22 @@ func (cmd *StringSliceCmd) SetVal(val []string) {
 }
 
 func (cmd *StringSliceCmd) Val() []string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *StringSliceCmd) Result() ([]string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *StringSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *StringSliceCmd) ScanSlice(container interface{}) error {
+	cmd.await()
 	return proto.ScanSlice(cmd.val, container)
 }
 
@@ -1926,14 +2118,17 @@ func (cmd *StringSliceSliceCmd) SetVal(val [][]string) {
 }
 
 func (cmd *StringSliceSliceCmd) Val() [][]string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *StringSliceSliceCmd) Result() ([][]string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *StringSliceSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2011,14 +2206,17 @@ func (cmd *KeyValueSliceCmd) SetVal(val []KeyValue) {
 }
 
 func (cmd *KeyValueSliceCmd) Val() []KeyValue {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *KeyValueSliceCmd) Result() ([]KeyValue, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *KeyValueSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2116,14 +2314,17 @@ func (cmd *BoolSliceCmd) SetVal(val []bool) {
 }
 
 func (cmd *BoolSliceCmd) Val() []bool {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *BoolSliceCmd) Result() ([]bool, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *BoolSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2179,6 +2380,7 @@ func NewMapStringStringCmd(ctx context.Context, args ...interface{}) *MapStringS
 }
 
 func (cmd *MapStringStringCmd) Val() map[string]string {
+	cmd.await()
 	return cmd.val
 }
 
@@ -2187,16 +2389,19 @@ func (cmd *MapStringStringCmd) SetVal(val map[string]string) {
 }
 
 func (cmd *MapStringStringCmd) Result() (map[string]string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringStringCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 // Scan scans the results from the map into a destination struct. The map keys
 // are matched in the Redis struct fields by the `redis:"field"` tag.
 func (cmd *MapStringStringCmd) Scan(dest interface{}) error {
+	cmd.await()
 	if cmd.err != nil {
 		return cmd.err
 	}
@@ -2277,14 +2482,17 @@ func (cmd *MapStringIntCmd) SetVal(val map[string]int64) {
 }
 
 func (cmd *MapStringIntCmd) Val() map[string]int64 {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *MapStringIntCmd) Result() (map[string]int64, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringIntCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2341,6 +2549,7 @@ func NewMapStringSliceInterfaceCmd(ctx context.Context, args ...interface{}) *Ma
 }
 
 func (cmd *MapStringSliceInterfaceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2349,10 +2558,12 @@ func (cmd *MapStringSliceInterfaceCmd) SetVal(val map[string][]interface{}) {
 }
 
 func (cmd *MapStringSliceInterfaceCmd) Result() (map[string][]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringSliceInterfaceCmd) Val() map[string][]interface{} {
+	cmd.await()
 	return cmd.val
 }
 
@@ -2469,14 +2680,17 @@ func (cmd *StringStructMapCmd) SetVal(val map[string]struct{}) {
 }
 
 func (cmd *StringStructMapCmd) Val() map[string]struct{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *StringStructMapCmd) Result() (map[string]struct{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *StringStructMapCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2544,14 +2758,17 @@ func (cmd *XMessageSliceCmd) SetVal(val []XMessage) {
 }
 
 func (cmd *XMessageSliceCmd) Val() []XMessage {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XMessageSliceCmd) Result() ([]XMessage, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XMessageSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2690,14 +2907,17 @@ func (cmd *XStreamSliceCmd) SetVal(val []XStream) {
 }
 
 func (cmd *XStreamSliceCmd) Val() []XStream {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XStreamSliceCmd) Result() ([]XStream, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XStreamSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2794,14 +3014,17 @@ func (cmd *XPendingCmd) SetVal(val *XPending) {
 }
 
 func (cmd *XPendingCmd) Val() *XPending {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XPendingCmd) Result() (*XPending, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XPendingCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2899,14 +3122,17 @@ func (cmd *XPendingExtCmd) SetVal(val []XPendingExt) {
 }
 
 func (cmd *XPendingExtCmd) Val() []XPendingExt {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XPendingExtCmd) Result() ([]XPendingExt, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XPendingExtCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2983,14 +3209,17 @@ func (cmd *XAutoClaimCmd) SetVal(val []XMessage, start string) {
 }
 
 func (cmd *XAutoClaimCmd) Val() (messages []XMessage, start string) {
+	cmd.await()
 	return cmd.val, cmd.start
 }
 
 func (cmd *XAutoClaimCmd) Result() (messages []XMessage, start string, err error) {
+	cmd.await()
 	return cmd.val, cmd.start, cmd.err
 }
 
 func (cmd *XAutoClaimCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3077,14 +3306,17 @@ func (cmd *XAutoClaimWithDeletedCmd) SetVal(val []XMessage, start string, delete
 }
 
 func (cmd *XAutoClaimWithDeletedCmd) Val() (messages []XMessage, start string, deletedIDs []string) {
+	cmd.await()
 	return cmd.val, cmd.start, cmd.deletedIDs
 }
 
 func (cmd *XAutoClaimWithDeletedCmd) Result() (messages []XMessage, start string, deletedIDs []string, err error) {
+	cmd.await()
 	return cmd.val, cmd.start, cmd.deletedIDs, cmd.err
 }
 
 func (cmd *XAutoClaimWithDeletedCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3188,14 +3420,17 @@ func (cmd *XAutoClaimJustIDCmd) SetVal(val []string, start string) {
 }
 
 func (cmd *XAutoClaimJustIDCmd) Val() (ids []string, start string) {
+	cmd.await()
 	return cmd.val, cmd.start
 }
 
 func (cmd *XAutoClaimJustIDCmd) Result() (ids []string, start string, err error) {
+	cmd.await()
 	return cmd.val, cmd.start, cmd.err
 }
 
 func (cmd *XAutoClaimJustIDCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3284,14 +3519,17 @@ func (cmd *XInfoConsumersCmd) SetVal(val []XInfoConsumer) {
 }
 
 func (cmd *XInfoConsumersCmd) Val() []XInfoConsumer {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XInfoConsumersCmd) Result() ([]XInfoConsumer, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XInfoConsumersCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3390,14 +3628,17 @@ func (cmd *XInfoGroupsCmd) SetVal(val []XInfoGroup) {
 }
 
 func (cmd *XInfoGroupsCmd) Val() []XInfoGroup {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XInfoGroupsCmd) Result() ([]XInfoGroup, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XInfoGroupsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3528,14 +3769,17 @@ func (cmd *XInfoStreamCmd) SetVal(val *XInfoStream) {
 }
 
 func (cmd *XInfoStreamCmd) Val() *XInfoStream {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XInfoStreamCmd) Result() (*XInfoStream, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XInfoStreamCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3755,14 +3999,17 @@ func (cmd *XInfoStreamFullCmd) SetVal(val *XInfoStreamFull) {
 }
 
 func (cmd *XInfoStreamFullCmd) Val() *XInfoStreamFull {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *XInfoStreamFullCmd) Result() (*XInfoStreamFull, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *XInfoStreamFullCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -4137,14 +4384,17 @@ func (cmd *ZSliceCmd) SetVal(val []Z) {
 }
 
 func (cmd *ZSliceCmd) Val() []Z {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ZSliceCmd) Result() ([]Z, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ZSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -4231,14 +4481,17 @@ func (cmd *ZWithKeyCmd) SetVal(val *ZWithKey) {
 }
 
 func (cmd *ZWithKeyCmd) Val() *ZWithKey {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ZWithKeyCmd) Result() (*ZWithKey, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ZWithKeyCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -4308,14 +4561,17 @@ func (cmd *ScanCmd) SetVal(page []string, cursor uint64) {
 }
 
 func (cmd *ScanCmd) Val() (keys []string, cursor uint64) {
+	cmd.await()
 	return cmd.page, cmd.cursor
 }
 
 func (cmd *ScanCmd) Result() (keys []string, cursor uint64, err error) {
+	cmd.await()
 	return cmd.page, cmd.cursor, cmd.err
 }
 
 func (cmd *ScanCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.page)
 }
 
@@ -4402,14 +4658,17 @@ func (cmd *ClusterSlotsCmd) SetVal(val []ClusterSlot) {
 }
 
 func (cmd *ClusterSlotsCmd) Val() []ClusterSlot {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ClusterSlotsCmd) Result() ([]ClusterSlot, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterSlotsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -4625,14 +4884,17 @@ func (cmd *GeoLocationCmd) SetVal(locations []GeoLocation) {
 }
 
 func (cmd *GeoLocationCmd) Val() []GeoLocation {
+	cmd.await()
 	return cmd.locations
 }
 
 func (cmd *GeoLocationCmd) Result() ([]GeoLocation, error) {
+	cmd.await()
 	return cmd.locations, cmd.err
 }
 
 func (cmd *GeoLocationCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.locations)
 }
 
@@ -4834,14 +5096,17 @@ func (cmd *GeoSearchLocationCmd) SetVal(val []GeoLocation) {
 }
 
 func (cmd *GeoSearchLocationCmd) Val() []GeoLocation {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *GeoSearchLocationCmd) Result() ([]GeoLocation, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *GeoSearchLocationCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -4981,14 +5246,17 @@ func (cmd *GeoPosCmd) SetVal(val []*GeoPos) {
 }
 
 func (cmd *GeoPosCmd) Val() []*GeoPos {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *GeoPosCmd) Result() ([]*GeoPos, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *GeoPosCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5083,14 +5351,17 @@ func (cmd *CommandsInfoCmd) SetVal(val map[string]*CommandInfo) {
 }
 
 func (cmd *CommandsInfoCmd) Val() map[string]*CommandInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *CommandsInfoCmd) Result() (map[string]*CommandInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *CommandsInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5267,6 +5538,11 @@ type cmdsInfoCache struct {
 	once        internal.Once
 	refreshLock sync.RWMutex
 	cmds        map[string]*CommandInfo
+	// cmdsAtomic mirrors cmds for lock-free reads via Peek. cmds is only ever
+	// replaced wholesale (never mutated in place), so an atomic pointer load is a
+	// safe, contention-free read — Peek is on the hot per-command cluster routing
+	// path where the RWMutex.RLock showed up as a bottleneck under heavy load.
+	cmdsAtomic atomic.Pointer[map[string]*CommandInfo]
 }
 
 func newCmdsInfoCache(fn func(ctx context.Context) (map[string]*CommandInfo, error)) *cmdsInfoCache {
@@ -5293,6 +5569,7 @@ func (c *cmdsInfoCache) Get(ctx context.Context) (map[string]*CommandInfo, error
 		}
 
 		c.cmds = lowerCmds
+		c.cmdsAtomic.Store(&lowerCmds)
 		return nil
 	})
 	return c.cmds, err
@@ -5307,16 +5584,19 @@ func (c *cmdsInfoCache) Refresh() {
 
 // Peek returns the cached CommandInfo map without triggering a Redis round-trip.
 // Returns nil when the cache is cold; callers should fall back to other heuristics.
-// Note: during the very first Get() (initial population) this call will block on
-// the writer lock. After that, concurrent Peek() calls do not block each other.
+// The read is lock-free (a single atomic load) and never blocks, even while a
+// concurrent Get() is populating the cache — it simply returns nil until the
+// first population publishes the map.
 // The returned map and its entries MUST NOT be mutated by the caller.
 func (c *cmdsInfoCache) Peek() map[string]*CommandInfo {
 	if c == nil {
 		return nil
 	}
-	c.refreshLock.RLock()
-	defer c.refreshLock.RUnlock()
-	return c.cmds
+	// Lock-free read: cmds is replaced wholesale, never mutated in place.
+	if p := c.cmdsAtomic.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // ------------------------------------------------------------------------------
@@ -5392,14 +5672,17 @@ func (cmd *SlowLogCmd) SetVal(val []SlowLog) {
 }
 
 func (cmd *SlowLogCmd) Val() []SlowLog {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *SlowLogCmd) Result() ([]SlowLog, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *SlowLogCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5537,14 +5820,17 @@ func (cmd *LatencyCmd) SetVal(val []Latency) {
 }
 
 func (cmd *LatencyCmd) Val() []Latency {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *LatencyCmd) Result() ([]Latency, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *LatencyCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5659,14 +5945,17 @@ func (cmd *HotKeysCmd) SetVal(val *HotKeysResult) {
 }
 
 func (cmd *HotKeysCmd) Val() *HotKeysResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *HotKeysCmd) Result() (*HotKeysResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *HotKeysCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5873,14 +6162,17 @@ func (cmd *MapStringInterfaceCmd) SetVal(val map[string]interface{}) {
 }
 
 func (cmd *MapStringInterfaceCmd) Val() map[string]interface{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *MapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringInterfaceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -5952,14 +6244,17 @@ func (cmd *MapStringStringSliceCmd) SetVal(val []map[string]string) {
 }
 
 func (cmd *MapStringStringSliceCmd) Val() []map[string]string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *MapStringStringSliceCmd) Result() ([]map[string]string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringStringSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -6030,6 +6325,7 @@ func NewMapMapStringInterfaceCmd(ctx context.Context, args ...interface{}) *MapM
 }
 
 func (cmd *MapMapStringInterfaceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -6038,10 +6334,12 @@ func (cmd *MapMapStringInterfaceCmd) SetVal(val map[string]interface{}) {
 }
 
 func (cmd *MapMapStringInterfaceCmd) Result() (map[string]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapMapStringInterfaceCmd) Val() map[string]interface{} {
+	cmd.await()
 	return cmd.val
 }
 
@@ -6129,14 +6427,17 @@ func (cmd *MapStringInterfaceSliceCmd) SetVal(val []map[string]interface{}) {
 }
 
 func (cmd *MapStringInterfaceSliceCmd) Val() []map[string]interface{} {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *MapStringInterfaceSliceCmd) Result() ([]map[string]interface{}, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *MapStringInterfaceSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -6216,14 +6517,17 @@ func (cmd *KeyValuesCmd) SetVal(key string, val []string) {
 }
 
 func (cmd *KeyValuesCmd) Val() (string, []string) {
+	cmd.await()
 	return cmd.key, cmd.val
 }
 
 func (cmd *KeyValuesCmd) Result() (string, []string, error) {
+	cmd.await()
 	return cmd.key, cmd.val, cmd.err
 }
 
 func (cmd *KeyValuesCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -6292,14 +6596,17 @@ func (cmd *ZSliceWithKeyCmd) SetVal(key string, val []Z) {
 }
 
 func (cmd *ZSliceWithKeyCmd) Val() (string, []Z) {
+	cmd.await()
 	return cmd.key, cmd.val
 }
 
 func (cmd *ZSliceWithKeyCmd) Result() (string, []Z, error) {
+	cmd.await()
 	return cmd.key, cmd.val, cmd.err
 }
 
 func (cmd *ZSliceWithKeyCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -6401,18 +6708,22 @@ func (cmd *FunctionListCmd) SetVal(val []Library) {
 }
 
 func (cmd *FunctionListCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *FunctionListCmd) Val() []Library {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FunctionListCmd) Result() ([]Library, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FunctionListCmd) First() (*Library, error) {
+	cmd.await()
 	if cmd.err != nil {
 		return nil, cmd.err
 	}
@@ -6614,14 +6925,17 @@ func (cmd *FunctionStatsCmd) SetVal(val FunctionStats) {
 }
 
 func (cmd *FunctionStatsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *FunctionStatsCmd) Val() FunctionStats {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FunctionStatsCmd) Result() (FunctionStats, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -6886,14 +7200,17 @@ func (cmd *LCSCmd) SetVal(val *LCSMatch) {
 }
 
 func (cmd *LCSCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *LCSCmd) Val() *LCSMatch {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *LCSCmd) Result() (*LCSMatch, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -7042,14 +7359,17 @@ func (cmd *KeyFlagsCmd) SetVal(val []KeyFlags) {
 }
 
 func (cmd *KeyFlagsCmd) Val() []KeyFlags {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *KeyFlagsCmd) Result() ([]KeyFlags, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *KeyFlagsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -7145,14 +7465,17 @@ func (cmd *ClusterLinksCmd) SetVal(val []ClusterLink) {
 }
 
 func (cmd *ClusterLinksCmd) Val() []ClusterLink {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ClusterLinksCmd) Result() ([]ClusterLink, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterLinksCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -7260,14 +7583,17 @@ func (cmd *ClusterShardsCmd) SetVal(val []ClusterShard) {
 }
 
 func (cmd *ClusterShardsCmd) Val() []ClusterShard {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ClusterShardsCmd) Result() ([]ClusterShard, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ClusterShardsCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -7420,14 +7746,17 @@ func (cmd *RankWithScoreCmd) SetVal(val RankScore) {
 }
 
 func (cmd *RankWithScoreCmd) Val() RankScore {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *RankWithScoreCmd) Result() (RankScore, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *RankWithScoreCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -7582,14 +7911,17 @@ func (cmd *ClientInfoCmd) SetVal(val *ClientInfo) {
 }
 
 func (cmd *ClientInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
 func (cmd *ClientInfoCmd) Val() *ClientInfo {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ClientInfoCmd) Result() (*ClientInfo, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
@@ -7840,14 +8172,17 @@ func (cmd *ACLLogCmd) SetVal(val []*ACLLogEntry) {
 }
 
 func (cmd *ACLLogCmd) Val() []*ACLLogEntry {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *ACLLogCmd) Result() ([]*ACLLogEntry, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *ACLLogCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -8021,14 +8356,17 @@ func (cmd *InfoCmd) SetVal(val map[string]map[string]string) {
 }
 
 func (cmd *InfoCmd) Val() map[string]map[string]string {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *InfoCmd) Result() (map[string]map[string]string, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *InfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -8068,6 +8406,7 @@ func (cmd *InfoCmd) readReply(rd *proto.Reader) error {
 }
 
 func (cmd *InfoCmd) Item(section, key string) string {
+	cmd.await()
 	if cmd.val == nil {
 		return ""
 	} else if cmd.val[section] == nil {
@@ -8125,6 +8464,7 @@ func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
 }
 
 func (cmd *MonitorCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, nil)
 }
 
@@ -8209,14 +8549,17 @@ func (cmd *VectorScoreSliceCmd) SetVal(val []VectorScore) {
 }
 
 func (cmd *VectorScoreSliceCmd) Val() []VectorScore {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *VectorScoreSliceCmd) Result() ([]VectorScore, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *VectorScoreSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -8293,14 +8636,17 @@ func (cmd *VectorScoreSliceSliceCmd) SetVal(val [][]VectorScore) {
 }
 
 func (cmd *VectorScoreSliceSliceCmd) Val() [][]VectorScore {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *VectorScoreSliceSliceCmd) Result() ([][]VectorScore, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *VectorScoreSliceSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -8420,14 +8766,17 @@ func (cmd *VectorAttribSliceCmd) SetVal(val []VectorAttrib) {
 }
 
 func (cmd *VectorAttribSliceCmd) Val() []VectorAttrib {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *VectorAttribSliceCmd) Result() ([]VectorAttrib, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *VectorAttribSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -8508,14 +8857,17 @@ func (cmd *VectorScoreAttribSliceCmd) SetVal(val []VectorScoreAttrib) {
 }
 
 func (cmd *VectorScoreAttribSliceCmd) Val() []VectorScoreAttrib {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *VectorScoreAttribSliceCmd) Result() ([]VectorScoreAttrib, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *VectorScoreAttribSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -9184,11 +9536,18 @@ func NewIncrEXIntCmd(ctx context.Context, args ...interface{}) *IncrEXIntCmd {
 }
 
 func (cmd *IncrEXIntCmd) SetVal(val IncrEXIntResult) { cmd.val = val }
-func (cmd *IncrEXIntCmd) Val() IncrEXIntResult       { return cmd.val }
+func (cmd *IncrEXIntCmd) Val() IncrEXIntResult {
+	cmd.await()
+	return cmd.val
+}
 func (cmd *IncrEXIntCmd) Result() (IncrEXIntResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
-func (cmd *IncrEXIntCmd) String() string { return cmdString(cmd, cmd.val) }
+func (cmd *IncrEXIntCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
 
 func (cmd *IncrEXIntCmd) readReply(rd *proto.Reader) error {
 	if err := rd.ReadFixedArrayLen(2); err != nil {
@@ -9238,11 +9597,18 @@ func NewIncrEXFloatCmd(ctx context.Context, args ...interface{}) *IncrEXFloatCmd
 }
 
 func (cmd *IncrEXFloatCmd) SetVal(val IncrEXFloatResult) { cmd.val = val }
-func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult       { return cmd.val }
+func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult {
+	cmd.await()
+	return cmd.val
+}
 func (cmd *IncrEXFloatCmd) Result() (IncrEXFloatResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
-func (cmd *IncrEXFloatCmd) String() string { return cmdString(cmd, cmd.val) }
+func (cmd *IncrEXFloatCmd) String() string {
+	cmd.await()
+	return cmdString(cmd, cmd.val)
+}
 
 func (cmd *IncrEXFloatCmd) readReply(rd *proto.Reader) error {
 	if err := rd.ReadFixedArrayLen(2); err != nil {
@@ -9292,14 +9658,17 @@ func (cmd *AREntrySliceCmd) SetVal(val []AREntry) {
 }
 
 func (cmd *AREntrySliceCmd) Val() []AREntry {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *AREntrySliceCmd) Result() ([]AREntry, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *AREntrySliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 

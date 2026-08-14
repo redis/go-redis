@@ -349,6 +349,10 @@ func (c *baseClient) himportAfterCmd(cn *pool.Conn, hc himportCmder) {
 // error), invalidates stale prepared flags for SETs that found their
 // registered fieldset missing server-side, and applies registry updates for
 // user-issued HIMPORT commands that succeeded in the batch.
+// rawErr throughout: this runs on the execution path, before an async
+// autopipeline batch completes (its ready channel closes only after the
+// pipeline hook chain returns) — Err() on a user command would await and
+// self-deadlock the dispatcher.
 func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []Cmder) {
 	var failed map[string]error
 	var refreshed map[string]struct{}
@@ -368,7 +372,7 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			continue
 		}
 		if set, ok := hc.(*HImportSetCmd); ok {
-			if rootCause, ok := failed[set.fieldsetName]; ok && himportNoSuchFieldset(set.Err()) {
+			if rootCause, ok := failed[set.fieldsetName]; ok && himportNoSuchFieldset(set.rawErr()) {
 				set.SetErr(rootCause)
 				continue
 			}
@@ -378,7 +382,7 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			// version once so the SET's re-issue, the cluster re-queue on
 			// whichever connection it lands, or the caller's transaction
 			// retry replays the PREPARE.
-			if himportNoSuchFieldset(set.Err()) {
+			if himportNoSuchFieldset(set.rawErr()) {
 				if _, done := refreshed[set.fieldsetName]; !done {
 					if refreshed == nil {
 						refreshed = make(map[string]struct{})
@@ -391,7 +395,7 @@ func (c *baseClient) himportAfterBatch(cn *pool.Conn, injected []Cmder, cmds []C
 			}
 			continue
 		}
-		if hc.Err() == nil {
+		if hc.rawErr() == nil {
 			c.himportAfterCmd(cn, hc)
 		}
 	}
@@ -416,7 +420,8 @@ func (c *baseClient) himportRetryFailedSets(ctx context.Context, cn *pool.Conn, 
 	}
 	var retry []Cmder
 	for _, cmd := range cmds {
-		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.Err()) {
+		// rawErr: execution path, same self-deadlock rule as himportAfterBatch.
+		if set, ok := cmd.(*HImportSetCmd); ok && himportNoSuchFieldset(set.rawErr()) {
 			if _, registered := c.himport.lookup(set.fieldsetName); registered {
 				retry = append(retry, set)
 			}

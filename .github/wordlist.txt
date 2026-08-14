@@ -1,10 +1,13 @@
 ACL
 ACLs
 APIs
+async
 autoload
 autoloader
 autoloading
+autopipelining
 analytics
+runnable
 Autoloading
 backend
 backends
@@ -23,6 +26,8 @@ fieldset
 fieldsets
 FPM
 Golang
+goroutine
+goroutines
 IANA
 keyspace
 keyspaces
@@ -122,3 +127,6 @@ TOCTOU
 wordlist
 worktree
 fetch's
+loopback
+autopipeliner
+autopipeliner's

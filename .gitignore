@@ -20,3 +20,9 @@ dockers/osscluster-tls/
 
 # Per-user Claude Code settings (machine/personal overrides, not shared policy)
 .claude/settings.local.json
+
+# example build artifacts
+example/autopipeline/autopipeline
+
+# Claude Code worktrees (ephemeral, local)
+.claude/worktrees/
