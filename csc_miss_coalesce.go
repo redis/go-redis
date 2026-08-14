@@ -472,12 +472,18 @@ func (mc *cscMissCoalescer) batchBudget() time.Duration {
 	return budget
 }
 
-// countBatch records batch-size accounting.
+// countBatch records batch-size accounting. The max is a CAS loop: with
+// concurrent workers a plain load-then-store could commit a smaller value over
+// a larger one that landed in between, permanently underreporting the maximum.
 func (mc *cscMissCoalescer) countBatch(batch []*cscMissReq) {
 	mc.batches.Add(1)
 	mc.batched.Add(uint64(len(batch)))
-	if n := uint64(len(batch)); n > mc.maxBatchSz.Load() {
-		mc.maxBatchSz.Store(n)
+	n := uint64(len(batch))
+	for {
+		cur := mc.maxBatchSz.Load()
+		if n <= cur || mc.maxBatchSz.CompareAndSwap(cur, n) {
+			return
+		}
 	}
 }
 

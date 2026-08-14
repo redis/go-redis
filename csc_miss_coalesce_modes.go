@@ -317,7 +317,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			buf = mc.grabInto(buf[:0], req)
 			mc.countBatch(buf)
 
-			werr := cn.WithWriter(c.context(sctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+			// sctx directly, NOT c.context(sctx): sctx is the ENGINE's cancellable
+			// session context, and with the default ContextTimeoutEnabled=false
+			// c.context() would strip it to context.Background() — then, with the
+			// per-op timeout disabled too, a blocked write/read could not be
+			// interrupted and Close would hang in wg.Wait (see the supervisor's
+			// stop-deadline below, which closes the conn as the backstop).
+			werr := cn.WithWriter(sctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				for _, r := range buf {
 					if e := writeCmd(wr, r.cmd); e != nil {
 						return e
@@ -351,7 +357,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		defer ticker.Stop()
 
 		readOne := func(req *cscMissReq) bool { // false => fatal, reader must exit
-			rerr := cn.WithReader(c.context(sctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+			rerr := cn.WithReader(sctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 				if e := c.processPendingPushNotificationWithReader(sctx, cn, rd); e != nil {
 					internal.Logger.Printf(sctx, "csc: miss-coalesce push drain: %v", e)
 				}
@@ -424,6 +430,16 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		case <-mc.stop:
 			stopFlag.Store(true)
 			doRecycle()
+			// Graceful drain first — but bounded: with ReadTimeout disabled a
+			// server that never replies would leave the reader blocked in a socket
+			// read that no context can interrupt, wedging stopCSCMissCoalescer's
+			// wg.Wait and therefore Client.Close. If the session has not ended
+			// within the batch budget, close the connection to force the I/O out.
+			select {
+			case <-superDone:
+			case <-time.After(mc.batchBudget()):
+				_ = cn.Close()
+			}
 		case <-recycleTimer.C:
 			doRecycle()
 		case <-sctx.Done(): // I/O error: unblock a reader/writer parked on the socket

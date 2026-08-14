@@ -195,8 +195,20 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 
 func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.refresh == q {
+		return
+	}
 	h.refresh = q
-	h.mu.Unlock()
+	// A running batcher snapshotted the previous refresh binding at creation
+	// (see ensureBatcher); a client attaching refresh-on-invalidate later would
+	// otherwise leave batched deletes permanently feeding a nil refresher. Drop
+	// it so the next invalidation rebuilds with the new snapshot; stop() flushes
+	// what it holds, so no queued delete is lost.
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
