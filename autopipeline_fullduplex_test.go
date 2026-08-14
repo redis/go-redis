@@ -818,6 +818,75 @@ func TestFullDuplexBackpressure(t *testing.T) {
 	}
 }
 
+// TestFDShutdownFlushCompletesBetweenSessionsBacklog pins the Close contract for
+// work accepted while NO session holds a connection (#3964, cursor High): a
+// command sitting in fd.ch (or an unacked carry) when Close wins the
+// between-sessions race must be EXECUTED via the normal pipeline path and
+// completed — not failed ErrClosed. Drives shutdownFlush directly: run()'s two
+// shutdown sites call it verbatim.
+func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	fd := ap.fd
+	if fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Simulate the between-sessions Close: backlog queued in fd.ch (bypassing
+	// submit — run() must not consume it, so this test does not race the engine's
+	// own loop; the queue is drained below by takeQueue inside shutdownFlush).
+	const n = 5
+	reqs := make([]fdReq, n)
+	for i := 0; i < n; i++ {
+		cmd := NewStatusCmd(ctx, "set", fmt.Sprintf("fdsf:%d", i), fmt.Sprintf("v%d", i))
+		reqs[i] = fdReq{cmd: cmd, batch: newAPBatch()}
+		fd.ch <- reqs[i]
+	}
+	// carry: an unacked tail from a failed session that was never re-leased.
+	carryCmd := NewStatusCmd(ctx, "set", "fdsf:carry", "vc")
+	carry := []fdReq{{cmd: carryCmd, batch: newAPBatch()}}
+
+	fd.shutdownFlush(context.Background(), carry)
+
+	// Every batch settles and every command EXECUTED (not ErrClosed).
+	for i := 0; i < n; i++ {
+		select {
+		case <-reqs[i].batch.done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("backlog cmd %d never completed after shutdownFlush", i)
+		}
+		if err := reqs[i].cmd.rawErr(); err != nil {
+			t.Fatalf("backlog cmd %d err = %v, want executed (nil)", i, err)
+		}
+	}
+	if err := carryCmd.rawErr(); err != nil {
+		t.Fatalf("carry cmd err = %v, want executed (nil)", err)
+	}
+	verify := NewClient(&Options{Addr: ":6379"})
+	defer verify.Close()
+	for i := 0; i < n; i++ {
+		if v, err := verify.Get(ctx, fmt.Sprintf("fdsf:%d", i)).Result(); err != nil || v != fmt.Sprintf("v%d", i) {
+			t.Fatalf("fdsf:%d = %q, %v — accepted command was not executed on Close", i, v, err)
+		}
+	}
+	if v, err := verify.Get(ctx, "fdsf:carry").Result(); err != nil || v != "vc" {
+		t.Fatalf("fdsf:carry = %q, %v — carry was not executed on Close", v, err)
+	}
+	for i := 0; i < n; i++ {
+		verify.Del(ctx, fmt.Sprintf("fdsf:%d", i))
+	}
+	verify.Del(ctx, "fdsf:carry")
+}
+
 // failWriteNetConn is a net.Conn whose Write always fails, so a buffered flush
 // (the end of WithWriter) returns an error while the command bytes were already
 // buffered — used to drive a write failure in writeCarryChunked deterministically.

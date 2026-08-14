@@ -321,7 +321,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx}
 
 	// Send under RLock and re-check closed so a send can never win the race with
-	// run()'s shutdown drain: drainQueue takes the WLock, sets closed, then
+	// run()'s shutdown drain: takeQueue takes the WLock, sets closed, then
 	// drains fd.ch. The RWMutex serialises those two, so once the final drain has
 	// run no new req can land in fd.ch — otherwise a req enqueued after the drain
 	// would never be completed and its caller would hang forever. A send that is
@@ -341,7 +341,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// Accepted onto the stream. Start the hook host ONLY now — a submission that
 		// is never admitted (the cancel paths below) must not spawn/leak a host
 		// goroutine under backpressure. Tracked in hostWg (Add under the gate, so it
-		// is ordered before drainQueue's WLock and run()'s hostWg.Wait never races an
+		// is ordered before the shutdown drain's WLock and run()'s hostWg.Wait never races an
 		// Add on a zero counter) so Close waits for post-next hook work.
 		if hookDone != nil {
 			fd.hostWg.Add(1)
@@ -462,29 +462,34 @@ func (fd *fdEngine) run() {
 	// next() returns runs on a host goroutine that closes the command's batch, so
 	// Close must not return while one is still running. Every hostWg.Add is gated
 	// behind submitMu+closed (see submit) and every run() return is preceded by
-	// drainQueue (which sets closed), so this Wait never races a live Add.
+	// the shutdown drain (which sets closed), so this Wait never races a live Add.
 	defer fd.hostWg.Wait()
 	bg := context.Background()
 	var carry []fdReq // unacked tail to re-issue at the start of the next attempt
 	attempts := 0
-	// Do not lease a connection (or hit the Limiter / dial) until the first command
-	// arrives: merely constructing an FD autopipeliner that is never used must stay
-	// idle, like the half-duplex engine, instead of leasing eagerly and then
-	// retrying a dial/limiter failure forever against an empty queue (#3964). This
-	// guards only the initial entry; steady-state idleness is handled by fdIdle in
-	// the loop (fdRecycle must NOT block here — it can be reached with fd.ch empty).
-	select {
-	case r := <-fd.ch:
-		carry = []fdReq{r}
-	case <-fd.ap.ctx.Done():
-		fd.drainQueue(ErrClosed)
-		return
-	}
 	for {
 		if fd.ap.ctx.Err() != nil {
-			fd.failReqs(carry, ErrClosed)
-			fd.drainQueue(ErrClosed)
+			fd.shutdownFlush(bg, carry)
 			return
+		}
+		// Never lease a connection (or hit the Limiter / dial) without work in
+		// hand: block for the first command whenever the carry is empty. This
+		// covers the initial entry (an unused FD autopipeliner stays idle instead
+		// of dialing in the background), the fdIdle return, AND the fail-fast
+		// exits below (fdDenied / exhausted fdLeaseErr / failed fdConnErr tail),
+		// which would otherwise loop straight back into attempt against an empty
+		// queue — hammering the Limiter or dialing a down server forever (#3964).
+		// Non-blocking when work is already queued, so fdRecycle with pending
+		// work still re-leases immediately; an empty recycle parks here, which is
+		// strictly better than holding a conn nothing uses.
+		if len(carry) == 0 {
+			select {
+			case r := <-fd.ch:
+				carry = []fdReq{r}
+			case <-fd.ap.ctx.Done():
+				fd.shutdownFlush(bg, nil)
+				return
+			}
 		}
 		unacked, result, aerr := fd.attempt(bg, carry)
 		switch result {
@@ -492,15 +497,9 @@ func (fd *fdEngine) run() {
 			return // Close: attempt drained written work; queue failed there.
 		case fdIdle:
 			// Conn returned cleanly to the pool (its per-conn hooks can run).
-			// Block for the next command before re-leasing, so an idle engine
-			// does not churn Get/Put.
-			select {
-			case r := <-fd.ch:
-				carry, attempts = []fdReq{r}, 0
-			case <-fd.ap.ctx.Done():
-				fd.drainQueue(ErrClosed)
-				return
-			}
+			// The loop-top wait blocks for the next command before re-leasing, so
+			// an idle engine does not churn Get/Put.
+			carry, attempts = nil, 0
 		case fdRecycle:
 			// Max-hold reached; conn returned cleanly. Work is pending — re-lease
 			// immediately.
@@ -1057,36 +1056,59 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 	}
 }
 
-// drainQueue fails everything currently queued (unwritten) with err, without
-// blocking. Used on Close for commands that never reached the wire.
+// takeQueue closes the submit gate and returns everything buffered in fd.ch.
+// It takes the WLock (blocking until in-flight submit sends finish — each
+// either landed in fd.ch, drained below, or took its ctx.Done() branch), sets
+// closed, then drains: after this no submit can enqueue new work, so nothing is
+// left un-completed behind the drain.
 //
-// It first closes the submit gate: it takes the WLock (blocking until in-flight
-// submit sends finish — each either landed in fd.ch, drained below, or took its
-// ctx.Done() branch), sets closed, then drains. After this no submit can enqueue
-// new work, so nothing is left un-completed behind the drain.
-//
-// INVARIANT: every drainQueue call is a terminal shutdown drain — run() exits
+// INVARIANT: every takeQueue call is a terminal shutdown drain — run() exits
 // right after, and every caller is past a ctx-cancel check. Never call it on a
 // non-close path: a submit blocked on a full channel is unwedged only by its
 // ctx.Done() branch, so without a cancelled ctx the WLock here would deadlock
 // against the RLock held across that send.
-func (fd *fdEngine) drainQueue(err error) {
+func (fd *fdEngine) takeQueue() []fdReq {
 	fd.submitMu.Lock()
 	fd.closed = true
 	fd.submitMu.Unlock()
+	var reqs []fdReq
 	for {
 		select {
 		case r := <-fd.ch:
-			r.cmd.SetErr(err)
-			r.complete()
+			reqs = append(reqs, r)
 		default:
-			return
+			return reqs
 		}
 	}
 }
 
+// shutdownFlush is the between-sessions Close flush: accepted commands sitting
+// in carry (an unacked tail from a failed session, never re-leased) and fd.ch
+// (accepted while no session held a connection) are dispatched as ONE pipeline
+// batch on the client's normal pipeline path, then completed — honoring the
+// "accepted ⇒ completes" Close contract exactly like the in-session
+// flushBacklogForClose, instead of failing them ErrClosed just because Close
+// won the race between sessions (#3964). Uses a background ctx (ap.ctx is
+// already cancelled); processPipeline bounds it with the client's own
+// timeouts/retries, and on failure the error lands on every command via
+// setCmdsErr — callers always settle, never hang.
+func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
+	backlog := append(carry, fd.takeQueue()...)
+	if len(backlog) == 0 {
+		return
+	}
+	cmds := make([]Cmder, len(backlog))
+	for i := range backlog {
+		cmds[i] = backlog[i].cmd
+	}
+	_ = fd.client.processPipeline(bg, cmds) // per-command results/errors are set inside
+	for i := range backlog {
+		backlog[i].complete()
+	}
+}
+
 // failQueue fails every command currently buffered in fd.ch with err WITHOUT
-// closing the engine (unlike drainQueue, which is the shutdown drain and sets
+// closing the engine (unlike takeQueue, which is the shutdown drain and sets
 // closed). Used on an acquisition denial (Limiter reject): the accepted backlog
 // is fail-fasted with the limiter error, but the engine stays alive to serve new
 // work once the limiter admits again. A command submitted concurrently after this
