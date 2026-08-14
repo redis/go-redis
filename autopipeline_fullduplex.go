@@ -271,8 +271,9 @@ type fdEngine struct {
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
 	closed   bool         // set once run() is tearing down; submit then rejects new work
 
-	retryWg sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
-	hostWg  sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
+	retryWg  sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
+	retrySem chan struct{}  // caps concurrent off-pipe retries at the window (see retryOnNormalConn)
+	hostWg   sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
 }
 
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
@@ -305,6 +306,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		window:   w,
 		idle:     idle,
 		maxHold:  maxHold,
+		retrySem: make(chan struct{}, w),
 	}
 }
 
@@ -448,9 +450,21 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 // result via req.complete(). Background ctx: the command was already accepted, so
 // it completes even under a concurrent Close (which waits via run()'s retryWg).
 func (fd *fdEngine) retryOnNormalConn(req fdReq) {
+	// Bound concurrent off-pipe retries to the FD window. Under a sustained
+	// retryable stream (LOADING/READONLY on every reply) each reply would
+	// otherwise spawn an independent retry goroutine while the reader keeps
+	// advancing the window and admitting more writes — unbounded goroutines all
+	// parked in backoff/pool acquisition. The acquire blocks the READER, which
+	// stops advancing the deque, which fills the window and blocks the writer and
+	// then submitters: end-to-end backpressure. No cycle: retries drain on the
+	// main pool, independent of the reader that is waiting here.
+	fd.retrySem <- struct{}{}
 	fd.retryWg.Add(1)
 	go func() {
-		defer fd.retryWg.Done()
+		defer func() {
+			<-fd.retrySem
+			fd.retryWg.Done()
+		}()
 		err := fd.ap.pipeliner.process(context.Background(), req.cmd)
 		req.cmd.SetErr(err)
 		req.complete()
