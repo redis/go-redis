@@ -96,13 +96,26 @@ type AutoPipelineOptions struct {
 	// hook chain individually (withProcessHook, not the batch ProcessPipelineHook),
 	// with the span bracketing the command's real write→reply latency. When no
 	// process hooks are registered this hosting is skipped entirely (the fast path).
-	// Caveat: because the write is already queued on the shared stream, a hook that
-	// SHORT-CIRCUITS (returns without calling next) does not cancel execution — the
-	// command still runs on the wire; the hook's returned error is still reflected
-	// to the caller. Hook presence is checked per command at submit time, so a hook
-	// registered via AddHook is observed only for commands submitted after it (a
-	// command already in flight is not retroactively spanned). DialHook and pool
-	// stats work as usual.
+	// Caveat: because the write is already queued on the shared stream when the hook
+	// host starts, a hook that SHORT-CIRCUITS (returns without calling next) does
+	// NOT cancel execution — the command still runs on the wire; only the hook's
+	// returned error is reflected to the caller. This differs from the half-duplex
+	// path, where next() gates the write. A hook that relies on short-circuiting to
+	// BLOCK a command (a policy/ACL/kill-switch hook, or a mock/cache that must not
+	// touch the server) therefore does NOT prevent the server write under FullDuplex
+	// — run such hooks on a plain client or the half-duplex autopipeline. Hooks that
+	// always call next (observability: spans/metrics) are unaffected.
+	//
+	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
+	// or per-command flag that waits for the hook to call next before enqueuing the
+	// command onto fd.ch, so a policy hook can veto the write, at the cost of the
+	// ~1-RTT concurrency for gated commands (observability-only hooks keep the fast
+	// path). Until then the short-circuit-does-not-block semantics above are
+	// intentional, not a bug.
+	//
+	// Hook presence is checked per command at submit time, so a hook registered via
+	// AddHook is observed only for commands submitted after it (a command already in
+	// flight is not retroactively spanned). DialHook and pool stats work as usual.
 	FullDuplex bool
 
 	// FullDuplexWindow is the maximum in-flight (written-but-unacknowledged)

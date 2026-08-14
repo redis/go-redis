@@ -1720,3 +1720,61 @@ func TestFullDuplexReaderPanicRecovers(t *testing.T) {
 		t.Fatalf("engine did not recover after the reader panic: %v", err)
 	}
 }
+
+// fdNoopHook is a passthrough ProcessHook whose only effect is to make the FD
+// engine host each command (hookCount > 0), so every completed command has a
+// hookDone channel — a double-complete would then double-close it (panic).
+type fdNoopHook struct{}
+
+func (fdNoopHook) DialHook(next DialHook) DialHook                                  { return next }
+func (fdNoopHook) ProcessHook(next ProcessHook) ProcessHook                         { return next }
+func (fdNoopHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook { return next }
+
+// TestFullDuplexReaderPanicMidBatchNoDoubleComplete guards #3964 :709: when the
+// reader panics on a command that shares a frontBatch snapshot with EARLIER,
+// already-completed commands, the recover must advance those completed ones out
+// of the deque. Otherwise recovery re-owns and re-completes them — double-closing
+// their hookDone (a second panic that crashes the process). A no-op hook makes
+// every command hooked; several completed GETs precede the panicking command in
+// one batch.
+func TestFullDuplexReaderPanicMidBatchNoDoubleComplete(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	c.AddHook(fdNoopHook{})
+	if err := c.Set(ctx, "fd:rpanic2:k", "hello", 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Fire several hooked GETs immediately followed by a decoder-panicking command,
+	// none awaited, so they land in one writer batch / reader snapshot: the GETs
+	// complete (done > 0) before the panic.
+	for i := 0; i < 8; i++ {
+		ap.Get(ctx, "fd:rpanic2:k")
+	}
+	panicCmd := NewRawWriteToCmd(ctx, fdPanicWriter{}, "get", "fd:rpanic2:k")
+	f := ap.Submit(ctx, panicCmd)
+	done := make(chan struct{})
+	go func() { _ = f.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("panicking command never settled")
+	}
+	// If the completed GETs were re-completed, their hookDone double-close would
+	// have crashed the process. Reaching here on a working engine proves it did not.
+	if err := ap.Set(ctx, "fd:rpanic2:after", "v", 0).Err(); err != nil {
+		t.Fatalf("engine did not recover after the mid-batch reader panic: %v", err)
+	}
+}

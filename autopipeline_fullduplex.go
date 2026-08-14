@@ -623,27 +623,35 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	// leaves the unread tail in the deque (it becomes the unacked recovery set).
 	go func() {
 		defer close(readerDone)
+		// done counts commands completed in the CURRENT frontBatch snapshot that
+		// have not yet been advanced out of the in-flight deque; it is 0 outside the
+		// inner read loop (reset at the top of each iteration, advanced at the end).
+		done := 0
 		// A reply decoder can panic (e.g. a RawWriteToCmd whose user io.Writer
 		// panics while readReply streams the raw reply). Without recovery that would
 		// crash the process and leave the outstanding tail incomplete. Recover and
 		// mark the session failed (failOnce) so run() takes the connection-error
 		// path: the reader exits, the unacked tail is recovered (retried per policy
 		// or failed) and the conn is removed — mirroring recoverDispatchPanic on the
-		// half-duplex async dispatchers.
+		// half-duplex async dispatchers. advance(done) FIRST so the commands already
+		// completed in the panicking snapshot leave the deque: otherwise recovery
+		// re-owns and re-completes them, overwriting good results and double-closing
+		// hookDone (a second panic) when process hooks are installed.
 		defer func() {
 			if r := recover(); r != nil {
+				inflight.advance(done)
 				failOnce(fmt.Errorf("redis: autopipeline: panic in full-duplex reader: %v", r))
 				internal.Logger.Printf(bg, "autopipeline: recovered full-duplex reader panic: %v\n%s", r, debug.Stack())
 			}
 		}()
 		var buf []fdReq
 		for {
+			done = 0
 			var ok bool
 			buf, ok = inflight.frontBatch(buf)
 			if !ok {
 				return
 			}
-			done := 0
 			var rerr error
 			// Read each reply as it lands (one WithReader per reply). Reading the
 			// whole snapshot inside a single WithReader was measurably slower on
