@@ -394,6 +394,11 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
+	// Pipeline pool (per node, created by default): allow URL opt-out
+	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	if q.has("conn_max_lifetime_jitter") {

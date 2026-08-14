@@ -914,6 +914,12 @@ func setupConnParams(u *url.URL, o *Options) (*Options, error) {
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
 	o.MaxConcurrentDials = q.int("max_concurrent_dials")
+	// Pipeline pool (created by default): allow URL-configured clients to opt out
+	// (pipeline_pool_size=-1) or tune it, otherwise these would be rejected as
+	// unexpected options. q.int accepts a negative value.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	if q.has("conn_max_idle_time") {
 		o.ConnMaxIdleTime = q.duration("conn_max_idle_time")
 	} else {

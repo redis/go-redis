@@ -607,3 +607,35 @@ func TestUniversalOptionsSimpleCopiesClientSideCache(t *testing.T) {
 		t.Fatal("Simple did not copy ClientSideCacheStrategy")
 	}
 }
+
+// TestParseURLPipelinePoolOptions verifies the URL parsers accept the pipeline
+// pool settings — notably pipeline_pool_size=-1 to opt out of the now-default
+// dedicated pipeline pool — instead of rejecting them as unexpected options
+// (#3959). Covers ParseURL, ParseClusterURL and ParseFailoverURL.
+func TestParseURLPipelinePoolOptions(t *testing.T) {
+	const q = "pipeline_pool_size=-1&pipeline_read_buffer_size=131072&pipeline_write_buffer_size=65536"
+
+	o, err := ParseURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if o.PipelinePoolSize != -1 || o.PipelineReadBufferSize != 131072 || o.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseURL pipeline opts: size=%d rbuf=%d wbuf=%d", o.PipelinePoolSize, o.PipelineReadBufferSize, o.PipelineWriteBufferSize)
+	}
+
+	co, err := ParseClusterURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseClusterURL: %v", err)
+	}
+	if co.PipelinePoolSize != -1 || co.PipelineReadBufferSize != 131072 || co.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseClusterURL pipeline opts: size=%d rbuf=%d wbuf=%d", co.PipelinePoolSize, co.PipelineReadBufferSize, co.PipelineWriteBufferSize)
+	}
+
+	fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + q)
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
+	}
+}
