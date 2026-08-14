@@ -81,10 +81,15 @@ func TestPooledClientMaintNotificationsDefaultEndpoint(t *testing.T) {
 // rejections are pre-failed, and the Conn pipeline only queues.
 func TestPipelineRejectsStateCommandsWhenPooled(t *testing.T) {
 	ctx := context.Background()
-	c := NewClient(&Options{Addr: ":6379"})
+	// localhost:1 is never dialed: the pooled-pipeline guard in
+	// generalProcessPipeline fires before any connection is acquired.
+	c := NewClient(&Options{Addr: "localhost:1"})
 	defer c.Close()
 
-	// Pooled pipeline: rejected, and NOT queued.
+	// Pooled pipeline: the returned command carries the guidance error AND the
+	// command is queued, so Exec surfaces the rejection even when the caller
+	// ignores the returned command. The command must never be sent to a borrowed
+	// pooled connection.
 	pp := c.Pipeline()
 	if cmd := pp.ClientTrackingOn(ctx, &ClientTrackingOptions{Bcast: true}); !errors.Is(cmd.Err(), errClientTrackingOnPooledClient) {
 		t.Fatalf("pooled Pipeline ClientTrackingOn err = %v, want errClientTrackingOnPooledClient", cmd.Err())
@@ -95,11 +100,33 @@ func TestPipelineRejectsStateCommandsWhenPooled(t *testing.T) {
 	if cmd := pp.ClientMaintNotifications(ctx, true, "none"); !errors.Is(cmd.Err(), errClientMaintNotificationsOnPooledClient) {
 		t.Fatalf("pooled Pipeline ClientMaintNotifications err = %v, want reject", cmd.Err())
 	}
-	if pp.Len() != 0 {
-		t.Fatalf("pooled Pipeline queued %d rejected state commands, want 0", pp.Len())
+	if pp.Len() != 3 {
+		t.Fatalf("pooled Pipeline queued %d state commands, want 3 (queued so Exec surfaces the rejection)", pp.Len())
+	}
+	// Exec surfaces the rejection through the guard, before any dial (this would
+	// otherwise fail dialing localhost:1 with a different error).
+	if _, err := pp.Exec(ctx); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("pooled Pipeline Exec err = %v, want errClientTrackingOnPooledClient (guarded before dial)", err)
 	}
 
-	// Dedicated-Conn pipeline: allowed → queued.
+	// The common Pipelined pattern — callback ignores the returned command — must
+	// still fail rather than silently reporting success (the dropped-error bug).
+	if _, err := c.Pipelined(ctx, func(pipe Pipeliner) error {
+		pipe.ClientTrackingOff(ctx)
+		return nil
+	}); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("Pipelined ClientTrackingOff err = %v, want errClientTrackingOnPooledClient", err)
+	}
+
+	// Discard drops queued rejections like any other queued command.
+	pp2 := c.Pipeline()
+	pp2.ClientTrackingOff(ctx)
+	pp2.Discard()
+	if _, err := pp2.Exec(ctx); err != nil {
+		t.Fatalf("after Discard, Exec err = %v, want nil (empty pipeline)", err)
+	}
+
+	// Dedicated-Conn pipeline: sticky → allowed → queued (state stays on the conn).
 	conn := c.Conn()
 	defer conn.Close()
 	cp := conn.Pipeline()
@@ -108,5 +135,34 @@ func TestPipelineRejectsStateCommandsWhenPooled(t *testing.T) {
 	}
 	if cp.Len() != 1 {
 		t.Fatalf("Conn Pipeline queued %d, want 1 (state command should be queued on a dedicated conn)", cp.Len())
+	}
+}
+
+// TestTxPipelineAllowsStateCommands pins that a Tx pipeline is sticky: WATCH
+// pins one connection for the whole Tx, so CLIENT TRACKING queues there instead
+// of being rejected as pooled (#3961 regression flagged by review). Needs a
+// server because Watch dials.
+func TestTxPipelineAllowsStateCommands(t *testing.T) {
+	ctx := context.Background()
+	c := NewClient(&Options{Addr: ":6379"})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	err := c.Watch(ctx, func(tx *Tx) error {
+		for _, p := range []Pipeliner{tx.Pipeline(), tx.TxPipeline()} {
+			cmd := p.ClientTrackingOn(ctx, nil)
+			if errors.Is(cmd.Err(), errClientTrackingOnPooledClient) {
+				t.Fatalf("Tx pipeline wrongly rejected CLIENT TRACKING (should be sticky): %v", cmd.Err())
+			}
+			if p.Len() != 1 {
+				t.Fatalf("Tx pipeline queued %d, want 1 (state command allowed on the pinned conn)", p.Len())
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
 	}
 }

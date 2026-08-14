@@ -235,6 +235,11 @@ type Cmder interface {
 	SetErr(error)
 	Err() error
 
+	// markStateRejected/isStateRejected flag a per-connection state command a
+	// pooled pipeline queued only to surface a rejection through Exec.
+	markStateRejected()
+	isStateRejected() bool
+
 	// setReady marks a command as asynchronously pending (autopipeline async
 	// faces); await blocks the public accessors until it has executed; rawErr
 	// reads the error without awaiting (internal execution path).
@@ -374,6 +379,11 @@ type baseCmd struct {
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
+	// stateRejected marks a per-connection state command that a pooled
+	// *Pipeline queued only to surface a rejection through Exec (see
+	// markStateRejected). generalProcessPipeline returns its pre-set error
+	// without sending it.
+	stateRejected bool
 	// slotCache memoizes the cluster slot once computed, so the cluster
 	// autopipeline shard router and the pipeline flush router don't each
 	// recompute it. 0 = not computed; it stores slot+1 so a real slot of 0 is
@@ -548,6 +558,20 @@ func (cmd *baseCmd) SetErr(e error) {
 func (cmd *baseCmd) Err() error {
 	cmd.await()
 	return cmd.err
+}
+
+// markStateRejected / isStateRejected carry the "queued only to be rejected"
+// signal from a pooled *Pipeline to generalProcessPipeline. A pooled pipeline
+// queues a per-connection state command (CLIENT TRACKING / MAINT_NOTIFICATIONS)
+// carrying a pre-set guidance error and this flag, so Exec surfaces the error
+// instead of the command being sent to an arbitrary pooled connection. A sticky
+// (dedicated-connection) pipeline never sets it, so those commands run normally.
+func (cmd *baseCmd) markStateRejected() {
+	cmd.stateRejected = true
+}
+
+func (cmd *baseCmd) isStateRejected() bool {
+	return cmd.stateRejected
 }
 
 func (cmd *baseCmd) readTimeout() *time.Duration {
