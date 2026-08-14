@@ -471,6 +471,12 @@ func (c *baseClient) clone() *baseClient {
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
 	}
+	// The miss coalescer travels with the cache too (an atomic.Pointer cannot be
+	// listed above): without this a WithTimeout clone would silently lose miss
+	// coalescing — its zero-valued pointer makes every miss fall back to a
+	// per-caller fetch. The clone shares the OWNER's coalescer (whose lifecycle
+	// stays owner-only: a clone's Close does not stop it).
+	clone.cscMissCoalescer.Store(c.cscMissCoalescer.Load())
 	return clone
 }
 

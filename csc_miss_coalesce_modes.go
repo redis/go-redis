@@ -161,12 +161,17 @@ func (mc *cscMissCoalescer) fullDuplexLoop() {
 			return
 		default:
 		}
-		if mc.runFullDuplexSession() {
-			return // stop requested
+		stopped, errored := mc.runFullDuplexSession()
+		if stopped {
+			return
 		}
-		// Session ended on a connection error or a clean recycle. On error, back
-		// off briefly so a persistent dial failure does not hot-spin; a clean
-		// recycle continues immediately.
+		// Back off only after an ERROR end, so a persistent dial failure does not
+		// hot-spin; a clean idle/recycle end continues immediately — the next
+		// session blocks on the miss queue anyway, and sleeping here would add a
+		// flat cscModeBackoff of latency to a miss already waiting in mc.ch.
+		if !errored {
+			continue
+		}
 		select {
 		case <-mc.stop:
 			return
@@ -183,7 +188,7 @@ func (mc *cscMissCoalescer) fullDuplexLoop() {
 //     and any queued maintenance handoff).
 //
 // Returns true iff stop was requested (the loop should exit).
-func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
+func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	c := mc.c
 
 	// Do not hold a pool connection while idle: wait for the first miss BEFORE
@@ -194,7 +199,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 	var first *cscMissReq
 	select {
 	case <-mc.stop:
-		return true
+		return true, false
 	case first = <-mc.ch:
 	}
 
@@ -209,7 +214,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		// next attempt's drain.
 		mc.settleErr(first, err)
 		mc.drainQueueErr(err)
-		return false
+		return false, true // error end: the loop backs off before re-acquiring
 	}
 	// CSC serving may have been disabled after the miss was queued (e.g. a HELLO 3
 	// downgrade or CLIENT TRACKING rejected during initConn). Holding the conn to
@@ -224,7 +229,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		// surfacing a spurious pool.ErrClosed for a valid cacheable read.
 		mc.settleErr(first, errCSCRetryUncached)
 		mc.drainQueueErr(errCSCRetryUncached)
-		return false
+		return false, false // clean end: no new misses route here while serving is off
 	}
 	connID := cn.GetID()
 	gen := c.cscConnInitGen(connID)
@@ -451,11 +456,11 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		select {
 		case r, ok := <-inflight:
 			if !ok {
-				return stopFlag.Load()
+				return stopFlag.Load(), errored()
 			}
 			mc.settleErr(r, reasonErr())
 		default:
-			return stopFlag.Load()
+			return stopFlag.Load(), errored()
 		}
 	}
 }

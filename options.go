@@ -475,6 +475,11 @@ type Options struct {
 	// larger than the cache MaxStaleness: deferring a delete by up to the window
 	// lets a reader see the pre-invalidation value for up to that long.
 	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache), like ClientSideCacheCoalesceMisses: the batcher's
+	// hot-entry refresh integration is LocalCache-specific. With a custom Cache
+	// implementation the window is ignored and deletes apply inline.
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheInvalidationBatchWindow time.Duration
 }

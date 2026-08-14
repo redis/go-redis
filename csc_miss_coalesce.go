@@ -378,7 +378,12 @@ func (mc *cscMissCoalescer) flushBatch(ctx context.Context, cn *pool.Conn, batch
 	// under lost coverage.
 	capturedGen := c.cscConnInitGen(connID)
 
-	if werr := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+	// ctx is the ENGINE's own bounded batch budget, not a caller context, so it
+	// must NOT go through c.context() — with ContextTimeoutEnabled=false (the
+	// default) that strips the deadline to context.Background(), and with
+	// ReadTimeout disabled a server that never replies would then block this
+	// worker forever, wedging Close in stopCSCMissCoalescer's wg.Wait.
+	if werr := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for _, req := range batch {
 			if e := writeCmd(wr, req.cmd); e != nil {
 				return e
@@ -389,7 +394,7 @@ func (mc *cscMissCoalescer) flushBatch(ctx context.Context, cn *pool.Conn, batch
 		return 0, werr
 	}
 
-	rerr := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+	rerr := cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 		for settled < len(batch) {
 			// Invalidation pushes share this connection with replies; drain them
 			// first so a push frame is not read as a value.
