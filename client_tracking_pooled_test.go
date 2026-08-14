@@ -138,6 +138,32 @@ func TestPipelineRejectsStateCommandsWhenPooled(t *testing.T) {
 	}
 }
 
+// TestClusterPipelineRejectsStateCommands pins the cluster-side gap (#3961
+// review): ClusterClient.processPipeline/processTxPipeline bypass
+// baseClient.generalProcessPipeline, so they must check stateRejectedErr
+// themselves — otherwise the queued CLIENT TRACKING runs on a borrowed node
+// connection and the server reply overwrites the guidance error. The guard
+// fires before any node mapping, so no cluster (or dial) is needed.
+func TestClusterPipelineRejectsStateCommands(t *testing.T) {
+	ctx := context.Background()
+	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"localhost:1"}})
+	defer cc.Close()
+
+	if _, err := cc.Pipelined(ctx, func(pipe Pipeliner) error {
+		pipe.ClientTrackingOff(ctx)
+		return nil
+	}); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("cluster Pipelined ClientTrackingOff err = %v, want errClientTrackingOnPooledClient", err)
+	}
+
+	if _, err := cc.TxPipelined(ctx, func(pipe Pipeliner) error {
+		pipe.ClientMaintNotifications(ctx, true, "none")
+		return nil
+	}); !errors.Is(err, errClientMaintNotificationsOnPooledClient) {
+		t.Fatalf("cluster TxPipelined ClientMaintNotifications err = %v, want errClientMaintNotificationsOnPooledClient", err)
+	}
+}
+
 // TestTxPipelineAllowsStateCommands pins that a Tx pipeline is sticky: WATCH
 // pins one connection for the whole Tx, so CLIENT TRACKING queues there instead
 // of being rejected as pooled (#3961 regression flagged by review). Needs a

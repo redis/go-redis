@@ -256,6 +256,22 @@ type Cmder interface {
 	GetCmdType() CmdType
 }
 
+// stateRejectedErr returns the pre-set guidance error of the first
+// state-rejected command in cmds (a per-connection state command a pooled
+// *Pipeline queued only to surface its rejection through Exec — see
+// Pipeline.rejectPooledState), or nil when none is present. Every pipeline
+// execution entry point must check it BEFORE dispatching, so the command is
+// never sent to a borrowed connection and the server reply cannot overwrite
+// the guidance error.
+func stateRejectedErr(cmds []Cmder) error {
+	for _, cmd := range cmds {
+		if cmd.isStateRejected() {
+			return cmd.Err()
+		}
+	}
+	return nil
+}
+
 func setCmdsErr(cmds []Cmder, e error) {
 	for _, cmd := range cmds {
 		// rawErr: this runs on the execution path; never await here.

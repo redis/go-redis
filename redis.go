@@ -1618,11 +1618,10 @@ func (c *baseClient) generalProcessPipeline(
 			setCmdsErr(cmds, err)
 			return err
 		}
-		if cmd.isStateRejected() {
-			err := cmd.Err()
-			setCmdsErr(cmds, err)
-			return err
-		}
+	}
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
 	}
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
