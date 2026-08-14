@@ -367,6 +367,22 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 					fail(e)
 					return
 				}
+				// Opaque-transport fallback, HELD-CONN ONLY: where socket readiness
+				// cannot be inspected (Windows; dialer wrappers exposing neither
+				// syscall.Conn nor NetConn) the readiness-gated peek above never
+				// fires, and unlike pooled connections nothing else ever drains this
+				// conn — a push would sit unread until the next reply. Run a
+				// throttled timed drain (at most once per cscFallbackProbeInterval;
+				// TakeCscPeriodicReadPending is a no-op on inspectable transports).
+				// Deliberately NOT inside peekAndProcessPushNotifications: pooled
+				// push paths have the drainer/health-check coverage, and a blanket
+				// fallback there perturbs sequenced push handling (mock-conn tests).
+				if cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
+					if e := c.timedPushDrain(sctx, cn); e != nil {
+						fail(e)
+						return
+					}
+				}
 				if handoffWanted() {
 					doRecycle()
 				}

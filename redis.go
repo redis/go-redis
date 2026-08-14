@@ -2558,25 +2558,24 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 	// not just when the socket is readable (MaybeHasData): a reply and a trailing
 	// invalidation can arrive in one socket read, leaving the invalidation in the
 	// reader buffer with an empty socket — MaybeHasData alone would skip it and
-	// serve stale until the next miss/MaxStaleness (#3965). On transports where
-	// socket readiness cannot be inspected at all (Windows; custom dialer
-	// wrappers exposing neither syscall.Conn nor NetConn) MaybeHasData is always
-	// false, so fall back to a throttled timed drain (at most once per
-	// cscFallbackProbeInterval, the same discipline as the CSC drainer) — without
-	// it a push addressed to a held full-duplex connection would sit unread
-	// until the next reply.
-	if !cn.MaybeHasData() && !cn.HasBufferedData() &&
-		!cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
+	// serve stale until the next miss/MaxStaleness (#3965).
+	if !cn.MaybeHasData() && !cn.HasBufferedData() {
 		return nil
 	}
 
-	// Short read timeout: MaybeHasData/HasBufferedData confirmed bytes, so
-	// the first read returns immediately — the deadline only needs to cover
-	// scheduler pauses, not network waits. 10us was routinely lost to
-	// scheduling on loaded machines: the peek then timed out with nothing
-	// consumed, the processor treated that as "no pending data", and a
-	// connection with buffered push bytes was returned to the pool instead
-	// of being drained (or removed, when the frame turns out partial).
+	return c.timedPushDrain(ctx, cn)
+}
+
+// timedPushDrain runs one short-deadline push drain on cn. The 1ms read
+// deadline only needs to cover scheduler pauses, not network waits, when the
+// caller has established data is (probably) present: 10us was routinely lost to
+// scheduling on loaded machines — the peek then timed out with nothing
+// consumed, the processor treated that as "no pending data", and a connection
+// with buffered push bytes was returned to the pool instead of being drained
+// (or removed, when the frame turns out partial). Callers without a readiness
+// signal (the opaque-transport fallback on a held full-duplex connection) pay
+// at most the 1ms when nothing is pending.
+func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 	err := cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
@@ -2626,6 +2625,22 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	if !readPending && !periodicReadPending && !hasData {
 		return false, nil
 	}
+
+	// The hard-deadline reads below (the probe and the drain) leave their
+	// deadline armed on the socket. Clients with a NEGATIVE ReadTimeout never
+	// re-arm (WithReader skips SetReadDeadline), so without this explicit clear
+	// a drained conn reused within the residue window would fail its first read
+	// with a spurious timeout. (checkForData used to clear deadlines
+	// incidentally on the next drainer tick; that reset was removed because it
+	// clobbered a concurrent writer's deadline on held full-duplex connections —
+	// this is the explicit, correctly-scoped replacement.) A removed conn makes
+	// the clear a no-op.
+	defer func() {
+		if c.opt.ReadTimeout < 0 {
+			_ = cn.WithReader(context.Background(), 0, func(*proto.Reader) error { return nil })
+		}
+	}()
+
 	if !hasData {
 		// TLS and opaque wrappers can hide bytes from the socket readiness
 		// check. Probe one byte without consuming it under a tiny deadline;
