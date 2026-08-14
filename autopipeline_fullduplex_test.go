@@ -918,7 +918,7 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
 	}
 
-	if err := fd.writeCarryChunked(context.Background(), cn, inflight, carry); err == nil {
+	if err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, nil); err == nil {
 		t.Fatal("writeCarryChunked returned nil error despite a failing write")
 	}
 	// The failing chunk was pushed by writeBatch; the suffix must be pushed too, so
@@ -1006,6 +1006,94 @@ func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("some accepted commands never completed after conn kill + Close — chunked backlog/carry dropped (callers would hang)")
 	}
+}
+
+// TestFullDuplexBlockingFace pins full-duplex on the BLOCKING AutoPipeline face
+// (#3964 follow-up): the engine activates, a single caller gets normal
+// synchronous semantics (result already on the returned cmd, errors surface on
+// the call), per-goroutine ordering holds by construction (each call waits),
+// many concurrent blocking callers all complete correctly, and Close is clean.
+func TestFullDuplexBlockingFace(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AutoPipelineWithOptions: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active on the blocking face")
+	}
+	if !ap.blocking {
+		t.Fatal("expected the blocking face")
+	}
+
+	// Single caller: the call itself blocks until executed — the returned cmd
+	// already holds its result, no accessor gating involved.
+	if err := ap.Set(ctx, "fdblk:k", "v1", 0).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if v, err := ap.Get(ctx, "fdblk:k").Result(); err != nil || v != "v1" {
+		t.Fatalf("get = %q, %v; want v1 (synchronous read-your-write)", v, err)
+	}
+
+	// A per-command Redis error surfaces on the call, synchronously.
+	if err := ap.LPush(ctx, "fdblk:k", "x").Err(); err == nil ||
+		!strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("LPush on a string = %v; want WRONGTYPE surfaced on the blocking call", err)
+	}
+	// And the stream is not desynced by it.
+	if v, err := ap.Get(ctx, "fdblk:k").Result(); err != nil || v != "v1" {
+		t.Fatalf("get after WRONGTYPE = %q, %v; want v1", v, err)
+	}
+
+	// Per-goroutine ordering by construction: INCR sequence observed in order.
+	ap.Del(ctx, "fdblk:ctr")
+	for i := 1; i <= 20; i++ {
+		n, err := ap.Incr(ctx, "fdblk:ctr").Result()
+		if err != nil || n != int64(i) {
+			t.Fatalf("incr %d = %d, %v; want %d (per-goroutine order)", i, n, err, i)
+		}
+	}
+
+	// Many concurrent blocking callers: all complete with their own results.
+	const G, M = 16, 25
+	var wg sync.WaitGroup
+	errs := make(chan error, G)
+	for g := 0; g < G; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < M; i++ {
+				key := fmt.Sprintf("fdblk:g%d:%d", g, i)
+				if err := ap.Set(ctx, key, key, 0).Err(); err != nil {
+					errs <- fmt.Errorf("g%d set %d: %w", g, i, err)
+					return
+				}
+				if v, err := ap.Get(ctx, key).Result(); err != nil || v != key {
+					errs <- fmt.Errorf("g%d get %d = %q, %v", g, i, v, err)
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	select {
+	case err := <-errs:
+		t.Fatal(err)
+	default:
+	}
+	// Cleanup.
+	for g := 0; g < G; g++ {
+		for i := 0; i < M; i++ {
+			ap.Del(ctx, fmt.Sprintf("fdblk:g%d:%d", g, i))
+		}
+	}
+	ap.Del(ctx, "fdblk:k", "fdblk:ctr")
 }
 
 // TestFullDuplexMidStreamRedisError proves a per-command Redis error (WRONGTYPE)

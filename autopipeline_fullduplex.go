@@ -465,6 +465,18 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq) {
 			<-fd.retrySem
 			fd.retryWg.Done()
 		}()
+		// process runs user code (hooks, arg encoders) and can panic; without
+		// recovery the batch never completes and the caller (and a hooked
+		// command's host, parked on hookDone) waits forever — the writer, reader
+		// and hostHook all recover, so this path must too.
+		defer func() {
+			if r := recover(); r != nil {
+				req.cmd.SetErr(fmt.Errorf("redis: autopipeline: panic in full-duplex off-pipe retry: %v", r))
+				internal.Logger.Printf(context.Background(),
+					"autopipeline: recovered full-duplex retry panic: %v\n%s", r, debug.Stack())
+				req.complete()
+			}
+		}()
 		err := fd.ap.pipeliner.process(context.Background(), req.cmd)
 		req.cmd.SetErr(err)
 		req.complete()
@@ -866,7 +878,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	// drained work — a recovered window can hold up to fd.window commands, so a
 	// single flush would otherwise ignore MaxBatchBytes and hit the same
 	// write-timeout/burst on the new connection.
-	writeErr := fd.writeCarryChunked(bg, cn, inflight, carry)
+	writeErr := fd.writeCarryChunked(bg, cn, inflight, carry, readerDone)
 	if writeErr == nil {
 		scratch := make([]fdReq, 0, fd.maxBatch)
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
@@ -903,8 +915,18 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			case req := <-fd.ch:
 				batch := append(scratch[:0], req)
 				batchBytes := cmdApproxBytes(req.cmd)
+				// Cap this batch by the REMAINING window room, not just MaxBatchSize:
+				// the backpressure gate above only ensures in-flight < window before
+				// draining, so with FullDuplexWindow smaller than MaxBatchSize a
+				// single drain could otherwise blow through the window (e.g.
+				// window=1, batch=200 → 200 in flight). The first command always
+				// goes (room is at least 1 after the gate).
+				limit := fd.maxBatch
+				if room := fd.window - inflight.len(); room < limit {
+					limit = room
+				}
 			drain:
-				for len(batch) < fd.maxBatch {
+				for len(batch) < limit {
 					// Soft MaxBatchBytes cap (like the half-duplex path): stop
 					// accumulating once the payload reaches the limit, so one flush
 					// cannot buffer an unbounded write. The first command is always
@@ -968,7 +990,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// half-duplex Close flush contract) rather than failing it ErrClosed, then
 		// let the reader drain every in-flight reply to a RESP boundary. A write
 		// error during the flush surfaces via the reader/sharedErr path below.
-		if e := fd.flushBacklogForClose(bg, cn, inflight); e != nil {
+		if e := fd.flushBacklogForClose(bg, cn, inflight, readerDone); e != nil {
 			// The backlog write failed partway: some flushed commands have no reply
 			// coming, and writeCarryChunked pushed the unwritten suffix into inflight.
 			// closeGraceful would leave the reader waiting on replies that never
@@ -1089,9 +1111,22 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 // writeCarryChunked re-issues a recovered tail on a fresh connection in the same
 // capped chunks as freshly drained work (see fdBatchEnd), so a large recovered
 // window is not flushed in one oversized write. Returns the first write error.
-func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq) error {
+func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq, readerDone <-chan struct{}) error {
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	for i := 0; i < len(carry); {
+		// Between chunks, stop if the reader is gone (decode panic, protocol
+		// error mid-replay): writing further chunks to a reader-less connection
+		// only enlarges the ambiguous at-least-once set — same priority rule as
+		// the serve loop. Push the un-written remainder so takeRemaining recovers
+		// the whole accepted set.
+		if readerDone != nil {
+			select {
+			case <-readerDone:
+				inflight.pushBatch(carry[i:])
+				return errFDReaderGone
+			default:
+			}
+		}
 		end := fdBatchEnd(carry, i, fd.maxBatch, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
 			// writeBatch pushed carry[i:end] into inflight before the failed write,
@@ -1220,7 +1255,7 @@ func (fd *fdEngine) failQueue(err error) {
 // Close's "flush accepted work" contract. The caller then closeGraceful()s the
 // deque so the reader drains these replies before exiting. Returns the first
 // write error (the caller degrades to the connection-error path on failure).
-func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, inflight *fdInflight) error {
+func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, inflight *fdInflight, readerDone <-chan struct{}) error {
 	fd.submitMu.Lock()
 	fd.closed = true
 	fd.submitMu.Unlock()
@@ -1230,7 +1265,7 @@ func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, infl
 		case r := <-fd.ch:
 			backlog = append(backlog, r)
 		default:
-			return fd.writeCarryChunked(bg, cn, inflight, backlog)
+			return fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone)
 		}
 	}
 }
