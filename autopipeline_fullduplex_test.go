@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
@@ -1243,5 +1244,372 @@ func TestFDInflightOwnershipPartition(t *testing.T) {
 				t.Fatalf("iter %d: cmd both advanced AND in recovery tail — double-owned (would double-execute)", iter)
 			}
 		}
+	}
+}
+
+// fdCountLimiter counts Allow/ReportResult to verify the full-duplex engine
+// accounts the Limiter once per session (Allow on acquire, ReportResult before
+// release), balanced 1:1.
+type fdCountLimiter struct{ allow, report atomic.Int64 }
+
+func (l *fdCountLimiter) Allow() error         { l.allow.Add(1); return nil }
+func (l *fdCountLimiter) ReportResult(_ error) { l.report.Add(1) }
+
+// TestFullDuplexLimiterPerSession verifies FullDuplex honors opt.Limiter with
+// per-session accounting: every session's conn acquisition is bracketed by
+// exactly one Allow and one ReportResult (before release). Previously the FD
+// engine bypassed the Limiter entirely (#3964).
+func TestFullDuplexLimiterPerSession(t *testing.T) {
+	ctx := context.Background()
+	lim := &fdCountLimiter{}
+	c := NewClient(&Options{
+		Addr:                    ":6379",
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 lim,
+	})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	if err := ap.Set(ctx, "fd:lim:k", "v", 0).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	// A tiny idle window so any late session settles before we read the counters.
+	time.Sleep(20 * time.Millisecond)
+	// Close waits for the engine (ap.wg), so every session's deferred
+	// ReportResult has run by the time Close returns.
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	a, r := lim.allow.Load(), lim.report.Load()
+	if a < 1 {
+		t.Fatalf("FullDuplex never called Limiter.Allow (allow=%d) — Limiter bypassed", a)
+	}
+	if a != r {
+		t.Fatalf("FullDuplex Limiter unbalanced: Allow=%d ReportResult=%d (must be 1:1 per session)", a, r)
+	}
+}
+
+// TestFullDuplexRetryDivertsToNormalConn verifies the mechanism the FD reader
+// uses for a retryable Redis error (LOADING/READONLY/…) or a redirect (MOVED/ASK):
+// the command is re-run on the client's normal path and the caller is settled with
+// that result — not left with the FD error. It drives retryOnNormalConn directly
+// (a deterministic stand-in for the reader's divert) since inducing a real LOADING
+// on a live server is not reproducible.
+func TestFullDuplexRetryDivertsToNormalConn(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	if err := c.Set(ctx, "fd:retry:k", "v", 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// As the reader does on a retryable error: hand an FD request to the divert.
+	cmd := NewStringCmd(ctx, "get", "fd:retry:k")
+	b := newAPBatch()
+	cmd.setReady(b)
+	ap.fd.retryOnNormalConn(fdReq{cmd: cmd, batch: b})
+
+	select {
+	case <-b.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retryOnNormalConn did not complete the diverted command")
+	}
+	if v, err := cmd.Result(); err != nil || v != "v" {
+		t.Fatalf("diverted GET = %q err=%v, want \"v\" (re-run on the normal path)", v, err)
+	}
+}
+
+// fdOtelRecorder counts RecordOperationDuration to prove the full-duplex reader
+// emits the native per-command OTel metric (it previously bypassed process, so
+// no metric was recorded — #3964). All other Recorder methods are no-ops.
+type fdOtelRecorder struct{ opDurations atomic.Int64 }
+
+func (r *fdOtelRecorder) RecordOperationDuration(context.Context, time.Duration, otel.Cmder, int, error, *pool.Conn, int) {
+	r.opDurations.Add(1)
+}
+func (r *fdOtelRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn, int) {
+}
+func (r *fdOtelRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn) {}
+func (r *fdOtelRecorder) RecordConnectionRelaxedTimeout(context.Context, int, *pool.Conn, string, string) {
+}
+func (r *fdOtelRecorder) RecordConnectionHandoff(context.Context, *pool.Conn, string)         {}
+func (r *fdOtelRecorder) RecordError(context.Context, string, *pool.Conn, string, bool, int)  {}
+func (r *fdOtelRecorder) RecordMaintenanceNotification(context.Context, *pool.Conn, string)   {}
+func (r *fdOtelRecorder) RecordConnectionWaitTime(context.Context, time.Duration, *pool.Conn) {}
+func (r *fdOtelRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string, error)   {}
+func (r *fdOtelRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {
+}
+func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
+}
+func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
+func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
+
+// TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
+// native per-command OTel duration metric (redisotel-native), which it did not
+// before — the reader completes commands without going through process().
+func TestFullDuplexRecordsOTelOperationDuration(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	rec := &fdOtelRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	// Runs through the FD pipe (writer -> reader), which is where the metric is
+	// emitted; Result() blocks until the reader completed it (emit is before
+	// complete()).
+	if err := ap.Set(ctx, "fd:otel:k", "v", 0).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if n := rec.opDurations.Load(); n < 1 {
+		t.Fatalf("FullDuplex recorded no OTel RecordOperationDuration (n=%d) — native metric bypassed", n)
+	}
+}
+
+// TestFullDuplexDivertsHImportOffPipe verifies the full-duplex engine routes a
+// managed HIMPORT command off the shared pipe to the normal Process path (#3964).
+// The FD writer streams raw commands and never injects the registered HIMPORT
+// PREPARE, so an HIMPORT SET riding the pipe can fail "no such fieldset"; diverting
+// it through Process lets _process inject the PREPARE from the registry.
+//
+// The assertion is routing, not end-to-end HIMPORT (which needs Redis 8.10+): a
+// diverted command executes on the MAIN pool via process(), while an FD-pipe
+// command uses the dedicated pipeline pool and never touches the main pool. So a
+// main-pool Hits/Misses bump after a lone HImportSet proves it diverted. The
+// command's own result is irrelevant here — it may error on an old server.
+func TestFullDuplexDivertsHImportOffPipe(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Warm the main pool so a later reuse registers as a Hit, then snapshot. The
+	// FD engine uses the pipeline pool, so nothing but the diverted HImportSet
+	// touches the main pool between the two snapshots.
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Fatalf("warm ping: %v", err)
+	}
+	before := c.PoolStats()
+
+	// Err() on the async face blocks until the diverted command has executed, so
+	// the "after" snapshot reflects its pool use. Ignore the result: it may be
+	// "no such fieldset" (registry empty) or "unknown command" (Redis < 8.10) —
+	// either way it ran on the main pool, which is what we assert.
+	_ = ap.HImportSet(ctx, "fd:himport:k", "fd:himport:fs", "v").Err()
+
+	after := c.PoolStats()
+	beforeN := before.Hits + before.Misses
+	afterN := after.Hits + after.Misses
+	if afterN <= beforeN {
+		t.Fatalf("HImportSet did not use the main pool (before=%d after=%d) — it rode the FD pipe instead of diverting to the normal path", beforeN, afterN)
+	}
+}
+
+// fdCloseHook is a ProcessHook that does work AFTER next() returns, to prove the
+// full-duplex engine tracks its hook-host goroutines so AutoPipeliner.Close waits
+// for post-next hook work before returning (#3964). It signals once when it has
+// entered the post-next phase, then holds briefly and records completion.
+type fdCloseHook struct {
+	entered   chan struct{}
+	once      sync.Once
+	finished  atomic.Bool
+	holdFor   time.Duration
+	watchName string
+}
+
+func (h *fdCloseHook) DialHook(next DialHook) DialHook { return next }
+
+func (h *fdCloseHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		err := next(ctx, cmd)
+		if cmd.Name() != h.watchName {
+			return err
+		}
+		h.once.Do(func() { close(h.entered) })
+		// Post-next work: if Close does not wait for this host goroutine, Close
+		// returns while we are still sleeping and finished is still false.
+		time.Sleep(h.holdFor)
+		h.finished.Store(true)
+		return err
+	}
+}
+
+func (h *fdCloseHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestFullDuplexCloseWaitsForHookHosts verifies AutoPipeliner.Close does not
+// return until a full-duplex command's post-next ProcessHook has finished. The FD
+// hook host is the only goroutine that closes such a command's batch; before the
+// fix it was untracked, so Close could return while accepted commands were still
+// blocked behind post-reply hooks (drain-before-return contract violated).
+func TestFullDuplexCloseWaitsForHookHosts(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	hook := &fdCloseHook{entered: make(chan struct{}), holdFor: 120 * time.Millisecond, watchName: "set"}
+	c.AddHook(hook)
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Fire the command on the async face and do NOT read its result (reading would
+	// itself block on the host closing the batch, hiding the bug). Wait until the
+	// host is in its post-next phase, then Close must wait for it to finish.
+	ap.Set(ctx, "fd:close:k", "v", 0)
+	select {
+	case <-hook.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("post-next hook never ran — command did not reach the FD reader")
+	}
+
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !hook.finished.Load() {
+		t.Fatal("Close returned before the post-next ProcessHook finished — FD hook host not waited (drain-before-return violated)")
+	}
+}
+
+// fdSelfReadHook calls next and then reads the command's OWN result
+// (cmd.Err()), the documented pattern also exercised by the async autopipeline
+// hook tests. On the full-duplex path the host goroutine is the only code that
+// closes the command's batch, so without the executor guard this read blocks on
+// batch.done forever (#3964, P1). It records the error it observed.
+type fdSelfReadHook struct {
+	watchName string
+	observed  chan error
+}
+
+func (h *fdSelfReadHook) DialHook(next DialHook) DialHook { return next }
+
+func (h *fdSelfReadHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		err := next(ctx, cmd)
+		if cmd.Name() != h.watchName {
+			return err
+		}
+		// Read own result after next: must return the just-executed view, not
+		// block on the batch this very goroutine is responsible for closing.
+		got := cmd.Err()
+		select {
+		case h.observed <- got:
+		default:
+		}
+		return err
+	}
+}
+
+func (h *fdSelfReadHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestFullDuplexHookReadingOwnResultDoesNotDeadlock verifies a ProcessHook that
+// reads its command's result after next() completes instead of hanging, on the
+// full-duplex path. Before the fix the FD host goroutine did not mark itself as
+// the batch executor, so cmd.Err() inside the hook blocked on batch.done (which
+// only that goroutine closes) — a hard deadlock.
+func TestFullDuplexHookReadingOwnResultDoesNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	hook := &fdSelfReadHook{watchName: "set", observed: make(chan error, 1)}
+	c.AddHook(hook)
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Guard the whole command with a timeout: a deadlock leaves the hook (and so
+	// the caller awaiting the batch) blocked forever.
+	var callerErr atomic.Value
+	done := make(chan struct{})
+	go func() {
+		if e := ap.Set(ctx, "fd:selfread:k", "v", 0).Err(); e != nil {
+			callerErr.Store(e)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("deadlock: hook read its command result after next and blocked on its own FD batch")
+	}
+	if v := callerErr.Load(); v != nil {
+		t.Fatalf("set: %v", v)
+	}
+	select {
+	case got := <-hook.observed:
+		if got != nil {
+			t.Fatalf("hook observed err=%v after next, want nil (just-executed view)", got)
+		}
+	default:
+		t.Fatal("hook did not run on the FD path")
 	}
 }
