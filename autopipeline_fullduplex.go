@@ -488,7 +488,14 @@ func (fd *fdEngine) run() {
 	defer fd.hostWg.Wait()
 	bg := context.Background()
 	var carry []fdReq // unacked tail to re-issue at the start of the next attempt
-	attempts := 0
+	// Two SEPARATE retry budgets, and both count only CONSECUTIVE failures of
+	// their own kind. A shared counter would let transient lease failures eat the
+	// reconnect budget: after MaxRetries lease errors, the first genuine
+	// mid-session drop would fail the whole unacked tail with zero replay
+	// attempts. leaseAttempts resets whenever a session actually ran (a lease
+	// succeeded); retryAttempts resets on a clean session end (idle/recycle).
+	leaseAttempts := 0 // consecutive fdLeaseErr/fdDenied acquisition failures
+	retryAttempts := 0 // consecutive fdConnErr tail-replay failures
 	for {
 		if fd.ap.ctx.Err() != nil {
 			fd.shutdownFlush(bg, carry)
@@ -521,12 +528,12 @@ func (fd *fdEngine) run() {
 			// Conn returned cleanly to the pool (its per-conn hooks can run).
 			// The loop-top wait blocks for the next command before re-leasing, so
 			// an idle engine does not churn Get/Put.
-			carry, attempts = nil, 0
+			carry, leaseAttempts, retryAttempts = nil, 0, 0
 		case fdRecycle:
 			// Max-hold reached; conn returned cleanly. Work is pending — re-lease
 			// immediately.
 			fd.recycles.Add(1)
-			carry, attempts = nil, 0
+			carry, leaseAttempts, retryAttempts = nil, 0, 0
 		case fdLeaseErr:
 			// Could not lease/init a connection for a new session (server down, pool
 			// saturated). Retry the lease for a transient outage; once retries are
@@ -547,18 +554,18 @@ func (fd *fdEngine) run() {
 				fd.shutdownFlush(bg, carry)
 				return
 			}
-			if shouldRetry(aerr, true) && attempts < fd.client.opt.MaxRetries {
-				attempts++
-				fd.sleepBackoff(attempts)
+			if shouldRetry(aerr, true) && leaseAttempts < fd.client.opt.MaxRetries {
+				leaseAttempts++
+				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease
 			}
 			fd.failReqs(carry, aerr)
 			fd.failQueue(aerr)
 			carry = nil
-			attempts++
-			fd.sleepBackoff(attempts)
-			if attempts >= fd.client.opt.MaxRetries {
-				attempts = 0
+			leaseAttempts++
+			fd.sleepBackoff(leaseAttempts)
+			if leaseAttempts >= fd.client.opt.MaxRetries {
+				leaseAttempts = 0
 			}
 		case fdDenied:
 			// Same Close-race guard as fdLeaseErr: on shutdown, flush instead of
@@ -578,19 +585,22 @@ func (fd *fdEngine) run() {
 			fd.failReqs(carry, aerr)
 			fd.failQueue(aerr)
 			carry = nil
-			attempts++
-			fd.sleepBackoff(attempts)
-			if attempts >= fd.client.opt.MaxRetries {
-				attempts = 0
+			leaseAttempts++
+			fd.sleepBackoff(leaseAttempts)
+			if leaseAttempts >= fd.client.opt.MaxRetries {
+				leaseAttempts = 0
 			}
 		default: // fdConnErr — a real connection error occurred
+			// A session ran, so the lease succeeded: acquisition failures are no
+			// longer consecutive.
+			leaseAttempts = 0
 			// retryTimeout=true: a read/write timeout is a retryable connection
 			// failure here (re-issue the unacked tail on a fresh conn), matching
 			// the cluster pipeline retry paths — otherwise a single WAN timeout
 			// fails the whole tail. The NoRetry guard below still protects
 			// non-idempotent writes, same as cmdsContainNoRetry.
 			if len(unacked) > 0 && shouldRetry(aerr, true) &&
-				attempts < fd.client.opt.MaxRetries {
+				retryAttempts < fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: retry the retryable PREFIX and
 				// fail it plus everything ordered after (a NoRetry command must never
 				// be re-sent). When the very first unacked command is NoRetry (n==0)
@@ -600,8 +610,8 @@ func (fd *fdEngine) run() {
 					if n < len(unacked) {
 						fd.failReqs(unacked[n:], aerr)
 					}
-					attempts++
-					fd.sleepBackoff(attempts)
+					retryAttempts++
+					fd.sleepBackoff(retryAttempts)
 					carry = unacked[:n]
 					continue
 				}
@@ -611,10 +621,10 @@ func (fd *fdEngine) run() {
 			// this loop. Keep the engine alive to serve new work when it recovers.
 			fd.failReqs(unacked, aerr)
 			carry = nil
-			attempts++
-			fd.sleepBackoff(attempts)
-			if attempts >= fd.client.opt.MaxRetries {
-				attempts = 0 // reset so backoff restarts small once we're serving again
+			retryAttempts++
+			fd.sleepBackoff(retryAttempts)
+			if retryAttempts >= fd.client.opt.MaxRetries {
+				retryAttempts = 0 // reset so backoff restarts small once we're serving again
 			}
 		}
 	}
@@ -801,6 +811,16 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					}
 					cb(octx, time.Since(req.writtenAt), req.cmd, 1, e, cn, fd.client.opt.DB)
 				}
+				// Error-metric parity with the normal command path: an
+				// inline-completed non-retryable Redis error (WRONGTYPE, NOPERM, …)
+				// must reach the native error callback too — process() emits it via
+				// classifyCommandError, and the FD reader bypasses process.
+				if e != nil {
+					if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+						errorType, statusCode, isInternal := classifyCommandError(e)
+						errorCallback(bg, errorType, cn, statusCode, isInternal, 0)
+					}
+				}
 				req.complete() // wake the caller, or hand off to the hook host
 				done++
 			}
@@ -868,6 +888,16 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					result = fdRecycle
 					break serve
 				}
+			}
+			// Priority check: Go's select picks randomly among ready cases, so with
+			// work queued AND the reader gone (reply-decode panic, protocol error)
+			// the main select below could take fd.ch and write a batch to a
+			// connection the engine already knows has no reader — needlessly
+			// enlarging the ambiguous at-least-once set. Check readerDone first.
+			select {
+			case <-readerDone:
+				break serve // result stays fdConnErr; unacked tail is recovered
+			default:
 			}
 			select {
 			case req := <-fd.ch:
