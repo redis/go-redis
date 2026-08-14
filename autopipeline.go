@@ -326,6 +326,16 @@ func (cfg *AutoPipelineOptions) Validate() error {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires MaxConcurrentBatches<=1 "+
 				"(an ordered single stream); got %d", cfg.MaxConcurrentBatches)
 		}
+		// A USER-set NumShards>1 contradicts FullDuplex the same way (one held
+		// FIFO connection = one stream); reject it rather than silently falling
+		// back to half-duplex. contentSharded is exempt: that flag is set by the
+		// CLUSTER wiring (never by users), where the documented behavior is a
+		// silent half-duplex fallback because the options type cannot see the
+		// client type.
+		if cfg.NumShards > 1 && !cfg.contentSharded {
+			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires NumShards<=1 "+
+				"(one held FIFO connection is a single stream); got %d", cfg.NumShards)
+		}
 	}
 	if cfg.MaxConcurrentBatches > 1 && !cfg.Unordered {
 		return fmt.Errorf("redis: AutoPipelineOptions.MaxConcurrentBatches=%d requires Unordered:true "+

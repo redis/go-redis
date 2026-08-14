@@ -1239,18 +1239,31 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	if len(backlog) == 0 {
 		return
 	}
-	cmds := make([]Cmder, len(backlog))
-	for i := range backlog {
-		cmds[i] = backlog[i].cmd
-	}
-	_ = fd.client.processPipeline(bg, cmds) // per-command results/errors are set inside
-	for i := range backlog {
-		backlog[i].complete()
+	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes and the
+	// in-session Close flush: the backlog can hold the carry plus the whole
+	// channel (up to window commands), and one unchunked pipeline would ignore
+	// MaxBatchBytes and hit the same oversized-write burst the caps exist to
+	// prevent.
+	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
+	for i := 0; i < len(backlog); {
+		end := fdBatchEnd(backlog, i, fd.maxBatch, byteLimit)
+		cmds := make([]Cmder, end-i)
+		for j := i; j < end; j++ {
+			cmds[j-i] = backlog[j].cmd
+		}
+		_ = fd.client.processPipeline(bg, cmds) // per-command results/errors are set inside
+		for j := i; j < end; j++ {
+			backlog[j].complete()
+		}
+		i = end
 	}
 }
 
 // failQueue fails every command currently buffered in fd.ch with err WITHOUT
-// closing the engine (unlike takeQueue, which is the shutdown drain and sets
+// closing the engine, with the same native error-metric emission as failReqs —
+// on fdLeaseErr/fdDenied the carry goes through failReqs and this drains the
+// accepted backlog, and both halves must be visible to extra/redisotel-native.
+// (Unlike takeQueue, which is the shutdown drain and sets
 // closed). Used on an acquisition denial (Limiter reject): the accepted backlog
 // is fail-fasted with the limiter error, but the engine stays alive to serve new
 // work once the limiter admits again. A command submitted concurrently after this
@@ -1258,10 +1271,25 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 // recovers. Channel receive is safe against a concurrent submit send, so no lock
 // is taken here.
 func (fd *fdEngine) failQueue(err error) {
+	errorCallback := pool.GetMetricErrorCallback()
+	var errorType, statusCode string
+	var isInternal bool
+	classified := false
 	for {
 		select {
 		case r := <-fd.ch:
 			r.cmd.SetErr(err)
+			if errorCallback != nil {
+				if !classified {
+					errorType, statusCode, isInternal = classifyCommandError(err)
+					classified = true
+				}
+				octx := r.ctx
+				if octx == nil {
+					octx = context.Background()
+				}
+				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+			}
 			r.complete()
 		default:
 			return
