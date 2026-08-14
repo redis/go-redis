@@ -197,6 +197,14 @@ func (f *fdInflight) advance(n int) {
 	if n > len(f.q) {
 		n = len(f.q)
 	}
+	// Zero the consumed prefix before reslicing: the reslice keeps the backing
+	// array (curInflight holds the deque while the engine idles), so without this
+	// a drained burst retains up to a window's worth of completed fdReq values —
+	// command args, caller contexts, batches — until the next session overwrites
+	// them.
+	for i := 0; i < n; i++ {
+		f.q[i] = fdReq{}
+	}
 	f.q = f.q[n:]
 	f.mu.Unlock()
 	select {
@@ -517,6 +525,14 @@ func (fd *fdEngine) run() {
 			// new conn, so replaying it wholesale is fine. A mid-session drop is
 			// fdConnErr (buffered work survives the reconnect); a persistent outage
 			// converges to this on the next attempt.
+			// Close racing the lease surfaces here as a lease "failure" (the
+			// acquisition ctx is cancelled): the accepted work is fine — flush it
+			// via the normal pipeline path, exactly like the loop-top shutdown
+			// check would have, instead of failing it with a canceled error.
+			if fd.ap.ctx.Err() != nil {
+				fd.shutdownFlush(bg, carry)
+				return
+			}
 			if shouldRetry(aerr, true) && attempts < fd.client.opt.MaxRetries {
 				attempts++
 				fd.sleepBackoff(attempts)
@@ -531,6 +547,13 @@ func (fd *fdEngine) run() {
 				attempts = 0
 			}
 		case fdDenied:
+			// Same Close-race guard as fdLeaseErr: on shutdown, flush instead of
+			// failing accepted work with a denial that only exists because Close
+			// interrupted the acquisition.
+			if fd.ap.ctx.Err() != nil {
+				fd.shutdownFlush(bg, carry)
+				return
+			}
 			// The Limiter denied session acquisition. Fail-fast every accepted
 			// command with the limiter error (matching the plain-client getConn
 			// path) rather than leaving them buffered until the breaker closes:
@@ -739,7 +762,13 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// blocking-command divert. NoRetry commands keep their error.
 				if e != nil && !req.cmd.NoRetry() {
 					moved, ask, _ := isMovedError(e)
-					if moved || ask || shouldRetry(e, false) {
+					// MOVED/ASK are redirects, not retries — always follow them (the
+					// fixed FD socket cannot). A retryable error (LOADING/READONLY/...)
+					// diverts only when retries are enabled: with MaxRetries < 0
+					// (normalized to 0) the divert's process() would still run its
+					// attempt zero, re-sending a command whose retry the caller
+					// explicitly disabled — surface the Redis error instead.
+					if moved || ask || (shouldRetry(e, false) && fd.client.opt.MaxRetries > 0) {
 						fd.retryOnNormalConn(req)
 						done++
 						continue
@@ -960,10 +989,23 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 // writeBatch pushes each req onto the in-flight FIFO (so it is tracked as
 // unacked even if the flush then fails) and writes the whole batch in one
 // buffered flush. A write error leaves the reqs in the deque for recovery.
-func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdInflight, reqs []fdReq) error {
+func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdInflight, reqs []fdReq) (err error) {
 	if len(reqs) == 0 {
 		return nil
 	}
+	// A command encoder can panic (e.g. a user encoding.BinaryMarshaler whose
+	// MarshalBinary panics while writeCmd serializes the args). This runs on the
+	// FD writer goroutine (or run() during a carry replay / Close flush), where an
+	// unrecovered panic would crash the process — the half-duplex dispatchers are
+	// protected by recoverDispatchPanic. Convert it to a connection error: the
+	// batch was pushed to the deque and the write may be partial, so the conn is
+	// desynced and every caller settles through the normal conn-error recovery.
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("redis: autopipeline: panic encoding full-duplex batch: %v", r)
+			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex write panic: %v\n%s", r, debug.Stack())
+		}
+	}()
 	// Stamp the wire-write time so the reader can record write→reply as the
 	// command's OTel operation duration. Done before pushBatch so the copies the
 	// reader reads from the deque carry it.
