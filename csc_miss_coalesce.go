@@ -330,7 +330,7 @@ func (mc *cscMissCoalescer) flush(batch []*cscMissReq) {
 	c := mc.c
 	mc.countBatch(batch)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
 	defer cancel()
 
 	cn, err := c.getConn(ctx)
@@ -423,6 +423,25 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		c.csc.Cancel(req.cacheKey, req.token)
 	}
 	req.done <- applyErr
+}
+
+// batchBudget bounds one whole coalesced flush (pool Get + write + read). It
+// honors the client's configured timeouts instead of a fixed cap: a client that
+// deliberately sets ReadTimeout/WriteTimeout high for slow cacheable reads must
+// not see only its coalesced misses cut off early (WithReader clamps the read to
+// min(ctx deadline, ReadTimeout), so a ctx shorter than ReadTimeout would win).
+// 5s remains the floor for the pool-Get/scheduling overhead; a non-positive
+// configured timeout (disabled) falls back to that floor alone.
+func (mc *cscMissCoalescer) batchBudget() time.Duration {
+	budget := 5 * time.Second
+	opt := mc.c.opt
+	if opt.WriteTimeout > 0 {
+		budget += opt.WriteTimeout
+	}
+	if opt.ReadTimeout > 0 {
+		budget += opt.ReadTimeout
+	}
+	return budget
 }
 
 // countBatch records batch-size accounting.

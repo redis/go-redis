@@ -78,7 +78,10 @@ func (mc *cscMissCoalescer) pinnedWorker() {
 				cn = got
 			}
 
-			ctx, cancel := opCtx()
+			// batchBudget, not opCtx: the flush includes the reply reads, which must
+			// honor a deliberately long configured ReadTimeout (opCtx's fixed 5s
+			// would clamp them; see batchBudget).
+			ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
 			settled, ferr := mc.flushBatch(ctx, cn, batch)
 			cancel()
 			if ferr != nil {

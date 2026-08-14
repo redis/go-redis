@@ -91,26 +91,45 @@ type invalidateHandler struct {
 	// fresh one (picking up the successor's window).
 	batcher *cscInvalBatcher
 
-	// invalBatchWindow is the coalescing window for the batcher above, threaded
-	// from the owning client's Options at attach time. 0 (default) deletes inline.
-	// Read under mu alongside cache/keyPrefix/refresh.
-	invalBatchWindow time.Duration
+	// invalBatchWindow is the EFFECTIVE coalescing window for the batcher above:
+	// the strictest window folded in across attached clients (see
+	// setInvalBatchWindow — 0/inline strictest, then smaller nonzero). 0
+	// (default) deletes inline. invalBatchWindowSet distinguishes "no client has
+	// attached a window yet" from an explicit 0 (inline) that must win over any
+	// later nonzero window. Read under mu alongside cache/keyPrefix/refresh.
+	invalBatchWindow    time.Duration
+	invalBatchWindowSet bool
 }
 
-// setInvalBatchWindow records the invalidation-batch coalescing window from the
-// owning client's Options. Normally set before any push can arrive (attach
-// time). When a second client binds to the same shared handler with a different
-// window, an already-running batcher was created with the previous window (its
-// window is fixed at creation), so it would keep honoring the old cadence and the
-// new client's staleness bound would not hold. Stop and drop that batcher so the
-// next invalidation lazily starts a fresh one with the new window via
-// ensureBatcher; stop() flushes what it holds, so no queued delete is lost.
+// setInvalBatchWindow folds one client's invalidation-batch window into the
+// shared handler's effective window. Called at attach time, before that
+// client's pushes can arrive. Multiple clients can share one handler
+// (same processor + cache), each with its own configured window, and the
+// handler runs ONE batcher — so the effective window is the STRICTEST across
+// attached clients: the smallest nonzero window, with zero (batching off,
+// inline deletes) strictest of all. Tightening can never violate any client's
+// staleness bound; taking the latest window as-is could (a later 1s attach
+// would silently loosen an earlier 10ms client's bound). The window is not
+// re-loosened when the strict client closes — bindings carry no identity to
+// track that, and staying stricter costs only batching efficiency, never
+// correctness.
+//
+// On a tighten, an already-running batcher was created with the looser window
+// (its window is fixed at creation), so stop and drop it; the next invalidation
+// lazily starts a fresh one with the new window via ensureBatcher. stop()
+// flushes what it holds, so no queued delete is lost.
 func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.invalBatchWindow == w {
-		return
+	if h.invalBatchWindowSet {
+		cur := h.invalBatchWindow
+		// Strictness: 0 (inline) is strictest; among nonzero, smaller is stricter.
+		stricter := (w == 0 && cur != 0) || (w != 0 && cur != 0 && w < cur)
+		if !stricter {
+			return
+		}
 	}
+	h.invalBatchWindowSet = true
 	h.invalBatchWindow = w
 	if h.batcher != nil {
 		h.batcher.stop()
@@ -121,7 +140,7 @@ func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 // ensureBatcher lazily starts the windowed invalidation batcher. The common
 // case (already started) is a shared RLock; only first-start takes the write
 // lock, so the hot invalidation path stays cheap.
-func (h *invalidateHandler) ensureBatcher(w time.Duration) *cscInvalBatcher {
+func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 	h.mu.RLock()
 	b := h.batcher
 	h.mu.RUnlock()
@@ -136,6 +155,15 @@ func (h *invalidateHandler) ensureBatcher(w time.Duration) *cscInvalBatcher {
 	// users is 0, release() no longer runs). The caller falls back to the inline
 	// delete path when this returns nil.
 	if h.users == 0 {
+		return nil
+	}
+	// Read the window HERE, under the same lock setInvalBatchWindow writes it —
+	// not from the caller's pre-lock snapshot, which a concurrent tighten (or an
+	// explicit 0 turning batching off) could have superseded; building from the
+	// snapshot would resurrect the old, looser cadence. 0 means batching is off:
+	// return nil so the caller deletes inline.
+	w := h.invalBatchWindow
+	if w <= 0 {
 		return nil
 	}
 	if h.batcher == nil {
@@ -187,10 +215,11 @@ func (h *invalidateHandler) HandlePushNotification(
 		// coalescer's miss-reply reader (the low-concurrency churn p99 tail).
 		if window > 0 {
 			if _, ok := cache.(*LocalCache); ok {
-				// nil when the binding was just released (users==0): fall through
-				// to the inline delete path below rather than enqueue on a nil
+				// nil when the binding was just released (users==0) or when a
+				// concurrent window change turned batching off: fall through to
+				// the inline delete path below rather than enqueue on a nil
 				// batcher (which would panic).
-				if b := h.ensureBatcher(window); b != nil {
+				if b := h.ensureBatcher(); b != nil {
 					for _, k := range payload {
 						var name string
 						switch v := k.(type) {
@@ -255,6 +284,10 @@ func (h *invalidateHandler) releaseLocked() {
 			h.batcher.stop()
 			h.batcher = nil
 		}
+		// A later re-acquire is a fresh binding: it must fold in its own window,
+		// not inherit the strictest window of the released one.
+		h.invalBatchWindow = 0
+		h.invalBatchWindowSet = false
 	}
 }
 

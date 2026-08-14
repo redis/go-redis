@@ -605,7 +605,7 @@ func TestInvalBatchWindowRebuildOnChange(t *testing.T) {
 	t.Cleanup(func() { h.release() })
 
 	h.setInvalBatchWindow(time.Second)
-	b1 := h.ensureBatcher(time.Second)
+	b1 := h.ensureBatcher()
 	if b1 == nil || b1.window != time.Second {
 		t.Fatalf("first batcher window = %v, want 1s", b1)
 	}
@@ -618,7 +618,7 @@ func TestInvalBatchWindowRebuildOnChange(t *testing.T) {
 	if running != nil {
 		t.Fatal("batcher not dropped on window change — the stale window would be kept")
 	}
-	b2 := h.ensureBatcher(10 * time.Millisecond)
+	b2 := h.ensureBatcher()
 	if b2 == nil || b2.window != 10*time.Millisecond {
 		t.Fatalf("rebuilt batcher window = %v, want 10ms", b2)
 	}
@@ -633,6 +633,77 @@ func TestInvalBatchWindowRebuildOnChange(t *testing.T) {
 	h.mu.Unlock()
 	if same != b2 {
 		t.Fatal("setInvalBatchWindow with an unchanged window must not rebuild the batcher")
+	}
+
+	// LOOSER window from a later binding must NOT apply: the effective window is
+	// the strictest across attached clients, or the 10ms client's staleness bound
+	// would be silently violated by a 1s attach.
+	h.setInvalBatchWindow(time.Second)
+	h.mu.Lock()
+	kept, keptWindow := h.batcher, h.invalBatchWindow
+	h.mu.Unlock()
+	if kept != b2 || keptWindow != 10*time.Millisecond {
+		t.Fatalf("a looser window applied over a stricter one: batcher rebuilt=%v window=%v, want kept 10ms", kept != b2, keptWindow)
+	}
+
+	// Explicit 0 (batching off, inline deletes) is strictest of all and must win.
+	h.setInvalBatchWindow(0)
+	h.mu.Lock()
+	zeroWindow, zeroBatcher := h.invalBatchWindow, h.batcher
+	h.mu.Unlock()
+	if zeroWindow != 0 || zeroBatcher != nil {
+		t.Fatalf("explicit 0 window must win (inline) and drop the batcher: window=%v batcher=%v", zeroWindow, zeroBatcher)
+	}
+	// ...and a later nonzero window must not loosen past it.
+	h.setInvalBatchWindow(time.Second)
+	h.mu.Lock()
+	afterZero := h.invalBatchWindow
+	h.mu.Unlock()
+	if afterZero != 0 {
+		t.Fatalf("nonzero window applied over an explicit 0: window=%v, want 0 (inline stays strictest)", afterZero)
+	}
+}
+
+// TestInvalBatchStopAppliesQueuedDeletes pins #3965 (cursor High): stopping the
+// batcher — as a window-change rebuild does — must apply the deletes still
+// buffered in its channel, not just the in-progress batch, or the cache serves
+// pre-invalidation values until TTL/MaxStaleness.
+func TestInvalBatchStopAppliesQueuedDeletes(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour) // never fires on its own in this test
+
+	nsKey := cscNamespacedKey("p:", "sq")
+	cacheKey := cscNamespacedKey("p:", "get:sq")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("stale")) {
+		t.Fatal("seed")
+	}
+	// Queue the delete on the batcher (1h window: buffered, not applied).
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, []interface{}{"sq"}}); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	if _, ok := cache.Get(ctx, cacheKey); !ok {
+		t.Fatal("delete applied before the window elapsed — batching not in effect, test proves nothing")
+	}
+
+	// Tighten the window: the rebuild stops the 1h batcher, whose stop path must
+	// drain + apply the queued delete.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := cache.Get(ctx, cacheKey); !ok {
+			break // delete applied
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued delete lost by the batcher stop/rebuild — entry still served")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

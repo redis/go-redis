@@ -114,9 +114,23 @@ func (b *cscInvalBatcher) run() {
 	for {
 		select {
 		case <-b.stopCh:
-			// Last user released the binding: flush what is pending (a no-op once
-			// the cache is nil) and exit so the goroutine does not live on
-			// re-arming the timer forever.
+			// Stopped: by the last user releasing the binding (deletes are then a
+			// no-op on the nil cache) or by a window change rebuilding the batcher
+			// (setInvalBatchWindow), where the queued deletes are still live and
+			// must not be lost — the cache would serve pre-invalidation values
+			// until TTL/MaxStaleness. Drain what is still buffered in ch into the
+			// batch, then flush once and exit.
+			for draining := true; draining; {
+				select {
+				case k := <-b.ch:
+					if _, dup := seen[k]; !dup {
+						seen[k] = struct{}{}
+						pending = append(pending, k)
+					}
+				default:
+					draining = false
+				}
+			}
 			flush()
 			return
 		case <-b.dropCh:
