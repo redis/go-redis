@@ -392,8 +392,18 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	// crash the process (and leave the caller blocked on b). Recover, fail the
 	// command, and close the batch so the waiter always wakes — mirroring the
 	// dispatch path's recoverDispatchPanic.
+	nextCalled := false
 	defer func() {
 		if r := recover(); r != nil {
+			// The command was already streamed, so the reader still owns cmd and
+			// will write its reply into it. If the panic happened BEFORE next()
+			// (nextCalled false), next() never waited hookDone — wait for it here so
+			// the reader's writes to cmd happen-before the caller's reads (no data
+			// race), and so a non-idempotent command is not left half-settled. When
+			// the panic came after next(), next() already waited hookDone.
+			if !nextCalled {
+				<-hookDone
+			}
 			if cmd.rawErr() == nil {
 				cmd.SetErr(fmt.Errorf("redis: autopipeline: panic in full-duplex process hook: %v", r))
 			}
@@ -401,7 +411,6 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			b.close()
 		}
 	}()
-	nextCalled := false
 	err := fd.ap.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
 		nextCalled = true
 		<-hookDone          // reply landed (or the command was failed)
@@ -493,12 +502,22 @@ func (fd *fdEngine) run() {
 			// the cluster pipeline retry paths — otherwise a single WAN timeout
 			// fails the whole tail. The NoRetry guard below still protects
 			// non-idempotent writes, same as cmdsContainNoRetry.
-			if len(unacked) > 0 && shouldRetry(aerr, true) && !fdReqsNoRetry(unacked) &&
+			if len(unacked) > 0 && shouldRetry(aerr, true) &&
 				attempts < fd.client.opt.MaxRetries {
-				attempts++
-				fd.sleepBackoff(attempts)
-				carry = unacked
-				continue
+				// Split at the first NoRetry command: retry the retryable PREFIX and
+				// fail it plus everything ordered after (a NoRetry command must never
+				// be re-sent). When the very first unacked command is NoRetry (n==0)
+				// there is nothing retryable ahead of it, so fall through to fail the
+				// whole tail. Mirrors the half-duplex split of retry-policy runs.
+				if n := fdFirstNoRetry(unacked); n > 0 {
+					if n < len(unacked) {
+						fd.failReqs(unacked[n:], aerr)
+					}
+					attempts++
+					fd.sleepBackoff(attempts)
+					carry = unacked[:n]
+					continue
+				}
 			}
 			// Not retrying the tail (none, non-retryable, or exhausted): fail it,
 			// then ALWAYS back off before re-leasing so a dead server cannot spin
@@ -587,15 +606,13 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	fd.curInflight.Store(inflight) // test observability (peak in-flight)
 	readerDone := make(chan struct{})
 
+	// Honor opt.ReadTimeout as-is for each per-reply read. After Options.init a
+	// user's disabled timeout (ReadTimeout:-1) is 0, and WithReader/deadline() treat
+	// <= 0 as "no deadline" — so a disabled timeout stays disabled instead of being
+	// clamped to a fixed 30s (options.go maps -1 -> 0; a default client keeps its
+	// positive 5s, which bounds each per-reply read). A genuinely stuck read is
+	// still unblocked by the conn Close on the error path above (fdConnErr case).
 	readTimeout := fd.client.opt.ReadTimeout
-	if readTimeout == 0 {
-		// Unset: keep a bound so the reader cannot block forever on a silent conn.
-		readTimeout = 30 * time.Second
-	}
-	// readTimeout < 0 (ReadTimeout explicitly disabled) flows through unchanged:
-	// WithReader/deadline() treats <= 0 as "no deadline", honoring the disabled
-	// timeout for slow scripts / module commands. A genuinely stuck read is still
-	// unblocked by the conn Close on the error path above (see the fdConnErr case).
 	var errOnce sync.Once
 	var sharedErr error
 	failOnce := func(e error) { errOnce.Do(func() { sharedErr = e }) }
@@ -606,6 +623,19 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	// leaves the unread tail in the deque (it becomes the unacked recovery set).
 	go func() {
 		defer close(readerDone)
+		// A reply decoder can panic (e.g. a RawWriteToCmd whose user io.Writer
+		// panics while readReply streams the raw reply). Without recovery that would
+		// crash the process and leave the outstanding tail incomplete. Recover and
+		// mark the session failed (failOnce) so run() takes the connection-error
+		// path: the reader exits, the unacked tail is recovered (retried per policy
+		// or failed) and the conn is removed — mirroring recoverDispatchPanic on the
+		// half-duplex async dispatchers.
+		defer func() {
+			if r := recover(); r != nil {
+				failOnce(fmt.Errorf("redis: autopipeline: panic in full-duplex reader: %v", r))
+				internal.Logger.Printf(bg, "autopipeline: recovered full-duplex reader panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		var buf []fdReq
 		for {
 			var ok bool
@@ -866,13 +896,19 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 // e.g. a RawWriteTo command). The whole tail is then failed rather than replayed
 // on a fresh connection — matching the half-duplex pipeline, which guards its
 // retry with cmdsContainNoRetry (redis.go generalProcessPipeline).
-func fdReqsNoRetry(reqs []fdReq) bool {
+// fdFirstNoRetry returns the index of the first NoRetry command in reqs, or
+// len(reqs) when there is none. The unacked tail is retried up to this index and
+// failed from it on, so retryable commands before a NoRetry still get their
+// network retries while the NoRetry command (and anything ordered after it) is
+// never re-sent — mirroring the half-duplex dispatcher's split of contiguous
+// retry-policy runs.
+func fdFirstNoRetry(reqs []fdReq) int {
 	for i := range reqs {
 		if reqs[i].cmd.NoRetry() {
-			return true
+			return i
 		}
 	}
-	return false
+	return len(reqs)
 }
 
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).

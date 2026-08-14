@@ -923,24 +923,6 @@ func TestFullDuplexCloseWhileBackpressured(t *testing.T) {
 	}
 }
 
-// TestFDReqsNoRetry covers the retry guard: a tail containing a NoRetry command
-// (RawWriteToCmd) must NOT be replayed on a fresh connection — matching the
-// half-duplex pipeline's cmdsContainNoRetry guard. Pure, no server.
-func TestFDReqsNoRetry(t *testing.T) {
-	ctx := context.Background()
-	retryable := fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v")}
-	if fdReqsNoRetry([]fdReq{retryable}) {
-		t.Fatal("a plain SET was reported NoRetry — the tail would wrongly be failed instead of replayed")
-	}
-	noretry := fdReq{cmd: NewRawWriteToCmd(ctx, io.Discard, "ping")}
-	if !noretry.cmd.NoRetry() {
-		t.Fatal("precondition: RawWriteToCmd.NoRetry() should be true")
-	}
-	if !fdReqsNoRetry([]fdReq{retryable, noretry}) {
-		t.Fatal("a tail containing a NoRetry command was not detected — FD would replay a non-retryable command")
-	}
-}
-
 // TestFullDuplexBlockingCmdDetection proves the divert predicate catches blocking
 // commands — in particular a RAW XREAD whose BLOCK token is a []byte (the form a
 // plain string type switch would miss, letting it ride the shared pipe). Pure.
@@ -1611,5 +1593,130 @@ func TestFullDuplexHookReadingOwnResultDoesNotDeadlock(t *testing.T) {
 		}
 	default:
 		t.Fatal("hook did not run on the FD path")
+	}
+}
+
+// fdPrePanicHook panics BEFORE calling next, to prove the FD host waits for the
+// reader to finish writing the command before releasing the caller (#3964): the
+// command is already streamed, so closing the batch immediately would race the
+// reader's write into cmd against the caller's read of it.
+type fdPrePanicHook struct{ watchName string }
+
+func (h *fdPrePanicHook) DialHook(next DialHook) DialHook { return next }
+func (h *fdPrePanicHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		if cmd.Name() == h.watchName {
+			panic("boom: hook panic before next")
+		}
+		return next(ctx, cmd)
+	}
+}
+func (h *fdPrePanicHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestFullDuplexPreNextHookPanicSettlesWithoutRace verifies a ProcessHook that
+// panics before next() surfaces an error to the caller, does not hang, and does
+// not race the reader's write into the command (run with -race). Before the fix
+// the panic-recover closed the batch immediately, letting the reader write cmd
+// after the caller had already observed the recovered failure.
+func TestFullDuplexPreNextHookPanicSettlesWithoutRace(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	c.AddHook(&fdPrePanicHook{watchName: "set"})
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, "fd:prepanic:k", "v", 0).Err() }()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("expected the hook panic to surface as an error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("caller hung after a pre-next hook panic")
+	}
+}
+
+// TestFDFirstNoRetry verifies the tail-split index that lets the FD retry path
+// replay the retryable PREFIX of an unacked tail while never re-sending a NoRetry
+// command (or anything ordered after it) (#3964).
+func TestFDFirstNoRetry(t *testing.T) {
+	ctx := context.Background()
+	retry := fdReq{cmd: NewStringCmd(ctx, "get", "k")}  // NoRetry() == false
+	nore := fdReq{cmd: NewRawWriteToCmd(ctx, nil, "x")} // NoRetry() == true
+	cases := []struct {
+		name string
+		in   []fdReq
+		want int
+	}{
+		{"empty", nil, 0},
+		{"all-retryable", []fdReq{retry, retry}, 2},
+		{"leading-noretry", []fdReq{nore, retry}, 0},
+		{"noretry-in-middle", []fdReq{retry, retry, nore, retry}, 2},
+		{"trailing-noretry", []fdReq{retry, nore}, 1},
+	}
+	for _, tc := range cases {
+		if got := fdFirstNoRetry(tc.in); got != tc.want {
+			t.Fatalf("%s: fdFirstNoRetry = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// fdPanicWriter panics from Write, simulating a user io.Writer that panics while
+// a RawWriteToCmd's readReply streams the raw reply on the FD reader goroutine.
+type fdPanicWriter struct{}
+
+func (fdPanicWriter) Write(p []byte) (int, error) { panic("boom: reply decoder panic") }
+
+// TestFullDuplexReaderPanicRecovers verifies a panic in reply decoding on the FD
+// reader goroutine is recovered (not a process crash): the command is settled
+// with an error and the engine keeps serving on a fresh session (#3964). A
+// RawWriteToCmd submitted raw rides the FD pipe, and its panicking writer panics
+// while the reader streams the reply.
+func TestFullDuplexReaderPanicRecovers(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := c.Set(ctx, "fd:rpanic:k", "hello", 0).Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	cmd := NewRawWriteToCmd(ctx, fdPanicWriter{}, "get", "fd:rpanic:k")
+	f := ap.Submit(ctx, cmd)
+	done := make(chan struct{})
+	go func() { _ = f.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("command never settled after a reader-decoder panic (reader did not recover)")
+	}
+	if cmd.Err() == nil {
+		t.Fatal("expected an error after the reader-decoder panic, got nil")
+	}
+	// The engine must survive: a subsequent command works on a fresh session.
+	if err := ap.Set(ctx, "fd:rpanic:after", "v", 0).Err(); err != nil {
+		t.Fatalf("engine did not recover after the reader panic: %v", err)
 	}
 }
