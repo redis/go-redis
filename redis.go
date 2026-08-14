@@ -406,7 +406,11 @@ type baseClient struct {
 	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
 	cscRefreshQueue  *cscRefreshQueue
 	cscRefreshHandle *cscRevalidateHandle
-	cscMissCoalescer *cscMissCoalescer
+	// cscMissCoalescer is atomic because a cache miss (processCached) races
+	// Client.Close (stopCSCMissCoalescer nils it): a plain field double-load
+	// could observe non-nil then call fetch on nil — a panic and a data race.
+	// Readers Load once; Close Swaps to nil so stop runs exactly once.
+	cscMissCoalescer atomic.Pointer[cscMissCoalescer]
 
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
 	// process and generalProcessPipeline). Set only on initConn's internal conn

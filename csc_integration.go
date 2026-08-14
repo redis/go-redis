@@ -27,11 +27,21 @@ func cscRegisterCleanups(c *Client) {
 		return
 	}
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
-	// also stops clones from serving once the drainer is gone.
+	// also stops clones from serving once the drainer is gone. Capture the miss
+	// coalescer too (started during attach, so already set here — nil when the
+	// option is off): its workers wait on their own stop channel, so without
+	// this a client dropped WITHOUT Close would leak them — and everything they
+	// retain (cache, pools) — per forgotten client. stopWorkers is idempotent
+	// (sync.Once), so an explicit Close racing this cleanup is safe; it only
+	// signals, never blocks, keeping the cleanup non-blocking.
 	active := c.baseClient.cscActive
+	mc := c.baseClient.cscMissCoalescer.Load()
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
 		if active != nil {
 			active.Store(false)
+		}
+		if mc != nil {
+			mc.stopWorkers()
 		}
 		h.signalStop()
 	}, h)
@@ -1063,9 +1073,11 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 	}
 
-	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when off).
-	if shouldFetch && c.cscMissCoalescer != nil {
-		err := c.cscMissCoalescer.fetch(ctx, cmd, key, token)
+	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when
+	// off). Load the pointer ONCE: a concurrent Close swaps it to nil, and a
+	// second load after the nil-check would call fetch on a nil receiver.
+	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
+		err := mc.fetch(ctx, cmd, key, token)
 		if err == errCSCRetryUncached {
 			// The coalescer bowed out because CSC serving was disabled mid-miss; the
 			// command itself is fine and the reservation was already cancelled. Run it

@@ -34,6 +34,28 @@ func opCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
+// acquireCtx bounds a session/batch connection acquisition. Unlike opCtx's
+// fixed 5s it honors a configured PoolTimeout above that (the normal command
+// path and the workers engine via batchBudget both wait the full pool budget
+// under temporary saturation), and it is cancelled when the coalescer stops so
+// Close does not stall behind a Get blocked on a saturated pool.
+func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
+	d := 5 * time.Second
+	if pt := mc.c.opt.PoolTimeout; pt > d {
+		d = pt
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-mc.stop:
+			cancel()
+		case <-done:
+		}
+	}()
+	return ctx, func() { close(done); cancel() }
+}
+
 // pinnedWorker holds one tracked main-pool connection and flushes batches on it
 // one at a time (half-duplex). The connection is reused across batches and only
 // re-acquired after a connection error.
@@ -63,7 +85,7 @@ func (mc *cscMissCoalescer) pinnedWorker() {
 			mc.countBatch(batch)
 
 			if cn == nil {
-				ctx, cancel := opCtx()
+				ctx, cancel := mc.acquireCtx()
 				got, err := c.getConn(ctx)
 				cancel()
 				if err != nil {
@@ -176,7 +198,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 	case first = <-mc.ch:
 	}
 
-	getCtx, getCancel := opCtx()
+	getCtx, getCancel := mc.acquireCtx()
 	cn, err := c.getConn(getCtx)
 	getCancel()
 	if err != nil {

@@ -146,11 +146,12 @@ func (r *cscMissReq) claimApply() bool {
 }
 
 type cscMissCoalescer struct {
-	c    *baseClient
-	ch   chan *cscMissReq
-	stop chan struct{}
-	wg   sync.WaitGroup
-	mode string // "workers" | "pinned" | "fullduplex"
+	c        *baseClient
+	ch       chan *cscMissReq
+	stop     chan struct{}
+	stopOnce sync.Once // guards close(stop): Close and the GC cleanup can both stop
+	wg       sync.WaitGroup
+	mode     string // "workers" | "pinned" | "fullduplex"
 
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
@@ -163,9 +164,13 @@ type cscMissCoalescer struct {
 }
 
 // startCSCMissCoalescer launches the batcher goroutines. No-op unless
-// Options.ClientSideCacheCoalesceMisses is set and CSC is active.
+// Options.ClientSideCacheCoalesceMisses is set and CSC is active, and — see the
+// option's GoDoc — unless the cache is the built-in *LocalCache: the coalescer's
+// publish path (fulfillCached capture, refresh integration, hot-entry
+// collection) is LocalCache-specific, so a custom Cache implementation falls
+// back to per-caller fetches.
 func (c *baseClient) startCSCMissCoalescer() {
-	if !cscCoalesceMissesEnabled(c.opt) || c.cscMissCoalescer != nil {
+	if !cscCoalesceMissesEnabled(c.opt) || c.cscMissCoalescer.Load() != nil {
 		return
 	}
 	if _, ok := c.csc.(*LocalCache); !ok {
@@ -177,7 +182,7 @@ func (c *baseClient) startCSCMissCoalescer() {
 		stop: make(chan struct{}),
 		mode: cscCoalesceMode(c.opt),
 	}
-	c.cscMissCoalescer = mc
+	c.cscMissCoalescer.Store(mc)
 	switch mc.mode {
 	case "pinned":
 		mc.wg.Add(1)
@@ -206,12 +211,13 @@ func (c *baseClient) startCSCMissCoalescer() {
 }
 
 func (c *baseClient) stopCSCMissCoalescer() {
-	mc := c.cscMissCoalescer
+	// Swap, not load-then-nil: exactly one caller wins even if Close races the
+	// GC cleanup path, so mc.stop is closed once.
+	mc := c.cscMissCoalescer.Swap(nil)
 	if mc == nil {
 		return
 	}
-	c.cscMissCoalescer = nil
-	close(mc.stop)
+	mc.stopWorkers()
 	mc.wg.Wait()
 	// Any request still queued after stop is drained and failed so no caller
 	// hangs on its done channel.
@@ -224,6 +230,14 @@ func (c *baseClient) stopCSCMissCoalescer() {
 			return
 		}
 	}
+}
+
+// stopWorkers signals every coalescer goroutine to exit; idempotent, does not
+// wait. Called by stopCSCMissCoalescer (Close) and by the GC cleanup for a
+// client dropped without Close — the workers retain the base client (cache,
+// pools), so leaving them running would leak all of it per forgotten client.
+func (mc *cscMissCoalescer) stopWorkers() {
+	mc.stopOnce.Do(func() { close(mc.stop) })
 }
 
 // fetch hands a reserved miss to the coalescer and waits for the result. The
@@ -330,14 +344,19 @@ func (mc *cscMissCoalescer) flush(batch []*cscMissReq) {
 	c := mc.c
 	mc.countBatch(batch)
 
-	ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
-	defer cancel()
-
-	cn, err := c.getConn(ctx)
+	// Acquire under acquireCtx (PoolTimeout-bounded AND cancelled by stop, so
+	// Close is not stalled behind a Get blocked on a saturated pool), then run
+	// the batch under the full write+read budget.
+	getCtx, getCancel := mc.acquireCtx()
+	cn, err := c.getConn(getCtx)
+	getCancel()
 	if err != nil {
 		mc.settleAllErr(batch, 0, err)
 		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
+	defer cancel()
 	settled, ferr := mc.flushBatch(ctx, cn, batch)
 	c.releaseConn(ctx, cn, ferr)
 	if ferr != nil {
@@ -425,20 +444,17 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 	req.done <- applyErr
 }
 
-// batchBudget bounds one whole coalesced flush (pool Get + write + read). It
-// honors the client's configured limits instead of a fixed cap: the pool Get may
-// legitimately wait up to PoolTimeout under temporary saturation (the normal
-// processWithRetry path does), and a client that deliberately sets
-// ReadTimeout/WriteTimeout high for slow cacheable reads must not see only its
-// coalesced misses cut off early (WithReader clamps the read to min(ctx
-// deadline, ReadTimeout), so a shorter ctx would win). A 5s floor covers
-// scheduling overhead when the configured limits are tiny or disabled.
+// batchBudget bounds one coalesced batch's write + reads (connection
+// acquisition is bounded separately by acquireCtx, which honors PoolTimeout and
+// is cancelled on stop). It honors the client's configured timeouts instead of
+// a fixed cap: a client that deliberately sets ReadTimeout/WriteTimeout high
+// for slow cacheable reads must not see only its coalesced misses cut off early
+// (WithReader clamps the read to min(ctx deadline, ReadTimeout), so a shorter
+// ctx would win). A 5s floor covers scheduling overhead when the configured
+// timeouts are tiny or disabled.
 func (mc *cscMissCoalescer) batchBudget() time.Duration {
 	opt := mc.c.opt
 	var budget time.Duration
-	if opt.PoolTimeout > 0 {
-		budget += opt.PoolTimeout
-	}
 	if opt.WriteTimeout > 0 {
 		budget += opt.WriteTimeout
 	}
@@ -516,7 +532,7 @@ type CSCMissCoalesceStats struct {
 
 // CSCMissCoalesceStats returns the client's miss-coalescer counters.
 func (c *Client) CSCMissCoalesceStats() CSCMissCoalesceStats {
-	mc := c.baseClient.cscMissCoalescer
+	mc := c.baseClient.cscMissCoalescer.Load()
 	if mc == nil {
 		return CSCMissCoalesceStats{}
 	}

@@ -293,7 +293,7 @@ func TestCSCMissCoalesceAbandonedFetchNoRace(t *testing.T) {
 	// interlock window was never exercised, so a green -race proves nothing. Skip
 	// (don't pass) so the gap is visible. When it does land, this is the neutralize
 	// anchor — reverting claimApply to an unconditional write makes -race fire here.
-	if n := cached.cscMissCoalescer.abandonedApplies.Load(); n == 0 {
+	if n := cached.cscMissCoalescer.Load().abandonedApplies.Load(); n == 0 {
 		t.Skip("timing window never landed: no fetch was abandoned mid-flight; " +
 			"interlock not exercised this run")
 	}
@@ -348,7 +348,7 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	cached.disableCSCServing(ctx, "test: force retry-uncached path")
 
 	cmd := NewStringCmd(ctx, "get", key)
-	if err := cached.cscMissCoalescer.fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
+	if err := cached.cscMissCoalescer.Load().fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
 		t.Fatalf("fetch after CSC disabled = %v; want errCSCRetryUncached (should not surface ErrClosed)", err)
 	}
 	// The reservation must be released, or later readers block IN_PROGRESS until

@@ -443,6 +443,12 @@ type Options struct {
 	// commands are pipelined onto a small set of tracked connections, cutting pool
 	// contention (and the churn p99 tail) at a small pool.
 	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache): the coalescer's publish path (fetch capture, refresh
+	// integration, hot-entry collection) is LocalCache-specific. With a custom
+	// Cache implementation the option is ignored and every miss fetches on its
+	// caller's connection as usual.
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMisses bool
 
