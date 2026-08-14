@@ -366,28 +366,8 @@ func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) []*cs
 	return dst
 }
 
-// CSCMissCoalesceStats reports coalescer activity.
-//
-// Experimental: this API may change in a minor release.
-type CSCMissCoalesceStats struct {
-	Active       bool   // a coalescer is running (ClientSideCacheCoalesceMisses on a LocalCache client)
-	Batched      uint64 // misses served through a batch
-	Batches      uint64 // batches flushed
-	Failed       uint64 // misses settled as errors (connection failure)
-	MaxBatchSize uint64
-}
-
-// CSCMissCoalesceStats returns the client's miss-coalescer counters.
-func (c *Client) CSCMissCoalesceStats() CSCMissCoalesceStats {
-	mc := c.baseClient.cscMissCoalescer.Load()
-	if mc == nil {
-		return CSCMissCoalesceStats{}
-	}
-	return CSCMissCoalesceStats{
-		Active:       true,
-		Batched:      mc.batched.Load(),
-		Batches:      mc.batches.Load(),
-		Failed:       mc.failed.Load(),
-		MaxBatchSize: mc.maxBatchSz.Load(),
-	}
-}
+// Coalescer observability is the client's normal telemetry (the otel operation
+// and error callbacks fire for coalesced misses like any other command path).
+// The engine's internal counters (batched/batches/failed/maxBatchSz on
+// cscMissCoalescer) exist for in-package tests, which read them directly off
+// c.cscMissCoalescer — deliberately NOT exported as a stats API.

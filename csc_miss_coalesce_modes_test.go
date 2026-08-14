@@ -71,7 +71,7 @@ func fdIdleConverges(t *testing.T, key string) bool {
 	if err := cached.Ping(ctx).Err(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
-	if !cached.CSCMissCoalesceStats().Active {
+	if cached.cscMissCoalescer.Load() == nil {
 		t.Fatal("coalescer not active (config not honored?)")
 	}
 	t.Cleanup(func() { seeder.Del(context.Background(), key) })
@@ -87,7 +87,7 @@ func fdIdleConverges(t *testing.T, key string) bool {
 	if got, err := cached.Get(ctx, key).Result(); err != nil || got != "v1" {
 		t.Fatalf("second read = %q, %v; want v1 (should be a local hit)", got, err)
 	}
-	if cached.CSCMissCoalesceStats().Batches == 0 {
+	if mcv := cached.cscMissCoalescer.Load(); mcv == nil || mcv.batches.Load() == 0 {
 		t.Fatal("coalescer never batched; the warm read did not route through it")
 	}
 
@@ -324,7 +324,7 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	if err := cached.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	if !cached.CSCMissCoalesceStats().Active {
+	if cached.cscMissCoalescer.Load() == nil {
 		t.Fatal("coalescer not active")
 	}
 
