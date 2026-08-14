@@ -425,7 +425,9 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	recycleTimer := time.NewTimer(c.fullDuplexRecycleAge())
 	defer recycleTimer.Stop()
 	superDone := make(chan struct{})
+	supDead := make(chan struct{}) // closed when the supervisor exits (joined before release)
 	go func() {
+		defer close(supDead)
 		select {
 		case <-mc.stop:
 			stopFlag.Store(true)
@@ -450,6 +452,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 
 	swg.Wait()
 	close(superDone)
+	// JOIN the supervisor before releasing the connection: the deferred scancel
+	// makes sctx.Done() ready at return, and if the supervisor were still parked
+	// in its select it could pick that case over the (also-ready) superDone and
+	// close a HEALTHY connection after it went back to the pool — possibly
+	// already acquired by an unrelated command. After this join the supervisor
+	// can no longer touch cn.
+	<-supDead
 
 	// Teardown. Error path: the socket was (or is being) closed; Remove it.
 	// Graceful path: the connection is clean (every written reply was read), so

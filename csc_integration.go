@@ -42,6 +42,14 @@ func cscRegisterCleanups(c *Client) {
 		}
 		if mc != nil {
 			mc.stopWorkers()
+			// Drain-cancel anything still queued (non-blocking): a request whose
+			// caller already gave up (ctx cancel) can sit in mc.ch holding an
+			// IN_PROGRESS reservation, and with the workers stopped nothing would
+			// ever settle its token — another client sharing the same injected
+			// cache would then block on that key until StaleTimeout. Channel
+			// receive is safe against a worker doing a final grab; each request is
+			// consumed by exactly one side.
+			mc.drainQueueErr(pool.ErrClosed)
 		}
 		h.signalStop()
 	}, h)
