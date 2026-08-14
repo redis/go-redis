@@ -71,12 +71,19 @@ type AutoPipelineOptions struct {
 	// connection. On a fast link (loopback) prefer the half-duplex path — with no
 	// RTT to overlap, full-duplex only adds coordination overhead.
 	//
-	// Honored only on the async, ordered (Unordered:false, MaxConcurrentBatches<=1),
-	// single-shard face of a standalone *Client that has a pipeline pool. It is
-	// NOT supported on cluster clients: a ClusterClient silently falls back to the
-	// half-duplex path (the options type cannot see the client type, so this is not
-	// caught by Validate). Validate rejects the contradictory standalone combos
-	// (FullDuplex with Unordered or MaxConcurrentBatches>1).
+	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
+	// single-shard face of a standalone *Client that has a pipeline pool — BOTH
+	// the deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. On
+	// the blocking face each caller still blocks per command, so a SINGLE
+	// blocking caller has exactly one command in flight and gains nothing from
+	// full-duplex (there is no next command to overlap — it only adds the held
+	// connection and goroutine overhead); the benefit appears with MANY
+	// concurrent blocking callers, whose commands overlap on the shared pipe
+	// exactly as on the async face (~1 RTT each instead of batch phase-locking).
+	// It is NOT supported on cluster clients: a ClusterClient silently falls back
+	// to the half-duplex path (the options type cannot see the client type, so
+	// this is not caught by Validate). Validate rejects the contradictory
+	// standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
 	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
@@ -99,9 +106,11 @@ type AutoPipelineOptions struct {
 	// flight at once WITHOUT awaiting the first (e.g. Set(k) then Get(k) both
 	// fired on the async face before reading Set's result) and the first diverts.
 	// Awaiting a command's result before issuing a dependent one preserves order
-	// (the dependent command is not enqueued until the first has settled), and the
-	// blocking AutoPipeline face never uses full-duplex at all — so drop-in
-	// synchronous usage is unaffected. NoRetry commands are never diverted.
+	// (the dependent command is not enqueued until the first has settled). The
+	// blocking AutoPipeline face waits per command by construction, so its
+	// per-goroutine ordering is unaffected by the divert — a blocking caller's
+	// next command is not even submitted until the previous one (diverted or not)
+	// has settled. NoRetry commands are never diverted.
 	//
 	// Observability: process hooks (redisotel spans/metrics, custom AddHook
 	// ProcessHooks) DO fire on the full-duplex path — each command runs through the
@@ -947,12 +956,15 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		perShard = 1
 		remainder = 0
 	}
-	// Ordered full-duplex: only the async ordered single-shard face on a
-	// standalone *Client with a pipeline pool. When on, submit() streams on one
-	// held connection and no shard flusher runs.
+	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
+	// with a pipeline pool — both the async and the blocking face. When on,
+	// submit() streams on one held connection and no shard flusher runs. The
+	// blocking face's shape needs nothing extra: submit's fd branch skips
+	// setReady (the blocking contract) and processBlocking Waits on the returned
+	// batch, exactly as it does for a half-duplex enqueue.
 	var fdClient *Client
 	fdOn := false
-	if config.FullDuplex && !blocking && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
+	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
 		if c, ok := pipeliner.(*Client); ok && c.getPipelinePool() != nil {
 			fdOn, fdClient = true, c
 		}
