@@ -426,20 +426,27 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 }
 
 // batchBudget bounds one whole coalesced flush (pool Get + write + read). It
-// honors the client's configured timeouts instead of a fixed cap: a client that
-// deliberately sets ReadTimeout/WriteTimeout high for slow cacheable reads must
-// not see only its coalesced misses cut off early (WithReader clamps the read to
-// min(ctx deadline, ReadTimeout), so a ctx shorter than ReadTimeout would win).
-// 5s remains the floor for the pool-Get/scheduling overhead; a non-positive
-// configured timeout (disabled) falls back to that floor alone.
+// honors the client's configured limits instead of a fixed cap: the pool Get may
+// legitimately wait up to PoolTimeout under temporary saturation (the normal
+// processWithRetry path does), and a client that deliberately sets
+// ReadTimeout/WriteTimeout high for slow cacheable reads must not see only its
+// coalesced misses cut off early (WithReader clamps the read to min(ctx
+// deadline, ReadTimeout), so a shorter ctx would win). A 5s floor covers
+// scheduling overhead when the configured limits are tiny or disabled.
 func (mc *cscMissCoalescer) batchBudget() time.Duration {
-	budget := 5 * time.Second
 	opt := mc.c.opt
+	var budget time.Duration
+	if opt.PoolTimeout > 0 {
+		budget += opt.PoolTimeout
+	}
 	if opt.WriteTimeout > 0 {
 		budget += opt.WriteTimeout
 	}
 	if opt.ReadTimeout > 0 {
 		budget += opt.ReadTimeout
+	}
+	if budget < 5*time.Second {
+		budget = 5 * time.Second
 	}
 	return budget
 }

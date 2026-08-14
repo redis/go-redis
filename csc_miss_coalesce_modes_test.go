@@ -109,6 +109,59 @@ func fdIdleConverges(t *testing.T, key string) bool {
 	return false
 }
 
+// TestFullDuplexSessionReleasesIdleConn pins #3965: a full-duplex session must
+// return its held connection after the idle grace instead of sitting on it until
+// the 30s recycle age — at PoolSize:1 a non-cacheable command (PING) would
+// otherwise block behind the idle session until PoolTimeout and fail.
+func TestFullDuplexSessionReleasesIdleConn(t *testing.T) {
+	ctx := context.Background()
+	probe := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	if err := probe.Ping(ctx).Err(); err != nil {
+		probe.Close()
+		t.Skipf("no redis: %v", err)
+	}
+	probe.Close()
+
+	old := cscFullDuplexSessionIdle
+	cscFullDuplexSessionIdle = 50 * time.Millisecond
+	t.Cleanup(func() { cscFullDuplexSessionIdle = old })
+
+	cached := NewClient(&Options{
+		Addr:                          internalTestRedisAddr(),
+		Protocol:                      3,
+		PoolSize:                      1, // the FD session's held conn is the ONLY conn
+		PoolTimeout:                   2 * time.Second,
+		ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 100},
+		ClientSideCacheCoalesceMisses: true,
+		ClientSideCacheCoalesceMode:   "fullduplex",
+	})
+	seeder := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
+	defer cached.Close()
+	defer seeder.Close()
+
+	key := "fdidlerel:k"
+	if err := seeder.Set(ctx, key, "v", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { seeder.Del(context.Background(), key) })
+	// Route a miss through the FD session so it acquires the pool's only conn.
+	if got, err := cached.Get(ctx, key).Result(); err != nil || got != "v" {
+		t.Fatalf("warm read = %q, %v", got, err)
+	}
+
+	// Past the grace the session must have released the conn; a non-cacheable
+	// PING then completes promptly. Without the release it blocks the full
+	// PoolTimeout and fails (the session held the conn toward the 30s recycle).
+	time.Sleep(200 * time.Millisecond)
+	start := time.Now()
+	if err := cached.Ping(ctx).Err(); err != nil {
+		t.Fatalf("PING after idle grace failed: %v — the idle FD session is still holding the pool's only conn", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("PING took %v; want prompt (idle session should have released the conn)", d)
+	}
+}
+
 // TestClassifyCachedReply pins the abandoned-path reply classifier: it must agree
 // with isCacheableReplyResult on the error-vs-value axis (value and nil are
 // cacheable, a top-level RESP error is not) WITHOUT a caller command to populate.

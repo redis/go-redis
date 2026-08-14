@@ -707,6 +707,38 @@ func TestInvalBatchStopAppliesQueuedDeletes(t *testing.T) {
 	}
 }
 
+// TestInvalBatchEnqueueAfterStopAppliesInline pins #3965 (cursor): a handler
+// goroutine can hold a batcher pointer across a concurrent stop (window-change
+// rebuild mid-enqueue-loop). enqueue on a stopped batcher must apply the delete
+// inline — a key parked in a channel nothing drains would serve
+// pre-invalidation values until TTL/MaxStaleness.
+func TestInvalBatchEnqueueAfterStopAppliesInline(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour)
+	b := h.ensureBatcher()
+	if b == nil {
+		t.Fatal("no batcher")
+	}
+
+	nsKey := cscNamespacedKey("p:", "as")
+	cacheKey := cscNamespacedKey("p:", "get:as")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("stale")) {
+		t.Fatal("seed")
+	}
+
+	b.stop()
+	b.enqueue(nsKey) // stopped: must delete inline, not park in b.ch
+	if _, ok := cache.Get(ctx, cacheKey); ok {
+		t.Fatal("enqueue on a stopped batcher parked the delete — entry still served")
+	}
+}
+
 // TestInvalBatchDroppedOnFlush pins #3965: a full cache Flush (FLUSHDB/FLUSHALL)
 // must discard the batcher's queued per-key deletes, or a delete queued before
 // the flush fires afterward and evicts an entry repopulated post-flush.

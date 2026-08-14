@@ -168,11 +168,15 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 	}
 	if h.batcher == nil {
 		h.batcher = &cscInvalBatcher{
-			h:      h,
 			window: w,
-			ch:     make(chan string, 8192),
-			stopCh: make(chan struct{}),
-			dropCh: make(chan struct{}, 1),
+			// Snapshot the binding for the batcher's lifetime (⊂ the binding's:
+			// releaseLocked stops it before clearing these) so the release-time
+			// stop-drain still applies queued deletes after h.cache is nilled.
+			cache:   h.cache,
+			refresh: h.refresh,
+			ch:      make(chan string, 8192),
+			stopCh:  make(chan struct{}),
+			dropCh:  make(chan struct{}, 1),
 		}
 		go h.batcher.run()
 	}

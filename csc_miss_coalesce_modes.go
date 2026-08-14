@@ -106,6 +106,16 @@ const cscFullDuplexConnsDefault = 1
 // can disable the idle drain (set it huge) as a negative control.
 var cscFullDuplexIdleProbe = 5 * time.Millisecond
 
+// cscFullDuplexSessionIdle is how long a session's writer waits for the next
+// miss before ending the session and returning its held connection to the pool.
+// Without it a session sits on a pool connection for up to fullDuplexRecycleAge
+// (30s) with no miss in flight, and at a small pool (PoolSize:1) a non-cacheable
+// command (PING/SET/uncached read) blocks behind it. The next miss re-acquires —
+// runFullDuplexSession already waits for work BEFORE taking a connection. Under
+// steady miss load the timer is reset per batch and never fires. A var so tests
+// can tighten or disable it.
+var cscFullDuplexSessionIdle = time.Second
+
 // fullDuplexRecycleAge bounds how long a single session holds one connection,
 // so the held connection is returned to the pool periodically (a Put runs the
 // OnPut pool hooks: metrics, health, and any queued maintenance handoff). Honors
@@ -241,6 +251,8 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 	go func() {
 		defer swg.Done()
 		defer close(inflight)
+		idleT := time.NewTimer(cscFullDuplexSessionIdle)
+		defer idleT.Stop()
 		buf := make([]*cscMissReq, 0, cscMissBatchMax)
 		pending := first // the miss that woke the session; write it before blocking
 		for {
@@ -248,6 +260,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 			if pending != nil {
 				req, pending = pending, nil
 			} else {
+				if !idleT.Stop() {
+					select {
+					case <-idleT.C:
+					default:
+					}
+				}
+				idleT.Reset(cscFullDuplexSessionIdle)
 				select {
 				case <-recycle:
 					return
@@ -256,6 +275,14 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 					doRecycle()
 					return
 				case <-sctx.Done():
+					return
+				case <-idleT.C:
+					// No miss for the grace period: end the session cleanly so the
+					// held connection goes back to the pool instead of blocking
+					// non-cacheable traffic at a small pool until the recycle age.
+					// The reader drains anything still in flight (close(inflight)
+					// is the graceful no-more signal); the next miss starts a fresh
+					// session, which acquires only when work is in hand.
 					return
 				case req = <-mc.ch:
 				}
