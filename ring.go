@@ -697,8 +697,11 @@ func (c *Ring) PoolStats() *PoolStats {
 		acc.Hits += s.Hits
 		acc.Misses += s.Misses
 		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
 		acc.TotalConns += s.TotalConns
 		acc.IdleConns += s.IdleConns
+		acc.StaleConns += s.StaleConns
 
 		// Each shard now creates the dedicated pipeline pool by default; fold its
 		// stats into acc.PipelineStats so ring monitoring reflects it too.
@@ -707,8 +710,11 @@ func (c *Ring) PoolStats() *PoolStats {
 			pipe.Hits += ps.Hits
 			pipe.Misses += ps.Misses
 			pipe.Timeouts += ps.Timeouts
+			pipe.WaitCount += ps.WaitCount
+			pipe.WaitDurationNs += ps.WaitDurationNs
 			pipe.TotalConns += ps.TotalConns
 			pipe.IdleConns += ps.IdleConns
+			pipe.StaleConns += ps.StaleConns
 			havePipe = true
 		}
 	}

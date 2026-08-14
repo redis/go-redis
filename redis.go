@@ -661,8 +661,13 @@ func pipelinePoolOptions(opt *Options) *Options {
 	// Spill, don't queue: when every pipeline connection is busy, fall back to the
 	// main pool after a short wait rather than blocking for the (main) PoolTimeout,
 	// which the clone would otherwise inherit (tens of seconds). withPipelineConn
-	// spills on the resulting ErrPoolTimeout.
+	// spills on the resulting ErrPoolTimeout. Cap at DefaultPipelinePoolTimeout but
+	// honor a caller's SHORTER PoolTimeout, so a client tuned to spill faster is not
+	// forced to wait the full default before falling back.
 	pipelineOpt.PoolTimeout = DefaultPipelinePoolTimeout
+	if opt.PoolTimeout > 0 && opt.PoolTimeout < DefaultPipelinePoolTimeout {
+		pipelineOpt.PoolTimeout = opt.PoolTimeout
+	}
 	return pipelineOpt
 }
 
