@@ -438,10 +438,13 @@ type Options struct {
 	// their invalidation arrives, instead of waiting for a reader to miss.
 	ClientSideCacheRefreshOnInvalidate bool
 
-	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses of the same
-	// key so they share one fetch instead of each taking a connection: the missed
-	// commands are pipelined onto a small set of tracked connections, cutting pool
-	// contention (and the churn p99 tail) at a small pool.
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they
+	// stream on a held tracked full-duplex connection instead of each taking a
+	// pool connection: a lone miss is written immediately (no batching delay —
+	// the caller is waiting), concurrent misses share writes opportunistically,
+	// and new misses go out while earlier replies are still in flight (~1 RTT
+	// per miss, no batch phase-lock). Cuts pool contention and the churn p99
+	// tail at a small pool.
 	//
 	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
 	// to a *LocalCache): the coalescer's publish path (fetch capture, refresh
@@ -451,23 +454,6 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMisses bool
-
-	// ClientSideCacheCoalesceMode selects the miss-coalescing engine; it is read
-	// only when ClientSideCacheCoalesceMisses is set. "" or "workers" (default)
-	// runs a small pool of workers, each acquiring a tracked connection per
-	// half-duplex batch (it is not held across batches); "fullduplex" holds a
-	// single connection with a concurrent writer+reader pair so many commands
-	// stream in flight on one socket.
-	//
-	// Experimental: this API may change in a minor release.
-	ClientSideCacheCoalesceMode string
-
-	// ClientSideCacheCoalesceWorkers sets the worker count for the "workers"
-	// coalescing mode. 0 (default) uses the built-in default. Ignored by other
-	// modes and when ClientSideCacheCoalesceMisses is unset.
-	//
-	// Experimental: this API may change in a minor release.
-	ClientSideCacheCoalesceWorkers int
 
 	// ClientSideCacheInvalidationBatchWindow coalesces invalidation-driven cache
 	// deletes into windowed background batches instead of applying them inline on

@@ -7,9 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // errCSCRetryUncached is settled to a coalesced miss when the coalescer bows out
@@ -32,11 +30,16 @@ var errCSCRetryUncached = errors.New("redis: csc miss-coalescer disabled mid-fet
 // refresh policy helps because the readers are the bottleneck).
 //
 // This coalesces concurrent misses the way refreshInvalidatedBatch coalesces
-// invalidated keys: each miss's ORIGINAL command is pipelined onto ONE
-// tracked (main-pool) connection, replies are read back in order, each is
-// applied to its caller's command AND published to the shared cache. Individual
-// pipelined commands (not MGET) so it is cluster-safe and works for any read
-// shape, not just string GET.
+// invalidated keys: each miss's ORIGINAL command is streamed onto a held
+// tracked (main-pool) full-duplex connection (see csc_miss_coalesce_modes.go),
+// replies are read back in order, each is applied to its caller's command AND
+// published to the shared cache. Individual pipelined commands (not MGET) so it
+// is cluster-safe and works for any read shape, not just string GET. Misses are
+// CALLER-BLOCKING — a real request waits on each fetch — so the engine is
+// latency-first: a lone miss is written immediately (batching is opportunistic,
+// packing only what is already queued, never waited-for), and new misses stream
+// out while earlier replies are still in flight (~1 RTT per miss, no batch
+// phase-lock, no pool Get on the hot path).
 //
 // It is cache-aware, which is the whole point and the reason it cannot just ride
 // the ordinary autopipeliner: it must Reserve/fulfilCached each key so the entry
@@ -48,60 +51,23 @@ var errCSCRetryUncached = errors.New("redis: csc miss-coalescer disabled mid-fet
 //
 // Tradeoff, same as the autopipeline path: a coalesced miss loses per-command
 // MaxRetries/backoff/LOADING handling. Behind Options.ClientSideCacheCoalesceMisses.
+//
+// (Two earlier engines were removed once full-duplex was feature-complete: a
+// "workers" engine — N pooled connections, half-duplex batches, which added a
+// full batch RTT of tail latency to misses arriving mid-flight — and a "pinned"
+// benchmark prototype with no idle invalidation drain.)
 
 const (
 	cscMissBatchMax   = 128
 	cscMissQueueDepth = 4096
-	// cscMissWorkersDefault batchers run concurrently in the default "workers"
-	// mode, each holding one main-pool (tracked) connection while it writes+reads
-	// its batch. Size it to the caching client's pool (env override): more workers
-	// than pool connections just makes workers block in the pool Get.
-	cscMissWorkersDefault = 8
 	// cscFullDuplexDepth caps in-flight commands on the single-connection
 	// full-duplex engine (flow control for the writer).
 	cscFullDuplexDepth = 4096
 )
 
-// Engine selection + tuning come from the client's Options (ClientSideCacheCoalesce*)
-// and are read once, at coalescer construction (per client).
+// cscCoalesceMissesEnabled is read once, at coalescer construction (per client).
 func cscCoalesceMissesEnabled(opt *Options) bool {
 	return opt != nil && opt.ClientSideCacheCoalesceMisses
-}
-
-func cscMissWorkersCount(opt *Options) int {
-	if opt != nil && opt.ClientSideCacheCoalesceWorkers > 0 {
-		return opt.ClientSideCacheCoalesceWorkers
-	}
-	return cscMissWorkersDefault
-}
-
-// cscForcePinned lets a benchmark opt into the "pinned" PROTOTYPE engine, which
-// is otherwise NOT reachable from the public ClientSideCacheCoalesceMode option.
-// Pinned holds one connection with no idle invalidation drain, so it can serve
-// stale values after an invalidation (see #3965) and is unsafe for general use;
-// it is kept only for engine benchmark comparison.
-var cscForcePinned bool
-
-// cscCoalesceMode selects the flush engine: "workers" (default, N pool conns,
-// half-duplex batches) or "fullduplex" (1 held conn, concurrent writer+reader,
-// deep pipeline). The "pinned" engine is a benchmark-only PROTOTYPE and is NOT
-// selectable via the public option (it falls back to "workers"); it can only be
-// forced internally via cscForcePinned.
-func cscCoalesceMode(opt *Options) string {
-	if opt == nil {
-		return "workers"
-	}
-	switch opt.ClientSideCacheCoalesceMode {
-	case "fullduplex":
-		return "fullduplex"
-	case "pinned":
-		if cscForcePinned {
-			return "pinned"
-		}
-		return "workers"
-	default:
-		return "workers"
-	}
 }
 
 // cscReq* are the states of cscMissReq.apply, the single-word interlock that
@@ -151,7 +117,6 @@ type cscMissCoalescer struct {
 	stop     chan struct{}
 	stopOnce sync.Once // guards close(stop): Close and the GC cleanup can both stop
 	wg       sync.WaitGroup
-	mode     string // "workers" | "pinned" | "fullduplex"
 
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
@@ -180,33 +145,17 @@ func (c *baseClient) startCSCMissCoalescer() {
 		c:    c,
 		ch:   make(chan *cscMissReq, cscMissQueueDepth),
 		stop: make(chan struct{}),
-		mode: cscCoalesceMode(c.opt),
 	}
 	c.cscMissCoalescer.Store(mc)
-	switch mc.mode {
-	case "pinned":
+	// N independent full-duplex sessions, each holding its own connection and
+	// pulling independent misses from the shared queue. Order-free: coalesced
+	// misses are standalone per-key fetches with no cross-request contract, and
+	// each session's per-conn reader still matches replies to requests. Sharding
+	// spreads the miss + invalidation-drain load off a single connection, which
+	// is what cuts the low-concurrency p99 tail.
+	for i := 0; i < cscFullDuplexConnsDefault; i++ {
 		mc.wg.Add(1)
-		go mc.pinnedWorker()
-	case "fullduplex":
-		// N independent full-duplex sessions, each holding its own connection and
-		// pulling independent misses from the shared queue. Order-free: coalesced
-		// misses are standalone per-key fetches with no cross-request contract, and
-		// each session's per-conn reader still matches replies to requests. Sharding
-		// spreads the miss + invalidation-drain load off a single connection, which
-		// is what cuts the low-concurrency p99 tail.
-		for i := 0; i < cscFullDuplexConnsDefault; i++ {
-			mc.wg.Add(1)
-			go mc.fullDuplexLoop()
-		}
-	default:
-		n := cscMissWorkersCount(c.opt)
-		if n < 1 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			mc.wg.Add(1)
-			go mc.worker()
-		}
+		go mc.fullDuplexLoop()
 	}
 }
 
@@ -298,119 +247,6 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		}
 		return ctx.Err()
 	}
-}
-
-func (mc *cscMissCoalescer) worker() {
-	defer mc.wg.Done()
-	batch := make([]*cscMissReq, 0, cscMissBatchMax)
-	for {
-		select {
-		case <-mc.stop:
-			return
-		case req := <-mc.ch:
-			batch = append(batch[:0], req)
-			// Take whatever else is already waiting so one connection serves many
-			// misses. A lone miss (nothing queued) flushes immediately — at
-			// inflight 1 every caller is blocked on its own Get, so any
-			// accumulation delay would be pure added latency.
-		drain:
-			for len(batch) < cscMissBatchMax {
-				select {
-				case more := <-mc.ch:
-					batch = append(batch, more)
-				default:
-					break drain
-				}
-			}
-			mc.flush(batch)
-		}
-	}
-}
-
-// flush (workers mode) acquires a fresh main-pool connection, pipelines the
-// batch onto it half-duplex (write all, then read all), and releases it. Every
-// req.done is sent exactly once and every token is settled.
-//
-// A published entry is only invalidatable if the connection that read it is
-// running CLIENT TRACKING, so this path must land on a tracked connection.
-// initConn issues CLIENT TRACKING ON for every pooled connection while CSC is
-// active (it is pool-agnostic), so the main pool is tracked and correct. The
-// main pool is used rather than the pipeline pool so the choice stays correct
-// even if a later change makes a dedicated pipeline pool deliberately untracked
-// (publishing a cache entry on an untracked connection would serve stale until
-// TTL). No contention cost: with the coalescer in front, reader misses are
-// handed to it, so the caching client's main pool has no other user.
-func (mc *cscMissCoalescer) flush(batch []*cscMissReq) {
-	c := mc.c
-	mc.countBatch(batch)
-
-	// Acquire under acquireCtx (PoolTimeout-bounded AND cancelled by stop, so
-	// Close is not stalled behind a Get blocked on a saturated pool), then run
-	// the batch under the full write+read budget.
-	getCtx, getCancel := mc.acquireCtx()
-	cn, err := c.getConn(getCtx)
-	getCancel()
-	if err != nil {
-		mc.settleAllErr(batch, 0, err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
-	defer cancel()
-	settled, ferr := mc.flushBatch(ctx, cn, batch)
-	c.releaseConn(ctx, cn, ferr)
-	if ferr != nil {
-		// Write/read failure: settle every request not yet handled as an error so
-		// no caller hangs and no token is left IN_PROGRESS.
-		mc.settleAllErr(batch, settled, ferr)
-	}
-}
-
-// flushBatch writes batch on cn, then reads and settles replies in order.
-// Returns the number settled and any connection error; on error the caller
-// settles the remaining requests. Used by both the workers and pinned engines.
-func (mc *cscMissCoalescer) flushBatch(ctx context.Context, cn *pool.Conn, batch []*cscMissReq) (settled int, err error) {
-	c := mc.c
-	connID := cn.GetID()
-	// Coverage generation captured BEFORE the reads, same discipline as
-	// refreshInvalidatedBatch/fulfillCached: if this conn loses tracking
-	// mid-batch every reply is rejected by fulfillCached rather than published
-	// under lost coverage.
-	capturedGen := c.cscConnInitGen(connID)
-
-	// ctx is the ENGINE's own bounded batch budget, not a caller context, so it
-	// must NOT go through c.context() — with ContextTimeoutEnabled=false (the
-	// default) that strips the deadline to context.Background(), and with
-	// ReadTimeout disabled a server that never replies would then block this
-	// worker forever, wedging Close in stopCSCMissCoalescer's wg.Wait.
-	if werr := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-		for _, req := range batch {
-			if e := writeCmd(wr, req.cmd); e != nil {
-				return e
-			}
-		}
-		return nil
-	}); werr != nil {
-		return 0, werr
-	}
-
-	rerr := cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		for settled < len(batch) {
-			// Invalidation pushes share this connection with replies; drain them
-			// first so a push frame is not read as a value.
-			if e := c.processPendingPushNotificationWithReader(ctx, cn, rd); e != nil {
-				internal.Logger.Printf(ctx, "csc: miss-coalesce push drain: %v", e)
-			}
-			raw, e := rd.ReadRawReply()
-			if e != nil {
-				return e
-			}
-			mc.applyAndSettle(batch[settled], raw, connID, capturedGen)
-			settled++
-		}
-		return nil
-	})
-	return settled, rerr
 }
 
 // applyAndSettle applies raw to the caller's command, publishes to the cache
@@ -534,7 +370,7 @@ func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) []*cs
 //
 // Experimental: this API may change in a minor release.
 type CSCMissCoalesceStats struct {
-	Mode         string // "workers" | "pinned" | "fullduplex"
+	Active       bool   // a coalescer is running (ClientSideCacheCoalesceMisses on a LocalCache client)
 	Batched      uint64 // misses served through a batch
 	Batches      uint64 // batches flushed
 	Failed       uint64 // misses settled as errors (connection failure)
@@ -548,7 +384,7 @@ func (c *Client) CSCMissCoalesceStats() CSCMissCoalesceStats {
 		return CSCMissCoalesceStats{}
 	}
 	return CSCMissCoalesceStats{
-		Mode:         mc.mode,
+		Active:       true,
 		Batched:      mc.batched.Load(),
 		Batches:      mc.batches.Load(),
 		Failed:       mc.failed.Load(),

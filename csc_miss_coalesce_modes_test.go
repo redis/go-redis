@@ -64,7 +64,6 @@ func fdIdleConverges(t *testing.T, key string) bool {
 		PoolSize:                      4,
 		ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 1000},
 		ClientSideCacheCoalesceMisses: true,
-		ClientSideCacheCoalesceMode:   "fullduplex",
 	})
 	seeder := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
 	defer cached.Close()
@@ -72,8 +71,8 @@ func fdIdleConverges(t *testing.T, key string) bool {
 	if err := cached.Ping(ctx).Err(); err != nil {
 		t.Fatalf("ping: %v", err)
 	}
-	if mode := cached.CSCMissCoalesceStats().Mode; mode != "fullduplex" {
-		t.Fatalf("coalescer mode = %q; want fullduplex (config not honored?)", mode)
+	if !cached.CSCMissCoalesceStats().Active {
+		t.Fatal("coalescer not active (config not honored?)")
 	}
 	t.Cleanup(func() { seeder.Del(context.Background(), key) })
 
@@ -133,7 +132,6 @@ func TestFullDuplexSessionReleasesIdleConn(t *testing.T) {
 		PoolTimeout:                   2 * time.Second,
 		ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 100},
 		ClientSideCacheCoalesceMisses: true,
-		ClientSideCacheCoalesceMode:   "fullduplex",
 	})
 	seeder := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
 	defer cached.Close()
@@ -319,7 +317,6 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 		PoolSize:                      4,
 		ClientSideCacheConfig:         &ClientSideCacheConfig{MaxEntries: 1000},
 		ClientSideCacheCoalesceMisses: true,
-		ClientSideCacheCoalesceMode:   "fullduplex",
 	})
 	seeder := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3})
 	defer cached.Close()
@@ -327,8 +324,8 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	if err := cached.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
-	if mode := cached.CSCMissCoalesceStats().Mode; mode != "fullduplex" {
-		t.Fatalf("coalescer mode = %q; want fullduplex", mode)
+	if !cached.CSCMissCoalesceStats().Active {
+		t.Fatal("coalescer not active")
 	}
 
 	key := "fdmiss:disabled"

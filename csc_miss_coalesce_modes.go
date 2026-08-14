@@ -11,22 +11,26 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// Alternate miss-coalescer engines (PROTOTYPE, benchmark comparison).
+// The full-duplex miss-coalescer engine — THE engine behind
+// Options.ClientSideCacheCoalesceMisses (misses are caller-blocking, so the
+// latency-first streaming engine is the only one; see csc_miss_coalesce.go for
+// the removed alternatives).
 //
-//   - pinnedWorker: one held tracked connection, serial half-duplex batches.
-//     Removes pool Get/Put churn and connection-count contention, but each batch
-//     costs a full RTT before the next starts.
-//   - fullDuplexLoop: one held tracked connection with concurrent writer + reader
-//     goroutines. Commands stream out while replies stream back, so many commands
-//     are in flight on a single socket (the rueidis pipelining model). Hides RTT
-//     with one connection instead of N.
+// fullDuplexLoop runs sessions holding one tracked connection with concurrent
+// writer + reader goroutines: commands stream out while replies stream back, so
+// many commands are in flight on a single socket (the rueidis pipelining
+// model) — hides RTT with one connection instead of N.
 //
-// Both hold a connection outside the normal pool Get/Put cycle and redial on
-// error. Correctness note: a held connection spans reconnects, so on ANY
-// connection error every in-flight request is failed (token cancelled, caller
-// woken) rather than matched to a reply across tracking generations, and a
-// published reply is gated on the reading connection's id+generation still
+// A session holds its connection outside the normal pool Get/Put cycle and
+// redials on error. Correctness note: a held connection spans reconnects, so on
+// ANY connection error every in-flight request is failed (token cancelled,
+// caller woken) rather than matched to a reply across tracking generations, and
+// a published reply is gated on the reading connection's id+generation still
 // matching the one captured when the command was written.
+//
+// (An earlier "pinned" engine — one held conn, serial half-duplex batches, NO
+// idle invalidation drain — was a benchmark-only prototype and has been
+// removed: it could serve stale after an invalidation while idle.)
 
 const cscModeBackoff = 5 * time.Millisecond
 
@@ -34,11 +38,11 @@ func opCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
-// acquireCtx bounds a session/batch connection acquisition. Unlike opCtx's
-// fixed 5s it honors a configured PoolTimeout above that (the normal command
-// path and the workers engine via batchBudget both wait the full pool budget
-// under temporary saturation), and it is cancelled when the coalescer stops so
-// Close does not stall behind a Get blocked on a saturated pool.
+// acquireCtx bounds a session connection acquisition. Unlike opCtx's fixed 5s
+// it honors a configured PoolTimeout above that (the normal command path waits
+// the full pool budget under temporary saturation), and it is cancelled when
+// the coalescer stops so Close does not stall behind a Get blocked on a
+// saturated pool.
 func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
 	d := 5 * time.Second
 	if pt := mc.c.opt.PoolTimeout; pt > d {
@@ -54,64 +58,6 @@ func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
 		}
 	}()
 	return ctx, func() { close(done); cancel() }
-}
-
-// pinnedWorker holds one tracked main-pool connection and flushes batches on it
-// one at a time (half-duplex). The connection is reused across batches and only
-// re-acquired after a connection error.
-func (mc *cscMissCoalescer) pinnedWorker() {
-	defer mc.wg.Done()
-	c := mc.c
-
-	var cn *pool.Conn
-	release := func(err error) {
-		if cn == nil {
-			return
-		}
-		ctx, cancel := opCtx()
-		c.releaseConn(ctx, cn, err)
-		cancel()
-		cn = nil
-	}
-	defer release(nil)
-
-	batch := make([]*cscMissReq, 0, cscMissBatchMax)
-	for {
-		select {
-		case <-mc.stop:
-			return
-		case req := <-mc.ch:
-			batch = mc.grabInto(batch[:0], req)
-			mc.countBatch(batch)
-
-			if cn == nil {
-				ctx, cancel := mc.acquireCtx()
-				got, err := c.getConn(ctx)
-				cancel()
-				if err != nil {
-					mc.settleAllErr(batch, 0, err)
-					select {
-					case <-mc.stop:
-						return
-					case <-time.After(cscModeBackoff):
-					}
-					continue
-				}
-				cn = got
-			}
-
-			// batchBudget, not opCtx: the flush includes the reply reads, which must
-			// honor a deliberately long configured ReadTimeout (opCtx's fixed 5s
-			// would clamp them; see batchBudget).
-			ctx, cancel := context.WithTimeout(context.Background(), mc.batchBudget())
-			settled, ferr := mc.flushBatch(ctx, cn, batch)
-			cancel()
-			if ferr != nil {
-				release(ferr) // retire the bad connection; next batch re-acquires
-				mc.settleAllErr(batch, settled, ferr)
-			}
-		}
-	}
 }
 
 // ---- full-duplex engine (feature-complete) ----
@@ -209,9 +155,8 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	if err != nil {
 		// No connection: fail the first miss plus everything queued so a caller on
 		// a deadline-less context is not blocked forever and no reservation leaks
-		// IN_PROGRESS (mirrors pinnedWorker's getConn-failure handling). The caller
-		// backs off and retries; requests arriving during backoff are failed on the
-		// next attempt's drain.
+		// IN_PROGRESS. The caller backs off and retries; requests arriving during
+		// backoff are failed on the next attempt's drain.
 		mc.settleErr(first, err)
 		mc.drainQueueErr(err)
 		return false, true // error end: the loop backs off before re-acquiring
@@ -367,10 +312,9 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				}
 				// Deliver the reply the caller is waiting for and let applyAndSettle
 				// gate only the CACHE PUBLISH on the connection's id/generation
-				// (fulfillCached checks the captured gen) — matching the workers and
-				// pinned engines. Previously FD failed the caller with ErrClosed on a
-				// mid-flight id/gen change even though the reply was read fine, losing
-				// a good result (#3965).
+				// (fulfillCached checks the captured gen). Previously FD failed the
+				// caller with ErrClosed on a mid-flight id/gen change even though the
+				// reply was read fine, losing a good result (#3965).
 				mc.applyAndSettle(req, raw, connID, gen)
 				return nil
 			})
