@@ -47,10 +47,7 @@ import (
 // Cluster and window auto-tune are follow-ups (see AP_ORDERED_FULLDUPLEX_DESIGN.md).
 // RESP3 push frames are demuxed inline.
 
-var (
-	errFDReaderGone   = errors.New("redis: autopipeline full-duplex reader exited")
-	errFDConnUnusable = errors.New("redis: autopipeline full-duplex connection unusable")
-)
+var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited")
 
 // Full-duplex tuning defaults, applied by newFDEngine when the corresponding
 // AutoPipelineOptions field is zero. See the FullDuplexWindow / FullDuplexIdleTimeout
@@ -72,6 +69,8 @@ const (
 	fdConnErr                  // connection failure: unacked tail returned for replay
 	fdIdle                     // idle: conn returned cleanly; re-lease on next command
 	fdRecycle                  // max-hold: conn returned cleanly; re-lease immediately (work pending)
+	fdDenied                   // acquisition denied (Limiter.Allow reject): fail carry + backlog, engine stays alive
+	fdLeaseErr                 // could not lease/init a conn for a new session: retry, then fail carry + backlog after MaxRetries
 )
 
 // fdReq pairs a command with the per-command apBatch whose done channel is
@@ -332,39 +331,37 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	if fd.closed {
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ErrClosed)
-		// No hook host was started (the spawn is below, under this gate), so wake
-		// the caller by closing the batch directly. req.complete() here would close
-		// hookDone with nobody listening and leave batch.done open forever.
-		b.close()
-		return b
-	}
-	// Start the hook host UNDER the gate and track it in hostWg so Close (which
-	// waits ap.wg -> run(), which waits hostWg) cannot return while a ProcessHook's
-	// post-next work is still running. Gating the Add behind the closed re-check
-	// keeps every Add ordered before drainQueue's WLock, so run()'s hostWg.Wait
-	// never races an Add on a zero counter.
-	if hookDone != nil {
-		fd.hostWg.Add(1)
-		go fd.hostHook(ctx, cmd, b, hookDone)
+		// Submit-time rejection: return the shared completedBatch sentinel (no host
+		// was started) so processAsync surfaces the error from raw Process(ctx,cmd),
+		// matching every other submit-time-rejection path.
+		return completedBatch
 	}
 	select {
 	case fd.ch <- req:
+		// Accepted onto the stream. Start the hook host ONLY now — a submission that
+		// is never admitted (the cancel paths below) must not spawn/leak a host
+		// goroutine under backpressure. Tracked in hostWg (Add under the gate, so it
+		// is ordered before drainQueue's WLock and run()'s hostWg.Wait never races an
+		// Add on a zero counter) so Close waits for post-next hook work.
+		if hookDone != nil {
+			fd.hostWg.Add(1)
+			go fd.hostHook(ctx, cmd, b, hookDone)
+		}
 		fd.submitMu.RUnlock()
 		return b
 	case <-ctx.Done():
 		// Caller's context expired/cancelled while backpressured (window/channel
-		// full): honor it instead of blocking until room or Close (#3964). A host
-		// (if any) was started above, so req.complete() closes hookDone and the host
-		// wakes, runs and closes the batch; hook-free, req.complete closes b itself.
+		// full): honor it instead of blocking until room or Close (#3964). Not
+		// admitted and no host started, so this is a submit-time failure — return the
+		// completedBatch sentinel so raw Process(ctx,cmd) reports the ctx error (the
+		// typed async face reads the same error off the command).
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ctx.Err())
-		req.complete()
-		return b
+		return completedBatch
 	case <-fd.ap.ctx.Done():
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ErrClosed)
-		req.complete()
-		return b
+		return completedBatch
 	}
 }
 
@@ -496,6 +493,47 @@ func (fd *fdEngine) run() {
 			// immediately.
 			fd.recycles.Add(1)
 			carry, attempts = nil, 0
+		case fdLeaseErr:
+			// Could not lease/init a connection for a new session (server down, pool
+			// saturated). Retry the lease for a transient outage; once retries are
+			// exhausted, fail-fast the carry tail AND the fd.ch backlog with the error
+			// (matching half-duplex, which completes accepted batches with the conn
+			// error after retries) rather than leaving accepted commands buffered
+			// indefinitely. The engine stays alive and serves again once the
+			// server/pool recovers. carry here is already NoRetry-safe (the mid-session
+			// fdConnErr split produced it, or it is nil), and it was never written on a
+			// new conn, so replaying it wholesale is fine. A mid-session drop is
+			// fdConnErr (buffered work survives the reconnect); a persistent outage
+			// converges to this on the next attempt.
+			if shouldRetry(aerr, true) && attempts < fd.client.opt.MaxRetries {
+				attempts++
+				fd.sleepBackoff(attempts)
+				continue // carry unchanged; re-lease
+			}
+			fd.failReqs(carry, aerr)
+			fd.failQueue(aerr)
+			carry = nil
+			attempts++
+			fd.sleepBackoff(attempts)
+			if attempts >= fd.client.opt.MaxRetries {
+				attempts = 0
+			}
+		case fdDenied:
+			// The Limiter denied session acquisition. Fail-fast every accepted
+			// command with the limiter error (matching the plain-client getConn
+			// path) rather than leaving them buffered until the breaker closes:
+			// the carry tail plus the whole fd.ch backlog. The engine stays alive
+			// (no closed flag) and backs off, so it serves again once the limiter
+			// admits — commands submitted after this drain are failed on the next
+			// denied attempt or served once it recovers.
+			fd.failReqs(carry, aerr)
+			fd.failQueue(aerr)
+			carry = nil
+			attempts++
+			fd.sleepBackoff(attempts)
+			if attempts >= fd.client.opt.MaxRetries {
+				attempts = 0
+			}
 		default: // fdConnErr — a real connection error occurred
 			// retryTimeout=true: a read/write timeout is a retryable connection
 			// failure here (re-issue the unacked tail on a fresh conn), matching
@@ -547,7 +585,11 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	limited := fd.client.opt.Limiter != nil
 	if limited {
 		if err := fd.client.opt.Limiter.Allow(); err != nil {
-			return carry, fdConnErr, err
+			// Acquisition denied (e.g. an open circuit breaker). Report nothing (no
+			// conn was acquired, mirroring getConn) and signal fdDenied so run()
+			// fail-fasts carry AND the fd.ch backlog with this error instead of
+			// leaving accepted async commands buffered until the breaker closes.
+			return carry, fdDenied, err
 		}
 	}
 
@@ -580,19 +622,17 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	cn, aerr = fd.pool.Get(fd.ap.ctx)
 	if aerr != nil {
 		cn = nil
-		return carry, fdConnErr, aerr
+		return carry, fdLeaseErr, aerr
 	}
-	if !cn.IsInited() {
-		if e := fd.client.initConn(bg, cn); e != nil {
-			fd.pool.Remove(bg, cn, e)
-			cn = nil // Removed; the defer must not release it again
-			return carry, fdConnErr, e
-		}
-		if !cn.TryAcquire() {
-			fd.pool.Remove(bg, cn, errFDConnUnusable)
-			cn = nil
-			return carry, fdConnErr, errFDConnUnusable
-		}
+	// Init + acquire through the shared helper (initPooledConn) rather than
+	// hand-inlining initConn/TryAcquire — the main and pipeline paths drifted three
+	// times when this was mirrored by hand. It records the create-time metric,
+	// unwraps the init error, and Removes the conn on any failure (so the defer,
+	// which sees cn=nil, does not double-release). It does NOT Put/return the conn,
+	// which suits the held-conn full-duplex model.
+	if e := fd.client.initPooledConn(bg, fd.pool, cn); e != nil {
+		cn = nil // initPooledConn already Removed it
+		return carry, fdLeaseErr, e
 	}
 
 	unacked, result, aerr = fd.session(bg, cn, carry)
@@ -746,8 +786,12 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 
 	result = fdConnErr // default until a break sets otherwise
 
-	// Writer: re-issue the recovered tail first, then serve the queue.
-	writeErr := fd.writeBatch(bg, cn, inflight, carry)
+	// Writer: re-issue the recovered tail first, then serve the queue. The tail is
+	// re-issued in the SAME MaxBatchSize/MaxBatchBytes-capped chunks as freshly
+	// drained work — a recovered window can hold up to fd.window commands, so a
+	// single flush would otherwise ignore MaxBatchBytes and hit the same
+	// write-timeout/burst on the new connection.
+	writeErr := fd.writeCarryChunked(bg, cn, inflight, carry)
 	if writeErr == nil {
 		scratch := make([]fdReq, 0, fd.maxBatch)
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
@@ -812,7 +856,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				}
 				resetIdle()
 			case <-maxC:
-				result = fdRecycle
+				// Max-hold reached. If the pipe is drained (nothing in-flight, nothing
+				// queued), return fdIdle so run() blocks for the next command instead
+				// of immediately re-leasing — otherwise a quiet engine configured with
+				// FullDuplexMaxHold < FullDuplexIdleTimeout would Get/Put-churn (and
+				// re-charge the Limiter/session hooks) every max-hold interval. With
+				// work pending, recycle to keep serving.
+				if inflight.empty() && len(fd.ch) == 0 {
+					result = fdIdle
+				} else {
+					result = fdRecycle
+				}
 				break serve
 			}
 		}
@@ -824,10 +878,15 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 
 	switch result {
 	case fdGraceful:
-		// Clean Close: stop pushing, let the reader drain in-flight replies to a
-		// RESP boundary, and fail only what never made it onto the wire.
+		// Clean Close: flush the accepted-but-unwritten fd.ch backlog on this
+		// connection first (so Close honors "accepted ⇒ completes", matching the
+		// half-duplex Close flush contract) rather than failing it ErrClosed, then
+		// let the reader drain every in-flight reply to a RESP boundary. A write
+		// error during the flush surfaces via the reader/sharedErr path below.
+		if e := fd.flushBacklogForClose(bg, cn, inflight); e != nil {
+			failOnce(e)
+		}
 		inflight.closeGraceful()
-		fd.drainQueue(ErrClosed)
 		<-readerDone
 		if sharedErr != nil {
 			// The reader hit a connection error during the final drain: the
@@ -900,10 +959,39 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	})
 }
 
-// fdReqsNoRetry reports whether any command in the tail forbids retry (NoRetry,
-// e.g. a RawWriteTo command). The whole tail is then failed rather than replayed
-// on a fresh connection — matching the half-duplex pipeline, which guards its
-// retry with cmdsContainNoRetry (redis.go generalProcessPipeline).
+// fdBatchEnd returns the exclusive end index of the next write chunk starting at
+// `start`, applying the same caps as the drain loop: at most maxBatch commands,
+// and (when byteLimit > 0) stop once the accumulated approximate payload reaches
+// the limit — but always include the first command, so a lone oversized command
+// still goes. Pure; the boundary logic is unit-tested.
+func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
+	end := start + 1
+	bytes := cmdApproxBytes(reqs[start].cmd)
+	for end < len(reqs) && end-start < maxBatch {
+		if byteLimit > 0 && bytes >= byteLimit {
+			break
+		}
+		bytes += cmdApproxBytes(reqs[end].cmd)
+		end++
+	}
+	return end
+}
+
+// writeCarryChunked re-issues a recovered tail on a fresh connection in the same
+// capped chunks as freshly drained work (see fdBatchEnd), so a large recovered
+// window is not flushed in one oversized write. Returns the first write error.
+func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq) error {
+	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
+	for i := 0; i < len(carry); {
+		end := fdBatchEnd(carry, i, fd.maxBatch, byteLimit)
+		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
+			return e
+		}
+		i = end
+	}
+	return nil
+}
+
 // fdFirstNoRetry returns the index of the first NoRetry command in reqs, or
 // len(reqs) when there is none. The unacked tail is retried up to this index and
 // failed from it on, so retryable commands before a NoRetry still get their
@@ -956,6 +1044,48 @@ func (fd *fdEngine) drainQueue(err error) {
 			r.complete()
 		default:
 			return
+		}
+	}
+}
+
+// failQueue fails every command currently buffered in fd.ch with err WITHOUT
+// closing the engine (unlike drainQueue, which is the shutdown drain and sets
+// closed). Used on an acquisition denial (Limiter reject): the accepted backlog
+// is fail-fasted with the limiter error, but the engine stays alive to serve new
+// work once the limiter admits again. A command submitted concurrently after this
+// returns is failed on the next denied attempt or served once the limiter
+// recovers. Channel receive is safe against a concurrent submit send, so no lock
+// is taken here.
+func (fd *fdEngine) failQueue(err error) {
+	for {
+		select {
+		case r := <-fd.ch:
+			r.cmd.SetErr(err)
+			r.complete()
+		default:
+			return
+		}
+	}
+}
+
+// flushBacklogForClose is the graceful-Close flush. It stops new submits (sets
+// closed) and re-issues every command still buffered in fd.ch on the current
+// connection, in the same MaxBatchSize/MaxBatchBytes chunks as normal writes, so
+// ACCEPTED commands complete instead of failing ErrClosed — matching half-duplex
+// Close's "flush accepted work" contract. The caller then closeGraceful()s the
+// deque so the reader drains these replies before exiting. Returns the first
+// write error (the caller degrades to the connection-error path on failure).
+func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, inflight *fdInflight) error {
+	fd.submitMu.Lock()
+	fd.closed = true
+	fd.submitMu.Unlock()
+	var backlog []fdReq
+	for {
+		select {
+		case r := <-fd.ch:
+			backlog = append(backlog, r)
+		default:
+			return fd.writeCarryChunked(bg, cn, inflight, backlog)
 		}
 	}
 }

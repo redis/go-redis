@@ -100,14 +100,22 @@ func fdTestClient(addr string) *Client {
 	})
 }
 
-// TestFullDuplexConsumesInvalidationPush proves the ordered full-duplex reader
-// drains an interleaved RESP3 push (a CLIENT TRACKING invalidation) instead of
-// misreading it as a command reply. CLIENT TRACKING ON is issued on the single
-// held FD connection, a key is primed (tracked) through FD, then a SECOND client
-// mutates it — the server pushes an `invalidate` frame onto the FD conn. If the
-// reader did not consume the push, one of the follow-up GET readReply calls
-// would parse the push frame as its reply and return a wrong value or error.
-func TestFullDuplexConsumesInvalidationPush(t *testing.T) {
+// TestFullDuplexStaysAlignedUnderConcurrentMutation verifies the ordered
+// full-duplex reader keeps command↔reply FIFO alignment while a SECOND client
+// mutates the key concurrently: every GET after the mutation returns the new
+// value and never errors.
+//
+// NOTE: this does NOT exercise the reader's RESP3 push-drain
+// (processPendingPushNotificationWithReader). An earlier version tried to via
+// CLIENT TRACKING, but that cannot reach the FD connection: pipeline-pool
+// connections are deliberately excluded from CLIENT TRACKING (redis.go — they
+// never populate the client-side cache), and CLIENT TRACKING issued through the
+// autopipeliner diverts to a main-pool connection anyway. So no invalidation push
+// ever lands on the held FD conn. Real FD-connection push demux is driven by
+// maintenance-notification pushes (maintnotifications e2e); a focused unit test
+// would need a mock connection that injects a push frame ahead of a reply —
+// tracked as a follow-up.
+func TestFullDuplexStaysAlignedUnderConcurrentMutation(t *testing.T) {
 	ctx := context.Background()
 	addr := ":6379"
 
@@ -126,13 +134,9 @@ func TestFullDuplexConsumesInvalidationPush(t *testing.T) {
 		t.Fatal("full-duplex engine not active (ap.fd is nil)")
 	}
 
-	key := "fd:pushtest:key"
+	key := "fd:align:key"
 	if err := c.Set(ctx, key, "v0", 0).Err(); err != nil {
 		t.Fatalf("seed set: %v", err)
-	}
-
-	if err := ap.Do(ctx, "CLIENT", "TRACKING", "ON").Err(); err != nil {
-		t.Fatalf("CLIENT TRACKING ON: %v", err)
 	}
 	if v, err := ap.Get(ctx, key).Result(); err != nil || v != "v0" {
 		t.Fatalf("prime GET: v=%q err=%v", v, err)
@@ -141,18 +145,16 @@ func TestFullDuplexConsumesInvalidationPush(t *testing.T) {
 	other := NewClient(&Options{Addr: addr})
 	defer other.Close()
 	if err := other.Set(ctx, key, "v1", 0).Err(); err != nil {
-		t.Fatalf("invalidating set: %v", err)
+		t.Fatalf("concurrent set: %v", err)
 	}
-
-	time.Sleep(150 * time.Millisecond) // let the invalidation push arrive/buffer
 
 	for i := 0; i < 100; i++ {
 		v, err := ap.Get(ctx, key).Result()
 		if err != nil {
-			t.Fatalf("GET %d after invalidation: %v (push misread as reply?)", i, err)
+			t.Fatalf("GET %d after concurrent mutation: %v (FIFO misalignment?)", i, err)
 		}
 		if v != "v1" {
-			t.Fatalf("GET %d: got %q want %q (FIFO misaligned by unconsumed push)", i, v, "v1")
+			t.Fatalf("GET %d: got %q want %q (reply/command misaligned)", i, v, "v1")
 		}
 	}
 }
@@ -1673,6 +1675,43 @@ func TestFDFirstNoRetry(t *testing.T) {
 	}
 }
 
+// TestFDBatchEnd verifies the replay chunk boundaries (#3964): the recovered tail
+// is re-issued in the same MaxBatchSize/MaxBatchBytes-capped chunks as freshly
+// drained work, so a large recovered window is not flushed in one oversized write.
+func TestFDBatchEnd(t *testing.T) {
+	ctx := context.Background()
+	mk := func(val string) fdReq { return fdReq{cmd: NewStatusCmd(ctx, "set", "k", val)} }
+
+	small := make([]fdReq, 7)
+	for i := range small {
+		small[i] = mk("v")
+	}
+	// maxBatch cap, byteLimit disabled: chunks of maxBatch, last chunk the remainder.
+	if got := fdBatchEnd(small, 0, 3, 0); got != 3 {
+		t.Fatalf("maxBatch: end=%d want 3", got)
+	}
+	if got := fdBatchEnd(small, 6, 3, 0); got != 7 {
+		t.Fatalf("tail remainder: end=%d want 7", got)
+	}
+	if got := fdBatchEnd(small[:1], 0, 3, 0); got != 1 {
+		t.Fatalf("single element: end=%d want 1", got)
+	}
+
+	// byteLimit cap. Each command is ~1052 bytes (cmdApproxBytes: per-arg len + 16).
+	big := make([]fdReq, 4)
+	for i := range big {
+		big[i] = mk(strings.Repeat("x", 1000))
+	}
+	// Limit below one command's size: the lone oversized command still goes (chunk 1).
+	if got := fdBatchEnd(big, 0, 100, 500); got != 1 {
+		t.Fatalf("byteLimit lone oversized: end=%d want 1", got)
+	}
+	// Limit spanning ~two commands: first always in, stop once the payload reaches it.
+	if got := fdBatchEnd(big, 0, 100, 1500); got != 2 {
+		t.Fatalf("byteLimit two: end=%d want 2", got)
+	}
+}
+
 // fdPanicWriter panics from Write, simulating a user io.Writer that panics while
 // a RawWriteToCmd's readReply streams the raw reply on the FD reader goroutine.
 type fdPanicWriter struct{}
@@ -1776,5 +1815,191 @@ func TestFullDuplexReaderPanicMidBatchNoDoubleComplete(t *testing.T) {
 	// have crashed the process. Reaching here on a working engine proves it did not.
 	if err := ap.Set(ctx, "fd:rpanic2:after", "v", 0).Err(); err != nil {
 		t.Fatalf("engine did not recover after the mid-batch reader panic: %v", err)
+	}
+}
+
+var errFDLimiterOpen = errors.New("fd test: limiter breaker open")
+
+// fdRejectLimiter denies every Allow(), simulating an open circuit breaker.
+type fdRejectLimiter struct{ allow atomic.Int64 }
+
+func (l *fdRejectLimiter) Allow() error         { l.allow.Add(1); return errFDLimiterOpen }
+func (l *fdRejectLimiter) ReportResult(_ error) {}
+
+// TestFullDuplexLimiterRejectFailsQueuedWork verifies that when the Limiter
+// denies FD session acquisition, accepted commands fail-fast with the limiter
+// error instead of hanging in fd.ch until the breaker closes (#3964, fdDenied).
+func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
+	ctx := context.Background()
+	probe := NewClient(&Options{Addr: ":6379"})
+	defer probe.Close()
+	if err := probe.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	c := NewClient(&Options{
+		Addr:                    ":6379",
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 &fdRejectLimiter{},
+		MaxRetries:              2,
+	})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, "fd:limreject:k", "v", 0).Err() }()
+	select {
+	case e := <-done:
+		if !errors.Is(e, errFDLimiterOpen) {
+			t.Fatalf("got %v, want the limiter error (fail-fast, not hang)", e)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("command hung on limiter rejection instead of failing fast")
+	}
+}
+
+// TestFullDuplexProcessReportsSubmitRejection verifies raw Process(ctx,cmd)
+// surfaces an FD submit-time rejection instead of returning nil (#3964): all FD
+// submit-reject paths (closed / caller-ctx cancel / engine ctx) return the shared
+// completedBatch sentinel, which processAsync checks to report cmd.rawErr(). The
+// closed path is exercised here deterministically; the ctx-cancel path uses the
+// identical return.
+func TestFullDuplexProcessReportsSubmitRejection(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// Raw Process on a closed FD autopipeliner must report ErrClosed, not nil.
+	if err := ap.Process(ctx, NewStatusCmd(ctx, "ping")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Process after Close = %v, want ErrClosed (submit rejection not surfaced)", err)
+	}
+}
+
+// TestFullDuplexCloseFlushesBacklog verifies graceful Close flushes accepted-but-
+// unwritten fd.ch commands (executes them) instead of failing them ErrClosed —
+// matching half-duplex Close's "accepted ⇒ completes" contract (#3964). A burst
+// is submitted and Close is called immediately, so some commands are still in the
+// backlog when Close runs; none may come back ErrClosed.
+func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	const n = 300
+	cmds := make([]*StatusCmd, n)
+	for i := 0; i < n; i++ {
+		cmds[i] = ap.Set(ctx, "fd:closeflush:"+itoa(i), "v", 0)
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	for i, cmd := range cmds {
+		if errors.Is(cmd.Err(), ErrClosed) {
+			t.Fatalf("cmd %d came back ErrClosed — Close did not flush the accepted fd.ch backlog", i)
+		}
+	}
+}
+
+// TestFullDuplexLeaseFailureFailsBacklog verifies that when the engine cannot
+// lease a connection for a new session (server down), accepted commands fail-fast
+// after the lease retries are exhausted instead of hanging in fd.ch (#3964,
+// fdLeaseErr). Uses a dead address, so it needs no live server.
+func TestFullDuplexLeaseFailureFailsBacklog(t *testing.T) {
+	ctx := context.Background()
+	c := NewClient(&Options{
+		Addr:                    "127.0.0.1:1", // nothing listening: dial refused
+		Protocol:                3,
+		PipelinePoolSize:        2,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                2,
+		MaxRetries:              2,
+		DialTimeout:             150 * time.Millisecond,
+		MinRetryBackoff:         time.Millisecond,
+		MaxRetryBackoff:         5 * time.Millisecond,
+	})
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, "fd:leasefail:k", "v", 0).Err() }()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("expected a connection error on a persistent lease failure, got nil")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("command hung on a persistent lease failure instead of failing after retries")
+	}
+}
+
+// TestFullDuplexMaxHoldIdleDoesNotChurn verifies that with FullDuplexMaxHold set
+// shorter than FullDuplexIdleTimeout, a quiet engine does NOT Get/Put-recycle every
+// max-hold interval (#3964): the max-hold branch returns fdIdle when the pipe is
+// drained, so run() blocks for the next command instead of re-leasing.
+func TestFullDuplexMaxHoldIdleDoesNotChurn(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:            true,
+		FullDuplexMaxHold:     40 * time.Millisecond,
+		FullDuplexIdleTimeout: 3 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// No work for several max-hold intervals. A drained engine must idle, not churn.
+	time.Sleep(300 * time.Millisecond)
+	if n := ap.fd.recycles.Load(); n > 2 {
+		t.Fatalf("idle engine recycled %d times in 300ms (max-hold ~40ms) — it churns Get/Put when idle", n)
 	}
 }

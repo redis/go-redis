@@ -91,6 +91,18 @@ type AutoPipelineOptions struct {
 	// the half-duplex divert; blocking commands were never part of the ordered
 	// stream).
 	//
+	// A command whose reply is a retryable Redis error (LOADING/READONLY/…) or a
+	// redirect (MOVED/ASK) is likewise re-run on the normal Process path, off the
+	// FD reader, so the reader keeps completing later replies — meaning a diverted
+	// command may settle AFTER a command submitted later on the same goroutine.
+	// This only reorders when a caller has TWO causally-dependent commands in
+	// flight at once WITHOUT awaiting the first (e.g. Set(k) then Get(k) both
+	// fired on the async face before reading Set's result) and the first diverts.
+	// Awaiting a command's result before issuing a dependent one preserves order
+	// (the dependent command is not enqueued until the first has settled), and the
+	// blocking AutoPipeline face never uses full-duplex at all — so drop-in
+	// synchronous usage is unaffected. NoRetry commands are never diverted.
+	//
 	// Observability: process hooks (redisotel spans/metrics, custom AddHook
 	// ProcessHooks) DO fire on the full-duplex path — each command runs through the
 	// hook chain individually (withProcessHook, not the batch ProcessPipelineHook),
@@ -2685,6 +2697,13 @@ func (ap *AutoPipeliner) Len() int {
 	total := 0
 	for _, s := range ap.shards {
 		total += s.Len()
+	}
+	// Full-duplex accepts commands onto fd.ch instead of the shard queues, so
+	// include its backlog — otherwise Len() reports 0 while accepted commands are
+	// buffered behind a backpressured/stalled FD writer, and callers using Len()
+	// for monitoring or local backpressure lose the signal in FullDuplex mode.
+	if ap.fd != nil {
+		total += len(ap.fd.ch)
 	}
 	return total
 }
