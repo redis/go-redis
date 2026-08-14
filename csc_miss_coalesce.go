@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,6 +11,16 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
+
+// errCSCRetryUncached is settled to a coalesced miss when the coalescer bows out
+// for a reason unrelated to the command itself: CSC serving was disabled after
+// the miss was queued (e.g. a RESP3 downgrade, or CLIENT TRACKING rejected during
+// a connection re-init), so this held-connection session would fetch on an
+// untracked conn or none at all. It never reaches the caller — processCached
+// catches it and re-runs the command uncached on the normal path, so a valid
+// cacheable read is not failed with a spurious pool.ErrClosed. The reservation is
+// always cancelled before this is settled, so no waiter is left IN_PROGRESS.
+var errCSCRetryUncached = errors.New("redis: csc miss-coalescer disabled mid-fetch; retry uncached")
 
 // Reader-miss coalescing (PROTOTYPE, env-gated).
 //
@@ -93,6 +104,16 @@ func cscCoalesceMode(opt *Options) string {
 	}
 }
 
+// cscReq* are the states of cscMissReq.apply, the single-word interlock that
+// decides who owns req.cmd: the fetching caller or the worker/reader applying
+// the reply. Exactly one side wins the pending->X CAS, so the worker never
+// writes cmd after the caller has returned and may be reusing it.
+const (
+	cscReqPending   uint32 = iota // no one has claimed cmd yet
+	cscReqAbandoned               // caller's ctx (or Close) fired first: cmd is the caller's again
+	cscReqApplying                // worker/reader claimed cmd first: it will write and settle
+)
+
 // cscMissReq is one caller waiting for its missed key. done carries the fetch
 // result back (the reply is already applied to cmd by the time done fires).
 type cscMissReq struct {
@@ -100,6 +121,28 @@ type cscMissReq struct {
 	cacheKey string
 	token    uint64
 	done     chan error
+	// apply interlocks ownership of cmd between the fetching caller and the
+	// worker/reader. The caller abandons (CAS pending->abandoned) if its context
+	// is cancelled — or Close races its enqueue — before a worker starts applying;
+	// the worker claims (CAS pending->applying) before it writes the reply into
+	// cmd. A plain flag would still race: a worker could read "not abandoned",
+	// begin writing cmd, and the caller cancel mid-write. The CAS makes the two
+	// decisions mutually exclusive. Either way the worker still settles the token
+	// and publishes to the shared cache (the fetch is never wasted) — only the cmd
+	// write is gated.
+	apply atomic.Uint32
+}
+
+// claimAbandon is the caller's side of the cmd interlock: it succeeds only if no
+// worker has started applying, in which case the worker will skip the cmd write.
+func (r *cscMissReq) claimAbandon() bool {
+	return r.apply.CompareAndSwap(cscReqPending, cscReqAbandoned)
+}
+
+// claimApply is the worker's side: it succeeds only if the caller has not
+// abandoned, in which case it is safe to write the caller's cmd.
+func (r *cscMissReq) claimApply() bool {
+	return r.apply.CompareAndSwap(cscReqPending, cscReqApplying)
 }
 
 type cscMissCoalescer struct {
@@ -113,6 +156,10 @@ type cscMissCoalescer struct {
 	batches    atomic.Uint64 // batches flushed
 	failed     atomic.Uint64 // reqs settled as errors (conn failure)
 	maxBatchSz atomic.Uint64
+	// abandonedApplies counts replies whose caller had already abandoned the req
+	// (lost the cmd interlock), so the cmd write was skipped. Used only to assert
+	// the -race abandoned-path test actually hit the window it guards.
+	abandonedApplies atomic.Uint64
 }
 
 // startCSCMissCoalescer launches the batcher goroutines. No-op unless
@@ -186,6 +233,17 @@ func (c *baseClient) stopCSCMissCoalescer() {
 // caller just returns early.
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) error {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+	// Reject early if the coalescer is already shutting down, so a send does not
+	// win the select race against a closed mc.stop and land in mc.ch after the
+	// shutdown drain (where no worker would ever pick it up). This narrows — but
+	// cannot fully close — that race; the mc.stop case in the wait select below is
+	// what guarantees the caller never hangs on a post-drain req.
+	select {
+	case <-mc.stop:
+		mc.c.csc.Cancel(cacheKey, token)
+		return pool.ErrClosed
+	default:
+	}
 	select {
 	case mc.ch <- req:
 	case <-mc.stop:
@@ -198,9 +256,32 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	select {
 	case err := <-req.done:
 		return err
+	case <-mc.stop:
+		// Close raced our enqueue: the req may have landed in mc.ch after the
+		// shutdown drain, so no worker will ever settle req.done. If we win the
+		// interlock (no worker is applying), cancel the reservation and return
+		// instead of hanging — a duplicate Cancel, if the drain also got this req,
+		// is a no-op on a settled token. If a worker already claimed cmd, it owns
+		// the write and will settle; wait for it so we do not touch cmd concurrently.
+		if req.claimAbandon() {
+			mc.c.csc.Cancel(cacheKey, token)
+			return pool.ErrClosed
+		}
+		// A worker already claimed cmd and is mid-write: wait for it to finish so we
+		// do not read/reuse cmd concurrently, then return the shutdown error (the
+		// receive is a happens-before edge, so the later cmd.SetErr is race-free).
+		<-req.done
+		return pool.ErrClosed
 	case <-ctx.Done():
-		// The batch will still settle req.done (buffered, cap 1) and the token;
-		// we just stop waiting.
+		// Caller stopped waiting. If we win the interlock the worker skips the cmd
+		// write but still settles the token and publishes to the cache (the fetch is
+		// not wasted); we just return early. If a worker already claimed cmd, it is
+		// mid-write — wait for it rather than race by reusing cmd. Either way return
+		// the context error, matching the non-coalesced path (processWithRetry), so a
+		// cancelled Get never returns a value depending on who won the CAS.
+		if !req.claimAbandon() {
+			<-req.done
+		}
 		return ctx.Err()
 	}
 }
@@ -311,9 +392,23 @@ func (mc *cscMissCoalescer) flushBatch(ctx context.Context, cn *pool.Conn, batch
 // applyAndSettle applies raw to the caller's command, publishes to the cache
 // when cacheable (under the reading connection's tracking generation), and wakes
 // the caller. Sends req.done exactly once.
+//
+// It first claims the cmd interlock: if the caller has abandoned the req (its
+// context was cancelled, or Close raced its enqueue) it has its Cmder back and
+// may be reading or reusing it, so the reply must NOT be written there. The
+// fetch is still not wasted — the reply is classified from a throwaway parse and,
+// when cacheable, published to the shared cache for the next reader; only the
+// caller's cmd write is skipped.
 func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, capturedGen uint64) {
 	c := mc.c
-	applyErr := applyCachedReply(req.cmd, raw)
+	var applyErr error
+	if req.claimApply() {
+		applyErr = applyCachedReply(req.cmd, raw)
+	} else {
+		// Abandoned: classify without touching the caller's cmd.
+		applyErr = classifyCachedReply(raw)
+		mc.abandonedApplies.Add(1)
+	}
 	if isCacheableReplyResult(applyErr) {
 		fc := &cscFetchCapture{
 			raw:     raw,

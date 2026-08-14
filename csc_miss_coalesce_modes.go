@@ -184,8 +184,11 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped bool) {
 		relCtx, relCancel := opCtx()
 		c.releaseConn(relCtx, cn, nil)
 		relCancel()
-		mc.settleErr(first, pool.ErrClosed)
-		mc.drainQueueErr(pool.ErrClosed)
+		// CSC is off now, but the commands are fine — settle with the retry-uncached
+		// sentinel so processCached re-runs each on the normal path instead of
+		// surfacing a spurious pool.ErrClosed for a valid cacheable read.
+		mc.settleErr(first, errCSCRetryUncached)
+		mc.drainQueueErr(errCSCRetryUncached)
 		return false
 	}
 	connID := cn.GetID()

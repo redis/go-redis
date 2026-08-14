@@ -896,6 +896,18 @@ func applyCachedReply(cmd Cmder, raw []byte) error {
 	return cmd.readReply(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
 }
 
+// classifyCachedReply reports the same error applyCachedReply would, without a
+// caller command to populate. The miss coalescer uses it on the abandoned path
+// (the caller returned and owns its Cmder again) to decide cache-vs-cancel: a
+// value or Nil is cacheable, a top-level RESP error is not. It reads the frame
+// generically, so it can only diverge from a concrete cmd's readReply on a
+// well-formed reply of an unexpected shape — which the next reader re-parses and
+// drops (see processCached), so a rare mis-cache self-heals.
+func classifyCachedReply(raw []byte) error {
+	_, err := proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1).ReadReply()
+	return err
+}
+
 // isCacheableReplyResult reports whether a fully read Redis reply can be
 // cached. redis.Nil is a normal negative lookup, not a transport/protocol
 // failure; tracking will invalidate it if the key is later created.
@@ -994,7 +1006,14 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 
 	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when off).
 	if shouldFetch && c.cscMissCoalescer != nil {
-		return c.cscMissCoalescer.fetch(ctx, cmd, key, token)
+		err := c.cscMissCoalescer.fetch(ctx, cmd, key, token)
+		if err == errCSCRetryUncached {
+			// The coalescer bowed out because CSC serving was disabled mid-miss; the
+			// command itself is fine and the reservation was already cancelled. Run it
+			// uncached on the normal path rather than surfacing a spurious ErrClosed.
+			return c.processWithRetry(ctx, cmd, nil, state)
+		}
+		return err
 	}
 
 	var fc cscFetchCapture
