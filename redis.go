@@ -2570,10 +2570,24 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 	// consumed, the processor treated that as "no pending data", and a
 	// connection with buffered push bytes was returned to the pool instead
 	// of being drained (or removed, when the frame turns out partial).
-	return cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
+	err := cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
+	// A NEGATIVE ReadTimeout means "never touch the socket deadline": every
+	// subsequent WithReader skips SetReadDeadline, so the 1ms probe deadline
+	// above would otherwise stay installed and poison the next reply read
+	// (surfacing a spurious i/o timeout on a held full-duplex connection, or on
+	// a pooled conn reused right after a drain). Clear it back to no-deadline
+	// for those callers; timeout>=0 callers re-arm their own on the next read.
+	if c.opt.ReadTimeout < 0 {
+		if clearErr := cn.WithReader(context.Background(), 0, func(*proto.Reader) error {
+			return nil
+		}); clearErr != nil && err == nil {
+			err = clearErr
+		}
+	}
+	return err
 }
 
 // cscFallbackProbeInterval bounds how often an idle connection without a
