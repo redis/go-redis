@@ -2400,13 +2400,19 @@ func (s *apShard) flushBatchSlice() {
 			// deadlock-free via the dispGid guard stamped above.
 			// A successful short-circuit stays successful (see dispatchCmds).
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
-				// Dispatch on the PIPELINE pool (as a one-command pipeline), not the
-				// main pool, so the flush uses the same pool the straggler-hold gate
-				// probes (codex #3962). processPipeline falls back to the main pool
-				// when no dedicated pipeline pool exists, so this is a no-op for
-				// default clients and only unifies the pools when one is configured.
-				// The solo goroutine dispatch (which is what avoids the 2xRTT
-				// flusher phase-lock) is unchanged.
+				// A CACHEABLE command goes through the single-command Process path so
+				// client-side caching is honored (processCommand -> processCached);
+				// processPipeline bypasses that branch and would silently drop CSC
+				// hits/fills for one-command flushes (codex #3962). Process is a no-op
+				// vs. the pipeline pool for CSC purposes on non-CSC clients (it just
+				// runs on the main pool — fine for a single command).
+				if isCacheable(cmd) {
+					return ap.pipeliner.process(ctx, cmd)
+				}
+				// Non-cacheable solo: dispatch as a one-command pipeline on the
+				// PIPELINE pool, the same pool the straggler-hold gate probes
+				// (processPipeline falls back to the main pool when none exists). The
+				// solo goroutine dispatch (the 2xRTT phase-lock fix) is unchanged.
 				return ap.pipeliner.processPipeline(ctx, []Cmder{cmd})
 			})
 			solo.SetErr(err)

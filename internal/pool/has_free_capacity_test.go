@@ -124,3 +124,38 @@ func TestHasFreeCapacityExcludesUnusableIdle(t *testing.T) {
 		t.Fatal("idle conn is UNUSABLE and pool is at PoolSize: HasFreeCapacity() = true, want false")
 	}
 }
+
+// TestHasFreeCapacityExcludesHandoffIdle pins the OnGet-reject refinement (#3962):
+// an idle connection marked ShouldHandoff is still StateIdle/usable, but an OnGet
+// hook (maintnotifications) diverts it to handoff instead of serving it, so
+// HasFreeCapacity must not count it as capacity. With the pool at PoolSize (no
+// dial possible), a lone handoff-marked idle conn means no free capacity.
+func TestHasFreeCapacityExcludesHandoffIdle(t *testing.T) {
+	connPool := pool.NewConnPool(&pool.Options{
+		Dialer:             dummyDialer,
+		PoolSize:           1,
+		MaxActiveConns:     1,
+		MaxConcurrentDials: 1,
+		PoolTimeout:        time.Second,
+		DialTimeout:        time.Second,
+		ConnMaxIdleTime:    -1,
+	})
+	t.Cleanup(func() { _ = connPool.Close() })
+	ctx := context.Background()
+
+	cn, err := connPool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := cn.MarkForHandoff("new-endpoint:6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	if !cn.IsUsable() {
+		t.Fatal("precondition: a handoff-marked conn should still be IsUsable (StateIdle)")
+	}
+	connPool.Put(ctx, cn)
+
+	if connPool.HasFreeCapacity() {
+		t.Fatal("HasFreeCapacity() = true with only a handoff-marked idle conn — an OnGet hook would divert it, so it must not count")
+	}
+}
