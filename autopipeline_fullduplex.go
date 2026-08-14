@@ -467,6 +467,19 @@ func (fd *fdEngine) run() {
 	bg := context.Background()
 	var carry []fdReq // unacked tail to re-issue at the start of the next attempt
 	attempts := 0
+	// Do not lease a connection (or hit the Limiter / dial) until the first command
+	// arrives: merely constructing an FD autopipeliner that is never used must stay
+	// idle, like the half-duplex engine, instead of leasing eagerly and then
+	// retrying a dial/limiter failure forever against an empty queue (#3964). This
+	// guards only the initial entry; steady-state idleness is handled by fdIdle in
+	// the loop (fdRecycle must NOT block here — it can be reached with fd.ch empty).
+	select {
+	case r := <-fd.ch:
+		carry = []fdReq{r}
+	case <-fd.ap.ctx.Done():
+		fd.drainQueue(ErrClosed)
+		return
+	}
 	for {
 		if fd.ap.ctx.Err() != nil {
 			fd.failReqs(carry, ErrClosed)
@@ -884,7 +897,18 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// let the reader drain every in-flight reply to a RESP boundary. A write
 		// error during the flush surfaces via the reader/sharedErr path below.
 		if e := fd.flushBacklogForClose(bg, cn, inflight); e != nil {
+			// The backlog write failed partway: some flushed commands have no reply
+			// coming, and writeCarryChunked pushed the unwritten suffix into inflight.
+			// closeGraceful would leave the reader waiting on replies that never
+			// arrive (hanging until ReadTimeout, or forever if it is disabled), so
+			// take the connection-error path instead: close the conn to wake the
+			// reader, then fail the whole unacked tail (the accepted suffix included).
 			failOnce(e)
+			inflight.hardClose()
+			_ = cn.Close()
+			<-readerDone
+			fd.failReqs(inflight.takeRemaining(), e)
+			return nil, fdConnErr, e
 		}
 		inflight.closeGraceful()
 		<-readerDone
@@ -985,6 +1009,19 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 	for i := 0; i < len(carry); {
 		end := fdBatchEnd(carry, i, fd.maxBatch, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
+			// writeBatch pushed carry[i:end] into inflight before the failed write,
+			// but the suffix carry[end:] was never pushed. Push it too so the whole
+			// accepted set is recoverable: on the fdConnErr path takeRemaining replays
+			// it, and on the Close path the caller fails it. Without this the suffix is
+			// in neither fd.ch nor inflight and its callers hang. The suffix is
+			// unwritten (writtenAt is zero), but it is only ever settled via failReqs
+			// or replayed — never completed inline by the reader — so the reader's
+			// write→reply OTel metric is not computed on it. This pairs with the Close
+			// path closing the conn on a flush error (so the reader is woken rather
+			// than waiting on replies that will never come).
+			if end < len(carry) {
+				inflight.pushBatch(carry[end:])
+			}
 			return e
 		}
 		i = end

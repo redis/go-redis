@@ -68,8 +68,13 @@ func TestFullDuplexReturnRunsPoolHooks(t *testing.T) {
 		t.Fatal("full-duplex engine not active")
 	}
 
-	// The engine leases a conn at startup and, finding no work, idle-returns it —
-	// so a Get and a Put should both be observed by the pool hook.
+	// The engine leases lazily — on the first command, not at startup (an unused FD
+	// autopipeliner must stay idle rather than dial in the background, #3964). Submit
+	// one command to trigger the lease; after serving it the engine idle-returns the
+	// conn, so a Get and a Put are both observed by the pool hook.
+	if err := ap.Set(ctx, "fd:hook:k", "v", 0).Err(); err != nil {
+		t.Fatalf("set: %v", err)
+	}
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
 		if hook.gets.Load() >= 1 && hook.puts.Load() >= 1 {
 			break
@@ -81,10 +86,10 @@ func TestFullDuplexReturnRunsPoolHooks(t *testing.T) {
 	}
 
 	// And a command still works after the return (re-lease → another Get).
-	if err := ap.Set(ctx, "fd:hook:k", "v", 0).Err(); err != nil {
+	if err := ap.Set(ctx, "fd:hook:k2", "v", 0).Err(); err != nil {
 		t.Fatalf("post-return set: %v", err)
 	}
-	if v, err := ap.Get(ctx, "fd:hook:k").Result(); err != nil || v != "v" {
+	if v, err := ap.Get(ctx, "fd:hook:k2").Result(); err != nil || v != "v" {
 		t.Fatalf("post-return get: v=%q err=%v", v, err)
 	}
 }
@@ -810,6 +815,127 @@ func TestFullDuplexBackpressure(t *testing.T) {
 	// Final peak sanity over the whole run.
 	if peak := ap.fd.curInflight.Load().peakLen(); peak > window+maxBatch {
 		t.Fatalf("final in-flight peak %d exceeded window+maxBatch=%d", peak, window+maxBatch)
+	}
+}
+
+// failWriteNetConn is a net.Conn whose Write always fails, so a buffered flush
+// (the end of WithWriter) returns an error while the command bytes were already
+// buffered — used to drive a write failure in writeCarryChunked deterministically.
+type failWriteNetConn struct{ mockNetConn }
+
+func (c *failWriteNetConn) Write(b []byte) (int, error) {
+	return 0, errors.New("write boom")
+}
+
+// TestWriteCarryChunkedRecoversSuffixOnWriteError pins the fix for #3964
+// (cursor High / codex): writeBatch pushes each chunk into the in-flight deque
+// BEFORE writing it, so when a multi-chunk carry write fails on a chunk, the
+// un-written suffix must also be pushed — otherwise those accepted commands are
+// in neither fd.ch nor the deque and their callers hang. This asserts the WHOLE
+// carry is recoverable via the deque after a write error, not just the failing
+// chunk. Deterministic and dial-free.
+func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
+	cn := pool.NewConn(&failWriteNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}}, // MaxBatchBytes 0 = disabled
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 2, // 5 commands -> chunks [0:2] [2:4] [4:5]
+	}
+	inflight := newFDInflight()
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
+	}
+
+	if err := fd.writeCarryChunked(context.Background(), cn, inflight, carry); err == nil {
+		t.Fatal("writeCarryChunked returned nil error despite a failing write")
+	}
+	// The failing chunk was pushed by writeBatch; the suffix must be pushed too, so
+	// the whole carry is recoverable by takeRemaining (without the fix only the
+	// first chunk is present and the rest are lost).
+	if got := inflight.len(); got != n {
+		t.Fatalf("in-flight deque holds %d of %d carry commands after a write error — the unwritten suffix was dropped (callers would hang)", got, n)
+	}
+}
+
+// TestFullDuplexCloseCompletesBacklogAfterConnKill is a broad bounded-hang guard:
+// killing the connection mid-flight and then closing the engine must settle every
+// accepted command (here via the connection-error recovery + drainQueue path),
+// not hang any caller. It does NOT specifically exercise the chunked-carry suffix
+// fix — that is pinned deterministically by
+// TestWriteCarryChunkedRecoversSuffixOnWriteError. Kept as an end-to-end no-hang
+// check on Close-after-conn-kill.
+func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
+	ctx := context.Background()
+	if err := NewClient(&Options{Addr: ":6379"}).Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const delay = 40 * time.Millisecond
+	paddr, stop := delayReplyProxy(t, "127.0.0.1:6379", delay)
+	defer stop()
+
+	c := fdTestClient(paddr)
+	defer c.Close()
+	const window, maxBatch = 8, 4 // small so the backlog spans multiple write chunks
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		FullDuplexWindow: window,
+		MaxBatchSize:     maxBatch,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Burst far more than the window so a backlog builds behind the lagging reader
+	// (in fd.ch and the in-flight deque). Submit off-goroutine: backpressure blocks
+	// ap.Set once full, and Close (ap.ctx cancel) releases it.
+	const N = 200
+	cmds := make([]*StatusCmd, N)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			cmds[i] = ap.Set(ctx, fmt.Sprintf("fdkill:%d", i), "v", 0)
+		}
+	}()
+
+	// Let a backlog accumulate, then kill the connection mid-flight and close the
+	// engine: the Close flush hits a dead connection with a multi-chunk backlog.
+	time.Sleep(delay / 2)
+	stop() // kill live conns so the next write/read fails
+
+	closed := make(chan struct{})
+	go func() { _ = ap.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("ap.Close() hung after conn kill — the Close flush blocked the reader on replies that never arrive")
+	}
+	wg.Wait() // every ap.Set returned (accepted, or released by Close)
+
+	// Every command's future MUST settle — a dropped/unrecovered command would
+	// block forever here. Bound it so a regression fails loudly instead of
+	// deadlocking the whole test binary. Values or errors are both fine; only a
+	// hang is a failure.
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < N; i++ {
+			if cmds[i] != nil {
+				_ = cmds[i].Err()
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("some accepted commands never completed after conn kill + Close — chunked backlog/carry dropped (callers would hang)")
 	}
 }
 
