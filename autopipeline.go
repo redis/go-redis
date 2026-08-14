@@ -80,10 +80,16 @@ type AutoPipelineOptions struct {
 	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
-	// connection so they cannot stall the shared pipe. The per-caller ordering
-	// guarantee therefore does NOT hold across such a diverted command relative to
-	// pipelined commands (identical to the half-duplex divert; blocking commands
-	// were never part of the ordered stream).
+	// connection so they cannot stall the shared pipe. Managed HIMPORT commands
+	// (PREPARE/SET/DISCARD/DISCARDALL) are diverted too, but only on the
+	// full-duplex path: a fieldset is connection-session state that the FD writer
+	// does not replay (nor does the FD reader update the client-side registry), so
+	// they run through the normal Process path — which injects the registered
+	// PREPARE and keeps the registry current — instead of failing with
+	// "no such fieldset". The per-caller ordering guarantee therefore does NOT hold
+	// across such a diverted command relative to pipelined commands (identical to
+	// the half-duplex divert; blocking commands were never part of the ordered
+	// stream).
 	//
 	// Observability: process hooks (redisotel spans/metrics, custom AddHook
 	// ProcessHooks) DO fire on the full-duplex path — each command runs through the
@@ -1340,6 +1346,16 @@ var blockingCommands = map[string]struct{}{
 	"migrate": {},
 }
 
+// isHImportCmd reports whether cmd is a managed HIMPORT command
+// (PREPARE/SET/DISCARD/DISCARDALL). It uses the same predicate himportInjectedCmds
+// uses to spot HIMPORT in a batch (the himportCmder marker), so it stays in sync
+// with the injection path and covers every subcommand without a name switch. Used
+// only on the full-duplex path to divert HIMPORT off the shared pipe (see submit).
+func isHImportCmd(cmd Cmder) bool {
+	_, ok := cmd.(himportCmder)
+	return ok
+}
+
 // isBlockingCmd reports whether cmd parks the connection. XREAD/XREADGROUP are
 // decided by ARGUMENTS, not by name: only the BLOCK form blocks, and
 // blanket-diverting the (far more common) non-blocking form would drop it out
@@ -1409,7 +1425,14 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// commands that would have worked — typed WAIT/WAITAOF on a cluster with
 	// command policies enabled (review finding by codex on #3942).
 	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
-		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd))
+		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
+		// Managed HIMPORT rides connection-session state (the registered PREPARE).
+		// The full-duplex writer streams raw commands and never injects that
+		// PREPARE, so an HIMPORT SET on the FD pipe can fail "no such fieldset";
+		// divert HIMPORT off the pipe to the normal Process path, which injects it
+		// (and updates the registry on PREPARE). The half-duplex sharded path
+		// injects inline (himportInjectedCmds) and is left on the pipeline.
+		(ap.fd != nil && isHImportCmd(cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)

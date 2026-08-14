@@ -88,8 +88,6 @@ func TestFullDuplexReturnRunsPoolHooks(t *testing.T) {
 	}
 }
 
-// TestFullDuplexIdleReturnsConn verifies lease/return: after an idle gap the
-
 func fdTestClient(addr string) *Client {
 	return NewClient(&Options{
 		Addr:                    addr,

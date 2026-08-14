@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -87,6 +88,12 @@ type fdReq struct {
 	cmd      Cmder
 	batch    *apBatch
 	hookDone chan struct{}
+	// ctx is the caller's submit context, kept so the per-command OTel metric can
+	// be recorded against it (span/baggage correlation), mirroring process().
+	ctx context.Context
+	// writtenAt is stamped when the command is flushed to the wire; the reader
+	// uses write→reply as the command's operation duration for the OTel metric.
+	writtenAt time.Time
 }
 
 // complete finalizes a command whose result is already set on it: it wakes the
@@ -256,6 +263,9 @@ type fdEngine struct {
 
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
 	closed   bool         // set once run() is tearing down; submit then rejects new work
+
+	retryWg sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
+	hostWg  sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
 }
 
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
@@ -308,9 +318,8 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	var hookDone chan struct{}
 	if fd.ap.pipeliner.hookCount() > 0 {
 		hookDone = make(chan struct{})
-		go fd.hostHook(ctx, cmd, b, hookDone)
 	}
-	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx}
 
 	// Send under RLock and re-check closed so a send can never win the race with
 	// run()'s shutdown drain: drainQueue takes the WLock, sets closed, then
@@ -323,8 +332,20 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	if fd.closed {
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ErrClosed)
-		req.complete()
+		// No hook host was started (the spawn is below, under this gate), so wake
+		// the caller by closing the batch directly. req.complete() here would close
+		// hookDone with nobody listening and leave batch.done open forever.
+		b.close()
 		return b
+	}
+	// Start the hook host UNDER the gate and track it in hostWg so Close (which
+	// waits ap.wg -> run(), which waits hostWg) cannot return while a ProcessHook's
+	// post-next work is still running. Gating the Add behind the closed re-check
+	// keeps every Add ordered before drainQueue's WLock, so run()'s hostWg.Wait
+	// never races an Add on a zero counter.
+	if hookDone != nil {
+		fd.hostWg.Add(1)
+		go fd.hostHook(ctx, cmd, b, hookDone)
 	}
 	select {
 	case fd.ch <- req:
@@ -332,7 +353,9 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		return b
 	case <-ctx.Done():
 		// Caller's context expired/cancelled while backpressured (window/channel
-		// full): honor it instead of blocking until room or Close (#3964).
+		// full): honor it instead of blocking until room or Close (#3964). A host
+		// (if any) was started above, so req.complete() closes hookDone and the host
+		// wakes, runs and closes the batch; hook-free, req.complete closes b itself.
 		fd.submitMu.RUnlock()
 		cmd.SetErr(ctx.Err())
 		req.complete()
@@ -353,6 +376,18 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // result is honored before the waiter wakes. FD reports each command individually
 // (withProcessHook), not as a pipeline batch. Only started when hookCount()>0.
 func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
+	// Declared first so it runs last: Close waits hostWg (via run()), and the host
+	// is done only after the recover defer below has also run.
+	defer fd.hostWg.Done()
+	// Mark this goroutine as the batch's executor so a user hook that reads its own
+	// command's result after next() (cmd.Err()/cmd.String(), a documented pattern)
+	// gets the not-yet/just-executed view instead of blocking on batch.done — which
+	// only THIS goroutine closes, below. Without it such a hook self-deadlocks: the
+	// reply closes hookDone (waking next), but the batch stays open until the hook
+	// returns. Mirrors runOutsidePipeline's async dispatch guard.
+	if fd.ap.armSelfDeadlockGuard() {
+		b.dispGid.Store(curGoroutineID())
+	}
 	// A user ProcessHook runs on this goroutine; an unrecovered panic here would
 	// crash the process (and leave the caller blocked on b). Recover, fail the
 	// command, and close the batch so the waiter always wakes — mirroring the
@@ -386,12 +421,43 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	b.close()       // now wake the waiter
 }
 
+// retryOnNormalConn re-runs a full-duplex command that came back with a retryable
+// Redis error (LOADING/READONLY/CLUSTERDOWN/…) or a redirect (MOVED/ASK) on the
+// client's NORMAL path (pipeliner.process): the cluster client routes redirects
+// to the proper node, and processCommand's retry loop handles LOADING/backoff up
+// to MaxRetries — neither of which the fixed single-conn FD socket can do. It
+// runs on its own goroutine so it does not stall the FD reader, tracked by
+// retryWg so Close waits for it, and settles the FD request with the outcome.
+//
+// process() is the raw single-command exec (no hook chain); when the client has
+// process hooks the FD hostHook still brackets this command and reports its
+// result via req.complete(). Background ctx: the command was already accepted, so
+// it completes even under a concurrent Close (which waits via run()'s retryWg).
+func (fd *fdEngine) retryOnNormalConn(req fdReq) {
+	fd.retryWg.Add(1)
+	go func() {
+		defer fd.retryWg.Done()
+		err := fd.ap.pipeliner.process(context.Background(), req.cmd)
+		req.cmd.SetErr(err)
+		req.complete()
+	}()
+}
+
 // run owns the engine for the AutoPipeliner's lifetime: acquire a pipeline-pool
 // connection, run one full-duplex attempt on it, and on connection failure
 // replay the unacked tail on a fresh connection (bounded by MaxRetries/backoff)
 // while continuing to serve the queue. Exits only on graceful Close.
 func (fd *fdEngine) run() {
 	defer fd.ap.wg.Done()
+	// Runs before wg.Done (LIFO), so Close — which waits ap.wg — also waits for
+	// any off-pipe retries still running on the normal client path.
+	defer fd.retryWg.Wait()
+	// Same discipline for per-command hook hosts: a ProcessHook doing work after
+	// next() returns runs on a host goroutine that closes the command's batch, so
+	// Close must not return while one is still running. Every hostWg.Add is gated
+	// behind submitMu+closed (see submit) and every run() return is preceded by
+	// drainQueue (which sets closed), so this Wait never races a live Add.
+	defer fd.hostWg.Wait()
 	bg := context.Background()
 	var carry []fdReq // unacked tail to re-issue at the start of the next attempt
 	attempts := 0
@@ -452,45 +518,65 @@ func (fd *fdEngine) run() {
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
 func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
+	// Per-session Limiter (opt.Limiter): the Limiter gates connection acquisition,
+	// and FD acquires ONE conn per session, so Allow() once here — if it rejects,
+	// do not acquire and do not report (mirrors getConn). Otherwise ReportResult
+	// exactly once at release, BEFORE the conn becomes available again (the
+	// report-before-release ordering, so a breaker sees a failure before admitting
+	// the next session). Both the Limiter report and the conn release therefore
+	// live in ONE deferred func, in that order.
+	limited := fd.client.opt.Limiter != nil
+	if limited {
+		if err := fd.client.opt.Limiter.Allow(); err != nil {
+			return carry, fdConnErr, err
+		}
+	}
+
+	var cn *pool.Conn
+	defer func() {
+		if limited {
+			fd.client.opt.Limiter.ReportResult(aerr)
+		}
+		if cn == nil {
+			return // nothing acquired, or already Removed inline below
+		}
+		// ANY connection-error end (result==fdConnErr) leaves the conn desynced —
+		// an unread reply tail, a partial write, or a reader protocol error — so it
+		// MUST be removed; Put()ing it would poison the pool. Keying on result (not
+		// isBadConn) is deliberate: errFDReaderGone or a plain write timeout are not
+		// classified bad-conn, yet the conn is still unusable. Clean ends go through
+		// releaseConnToPool (drains pending pushes before Put; removes if desynced).
+		if result == fdConnErr {
+			fd.pool.Remove(bg, cn, aerr)
+		} else {
+			fd.client.releaseConnToPool(bg, fd.pool, cn, nil)
+		}
+	}()
+
 	// Acquire under ap.ctx (not bg): if Close cancels ap.ctx while this Get is
 	// blocked on a saturated pool, it returns at once instead of waiting out
 	// PoolTimeout, so shutdown is not delayed (#3964). Everything after — init and
 	// the session's I/O — stays on bg so already-accepted commands still complete
 	// during Close (Close waits for run() via ap.wg).
-	cn, err := fd.pool.Get(fd.ap.ctx)
-	if err != nil {
-		return carry, fdConnErr, err
+	cn, aerr = fd.pool.Get(fd.ap.ctx)
+	if aerr != nil {
+		cn = nil
+		return carry, fdConnErr, aerr
 	}
 	if !cn.IsInited() {
 		if e := fd.client.initConn(bg, cn); e != nil {
 			fd.pool.Remove(bg, cn, e)
+			cn = nil // Removed; the defer must not release it again
 			return carry, fdConnErr, e
 		}
 		if !cn.TryAcquire() {
 			fd.pool.Remove(bg, cn, errFDConnUnusable)
+			cn = nil
 			return carry, fdConnErr, errFDConnUnusable
 		}
 	}
 
 	unacked, result, aerr = fd.session(bg, cn, carry)
-
-	// ANY connection-error end (result==fdConnErr) leaves the conn desynced — an
-	// unread reply tail, a partial write, or a reader protocol error — so it MUST
-	// be removed; Put()ing it would poison the pool for the next caller. Keying on
-	// result (not isBadConn) is deliberate: errors like errFDReaderGone or a plain
-	// write timeout are not classified bad-conn, yet the conn is still unusable.
-	//
-	// Clean ends (graceful / idle / recycle) leave the conn at a RESP boundary.
-	// Return it via the shared releaseConnToPool rather than a raw Put so pending
-	// push notifications (MOVING/failover) are drained BEFORE the conn goes back
-	// to the pool — otherwise a buffered push would sit until the next user, delaying
-	// handoff (#3964) — and the conn is Removed instead if the drain shows it is
-	// desynced. (Same path the main pool uses, so the two cannot drift.)
-	if result == fdConnErr {
-		fd.pool.Remove(bg, cn, aerr)
-	} else {
-		fd.client.releaseConnToPool(bg, fd.pool, cn, nil)
-	}
 	return unacked, result, aerr
 }
 
@@ -552,8 +638,37 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					rerr = e // connection/protocol error: stop; unread tail stays
 					break
 				}
-				req.cmd.SetErr(e) // nil or a per-command Redis error (a valid reply)
-				req.complete()    // wake the caller, or hand off to the hook host
+				// A retryable Redis error (LOADING/READONLY/CLUSTERDOWN/TRYAGAIN/…)
+				// or a redirect (MOVED/ASK) is NOT the caller's final answer: the FD
+				// conn is a single fixed socket/node, so re-run the command on the
+				// client's NORMAL path, which routes redirects to the proper node
+				// (cluster) and applies the standard retry/backoff (LOADING). Done off
+				// the reader goroutine so it does not stall other in-flight replies,
+				// and counted in `done` so the reader advances past it now. Per-caller
+				// ordering is NOT promised across this divert — same exception as the
+				// blocking-command divert. NoRetry commands keep their error.
+				if e != nil && !req.cmd.NoRetry() {
+					moved, ask, _ := isMovedError(e)
+					if moved || ask || shouldRetry(e, false) {
+						fd.retryOnNormalConn(req)
+						done++
+						continue
+					}
+				}
+				req.cmd.SetErr(e) // nil or a non-retryable Redis error (WRONGTYPE, …)
+				// Record the per-command OTel duration metric (write→reply),
+				// mirroring baseClient.process — the FD reader bypasses process, so
+				// without this FD commands emit no native metric. Only for
+				// inline-completed commands; a command diverted to the retry path
+				// above runs through process, which emits its own.
+				if cb := otel.GetOperationDurationCallback(); cb != nil {
+					octx := req.ctx
+					if octx == nil {
+						octx = bg
+					}
+					cb(octx, time.Since(req.writtenAt), req.cmd, 1, e, cn, fd.client.opt.DB)
+				}
+				req.complete() // wake the caller, or hand off to the hook host
 				done++
 			}
 			inflight.advance(done)
@@ -728,6 +843,13 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdInflight, reqs []fdReq) error {
 	if len(reqs) == 0 {
 		return nil
+	}
+	// Stamp the wire-write time so the reader can record write→reply as the
+	// command's OTel operation duration. Done before pushBatch so the copies the
+	// reader reads from the deque carry it.
+	now := time.Now()
+	for i := range reqs {
+		reqs[i].writtenAt = now
 	}
 	inflight.pushBatch(reqs)
 	return cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
