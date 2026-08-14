@@ -592,6 +592,90 @@ func TestSharedCacheSeparatesFixedCredentialIdentities(t *testing.T) {
 	}
 }
 
+// TestInvalBatchWindowRebuildOnChange pins #3965: a running batcher's window is
+// fixed at creation, so when a second client binds to the same shared handler
+// with a different window, setInvalBatchWindow must drop the running batcher so
+// the next invalidation starts a fresh one with the new (e.g. stricter) window.
+func TestInvalBatchWindowRebuildOnChange(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+
+	h.setInvalBatchWindow(time.Second)
+	b1 := h.ensureBatcher(time.Second)
+	if b1 == nil || b1.window != time.Second {
+		t.Fatalf("first batcher window = %v, want 1s", b1)
+	}
+
+	// Stricter window from a second binding: the running batcher must be dropped.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	h.mu.Lock()
+	running := h.batcher
+	h.mu.Unlock()
+	if running != nil {
+		t.Fatal("batcher not dropped on window change — the stale window would be kept")
+	}
+	b2 := h.ensureBatcher(10 * time.Millisecond)
+	if b2 == nil || b2.window != 10*time.Millisecond {
+		t.Fatalf("rebuilt batcher window = %v, want 10ms", b2)
+	}
+	if b2 == b1 {
+		t.Fatal("expected a fresh batcher after the window change")
+	}
+
+	// Same window again must not churn the batcher.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	h.mu.Lock()
+	same := h.batcher
+	h.mu.Unlock()
+	if same != b2 {
+		t.Fatal("setInvalBatchWindow with an unchanged window must not rebuild the batcher")
+	}
+}
+
+// TestInvalBatchDroppedOnFlush pins #3965: a full cache Flush (FLUSHDB/FLUSHALL)
+// must discard the batcher's queued per-key deletes, or a delete queued before
+// the flush fires afterward and evicts an entry repopulated post-flush.
+func TestInvalBatchDroppedOnFlush(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(80 * time.Millisecond) // batched; long enough not to fire before the flush
+
+	nsKey := cscNamespacedKey("p:", "x")
+	cacheKey := cscNamespacedKey("p:", "get:x")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("v1")) {
+		t.Fatal("seed")
+	}
+
+	// Batched invalidation for x: queued, not yet applied (window not elapsed).
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, []interface{}{"x"}}); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	// Full flush: clears the cache AND must drop the queued delete for x.
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, nil}); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	// Repopulate x after the flush, then wait past the window: the dropped delete
+	// must NOT fire and evict the fresh entry.
+	if !cache.set(cacheKey, []string{nsKey}, []byte("v2")) {
+		t.Fatal("repopulate")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if v, ok := cache.Get(ctx, cacheKey); !ok || string(v) != "v2" {
+		t.Fatalf("repopulated entry evicted by a stale batched delete after flush: got %q ok=%v, want v2", v, ok)
+	}
+}
+
 func TestAttachCSC_HandlerConflictDoesNotEnableTracking(t *testing.T) {
 	proc := push.NewProcessor()
 	if err := proc.RegisterHandler(invalidatePushName, &recordingHandler{}, true); err != nil {

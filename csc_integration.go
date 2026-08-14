@@ -98,11 +98,24 @@ type invalidateHandler struct {
 }
 
 // setInvalBatchWindow records the invalidation-batch coalescing window from the
-// owning client's Options. Set before any push can arrive (attach time).
+// owning client's Options. Normally set before any push can arrive (attach
+// time). When a second client binds to the same shared handler with a different
+// window, an already-running batcher was created with the previous window (its
+// window is fixed at creation), so it would keep honoring the old cadence and the
+// new client's staleness bound would not hold. Stop and drop that batcher so the
+// next invalidation lazily starts a fresh one with the new window via
+// ensureBatcher; stop() flushes what it holds, so no queued delete is lost.
 func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.invalBatchWindow == w {
+		return
+	}
 	h.invalBatchWindow = w
-	h.mu.Unlock()
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
 }
 
 // ensureBatcher lazily starts the windowed invalidation batcher. The common
@@ -131,6 +144,7 @@ func (h *invalidateHandler) ensureBatcher(w time.Duration) *cscInvalBatcher {
 			window: w,
 			ch:     make(chan string, 8192),
 			stopCh: make(chan struct{}),
+			dropCh: make(chan struct{}, 1),
 		}
 		go h.batcher.run()
 	}
@@ -151,6 +165,7 @@ func (h *invalidateHandler) HandlePushNotification(
 	h.mu.RLock()
 	cache, keyPrefix, refresh := h.cache, h.keyPrefix, h.refresh
 	window := h.invalBatchWindow
+	batcher := h.batcher
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -159,6 +174,13 @@ func (h *invalidateHandler) HandlePushNotification(
 	switch payload := notification[1].(type) {
 	case nil:
 		cache.Flush()
+		// A full flush (FLUSHDB/FLUSHALL) removed every entry, so any per-key
+		// deletes the batcher still has queued are redundant — applying them after
+		// the flush would evict entries a reader repopulated post-flush, an extra
+		// miss for up to the window. Drop the batcher's pending queue.
+		if batcher != nil {
+			batcher.drop()
+		}
 	case []interface{}:
 		// Offload path: enqueue keys to the windowed background batcher instead of
 		// deleting inline, so invalidation work does not steal time from the

@@ -27,6 +27,7 @@ type cscInvalBatcher struct {
 	window   time.Duration
 	ch       chan string
 	stopCh   chan struct{}
+	dropCh   chan struct{} // cap-1: signal run() to discard its in-progress batch
 	stopOnce sync.Once
 }
 
@@ -35,6 +36,29 @@ type cscInvalBatcher struct {
 // call while holding the handler lock (see releaseLocked).
 func (b *cscInvalBatcher) stop() {
 	b.stopOnce.Do(func() { close(b.stopCh) })
+}
+
+// drop discards everything the batcher currently has queued — the channel plus
+// the run loop's in-progress batch — WITHOUT applying it. Called after a full
+// cache Flush (FLUSHDB/FLUSHALL) has already removed every entry, so the queued
+// per-key deletes are redundant; applying them would evict entries a reader
+// repopulated after the flush (an extra miss within the window). Best-effort: a
+// key racing in right after is treated as a normal post-flush invalidation.
+func (b *cscInvalBatcher) drop() {
+	// Drain queued keys (best-effort, non-blocking).
+	for draining := true; draining; {
+		select {
+		case <-b.ch:
+		default:
+			draining = false
+		}
+	}
+	// Signal run() to clear its in-progress batch; the cap-1 buffer means a signal
+	// is never lost even if run() is not currently selecting.
+	select {
+	case b.dropCh <- struct{}{}:
+	default:
+	}
 }
 
 // enqueue hands a namespaced key to the batcher without blocking the caller. On
@@ -95,6 +119,11 @@ func (b *cscInvalBatcher) run() {
 			// re-arming the timer forever.
 			flush()
 			return
+		case <-b.dropCh:
+			// A full cache Flush superseded the queued deletes: discard the
+			// in-progress batch without applying it (see drop()).
+			pending = pending[:0]
+			clear(seen)
 		case k := <-b.ch:
 			if _, dup := seen[k]; !dup {
 				seen[k] = struct{}{}
