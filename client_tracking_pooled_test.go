@@ -164,6 +164,39 @@ func TestClusterPipelineRejectsStateCommands(t *testing.T) {
 	}
 }
 
+// TestRingPipelineRejectsStateCommands pins the Ring-side gap (#3961 review):
+// Ring.generalProcessPipeline shards concurrently, so it must surface a queued
+// pooled-state rejection BEFORE sharding — otherwise the other shard groups
+// execute while only the rejected command's group fails. The guard fires before
+// any shard lookup, so no server is needed; mixing a keyed command in the same
+// batch pins that it is NOT dispatched either.
+func TestRingPipelineRejectsStateCommands(t *testing.T) {
+	ctx := context.Background()
+	ring := NewRing(&RingOptions{Addrs: map[string]string{"a": "localhost:1"}})
+	defer ring.Close()
+
+	var keyed *StatusCmd
+	if _, err := ring.Pipelined(ctx, func(pipe Pipeliner) error {
+		keyed = pipe.Set(ctx, "rk", "v", 0)
+		pipe.ClientTrackingOff(ctx)
+		return nil
+	}); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("Ring Pipelined ClientTrackingOff err = %v, want errClientTrackingOnPooledClient", err)
+	}
+	// The whole batch must fail-before-dispatch: the keyed command carries the
+	// same guidance error (a dial error would mean its shard group was executed).
+	if err := keyed.Err(); !errors.Is(err, errClientTrackingOnPooledClient) {
+		t.Fatalf("keyed command in the same batch err = %v, want errClientTrackingOnPooledClient (must not dispatch)", err)
+	}
+
+	if _, err := ring.TxPipelined(ctx, func(pipe Pipeliner) error {
+		pipe.ClientMaintNotifications(ctx, true, "none")
+		return nil
+	}); !errors.Is(err, errClientMaintNotificationsOnPooledClient) {
+		t.Fatalf("Ring TxPipelined ClientMaintNotifications err = %v, want errClientMaintNotificationsOnPooledClient", err)
+	}
+}
+
 // TestTxPipelineAllowsStateCommands pins that a Tx pipeline is sticky: WATCH
 // pins one connection for the whole Tx, so CLIENT TRACKING queues there instead
 // of being rejected as pooled (#3961 regression flagged by review). Needs a
