@@ -84,14 +84,26 @@ var cscFullDuplexIdleProbe = 5 * time.Millisecond
 // can tighten or disable it.
 var cscFullDuplexSessionIdle = time.Second
 
-// fullDuplexRecycleAge bounds how long a single session holds one connection,
-// so the held connection is returned to the pool periodically (a Put runs the
-// OnPut pool hooks: metrics, health, and any queued maintenance handoff). Honors
-// a shorter ConnMaxLifetime.
-func (c *baseClient) fullDuplexRecycleAge() time.Duration {
+// fullDuplexRecycleAge bounds how long a single session holds cn, so the held
+// connection is returned to the pool periodically (a Put runs the OnPut pool
+// hooks: metrics, health, and any queued maintenance handoff). Bounded by the
+// connection's REMAINING absolute lifetime (expiresAt includes
+// ConnMaxLifetimeJitter): an already-old pooled connection must not be held for
+// a fresh full recycle age past the expiry the pool's reaper enforces.
+func (c *baseClient) fullDuplexRecycleAge(cn *pool.Conn) time.Duration {
 	age := 30 * time.Second
 	if c.opt.ConnMaxLifetime > 0 && c.opt.ConnMaxLifetime < age {
 		age = c.opt.ConnMaxLifetime
+	}
+	if exp := cn.ExpiresAt(); !exp.IsZero() {
+		if remain := time.Until(exp); remain < age {
+			age = remain
+		}
+	}
+	// A conn at (or past) expiry still serves the session it was just leased
+	// for — recycle promptly rather than with a zero/negative timer.
+	if age < 10*time.Millisecond {
+		age = 10 * time.Millisecond
 	}
 	return age
 }
@@ -366,7 +378,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 
 	// Supervisor: request a graceful recycle on stop or when the session ages
 	// out. A handoff/close request comes from the reader via doRecycle().
-	recycleTimer := time.NewTimer(c.fullDuplexRecycleAge())
+	recycleTimer := time.NewTimer(c.fullDuplexRecycleAge(cn))
 	defer recycleTimer.Stop()
 	superDone := make(chan struct{})
 	supDead := make(chan struct{}) // closed when the supervisor exits (joined before release)

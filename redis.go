@@ -2558,8 +2558,15 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 	// not just when the socket is readable (MaybeHasData): a reply and a trailing
 	// invalidation can arrive in one socket read, leaving the invalidation in the
 	// reader buffer with an empty socket — MaybeHasData alone would skip it and
-	// serve stale until the next miss/MaxStaleness (#3965).
-	if !cn.MaybeHasData() && !cn.HasBufferedData() {
+	// serve stale until the next miss/MaxStaleness (#3965). On transports where
+	// socket readiness cannot be inspected at all (Windows; custom dialer
+	// wrappers exposing neither syscall.Conn nor NetConn) MaybeHasData is always
+	// false, so fall back to a throttled timed drain (at most once per
+	// cscFallbackProbeInterval, the same discipline as the CSC drainer) — without
+	// it a push addressed to a held full-duplex connection would sit unread
+	// until the next reply.
+	if !cn.MaybeHasData() && !cn.HasBufferedData() &&
+		!cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
 		return nil
 	}
 

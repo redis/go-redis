@@ -979,6 +979,15 @@ func (cn *Conn) ClearHandoffState() {
 	cn.stateMachine.Transition(StateIdle)
 }
 
+// ExpiresAt returns the connection's absolute lifetime expiry (zero when no
+// ConnMaxLifetime applies). Set once at dial, before the conn is shared, so a
+// plain read is safe. Long-holding callers (the CSC full-duplex session) use it
+// to bound their hold by the REMAINING lifetime — including jitter — rather
+// than restarting a full lifetime the pool's reaper would not honor.
+func (cn *Conn) ExpiresAt() time.Time {
+	return cn.expiresAt
+}
+
 // HasBufferedData safely checks if the connection has buffered data.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) HasBufferedData() bool {
