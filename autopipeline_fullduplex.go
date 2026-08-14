@@ -15,7 +15,8 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// Ordered full-duplex dispatch for the async ordered AutoPipeline face.
+// Ordered full-duplex dispatch for the ordered AutoPipeline faces (async and
+// blocking).
 //
 // The half-duplex path executes one batch per round trip (MaxConcurrentBatches
 // is 1 in ordered mode), so a slow link caps throughput at batch/RTT and late
@@ -41,9 +42,10 @@ import (
 // a command whose write reached the server but whose reply was lost may re-execute
 // (relevant for non-idempotent writes) — the ambiguous set is only the unacked tail.
 //
-// Gated by AutoPipelineOptions.FullDuplex, honored only on the async ordered
-// single-shard face on a standalone *Client with a pipeline pool. Window, idle
-// return and max-hold are tuned via the FullDuplex* options (see their GoDoc).
+// Gated by AutoPipelineOptions.FullDuplex, honored on the ordered single-shard
+// faces (async AND blocking) of a standalone *Client with a pipeline pool.
+// Window, idle return and max-hold are tuned via the FullDuplex* options (see
+// their GoDoc).
 // Cluster and window auto-tune are follow-ups (see AP_ORDERED_FULLDUPLEX_DESIGN.md).
 // RESP3 push frames are demuxed inline.
 
@@ -1166,12 +1168,31 @@ func fdFirstNoRetry(reqs []fdReq) int {
 
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).
 func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
+	// Error-metric parity with the normal command path: commands terminated here
+	// (lease failure, retry exhaustion, a NoRetry tail, Close) never reach the
+	// reader's inline completion, so emit the native error callback per command —
+	// process() does the same via classifyCommandError. One classification for
+	// the whole set: every req fails with the same err. No duration metric: these
+	// commands have no meaningful write→reply span (many were never written).
+	errorCallback := pool.GetMetricErrorCallback()
+	var errorType, statusCode string
+	var isInternal bool
+	if errorCallback != nil && len(reqs) > 0 {
+		errorType, statusCode, isInternal = classifyCommandError(err)
+	}
 	for i := range reqs {
 		// rawErr(), not Err(): this runs on the engine goroutine, and Err()
 		// awaits batch.done — the very channel complete() closes just below — so
 		// awaiting here would self-deadlock (the same trap hostHook documents).
 		if reqs[i].cmd.rawErr() == nil {
 			reqs[i].cmd.SetErr(err)
+		}
+		if errorCallback != nil {
+			octx := reqs[i].ctx
+			if octx == nil {
+				octx = context.Background()
+			}
+			errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
 		}
 		reqs[i].complete()
 	}
