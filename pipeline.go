@@ -57,11 +57,69 @@ type Pipeline struct {
 
 	exec pipelineExecer
 	cmds []Cmder
+	// sticky is true only for a Pipeline created from a dedicated *Conn (a
+	// persistent, caller-owned connection). Per-connection state commands
+	// (CLIENT TRACKING / MAINT_NOTIFICATIONS) are then allowed. On a pooled
+	// Pipeline (from a Client/Ring/ClusterClient, or a Tx) the connection is
+	// borrowed for Exec and returned to the pool afterwards, so queuing those
+	// commands would leave per-connection state on an arbitrary connection — the
+	// overrides below reject them there (matching the pooled-client wrappers).
+	sticky bool
 }
 
 func (c *Pipeline) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
+}
+
+// ClientTracking / ClientTrackingOn / ClientTrackingOff / ClientMaintNotifications
+// are per-connection state. On a POOLED pipeline (from a Client/Ring/ClusterClient,
+// or a Tx) the connection is borrowed for Exec and returned to the pool afterwards,
+// so queuing these would leave state on an arbitrary connection — reject them with
+// guidance, exactly like the pooled-client wrappers. On a pipeline from a dedicated
+// *Conn (sticky) they are queued normally, since the state stays on that connection.
+func (c *Pipeline) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTracking(ctx, on, opt)
+	}
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+func (c *Pipeline) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTrackingOn(ctx, opt)
+	}
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
+}
+
+func (c *Pipeline) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTrackingOff(ctx)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+func (c *Pipeline) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientMaintNotifications(ctx, enabled, endpointType)
+	}
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 // Len returns the number of queued commands.

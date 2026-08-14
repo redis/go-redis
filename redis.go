@@ -2540,7 +2540,8 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipelineHook,
+		exec:   c.processPipelineHook,
+		sticky: true, // dedicated connection: per-connection state commands are allowed
 	}
 	pipe.init()
 	return &pipe
@@ -2557,6 +2558,7 @@ func (c *Conn) TxPipeline() Pipeliner {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)
 		},
+		sticky: true, // dedicated connection: per-connection state commands are allowed
 	}
 	pipe.init()
 	return &pipe
