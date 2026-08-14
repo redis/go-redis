@@ -1064,36 +1064,58 @@ func (ap *AutoPipeliner) HImportDiscardAll(ctx context.Context) *IntCmd {
 	return ap.pipeliner.HImportDiscardAll(ctx)
 }
 
-// Watch runs a transactional function on the underlying client (not batched).
 // ClientTracking and friends are per-connection commands (statefulCmdable);
 // through the autopipeliner they fail with guidance exactly as on the
 // underlying pooled client — a batch executes on an arbitrary pool
-// connection. Use a dedicated connection (Client.Conn), a Pipeline/Tx, or
-// the built-in client-side cache.
+// connection. Use a dedicated connection (Client.Conn) or the built-in
+// client-side cache. On a closed autopipeliner they return ErrClosed, like
+// every other dispatch path.
 func (ap *AutoPipeliner) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
-	arg := "off"
-	if on {
-		arg = "on"
+	if !on {
+		return ap.ClientTrackingOff(ctx)
 	}
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+	return ap.ClientTrackingOn(ctx, opt)
 }
 
 // ClientTrackingOn through the autopipeliner fails with guidance; see ClientTracking.
 func (ap *AutoPipeliner) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	if ap.isClosed() {
+		return pooledConnStateCmd(ctx, ErrClosed, args...)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
 }
 
 // ClientTrackingOff through the autopipeliner fails with guidance; see ClientTracking.
 func (ap *AutoPipeliner) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	if ap.isClosed() {
+		return pooledConnStateCmd(ctx, ErrClosed, "client", "tracking", "off")
+	}
 	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
 }
 
 // ClientMaintNotifications through the autopipeliner fails with guidance;
-// set Options.MaintNotificationsConfig instead.
+// set the MaintNotificationsConfig option instead.
 func (ap *AutoPipeliner) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	if ap.isClosed() {
+		return pooledConnStateCmd(ctx, ErrClosed, args...)
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
+// Watch runs a transactional function on the underlying client (not batched).
 func (ap *AutoPipeliner) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {
 	return ap.pipeliner.Watch(ctx, fn, keys...)
 }

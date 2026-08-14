@@ -962,18 +962,21 @@ func (c *Ring) generalProcessPipeline(
 
 // ClientTracking and friends are per-connection commands (statefulCmdable);
 // on a pooled ring client they fail with guidance. Use a dedicated connection
-// of the relevant shard client, a Pipeline/Tx, or the built-in client-side cache.
+// of the relevant shard client, or the built-in client-side cache.
 func (c *Ring) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
-	arg := "off"
-	if on {
-		arg = "on"
+	if !on {
+		return c.ClientTrackingOff(ctx)
 	}
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+	return c.ClientTrackingOn(ctx, opt)
 }
 
 // ClientTrackingOn on a pooled ring client fails with guidance; see ClientTracking.
 func (c *Ring) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
 }
 
 // ClientTrackingOff on a pooled ring client fails with guidance; see ClientTracking.
@@ -981,10 +984,19 @@ func (c *Ring) ClientTrackingOff(ctx context.Context) *StatusCmd {
 	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
 }
 
-// ClientMaintNotifications on a pooled ring client fails with guidance;
-// set RingOptions.MaintNotificationsConfig instead.
+// ClientMaintNotifications on a pooled ring client fails with guidance; set
+// MaintNotificationsConfig on the per-shard Options (RingOptions.NewClient) instead.
 func (c *Ring) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 func (c *Ring) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {

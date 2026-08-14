@@ -2628,19 +2628,21 @@ func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedire
 
 // ClientTracking and friends are per-connection commands (statefulCmdable);
 // on a pooled cluster client they fail with guidance. Use a dedicated
-// connection of the relevant node client, a Pipeline/Tx, or the built-in
-// client-side cache.
+// connection of the relevant node client, or the built-in client-side cache.
 func (c *ClusterClient) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
-	arg := "off"
-	if on {
-		arg = "on"
+	if !on {
+		return c.ClientTrackingOff(ctx)
 	}
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+	return c.ClientTrackingOn(ctx, opt)
 }
 
 // ClientTrackingOn on a pooled cluster client fails with guidance; see ClientTracking.
 func (c *ClusterClient) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
 }
 
 // ClientTrackingOff on a pooled cluster client fails with guidance; see ClientTracking.
@@ -2651,7 +2653,16 @@ func (c *ClusterClient) ClientTrackingOff(ctx context.Context) *StatusCmd {
 // ClientMaintNotifications on a pooled cluster client fails with guidance;
 // set ClusterOptions.MaintNotificationsConfig instead.
 func (c *ClusterClient) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 func (c *ClusterClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error {

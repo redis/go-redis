@@ -2133,11 +2133,11 @@ func (c *Client) Close() error {
 var (
 	errClientTrackingOnPooledClient = errors.New(
 		"redis: CLIENT TRACKING is per-connection state and cannot be applied through a connection pool; " +
-			"use a dedicated connection (Client.Conn) or a Pipeline/Tx, " +
-			"or configure the built-in client-side cache (Options.ClientSideCacheConfig) instead")
+			"use a dedicated connection (Client.Conn), " +
+			"or configure the built-in client-side cache (the ClientSideCacheConfig option) instead")
 	errClientMaintNotificationsOnPooledClient = errors.New(
 		"redis: CLIENT MAINT_NOTIFICATIONS is per-connection state and cannot be applied through a connection pool; " +
-			"set Options.MaintNotificationsConfig to enable it on every connection automatically, " +
+			"set the MaintNotificationsConfig option to enable it on every connection automatically, " +
 			"or use a dedicated connection (Client.Conn) for manual control")
 )
 
@@ -2154,16 +2154,19 @@ func pooledConnStateCmd(ctx context.Context, err error, args ...interface{}) *St
 // per-connection state. Use Client.Conn, a Pipeline/Tx, or the built-in
 // client-side cache. See the statefulCmdable method for the working variant.
 func (c *Client) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
-	arg := "off"
-	if on {
-		arg = "on"
+	if !on {
+		return c.ClientTrackingOff(ctx)
 	}
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", arg)
+	return c.ClientTrackingOn(ctx, opt)
 }
 
 // ClientTrackingOn on a pooled client fails with guidance; see ClientTracking.
 func (c *Client) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "on")
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
 }
 
 // ClientTrackingOff on a pooled client fails with guidance; see ClientTracking.
@@ -2177,7 +2180,16 @@ func (c *Client) ClientTrackingOff(ctx context.Context) *StatusCmd {
 // during connection init. See the statefulCmdable method for the working
 // per-connection variant.
 func (c *Client) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
-	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, "client", "maint_notifications")
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
 }
 
 func (c *Client) Conn() *Conn {
