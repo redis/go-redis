@@ -34,10 +34,10 @@ func (h *fdCountHook) OnPut(_ context.Context, _ *pool.Conn) (bool, bool, error)
 }
 func (h *fdCountHook) OnRemove(_ context.Context, _ *pool.Conn, _ error) {}
 
-// TestFullDuplexReturnRunsPoolHooks verifies that on lease/return the FD
-// connection passes back through the pipeline pool's PoolHook Get/Put path.
-// maintnotifications (step 4) and streaming-creds re-auth (step 5) are exactly
-// such pool hooks, so this is the concrete evidence they get a chance to run.
+// TestFullDuplexReturnRunsPoolHooks verifies the held FD connection passes back
+// through the pipeline pool's PoolHook Get/Put path on lease/return — that path
+// is what gives per-conn hooks (maintnotifications, streaming-creds re-auth) a
+// chance to run.
 func TestFullDuplexReturnRunsPoolHooks(t *testing.T) {
 	ctx := context.Background()
 
@@ -108,18 +108,10 @@ func fdTestClient(addr string) *Client {
 // TestFullDuplexStaysAlignedUnderConcurrentMutation verifies the ordered
 // full-duplex reader keeps command↔reply FIFO alignment while a SECOND client
 // mutates the key concurrently: every GET after the mutation returns the new
-// value and never errors.
-//
-// NOTE: this does NOT exercise the reader's RESP3 push-drain
-// (processPendingPushNotificationWithReader). An earlier version tried to via
-// CLIENT TRACKING, but that cannot reach the FD connection: pipeline-pool
-// connections are deliberately excluded from CLIENT TRACKING (redis.go — they
-// never populate the client-side cache), and CLIENT TRACKING issued through the
-// autopipeliner diverts to a main-pool connection anyway. So no invalidation push
-// ever lands on the held FD conn. Real FD-connection push demux is driven by
-// maintenance-notification pushes (maintnotifications e2e); a focused unit test
-// would need a mock connection that injects a push frame ahead of a reply —
-// tracked as a follow-up.
+// value and never errors. It does NOT cover the reader's RESP3 push-drain — no
+// invalidation push can reach the FD conn (pipeline-pool connections are excluded
+// from CLIENT TRACKING), so push demux is covered by the maintnotifications e2e
+// suite instead.
 func TestFullDuplexStaysAlignedUnderConcurrentMutation(t *testing.T) {
 	ctx := context.Background()
 	addr := ":6379"
@@ -477,8 +469,16 @@ func TestFullDuplexConfigDefaults(t *testing.T) {
 	if ap.fd.maxHold != fdDefaultMaxHold {
 		t.Fatalf("zero FullDuplexMaxHold resolved to %s, want default %s", ap.fd.maxHold, fdDefaultMaxHold)
 	}
-	if cap(ap.fd.ch) != fdDefaultWindow {
-		t.Fatalf("queue capacity %d, want window %d", cap(ap.fd.ch), fdDefaultWindow)
+	// The submit queue is capped (min(window, 4096)): a buffered channel
+	// allocates its full capacity eagerly, so a window-sized queue would cost
+	// several MiB per engine up front; backpressure comes from the in-flight
+	// deque, which grows only with actual in-flight.
+	if want := 4096; cap(ap.fd.ch) != want {
+		t.Fatalf("queue capacity %d, want %d (capped; window %d bounds in-flight, not the queue)",
+			cap(ap.fd.ch), want, fdDefaultWindow)
+	}
+	if ap.fd.window != fdDefaultWindow {
+		t.Fatalf("window %d, want default %d", ap.fd.window, fdDefaultWindow)
 	}
 }
 
@@ -616,12 +616,11 @@ func (h *fdShortCircuitHook) ProcessPipelineHook(next ProcessPipelineHook) Proce
 	return next
 }
 
-// TestFullDuplexHookShortCircuit exercises the short-circuit path (the one where
-// host and reader both finalize the command). It must be race-free (-race), the
-// caller must see the hook's error, and the command must still execute on the
-// wire (FD cannot un-send an already-queued command). Regression guard for the
-// data race where the host released the caller before the reader finished writing
-// the command.
+// TestFullDuplexHookShortCircuit exercises the short-circuit path, where host and
+// reader both finalize the command: it must be race-free (-race), the caller must
+// see the hook's error, and the command must still execute on the wire (FD cannot
+// un-send an already-queued command). Guards the race where the host releases the
+// caller before the reader has finished writing into the command.
 func TestFullDuplexHookShortCircuit(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -819,11 +818,10 @@ func TestFullDuplexBackpressure(t *testing.T) {
 }
 
 // TestFDShutdownFlushCompletesBetweenSessionsBacklog pins the Close contract for
-// work accepted while NO session holds a connection (#3964, cursor High): a
-// command sitting in fd.ch (or an unacked carry) when Close wins the
-// between-sessions race must be EXECUTED via the normal pipeline path and
-// completed — not failed ErrClosed. Drives shutdownFlush directly: run()'s two
-// shutdown sites call it verbatim.
+// work accepted while NO session holds a connection: a command sitting in fd.ch
+// (or an unacked carry) when Close wins the between-sessions race must be
+// EXECUTED via the normal pipeline path, not failed ErrClosed. Drives
+// shutdownFlush directly, which is what run()'s two shutdown sites call.
 func TestFDShutdownFlushCompletesBetweenSessionsBacklog(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -896,13 +894,11 @@ func (c *failWriteNetConn) Write(b []byte) (int, error) {
 	return 0, errors.New("write boom")
 }
 
-// TestWriteCarryChunkedRecoversSuffixOnWriteError pins the fix for #3964
-// (cursor High / codex): writeBatch pushes each chunk into the in-flight deque
-// BEFORE writing it, so when a multi-chunk carry write fails on a chunk, the
-// un-written suffix must also be pushed — otherwise those accepted commands are
-// in neither fd.ch nor the deque and their callers hang. This asserts the WHOLE
-// carry is recoverable via the deque after a write error, not just the failing
-// chunk. Deterministic and dial-free.
+// TestWriteCarryChunkedRecoversSuffixOnWriteError pins deque recovery of a
+// partially written carry: writeBatch pushes each chunk into the in-flight deque
+// BEFORE writing it, so when a multi-chunk carry write fails the un-written
+// suffix must be pushed too — otherwise those accepted commands are in neither
+// fd.ch nor the deque and their callers hang. Deterministic and dial-free.
 func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 	cn := pool.NewConn(&failWriteNetConn{})
 	fd := &fdEngine{
@@ -931,11 +927,9 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 
 // TestFullDuplexCloseCompletesBacklogAfterConnKill is a broad bounded-hang guard:
 // killing the connection mid-flight and then closing the engine must settle every
-// accepted command (here via the connection-error recovery + drainQueue path),
-// not hang any caller. It does NOT specifically exercise the chunked-carry suffix
-// fix — that is pinned deterministically by
-// TestWriteCarryChunkedRecoversSuffixOnWriteError. Kept as an end-to-end no-hang
-// check on Close-after-conn-kill.
+// accepted command (via the connection-error recovery + drainQueue path) rather
+// than hang a caller. End-to-end only; the chunked-carry suffix case is pinned
+// deterministically by TestWriteCarryChunkedRecoversSuffixOnWriteError.
 func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
 	ctx := context.Background()
 	if err := NewClient(&Options{Addr: ":6379"}).Ping(ctx).Err(); err != nil {
@@ -1008,11 +1002,11 @@ func TestFullDuplexCloseCompletesBacklogAfterConnKill(t *testing.T) {
 	}
 }
 
-// TestFullDuplexBlockingFace pins full-duplex on the BLOCKING AutoPipeline face
-// (#3964 follow-up): the engine activates, a single caller gets normal
-// synchronous semantics (result already on the returned cmd, errors surface on
-// the call), per-goroutine ordering holds by construction (each call waits),
-// many concurrent blocking callers all complete correctly, and Close is clean.
+// TestFullDuplexBlockingFace pins full-duplex on the BLOCKING AutoPipeline face:
+// the engine activates, a single caller gets normal synchronous semantics (result
+// already on the returned cmd, errors surface on the call), per-goroutine
+// ordering holds by construction (each call waits), many concurrent blocking
+// callers all complete correctly, and Close is clean.
 func TestFullDuplexBlockingFace(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1230,9 +1224,7 @@ func TestFullDuplexBlockingCmdDetection(t *testing.T) {
 // TestFullDuplexBlockingDivertsOffPipe proves a parked blocking command does NOT
 // head-of-line-block the shared FD pipe: it is diverted to a separate pooled
 // connection, so pipelined commands submitted while it is parked complete
-// promptly. Note: the per-caller ordering guarantee is deliberately NOT claimed
-// across this divert boundary (the blocking command runs on its own connection),
-// so this test does not assert ordering between the BLPOP and the GETs.
+// promptly. Ordering across the divert boundary is deliberately not asserted.
 func TestFullDuplexBlockingDivertsOffPipe(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1412,11 +1404,11 @@ func TestFDFailReqsNoDeadlock(t *testing.T) {
 	}
 }
 
-// TestFDInflightHardCloseTakesUnackedTail covers the double-ownership fix: an
-// entry the reader has completed+advanced must NEVER also be returned by the
-// recovery path. hardClose stops the reader; takeRemaining (called after the
-// reader would have exited) returns exactly the un-advanced tail, in order — so
-// completed commands are not replayed/failed a second time. Pure, no server.
+// TestFDInflightHardCloseTakesUnackedTail pins deque ownership: an entry the
+// reader has completed+advanced must NEVER also be returned by the recovery path.
+// hardClose stops the reader; takeRemaining (called after the reader would have
+// exited) returns exactly the un-advanced tail, in order, so completed commands
+// are never replayed or failed a second time. Pure, no server.
 func TestFDInflightHardCloseTakesUnackedTail(t *testing.T) {
 	ctx := context.Background()
 	f := newFDInflight()
@@ -1453,15 +1445,13 @@ func TestFDInflightHardCloseTakesUnackedTail(t *testing.T) {
 	}
 }
 
-// TestFDInflightOwnershipPartition pins the deque contract the Blocker-2 fix
-// relies on: with the correct usage (hardClose, then takeRemaining ONLY after
-// the reader has exited), every entry is owned by EXACTLY ONE side — advanced by
-// the reader OR returned by takeRemaining, never both and never neither. A
-// reader goroutine drains+advances while a second goroutine races a hardClose;
-// under -race this also proves advance/hardClose/takeRemaining are lock-clean.
-// (The session-level regression — that session() must take the tail only after
-// <-readerDone, not before as the old closeRecover did — is covered end-to-end
-// by TestFullDuplexRecoversFromConnKill.)
+// TestFDInflightOwnershipPartition pins the deque partition invariant: with the
+// correct usage (hardClose, then takeRemaining ONLY after the reader has exited)
+// every entry is owned by EXACTLY ONE side — advanced by the reader OR returned
+// by takeRemaining, never both and never neither. A reader drains+advances while
+// a second goroutine races a hardClose, so -race also proves advance/hardClose/
+// takeRemaining are lock-clean. The session-level path (take the tail only after
+// <-readerDone) is covered end-to-end by TestFullDuplexRecoversFromConnKill.
 func TestFDInflightOwnershipPartition(t *testing.T) {
 	ctx := context.Background()
 	for iter := 0; iter < 200; iter++ {
@@ -1524,8 +1514,7 @@ func (l *fdCountLimiter) ReportResult(_ error) { l.report.Add(1) }
 
 // TestFullDuplexLimiterPerSession verifies FullDuplex honors opt.Limiter with
 // per-session accounting: every session's conn acquisition is bracketed by
-// exactly one Allow and one ReportResult (before release). Previously the FD
-// engine bypassed the Limiter entirely (#3964).
+// exactly one Allow and one ReportResult, the report before the release.
 func TestFullDuplexLimiterPerSession(t *testing.T) {
 	ctx := context.Background()
 	lim := &fdCountLimiter{}
@@ -1613,8 +1602,8 @@ func TestFullDuplexRetryDivertsToNormalConn(t *testing.T) {
 }
 
 // fdOtelRecorder counts RecordOperationDuration to prove the full-duplex reader
-// emits the native per-command OTel metric (it previously bypassed process, so
-// no metric was recorded — #3964). All other Recorder methods are no-ops.
+// emits the native per-command OTel metric itself (it bypasses process, which
+// would otherwise emit it). All other Recorder methods are no-ops.
 type fdOtelRecorder struct{ opDurations atomic.Int64 }
 
 func (r *fdOtelRecorder) RecordOperationDuration(context.Context, time.Duration, otel.Cmder, int, error, *pool.Conn, int) {
@@ -1638,8 +1627,8 @@ func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn,
 func (r *fdOtelRecorder) RecordPendingRequests(context.Context, int, *pool.Conn, string)       {}
 
 // TestFullDuplexRecordsOTelOperationDuration verifies the FD reader records the
-// native per-command OTel duration metric (redisotel-native), which it did not
-// before — the reader completes commands without going through process().
+// native per-command OTel duration metric (redisotel-native) itself, which it
+// must because it completes commands without going through process().
 func TestFullDuplexRecordsOTelOperationDuration(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1671,17 +1660,14 @@ func TestFullDuplexRecordsOTelOperationDuration(t *testing.T) {
 	}
 }
 
-// TestFullDuplexDivertsHImportOffPipe verifies the full-duplex engine routes a
-// managed HIMPORT command off the shared pipe to the normal Process path (#3964).
-// The FD writer streams raw commands and never injects the registered HIMPORT
-// PREPARE, so an HIMPORT SET riding the pipe can fail "no such fieldset"; diverting
-// it through Process lets _process inject the PREPARE from the registry.
-//
-// The assertion is routing, not end-to-end HIMPORT (which needs Redis 8.10+): a
-// diverted command executes on the MAIN pool via process(), while an FD-pipe
-// command uses the dedicated pipeline pool and never touches the main pool. So a
-// main-pool Hits/Misses bump after a lone HImportSet proves it diverted. The
-// command's own result is irrelevant here — it may error on an old server.
+// TestFullDuplexDivertsHImportOffPipe verifies the FD engine routes a managed
+// HIMPORT command off the shared pipe to the normal Process path: the FD writer
+// never injects the registered PREPARE, so an HIMPORT SET riding the pipe can
+// fail "no such fieldset". The assertion is routing, not end-to-end HIMPORT
+// (which needs Redis 8.10+): a diverted command runs on the MAIN pool while an
+// FD-pipe command never touches it, so a main-pool Hits/Misses bump after a lone
+// HImportSet proves the divert. Its own result is irrelevant — it may error on an
+// old server.
 func TestFullDuplexDivertsHImportOffPipe(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1722,8 +1708,8 @@ func TestFullDuplexDivertsHImportOffPipe(t *testing.T) {
 
 // fdCloseHook is a ProcessHook that does work AFTER next() returns, to prove the
 // full-duplex engine tracks its hook-host goroutines so AutoPipeliner.Close waits
-// for post-next hook work before returning (#3964). It signals once when it has
-// entered the post-next phase, then holds briefly and records completion.
+// for post-next hook work before returning. It signals once when it has entered
+// the post-next phase, then holds briefly and records completion.
 type fdCloseHook struct {
 	entered   chan struct{}
 	once      sync.Once
@@ -1755,9 +1741,9 @@ func (h *fdCloseHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipel
 
 // TestFullDuplexCloseWaitsForHookHosts verifies AutoPipeliner.Close does not
 // return until a full-duplex command's post-next ProcessHook has finished. The FD
-// hook host is the only goroutine that closes such a command's batch; before the
-// fix it was untracked, so Close could return while accepted commands were still
-// blocked behind post-reply hooks (drain-before-return contract violated).
+// hook host is the only goroutine that closes such a command's batch, so an
+// untracked host would let Close return with accepted commands still blocked
+// behind post-reply hooks — violating drain-before-return.
 func TestFullDuplexCloseWaitsForHookHosts(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1799,7 +1785,7 @@ func TestFullDuplexCloseWaitsForHookHosts(t *testing.T) {
 // (cmd.Err()), the documented pattern also exercised by the async autopipeline
 // hook tests. On the full-duplex path the host goroutine is the only code that
 // closes the command's batch, so without the executor guard this read blocks on
-// batch.done forever (#3964, P1). It records the error it observed.
+// batch.done forever. It records the error it observed.
 type fdSelfReadHook struct {
 	watchName string
 	observed  chan error
@@ -1830,9 +1816,9 @@ func (h *fdSelfReadHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPi
 
 // TestFullDuplexHookReadingOwnResultDoesNotDeadlock verifies a ProcessHook that
 // reads its command's result after next() completes instead of hanging, on the
-// full-duplex path. Before the fix the FD host goroutine did not mark itself as
-// the batch executor, so cmd.Err() inside the hook blocked on batch.done (which
-// only that goroutine closes) — a hard deadlock.
+// full-duplex path: unless the FD host marks itself as the batch executor,
+// cmd.Err() inside the hook blocks on batch.done — which only that same goroutine
+// closes, a hard deadlock.
 func TestFullDuplexHookReadingOwnResultDoesNotDeadlock(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1882,9 +1868,9 @@ func TestFullDuplexHookReadingOwnResultDoesNotDeadlock(t *testing.T) {
 }
 
 // fdPrePanicHook panics BEFORE calling next, to prove the FD host waits for the
-// reader to finish writing the command before releasing the caller (#3964): the
-// command is already streamed, so closing the batch immediately would race the
-// reader's write into cmd against the caller's read of it.
+// reader to finish writing the command before releasing the caller: the command
+// is already streamed, so closing the batch immediately would race the reader's
+// write into cmd against the caller's read of it.
 type fdPrePanicHook struct{ watchName string }
 
 func (h *fdPrePanicHook) DialHook(next DialHook) DialHook { return next }
@@ -1902,9 +1888,9 @@ func (h *fdPrePanicHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPi
 
 // TestFullDuplexPreNextHookPanicSettlesWithoutRace verifies a ProcessHook that
 // panics before next() surfaces an error to the caller, does not hang, and does
-// not race the reader's write into the command (run with -race). Before the fix
-// the panic-recover closed the batch immediately, letting the reader write cmd
-// after the caller had already observed the recovered failure.
+// not race the reader's write into the command (run with -race): a recover that
+// closed the batch without first awaiting hookDone would let the reader write cmd
+// after the caller had already observed the failure.
 func TestFullDuplexPreNextHookPanicSettlesWithoutRace(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -1935,7 +1921,7 @@ func TestFullDuplexPreNextHookPanicSettlesWithoutRace(t *testing.T) {
 
 // TestFDFirstNoRetry verifies the tail-split index that lets the FD retry path
 // replay the retryable PREFIX of an unacked tail while never re-sending a NoRetry
-// command (or anything ordered after it) (#3964).
+// command (or anything ordered after it).
 func TestFDFirstNoRetry(t *testing.T) {
 	ctx := context.Background()
 	retry := fdReq{cmd: NewStringCmd(ctx, "get", "k")}  // NoRetry() == false
@@ -1958,8 +1944,8 @@ func TestFDFirstNoRetry(t *testing.T) {
 	}
 }
 
-// TestFDBatchEnd verifies the replay chunk boundaries (#3964): the recovered tail
-// is re-issued in the same MaxBatchSize/MaxBatchBytes-capped chunks as freshly
+// TestFDBatchEnd verifies the replay chunk boundaries: the recovered tail is
+// re-issued in the same MaxBatchSize/MaxBatchBytes-capped chunks as freshly
 // drained work, so a large recovered window is not flushed in one oversized write.
 func TestFDBatchEnd(t *testing.T) {
 	ctx := context.Background()
@@ -2003,9 +1989,9 @@ func (fdPanicWriter) Write(p []byte) (int, error) { panic("boom: reply decoder p
 
 // TestFullDuplexReaderPanicRecovers verifies a panic in reply decoding on the FD
 // reader goroutine is recovered (not a process crash): the command is settled
-// with an error and the engine keeps serving on a fresh session (#3964). A
-// RawWriteToCmd submitted raw rides the FD pipe, and its panicking writer panics
-// while the reader streams the reply.
+// with an error and the engine keeps serving on a fresh session. A raw
+// RawWriteToCmd rides the FD pipe and its writer panics while the reader streams
+// the reply.
 func TestFullDuplexReaderPanicRecovers(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -2052,13 +2038,12 @@ func (fdNoopHook) DialHook(next DialHook) DialHook                              
 func (fdNoopHook) ProcessHook(next ProcessHook) ProcessHook                         { return next }
 func (fdNoopHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook { return next }
 
-// TestFullDuplexReaderPanicMidBatchNoDoubleComplete guards #3964 :709: when the
-// reader panics on a command that shares a frontBatch snapshot with EARLIER,
-// already-completed commands, the recover must advance those completed ones out
-// of the deque. Otherwise recovery re-owns and re-completes them — double-closing
-// their hookDone (a second panic that crashes the process). A no-op hook makes
-// every command hooked; several completed GETs precede the panicking command in
-// one batch.
+// TestFullDuplexReaderPanicMidBatchNoDoubleComplete guards the reader-panic
+// recover path: when the panic hits a command sharing a frontBatch snapshot with
+// EARLIER, already-completed commands, the recover must advance those out of the
+// deque — otherwise recovery re-owns and re-completes them, double-closing their
+// hookDone (a second panic that crashes the process). A no-op hook makes every
+// command hooked, with completed GETs ahead of the panicking one in a batch.
 func TestFullDuplexReaderPanicMidBatchNoDoubleComplete(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -2110,8 +2095,8 @@ func (l *fdRejectLimiter) Allow() error         { l.allow.Add(1); return errFDLi
 func (l *fdRejectLimiter) ReportResult(_ error) {}
 
 // TestFullDuplexLimiterRejectFailsQueuedWork verifies that when the Limiter
-// denies FD session acquisition, accepted commands fail-fast with the limiter
-// error instead of hanging in fd.ch until the breaker closes (#3964, fdDenied).
+// denies FD session acquisition (fdDenied), accepted commands fail-fast with the
+// limiter error instead of hanging in fd.ch until the breaker closes.
 func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	probe := NewClient(&Options{Addr: ":6379"})
@@ -2153,11 +2138,10 @@ func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
 }
 
 // TestFullDuplexProcessReportsSubmitRejection verifies raw Process(ctx,cmd)
-// surfaces an FD submit-time rejection instead of returning nil (#3964): all FD
-// submit-reject paths (closed / caller-ctx cancel / engine ctx) return the shared
+// surfaces an FD submit-time rejection instead of returning nil: every submit
+// reject path (closed / caller-ctx cancel / engine ctx) returns the shared
 // completedBatch sentinel, which processAsync checks to report cmd.rawErr(). The
-// closed path is exercised here deterministically; the ctx-cancel path uses the
-// identical return.
+// closed path is the one exercised here; the others use the identical return.
 func TestFullDuplexProcessReportsSubmitRejection(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -2181,11 +2165,10 @@ func TestFullDuplexProcessReportsSubmitRejection(t *testing.T) {
 	}
 }
 
-// TestFullDuplexCloseFlushesBacklog verifies graceful Close flushes accepted-but-
-// unwritten fd.ch commands (executes them) instead of failing them ErrClosed —
-// matching half-duplex Close's "accepted ⇒ completes" contract (#3964). A burst
-// is submitted and Close is called immediately, so some commands are still in the
-// backlog when Close runs; none may come back ErrClosed.
+// TestFullDuplexCloseFlushesBacklog verifies graceful Close executes the
+// accepted-but-unwritten fd.ch commands instead of failing them ErrClosed
+// ("accepted ⇒ completes"). A burst is submitted and Close called immediately, so
+// some commands are still in the backlog when Close runs; none may be ErrClosed.
 func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 	ctx := context.Background()
 	c := fdTestClient(":6379")
@@ -2217,9 +2200,9 @@ func TestFullDuplexCloseFlushesBacklog(t *testing.T) {
 }
 
 // TestFullDuplexLeaseFailureFailsBacklog verifies that when the engine cannot
-// lease a connection for a new session (server down), accepted commands fail-fast
-// after the lease retries are exhausted instead of hanging in fd.ch (#3964,
-// fdLeaseErr). Uses a dead address, so it needs no live server.
+// lease a connection for a new session (fdLeaseErr, server down), accepted
+// commands fail-fast once the lease retries are exhausted instead of hanging in
+// fd.ch. Uses a dead address, so it needs no live server.
 func TestFullDuplexLeaseFailureFailsBacklog(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{
@@ -2257,8 +2240,8 @@ func TestFullDuplexLeaseFailureFailsBacklog(t *testing.T) {
 }
 
 // TestFullDuplexMaxHoldIdleDoesNotChurn verifies that with FullDuplexMaxHold set
-// shorter than FullDuplexIdleTimeout, a quiet engine does NOT Get/Put-recycle every
-// max-hold interval (#3964): the max-hold branch returns fdIdle when the pipe is
+// shorter than FullDuplexIdleTimeout a quiet engine does NOT Get/Put-recycle
+// every max-hold interval: the max-hold branch returns fdIdle when the pipe is
 // drained, so run() blocks for the next command instead of re-leasing.
 func TestFullDuplexMaxHoldIdleDoesNotChurn(t *testing.T) {
 	ctx := context.Background()

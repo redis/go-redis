@@ -68,64 +68,57 @@ type AutoPipelineOptions struct {
 	// ordered command stream, instead of the half-duplex one-batch-per-round-trip
 	// flusher. Its win is a latency-bound (WAN) link under many concurrent
 	// goroutines: ~1 RTT latency and pipe-saturated throughput on a single
-	// connection. On a fast link (loopback) prefer the half-duplex path — with no
-	// RTT to overlap, full-duplex only adds coordination overhead.
+	// connection. On a fast link (loopback) prefer half-duplex — with no RTT to
+	// overlap, full-duplex only adds coordination overhead.
 	//
 	// Honored on the ordered (Unordered:false, MaxConcurrentBatches<=1),
-	// single-shard face of a standalone *Client that has a pipeline pool — BOTH
-	// the deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. On
-	// the blocking face each caller still blocks per command, so a SINGLE
-	// blocking caller has exactly one command in flight and gains nothing from
-	// full-duplex (there is no next command to overlap — it only adds the held
-	// connection and goroutine overhead); the benefit appears with MANY
-	// concurrent blocking callers, whose commands overlap on the shared pipe
-	// exactly as on the async face (~1 RTT each instead of batch phase-locking).
-	// It is NOT supported on cluster clients: a ClusterClient silently falls back
-	// to the half-duplex path (the options type cannot see the client type, so
-	// this is not caught by Validate). Validate rejects the contradictory
+	// single-shard face of a standalone *Client that has a pipeline pool — BOTH the
+	// deferred (AsyncAutoPipeline) and the blocking (AutoPipeline) face. A SINGLE
+	// blocking caller gains nothing: it has one command in flight, so there is
+	// nothing to overlap, and it still pays the held connection and goroutine
+	// overhead; the win needs MANY concurrent blocking callers, whose commands then
+	// overlap on the shared pipe exactly as on the async face (~1 RTT each instead
+	// of batch phase-locking). NOT supported on cluster clients: a ClusterClient
+	// silently falls back to half-duplex (the options type cannot see the client
+	// type, so Validate cannot catch it). Validate does reject the contradictory
 	// standalone combos (FullDuplex with Unordered or MaxConcurrentBatches>1).
 	//
 	// Ordering caveat: blocking and connection-hostile commands (BLPOP, WAIT,
 	// XREAD BLOCK, SUBSCRIBE, MULTI, ...) are diverted to a separate pooled
-	// connection so they cannot stall the shared pipe. Managed HIMPORT commands
-	// (PREPARE/SET/DISCARD/DISCARDALL) are diverted too, but only on the
-	// full-duplex path: a fieldset is connection-session state that the FD writer
-	// does not replay (nor does the FD reader update the client-side registry), so
-	// they run through the normal Process path — which injects the registered
-	// PREPARE and keeps the registry current — instead of failing with
-	// "no such fieldset". The per-caller ordering guarantee therefore does NOT hold
-	// across such a diverted command relative to pipelined commands (identical to
-	// the half-duplex divert; blocking commands were never part of the ordered
-	// stream).
-	//
-	// A command whose reply is a retryable Redis error (LOADING/READONLY/…) or a
-	// redirect (MOVED/ASK) is likewise re-run on the normal Process path, off the
-	// FD reader, so the reader keeps completing later replies — meaning a diverted
-	// command may settle AFTER a command submitted later on the same goroutine.
-	// This only reorders when a caller has TWO causally-dependent commands in
-	// flight at once WITHOUT awaiting the first (e.g. Set(k) then Get(k) both
-	// fired on the async face before reading Set's result) and the first diverts.
-	// Awaiting a command's result before issuing a dependent one preserves order
-	// (the dependent command is not enqueued until the first has settled). The
-	// blocking AutoPipeline face waits per command by construction, so its
-	// per-goroutine ordering is unaffected by the divert — a blocking caller's
-	// next command is not even submitted until the previous one (diverted or not)
-	// has settled. NoRetry commands are never diverted.
+	// connection so they cannot stall the shared pipe. Managed HIMPORT
+	// (PREPARE/SET/DISCARD/DISCARDALL) is diverted too, but only on the full-duplex
+	// path: a fieldset is connection-session state that the FD writer does not
+	// replay and the FD reader does not track, so it runs through the normal Process
+	// path — which injects the registered PREPARE and keeps the registry current —
+	// instead of failing with "no such fieldset". A reply that is a retryable Redis
+	// error (LOADING/READONLY/…) or a redirect (MOVED/ASK) is likewise re-run
+	// through Process, off the FD reader, so the reader keeps completing later
+	// replies. Per-caller ordering therefore does NOT hold across a diverted
+	// command: it may settle AFTER a command submitted later on the same goroutine.
+	// That reorders only a caller holding TWO causally-dependent commands in flight
+	// WITHOUT awaiting the first (e.g. Set(k) then Get(k) both fired on the async
+	// face before reading Set's result); awaiting a result before issuing a
+	// dependent one preserves order, and the blocking face waits per command by
+	// construction, so its per-goroutine ordering is unaffected. NoRetry commands
+	// are never diverted. Half-duplex diverts identically; blocking commands were
+	// never part of the ordered stream.
 	//
 	// Observability: process hooks (redisotel spans/metrics, custom AddHook
-	// ProcessHooks) DO fire on the full-duplex path — each command runs through the
-	// hook chain individually (withProcessHook, not the batch ProcessPipelineHook),
-	// with the span bracketing the command's real write→reply latency. When no
-	// process hooks are registered this hosting is skipped entirely (the fast path).
-	// Caveat: because the write is already queued on the shared stream when the hook
-	// host starts, a hook that SHORT-CIRCUITS (returns without calling next) does
-	// NOT cancel execution — the command still runs on the wire; only the hook's
-	// returned error is reflected to the caller. This differs from the half-duplex
-	// path, where next() gates the write. A hook that relies on short-circuiting to
-	// BLOCK a command (a policy/ACL/kill-switch hook, or a mock/cache that must not
-	// touch the server) therefore does NOT prevent the server write under FullDuplex
-	// — run such hooks on a plain client or the half-duplex autopipeline. Hooks that
-	// always call next (observability: spans/metrics) are unaffected.
+	// ProcessHooks) DO fire on the full-duplex path — each command runs the hook
+	// chain individually (withProcessHook, not the batch ProcessPipelineHook), the
+	// span bracketing its real write→reply latency; with none registered the hosting
+	// is skipped entirely (the fast path). Presence is checked per command at submit
+	// time, so a hook registered via AddHook is observed only by commands submitted
+	// after it (one already in flight is not retroactively spanned). DialHook and
+	// pool stats work as usual. Caveat: the write is already queued on the shared
+	// stream when the hook host starts, so a hook that SHORT-CIRCUITS (returns
+	// without calling next) does NOT cancel execution — the command still runs on
+	// the wire and only the hook's returned error reaches the caller, unlike the
+	// half-duplex path where next() gates the write. A hook that relies on
+	// short-circuiting to BLOCK a command (a policy/ACL/kill-switch hook, or a
+	// mock/cache that must not touch the server) therefore does NOT prevent the
+	// server write under FullDuplex — run such hooks on a plain client or the
+	// half-duplex autopipeline. Hooks that always call next are unaffected.
 	//
 	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
 	// or per-command flag that waits for the hook to call next before enqueuing the
@@ -133,20 +126,16 @@ type AutoPipelineOptions struct {
 	// ~1-RTT concurrency for gated commands (observability-only hooks keep the fast
 	// path). Until then the short-circuit-does-not-block semantics above are
 	// intentional, not a bug.
-	//
-	// Hook presence is checked per command at submit time, so a hook registered via
-	// AddHook is observed only for commands submitted after it (a command already in
-	// flight is not retroactively spanned). DialHook and pool stats work as usual.
 	FullDuplex bool
 
 	// FullDuplexWindow is the maximum in-flight (written-but-unacknowledged)
 	// commands before the writer applies backpressure — a hard memory bound AND the
 	// cap on how deep the pipe can fill, so it must exceed the bandwidth-delay
-	// product (RTT × target rate) or it throttles throughput. Only used when
-	// FullDuplex is set. 0 means the default (65536, which covers ~50ms links at
-	// ~1.3M ops/s); a negative value is rejected by Validate. The deque only holds
+	// product (RTT × target rate) or it throttles throughput. The deque holds only
 	// ACTUAL in-flight (self-limited by throughput), so a generous window costs no
-	// memory until a stalled peer makes in-flight actually grow.
+	// memory until a stalled peer makes in-flight grow. Only used when FullDuplex is
+	// set; 0 means the default (65536, covering ~50ms links at ~1.3M ops/s) and a
+	// negative value is rejected by Validate.
 	FullDuplexWindow int
 
 	// FullDuplexIdleTimeout is how long the held full-duplex connection may sit
@@ -313,10 +302,9 @@ func DefaultBlockingAutoPipelineOptions() *AutoPipelineOptions {
 // call, not in NewClient.
 func (cfg *AutoPipelineOptions) Validate() error {
 	if cfg.FullDuplex {
-		// Full-duplex is an ordered single-stream mechanism: it relies on one FIFO
-		// connection to match replies to commands, which Unordered / parallel
-		// batches break. Checked BEFORE the generic MaxConcurrentBatches rule below
-		// so a FullDuplex misconfig gets a FullDuplex-specific message.
+		// Full-duplex matches replies to commands by FIFO position on one connection,
+		// which Unordered / parallel batches break. Checked BEFORE the generic
+		// MaxConcurrentBatches rule so the message is FullDuplex-specific.
 		if cfg.Unordered {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires an ordered stream " +
 				"(Unordered:false); full-duplex matches replies by in-flight FIFO position, which " +
@@ -326,12 +314,11 @@ func (cfg *AutoPipelineOptions) Validate() error {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires MaxConcurrentBatches<=1 "+
 				"(an ordered single stream); got %d", cfg.MaxConcurrentBatches)
 		}
-		// A USER-set NumShards>1 contradicts FullDuplex the same way (one held
-		// FIFO connection = one stream); reject it rather than silently falling
-		// back to half-duplex. contentSharded is exempt: that flag is set by the
-		// CLUSTER wiring (never by users), where the documented behavior is a
-		// silent half-duplex fallback because the options type cannot see the
-		// client type.
+		// A USER-set NumShards>1 contradicts FullDuplex the same way (one held FIFO
+		// connection is one stream); reject it rather than silently falling back to
+		// half-duplex. contentSharded is exempt: that flag is set by the CLUSTER
+		// wiring (never by users), where the silent fallback IS the documented
+		// behavior, since the options type cannot see the client type.
 		if cfg.NumShards > 1 && !cfg.contentSharded {
 			return fmt.Errorf("redis: AutoPipelineOptions.FullDuplex requires NumShards<=1 "+
 				"(one held FIFO connection is a single stream); got %d", cfg.NumShards)
@@ -967,11 +954,10 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		remainder = 0
 	}
 	// Ordered full-duplex: the ordered single-shard face on a standalone *Client
-	// with a pipeline pool — both the async and the blocking face. When on,
-	// submit() streams on one held connection and no shard flusher runs. The
-	// blocking face's shape needs nothing extra: submit's fd branch skips
-	// setReady (the blocking contract) and processBlocking Waits on the returned
-	// batch, exactly as it does for a half-duplex enqueue.
+	// with a pipeline pool, async or blocking. When on, submit() streams on one
+	// held connection and no shard flusher runs. The blocking face needs nothing
+	// extra: submit's fd branch skips setReady (the blocking contract) and
+	// processBlocking Waits on the returned batch, as for a half-duplex enqueue.
 	var fdClient *Client
 	fdOn := false
 	if config.FullDuplex && !config.Unordered && config.MaxConcurrentBatches <= 1 && nShards == 1 {
@@ -1473,12 +1459,11 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// command policies enabled (review finding by codex on #3942).
 	diverted := cmd.readTimeout() != nil || runsOutsidePipeline(cmd.Name()) || isBlockingCmd(cmd) ||
 		(ap.mustDivert != nil && ap.mustDivert(ctx, cmd)) ||
-		// Managed HIMPORT rides connection-session state (the registered PREPARE).
-		// The full-duplex writer streams raw commands and never injects that
-		// PREPARE, so an HIMPORT SET on the FD pipe can fail "no such fieldset";
-		// divert HIMPORT off the pipe to the normal Process path, which injects it
-		// (and updates the registry on PREPARE). The half-duplex sharded path
-		// injects inline (himportInjectedCmds) and is left on the pipeline.
+		// Managed HIMPORT rides connection-session state (the registered PREPARE)
+		// that the full-duplex writer never injects, so an HIMPORT SET on the FD
+		// pipe can fail "no such fieldset". Divert it to the normal Process path,
+		// which injects the PREPARE (and updates the registry). The half-duplex
+		// sharded path injects inline (himportInjectedCmds) and stays on the pipeline.
 		(ap.fd != nil && isHImportCmd(cmd))
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
