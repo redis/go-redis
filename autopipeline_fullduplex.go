@@ -48,6 +48,14 @@ import (
 
 var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited")
 
+// errFDPanicRecovered marks a session failure caused by a recovered panic
+// (reply decode, batch encode). Wrapped with %w so the retry decision can
+// recognize it: the connection is desynced exactly like a transport error, and
+// the unacked tail — mostly commands the panic never touched — must be REPLAYED
+// on a fresh connection, not failed (shouldRetry alone would reject these plain
+// error values and permanently fail innocent in-flight commands).
+var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
+
 // Full-duplex tuning defaults, applied by newFDEngine when the corresponding
 // AutoPipelineOptions field is zero (rationale in the FullDuplex* GoDoc). The
 // window must exceed the bandwidth-delay product (RTT × target rate) or it
@@ -600,9 +608,15 @@ func (fd *fdEngine) run() {
 			// retryTimeout=true: a read/write timeout is a retryable connection
 			// failure here (re-issue the unacked tail on a fresh conn), matching
 			// the cluster pipeline retry paths — otherwise a single WAN timeout
-			// fails the whole tail. The NoRetry guard below still protects
-			// non-idempotent writes, same as cmdsContainNoRetry.
-			if len(unacked) > 0 && shouldRetry(aerr, true) &&
+			// fails the whole tail. The engine's internal failure markers
+			// (recovered panics, reader-gone) desync the conn exactly like a
+			// transport error and the tail is mostly commands they never touched,
+			// so they are replayable too — shouldRetry alone would reject them and
+			// permanently fail innocent in-flight commands. The NoRetry guard
+			// below still protects non-idempotent writes.
+			replayable := shouldRetry(aerr, true) ||
+				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered)
+			if len(unacked) > 0 && replayable &&
 				retryAttempts < fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: replay the retryable PREFIX and fail
 				// that command plus everything ordered after it (a NoRetry command must
@@ -733,7 +747,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		defer func() {
 			if r := recover(); r != nil {
 				inflight.advance(done)
-				failOnce(fmt.Errorf("redis: autopipeline: panic in full-duplex reader: %v", r))
+				failOnce(fmt.Errorf("%w: reader: %v", errFDPanicRecovered, r))
 				internal.Logger.Printf(bg, "autopipeline: recovered full-duplex reader panic: %v\n%s", r, debug.Stack())
 			}
 		}()
@@ -1029,7 +1043,7 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// settles through the normal conn-error recovery.
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("redis: autopipeline: panic encoding full-duplex batch: %v", r)
+			err = fmt.Errorf("%w: encoding batch: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex write panic: %v\n%s", r, debug.Stack())
 		}
 	}()
