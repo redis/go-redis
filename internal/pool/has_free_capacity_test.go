@@ -8,13 +8,9 @@ import (
 	"github.com/redis/go-redis/v9/internal/pool"
 )
 
-// TestHasFreeCapacityHonorsMaxActiveConns pins the branch the plain
-// IdleLen()>0 || Len()<Size() heuristic missed: with MaxActiveConns < PoolSize
-// and no idle connection, the pool cannot serve another Get (newConn returns
-// ErrPoolExhausted once poolSize >= MaxActiveConns), yet Len() < Size() still
-// holds. HasFreeCapacity must report false there — that is what makes the
-// autopipeline straggler-hold gate stop shortening the hold into a pool the
-// flush's Get would exhaust (#3962).
+// TestHasFreeCapacityHonorsMaxActiveConns: with MaxActiveConns < PoolSize and
+// no idle conn, a Get would fail ErrPoolExhausted even though Len() < Size() —
+// HasFreeCapacity must report false.
 func TestHasFreeCapacityHonorsMaxActiveConns(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:             dummyDialer,
@@ -53,14 +49,10 @@ func TestHasFreeCapacityHonorsMaxActiveConns(t *testing.T) {
 	}
 }
 
-// TestHasFreeCapacityWithoutMaxActiveConns confirms that with MaxActiveConns
-// unset HasFreeCapacity reduces EXACTLY to the prior `IdleLen()>0 || Len()<Size()`
-// heuristic: a fresh pool is free, a pool grown to PoolSize with no idle conn is
-// reported not-free, and an idle conn makes it free again. This is a conservative
-// gate, not an admission check: a second Get on the PoolSize-full pool would in
-// fact still succeed with a non-pooled connection (PoolSize does not hard-block
-// dials) — HasFreeCapacity deliberately does not track that, it just keeps the
-// straggler-hold conservative.
+// TestHasFreeCapacityWithoutMaxActiveConns: with MaxActiveConns unset the gate
+// reduces to the prior idle-or-under-size heuristic (fresh pool free, full pool
+// with no idle not-free, idle conn free again). Conservative by design: it does
+// not track non-pooled overflow Gets.
 func TestHasFreeCapacityWithoutMaxActiveConns(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:             dummyDialer,
@@ -92,9 +84,8 @@ func TestHasFreeCapacityWithoutMaxActiveConns(t *testing.T) {
 	}
 }
 
-// TestHasFreeCapacityExcludesUnusableIdle pins the refinement that an idle
-// connection which is not usable (mid handoff / re-auth) does NOT count as
-// capacity — the old IdleLen()>0 term would have wrongly reported free.
+// TestHasFreeCapacityExcludesUnusableIdle: a not-usable idle conn (mid handoff
+// or re-auth) must not count as capacity.
 func TestHasFreeCapacityExcludesUnusableIdle(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:             dummyDialer,
@@ -125,11 +116,9 @@ func TestHasFreeCapacityExcludesUnusableIdle(t *testing.T) {
 	}
 }
 
-// TestHasFreeCapacityExcludesHandoffIdle pins the OnGet-reject refinement (#3962):
-// an idle connection marked ShouldHandoff is still StateIdle/usable, but an OnGet
-// hook (maintnotifications) diverts it to handoff instead of serving it, so
-// HasFreeCapacity must not count it as capacity. With the pool at PoolSize (no
-// dial possible), a lone handoff-marked idle conn means no free capacity.
+// TestHasFreeCapacityExcludesHandoffIdle: a handoff-marked idle conn is still
+// StateIdle/usable but an OnGet hook diverts it, so it must not count as
+// capacity.
 func TestHasFreeCapacityExcludesHandoffIdle(t *testing.T) {
 	connPool := pool.NewConnPool(&pool.Options{
 		Dialer:             dummyDialer,

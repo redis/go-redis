@@ -553,12 +553,10 @@ type AutoPipeliner struct {
 	// tell whether flushing a tiny batch now would contend for a scarce pooled
 	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
 	pipelinePool pool.Pooler
-	// cscEnabled records whether the underlying client has client-side caching
-	// active. Captured once at construction (CSC attaches at client creation,
-	// before the autopipeliner is lazily built). Only a CSC client benefits from
-	// routing a cacheable solo straggler through the single-command Process path
-	// (which honors the cache); a non-CSC client must instead dispatch it on the
-	// pipeline pool the straggler gate probed, not the main pool (#3962).
+	// cscEnabled: client-side caching is active on the underlying client
+	// (captured at construction; CSC attaches at client creation). Gates the
+	// cacheable-solo routing: only a CSC client routes through Process (which
+	// honors the cache); otherwise solos stay on the pipeline pool.
 	cscEnabled bool
 	config     *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
@@ -814,9 +812,8 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
-	// Capture whether client-side caching is active (in-package, promoted to
-	// *Client; a *ClusterClient does not expose it). Used to route a cacheable
-	// solo straggler: through Process only when the cache can actually serve it.
+	// CSC state (in-package assertion; *ClusterClient does not expose it) — see
+	// the cscEnabled field doc.
 	if cc, ok := pipeliner.(interface{ autopipelineCSCActive() bool }); ok {
 		ap.cscEnabled = cc.autopipelineCSCActive()
 	}
@@ -2413,21 +2410,15 @@ func (s *apShard) flushBatchSlice() {
 			// deadlock-free via the dispGid guard stamped above.
 			// A successful short-circuit stays successful (see dispatchCmds).
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
-				// A cacheable command goes through the single-command Process path so
-				// client-side caching is honored (processCommand -> processCached) —
-				// processPipeline bypasses that branch and would silently drop CSC
-				// hits/fills for one-command flushes (codex #3962). But ONLY when the
-				// client actually has CSC: on a non-CSC client Process just runs on the
-				// MAIN pool, so a cacheable solo would ignore the dedicated pipeline pool
-				// the straggler gate probed and could contend on a saturated main pool
-				// while pipeline capacity sits free. So gate on cscEnabled.
+				// A cacheable solo on a CSC client goes through Process so the cache
+				// is honored (processPipeline bypasses processCached). Gated on
+				// cscEnabled: without CSC, Process would just run on the MAIN pool,
+				// ignoring the pipeline pool the straggler gate probed.
 				if ap.cscEnabled && isCacheable(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
-				// Otherwise dispatch as a one-command pipeline on the PIPELINE pool, the
-				// same pool the straggler-hold gate probes (processPipeline falls back to
-				// the main pool when none exists). The solo goroutine dispatch (the 2xRTT
-				// phase-lock fix) is unchanged.
+				// One-command pipeline on the PIPELINE pool (falls back to the main
+				// pool when none exists).
 				return ap.pipeliner.processPipeline(ctx, []Cmder{cmd})
 			})
 			solo.SetErr(err)

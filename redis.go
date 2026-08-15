@@ -1179,9 +1179,8 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 // autopipelineCSCActive reports whether client-side caching can serve this
-// client, so the autopipeliner routes a cacheable solo straggler through the
-// cache-honoring Process path only when it would actually help (#3962). Captured
-// once at autopipeliner construction via an in-package type assertion.
+// client; the autopipeliner captures it at construction to gate cacheable-solo
+// routing through the cache-honoring Process path.
 func (c *baseClient) autopipelineCSCActive() bool {
 	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
 }
