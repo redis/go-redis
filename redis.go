@@ -502,6 +502,16 @@ func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
 	clone := c.clone()
 	clone.opt = opt
 
+	// Do not route the clone's misses through the OWNER's coalescer when the
+	// timeouts diverge: the shared engine's writer/reader/acquire budgets and
+	// backstops all read the owner's options, so a coalesced miss would honor
+	// the owner's deadlines, not the clone's — defeating WithTimeout's whole
+	// point. The clone still serves cache hits and still caches its uncached
+	// fetches (the pre-coalescer CSC path); only miss COALESCING is bypassed.
+	if timeout != c.opt.ReadTimeout || timeout != c.opt.WriteTimeout {
+		clone.cscMissCoalescer.Store(nil)
+	}
+
 	return clone
 }
 

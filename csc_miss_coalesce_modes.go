@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // The full-duplex miss-coalescer engine — THE engine behind
@@ -394,10 +395,21 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				// Deliberately not in peekAndProcessPushNotifications: pooled paths
 				// have drainer coverage, and a blanket fallback perturbs sequenced
 				// push handling.
-				if cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
-					if e := c.timedPushDrain(sctx, cn); e != nil {
-						fail(e)
-						return
+				// Built-in processor ONLY: this probe reads speculatively (no
+				// readiness signal exists on an opaque transport), and the
+				// built-in processor swallows the no-data boundary timeout. A
+				// CUSTOM processor's contract documents being invoked when
+				// notifications are KNOWN present — a natural implementation
+				// surfaces the empty-probe timeout, which would fail (and
+				// redial) a healthy session on every idle probe. Custom +
+				// opaque conns forgo the speculative drain; their invalidations
+				// land on session end/recycle at the latest.
+				if _, builtin := c.pushProcessor.(*push.Processor); builtin {
+					if cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
+						if e := c.timedPushDrain(sctx, cn); e != nil {
+							fail(e)
+							return
+						}
 					}
 				}
 				if handoffWanted() {
@@ -434,19 +446,25 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			// Recomputed per interval: an expired relaxation shrinks it back.
 			interval := mc.batchBudget()
 			rt := cn.EffectiveReadTimeout(c.opt.ReadTimeout)
+			wt := cn.EffectiveWriteTimeout(c.opt.WriteTimeout)
 			if rt+time.Second > interval {
 				interval = rt + time.Second
 			}
-			// Deadline-less reads (no active relaxation): the user explicitly
-			// disabled read deadlines, so the RECYCLE path must not cut a
-			// legitimately long reply that completes no read for an interval —
-			// wait for the session (or Close) instead. Close still terminates:
-			// once stop fires, the bounded zero-progress close below applies,
-			// which is the shutdown contract (Close never wedges). NOTE the
-			// <= 0: Options.init normalizes ReadTimeout -1 (indefinite) to 0
-			// and -2 (no deadline calls) to -1, so BOTH deadline-less modes
-			// land at rt <= 0 here.
-			if !stopping && rt <= 0 {
+			if wt+time.Second > interval {
+				interval = wt + time.Second
+			}
+			// Deadline-less I/O (no active relaxation): the user explicitly
+			// disabled the read and/or write deadline, so the RECYCLE path must
+			// not cut a session whose reader is in a legitimately long reply OR
+			// whose writer is blocked flushing a large request — readsDone
+			// cannot show progress before a reply exists, so a deadline-free
+			// blocked WRITE looks exactly like a stall. Wait for the session
+			// (or Close) instead. Close still terminates: once stop fires, the
+			// bounded zero-progress close below applies, which is the shutdown
+			// contract (Close never wedges). NOTE the <= 0: Options.init
+			// normalizes -1 (indefinite) to 0 and -2 (no deadline calls) to
+			// -1, so both deadline-less modes land at <= 0 here.
+			if !stopping && (rt <= 0 || wt <= 0) {
 				select {
 				case <-superDone:
 					return

@@ -47,7 +47,10 @@ func cscRegisterCleanups(c *Client) {
 		}
 		if mc != nil {
 			mc.stopWorkers()
-			mc.drainQueueErr(pool.ErrClosed)
+			// Retry-uncached, matching every other stop path: a clone still
+			// alive re-runs the read on the (possibly still open) pool instead
+			// of surfacing a spurious ErrClosed.
+			mc.drainQueueErr(errCSCRetryUncached)
 		}
 		h.signalStop()
 	}, h)
@@ -361,6 +364,12 @@ func (h *invalidateHandler) releaseLocked() {
 		// A fresh binding folds in its own window; do not inherit this one's.
 		h.invalBatchWindow = 0
 		h.invalBatchWindowSet = false
+		// Clear the refresh bindings with the binding itself: a client dropped
+		// without Close never runs clearRefreshQueue, and a successor reusing
+		// this handler must not inherit (or later restore) a dead queue whose
+		// consumer is gone — hot entries offered there would vanish silently.
+		h.refresh = nil
+		h.refreshStack = nil
 	}
 }
 

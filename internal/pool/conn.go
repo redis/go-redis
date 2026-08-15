@@ -574,6 +574,12 @@ func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration 
 	return cn.getEffectiveReadTimeout(normalTimeout)
 }
 
+// EffectiveWriteTimeout is the write-side counterpart of EffectiveReadTimeout,
+// for callers bounding how long a blocked write may legitimately take.
+func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
+	return cn.getEffectiveWriteTimeout(normalTimeout)
+}
+
 // getEffectiveReadTimeout returns the timeout to use for read operations.
 // If relaxed timeout is set and not expired, it takes precedence over the provided timeout.
 // This method automatically clears expired relaxed timeouts using atomic operations.
