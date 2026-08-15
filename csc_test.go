@@ -2552,9 +2552,23 @@ func TestReleaseConnRemovesConnectionAfterPartialPushRead(t *testing.T) {
 	// runner the drain's short probe deadline can expire before consuming any
 	// byte — a benign timeout: nothing was read, the frame is intact in the
 	// socket, and re-pooling is safe (the next drain consumes it whole). Only a
-	// Put after bytes moved into the reader is the desync bug.
+	// Put after bytes moved into the reader is the desync bug. An empty reader
+	// buffer alone does NOT prove zero consumption (a partial parse can eat
+	// every available byte and still leave the buffer empty), so before
+	// skipping, prove the stream is intact: complete the frame and require the
+	// whole push to parse. A parse failure means a desynced conn was re-pooled
+	// — exactly the regression this test pins.
 	if cp.puts == 1 && cp.removes == 0 && !cn.HasBufferedData() {
-		t.Skip("probe timed out before consuming anything; conn re-pooled intact (safe) — mid-frame path not exercised this run")
+		if _, err := server.Write([]byte("o\r\n")); err != nil {
+			t.Fatalf("completing push frame: %v", err)
+		}
+		if err := cn.WithReader(context.Background(), 2*time.Second, func(rd *proto.Reader) error {
+			_, err := rd.ReadReply()
+			return err
+		}); err != nil {
+			t.Fatalf("re-pooled conn is desynced: completed push failed to parse: %v", err)
+		}
+		t.Skip("probe timed out before consuming anything; conn re-pooled intact (whole-frame parse verified) — mid-frame path not exercised this run")
 	}
 	if cp.removes != 1 || cp.puts != 0 {
 		t.Fatalf("partial push read must remove, not re-pool, the connection: removes=%d puts=%d",

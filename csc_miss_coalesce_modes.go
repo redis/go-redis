@@ -195,6 +195,12 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	gen := c.cscConnInitGen(connID)
 
 	inflight := make(chan *cscMissReq, cscFullDuplexDepth)
+	// readsDone counts replies the reader has fully consumed. The drain
+	// backstop samples it as its progress signal: unlike len(inflight), it sees
+	// the ACTIVE read too (the reader pops a request before reading its reply,
+	// so a lone deep read under a maintenance-relaxed timeout would otherwise
+	// look like a zero-progress stall and get its socket closed mid-reply).
+	var readsDone atomic.Uint64
 	sctx, scancel := context.WithCancel(context.Background())
 	defer scancel()
 
@@ -282,12 +288,33 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			// per-op timeouts disabled a blocked read/write could then never be
 			// interrupted (the supervisor's conn-close is the backstop).
 			werr := cn.WithWriter(sctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
-				for _, r := range buf {
-					if e := writeCmd(wr, r.cmd); e != nil {
-						return e
+				// Claim each request (PENDING->WRITING) around its arg
+				// serialization: an abandoned caller owns its Cmder again and may
+				// be reusing mutable args (a []byte key), so args must never be
+				// read after fetch returned — and a mutated key must not be
+				// fetched and published under the original cache key. Abandoned
+				// requests are dropped here with their reservation cancelled
+				// (nothing will fetch them); the claim is released as soon as the
+				// args are copied into the write buffer, before the flush.
+				var e error
+				n := 0
+				for i, r := range buf {
+					if !r.claimWrite() {
+						mc.c.csc.Cancel(r.cacheKey, r.token)
+						continue
+					}
+					e = writeCmd(wr, r.cmd)
+					r.releaseWrite()
+					buf[n] = r
+					n++
+					if e != nil {
+						// Keep the unvisited tail so the error path settles it.
+						n += copy(buf[n:], buf[i+1:])
+						break
 					}
 				}
-				return nil
+				buf = buf[:n]
+				return e
 			})
 			if werr != nil {
 				fail(werr)
@@ -336,6 +363,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				mc.settleErr(req, rerr)
 				return false
 			}
+			readsDone.Add(1)
 			return true
 		}
 
@@ -401,19 +429,29 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	// force the I/O out with a conn close (else Close wedges in wg.Wait) — but a
 	// HEALTHY drain of a deep in-flight pipeline (up to cscFullDuplexDepth
 	// replies, ~in-flight × RTT, possibly under a maintenance-relaxed timeout)
-	// may legitimately exceed any fixed budget. Each budget interval that
-	// consumed at least one reply extends the wait; only a zero-progress
-	// interval closes the conn.
+	// may legitimately exceed any fixed budget. Progress is COMPLETED READS
+	// (readsDone), not queue length: the reader pops a request before reading
+	// its reply, so len(inflight) is blind to the active read and would call a
+	// lone deep read a stall. Each budget interval that completed at least one
+	// reply extends the wait; only a zero-progress interval closes the conn.
 	drainBackstop := func() {
-		prev := len(inflight)
+		prev := readsDone.Load()
 		for {
+			// One blocked read may legitimately wait out the conn's EFFECTIVE
+			// read timeout (a maintenance-relaxed timeout can far exceed the
+			// batch budget), so the zero-progress verdict must not fire sooner.
+			// Recomputed per interval: an expired relaxation shrinks it back.
+			interval := mc.batchBudget()
+			if rt := cn.EffectiveReadTimeout(c.opt.ReadTimeout); rt+time.Second > interval {
+				interval = rt + time.Second
+			}
 			select {
 			case <-superDone:
 				return
-			case <-time.After(mc.batchBudget()):
-				cur := len(inflight)
-				if cur < prev {
-					prev = cur // draining; give it another interval
+			case <-time.After(interval):
+				cur := readsDone.Load()
+				if cur != prev {
+					prev = cur // still consuming replies; give it another interval
 					continue
 				}
 				_ = cn.Close()

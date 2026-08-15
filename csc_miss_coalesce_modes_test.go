@@ -227,6 +227,43 @@ func TestCSCMissReqClaimInterlock(t *testing.T) {
 			t.Fatalf("iter %d: exactly one claim must win, got abandon=%v apply=%v", i, abandon, apply)
 		}
 	}
+
+	// Writer claim: abandonOrWait must not resolve while the session writer is
+	// serializing cmd's args (WRITING), and must win right after releaseWrite —
+	// the caller may reuse mutable args the moment fetch returns, so the write
+	// claim is what keeps the serializer off them.
+	s := &cscMissReq{}
+	if !s.claimWrite() {
+		t.Fatal("first claimWrite must win from pending")
+	}
+	if s.claimAbandon() {
+		t.Fatal("claimAbandon must lose while the writer holds the claim")
+	}
+	got := make(chan bool, 1)
+	go func() { got <- s.abandonOrWait() }()
+	select {
+	case v := <-got:
+		t.Fatalf("abandonOrWait resolved (%v) while the request was WRITING", v)
+	case <-time.After(20 * time.Millisecond):
+	}
+	s.releaseWrite()
+	select {
+	case v := <-got:
+		if !v {
+			t.Fatal("abandonOrWait must win once the writer released the claim")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("abandonOrWait did not resolve after releaseWrite")
+	}
+	// And a writer claim must lose against an abandoned request — that is the
+	// skip path that keeps abandoned args off the wire.
+	a := &cscMissReq{}
+	if !a.claimAbandon() {
+		t.Fatal("claimAbandon must win from pending")
+	}
+	if a.claimWrite() {
+		t.Fatal("claimWrite must lose after the caller abandoned")
+	}
 }
 
 // TestCSCMissCoalesceAbandonedFetchNoRace is a -race guard for #3965 :57: a caller

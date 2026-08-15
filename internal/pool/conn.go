@@ -210,6 +210,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 func (cn *Conn) UsedAt() time.Time {
 	return time.Unix(0, cn.usedAt.Load())
 }
+
 func (cn *Conn) SetUsedAt(tm time.Time) {
 	cn.usedAt.Store(tm.UnixNano())
 }
@@ -217,6 +218,7 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 func (cn *Conn) UsedAtNs() int64 {
 	return cn.usedAt.Load()
 }
+
 func (cn *Conn) SetUsedAtNs(ns int64) {
 	cn.usedAt.Store(ns)
 }
@@ -224,6 +226,7 @@ func (cn *Conn) SetUsedAtNs(ns int64) {
 func (cn *Conn) LastPutAtNs() int64 {
 	return cn.lastPutAt.Load()
 }
+
 func (cn *Conn) SetLastPutAtNs(ns int64) {
 	cn.lastPutAt.Store(ns)
 }
@@ -559,6 +562,16 @@ func (cn *Conn) HasRelaxedTimeout() bool {
 
 	// If deadline is set, check if it's still in the future
 	return time.Now().UnixNano() < deadlineNs
+}
+
+// EffectiveReadTimeout reports the read timeout a read on this conn would use
+// right now: the active relaxed timeout (maintenance notifications) when set
+// and unexpired, else normalTimeout. Callers that bound how long a blocked
+// read may legitimately take (e.g. the CSC full-duplex drain backstop) must
+// use this rather than the configured ReadTimeout, or a relaxed read gets cut
+// short.
+func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
+	return cn.getEffectiveReadTimeout(normalTimeout)
 }
 
 // getEffectiveReadTimeout returns the timeout to use for read operations.
