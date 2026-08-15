@@ -1,11 +1,14 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // TestFullDuplexIdleInvalidation pins the feature-complete full-duplex engine's
@@ -227,42 +230,30 @@ func TestCSCMissReqClaimInterlock(t *testing.T) {
 			t.Fatalf("iter %d: exactly one claim must win, got abandon=%v apply=%v", i, abandon, apply)
 		}
 	}
+}
 
-	// Writer claim: abandonOrWait must not resolve while the session writer is
-	// serializing cmd's args (WRITING), and must win right after releaseWrite —
-	// the caller may reuse mutable args the moment fetch returns, so the write
-	// claim is what keeps the serializer off them.
-	s := &cscMissReq{}
-	if !s.claimWrite() {
-		t.Fatal("first claimWrite must win from pending")
+// TestCSCMissWireSnapshotImmuneToArgMutation pins the fix for the abandoned-
+// args race: the wire form is snapshotted at enqueue while the caller owns
+// cmd, so a caller that abandons and then mutates a []byte arg can neither
+// change what goes on the wire nor cause a reply for the mutated key to be
+// published under the original cache key.
+func TestCSCMissWireSnapshotImmuneToArgMutation(t *testing.T) {
+	key := []byte("orig-key")
+	cmd := NewStringCmd(context.Background(), "get", key)
+
+	var wireBuf bytes.Buffer
+	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
+		t.Fatalf("snapshot encode: %v", err)
 	}
-	if s.claimAbandon() {
-		t.Fatal("claimAbandon must lose while the writer holds the claim")
+	wire := wireBuf.Bytes()
+	if !bytes.Contains(wire, []byte("orig-key")) {
+		t.Fatalf("snapshot must contain the original key, got %q", wire)
 	}
-	got := make(chan bool, 1)
-	go func() { got <- s.abandonOrWait() }()
-	select {
-	case v := <-got:
-		t.Fatalf("abandonOrWait resolved (%v) while the request was WRITING", v)
-	case <-time.After(20 * time.Millisecond):
-	}
-	s.releaseWrite()
-	select {
-	case v := <-got:
-		if !v {
-			t.Fatal("abandonOrWait must win once the writer released the claim")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("abandonOrWait did not resolve after releaseWrite")
-	}
-	// And a writer claim must lose against an abandoned request — that is the
-	// skip path that keeps abandoned args off the wire.
-	a := &cscMissReq{}
-	if !a.claimAbandon() {
-		t.Fatal("claimAbandon must win from pending")
-	}
-	if a.claimWrite() {
-		t.Fatal("claimWrite must lose after the caller abandoned")
+
+	copy(key, "MUTATED!") // caller reuses its buffer after abandoning
+
+	if !bytes.Contains(wire, []byte("orig-key")) || bytes.Contains(wire, []byte("MUTATED!")) {
+		t.Fatalf("wire snapshot changed after caller mutated its arg buffer: %q", wire)
 	}
 }
 

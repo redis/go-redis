@@ -1,14 +1,15 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
 )
 
 // errCSCRetryUncached settles a coalesced miss when the coalescer bows out for a
@@ -71,7 +72,6 @@ const (
 	cscReqPending   uint32 = iota // no one has claimed cmd yet
 	cscReqAbandoned               // caller's ctx (or Close) fired first: cmd is the caller's again
 	cscReqApplying                // reader claimed cmd first: it will write and settle
-	cscReqWriting                 // session writer is serializing cmd's args; spans one batch encode
 )
 
 // cscMissReq is one caller waiting for its missed key. done carries the fetch
@@ -81,6 +81,13 @@ type cscMissReq struct {
 	cacheKey string
 	token    uint64
 	done     chan error
+	// wire is cmd's RESP encoding, snapshotted at enqueue while the caller
+	// still owned cmd. The session writer writes ONLY these engine-owned bytes
+	// — it never reads cmd — so an abandoning caller may reuse mutable args
+	// (e.g. a []byte key) the moment fetch returns, and a post-abandon
+	// mutation can neither reach the wire nor publish under the original
+	// cache key. Only the reply side touches cmd, gated by the apply interlock.
+	wire []byte
 	// apply interlocks ownership of cmd between the fetching caller and the
 	// reader. The caller abandons (CAS pending->abandoned) if its context is
 	// cancelled — or Close races its enqueue — before a reply is applied; the
@@ -102,39 +109,6 @@ func (r *cscMissReq) claimAbandon() bool {
 // abandoned, in which case it is safe to write the caller's cmd.
 func (r *cscMissReq) claimApply() bool {
 	return r.apply.CompareAndSwap(cscReqPending, cscReqApplying)
-}
-
-// claimWrite is the session writer's side: it claims cmd for the duration of
-// ONE batch encode, so an abandoning caller cannot take cmd back (and start
-// reusing mutable args, e.g. a []byte key) while its args are being read into
-// the wire buffer. releaseWrite returns the request to PENDING as soon as the
-// args are copied — before the socket flush — so the claim never spans I/O.
-func (r *cscMissReq) claimWrite() bool {
-	return r.apply.CompareAndSwap(cscReqPending, cscReqWriting)
-}
-
-func (r *cscMissReq) releaseWrite() {
-	r.apply.CompareAndSwap(cscReqWriting, cscReqPending)
-}
-
-// abandonOrWait resolves the caller-side interlock when the caller stops
-// waiting: true once the request is ABANDONED (the engine will never touch cmd
-// again — including the session writer, which claims WRITING around arg
-// serialization and skips abandoned requests); false if the reader claimed the
-// reply first, in which case the caller must receive done before reusing cmd.
-// A request found mid-serialization is waited out with a yield loop — WRITING
-// spans one in-memory batch encode, never a network round trip.
-func (r *cscMissReq) abandonOrWait() bool {
-	for {
-		if r.claimAbandon() {
-			return true
-		}
-		if r.apply.Load() == cscReqWriting {
-			runtime.Gosched()
-			continue
-		}
-		return false
-	}
 }
 
 type cscMissCoalescer struct {
@@ -219,6 +193,19 @@ func (mc *cscMissCoalescer) stopWorkers() {
 // wasted), the caller just returns early.
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) error {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+	// Snapshot the wire form NOW, while the caller still owns cmd: the session
+	// writer writes these engine-owned bytes and never reads cmd again, so an
+	// abandoning caller can immediately reuse mutable args (e.g. a []byte key)
+	// without racing arg serialization, a mutated key can never be sent or
+	// published under the original cache key, and the fetch always completes —
+	// the reservation always settles. The reply side still claims cmd (apply
+	// interlock) before writing the result into it.
+	var wireBuf bytes.Buffer
+	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
+		mc.c.csc.Cancel(cacheKey, token)
+		return err
+	}
+	req.wire = wireBuf.Bytes()
 	// Reject early if the coalescer is already stopping, so a send does not win the
 	// select race against a closed mc.stop and land in mc.ch after the shutdown
 	// drain, where nothing would pick it up. This narrows but cannot close that
@@ -248,8 +235,14 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// means no reply is being applied — cancel the reservation and return instead
 		// of hanging (a duplicate Cancel, if the drain also got this req, is a no-op
 		// on a settled token).
-		if req.abandonOrWait() {
+		if req.claimAbandon() {
 			mc.c.csc.Cancel(cacheKey, token)
+			// The req may be sitting in mc.ch AFTER the shutdown drain ran, where
+			// no worker will ever dequeue it — a live WithTimeout clone's pointer
+			// would then retain it (and its Cmder) indefinitely. Re-run the
+			// non-blocking drain to empty the queue; settling our own abandoned
+			// req is harmless (done is buffered, the duplicate Cancel is a no-op).
+			mc.drainQueueErr(pool.ErrClosed)
 			return pool.ErrClosed
 		}
 		// The reader claimed cmd and is mid-write: wait so we do not read/reuse cmd
@@ -263,7 +256,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// claimed cmd, wait rather than race by reusing cmd. Either way return the
 		// context error, matching the non-coalesced path (processWithRetry), so a
 		// cancelled Get never returns a value depending on who won the CAS.
-		if !req.abandonOrWait() {
+		if !req.claimAbandon() {
 			<-req.done
 		}
 		return ctx.Err()
