@@ -1697,11 +1697,15 @@ func (p *ConnPool) Size() int {
 // and the dial circuit breaker not being open (a saturated dialErrorsNum makes
 // the Get fail fast rather than serve).
 func (p *ConnPool) HasFreeCapacity() bool {
-	if p.usableIdleLen() > 0 {
-		return true
-	}
+	// Turn check comes FIRST: Get acquires a turn before popIdle, so with the
+	// semaphore exhausted even a usable idle conn is not immediately servable
+	// (putConnWithoutTurn can re-pool a conn while its turn stays held, so
+	// idle > 0 does not imply a free turn).
 	if p.semaphore.Available() <= 0 {
 		return false
+	}
+	if p.usableIdleLen() > 0 {
+		return true
 	}
 	size := p.poolSize.Load()
 	if size >= p.cfg.PoolSize {
