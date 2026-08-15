@@ -466,7 +466,18 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq) {
 	// advancing the deque, which fills the window and blocks the writer and then
 	// submitters — end-to-end backpressure. No cycle: retries drain on the main
 	// pool, independent of the reader waiting here.
-	fd.retrySem <- struct{}{}
+	// Interruptible acquire: the reader must not park here past Close. A wait is
+	// otherwise BOUNDED — every slot holder is a retry running through process(),
+	// whose own timeouts/backoff guarantee it releases — but on Close nothing
+	// should keep the reader from observing teardown, so fail the request
+	// directly instead.
+	select {
+	case fd.retrySem <- struct{}{}:
+	case <-fd.ap.ctx.Done():
+		req.cmd.SetErr(ErrClosed)
+		req.complete()
+		return
+	}
 	fd.retryWg.Add(1)
 	go func() {
 		defer func() {
