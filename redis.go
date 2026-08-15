@@ -1613,6 +1613,10 @@ func (c *baseClient) generalProcessPipeline(
 	// (stateRejectedErr) before dispatch.
 	for _, cmd := range cmds {
 		if err := c.cscCommandError(cmd); err != nil {
+			// Overwrite a queued pooled-state rejection's pre-set error: on a CSC
+			// client the CSC-specific error wins, and Exec's return and the
+			// command's Err() must agree (setCmdsErr skips already-errored cmds).
+			cmd.SetErr(err)
 			setCmdsErr(cmds, err)
 			return err
 		}

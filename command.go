@@ -629,6 +629,9 @@ func (cmd *baseCmd) cloneBaseCmd() baseCmd {
 		rawVal:       cmd.rawVal,
 		_readTimeout: readTimeout,
 		cmdType:      cmd.cmdType,
+		// A hook that rebuilds the command slice via Clone must not launder a
+		// queued pooled-state rejection into a sendable command.
+		stateRejected: cmd.stateRejected,
 	}
 }
 
