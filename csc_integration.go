@@ -177,13 +177,31 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 			// stop-drain still applies queued deletes after h.cache is nilled.
 			cache:   h.cache,
 			refresh: h.refresh,
-			ch:      make(chan string, 8192),
+			ch:      make(chan cscInvalItem, 8192),
 			stopCh:  make(chan struct{}),
-			dropCh:  make(chan struct{}, 1),
 		}
 		go h.batcher.run()
 	}
 	return h.batcher
+}
+
+// clearRefreshQueue clears the handler's refresh binding ONLY while it still
+// points at q: two clients sharing one cache and push processor each attach
+// their own queue (last attach wins), and a closing client must not clobber
+// the binding of a live sibling that re-attached after it — invalidations
+// would keep deleting entries but silently stop feeding the survivor's
+// refresher.
+func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if q == nil || h.refresh != q {
+		return
+	}
+	h.refresh = nil
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
 }
 
 func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
@@ -218,12 +236,15 @@ func (h *invalidateHandler) HandlePushNotification(
 
 	switch payload := notification[1].(type) {
 	case nil:
-		cache.Flush()
-		// A full flush removed every entry: queued per-key deletes are redundant
-		// and would evict entries repopulated post-flush. Drop them.
+		// Supersede queued per-key deletes BEFORE flushing: drop() bumps the
+		// batcher epoch, so anything already enqueued (pre-flush, redundant by
+		// the flush) is skipped at apply, while an invalidation racing in from
+		// another tracked connection AFTER this point carries the new epoch and
+		// still applies — its post-flush delete must not be lost.
 		if batcher != nil {
 			batcher.drop()
 		}
+		cache.Flush()
 	case []interface{}:
 		// Offload path: enqueue keys to the windowed background batcher instead of
 		// deleting inline, so invalidation work does not steal time from the
@@ -707,32 +728,38 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 // args, and pipelines — are also caught: the guard matches on the command's
 // leading args, not the typed method.
 var errClientTrackingWithCSC = errors.New(
-	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled")
+	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled",
+)
 
 // errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
 // keys use Options.DB, while SELECT mutates only the chosen pool connection.
 var errSelectWithCSC = errors.New(
-	"redis: SELECT is not allowed when client-side caching is enabled")
+	"redis: SELECT is not allowed when client-side caching is enabled",
+)
 
 // errAuthWithCSC rejects runtime authentication because it can change one
 // connection's ACL identity without changing the client's fixed cache namespace.
 var errAuthWithCSC = errors.New(
-	"redis: AUTH is not allowed when client-side caching is enabled")
+	"redis: AUTH is not allowed when client-side caching is enabled",
+)
 
 // errHelloWithCSC rejects HELLO with arguments because it can switch a tracked
 // connection out of RESP3 (and can also change authentication).
 var errHelloWithCSC = errors.New(
-	"redis: HELLO with arguments is not allowed when client-side caching is enabled")
+	"redis: HELLO with arguments is not allowed when client-side caching is enabled",
+)
 
 // errResetWithCSC rejects RESET because it disables tracking and switches the
 // connection to RESP2.
 var errResetWithCSC = errors.New(
-	"redis: RESET is not allowed when client-side caching is enabled")
+	"redis: RESET is not allowed when client-side caching is enabled",
+)
 
 // errSubscribeWithCSC rejects raw subscriptions on the ordinary pool. The
 // typed Subscribe methods use dedicated PubSub connections and remain allowed.
 var errSubscribeWithCSC = errors.New(
-	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled")
+	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled",
+)
 
 // cscCommandError rejects commands that can make a pooled connection's state
 // diverge from the assumptions used by CSC.
@@ -943,12 +970,16 @@ func (c *baseClient) stopBackgroundDrainer() {
 		return
 	}
 	h.teardownOnce.Do(func() {
-		c.stopCSCRefresher()
-		c.stopCSCMissCoalescer()
-		// Stop serving cache hits on any clone before the drainer is gone.
+		// Deactivate serving FIRST: with the flag still true a clone's miss
+		// could route to the just-stopped coalescer and fail with ErrClosed
+		// while the pool is still open. Once false, racing reads take the
+		// plain uncached path (fetch's stop returns errCSCRetryUncached as the
+		// backstop for requests already in flight).
 		if c.cscActive != nil {
 			c.cscActive.Store(false)
 		}
+		c.stopCSCRefresher()
+		c.stopCSCMissCoalescer()
 		h.signalStop()
 		<-h.done
 		// The drainer's exit defer revoked and evicted this pool's coverage

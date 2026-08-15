@@ -213,15 +213,19 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// never hangs on a post-drain req.
 	select {
 	case <-mc.stop:
+		// Retry-uncached, not ErrClosed: the coalescer stopping does not mean
+		// the CLIENT is closed (teardown deactivates serving before stopping
+		// the coalescer, and a clone can race that window) — the uncached
+		// re-run either succeeds on the open pool or surfaces the real error.
 		mc.c.csc.Cancel(cacheKey, token)
-		return pool.ErrClosed
+		return errCSCRetryUncached
 	default:
 	}
 	select {
 	case mc.ch <- req:
 	case <-mc.stop:
 		mc.c.csc.Cancel(cacheKey, token)
-		return pool.ErrClosed
+		return errCSCRetryUncached
 	case <-ctx.Done():
 		mc.c.csc.Cancel(cacheKey, token)
 		return ctx.Err()
@@ -242,14 +246,15 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 			// would then retain it (and its Cmder) indefinitely. Re-run the
 			// non-blocking drain to empty the queue; settling our own abandoned
 			// req is harmless (done is buffered, the duplicate Cancel is a no-op).
-			mc.drainQueueErr(pool.ErrClosed)
-			return pool.ErrClosed
+			mc.drainQueueErr(errCSCRetryUncached)
+			return errCSCRetryUncached
 		}
-		// The reader claimed cmd and is mid-write: wait so we do not read/reuse cmd
-		// concurrently (the receive is a happens-before edge, so a later cmd.SetErr
-		// is race-free), then return the shutdown error.
-		<-req.done
-		return pool.ErrClosed
+		// The reader claimed cmd and is mid-apply: wait so we do not read/reuse
+		// cmd concurrently (the receive is a happens-before edge), then return
+		// the settle result itself — the reply may have been applied
+		// successfully, and discarding it for a blanket ErrClosed would fail a
+		// read that has its value.
+		return <-req.done
 	case <-ctx.Done():
 		// Caller stopped waiting. If we win the interlock the reader skips the cmd
 		// write but still settles the token and publishes to the cache; if it already

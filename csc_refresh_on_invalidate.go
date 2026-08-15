@@ -406,8 +406,11 @@ func (c *baseClient) stopCSCRefresher() {
 		return
 	}
 	c.cscRefreshHandle = nil
+	// Clear only OUR binding: a sibling client sharing this cache/processor may
+	// have re-attached its own queue after ours, and an unconditional nil here
+	// would sever the survivor's refresher (see clearRefreshQueue).
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
-		ih.setRefreshQueue(nil)
+		ih.clearRefreshQueue(c.cscRefreshQueue)
 	}
 	close(h.stop)
 	<-h.done

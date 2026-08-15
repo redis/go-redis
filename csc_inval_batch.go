@@ -2,6 +2,7 @@ package redis
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,6 +23,13 @@ import (
 
 const cscInvalBatchMax = 4096 // size-cap flush regardless of the timer
 
+// cscInvalItem is one queued invalidation, tagged with the batcher epoch it
+// was enqueued under so a full-cache flush can supersede it (see drop()).
+type cscInvalItem struct {
+	key   string
+	epoch uint64
+}
+
 type cscInvalBatcher struct {
 	window time.Duration
 	// cache/refresh are snapshotted at creation (batcher lifetime is inside the
@@ -31,10 +39,12 @@ type cscInvalBatcher struct {
 	cache   Cache
 	refresh *cscRefreshQueue
 
-	ch       chan string
+	ch       chan cscInvalItem
 	stopCh   chan struct{}
-	dropCh   chan struct{} // cap-1: signal run() to discard its in-progress batch
 	stopOnce sync.Once
+	// epoch versions enqueued invalidations against full-cache flushes: drop()
+	// bumps it, and apply skips items from an older epoch. See drop().
+	epoch atomic.Uint64
 	// stopMu/stopped interlock enqueue against stop: a handler can hold a stale
 	// batcher pointer across a rebuild. enqueue sends under the read side, so a
 	// sent key lands BEFORE stop closes stopCh (the stop-drain sees it); once
@@ -56,57 +66,56 @@ func (b *cscInvalBatcher) stop() {
 	})
 }
 
-// drop discards everything queued (channel + the run loop's in-progress batch)
-// WITHOUT applying: after a full cache Flush the per-key deletes are redundant
-// and would evict post-flush repopulations. Best-effort against racing
-// enqueues.
+// drop marks everything enqueued so far as superseded by a full cache Flush:
+// bumping the epoch makes apply skip stale-epoch items — both queued and in an
+// in-progress batch — without draining anything. The old drain-based drop
+// could discard a NEWER per-key invalidation racing in from another tracked
+// connection after the flush, losing its delete and leaving a repopulated
+// entry stale; with epochs that item carries the new epoch and survives.
+// Callers bump BEFORE flushing the cache, so a stale epoch always means
+// "enqueued before the flush", where the delete is redundant by the flush.
 func (b *cscInvalBatcher) drop() {
-	// Drain queued keys (best-effort, non-blocking).
-	for draining := true; draining; {
-		select {
-		case <-b.ch:
-		default:
-			draining = false
-		}
-	}
-	// Signal run() to clear its in-progress batch; the cap-1 buffer means a signal
-	// is never lost even if run() is not currently selecting.
-	select {
-	case b.dropCh <- struct{}{}:
-	default:
-	}
+	b.epoch.Add(1)
 }
 
 // enqueue hands a namespaced key to the batcher without blocking the caller. On
 // a full queue — or once the batcher is stopped (see stopMu) — it applies the
 // delete inline so an invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
+	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load()}
 	b.stopMu.RLock()
 	if b.stopped {
 		b.stopMu.RUnlock()
-		b.apply([]string{nsKey})
+		b.apply([]cscInvalItem{it})
 		return
 	}
 	select {
-	case b.ch <- nsKey:
+	case b.ch <- it:
 		b.stopMu.RUnlock()
 	default:
 		b.stopMu.RUnlock()
-		b.apply([]string{nsKey})
+		b.apply([]cscInvalItem{it})
 	}
 }
 
 // apply deletes the namespaced keys and feeds evicted-hot entries to the
 // refresher, using the creation-time snapshot (see the struct fields).
-func (b *cscInvalBatcher) apply(keys []string) {
+func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 	cache, refresh := b.cache, b.refresh
 	if cache == nil {
 		return
 	}
+	cur := b.epoch.Load()
 	lc, canRefresh := cache.(*LocalCache)
 	canRefresh = canRefresh && refresh != nil
 	var hot []cscRefreshTarget
-	for _, k := range keys {
+	for _, it := range items {
+		// Stale epoch: enqueued before a full cache Flush that superseded it
+		// (see drop()); applying it would only evict a post-flush repopulation.
+		if it.epoch != cur {
+			continue
+		}
+		k := it.key
 		if !canRefresh {
 			cache.DeleteByRedisKey(k)
 			continue
@@ -121,8 +130,11 @@ func (b *cscInvalBatcher) apply(keys []string) {
 func (b *cscInvalBatcher) run() {
 	t := time.NewTimer(b.window)
 	defer t.Stop()
-	pending := make([]string, 0, 256)
-	seen := make(map[string]struct{}, 256)
+	pending := make([]cscInvalItem, 0, 256)
+	// seen dedups by key WITHIN an epoch: the same key arriving again after a
+	// flush bumped the epoch must be re-appended (the old occurrence will be
+	// skipped by apply), or its post-flush delete would be lost to dedup.
+	seen := make(map[string]uint64, 256)
 	flush := func() {
 		if len(pending) == 0 {
 			return
@@ -141,10 +153,10 @@ func (b *cscInvalBatcher) run() {
 			// once, exit.
 			for draining := true; draining; {
 				select {
-				case k := <-b.ch:
-					if _, dup := seen[k]; !dup {
-						seen[k] = struct{}{}
-						pending = append(pending, k)
+				case it := <-b.ch:
+					if e, dup := seen[it.key]; !dup || e != it.epoch {
+						seen[it.key] = it.epoch
+						pending = append(pending, it)
 					}
 				default:
 					draining = false
@@ -152,15 +164,10 @@ func (b *cscInvalBatcher) run() {
 			}
 			flush()
 			return
-		case <-b.dropCh:
-			// A full cache Flush superseded the queued deletes: discard the
-			// in-progress batch without applying it (see drop()).
-			pending = pending[:0]
-			clear(seen)
-		case k := <-b.ch:
-			if _, dup := seen[k]; !dup {
-				seen[k] = struct{}{}
-				pending = append(pending, k)
+		case it := <-b.ch:
+			if e, dup := seen[it.key]; !dup || e != it.epoch {
+				seen[it.key] = it.epoch
+				pending = append(pending, it)
 			}
 			if len(pending) >= cscInvalBatchMax {
 				flush()
