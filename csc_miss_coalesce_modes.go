@@ -396,32 +396,41 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	defer recycleTimer.Stop()
 	superDone := make(chan struct{})
 	supDead := make(chan struct{}) // closed when the supervisor exits (joined before release)
+	// drainBackstop bounds a graceful drain by PROGRESS, not wall clock: no
+	// context can interrupt a deadline-less socket read, so a stalled drain must
+	// force the I/O out with a conn close (else Close wedges in wg.Wait) — but a
+	// HEALTHY drain of a deep in-flight pipeline (up to cscFullDuplexDepth
+	// replies, ~in-flight × RTT, possibly under a maintenance-relaxed timeout)
+	// may legitimately exceed any fixed budget. Each budget interval that
+	// consumed at least one reply extends the wait; only a zero-progress
+	// interval closes the conn.
+	drainBackstop := func() {
+		prev := len(inflight)
+		for {
+			select {
+			case <-superDone:
+				return
+			case <-time.After(mc.batchBudget()):
+				cur := len(inflight)
+				if cur < prev {
+					prev = cur // draining; give it another interval
+					continue
+				}
+				_ = cn.Close()
+				return
+			}
+		}
+	}
 	go func() {
 		defer close(supDead)
 		select {
 		case <-mc.stop:
 			stopFlag.Store(true)
 			doRecycle()
-			// Bounded graceful drain: no context can interrupt a deadline-less
-			// socket read, so if the session has not ended within the batch budget,
-			// close the conn to force the I/O out (else Close wedges in wg.Wait).
-			select {
-			case <-superDone:
-			case <-time.After(mc.batchBudget()):
-				_ = cn.Close()
-			}
+			drainBackstop()
 		case <-recycleTimer.C:
 			doRecycle()
-			// Same bounded backstop as the stop path: with ReadTimeout disabled a
-			// reader blocked on a non-replying server never observes the recycle,
-			// and with the supervisor gone nothing would ever close the conn — a
-			// later Close would hang in wg.Wait. Force the I/O out if the session
-			// has not drained within the batch budget.
-			select {
-			case <-superDone:
-			case <-time.After(mc.batchBudget()):
-				_ = cn.Close()
-			}
+			drainBackstop()
 		case <-sctx.Done(): // I/O error: unblock a reader/writer parked on the socket
 			_ = cn.Close()
 		case <-superDone:
