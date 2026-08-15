@@ -131,6 +131,14 @@ type Conn struct {
 	// if counter reaches 0, we clear the relaxed timeouts
 	relaxedCounter atomic.Int32
 
+	// onCloseAtomic replaces the plain onClose field below: it is read and
+	// cleared by Close while initConn (running inside SetNetConnAndInitConn
+	// under the INITIALIZING state) installs it via SetOnClose; Close
+	// transitions to CLOSED from any state, so the two race when a pool
+	// shutdown closes a connection mid-init. Stored as an atomic pointer so
+	// the setter and Close don't need a mutex (keeping Conn slim).
+	onCloseAtomic atomic.Pointer[func() error]
+
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
@@ -635,7 +643,11 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 // time, and a richer registry here would not even solve the "stale
 // closure" hazard described above.
 func (cn *Conn) SetOnClose(fn func() error) {
-	cn.onClose = fn
+	if fn == nil {
+		cn.onCloseAtomic.Store(nil)
+		return
+	}
+	cn.onCloseAtomic.Store(&fn)
 }
 
 // SetInitConnFunc sets the connection initialization function to be called on reconnections.
@@ -967,10 +979,9 @@ func (cn *Conn) Close() error {
 	// Transition to CLOSED state
 	cn.stateMachine.Transition(StateClosed)
 
-	if cn.onClose != nil {
+	if fn := cn.onCloseAtomic.Swap(nil); fn != nil {
 		// ignore error
-		_ = cn.onClose()
-		cn.onClose = nil
+		_ = (*fn)()
 	}
 
 	// Lock-free netConn access for better performance
