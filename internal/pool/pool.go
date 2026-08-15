@@ -1692,8 +1692,10 @@ func (p *ConnPool) Size() int {
 // in order: a truly servable idle conn (usableIdleLen — plain IdleLen counts
 // not-usable and handoff-marked entries an OnGet hook would divert); a free
 // pool turn (accounts for in-use conns AND in-flight dials); room under
-// PoolSize and MaxActiveConns (newConn's hard dial gate); and a free dial slot
-// (MaxConcurrentDials below PoolSize can saturate slots while a turn is free).
+// PoolSize and MaxActiveConns (newConn's hard dial gate); a free dial slot
+// (MaxConcurrentDials below PoolSize can saturate slots while a turn is free);
+// and the dial circuit breaker not being open (a saturated dialErrorsNum makes
+// the Get fail fast rather than serve).
 func (p *ConnPool) HasFreeCapacity() bool {
 	if p.usableIdleLen() > 0 {
 		return true
@@ -1709,6 +1711,12 @@ func (p *ConnPool) HasFreeCapacity() bool {
 		return false
 	}
 	if c := cap(p.dialsInProgress); c > 0 && len(p.dialsInProgress) >= c {
+		return false
+	}
+	// Dial circuit breaker open (dialConn fails fast until a background probe
+	// succeeds): the Get would need this dial and error immediately, so there is
+	// no capacity to report.
+	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
 		return false
 	}
 	return true

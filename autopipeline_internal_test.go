@@ -1473,7 +1473,8 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 // routed through the cache-honoring Process path (main pool) ONLY when the
 // client has client-side caching active. A non-CSC client (the default) must
 // keep cacheable solos on the pipeline pool the straggler gate probed, so
-// ap.cscEnabled — the gate — must be false there and true for a CSC client.
+// the live gate (cscActiveFn) must report false there and true for a CSC
+// client — and false again after CSC disables itself mid-life.
 func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	ctx := context.Background()
 
@@ -1485,8 +1486,8 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	defer ap.Close()
-	if ap.cscEnabled {
-		t.Fatal("non-CSC client: ap.cscEnabled = true, want false — a cacheable solo would wrongly use the main pool instead of the pipeline pool")
+	if ap.cscActiveFn != nil && ap.cscActiveFn() {
+		t.Fatal("non-CSC client: gate reports active, want inactive — a cacheable solo would wrongly use the main pool instead of the pipeline pool")
 	}
 
 	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
@@ -1510,7 +1511,13 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline (csc): %v", err)
 	}
 	defer apc.Close()
-	if !apc.cscEnabled {
-		t.Fatal("CSC client: ap.cscEnabled = false, want true — cacheable solos must honor the cache")
+	if apc.cscActiveFn == nil || !apc.cscActiveFn() {
+		t.Fatal("CSC client: gate reports inactive, want active — cacheable solos must honor the cache")
+	}
+	// Mid-life disable (RESP3 fallback, processor damping): the LIVE gate must
+	// flip so cacheable solos return to the pipeline pool.
+	cscC.disableCSCServing(ctx, "test: mid-life disable")
+	if apc.cscActiveFn() {
+		t.Fatal("gate still reports active after CSC disabled itself mid-life")
 	}
 }

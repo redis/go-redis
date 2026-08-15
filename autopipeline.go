@@ -553,12 +553,15 @@ type AutoPipeliner struct {
 	// tell whether flushing a tiny batch now would contend for a scarce pooled
 	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
 	pipelinePool pool.Pooler
-	// cscEnabled: client-side caching is active on the underlying client
-	// (captured at construction; CSC attaches at client creation). Gates the
-	// cacheable-solo routing: only a CSC client routes through Process (which
-	// honors the cache); otherwise solos stay on the pipeline pool.
-	cscEnabled bool
-	config     *AutoPipelineOptions
+	// cscActiveFn reports whether client-side caching is CURRENTLY active on the
+	// underlying client (nil when the client type exposes none). Consulted per
+	// solo dispatch — not captured as a bool — because CSC can disable itself
+	// mid-life (RESP3 fallback, processor damping), after which cacheable solos
+	// should return to the pipeline pool instead of the main pool. Gates the
+	// cacheable-solo routing: only an active-CSC client routes through Process
+	// (which honors the cache).
+	cscActiveFn func() bool
+	config      *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -812,10 +815,10 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
 		ap.pipelinePool = pp.getPipelinePool()
 	}
-	// CSC state (in-package assertion; *ClusterClient does not expose it) — see
-	// the cscEnabled field doc.
+	// CSC probe (in-package assertion; *ClusterClient does not expose it) — see
+	// the cscActiveFn field doc.
 	if cc, ok := pipeliner.(interface{ autopipelineCSCActive() bool }); ok {
-		ap.cscEnabled = cc.autopipelineCSCActive()
+		ap.cscActiveFn = cc.autopipelineCSCActive
 	}
 
 	// Route the typed command surface. Blocking: the command call blocks until
@@ -2412,9 +2415,9 @@ func (s *apShard) flushBatchSlice() {
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
 				// A cacheable solo on a CSC client goes through Process so the cache
 				// is honored (processPipeline bypasses processCached). Gated on
-				// cscEnabled: without CSC, Process would just run on the MAIN pool,
-				// ignoring the pipeline pool the straggler gate probed.
-				if ap.cscEnabled && isCacheable(cmd) {
+				// the LIVE CSC state: without active CSC, Process would just run on
+				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
+				if ap.cscActiveFn != nil && ap.cscActiveFn() && isCacheable(cmd) {
 					return ap.pipeliner.process(ctx, cmd)
 				}
 				// One-command pipeline on the PIPELINE pool (falls back to the main
