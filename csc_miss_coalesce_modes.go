@@ -51,7 +51,9 @@ func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
 	if pt := opt.PoolTimeout; pt > d {
 		d = pt
 	}
-	// Options.init resolves the dial knobs to nonzero defaults.
+	// Options.init resolves the dial knobs to nonzero defaults. A custom
+	// DialerRetryBackoff returning delays beyond DialerRetryTimeout is not
+	// observable here; such configs should raise PoolTimeout to match.
 	if db := time.Duration(opt.DialerRetries)*(opt.DialTimeout+opt.DialerRetryTimeout) + opt.DialTimeout; db > d {
 		d = db
 	}
@@ -410,6 +412,16 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			}
 		case <-recycleTimer.C:
 			doRecycle()
+			// Same bounded backstop as the stop path: with ReadTimeout disabled a
+			// reader blocked on a non-replying server never observes the recycle,
+			// and with the supervisor gone nothing would ever close the conn — a
+			// later Close would hang in wg.Wait. Force the I/O out if the session
+			// has not drained within the batch budget.
+			select {
+			case <-superDone:
+			case <-time.After(mc.batchBudget()):
+				_ = cn.Close()
+			}
 		case <-sctx.Done(): // I/O error: unblock a reader/writer parked on the socket
 			_ = cn.Close()
 		case <-superDone:
