@@ -2581,6 +2581,12 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 	// deadline-less read either.
 	return cn.WithReaderHardDeadline(time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
+		// Nonblocking Close adapter, like the background drainer's: this drain
+		// runs on CSC-held paths (the FD session tick among them), where a
+		// custom handler calling Close() on the raw client would deadlock —
+		// Close waits on the coalescer's WaitGroup, which includes the very
+		// goroutine parked in the handler.
+		handlerCtx.Client = cscHandlerClient{baseClient: c}
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
 }

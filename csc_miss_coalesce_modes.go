@@ -327,7 +327,14 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 
 		readOne := func(req *cscMissReq) bool { // false => fatal, reader must exit
 			rerr := cn.WithReader(sctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
-				if e := c.processPendingPushNotificationWithReader(sctx, cn, rd); e != nil {
+				// Push handling with the nonblocking Close adapter: this reader
+				// is part of mc.wg, so a custom push handler calling Close() on
+				// the raw client would self-deadlock (Close waits on mc.wg while
+				// the reader is parked inside the handler). The adapter's Close
+				// signals and defers the blocking teardown to a goroutine.
+				handlerCtx := c.pushNotificationHandlerContext(cn)
+				handlerCtx.Client = cscHandlerClient{baseClient: c}
+				if e := c.pushProcessor.ProcessPendingNotifications(sctx, handlerCtx, rd); e != nil {
 					internal.Logger.Printf(sctx, "csc: miss-coalesce push drain: %v", e)
 				}
 				raw, e := rd.ReadRawReply()

@@ -43,8 +43,15 @@ type cscInvalBatcher struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	// epoch versions enqueued invalidations against full-cache flushes: drop()
-	// bumps it, and apply skips items from an older epoch. See drop().
-	epoch atomic.Uint64
+	// bumps it, and apply skips items from an older epoch. applyMu serializes
+	// the two: without it, apply could snapshot the epoch, a concurrent
+	// drop()+Flush() land mid-loop, and the remaining stale items would still
+	// be applied AFTER the flush — evicting post-flush repopulations, the exact
+	// case the epoch exists to prevent. drop() holding applyMu means any
+	// in-flight batch finishes BEFORE the flush (harmless: the flush wipes
+	// everything anyway), and every later apply sees the new epoch.
+	epoch   atomic.Uint64
+	applyMu sync.Mutex
 	// stopMu/stopped interlock enqueue against stop: a handler can hold a stale
 	// batcher pointer across a rebuild. enqueue sends under the read side, so a
 	// sent key lands BEFORE stop closes stopCh (the stop-drain sees it); once
@@ -75,7 +82,11 @@ func (b *cscInvalBatcher) stop() {
 // Callers bump BEFORE flushing the cache, so a stale epoch always means
 // "enqueued before the flush", where the delete is redundant by the flush.
 func (b *cscInvalBatcher) drop() {
+	// Serialize with apply (see applyMu): after drop returns, no stale-epoch
+	// delete can run — the caller may flush the cache immediately.
+	b.applyMu.Lock()
 	b.epoch.Add(1)
+	b.applyMu.Unlock()
 }
 
 // enqueue hands a namespaced key to the batcher without blocking the caller. On
@@ -105,6 +116,10 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 	if cache == nil {
 		return
 	}
+	// Held for the whole batch so a concurrent drop()+Flush() cannot land
+	// mid-loop and leave stale-epoch deletes running post-flush (see applyMu).
+	b.applyMu.Lock()
+	defer b.applyMu.Unlock()
 	cur := b.epoch.Load()
 	lc, canRefresh := cache.(*LocalCache)
 	canRefresh = canRefresh && refresh != nil
