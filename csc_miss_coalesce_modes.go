@@ -430,13 +430,16 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			if rt+time.Second > interval {
 				interval = rt + time.Second
 			}
-			// Deadline-less reads (negative ReadTimeout, no active relaxation):
-			// the user explicitly disabled read deadlines, so the RECYCLE path
-			// must not cut a legitimately long reply that completes no read for
-			// an interval — wait for the session (or Close) instead. Close still
-			// terminates: once stop fires, the bounded zero-progress close below
-			// applies, which is the shutdown contract (Close never wedges).
-			if !stopping && rt < 0 {
+			// Deadline-less reads (no active relaxation): the user explicitly
+			// disabled read deadlines, so the RECYCLE path must not cut a
+			// legitimately long reply that completes no read for an interval —
+			// wait for the session (or Close) instead. Close still terminates:
+			// once stop fires, the bounded zero-progress close below applies,
+			// which is the shutdown contract (Close never wedges). NOTE the
+			// <= 0: Options.init normalizes ReadTimeout -1 (indefinite) to 0
+			// and -2 (no deadline calls) to -1, so BOTH deadline-less modes
+			// land at rt <= 0 here.
+			if !stopping && rt <= 0 {
 				select {
 				case <-superDone:
 					return
@@ -468,6 +471,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			drainBackstop(true)
 		case <-recycleTimer.C:
 			doRecycle()
+			drainBackstop(false)
+		case <-recycle:
+			// Reader-triggered recycle (handoffWanted: unusable / handoff-marked /
+			// close-on-put). The writer exits, but replies may remain in flight —
+			// without a backstop a stalled read would hold the conn (and postpone
+			// the requested handoff) until Close. Same bounded drain as the timer
+			// path; doRecycle already ran (this channel IS the recycle signal).
 			drainBackstop(false)
 		case <-sctx.Done(): // I/O error: unblock a reader/writer parked on the socket
 			_ = cn.Close()

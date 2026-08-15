@@ -2573,21 +2573,16 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 // signal (the opaque-transport fallback on a held full-duplex connection) pay
 // at most the 1ms when nothing is pending.
 func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
-	err := cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
+	// HARD deadline: WithReader would let an active maintenance-relaxed timeout
+	// REPLACE the 1ms probe cap, and a no-data probe would then block the
+	// caller (the FD session tick) for the relaxed duration while holding the
+	// conn — starving a small pool. WithReaderHardDeadline bypasses relaxation
+	// and clears the deadline on exit, so no residue poisons a later
+	// deadline-less read either.
+	return cn.WithReaderHardDeadline(time.Millisecond, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
-	// A NEGATIVE ReadTimeout never re-arms deadlines, so the 1ms probe deadline
-	// would stay installed and poison the next read — clear it back to
-	// no-deadline for those callers (timeout>=0 callers re-arm on the next read).
-	if c.opt.ReadTimeout < 0 {
-		if clearErr := cn.WithReader(context.Background(), 0, func(*proto.Reader) error {
-			return nil
-		}); clearErr != nil && err == nil {
-			err = clearErr
-		}
-	}
-	return err
 }
 
 // cscFallbackProbeInterval bounds how often an idle connection without a
@@ -2651,7 +2646,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})
