@@ -39,14 +39,21 @@ func opCtx() (context.Context, context.CancelFunc) {
 }
 
 // acquireCtx bounds a session connection acquisition. Unlike opCtx's fixed 5s
-// it honors a configured PoolTimeout above that (the normal command path waits
-// the full pool budget under temporary saturation), and it is cancelled when
-// the coalescer stops so Close does not stall behind a Get blocked on a
-// saturated pool.
+// it honors the larger of the configured PoolTimeout (a saturated pool may
+// legitimately make Get wait that long) and the pool's full dial budget
+// (DialerRetries attempts of DialTimeout plus backoffs — a shorter outer
+// deadline would cancel Get mid-dial-sequence and forfeit configured retries).
+// Cancelled when the coalescer stops, so Close does not stall behind a blocked
+// Get.
 func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
+	opt := mc.c.opt
 	d := 5 * time.Second
-	if pt := mc.c.opt.PoolTimeout; pt > d {
+	if pt := opt.PoolTimeout; pt > d {
 		d = pt
+	}
+	// Options.init resolves the dial knobs to nonzero defaults.
+	if db := time.Duration(opt.DialerRetries)*(opt.DialTimeout+opt.DialerRetryTimeout) + opt.DialTimeout; db > d {
+		d = db
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d)
 	done := make(chan struct{})
@@ -74,22 +81,16 @@ const cscFullDuplexConnsDefault = 1
 // can disable the idle drain (set it huge) as a negative control.
 var cscFullDuplexIdleProbe = 5 * time.Millisecond
 
-// cscFullDuplexSessionIdle is how long a session's writer waits for the next
-// miss before ending the session and returning its held connection to the pool.
-// Without it a session sits on a pool connection for up to fullDuplexRecycleAge
-// (30s) with no miss in flight, and at a small pool (PoolSize:1) a non-cacheable
-// command (PING/SET/uncached read) blocks behind it. The next miss re-acquires —
-// runFullDuplexSession already waits for work BEFORE taking a connection. Under
-// steady miss load the timer is reset per batch and never fires. A var so tests
-// can tighten or disable it.
+// cscFullDuplexSessionIdle: a session with no miss for this long ends and
+// returns its held connection (at PoolSize:1 an idle hold would block
+// non-cacheable commands until PoolTimeout). The next miss re-acquires; under
+// steady load the timer never fires. Var for tests.
 var cscFullDuplexSessionIdle = time.Second
 
-// fullDuplexRecycleAge bounds how long a single session holds cn, so the held
-// connection is returned to the pool periodically (a Put runs the OnPut pool
-// hooks: metrics, health, and any queued maintenance handoff). Bounded by the
-// connection's REMAINING absolute lifetime (expiresAt includes
-// ConnMaxLifetimeJitter): an already-old pooled connection must not be held for
-// a fresh full recycle age past the expiry the pool's reaper enforces.
+// fullDuplexRecycleAge bounds how long a session holds cn so OnPut pool hooks
+// (metrics, health, queued maintenance handoff) run periodically. Capped by the
+// conn's REMAINING lifetime (ExpiresAt, jitter included): an old conn must not
+// be held past the expiry the pool's reaper enforces.
 func (c *baseClient) fullDuplexRecycleAge(cn *pool.Conn) time.Duration {
 	age := 30 * time.Second
 	if c.opt.ConnMaxLifetime > 0 && c.opt.ConnMaxLifetime < age {
@@ -274,12 +275,10 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			buf = mc.grabInto(buf[:0], req)
 			mc.countBatch(buf)
 
-			// sctx directly, NOT c.context(sctx): sctx is the ENGINE's cancellable
-			// session context, and with the default ContextTimeoutEnabled=false
-			// c.context() would strip it to context.Background() — then, with the
-			// per-op timeout disabled too, a blocked write/read could not be
-			// interrupted and Close would hang in wg.Wait (see the supervisor's
-			// stop-deadline below, which closes the conn as the backstop).
+			// sctx directly, NOT c.context(sctx): c.context() strips the engine's
+			// cancellable session ctx under ContextTimeoutEnabled=false, and with
+			// per-op timeouts disabled a blocked read/write could then never be
+			// interrupted (the supervisor's conn-close is the backstop).
 			werr := cn.WithWriter(sctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 				for _, r := range buf {
 					if e := writeCmd(wr, r.cmd); e != nil {
@@ -367,16 +366,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 					fail(e)
 					return
 				}
-				// Opaque-transport fallback, HELD-CONN ONLY: where socket readiness
-				// cannot be inspected (Windows; dialer wrappers exposing neither
-				// syscall.Conn nor NetConn) the readiness-gated peek above never
-				// fires, and unlike pooled connections nothing else ever drains this
-				// conn — a push would sit unread until the next reply. Run a
-				// throttled timed drain (at most once per cscFallbackProbeInterval;
-				// TakeCscPeriodicReadPending is a no-op on inspectable transports).
-				// Deliberately NOT inside peekAndProcessPushNotifications: pooled
-				// push paths have the drainer/health-check coverage, and a blanket
-				// fallback there perturbs sequenced push handling (mock-conn tests).
+				// Opaque-transport fallback, HELD-CONN ONLY: where readiness cannot
+				// be inspected (Windows; wrappers exposing neither syscall.Conn nor
+				// NetConn) the gated peek never fires and nothing else drains this
+				// conn. Throttled timed drain (no-op on inspectable transports).
+				// Deliberately not in peekAndProcessPushNotifications: pooled paths
+				// have drainer coverage, and a blanket fallback perturbs sequenced
+				// push handling.
 				if cn.TakeCscPeriodicReadPending(cscFallbackProbeInterval) {
 					if e := c.timedPushDrain(sctx, cn); e != nil {
 						fail(e)
@@ -404,11 +400,9 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		case <-mc.stop:
 			stopFlag.Store(true)
 			doRecycle()
-			// Graceful drain first — but bounded: with ReadTimeout disabled a
-			// server that never replies would leave the reader blocked in a socket
-			// read that no context can interrupt, wedging stopCSCMissCoalescer's
-			// wg.Wait and therefore Client.Close. If the session has not ended
-			// within the batch budget, close the connection to force the I/O out.
+			// Bounded graceful drain: no context can interrupt a deadline-less
+			// socket read, so if the session has not ended within the batch budget,
+			// close the conn to force the I/O out (else Close wedges in wg.Wait).
 			select {
 			case <-superDone:
 			case <-time.After(mc.batchBudget()):
@@ -424,12 +418,9 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 
 	swg.Wait()
 	close(superDone)
-	// JOIN the supervisor before releasing the connection: the deferred scancel
-	// makes sctx.Done() ready at return, and if the supervisor were still parked
-	// in its select it could pick that case over the (also-ready) superDone and
-	// close a HEALTHY connection after it went back to the pool — possibly
-	// already acquired by an unrelated command. After this join the supervisor
-	// can no longer touch cn.
+	// JOIN the supervisor before releasing cn: the deferred scancel makes
+	// sctx.Done() ready, and a still-parked supervisor could pick it over the
+	// equally-ready superDone and close a healthy conn already back in the pool.
 	<-supDead
 
 	// Teardown. Error path: the socket was (or is being) closed; Remove it.

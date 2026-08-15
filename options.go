@@ -452,6 +452,11 @@ type Options struct {
 	// Cache implementation the option is ignored and every miss fetches on its
 	// caller's connection as usual.
 	//
+	// Pool sizing: under sustained miss traffic the engine holds one pool
+	// connection (released after a 1s idle gap and at the recycle age). Size
+	// PoolSize for that held connection — with PoolSize 1, continuous misses
+	// can make unrelated non-cacheable commands wait on the pool.
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMisses bool
 

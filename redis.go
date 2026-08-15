@@ -406,10 +406,9 @@ type baseClient struct {
 	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
 	cscRefreshQueue  *cscRefreshQueue
 	cscRefreshHandle *cscRevalidateHandle
-	// cscMissCoalescer is atomic because a cache miss (processCached) races
-	// Client.Close (stopCSCMissCoalescer nils it): a plain field double-load
-	// could observe non-nil then call fetch on nil — a panic and a data race.
-	// Readers Load once; Close Swaps to nil so stop runs exactly once.
+	// cscMissCoalescer is atomic: a miss (processCached) races Close, which
+	// Swaps it to nil — readers Load once (a double-load could call fetch on a
+	// nil receiver) and exactly one closer wins the Swap.
 	cscMissCoalescer atomic.Pointer[cscMissCoalescer]
 
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
@@ -471,11 +470,9 @@ func (c *baseClient) clone() *baseClient {
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
 	}
-	// The miss coalescer travels with the cache too (an atomic.Pointer cannot be
-	// listed above): without this a WithTimeout clone would silently lose miss
-	// coalescing — its zero-valued pointer makes every miss fall back to a
-	// per-caller fetch. The clone shares the OWNER's coalescer (whose lifecycle
-	// stays owner-only: a clone's Close does not stop it).
+	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
+	// in the literal above); a clone shares the OWNER's coalescer, whose
+	// lifecycle stays owner-only — a clone's Close does not stop it.
 	clone.cscMissCoalescer.Store(c.cscMissCoalescer.Load())
 	return clone
 }
@@ -2580,12 +2577,9 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
-	// A NEGATIVE ReadTimeout means "never touch the socket deadline": every
-	// subsequent WithReader skips SetReadDeadline, so the 1ms probe deadline
-	// above would otherwise stay installed and poison the next reply read
-	// (surfacing a spurious i/o timeout on a held full-duplex connection, or on
-	// a pooled conn reused right after a drain). Clear it back to no-deadline
-	// for those callers; timeout>=0 callers re-arm their own on the next read.
+	// A NEGATIVE ReadTimeout never re-arms deadlines, so the 1ms probe deadline
+	// would stay installed and poison the next read — clear it back to
+	// no-deadline for those callers (timeout>=0 callers re-arm on the next read).
 	if c.opt.ReadTimeout < 0 {
 		if clearErr := cn.WithReader(context.Background(), 0, func(*proto.Reader) error {
 			return nil
@@ -2626,15 +2620,10 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 		return false, nil
 	}
 
-	// The hard-deadline reads below (the probe and the drain) leave their
-	// deadline armed on the socket. Clients with a NEGATIVE ReadTimeout never
-	// re-arm (WithReader skips SetReadDeadline), so without this explicit clear
-	// a drained conn reused within the residue window would fail its first read
-	// with a spurious timeout. (checkForData used to clear deadlines
-	// incidentally on the next drainer tick; that reset was removed because it
-	// clobbered a concurrent writer's deadline on held full-duplex connections —
-	// this is the explicit, correctly-scoped replacement.) A removed conn makes
-	// the clear a no-op.
+	// The hard-deadline reads below (probe and drain) leave their deadline armed.
+	// A NEGATIVE ReadTimeout never re-arms (WithReader skips SetReadDeadline), so
+	// without this clear a drained conn reused within the residue window fails
+	// its first read with a spurious timeout. No-op on a removed conn.
 	defer func() {
 		if c.opt.ReadTimeout < 0 {
 			_ = cn.WithReader(context.Background(), 0, func(*proto.Reader) error { return nil })

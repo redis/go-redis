@@ -980,10 +980,8 @@ func (cn *Conn) ClearHandoffState() {
 }
 
 // ExpiresAt returns the connection's absolute lifetime expiry (zero when no
-// ConnMaxLifetime applies). Set once at dial, before the conn is shared, so a
-// plain read is safe. Long-holding callers (the CSC full-duplex session) use it
-// to bound their hold by the REMAINING lifetime — including jitter — rather
-// than restarting a full lifetime the pool's reaper would not honor.
+// ConnMaxLifetime applies; jitter included). Set once at dial, so a plain read
+// is safe. Long-holding callers bound their hold by the REMAINING lifetime.
 func (cn *Conn) ExpiresAt() time.Time {
 	return cn.expiresAt
 }

@@ -89,15 +89,11 @@ func maybeHasData(conn net.Conn) bool {
 }
 
 func checkForData(conn net.Conn) (bool, error) {
-	// Unlike the general health check, CSC only uses this as a readiness hint
-	// before a bounded read, so unwrapping TLS is safe and avoids blocking.
-	//
-	// Deliberately NO SetDeadline reset here (unlike connCheck): this probe is a
-	// raw MSG_PEEK|MSG_DONTWAIT syscall that never touches net.Conn deadlines,
-	// and it runs CONCURRENTLY with command I/O on a held full-duplex connection
-	// — the reader's idle tick probes while the writer may be inside WithWriter
-	// with a write deadline armed. Clearing deadlines here would strip that
-	// concurrent write's bound and let a blocked write hang past its timeout.
+	// Readiness hint before a bounded read, so unwrapping TLS is safe.
+	// Deliberately NO SetDeadline reset (unlike connCheck): the raw
+	// MSG_PEEK|MSG_DONTWAIT syscall never touches net.Conn deadlines, and this
+	// runs CONCURRENTLY with command I/O on a held full-duplex connection —
+	// clearing here would strip an armed write deadline mid-write.
 	sysConn, ok := underlyingSyscallConn(conn)
 	if !ok {
 		return false, nil

@@ -24,13 +24,10 @@ const cscInvalBatchMax = 4096 // size-cap flush regardless of the timer
 
 type cscInvalBatcher struct {
 	window time.Duration
-	// cache/refresh are snapshotted at creation rather than re-read from the
-	// binding on every apply: the batcher's lifetime is strictly inside one
-	// binding (releaseLocked stops it before users hits 0 clears the binding),
-	// and the snapshot is what lets the release-time stop-drain still apply
-	// queued deletes AFTER releaseLocked has nilled h.cache — dropping them
-	// there would let a successor reusing the same shared cache serve
-	// pre-invalidation values until TTL/MaxStaleness.
+	// cache/refresh are snapshotted at creation (batcher lifetime is inside the
+	// binding lifetime): the release-time stop-drain must still apply queued
+	// deletes AFTER releaseLocked nils h.cache, or a successor reusing the
+	// shared cache serves stale until TTL/MaxStaleness.
 	cache   Cache
 	refresh *cscRefreshQueue
 
@@ -38,23 +35,18 @@ type cscInvalBatcher struct {
 	stopCh   chan struct{}
 	dropCh   chan struct{} // cap-1: signal run() to discard its in-progress batch
 	stopOnce sync.Once
-	// stopMu/stopped interlock enqueue against stop: a handler goroutine can hold
-	// a batcher pointer across a concurrent stop (a window-change rebuild while
-	// HandlePushNotification is mid-enqueue-loop, or ensureBatcher's RLock fast
-	// path returning a just-stopped instance). enqueue sends while holding the
-	// read side, so every key sent lands BEFORE stop's write side closes stopCh —
-	// guaranteeing run()'s stop-drain sees it; once stopped, enqueue applies
-	// inline instead, so no delete is ever parked in a channel nothing drains
-	// (which would serve pre-invalidation values until TTL/MaxStaleness).
+	// stopMu/stopped interlock enqueue against stop: a handler can hold a stale
+	// batcher pointer across a rebuild. enqueue sends under the read side, so a
+	// sent key lands BEFORE stop closes stopCh (the stop-drain sees it); once
+	// stopped, enqueue applies inline — no delete is ever parked in a channel
+	// nothing drains.
 	stopMu  sync.RWMutex
 	stopped bool
 }
 
-// stop signals run() to flush and exit; idempotent. It closes a channel and
-// flips the stopped flag — it never touches h.mu and does not wait for the
-// goroutine — so it is safe to call while holding the handler lock (see
-// releaseLocked). Lock order is h.mu → stopMu, never the reverse: enqueue's
-// stopMu critical section contains only the flag check and a channel send.
+// stop signals run() to flush and exit; idempotent, never touches h.mu, does
+// not wait — safe under the handler lock. Lock order h.mu -> stopMu, never
+// reversed (enqueue's stopMu section is only the flag check and the send).
 func (b *cscInvalBatcher) stop() {
 	b.stopOnce.Do(func() {
 		b.stopMu.Lock()
@@ -64,12 +56,10 @@ func (b *cscInvalBatcher) stop() {
 	})
 }
 
-// drop discards everything the batcher currently has queued — the channel plus
-// the run loop's in-progress batch — WITHOUT applying it. Called after a full
-// cache Flush (FLUSHDB/FLUSHALL) has already removed every entry, so the queued
-// per-key deletes are redundant; applying them would evict entries a reader
-// repopulated after the flush (an extra miss within the window). Best-effort: a
-// key racing in right after is treated as a normal post-flush invalidation.
+// drop discards everything queued (channel + the run loop's in-progress batch)
+// WITHOUT applying: after a full cache Flush the per-key deletes are redundant
+// and would evict post-flush repopulations. Best-effort against racing
+// enqueues.
 func (b *cscInvalBatcher) drop() {
 	// Drain queued keys (best-effort, non-blocking).
 	for draining := true; draining; {
@@ -106,11 +96,8 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 	}
 }
 
-// apply deletes the given namespaced keys and feeds any evicted-hot entries to
-// the refresher. Uses the creation-time snapshot (see the struct fields), NOT a
-// re-read of the live binding: releaseLocked nils the binding before this
-// goroutine's final stop-drain flush runs, and these deletes must still land on
-// the (possibly shared, successor-reused) cache.
+// apply deletes the namespaced keys and feeds evicted-hot entries to the
+// refresher, using the creation-time snapshot (see the struct fields).
 func (b *cscInvalBatcher) apply(keys []string) {
 	cache, refresh := b.cache, b.refresh
 	if cache == nil {
@@ -149,12 +136,9 @@ func (b *cscInvalBatcher) run() {
 	for {
 		select {
 		case <-b.stopCh:
-			// Stopped: by the last user releasing the binding (deletes are then a
-			// no-op on the nil cache) or by a window change rebuilding the batcher
-			// (setInvalBatchWindow), where the queued deletes are still live and
-			// must not be lost — the cache would serve pre-invalidation values
-			// until TTL/MaxStaleness. Drain what is still buffered in ch into the
-			// batch, then flush once and exit.
+			// Stopped (last release, or a window-change rebuild where queued deletes
+			// are still live and must not be lost): drain ch into the batch, flush
+			// once, exit.
 			for draining := true; draining; {
 				select {
 				case k := <-b.ch:

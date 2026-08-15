@@ -28,12 +28,13 @@ func cscRegisterCleanups(c *Client) {
 	}
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
 	// also stops clones from serving once the drainer is gone. Capture the miss
-	// coalescer too (started during attach, so already set here — nil when the
-	// option is off): its workers wait on their own stop channel, so without
-	// this a client dropped WITHOUT Close would leak them — and everything they
-	// retain (cache, pools) — per forgotten client. stopWorkers is idempotent
-	// (sync.Once), so an explicit Close racing this cleanup is safe; it only
-	// signals, never blocks, keeping the cleanup non-blocking.
+	// coalescer too (set during attach; nil when off): its sessions wait on
+	// their own stop channel, so a client dropped WITHOUT Close would leak them
+	// and everything they retain (cache, pools). stopWorkers is idempotent and
+	// signal-only, keeping the cleanup non-blocking; the drain-cancel then
+	// settles any queued request whose reservation would otherwise stay
+	// IN_PROGRESS and block a cache-sharing client until StaleTimeout (channel
+	// receive gives each request exactly one consumer).
 	active := c.baseClient.cscActive
 	mc := c.baseClient.cscMissCoalescer.Load()
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
@@ -42,13 +43,6 @@ func cscRegisterCleanups(c *Client) {
 		}
 		if mc != nil {
 			mc.stopWorkers()
-			// Drain-cancel anything still queued (non-blocking): a request whose
-			// caller already gave up (ctx cancel) can sit in mc.ch holding an
-			// IN_PROGRESS reservation, and with the workers stopped nothing would
-			// ever settle its token — another client sharing the same injected
-			// cache would then block on that key until StaleTimeout. Channel
-			// receive is safe against a worker doing a final grab; each request is
-			// consumed by exactly one side.
 			mc.drainQueueErr(pool.ErrClosed)
 		}
 		h.signalStop()
@@ -119,23 +113,16 @@ type invalidateHandler struct {
 	invalBatchWindowSet bool
 }
 
-// setInvalBatchWindow folds one client's invalidation-batch window into the
-// shared handler's effective window. Called at attach time, before that
-// client's pushes can arrive. Multiple clients can share one handler
-// (same processor + cache), each with its own configured window, and the
-// handler runs ONE batcher — so the effective window is the STRICTEST across
-// attached clients: the smallest nonzero window, with zero (batching off,
-// inline deletes) strictest of all. Tightening can never violate any client's
-// staleness bound; taking the latest window as-is could (a later 1s attach
-// would silently loosen an earlier 10ms client's bound). The window is not
-// re-loosened when the strict client closes — bindings carry no identity to
-// track that, and staying stricter costs only batching efficiency, never
-// correctness.
-//
-// On a tighten, an already-running batcher was created with the looser window
-// (its window is fixed at creation), so stop and drop it; the next invalidation
-// lazily starts a fresh one with the new window via ensureBatcher. stop()
-// flushes what it holds, so no queued delete is lost.
+// setInvalBatchWindow folds one client's window into the shared handler's
+// effective window at attach time. Clients sharing a handler may configure
+// different windows but the handler runs ONE batcher, so the effective window
+// is the STRICTEST attached: smallest nonzero, with explicit zero (inline
+// deletes) strictest of all — tightening can never violate a client's staleness
+// bound, while taking the latest as-is could loosen an earlier stricter one.
+// Not re-loosened on close (bindings carry no identity; staying stricter costs
+// only efficiency). On a tighten the running batcher (window fixed at creation)
+// is stopped — stop() flushes, so no queued delete is lost — and the next
+// invalidation rebuilds via ensureBatcher.
 func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -175,11 +162,9 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 	if h.users == 0 {
 		return nil
 	}
-	// Read the window HERE, under the same lock setInvalBatchWindow writes it —
-	// not from the caller's pre-lock snapshot, which a concurrent tighten (or an
-	// explicit 0 turning batching off) could have superseded; building from the
-	// snapshot would resurrect the old, looser cadence. 0 means batching is off:
-	// return nil so the caller deletes inline.
+	// Read the window under this lock (not a caller snapshot a concurrent
+	// tighten could supersede). 0 = batching off: return nil, caller deletes
+	// inline.
 	w := h.invalBatchWindow
 	if w <= 0 {
 		return nil
@@ -208,11 +193,9 @@ func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 		return
 	}
 	h.refresh = q
-	// A running batcher snapshotted the previous refresh binding at creation
-	// (see ensureBatcher); a client attaching refresh-on-invalidate later would
-	// otherwise leave batched deletes permanently feeding a nil refresher. Drop
-	// it so the next invalidation rebuilds with the new snapshot; stop() flushes
-	// what it holds, so no queued delete is lost.
+	// A running batcher snapshotted the previous refresh binding at creation;
+	// drop it so the next invalidation rebuilds with the new one (stop()
+	// flushes, so no queued delete is lost).
 	if h.batcher != nil {
 		h.batcher.stop()
 		h.batcher = nil
@@ -236,10 +219,8 @@ func (h *invalidateHandler) HandlePushNotification(
 	switch payload := notification[1].(type) {
 	case nil:
 		cache.Flush()
-		// A full flush (FLUSHDB/FLUSHALL) removed every entry, so any per-key
-		// deletes the batcher still has queued are redundant — applying them after
-		// the flush would evict entries a reader repopulated post-flush, an extra
-		// miss for up to the window. Drop the batcher's pending queue.
+		// A full flush removed every entry: queued per-key deletes are redundant
+		// and would evict entries repopulated post-flush. Drop them.
 		if batcher != nil {
 			batcher.drop()
 		}
@@ -318,8 +299,7 @@ func (h *invalidateHandler) releaseLocked() {
 			h.batcher.stop()
 			h.batcher = nil
 		}
-		// A later re-acquire is a fresh binding: it must fold in its own window,
-		// not inherit the strictest window of the released one.
+		// A fresh binding folds in its own window; do not inherit this one's.
 		h.invalBatchWindow = 0
 		h.invalBatchWindowSet = false
 	}
@@ -1099,9 +1079,8 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
 		err := mc.fetch(ctx, cmd, key, token)
 		if err == errCSCRetryUncached {
-			// The coalescer bowed out because CSC serving was disabled mid-miss; the
-			// command itself is fine and the reservation was already cancelled. Run it
-			// uncached on the normal path rather than surfacing a spurious ErrClosed.
+			// CSC was disabled mid-miss; the command is fine and the reservation is
+			// already cancelled — run it uncached instead of surfacing ErrClosed.
 			return c.processWithRetry(ctx, cmd, nil, state)
 		}
 		return err
