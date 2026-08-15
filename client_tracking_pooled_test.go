@@ -138,12 +138,9 @@ func TestPipelineRejectsStateCommandsWhenPooled(t *testing.T) {
 	}
 }
 
-// TestClusterPipelineRejectsStateCommands pins the cluster-side gap (#3961
-// review): ClusterClient.processPipeline/processTxPipeline bypass
-// baseClient.generalProcessPipeline, so they must check stateRejectedErr
-// themselves — otherwise the queued CLIENT TRACKING runs on a borrowed node
-// connection and the server reply overwrites the guidance error. The guard
-// fires before any node mapping, so no cluster (or dial) is needed.
+// TestClusterPipelineRejectsStateCommands: cluster pipeline entries bypass
+// baseClient.generalProcessPipeline, so they must surface a queued pooled-state
+// rejection themselves. Dial-free: the guard fires before any node mapping.
 func TestClusterPipelineRejectsStateCommands(t *testing.T) {
 	ctx := context.Background()
 	cc := NewClusterClient(&ClusterOptions{Addrs: []string{"localhost:1"}})
@@ -164,12 +161,9 @@ func TestClusterPipelineRejectsStateCommands(t *testing.T) {
 	}
 }
 
-// TestRingPipelineRejectsStateCommands pins the Ring-side gap (#3961 review):
-// Ring.generalProcessPipeline shards concurrently, so it must surface a queued
-// pooled-state rejection BEFORE sharding — otherwise the other shard groups
-// execute while only the rejected command's group fails. The guard fires before
-// any shard lookup, so no server is needed; mixing a keyed command in the same
-// batch pins that it is NOT dispatched either.
+// TestRingPipelineRejectsStateCommands: Ring shards dispatch concurrently, so
+// the rejection must surface BEFORE sharding or other shard groups execute. The
+// keyed command in the same batch pins fail-before-dispatch. Dial-free.
 func TestRingPipelineRejectsStateCommands(t *testing.T) {
 	ctx := context.Background()
 	ring := NewRing(&RingOptions{Addrs: map[string]string{"a": "localhost:1"}})
@@ -197,10 +191,9 @@ func TestRingPipelineRejectsStateCommands(t *testing.T) {
 	}
 }
 
-// TestTxPipelineAllowsStateCommands pins that a Tx pipeline is sticky: WATCH
-// pins one connection for the whole Tx, so CLIENT TRACKING queues there instead
-// of being rejected as pooled (#3961 regression flagged by review). Needs a
-// server because Watch dials.
+// TestTxPipelineAllowsStateCommands: Tx pipelines are sticky (WATCH pins one
+// connection until Close), so state commands queue instead of being rejected.
+// Needs a server (Watch dials).
 func TestTxPipelineAllowsStateCommands(t *testing.T) {
 	ctx := context.Background()
 	c := NewClient(&Options{Addr: ":6379"})

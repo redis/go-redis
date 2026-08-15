@@ -914,12 +914,9 @@ func (c *Ring) generalProcessPipeline(
 		cmds = cmds[1 : len(cmds)-1]
 	}
 
-	// Surface a queued pooled-state rejection BEFORE sharding (see
-	// Pipeline.rejectPooledState): the per-shard dispatch below runs shard groups
-	// concurrently, so without this check the group holding the rejected CLIENT
-	// command fails while the other shards' commands still execute — breaking the
-	// fail-before-dispatch contract that baseClient.generalProcessPipeline and the
-	// cluster pipeline entries enforce.
+	// Surface a queued pooled-state rejection BEFORE sharding: shard groups run
+	// concurrently, so a later check would let the other shards execute while
+	// only the rejected command's group fails (fail-before-dispatch contract).
 	if err := stateRejectedErr(cmds); err != nil {
 		setCmdsErr(cmds, err)
 		return err

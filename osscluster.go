@@ -1767,10 +1767,8 @@ func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error)
 }
 
 func (c *ClusterClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	// Cluster pipelines do not pass through baseClient.generalProcessPipeline, so
-	// surface a queued pooled-state rejection here (see Pipeline.rejectPooledState)
-	// before any command is mapped to a node — otherwise the state command runs on
-	// a borrowed node connection and its reply overwrites the guidance error.
+	// Cluster pipelines bypass baseClient.generalProcessPipeline: surface a
+	// queued pooled-state rejection before any node mapping (fail-before-dispatch).
 	if err := stateRejectedErr(cmds); err != nil {
 		setCmdsErr(cmds, err)
 		return err
@@ -2260,8 +2258,7 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 		return nil
 	}
 
-	// Same pooled-state rejection surfacing as processPipeline: cluster tx
-	// pipelines bypass baseClient.generalProcessPipeline too.
+	// Same fail-before-dispatch surfacing as processPipeline.
 	if err := stateRejectedErr(cmds); err != nil {
 		setCmdsErr(cmds, err)
 		return err

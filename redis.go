@@ -1607,12 +1607,10 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
-	// Pipeline commands never pass through process, so apply the same CSC state
-	// guard here. initConn's internal client is exempt. The CSC guard runs first
-	// so a CSC client rejects CLIENT TRACKING with the CSC-specific error; the
-	// pooled-state check then surfaces a per-connection state command a pooled
-	// pipeline queued only to be rejected (see Pipeline.rejectPooledState) —
-	// returning its guidance error rather than sending it to a borrowed conn.
+	// Pipelines bypass process, so apply the CSC state guard here (initConn's
+	// internal client is exempt); it runs first so a CSC client gets the
+	// CSC-specific error. Then surface any queued pooled-state rejection
+	// (stateRejectedErr) before dispatch.
 	for _, cmd := range cmds {
 		if err := c.cscCommandError(cmd); err != nil {
 			setCmdsErr(cmds, err)

@@ -257,12 +257,10 @@ type Cmder interface {
 }
 
 // stateRejectedErr returns the pre-set guidance error of the first
-// state-rejected command in cmds (a per-connection state command a pooled
-// *Pipeline queued only to surface its rejection through Exec — see
-// Pipeline.rejectPooledState), or nil when none is present. Every pipeline
-// execution entry point must check it BEFORE dispatching, so the command is
-// never sent to a borrowed connection and the server reply cannot overwrite
-// the guidance error.
+// state-rejected command in cmds (see Pipeline.rejectPooledState), or nil.
+// EVERY pipeline execution entry point must check it BEFORE dispatching:
+// otherwise the command runs on a borrowed connection and the server reply
+// overwrites the guidance error.
 func stateRejectedErr(cmds []Cmder) error {
 	for _, cmd := range cmds {
 		if cmd.isStateRejected() {
@@ -395,10 +393,8 @@ type baseCmd struct {
 	rawVal       interface{}
 	_readTimeout *time.Duration
 	cmdType      CmdType
-	// stateRejected marks a per-connection state command that a pooled
-	// *Pipeline queued only to surface a rejection through Exec (see
-	// markStateRejected). generalProcessPipeline returns its pre-set error
-	// without sending it.
+	// stateRejected marks a state command a pooled *Pipeline queued only to
+	// surface its rejection through Exec (see stateRejectedErr).
 	stateRejected bool
 	// slotCache memoizes the cluster slot once computed, so the cluster
 	// autopipeline shard router and the pipeline flush router don't each
@@ -577,11 +573,9 @@ func (cmd *baseCmd) Err() error {
 }
 
 // markStateRejected / isStateRejected carry the "queued only to be rejected"
-// signal from a pooled *Pipeline to generalProcessPipeline. A pooled pipeline
-// queues a per-connection state command (CLIENT TRACKING / MAINT_NOTIFICATIONS)
-// carrying a pre-set guidance error and this flag, so Exec surfaces the error
-// instead of the command being sent to an arbitrary pooled connection. A sticky
-// (dedicated-connection) pipeline never sets it, so those commands run normally.
+// signal from a pooled *Pipeline to the pipeline executors (stateRejectedErr):
+// Exec surfaces the pre-set guidance error instead of sending the command to a
+// borrowed connection. Sticky pipelines never set it.
 func (cmd *baseCmd) markStateRejected() {
 	cmd.stateRejected = true
 }
