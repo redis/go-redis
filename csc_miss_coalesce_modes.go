@@ -338,7 +338,17 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				handlerCtx := c.pushNotificationHandlerContext(cn)
 				handlerCtx.Client = cscHandlerClient{baseClient: c}
 				if e := c.pushProcessor.ProcessPendingNotifications(sctx, handlerCtx, rd); e != nil {
+					// FATAL, not log-and-continue: a surfaced processor error
+					// means bytes may have been consumed mid-frame (the built-in
+					// processor swallows benign boundary timeouts and surfaces
+					// only mid-frame failures; a custom processor's contract
+					// cannot prove no bytes were consumed). Continuing into
+					// ReadRawReply on a desynchronized stream could apply a push
+					// fragment as this request's reply AND publish it to the
+					// cache. Same policy as drainPushNotifications: fail the
+					// session so the connection is closed and removed.
 					internal.Logger.Printf(sctx, "csc: miss-coalesce push drain: %v", e)
+					return e
 				}
 				raw, e := rd.ReadRawReply()
 				if e != nil {
