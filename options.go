@@ -624,7 +624,26 @@ func (opt *Options) init() {
 			"redis: client-side caching requires Protocol: 3 (RESP3); caching is disabled")
 	}
 
-	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
+	// Maintnotifications defaults (handoff workers, queue depth) must cover
+	// every pool the manager hooks, not just the main one: the dedicated
+	// pipeline pool adds up to PipelinePoolSize connections whose handoffs run
+	// through hooks sized from this config (see enableMaintNotificationsUpgrades),
+	// so derive the defaults from the combined connection ceiling.
+	maintPoolSize := opt.PoolSize
+	maintMaxActive := opt.MaxActiveConns
+	if opt.PipelinePoolSize >= 0 {
+		pps := opt.PipelinePoolSize
+		if pps == 0 {
+			pps = DefaultPipelinePoolSize
+		}
+		maintPoolSize += pps
+		if maintMaxActive > 0 {
+			// The pipeline pool sits outside MaxActiveConns; its ceiling is
+			// MaxActiveConns + PipelinePoolSize (see the PipelinePoolSize doc).
+			maintMaxActive += pps
+		}
+	}
+	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(maintPoolSize, maintMaxActive)
 
 	// auto-detect endpoint type if not specified
 	endpointType := opt.MaintNotificationsConfig.EndpointType
