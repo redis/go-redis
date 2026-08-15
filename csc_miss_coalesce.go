@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -165,13 +164,17 @@ func (c *baseClient) stopCSCMissCoalescer() {
 	}
 	mc.stopWorkers()
 	mc.wg.Wait()
-	// Any request still queued after stop is drained and failed so no caller
-	// hangs on its done channel.
+	// Any request still queued after stop is drained and settled so no caller
+	// hangs on its done channel. Retry-uncached, matching fetch's stop paths:
+	// teardown deactivates serving before stopping the coalescer, so a caller
+	// woken here re-runs its read on the (possibly still open) pool instead of
+	// surfacing a spurious ErrClosed mid-window; on a truly closed client the
+	// uncached re-run fails with the real error.
 	for {
 		select {
 		case req := <-mc.ch:
 			mc.c.csc.Cancel(req.cacheKey, req.token)
-			req.done <- pool.ErrClosed
+			req.done <- errCSCRetryUncached
 		default:
 			return
 		}

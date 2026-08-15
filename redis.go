@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
@@ -406,6 +407,13 @@ type baseClient struct {
 	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
 	cscRefreshQueue  *cscRefreshQueue
 	cscRefreshHandle *cscRevalidateHandle
+	// cscClientWeak points (weakly) back at the canonical *Client wrapper, so
+	// the CSC push-handler adapter can close through Client.Close — which also
+	// stops the cached autopipeliners — instead of baseClient.Close. WEAK on
+	// purpose: a strong back-reference would make the wrapper reachable from
+	// the drainer goroutine and the drop-without-Close cleanup
+	// (cscRegisterCleanups) could never fire.
+	cscClientWeak weak.Pointer[Client]
 	// cscMissCoalescer is atomic: a miss (processCached) races Close, which
 	// Swaps it to nil — readers Load once (a double-load could call fetch on a
 	// nil receiver) and exactly one closer wins the Swap.

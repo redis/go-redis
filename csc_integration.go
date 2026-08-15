@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -26,6 +27,9 @@ func cscRegisterCleanups(c *Client) {
 	if h == nil {
 		return
 	}
+	// Weak back-reference for the push-handler adapter's canonical close (see
+	// baseClient.cscClientWeak): must be weak or this cleanup never fires.
+	c.baseClient.cscClientWeak = weak.Make(c)
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
 	// also stops clones from serving once the drainer is gone. Capture the miss
 	// coalescer too (set during attach; nil when off): its sessions wait on
@@ -92,8 +96,16 @@ type invalidateHandler struct {
 	users     int
 
 	// refresh, when set, receives evicted-but-hot entries for immediate refetch.
-	// Feeding it must never block the invalidation-delivery path.
+	// Feeding it must never block the invalidation-delivery path. It is the TOP
+	// of refreshStack: clients sharing this handler each attach their own queue
+	// and the newest attachment is active; when it clears, the next-newest live
+	// binding is RESTORED (closing the newest owner must not sever an older
+	// sibling's still-running refresher).
 	refresh *cscRefreshQueue
+
+	// refreshStack holds every live refresh binding in attach order (older
+	// first). Guarded by mu. Small: one entry per client sharing the handler.
+	refreshStack []*cscRefreshQueue
 
 	// batcher offloads invalidation cache-deletes to a windowed background
 	// goroutine (Options.ClientSideCacheInvalidationBatchWindow). Lazily started
@@ -192,12 +204,26 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 // would keep deleting entries but silently stop feeding the survivor's
 // refresher.
 func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if q == nil || h.refresh != q {
+	if q == nil {
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, b := range h.refreshStack {
+		if b == q {
+			h.refreshStack = append(h.refreshStack[:i], h.refreshStack[i+1:]...)
+			break
+		}
+	}
+	if h.refresh != q {
+		return // a newer sibling owns the active binding; nothing else changes
+	}
+	// Restore the next-newest live binding (nil when none): the surviving
+	// sibling's refresher keeps getting fed after the newest owner closes.
 	h.refresh = nil
+	if n := len(h.refreshStack); n > 0 {
+		h.refresh = h.refreshStack[n-1]
+	}
 	if h.batcher != nil {
 		h.batcher.stop()
 		h.batcher = nil
@@ -207,6 +233,18 @@ func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
 func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if q != nil {
+		found := false
+		for _, b := range h.refreshStack {
+			if b == q {
+				found = true
+				break
+			}
+		}
+		if !found {
+			h.refreshStack = append(h.refreshStack, q)
+		}
+	}
 	if h.refresh == q {
 		return
 	}
@@ -813,10 +851,22 @@ type cscHandlerClient struct {
 	*baseClient
 }
 
+// closeCanonical closes through the canonical *Client wrapper while it is
+// still alive — Client.Close also stops the cached autopipeliners, which
+// baseClient.Close does not, so closing only the baseClient would leave flush
+// goroutines running against closed pools. Falls back to baseClient.Close if
+// the wrapper was already collected (weak ref: see baseClient.cscClientWeak).
+func (c cscHandlerClient) closeCanonical() error {
+	if cl := c.cscClientWeak.Value(); cl != nil {
+		return cl.Close()
+	}
+	return c.baseClient.Close()
+}
+
 func (c cscHandlerClient) Close() error {
 	h := c.cscDrainHandle
 	if h == nil {
-		return c.baseClient.Close()
+		return c.closeCanonical()
 	}
 	h.handlerCloseOnce.Do(func() {
 		// Close has logically started: stop cache hits immediately and let the
@@ -826,7 +876,7 @@ func (c cscHandlerClient) Close() error {
 		}
 		h.signalStop()
 		go func() {
-			if err := c.baseClient.Close(); err != nil {
+			if err := c.closeCanonical(); err != nil {
 				internal.Logger.Printf(context.Background(), "csc: deferred client close failed: %v", err)
 			}
 		}()
