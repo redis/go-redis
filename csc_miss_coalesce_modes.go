@@ -96,9 +96,11 @@ var cscFullDuplexSessionIdle = time.Second
 // be held past the expiry the pool's reaper enforces.
 func (c *baseClient) fullDuplexRecycleAge(cn *pool.Conn) time.Duration {
 	age := 30 * time.Second
-	if c.opt.ConnMaxLifetime > 0 && c.opt.ConnMaxLifetime < age {
-		age = c.opt.ConnMaxLifetime
-	}
+	// Lifetime is honored via the conn's ACTUAL absolute expiry only —
+	// ExpiresAt already includes ConnMaxLifetimeJitter. Capping at the raw
+	// ConnMaxLifetime first would collapse every positive-jitter connection
+	// back to the unjittered lifetime, re-synchronizing recycles across
+	// clients started together (the herd the jitter option exists to prevent).
 	if exp := cn.ExpiresAt(); !exp.IsZero() {
 		if remain := time.Until(exp); remain < age {
 			age = remain
