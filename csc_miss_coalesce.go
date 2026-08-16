@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -80,6 +81,13 @@ type cscMissReq struct {
 	cacheKey string
 	token    uint64
 	done     chan error
+	// servedBy is the session connection that served (or failed) this request,
+	// set by the engine BEFORE settling done (the channel receive is the
+	// happens-before edge for the caller's read). Feeds the native OTel
+	// recorder: processCached stamps it into processState so a coalesced miss
+	// reports its serving connection and an attempt, like any other command.
+	// Nil when the request never reached a session (enqueue reject, abandon).
+	servedBy *pool.Conn
 	// wire is cmd's RESP encoding, snapshotted at enqueue while the caller
 	// still owned cmd. The session writer writes ONLY these engine-owned bytes
 	// — it never reads cmd — so an abandoning caller may reuse mutable args
@@ -194,7 +202,11 @@ func (mc *cscMissCoalescer) stopWorkers() {
 // from here. Honors the caller's context: if it cancels while waiting, the
 // session still settles the token and populates the cache (the fetch is not
 // wasted), the caller just returns early.
-func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) error {
+//
+// served is the session connection that produced the settle (nil when the
+// request never reached one); processCached stamps it into processState so the
+// native OTel recorder attributes the miss like any other command.
+func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
@@ -206,7 +218,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	var wireBuf bytes.Buffer
 	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
 		mc.c.csc.Cancel(cacheKey, token)
-		return err
+		return nil, err
 	}
 	req.wire = wireBuf.Bytes()
 	// Reject early if the coalescer is already stopping, so a send does not win the
@@ -221,21 +233,21 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// the coalescer, and a clone can race that window) — the uncached
 		// re-run either succeeds on the open pool or surfaces the real error.
 		mc.c.csc.Cancel(cacheKey, token)
-		return errCSCRetryUncached
+		return nil, errCSCRetryUncached
 	default:
 	}
 	select {
 	case mc.ch <- req:
 	case <-mc.stop:
 		mc.c.csc.Cancel(cacheKey, token)
-		return errCSCRetryUncached
+		return nil, errCSCRetryUncached
 	case <-ctx.Done():
 		mc.c.csc.Cancel(cacheKey, token)
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 	select {
 	case err := <-req.done:
-		return err
+		return req.servedBy, err
 	case <-mc.stop:
 		// Close raced our enqueue: the req may have landed in mc.ch after the
 		// shutdown drain, so nothing will settle req.done. Winning the interlock
@@ -250,14 +262,15 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 			// non-blocking drain to empty the queue; settling our own abandoned
 			// req is harmless (done is buffered, the duplicate Cancel is a no-op).
 			mc.drainQueueErr(errCSCRetryUncached)
-			return errCSCRetryUncached
+			return nil, errCSCRetryUncached
 		}
 		// The reader claimed cmd and is mid-apply: wait so we do not read/reuse
 		// cmd concurrently (the receive is a happens-before edge), then return
 		// the settle result itself — the reply may have been applied
 		// successfully, and discarding it for a blanket ErrClosed would fail a
 		// read that has its value.
-		return <-req.done
+		e := <-req.done
+		return req.servedBy, e
 	case <-ctx.Done():
 		// Caller stopped waiting. If we win the interlock the reader skips the cmd
 		// write but still settles the token and publishes to the cache; if it already
@@ -266,8 +279,9 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// cancelled Get never returns a value depending on who won the CAS.
 		if !req.claimAbandon() {
 			<-req.done
+			return req.servedBy, ctx.Err()
 		}
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 
@@ -302,6 +316,14 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 	} else {
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
 		c.csc.Cancel(req.cacheKey, req.token)
+	}
+	// Native error-metric parity with processWithRetry, which emits for every
+	// non-nil command error (redis.Nil included) on the uncoalesced path.
+	if applyErr != nil {
+		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+			errorType, statusCode, isInternal := classifyCommandError(applyErr)
+			errorCallback(context.Background(), errorType, req.servedBy, statusCode, isInternal, 0)
+		}
 	}
 	req.done <- applyErr
 }
@@ -343,9 +365,18 @@ func (mc *cscMissCoalescer) countBatch(batch []*cscMissReq) {
 	}
 }
 
-// settleErr cancels the reservation and fails one waiting caller.
+// settleErr cancels the reservation and fails one waiting caller. It emits the
+// native error metric (parity with processWithRetry and the FD autopipeline
+// engine's failReqs) — except for the retry-uncached sentinel, whose command
+// re-runs on the fully instrumented uncoalesced path and would double-count.
 func (mc *cscMissCoalescer) settleErr(req *cscMissReq, err error) {
 	mc.c.csc.Cancel(req.cacheKey, req.token)
+	if err != errCSCRetryUncached {
+		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+			errorType, statusCode, isInternal := classifyCommandError(err)
+			errorCallback(context.Background(), errorType, req.servedBy, statusCode, isInternal, 0)
+		}
+	}
 	req.done <- err
 	mc.failed.Add(1)
 }

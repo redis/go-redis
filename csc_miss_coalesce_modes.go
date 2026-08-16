@@ -359,11 +359,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				// (fulfillCached checks the captured gen). Previously FD failed the
 				// caller with ErrClosed on a mid-flight id/gen change even though the
 				// reply was read fine, losing a good result (#3965).
+				req.servedBy = cn // before settle: done is the happens-before edge
 				mc.applyAndSettle(req, raw, connID, gen)
 				return nil
 			})
 			if rerr != nil {
 				fail(rerr)
+				req.servedBy = cn // attribute the failed read to the session conn
 				mc.settleErr(req, rerr)
 				return false
 			}

@@ -1167,11 +1167,19 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// off). Load the pointer ONCE: a concurrent Close swaps it to nil, and a
 	// second load after the nil-check would call fetch on a nil receiver.
 	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
-		err := mc.fetch(ctx, cmd, key, token)
+		served, err := mc.fetch(ctx, cmd, key, token)
 		if err == errCSCRetryUncached {
 			// CSC was disabled mid-miss; the command is fine and the reservation is
 			// already cancelled — run it uncached instead of surfacing ErrClosed.
 			return c.processWithRetry(ctx, cmd, nil, state)
+		}
+		// Native-recorder attribution: the coalesced fetch contacted Redis on
+		// the session's held connection — report it as one attempt on that conn
+		// so operation-duration metrics carry a real server.address instead of
+		// zero attempts and a nil connection.
+		if state != nil && served != nil {
+			state.attempts++
+			state.lastConn = served
 		}
 		return err
 	}

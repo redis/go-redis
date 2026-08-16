@@ -373,7 +373,7 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	cached.disableCSCServing(ctx, "test: force retry-uncached path")
 
 	cmd := NewStringCmd(ctx, "get", key)
-	if err := cached.cscMissCoalescer.Load().fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
+	if _, err := cached.cscMissCoalescer.Load().fetch(ctx, cmd, nsKey, token); err != errCSCRetryUncached {
 		t.Fatalf("fetch after CSC disabled = %v; want errCSCRetryUncached (should not surface ErrClosed)", err)
 	}
 	// The reservation must be released, or later readers block IN_PROGRESS until
