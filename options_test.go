@@ -541,6 +541,93 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 	wg.Wait()
 }
 
+// TestOptionsInitSkipsEndpointDetectWhenMaintDisabled ensures Options.init does
+// not call DetectEndpointType (DNS) when maintenance notifications are disabled.
+// EndpointType is only used for CLIENT MAINT_NOTIFICATIONS; resolving hostnames
+// during client construction stalls NewClient / per-node cluster setup when DNS
+// is slow or broken.
+func TestOptionsInitSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	// NXDOMAIN / non-resolvable name. DetectEndpointType bounds lookups at 2s;
+	// if detection still ran, construction would take on the order of that timeout
+	// rather than completing immediately.
+	const unresolvable = "go-redis-maint-disabled-must-not-resolve.invalid:6379"
+
+	t.Run("disabled leaves EndpointTypeAuto without DNS", func(t *testing.T) {
+		opt := &Options{
+			Addr: unresolvable,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeDisabled,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		start := time.Now()
+		opt.init()
+		elapsed := time.Since(start)
+
+		if elapsed > 200*time.Millisecond {
+			t.Fatalf("Options.init stalled for %v with ModeDisabled; DetectEndpointType should not run", elapsed)
+		}
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want %q (unchanged when ModeDisabled)", got, maintnotifications.EndpointTypeAuto)
+		}
+	})
+
+	t.Run("auto still detects and does not stay Auto", func(t *testing.T) {
+		opt := &Options{
+			Addr: unresolvable,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got == "" || got == maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want a concrete type after DetectEndpointType", got)
+		}
+	})
+
+	t.Run("explicit EndpointType still skips detect", func(t *testing.T) {
+		opt := &Options{
+			Addr: unresolvable,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeInternalFQDN,
+			},
+		}
+		start := time.Now()
+		opt.init()
+		elapsed := time.Since(start)
+		if elapsed > 200*time.Millisecond {
+			t.Fatalf("Options.init stalled for %v with explicit EndpointType", elapsed)
+		}
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeInternalFQDN {
+			t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeInternalFQDN)
+		}
+	})
+}
+
+func TestNewClientSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	const unresolvable = "go-redis-maint-disabled-must-not-resolve.invalid:6379"
+
+	start := time.Now()
+	c := NewClient(&Options{
+		Addr: unresolvable,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:         maintnotifications.ModeDisabled,
+			EndpointType: maintnotifications.EndpointTypeAuto,
+		},
+	})
+	elapsed := time.Since(start)
+	defer c.Close()
+
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("NewClient stalled for %v with ModeDisabled; DetectEndpointType should not run", elapsed)
+	}
+	if got := c.Options().MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+		t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeAuto)
+	}
+}
+
 func TestClientSideCacheRESP2Warning(t *testing.T) {
 	origLogger := internal.Logger
 	defer func() { internal.Logger = origLogger }()
