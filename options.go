@@ -574,7 +574,7 @@ func (opt *Options) init() {
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// Skip endpoint auto-detection when maint notifications are disabled.
+	// skip endpoint detection when maint notifications are disabled.
 	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
 		endpointType := opt.MaintNotificationsConfig.EndpointType
 		// auto-detect endpoint type if not specified
