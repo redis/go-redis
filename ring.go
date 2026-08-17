@@ -705,16 +705,29 @@ func (c *Ring) Len() int {
 	return c.sharding.Len()
 }
 
+// failedPubSub returns a PubSub that surfaces err on every operation instead of
+// panicking at construction (issue #3761).
+func (c *Ring) failedPubSub(err error) *PubSub {
+	if err == nil {
+		err = fmt.Errorf("redis: pubsub failed")
+	}
+	pubsub := &PubSub{
+		opt:       c.opt.clientOptions(),
+		stickyErr: err,
+	}
+	pubsub.init()
+	return pubsub
+}
+
 // Subscribe subscribes the client to the specified channels.
 func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
-		panic("at least one channel is required")
+		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
 	}
 
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		// TODO: return PubSub with sticky error
-		panic(err)
+		return c.failedPubSub(err)
 	}
 	return shard.Client.Subscribe(ctx, channels...)
 }
@@ -722,13 +735,12 @@ func (c *Ring) Subscribe(ctx context.Context, channels ...string) *PubSub {
 // PSubscribe subscribes the client to the given patterns.
 func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
-		panic("at least one channel is required")
+		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
 	}
 
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		// TODO: return PubSub with sticky error
-		panic(err)
+		return c.failedPubSub(err)
 	}
 	return shard.Client.PSubscribe(ctx, channels...)
 }
@@ -736,12 +748,11 @@ func (c *Ring) PSubscribe(ctx context.Context, channels ...string) *PubSub {
 // SSubscribe Subscribes the client to the specified shard channels.
 func (c *Ring) SSubscribe(ctx context.Context, channels ...string) *PubSub {
 	if len(channels) == 0 {
-		panic("at least one channel is required")
+		return c.failedPubSub(fmt.Errorf("redis: at least one channel is required"))
 	}
 	shard, err := c.sharding.GetByKey(channels[0])
 	if err != nil {
-		// TODO: return PubSub with sticky error
-		panic(err)
+		return c.failedPubSub(err)
 	}
 	return shard.Client.SSubscribe(ctx, channels...)
 }
