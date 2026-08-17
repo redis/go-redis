@@ -37,6 +37,11 @@ type PubSub struct {
 	closed bool
 	exit   chan struct{}
 
+	// stickyErr is set when PubSub is constructed in a failed state (e.g. Ring
+	// shard lookup failure). Subsequent operations return this error instead of
+	// panicking at construction time.
+	stickyErr error
+
 	cmd *Cmd
 
 	chOnce sync.Once
@@ -72,6 +77,9 @@ func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
 }
 
 func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, error) {
+	if c.stickyErr != nil {
+		return nil, c.stickyErr
+	}
 	if c.closed {
 		return nil, pool.ErrClosed
 	}
@@ -575,8 +583,13 @@ func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
 		c.msgCh.initMsgChan()
 	})
 	if c.msgCh == nil {
-		err := fmt.Errorf("redis: Channel can't be called after ChannelWithSubscriptions")
-		panic(err)
+		// Already using ChannelWithSubscriptions — return a closed channel
+		// instead of panicking so callers can recover (issue #3761).
+		internal.Logger.Printf(c.getContext(),
+			"redis: Channel can't be called after ChannelWithSubscriptions")
+		ch := make(chan *Message)
+		close(ch)
+		return ch
 	}
 	return c.msgCh.msgCh
 }
@@ -600,8 +613,13 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 		c.allCh.initAllChan()
 	})
 	if c.allCh == nil {
-		err := fmt.Errorf("redis: ChannelWithSubscriptions can't be called after Channel")
-		panic(err)
+		// Already using Channel — return a closed channel instead of panicking
+		// so callers can recover (issue #3761).
+		internal.Logger.Printf(c.getContext(),
+			"redis: ChannelWithSubscriptions can't be called after Channel")
+		ch := make(chan interface{})
+		close(ch)
+		return ch
 	}
 	return c.allCh.allCh
 }
