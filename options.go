@@ -574,12 +574,10 @@ func (opt *Options) init() {
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// EndpointType is only consumed when sending CLIENT MAINT_NOTIFICATIONS.
-	// Skip DNS-backed auto-detection when maintenance notifications are disabled
-	// so client construction cannot stall on resolver timeouts. This is especially
-	// costly for cluster clients, which construct Options once per node.
+	// Skip endpoint auto-detection when maint notifications are disabled.
 	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
 		endpointType := opt.MaintNotificationsConfig.EndpointType
+		// auto-detect endpoint type if not specified
 		if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
 			endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
 		}
