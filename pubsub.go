@@ -225,6 +225,10 @@ func (c *PubSub) Close() error {
 		return pool.ErrClosed
 	}
 	c.closed = true
+	// Override construction-time stickyErr (e.g. Ring failedPubSub) so
+	// Channel receivers observe pool.ErrClosed and exit cleanly.
+	// Matches SingleConnPool.Close which sets stickyErr = ErrClosed.
+	c.stickyErr = pool.ErrClosed
 	close(c.exit)
 
 	// Call cleanup callback if set

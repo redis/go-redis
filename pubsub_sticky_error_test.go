@@ -22,7 +22,15 @@ func TestRingSubscribeEmptyChannelsNoPanic(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected sticky error from empty Subscribe")
 	}
-	_ = pubsub.Close()
+	if err := pubsub.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// After Close, sticky construction error is overridden by ErrClosed so
+	// Channel/initMsgChan can terminate (pool.ErrClosed is the exit signal).
+	_, err = pubsub.Receive(context.Background())
+	if err != redis.ErrClosed {
+		t.Fatalf("after Close want redis.ErrClosed, got %v", err)
+	}
 }
 
 func TestPubSubChannelMutualExclusionNoPanic(t *testing.T) {
