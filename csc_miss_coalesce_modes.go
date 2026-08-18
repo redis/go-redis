@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -171,6 +172,18 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	cn, err := c.getConn(getCtx)
 	getCancel()
 	if err != nil {
+		// acquireCtx derives its context from context.Background() and is cancelled
+		// ONLY by mc.stop (its sole non-deadline cancel source), so a context.Canceled
+		// here means the coalescer is tearing down, not that the caller's context or the
+		// pool failed. Settle retry-uncached — like the other stop paths (fetch, the
+		// serving-disabled branch below, stopCSCMissCoalescer) — so processCached re-runs
+		// each read on the still-open pool instead of surfacing a spurious cancellation,
+		// and report stopped so the loop exits without backing off.
+		if errors.Is(err, context.Canceled) {
+			mc.settleErr(first, errCSCRetryUncached)
+			mc.drainQueueErr(errCSCRetryUncached)
+			return true, false // stop requested: exit the loop
+		}
 		// No connection: fail the first miss plus everything queued so a caller on
 		// a deadline-less context is not blocked forever and no reservation leaks
 		// IN_PROGRESS. The caller backs off and retries; requests arriving during
