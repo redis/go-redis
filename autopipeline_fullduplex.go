@@ -146,36 +146,78 @@ func (r fdReq) complete() {
 //   - recover: hard stop; the reader abandons the remaining, which are returned
 //     to the retry loop for replay.
 type fdInflight struct {
-	mu         sync.Mutex
-	cond       *sync.Cond
-	q          []fdReq
+	mu   sync.Mutex
+	cond *sync.Cond
+	// buf is a ring buffer of in-flight entries: the writer appends at the back
+	// (head+count), the reader pops from the front (head). A grow-only slice
+	// (append + reslice-off-front) reallocated its backing array on every window
+	// churn — the single largest allocation source under load — because the
+	// popped-off prefix was never reused. The ring reuses the whole array for the
+	// life of the session; it only grows when live count would exceed capacity.
+	buf        []fdReq
+	head       int           // index of the front (oldest) live entry
+	count      int           // number of live entries
 	noMorePush bool          // graceful: drain remaining then reader exits
 	hardClosed bool          // recover: reader stops immediately, remaining replayed
 	room       chan struct{} // cap-1 signal: the reader popped, so there is room
-	peak       int           // high-water mark of len(q); observability for the backpressure test
+	peak       int           // high-water mark of live count; observability for the backpressure test
 	advanced   int           // total entries the reader completed this session (progress signal)
 }
 
-func newFDInflight() *fdInflight {
+func newFDInflight() *fdInflight { return newFDInflightCap(0) }
+
+// newFDInflightCap presizes the ring so a session at the configured batch size
+// takes no reallocations in steady state (session passes maxBatch). Tests use
+// the zero-cap no-arg form and let it grow.
+func newFDInflightCap(initialCap int) *fdInflight {
 	f := &fdInflight{room: make(chan struct{}, 1)}
+	if initialCap > 0 {
+		f.buf = make([]fdReq, initialCap)
+	}
 	f.cond = sync.NewCond(&f.mu)
 	return f
 }
 
 func (f *fdInflight) len() int {
 	f.mu.Lock()
-	n := len(f.q)
+	n := f.count
 	f.mu.Unlock()
 	return n
+}
+
+// grow ensures the ring can hold at least need entries, preserving FIFO order
+// and normalizing the front to index 0. Caller holds f.mu.
+func (f *fdInflight) grow(need int) {
+	if need <= len(f.buf) {
+		return
+	}
+	nc := len(f.buf) * 2
+	if nc < need {
+		nc = need
+	}
+	if nc < 8 {
+		nc = 8
+	}
+	nb := make([]fdReq, nc)
+	// Unwrap the live entries into the new buffer starting at 0.
+	for i := 0; i < f.count; i++ {
+		nb[i] = f.buf[(f.head+i)%len(f.buf)]
+	}
+	f.buf = nb
+	f.head = 0
 }
 
 // pushBatch appends a whole write batch under one lock (fewer lock ops than
 // per-command push — matters at loopback op rates).
 func (f *fdInflight) pushBatch(reqs []fdReq) {
 	f.mu.Lock()
-	f.q = append(f.q, reqs...)
-	if len(f.q) > f.peak {
-		f.peak = len(f.q)
+	f.grow(f.count + len(reqs))
+	for _, r := range reqs {
+		f.buf[(f.head+f.count)%len(f.buf)] = r
+		f.count++
+	}
+	if f.count > f.peak {
+		f.peak = f.count
 	}
 	f.cond.Signal()
 	f.mu.Unlock()
@@ -199,22 +241,34 @@ const fdReadBatch = 256
 
 // frontBatch blocks until entries are available (or the deque is closing) and
 // returns a snapshot of the front (up to fdReadBatch). ok=false means the reader
-// should exit. The writer only ever appends, so this prefix stays the front
-// until the reader advance()s it.
+// should exit. The writer only ever appends at the back, so this prefix stays the
+// front until the reader advance()s it. The snapshot is copied into the caller's
+// buf (may span the ring's wrap seam as two segments), so it never aliases the
+// backing array.
 func (f *fdInflight) frontBatch(buf []fdReq) ([]fdReq, bool) {
 	f.mu.Lock()
-	for len(f.q) == 0 && !f.noMorePush && !f.hardClosed {
+	for f.count == 0 && !f.noMorePush && !f.hardClosed {
 		f.cond.Wait()
 	}
-	if f.hardClosed || len(f.q) == 0 {
+	if f.hardClosed || f.count == 0 {
 		f.mu.Unlock()
 		return buf[:0], false
 	}
-	n := len(f.q)
+	n := f.count
 	if n > fdReadBatch {
 		n = fdReadBatch
 	}
-	buf = append(buf[:0], f.q[:n]...)
+	buf = buf[:0]
+	// First segment: head .. min(end-of-array, head+n).
+	seg := len(f.buf) - f.head
+	if seg > n {
+		seg = n
+	}
+	buf = append(buf, f.buf[f.head:f.head+seg]...)
+	if seg < n {
+		// Wrapped: remainder from the start of the array.
+		buf = append(buf, f.buf[:n-seg]...)
+	}
 	f.mu.Unlock()
 	return buf, true
 }
@@ -226,17 +280,19 @@ func (f *fdInflight) advance(n int) {
 		return
 	}
 	f.mu.Lock()
-	if n > len(f.q) {
-		n = len(f.q)
+	if n > f.count {
+		n = f.count
 	}
-	// Zero the consumed prefix before reslicing: the reslice keeps the backing
-	// array (curInflight holds the deque while the engine idles), so otherwise a
-	// drained burst retains a window's worth of completed fdReq values — command
-	// args, caller contexts, batches — until the next session overwrites them.
+	// Zero each consumed entry before dropping it: the ring keeps its backing
+	// array for the whole session (curInflight holds the deque while the engine
+	// idles), so otherwise a drained burst retains a window's worth of completed
+	// fdReq values — command args, caller contexts, batches — until the slot is
+	// overwritten by a later push.
 	for i := 0; i < n; i++ {
-		f.q[i] = fdReq{}
+		f.buf[(f.head+i)%len(f.buf)] = fdReq{}
 	}
-	f.q = f.q[n:]
+	f.head = (f.head + n) % len(f.buf)
+	f.count -= n
 	f.advanced += n
 	f.mu.Unlock()
 	select {
@@ -258,7 +314,7 @@ func (f *fdInflight) advancedTotal() int {
 
 func (f *fdInflight) empty() bool {
 	f.mu.Lock()
-	n := len(f.q)
+	n := f.count
 	f.mu.Unlock()
 	return n == 0
 }
@@ -287,11 +343,25 @@ func (f *fdInflight) hardClose() {
 // takeRemaining returns the entries the reader left unacknowledged, in order,
 // and clears the queue. Call ONLY after the reader has exited (<-readerDone):
 // the reader advance()s every command it completes, so what remains is exactly
-// the unacked tail, and with the reader gone there is no concurrent access.
+// the unacked tail, and with the reader gone there is no concurrent access. The
+// live entries are unwrapped into a fresh contiguous slice (they may span the
+// ring's wrap seam); the ring is terminal for the session, so the backing array
+// is dropped.
 func (f *fdInflight) takeRemaining() []fdReq {
 	f.mu.Lock()
-	rem := f.q
-	f.q = nil
+	if f.count == 0 {
+		f.buf = nil
+		f.head = 0
+		f.mu.Unlock()
+		return nil
+	}
+	rem := make([]fdReq, f.count)
+	for i := 0; i < f.count; i++ {
+		rem[i] = f.buf[(f.head+i)%len(f.buf)]
+	}
+	f.buf = nil
+	f.head = 0
+	f.count = 0
 	f.mu.Unlock()
 	return rem
 }
@@ -839,7 +909,7 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 // session runs the writer (this goroutine) + reader (spawned) on one connection
 // until Close (graceful) or a connection error (returns the unacked tail).
 func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	inflight := newFDInflight()
+	inflight := newFDInflightCap(fd.maxBatch)
 	fd.curInflight.Store(inflight) // test observability (peak in-flight)
 	fd.curConn.Store(cn)           // test observability (handoff)
 	defer fd.curConn.Store(nil)
