@@ -233,6 +233,78 @@ func TestReader_ReadStringInto_Int(t *testing.T) {
 	}
 }
 
+// When the destination buffer VISIBLY has room for the trailing CRLF
+// (len(buf) >= n+2), ReadStringInto takes the fast path that reads
+// payload+CRLF in a single io.ReadFull. Verify it returns the right payload
+// AND leaves the stream aligned so the following reply parses correctly.
+func TestReader_ReadStringInto_FastPathStreamAligned(t *testing.T) {
+	// Two bulk strings back to back.
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n$5\r\nworld\r\n")))
+
+	buf := make([]byte, 7) // len 7 >= 5+2 -> fast path
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto #1: %v", err)
+	}
+	if n != 5 || string(buf[:n]) != "hello" {
+		t.Fatalf("#1 got %q (n=%d), want hello", buf[:n], n)
+	}
+	// Second reply must be intact (stream not corrupted by the CRLF handling).
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString #2: %v", err)
+	}
+	if s != "world" {
+		t.Fatalf("#2 got %q, want world", s)
+	}
+}
+
+// Regression: a sub-slice of a larger buffer exposes trailing CAPACITY that
+// belongs to the caller's next packed segment. The fast path must gate on
+// len, not cap — the old cap gate wrote the trailing CRLF past len(buf) into
+// the neighboring segment, silently corrupting caller-owned memory.
+func TestReader_ReadStringInto_NeverWritesPastLen(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n")))
+
+	big := make([]byte, 10)
+	for i := range big {
+		big[i] = 'Z'
+	}
+	segment := big[:5] // len 5, cap 10: spare capacity belongs to big[5:]
+	n, err := r.ReadStringInto(segment)
+	if err != nil {
+		t.Fatalf("ReadStringInto: %v", err)
+	}
+	if string(segment[:n]) != "hello" {
+		t.Fatalf("got %q, want hello", segment[:n])
+	}
+	if string(big[5:]) != "ZZZZZ" {
+		t.Fatalf("bytes past len(buf) were modified: big[5:] = %q, want ZZZZZ", big[5:])
+	}
+}
+
+// When the buffer is exactly the payload size (cap == n), ReadStringInto uses
+// the slow path (read payload, discard CRLF). It must still align the stream.
+func TestReader_ReadStringInto_ExactBufStreamAligned(t *testing.T) {
+	r := proto.NewReader(bytes.NewReader([]byte("$5\r\nhello\r\n$5\r\nworld\r\n")))
+
+	buf := make([]byte, 5) // cap == len == 5 -> slow path
+	n, err := r.ReadStringInto(buf)
+	if err != nil {
+		t.Fatalf("ReadStringInto #1: %v", err)
+	}
+	if string(buf[:n]) != "hello" {
+		t.Fatalf("#1 got %q, want hello", buf[:n])
+	}
+	s, err := r.ReadString()
+	if err != nil {
+		t.Fatalf("ReadString #2: %v", err)
+	}
+	if s != "world" {
+		t.Fatalf("#2 got %q, want world", s)
+	}
+}
+
 func TestReader_ReadStringInto_Float(t *testing.T) {
 	r := proto.NewReader(bytes.NewReader([]byte(",3.14\r\n")))
 	buf := make([]byte, 16)

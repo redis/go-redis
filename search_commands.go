@@ -963,22 +963,27 @@ func (cmd *AggregateCmd) SetVal(val *FTAggregateResult) {
 }
 
 func (cmd *AggregateCmd) Val() *FTAggregateResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *AggregateCmd) Result() (*FTAggregateResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *AggregateCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *AggregateCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
 func (cmd *AggregateCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1612,7 +1617,6 @@ func (c cmdable) FTCreate(ctx context.Context, index string, options *FTCreateOp
 		}
 		if schema.IndexMissing {
 			args = append(args, "INDEXMISSING")
-
 		}
 	}
 	cmd := NewStatusCmd(ctx, args...)
@@ -2175,6 +2179,7 @@ func newFTInfoCmd(ctx context.Context, args ...interface{}) *FTInfoCmd {
 }
 
 func (cmd *FTInfoCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2183,20 +2188,25 @@ func (cmd *FTInfoCmd) SetVal(val FTInfoResult) {
 }
 
 func (cmd *FTInfoCmd) Result() (FTInfoResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTInfoCmd) Val() FTInfoResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTInfoCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTInfoCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
+
 func (cmd *FTInfoCmd) readReply(rd *proto.Reader) (err error) {
 	readType, err := rd.PeekReplyType()
 	if err != nil {
@@ -2377,6 +2387,7 @@ func newFTSpellCheckCmd(ctx context.Context, args ...interface{}) *FTSpellCheckC
 }
 
 func (cmd *FTSpellCheckCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2385,18 +2396,22 @@ func (cmd *FTSpellCheckCmd) SetVal(val []SpellCheckResult) {
 }
 
 func (cmd *FTSpellCheckCmd) Result() ([]SpellCheckResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSpellCheckCmd) Val() []SpellCheckResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSpellCheckCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSpellCheckCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2693,6 +2708,7 @@ func newFTSearchCmd(ctx context.Context, options *FTSearchOptions, args ...inter
 }
 
 func (cmd *FTSearchCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2701,18 +2717,22 @@ func (cmd *FTSearchCmd) SetVal(val FTSearchResult) {
 }
 
 func (cmd *FTSearchCmd) Result() (FTSearchResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSearchCmd) Val() FTSearchResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSearchCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSearchCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -2976,6 +2996,7 @@ func newFTHybridCmd(ctx context.Context, options *FTHybridOptions, args ...inter
 }
 
 func (cmd *FTHybridCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -2984,26 +3005,32 @@ func (cmd *FTHybridCmd) SetVal(val FTHybridResult) {
 }
 
 func (cmd *FTHybridCmd) Result() (FTHybridResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTHybridCmd) CursorResult() (*FTHybridCursorResult, error) {
+	cmd.await()
 	return cmd.cursorVal, cmd.err
 }
 
 func (cmd *FTHybridCmd) Val() FTHybridResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTHybridCmd) CursorVal() *FTHybridCursorResult {
+	cmd.await()
 	return cmd.cursorVal
 }
 
 func (cmd *FTHybridCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTHybridCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 
@@ -3125,9 +3152,35 @@ func parseFTHybrid(data []interface{}, withCursor bool) (FTHybridResult, *FTHybr
 }
 
 func (cmd *FTHybridCmd) readReply(rd *proto.Reader) (err error) {
-	data, err := rd.ReadSlice()
+	readType, err := rd.PeekReplyType()
 	if err != nil {
 		return err
+	}
+
+	// RESP3 returns a map, RESP2 returns an array. ReadSlice reads a map
+	// header's declared length as an element count, so it consumes only half
+	// the key/value frames and leaves the rest on the connection; ReadReply
+	// consumes the whole map. Flatten it into the key/value list parseFTHybrid
+	// expects, matching AggregateCmd/FTSearchCmd/FTSpellCheckCmd/FTSynDumpCmd.
+	var data []interface{}
+	if readType == proto.RespMap {
+		cmd.rawVal, err = rd.ReadReply()
+		if err != nil {
+			return err
+		}
+		rawMap, ok := cmd.rawVal.(map[interface{}]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected RESP3 response type: %T", cmd.rawVal)
+		}
+		data = make([]interface{}, 0, len(rawMap)*2)
+		for k, v := range rawMap {
+			data = append(data, k, v)
+		}
+	} else {
+		data, err = rd.ReadSlice()
+		if err != nil {
+			return err
+		}
 	}
 
 	result, cursorResult, err := parseFTHybrid(data, cmd.withCursor)
@@ -3514,6 +3567,7 @@ func NewFTSynDumpCmd(ctx context.Context, args ...interface{}) *FTSynDumpCmd {
 }
 
 func (cmd *FTSynDumpCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -3522,18 +3576,22 @@ func (cmd *FTSynDumpCmd) SetVal(val []FTSynDumpResult) {
 }
 
 func (cmd *FTSynDumpCmd) Val() []FTSynDumpResult {
+	cmd.await()
 	return cmd.val
 }
 
 func (cmd *FTSynDumpCmd) Result() ([]FTSynDumpResult, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *FTSynDumpCmd) RawVal() interface{} {
+	cmd.await()
 	return cmd.rawVal
 }
 
 func (cmd *FTSynDumpCmd) RawResult() (interface{}, error) {
+	cmd.await()
 	return cmd.rawVal, cmd.err
 }
 

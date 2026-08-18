@@ -16,11 +16,15 @@ inputs:
   client-libs-test-image-tag:
     description: 'Client libs test image tag'
     required: false
+  make-target:
+    description: 'Makefile target to run for the test step'
+    required: false
+    default: 'test.ci'
 runs:
   using: "composite"
   steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         repository: ${{ inputs.repository }}
         ref: ${{ inputs.ref }}
@@ -47,8 +51,7 @@ runs:
         elif [[ -n "$REDIS_VERSION" ]]; then
           # Mapping of redis version to redis testing containers
           declare -A redis_version_mapping=(
-            ["8.10.x"]="8.10-rc2"
-            ["8.8.x"]="8.8.0"
+            ["8.10.x"]="8.10.0"
             ["8.6.x"]="8.6.1"
             ["8.4.x"]="8.4.0"
             ["8.2.x"]="8.2.1-pre"
@@ -73,6 +76,9 @@ runs:
       env:
         RCE_DOCKER: "true"
         RE_CLUSTER: "false"
+        # Passed through the environment (not ${{ }}-interpolated into the
+        # script) so the input value cannot inject shell commands.
+        MAKE_TARGET: ${{ inputs.make-target }}
       run: |
-        make test.ci
+        make -- "${MAKE_TARGET:?make-target must not be empty}"
       shell: bash

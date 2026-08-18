@@ -40,6 +40,11 @@ type StickyConnPool struct {
 	state atomic.Uint32
 	ch    chan *Conn
 
+	// onFirstConn runs once when this sticky pool claims a connection from its
+	// parent. CSC uses it to revoke cache ownership before the connection leaves
+	// the parent's background drainer.
+	onFirstConn func(*Conn)
+
 	_badConnError atomic.Value
 }
 
@@ -75,6 +80,9 @@ func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
 				return nil, err
 			}
 			if p.state.CompareAndSwap(stateDefault, stateInited) {
+				if p.onFirstConn != nil {
+					p.onFirstConn(cn)
+				}
 				return cn, nil
 			}
 			p.pool.Remove(ctx, cn, ErrClosed)
@@ -96,12 +104,26 @@ func (p *StickyConnPool) Get(ctx context.Context) (*Conn, error) {
 	return nil, fmt.Errorf("redis: StickyConnPool.Get: infinite loop")
 }
 
+// SetOnFirstConn configures a callback that runs when the sticky pool first
+// claims a parent connection. It must be called before the pool is used.
+func (p *StickyConnPool) SetOnFirstConn(fn func(*Conn)) {
+	p.onFirstConn = fn
+}
+
 func (p *StickyConnPool) Put(ctx context.Context, cn *Conn) {
 	defer func() {
 		if recover() != nil {
 			p.freeConn(ctx, cn)
 		}
 	}()
+	// A connection marked for removal on release (it may hold unread
+	// replies) must not be served to the next Get: record it as a bad
+	// connection — exactly like Remove — so Get refuses and the underlying
+	// connection is removed from the parent pool when the sticky pool
+	// unwinds (the parent's Put honors the same mark).
+	if reason := cn.CloseOnPutReason(); reason != "" {
+		p._badConnError.Store(BadConnError{wrapped: errors.New(reason)})
+	}
 	p.ch <- cn
 }
 

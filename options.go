@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
+	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/internal/util"
@@ -187,6 +188,86 @@ type Options struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize is the size of the bufio.Reader buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// ReadBufferSize buffers.
+	//
+	// Recommended: 64–128 KiB for high-throughput pipelining. The benefit here is
+	// on the READ side: a batch's replies arrive as one large stream, and a bigger
+	// buffer consumes them in fewer syscalls instead of refilling repeatedly
+	// mid-batch. Size it to roughly the reply volume of a typical batch — which
+	// for read-heavy pipelines is dominated by value sizes, not command count.
+	// (The write-side counterpart, sizing to the outgoing wire bytes so the batch
+	// flushes without overflowing mid-write, belongs to PipelineWriteBufferSize.)
+	// Benchmarks show throughput climbs from the 32 KiB default up to ~64 KiB and
+	// then plateaus; going beyond ~128 KiB gives no further gain and very large
+	// buffers (≥512 KiB) can regress throughput and waste memory. Bigger is not
+	// better.
+	//
+	// Example:
+	//   client := redis.NewClient(&redis.Options{
+	//       Addr:                    "localhost:6379",
+	//       ReadBufferSize:          32 * 1024,   // 32 KiB for regular commands
+	//       PipelineReadBufferSize:  128 * 1024,  // 128 KiB for pipelining
+	//       PipelineWriteBufferSize: 128 * 1024,
+	//   })
+	//
+	// Memory impact: With PoolSize=100 and PipelinePoolSize=10:
+	//   - Without pipeline pool: 100 conns × 128 KiB = 12.8 MB (if all use 128 KiB buffers)
+	//   - With pipeline pool: (100 × 32 KiB) + (10 × 128 KiB) = 4.5 MB (~65% savings)
+	//
+	// default: 0 (use ReadBufferSize)
+	PipelineReadBufferSize int
+
+	// PipelineWriteBufferSize is the size of the bufio.Writer buffer for pipeline connections.
+	// If set to a value > 0, a separate connection pool will be created specifically for
+	// pipelining operations (Pipeline, AutoPipeline and AsyncAutoPipeline) with
+	// this buffer size.
+	//
+	// This allows you to use large buffers for pipelining (to reduce syscalls and improve
+	// throughput) while keeping regular command buffers small (to save memory).
+	//
+	// If not set (0), pipeline operations will use the regular connection pool with
+	// WriteBufferSize buffers.
+	//
+	// Recommended: 64–128 KiB for high-throughput pipelining (size to roughly
+	// MaxBatchSize × average-command-bytes). Throughput plateaus past ~64 KiB and
+	// gains nothing beyond ~128 KiB; very large buffers (≥512 KiB) can regress it.
+	// See PipelineReadBufferSize for the full rationale.
+	//
+	// default: 0 (use WriteBufferSize)
+	PipelineWriteBufferSize int
+
+	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
+	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	//
+	// Pipelining typically needs fewer connections than regular operations because
+	// batching reduces connection contention. A smaller pool saves memory while
+	// maintaining high throughput.
+	//
+	// If not set (0), defaults to 10 connections.
+	//
+	// default: 10
+	PipelinePoolSize int
+
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
+	// AutoPipeline and AsyncAutoPipeline use it when called without an
+	// explicit config, falling back to their per-face defaults
+	// (DefaultBlockingAutoPipelineOptions / DefaultAutoPipelineOptions) when it
+	// is nil. Pass a config to either method to override. Commands issued
+	// through an autopipeliner are batched into pipelines to cut round-trips
+	// and raise throughput.
+	//
+	// EXPERIMENTAL: this API is subject to change, use with caution.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	// PoolFIFO type of connection pool.
 	//
 	//	- true for FIFO pool
@@ -300,6 +381,8 @@ type Options struct {
 
 	// PushNotificationProcessor is the processor for handling push notifications.
 	// If nil, a default processor will be created for RESP3 connections.
+	// With client-side caching, a custom processor runs while an idle connection
+	// is borrowed from the pool and should return promptly.
 	PushNotificationProcessor push.NotificationProcessor
 
 	// FailingTimeoutSeconds is the timeout in seconds for marking a cluster node as failing.
@@ -313,11 +396,75 @@ type Options struct {
 	// transitions seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications are in "auto" mode and will be enabled if the server supports it.
 	MaintNotificationsConfig *maintnotifications.Config
+
+	// ClientSideCacheConfig enables client-side caching when non-nil. Together
+	// with ClientSideCache it is the on/off switch for the feature: leave both
+	// nil to disable CSC, set either one to enable it. If ClientSideCache is also set, it
+	// takes precedence over this config.
+	//
+	// Client-side caching is disabled when CredentialsProvider,
+	// CredentialsProviderContext, or StreamingCredentialsProvider is set:
+	// provider-backed credentials can change the ACL identity after the cache
+	// namespace is selected. Fixed Username/Password values are supported and
+	// included in the cache namespace.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheConfig *ClientSideCacheConfig
+
+	// ClientSideCache is an explicit Cache implementation used for client-side
+	// caching. When set, it overrides ClientSideCacheConfig. Intended for
+	// advanced users that want to share a cache across clients or supply a
+	// custom implementation.
+	//
+	// A shared Cache is only safe across clients on the same server and DB.
+	// Clients with different fixed Username/Password values are isolated by a
+	// username namespace.
+	// Client-side caching is restricted to DB 0 and disabled with a warning
+	// otherwise. It is also disabled with any credential provider; see
+	// ClientSideCacheConfig.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCache Cache
+
+	// ClientSideCacheStrategy selects the invalidation architecture used when
+	// client-side caching is enabled (via ClientSideCacheConfig or
+	// ClientSideCache); it is ignored when CSC is disabled. The zero value is
+	// CSCStrategySharedTracking, currently the only implemented strategy.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheStrategy CSCStrategy
 }
+
+// CSCStrategy selects the client-side caching invalidation architecture. Set via
+// Options.ClientSideCacheStrategy; fixed for the client's lifetime.
+//
+// CSCStrategySharedTracking is currently the only implemented strategy; the type
+// exists as an extension point for additional architectures (e.g. a BCAST sidecar)
+// without a breaking API change.
+//
+// Experimental: this API may change in a minor release.
+type CSCStrategy int
+
+const (
+	// CSCStrategySharedTracking (default, the zero value): one shared cache; every
+	// pool connection runs plain CLIENT TRACKING ON and a background drainer applies
+	// buffered invalidations. Portable (no BCAST), and matches the other Redis clients.
+	CSCStrategySharedTracking CSCStrategy = iota
+)
 
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
+	}
+	// An unknown strategy would thread the CSC gates inconsistently (e.g. tracking
+	// on with no drainer), serving stale data. Clamp to the only supported value.
+	switch opt.ClientSideCacheStrategy {
+	case CSCStrategySharedTracking:
+	default:
+		internal.Logger.Printf(context.Background(),
+			"redis: unknown ClientSideCacheStrategy %d; falling back to CSCStrategySharedTracking",
+			opt.ClientSideCacheStrategy)
+		opt.ClientSideCacheStrategy = CSCStrategySharedTracking
 	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {
@@ -357,6 +504,13 @@ func (opt *Options) init() {
 	}
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
+	} else if opt.Protocol == 3 && opt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
+		// Too small to hold a push header, the processor would consume frames before
+		// knowing their name and could swallow a Pub/Sub frame. Clamp to the minimum.
+		internal.Logger.Printf(context.Background(),
+			"redis: ReadBufferSize=%d is below the RESP3 minimum %d; clamping.",
+			opt.ReadBufferSize, proto.MinRESP3ReadBufferSize)
+		opt.ReadBufferSize = proto.MinRESP3ReadBufferSize
 	}
 	if opt.WriteBufferSize == 0 {
 		opt.WriteBufferSize = proto.DefaultBufferSize
@@ -413,15 +567,22 @@ func (opt *Options) init() {
 		opt.FailingTimeoutSeconds = 15
 	}
 
+	if opt.Protocol == 2 && (opt.ClientSideCache != nil || opt.ClientSideCacheConfig != nil) {
+		internal.Logger.Printf(context.Background(),
+			"redis: client-side caching requires Protocol: 3 (RESP3); caching is disabled")
+	}
+
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// auto-detect endpoint type if not specified
-	endpointType := opt.MaintNotificationsConfig.EndpointType
-	if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
-		// Auto-detect endpoint type if not specified
-		endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+	// skip endpoint detection when maint notifications are disabled.
+	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		endpointType := opt.MaintNotificationsConfig.EndpointType
+		// auto-detect endpoint type if not specified
+		if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
+			endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+		}
+		opt.MaintNotificationsConfig.EndpointType = endpointType
 	}
-	opt.MaintNotificationsConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {

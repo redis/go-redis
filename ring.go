@@ -48,6 +48,10 @@ type RingOptions struct {
 	// NewClient creates a shard client with provided options.
 	NewClient func(opt *Options) *Client
 
+	// himport is the ring-wide HIMPORT fieldset registry, set by NewRing and
+	// shared with every shard client (see himport.go, himport_cluster.go).
+	himport *himportRegistry
+
 	// ClientName will execute the `CLIENT SETNAME ClientName` command for each conn.
 	ClientName string
 
@@ -142,6 +146,14 @@ type RingOptions struct {
 	//
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
+
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining on
+	// each shard, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
 
 	TLSConfig *tls.Config
 	Limiter   Limiter
@@ -247,6 +259,10 @@ func (opt *RingOptions) clientOptions() *Options {
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
 
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+
 		TLSConfig: opt.TLSConfig,
 		Limiter:   opt.Limiter,
 
@@ -270,10 +286,16 @@ func newRingShard(opt *RingOptions, addr string) *ringShard {
 	clopt := opt.clientOptions()
 	clopt.Addr = addr
 
-	return &ringShard{
+	shard := &ringShard{
 		Client: opt.NewClient(clopt),
 		addr:   addr,
 	}
+	// Share the ring-wide HIMPORT fieldset registry so any shard connection
+	// serving an HIMPORT SET can lazily replay the PREPARE.
+	if opt.himport != nil {
+		shard.Client.himport = opt.himport
+	}
+	return shard
 }
 
 func (shard *ringShard) String() string {
@@ -605,7 +627,16 @@ func NewRing(opt *RingOptions) *Ring {
 	if opt == nil {
 		panic("redis: NewRing nil options")
 	}
+	// Shallow-copy the options: the ring-wide HIMPORT registry is carried
+	// through them to shard construction, and reusing one caller-owned
+	// RingOptions across several rings must not make the rings share (or
+	// clobber each other's) registry.
+	optCopy := *opt
+	opt = &optCopy
 	opt.init()
+	// The registry must exist before the first shard is created; shards
+	// adopt it in newRingShard.
+	opt.himport = newHImportRegistry()
 
 	hbCtx, hbCancel := context.WithCancel(context.Background())
 
@@ -830,6 +861,34 @@ func (c *Ring) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// ErrRingAutoPipelineUnsupported is returned by Ring's AutoPipeline /
+// AsyncAutoPipeline (and their WithOptions forms); check for it with
+// errors.Is. Autopipelining is not implemented for Ring; use the per-shard
+// clients or a ClusterClient. Ring is part of the UniversalClient
+// interface, so these methods exist to satisfy it and fail explicitly rather
+// than being silently absent.
+var ErrRingAutoPipelineUnsupported = errors.New("redis: AutoPipeline is not supported by Ring")
+
+// AutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AutoPipeline() (*AutoPipeliner, error) {
+	return c.AutoPipelineWithOptions(nil)
+}
+
+// AutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return nil, ErrRingAutoPipelineUnsupported
+}
+
+// AsyncAutoPipeline is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return c.AsyncAutoPipelineWithOptions(nil)
+}
+
+// AsyncAutoPipelineWithOptions is not supported by Ring; it returns ErrRingAutoPipelineUnsupported.
+func (c *Ring) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return nil, ErrRingAutoPipelineUnsupported
 }
 
 func (c *Ring) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
