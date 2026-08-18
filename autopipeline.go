@@ -118,7 +118,13 @@ type AutoPipelineOptions struct {
 	// short-circuiting to BLOCK a command (a policy/ACL/kill-switch hook, or a
 	// mock/cache that must not touch the server) therefore does NOT prevent the
 	// server write under FullDuplex — run such hooks on a plain client or the
-	// half-duplex autopipeline. Hooks that always call next are unaffected.
+	// half-duplex autopipeline. A hook that calls next and only OBSERVES the
+	// command (reads its result after next, optionally rewriting the returned
+	// error) is unaffected. But because the write is already queued when the host
+	// starts, a hook MUST NOT mutate the command — e.g. cmd.Args() — or set its
+	// result BEFORE calling next: that races the writer's serialization and the
+	// reader's completion. Mutate-before-next hooks must run on a plain client or
+	// the half-duplex autopipeline, where next() gates the write.
 	//
 	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
 	// or per-command flag that waits for the hook to call next before enqueuing the

@@ -1188,6 +1188,27 @@ func (c *baseClient) withConn(
 	return fnErr
 }
 
+// spillToMainPool runs fn on a MAIN-pool connection WITHOUT charging the Limiter.
+// It is the pipeline-pool spill target: withPipelineConn has already called
+// Limiter.Allow and will call ReportResult in its defer, so the spilled operation
+// is accounted exactly once. Routing the spill through withConn instead would
+// repeat the Limiter (getConn.Allow + releaseConn.ReportResult), consuming two
+// token-bucket tokens — or rejecting the second admission despite idle main-pool
+// capacity — and counting the operation twice in a circuit breaker. Uses _getConn
+// (no Limiter) and releaseConnToPool (no Limiter; accounting stays with callers).
+func (c *baseClient) spillToMainPool(ctx context.Context, fn func(context.Context, *pool.Conn) error) error {
+	cn, err := c._getConn(ctx)
+	if err != nil {
+		return err
+	}
+	var fnErr error
+	// Closure defer so fnErr is read at call time, not captured as nil now: a failed
+	// spilled pipeline must be released as failed so the owning pool removes it.
+	defer func() { c.releaseConnToPool(ctx, c.connPool, cn, fnErr) }()
+	fnErr = fn(ctx, cn)
+	return fnErr
+}
+
 // withPipelineConn executes fn with a connection from the pipeline pool when
 // one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
 // otherwise it falls back to the regular pool via withConn.
@@ -1258,7 +1279,9 @@ func (c *baseClient) withPipelineConn(
 		// withConn surfaces the genuine exhaustion (spill is one-shot; it does not
 		// spill back).
 		if errors.Is(retErr, pool.ErrPoolTimeout) || errors.Is(retErr, pool.ErrPoolExhausted) {
-			return c.withConn(ctx, fn)
+			// spillToMainPool, not withConn: the Limiter was already charged above and
+			// is reported in this function's defer, so the spill must not charge it again.
+			return c.spillToMainPool(ctx, fn)
 		}
 		return retErr
 	}
@@ -2767,9 +2790,19 @@ func (c *baseClient) processPendingPushNotificationWithReader(ctx context.Contex
 
 // pushNotificationHandlerContext creates a handler context for push notification processing
 func (c *baseClient) pushNotificationHandlerContext(cn *pool.Conn) push.NotificationHandlerContext {
+	// Report the pool that actually owns cn, not always the main pool: with a
+	// dedicated pipeline pool (now created for default clients), a notification
+	// received while running an ordinary pipeline arrives on a pipeline-owned
+	// connection, and a handler that inspects or operates on ConnPool must target
+	// that pool — otherwise it modifies the main pool while the real pipeline
+	// connection is left untouched. poolForConn derefs cn, so guard nil.
+	connPool := pool.Pooler(c.connPool)
+	if cn != nil {
+		connPool = c.poolForConn(cn)
+	}
 	return push.NotificationHandlerContext{
 		Client:   c,
-		ConnPool: c.connPool,
+		ConnPool: connPool,
 		Conn:     cn, // Wrap in adapter for easier interface access
 	}
 }
