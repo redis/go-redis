@@ -489,8 +489,22 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 			for i := range kept {
 				// Invalidation pushes share this connection with replies, so drain
 				// them first or a push frame would be read as a value and cached.
-				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-					internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
+				// Use the nonblocking Close adapter (like the miss-coalescer and
+				// background drainer): this reader is part of the refresher's
+				// waitgroup, so a custom push handler calling Close() on the raw
+				// client would self-deadlock (Close waits on the very goroutine
+				// parked in the handler). And PROPAGATE a processor error instead of
+				// logging and continuing: a surfaced error means bytes may have been
+				// consumed mid-frame, so reading the next reply on a desynced stream
+				// could publish a push fragment under the wrong cache key — abort so
+				// withConn retires the connection.
+				if c.opt.Protocol == 3 && c.pushProcessor != nil {
+					handlerCtx := c.pushNotificationHandlerContext(cn)
+					handlerCtx.Client = cscHandlerClient{baseClient: c}
+					if err := c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd); err != nil {
+						internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
+						return err
+					}
 				}
 				raw, err := rd.ReadRawReply()
 				if err != nil {
