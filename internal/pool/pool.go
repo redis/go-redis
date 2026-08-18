@@ -847,11 +847,21 @@ func (p *ConnPool) getLastDialError() error {
 
 // Get returns existed connection from the pool or creates a new one.
 func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
-	return p.getConn(ctx)
+	return p.getConn(ctx, true)
 }
 
-// getConn returns a connection from the pool.
-func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
+// TryGet returns a connection only if a pool turn is immediately available (a free
+// slot, or room to dial a new one); it never waits out PoolTimeout for a busy
+// pool, returning ErrPoolTimeout at once instead. It lets a caller with a fallback
+// — the dedicated pipeline pool spilling to the main pool — spill without stalling.
+// Dialing a new connection under an acquired turn still happens normally.
+func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
+	return p.getConn(ctx, false)
+}
+
+// getConn returns a connection from the pool. When wait is false it does not block
+// for a turn (see waitTurn / TryGet).
+func (p *ConnPool) getConn(ctx context.Context, wait bool) (cn *Conn, err error) {
 	if p.closed() {
 		return nil, ErrClosed
 	}
@@ -894,7 +904,7 @@ func (p *ConnPool) getConn(ctx context.Context) (cn *Conn, err error) {
 	if waitTimeCallback != nil {
 		waitStart = time.Now()
 	}
-	if err = p.waitTurn(ctx); err != nil {
+	if err = p.waitTurn(ctx, wait); err != nil {
 		return nil, err
 	}
 	if waitTimeCallback != nil {
@@ -1161,7 +1171,7 @@ func (p *ConnPool) putIdleConn(ctx context.Context, cn *Conn) bool {
 	return true
 }
 
-func (p *ConnPool) waitTurn(ctx context.Context) error {
+func (p *ConnPool) waitTurn(ctx context.Context, wait bool) error {
 	// Fast path: check context first
 	select {
 	case <-ctx.Done():
@@ -1172,6 +1182,13 @@ func (p *ConnPool) waitTurn(ctx context.Context) error {
 	// Fast path: try to acquire without blocking
 	if p.semaphore.TryAcquire() {
 		return nil
+	}
+
+	// Non-waiting acquire (TryGet): the pool is at capacity and no turn is
+	// immediately free, so return at once instead of waiting out PoolTimeout — the
+	// caller (a pipeline pool spilling to the main pool) falls back immediately.
+	if !wait {
+		return ErrPoolTimeout
 	}
 
 	// Slow path: need to wait

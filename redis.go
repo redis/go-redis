@@ -650,14 +650,20 @@ func pipelinePoolOptions(opt *Options) *Options {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
 	pipelineOpt.MinIdleConns = 0
-	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init already
-	// defaulted/capped it to the MAIN pool size, so a pipeline pool larger than the
-	// main pool (e.g. PoolSize:1 with the default 10-slot pipeline pool) would
-	// otherwise dial only one connection at a time — an initial burst serializes
-	// slow dials and can hit PoolTimeout or spill despite idle pipeline slots.
-	// Default to the pipeline pool size; preserve an explicitly configured lower
-	// limit (post-init it survives as a value strictly below the main pool size).
-	if pipelineOpt.MaxConcurrentDials >= opt.PoolSize || pipelineOpt.MaxConcurrentDials > pipelineOpt.PoolSize {
+	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init capped it to
+	// the MAIN pool size, so a pipeline pool larger than the main pool (e.g.
+	// PoolSize:1 with the default 10-slot pipeline pool) would otherwise dial one
+	// connection at a time — an initial burst serializes slow dials and can hit
+	// PoolTimeout or spill despite idle pipeline slots. If the caller set an EXPLICIT
+	// dial cap, honor it (bounded by the pipeline pool size); otherwise default to
+	// the pipeline pool size. Keyed on maxConcurrentDialsSet, NOT equality with
+	// PoolSize, so an explicit MaxConcurrentDials==PoolSize (e.g. PoolSize:1,
+	// MaxConcurrentDials:1) is not mistaken for the default and silently widened.
+	if opt.maxConcurrentDialsSet {
+		if pipelineOpt.MaxConcurrentDials > pipelineOpt.PoolSize {
+			pipelineOpt.MaxConcurrentDials = pipelineOpt.PoolSize
+		}
+	} else {
 		pipelineOpt.MaxConcurrentDials = pipelineOpt.PoolSize
 	}
 	return pipelineOpt
@@ -1270,24 +1276,29 @@ func (c *baseClient) withPipelineConn(
 		}
 	}()
 
-	cn, retErr = pipelinePool.Get(ctx)
+	// TryGet, not Get: the pipeline pool is a small burst-capacity pool that SPILLS
+	// to the main pool when saturated, so it must not wait out PoolTimeout (up to 6s
+	// by default) before spilling — an eleventh concurrent pipeline should fall back
+	// to an idle main pool immediately, not stall. TryGet returns ErrPoolTimeout at
+	// once when at capacity, while still dialing a new pipeline connection when there
+	// is room (a cold pool is not spilled on its first, slow dial).
+	cn, retErr = pipelinePool.TryGet(ctx)
 	if retErr != nil {
 		cn = nil // nothing acquired: no release, but still report above
-		// The pipeline pool is a small burst-capacity pool; under a burst of
-		// concurrent pipelines wider than its cap, SPILL to the main pool instead of
-		// failing. Spilled pipelines run with the regular buffer sizes — a throughput
-		// detail, not a behavior change — and total connections stay bounded by
-		// PoolSize + PipelinePoolSize. This keeps the pre-pipeline-pool capacity for
-		// heavy concurrent Pipelined callers, who previously shared the main pool.
+		// Under a burst of concurrent pipelines wider than its cap, SPILL to the main
+		// pool instead of failing. Spilled pipelines run with the regular buffer sizes
+		// — a throughput detail, not a behavior change — and total connections stay
+		// bounded by PoolSize + PipelinePoolSize. This keeps the pre-pipeline-pool
+		// capacity for heavy concurrent Pipelined callers, who previously shared the
+		// main pool.
 		//
 		// Spill on ErrPoolExhausted too, not just ErrPoolTimeout: pipelinePoolOptions
 		// clones the client options, so a positive MaxActiveConns smaller than the
 		// pipeline PoolSize (e.g. MaxActiveConns:1 with the default 10-slot pipeline
-		// pool) makes Get return the hard-ceiling ErrPoolExhausted immediately rather
-		// than timing out. Failing there would break the advertised spill behavior
-		// even while the main pool is idle. If the main pool is also at its ceiling,
-		// withConn surfaces the genuine exhaustion (spill is one-shot; it does not
-		// spill back).
+		// pool) makes TryGet return the hard-ceiling ErrPoolExhausted. Failing there
+		// would break the advertised spill behavior even while the main pool is idle.
+		// If the main pool is also at its ceiling, withConn surfaces the genuine
+		// exhaustion (spill is one-shot; it does not spill back).
 		if errors.Is(retErr, pool.ErrPoolTimeout) || errors.Is(retErr, pool.ErrPoolExhausted) {
 			// spillToMainPool, not withConn: the Limiter was already charged above and
 			// is reported in this function's defer, so the spill must not charge it again.

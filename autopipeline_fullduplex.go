@@ -118,6 +118,12 @@ type fdReq struct {
 	// writtenAt is stamped when the command is flushed to the wire; the reader
 	// uses write→reply as the command's operation duration for the OTel metric.
 	writtenAt time.Time
+	// attempts counts how many times this command has been issued: 1 at submit,
+	// incremented on each connection-error replay of the carried tail. Fed to the
+	// OTel duration/error callbacks so a command that succeeded on a replacement
+	// connection reports its real attempt count (retry_attempts), matching the
+	// normal command path instead of always reporting a single attempt.
+	attempts int
 }
 
 // complete finalizes a command whose result is already set on it: it wakes the
@@ -372,7 +378,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	if fd.ap.pipeliner.hookCount() > 0 {
 		hookDone = make(chan struct{})
 	}
-	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx}
+	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1}
 
 	// Send under RLock and re-check closed so a send can never win the race with
 	// run()'s shutdown drain (takeQueue: WLock, set closed, drain fd.ch). Once the
@@ -702,6 +708,14 @@ func (fd *fdEngine) run() {
 					retryAttempts++
 					fd.sleepBackoff(retryAttempts)
 					carry = unacked[:n]
+					// These commands were already issued on the failed connection and are
+					// about to be re-issued; bump their attempt count so a subsequent
+					// success/failure reports the real retry_attempts (not always 1). The
+					// clean-recycle suffix path (fdRecycle) leaves attempts at 1 — that
+					// tail was never sent, so its replay is a first attempt.
+					for i := range carry {
+						carry[i].attempts++
+					}
 					continue
 				}
 			}
@@ -905,15 +919,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					octx = bg
 				}
 				if cb := otel.GetOperationDurationCallback(); cb != nil {
-					cb(octx, time.Since(req.writtenAt), req.cmd, 1, e, cn, fd.client.opt.DB)
+					cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
 				}
 				// Same parity for errors: an inline-completed non-retryable Redis error
 				// (WRONGTYPE, NOPERM, …) must reach the native error callback, which
-				// process() would otherwise emit via classifyCommandError.
+				// process() would otherwise emit via classifyCommandError. Report
+				// attempts-1 retries, like processWithRetry, so an error on a replayed
+				// command is not undercounted as zero retries.
 				if e != nil {
 					if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 						errorType, statusCode, isInternal := classifyCommandError(e)
-						errorCallback(octx, errorType, cn, statusCode, isInternal, 0)
+						errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
 					}
 				}
 				req.complete() // wake the caller, or hand off to the hook host
@@ -1096,13 +1112,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// Clean Close: flush the accepted-but-unwritten fd.ch backlog on this
 		// connection first, so Close honors "accepted ⇒ completes" instead of failing
 		// it ErrClosed, then let the reader drain every in-flight reply to a RESP
-		// boundary. A flush write error surfaces via the sharedErr path below.
-		if e := fd.flushBacklogForClose(bg, cn, inflight, readerDone); e != nil {
-			// The backlog write failed partway: some flushed commands have no reply
-			// coming and the unwritten suffix is in inflight (flushBacklogForClose pushes
-			// it back on any early stop), so closeGraceful would park the reader on
-			// replies that never arrive. Take the connection-error path: close the conn to
-			// wake the reader, then fail the whole unacked tail (accepted suffix included).
+		// boundary.
+		unwritten, e := fd.flushBacklogForClose(bg, cn, inflight, readerDone)
+		if e != nil && !errors.Is(e, errFDConnMoving) {
+			// A real write error (dead conn) failed the backlog partway: some flushed
+			// commands have no reply coming and the unwritten suffix is already in
+			// inflight (writeCarryChunked pushed it), so closeGraceful would park the
+			// reader on replies that never arrive. Close the conn to wake the reader,
+			// then fail the whole unacked tail (accepted suffix included).
 			failOnce(e)
 			inflight.hardClose()
 			_ = cn.Close()
@@ -1110,14 +1127,30 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			fd.failReqs(inflight.takeRemaining(), e)
 			return nil, fdConnErr, e
 		}
+		// e == nil (fully flushed) OR errFDConnMoving (handoff mid-flush on a LIVE
+		// conn). Either way the connection is healthy: drain the already-written prefix
+		// to a boundary so those callers complete with real replies (never failed with a
+		// synthetic moving error), then let attempt() Put the conn — a handoff-marked
+		// conn is handed off seamlessly by OnPut, exactly like the serve-loop and
+		// carry-replay recycles.
 		inflight.closeGraceful()
 		<-readerDone
 		if sharedErr != nil {
 			// Reader failed during the final drain: fail the stranded tail (its callers
-			// would hang) and report the error so attempt() removes the desynced conn.
-			// run() exits on its next loop, so this does not retry.
+			// would hang) plus the never-sent handoff suffix, and report the error so
+			// attempt() removes the desynced conn. run() exits next, so this does not retry.
 			fd.failReqs(inflight.takeRemaining(), sharedErr)
+			if len(unwritten) > 0 {
+				fd.failReqs(unwritten, sharedErr)
+			}
 			return nil, fdConnErr, sharedErr
+		}
+		// Handoff mid-flush: the prefix drained cleanly and the conn will be Put
+		// (OnPut handoff). Complete the never-sent suffix on ANOTHER connection through
+		// the normal pipeline — accepted ⇒ completes — instead of failing it. Empty on
+		// a plain Close with no handoff.
+		if len(unwritten) > 0 {
+			fd.shutdownFlush(bg, unwritten)
 		}
 		return nil, fdGraceful, nil
 	case fdIdle, fdRecycle:
@@ -1365,7 +1398,10 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 			if octx == nil {
 				octx = context.Background()
 			}
-			errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+			// Report attempts-1 retries (like processWithRetry), so a carried tail
+			// failed after replays is not undercounted as zero. max() guards a req that
+			// somehow carries attempts==0.
+			errorCallback(octx, errorType, nil, statusCode, isInternal, max(0, reqs[i].attempts-1))
 		}
 		reqs[i].complete()
 	}
@@ -1501,8 +1537,11 @@ func (fd *fdEngine) failQueue(err error) {
 // connection, in the same MaxBatchSize/MaxBatchBytes chunks as normal writes, so
 // ACCEPTED commands complete instead of failing ErrClosed. The caller then
 // closeGraceful()s the deque so the reader drains these replies before exiting.
-// Returns the first write error (the caller then degrades to the conn-error path).
-func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, inflight *fdInflight, readerDone <-chan struct{}) error {
+// Returns (unwritten, err) from writeCarryChunked: on errFDConnMoving (handoff
+// mid-flush, live conn) unwritten is the never-sent suffix the caller flushes
+// elsewhere; on a real write error unwritten is nil (that suffix is already in
+// inflight) and the caller degrades to the conn-error path.
+func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, inflight *fdInflight, readerDone <-chan struct{}) ([]fdReq, error) {
 	fd.submitMu.Lock()
 	fd.closed = true
 	fd.submitMu.Unlock()
@@ -1512,16 +1551,14 @@ func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, infl
 		case r := <-fd.ch:
 			backlog = append(backlog, r)
 		default:
-			// Close flush: if a handoff mark fires mid-flush, writeCarryChunked returns
-			// the unwritten suffix out-of-band; push it into inflight so the caller's
-			// conn-error path (takeRemaining) recovers/fails it instead of hanging its
-			// callers. The dead-conn paths already pushed their suffix and return an
-			// empty one, so this never double-pushes.
-			suffix, e := fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone)
-			if len(suffix) > 0 {
-				inflight.pushBatch(suffix)
-			}
-			return e
+			// Return the unwritten suffix OUT-OF-BAND (do not push it into inflight) so
+			// the caller can tell a live handoff (errFDConnMoving) from a dead-conn write
+			// error: on handoff it clean-recycles — drains the written prefix, Puts the
+			// conn for the OnPut maintenance handoff, and completes the never-sent suffix
+			// on another connection — instead of failing accepted work. The dead-conn
+			// paths inside writeCarryChunked already pushed their suffix into inflight and
+			// return an empty one here.
+			return fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone)
 		}
 	}
 }
