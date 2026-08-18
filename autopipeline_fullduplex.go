@@ -56,6 +56,15 @@ var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited"
 // error values and permanently fail innocent in-flight commands).
 var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
 
+// errFDConnMoving marks a session ended because the held connection was marked
+// for handoff (MOVING/FAILING_OVER) while a recovered carry was still being
+// replayed. Distinct from errFDReaderGone so logs and the retry decision can tell
+// a live handoff from a dead reader. Wrapped into the replay set like the other
+// desync sentinels: a handoff is by definition replayable — the whole accepted
+// tail must be re-issued on a fresh connection (which the pool routes to the new
+// endpoint), never failed.
+var errFDConnMoving = errors.New("redis: autopipeline: full-duplex connection moving")
+
 // Full-duplex tuning defaults, applied by newFDEngine when the corresponding
 // AutoPipelineOptions field is zero (rationale in the FullDuplex* GoDoc). The
 // window must exceed the bandwidth-delay product (RTT × target rate) or it
@@ -655,7 +664,8 @@ func (fd *fdEngine) run() {
 			// permanently fail innocent in-flight commands. The NoRetry guard
 			// below still protects non-idempotent writes.
 			replayable := shouldRetry(aerr, true) ||
-				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered)
+				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered) ||
+				errors.Is(aerr, errFDConnMoving)
 			if len(unacked) > 0 && replayable &&
 				retryAttempts < fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: replay the retryable PREFIX and fail
@@ -1189,15 +1199,39 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			default:
 			}
 		}
-		// Bound in-flight to the window between chunks, like the serve loop. On
-		// graceful Close this writes the backlog on top of replies still in flight,
-		// so without the gate a small FullDuplexWindow is exceeded by up to ~2x
-		// (window + buffered backlog). The serve loop keys its wait on ap.ctx, but
-		// here ap.ctx is already cancelled (that is why we are flushing), so the
+		// Between chunks, stop if the connection was marked for handoff, exactly as
+		// the serve loop polls ShouldHandoff: a MOVING/FAILING_OVER push drained by
+		// the reader marks cn, and carry replay runs BEFORE the serve loop, so a
+		// large replay must not keep streaming to a moving node and delay the
+		// handoff past its deadline. Push the unwritten remainder and return
+		// errFDConnMoving so run() replays the whole accepted tail on a fresh
+		// connection (which the pool routes to the new endpoint). ShouldHandoff() is
+		// an atomic load, safe to poll here while the reader sets it.
+		if cn.ShouldHandoff() {
+			inflight.pushBatch(carry[i:])
+			return errFDConnMoving
+		}
+		// Bound in-flight to the window between chunks, like the serve loop — which
+		// uses a PREDICATE LOOP, not a one-shot wait: inflight.room is a cap-1
+		// channel that can hold a STALE signal (the reader popped, the writer
+		// observed the room and refilled it without consuming the signal), so after
+		// each wake recheck inflight.len() >= fd.window before writing. A one-shot if
+		// could consume that stale signal with the deque still full, compute zero
+		// remaining room, leave lim at MaxBatchSize, and write past FullDuplexWindow.
+		// On graceful Close this writes the backlog on top of replies still in
+		// flight, so without the gate a small FullDuplexWindow is exceeded by up to
+		// ~2x (window + buffered backlog). The serve loop keys its wait on ap.ctx,
+		// but here ap.ctx is already cancelled (that is why we are flushing), so the
 		// wait is BOUNDED instead: if the reader does not drain within the bound,
 		// stop gating (set stuck) so Close cannot block forever — correctness of a
 		// terminating Close outranks a transient teardown overshoot.
-		if !stuck && readerDone != nil && inflight.len() >= fd.window {
+		for !stuck && readerDone != nil && inflight.len() >= fd.window {
+			// Poll handoff on every wake too, like the serve loop's window gate, so a
+			// MOVING mark under backpressure recycles within one drained reply.
+			if cn.ShouldHandoff() {
+				inflight.pushBatch(carry[i:])
+				return errFDConnMoving
+			}
 			timer := time.NewTimer(fdCloseFlushWait)
 			select {
 			case <-inflight.room:
@@ -1342,7 +1376,22 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 		for j := i; j < end; j++ {
 			cmds[j-i] = backlog[j].cmd
 		}
-		err := fd.client.processPipeline(bg, cmds) // per-command results/errors are set inside
+		// Initialize the flush with a backlog request's own context (cancellation
+		// removed), not the engine's background context: if this flush has to
+		// initialize a fresh pooled connection — e.g. the preceding lease failed —
+		// a CredentialsProviderContext resolves credentials from the request's
+		// context values, so the flush authenticates as the right tenant instead of
+		// a fallback. WithoutCancel because these requests' contexts may already be
+		// cancelled (that is often what triggered Close), yet the accepted-⇒-completes
+		// contract still requires the write to go through. A chunk can mix callers;
+		// the first request in the chunk is the representative — a documented
+		// approximation, matching how the diverted-retry and session-init paths pick
+		// one context for a batch.
+		fctx := bg
+		if c := backlog[i].ctx; c != nil {
+			fctx = context.WithoutCancel(c)
+		}
+		err := fd.client.processPipeline(fctx, cmds) // per-command results/errors are set inside
 		for j := i; j < end; j++ {
 			backlog[j].complete()
 		}

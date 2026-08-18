@@ -1242,14 +1242,22 @@ func (c *baseClient) withPipelineConn(
 	cn, retErr = pipelinePool.Get(ctx)
 	if retErr != nil {
 		cn = nil // nothing acquired: no release, but still report above
-		if errors.Is(retErr, pool.ErrPoolTimeout) {
-			// The pipeline pool is a small burst-capacity pool; under a burst
-			// of concurrent pipelines wider than its cap, SPILL to the main
-			// pool instead of failing. Spilled pipelines run with the regular
-			// buffer sizes — a throughput detail, not a behavior change — and
-			// total connections stay bounded by PoolSize + PipelinePoolSize.
-			// This keeps the pre-pipeline-pool capacity for heavy concurrent
-			// Pipelined callers, who previously shared the main pool.
+		// The pipeline pool is a small burst-capacity pool; under a burst of
+		// concurrent pipelines wider than its cap, SPILL to the main pool instead of
+		// failing. Spilled pipelines run with the regular buffer sizes — a throughput
+		// detail, not a behavior change — and total connections stay bounded by
+		// PoolSize + PipelinePoolSize. This keeps the pre-pipeline-pool capacity for
+		// heavy concurrent Pipelined callers, who previously shared the main pool.
+		//
+		// Spill on ErrPoolExhausted too, not just ErrPoolTimeout: pipelinePoolOptions
+		// clones the client options, so a positive MaxActiveConns smaller than the
+		// pipeline PoolSize (e.g. MaxActiveConns:1 with the default 10-slot pipeline
+		// pool) makes Get return the hard-ceiling ErrPoolExhausted immediately rather
+		// than timing out. Failing there would break the advertised spill behavior
+		// even while the main pool is idle. If the main pool is also at its ceiling,
+		// withConn surfaces the genuine exhaustion (spill is one-shot; it does not
+		// spill back).
+		if errors.Is(retErr, pool.ErrPoolTimeout) || errors.Is(retErr, pool.ErrPoolExhausted) {
 			return c.withConn(ctx, fn)
 		}
 		return retErr

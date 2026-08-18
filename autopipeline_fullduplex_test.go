@@ -925,6 +925,43 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 	}
 }
 
+// TestWriteCarryChunkedStopsOnHandoff pins the P1 fix (review thread on #3964):
+// a connection marked for handoff (MOVING/FAILING_OVER) while a recovered carry
+// is being replayed must stop promptly — not stream the whole tail to a moving
+// node — return errFDConnMoving, and push the entire carry so run() replays it on
+// a fresh connection instead of failing (errFDConnMoving is in the replayable set).
+func TestWriteCarryChunkedStopsOnHandoff(t *testing.T) {
+	// A failing-write conn is fine: the handoff guard is at the TOP of the loop,
+	// before any write, so a marked conn must return before writeBatch is reached.
+	cn := pool.NewConn(&failWriteNetConn{})
+	if err := cn.MarkForHandoff(":6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}}, // MaxBatchBytes 0 = disabled
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 2,
+	}
+	inflight := newFDInflight()
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
+	}
+
+	// readerDone open (not closed) so the handoff branch fires, not the reader-gone one.
+	readerDone := make(chan struct{})
+	err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone)
+	if !errors.Is(err, errFDConnMoving) {
+		t.Fatalf("writeCarryChunked returned %v, want errFDConnMoving after the conn was marked for handoff", err)
+	}
+	// The whole carry must be recoverable so run() can replay it on a fresh conn.
+	if got := inflight.len(); got != n {
+		t.Fatalf("in-flight deque holds %d of %d carry commands after handoff — the tail was dropped (callers would hang or lose commands)", got, n)
+	}
+}
+
 // TestFullDuplexCloseCompletesBacklogAfterConnKill is a broad bounded-hang guard:
 // killing the connection mid-flight and then closing the engine must settle every
 // accepted command (via the connection-error recovery + drainQueue path) rather
