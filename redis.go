@@ -2624,6 +2624,17 @@ func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.
 		// Close waits on the coalescer's WaitGroup, which includes the very
 		// goroutine parked in the handler.
 		handlerCtx.Client = cscHandlerClient{baseClient: c}
+		// Built-in processor: use the Buffered variant (as drainPushNotifications
+		// does) so an error AFTER partially consuming a fragmented frame — e.g. a
+		// RESP3 attribute whose remainder arrives slower than the hard cap — is
+		// PROPAGATED, not swallowed. A swallowed mid-frame error would leave the
+		// connection desynchronized and later fragments could be misread as command
+		// replies and cached under the wrong key. Custom processors keep the
+		// unbuffered call (their contract is "invoked when notifications are known
+		// present").
+		if processor, ok := c.pushProcessor.(*push.Processor); ok {
+			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+		}
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
 }
