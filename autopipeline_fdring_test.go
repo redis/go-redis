@@ -116,6 +116,24 @@ func TestFDInflightRingGrowWhileWrapped(t *testing.T) {
 	}
 }
 
+// TestFDInflightRingAdvanceEmpty guards against a divide-by-zero in advance on a
+// never-grown ring (nil backing buffer): n>0 clamps to 0, and the modulo update
+// must not run. Regression for the copilot review on #3970.
+func TestFDInflightRingAdvanceEmpty(t *testing.T) {
+	f := newFDInflight() // zero-cap: buf is nil until first push
+	f.advance(5)         // must be a no-op, not a panic
+	if f.len() != 0 {
+		t.Fatalf("len=%d after advance on empty ring, want 0", f.len())
+	}
+	// Also after draining a grown ring back to empty.
+	f.pushBatch([]fdReq{mkReq(), mkReq()})
+	f.advance(2)
+	f.advance(3) // over-advance on an empty (but grown) ring: no-op, no panic
+	if f.len() != 0 {
+		t.Fatalf("len=%d after over-advance, want 0", f.len())
+	}
+}
+
 // TestFDInflightRingZeroesConsumed guards the load-bearing zeroing in advance:
 // popped slots must be cleared so drained entries don't pin cmd/ctx/batch for
 // the life of the session.

@@ -284,6 +284,14 @@ func (f *fdInflight) advance(n int) {
 	if n > f.count {
 		n = f.count
 	}
+	if n == 0 {
+		// Nothing to drop (empty ring, or clamped away). Return before the modulo
+		// below, which divides by len(f.buf) and would panic on a never-grown ring
+		// (nil buf). The slice implementation tolerated advance on an empty queue;
+		// preserve that.
+		f.mu.Unlock()
+		return
+	}
 	// Zero each consumed entry before dropping it: the ring keeps its backing
 	// array for the whole session (curInflight holds the deque while the engine
 	// idles), so otherwise a drained burst retains a window's worth of completed
