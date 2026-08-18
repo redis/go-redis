@@ -4,8 +4,6 @@ import (
 	"math"
 	"testing"
 	"time"
-
-	"github.com/redis/go-redis/v9/internal/routing"
 )
 
 func toleranceTestNode(t *testing.T, latency time.Duration, failing bool) *clusterNode {
@@ -34,10 +32,8 @@ func TestSlotClosestNodeToleranceZeroKeepsStrictMinimum(t *testing.T) {
 		toleranceTestNode(t, 900*time.Microsecond, false),
 	)
 
-	picker := &routing.RoundRobinPicker{}
-
 	for i := 0; i < 20; i++ {
-		got, err := state.slotClosestNode(0, 0, picker)
+		got, err := state.slotClosestNode(0, 0)
 		if err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
@@ -54,10 +50,9 @@ func TestSlotClosestNodeToleranceSpreadsAcrossCloseNodes(t *testing.T) {
 	state := toleranceTestState(a, b, far)
 
 	counts := map[*clusterNode]int{}
-	picker := &routing.RoundRobinPicker{}
 
 	for i := 0; i < 100; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond, picker)
+		got, err := state.slotClosestNode(0, 50*time.Microsecond)
 		if err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
@@ -79,10 +74,8 @@ func TestSlotClosestNodeToleranceSkipsFailingNodes(t *testing.T) {
 	healthy := toleranceTestNode(t, 120*time.Microsecond, false)
 	state := toleranceTestState(toleranceTestNode(t, 100*time.Microsecond, true), healthy)
 
-	picker := &routing.RoundRobinPicker{}
-
 	for i := 0; i < 10; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond, picker)
+		got, err := state.slotClosestNode(0, 50*time.Microsecond)
 		if err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
@@ -100,7 +93,7 @@ func TestSlotClosestNodePrefersSlowerHealthyNode(t *testing.T) {
 	healthy := toleranceTestNode(t, 800*time.Microsecond, false)
 	state := toleranceTestState(toleranceTestNode(t, 100*time.Microsecond, true), healthy)
 
-	got, err := state.slotClosestNode(0, 0, nil)
+	got, err := state.slotClosestNode(0, 0)
 	if err != nil {
 		t.Fatalf("slotClosestNode: %v", err)
 	}
@@ -109,22 +102,6 @@ func TestSlotClosestNodePrefersSlowerHealthyNode(t *testing.T) {
 	}
 }
 
-func TestSlotClosestNodeToleranceNilPicker(t *testing.T) {
-	a := toleranceTestNode(t, 100*time.Microsecond, false)
-	state := toleranceTestState(a, toleranceTestNode(t, 120*time.Microsecond, false))
-
-	got, err := state.slotClosestNode(0, 50*time.Microsecond, nil)
-	if err != nil {
-		t.Fatalf("slotClosestNode: %v", err)
-	}
-	if got != a {
-		t.Fatal("expected the first candidate when no picker is configured")
-	}
-}
-
-// The candidate set is built from latencies captured in the same pass that computes the
-// minimum. Re-reading Latency() would let the background probe empty the set between the
-// two reads, and slotClosestNode would then return (nil, nil) for callers to dereference.
 func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
 	nodes := []*clusterNode{
 		toleranceTestNode(t, 100*time.Microsecond, false),
@@ -132,7 +109,6 @@ func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
 		toleranceTestNode(t, 900*time.Microsecond, false),
 	}
 	state := toleranceTestState(nodes...)
-	picker := &routing.RoundRobinPicker{}
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -151,7 +127,7 @@ func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
 	}()
 
 	for i := 0; i < 5000; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond, picker)
+		got, err := state.slotClosestNode(0, 50*time.Microsecond)
 		if err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
@@ -166,7 +142,7 @@ func TestSlotClosestNodeToleranceHandlesHugeTolerance(t *testing.T) {
 	state := toleranceTestState(a, toleranceTestNode(t, 900*time.Microsecond, false))
 
 	// A tolerance near the maximum must not overflow into a negative comparison.
-	got, err := state.slotClosestNode(0, time.Duration(math.MaxInt64), &routing.RoundRobinPicker{})
+	got, err := state.slotClosestNode(0, time.Duration(math.MaxInt64))
 	if err != nil {
 		t.Fatalf("slotClosestNode: %v", err)
 	}
@@ -225,12 +201,46 @@ func TestSlotClosestNodeToleranceDisabledDoesNotAllocate(t *testing.T) {
 	)
 
 	allocs := testing.AllocsPerRun(200, func() {
-		if _, err := state.slotClosestNode(0, 0, nil); err != nil {
+		if _, err := state.slotClosestNode(0, 0); err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
 	})
 
 	if allocs != 0 {
 		t.Fatalf("zero tolerance allocated %.0f times per call, want 0", allocs)
+	}
+}
+
+// Rotation state is per slot. A counter shared across slots is advanced by the other slots
+// between two visits to this one, so with a regular interleaving each slot keeps landing on
+// the same candidate index and one replica per shard takes all of that shard's reads.
+func TestSlotClosestNodeToleranceRotatesPerSlot(t *testing.T) {
+	nodesFor := func() []*clusterNode {
+		return []*clusterNode{
+			toleranceTestNode(t, 100*time.Microsecond, false),
+			toleranceTestNode(t, 120*time.Microsecond, false),
+		}
+	}
+	a, b := nodesFor(), nodesFor()
+	state := &clusterState{slots: []*clusterSlot{
+		{start: 0, end: 100, nodes: a},
+		{start: 101, end: 200, nodes: b},
+	}}
+
+	counts := map[*clusterNode]int{}
+	for i := 0; i < 100; i++ {
+		for _, slot := range []int{50, 150} { // alternate slots, the interleaving that breaks a shared counter
+			got, err := state.slotClosestNode(slot, 50*time.Microsecond)
+			if err != nil {
+				t.Fatalf("slotClosestNode: %v", err)
+			}
+			counts[got]++
+		}
+	}
+
+	for name, nodes := range map[string][]*clusterNode{"slot 0-100": a, "slot 101-200": b} {
+		if counts[nodes[0]] == 0 || counts[nodes[1]] == 0 {
+			t.Fatalf("%s did not rotate: %d / %d", name, counts[nodes[0]], counts[nodes[1]])
+		}
 	}
 }

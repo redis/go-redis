@@ -824,6 +824,11 @@ type clusterSlot struct {
 	start int
 	end   int
 	nodes []*clusterNode
+
+	// rotation cursor for RouteByLatencyTolerance. Per slot on purpose: a counter shared
+	// across slots is advanced by the other slots between two visits to this one, so with a
+	// regular interleaving each slot keeps landing on the same candidate index.
+	rotation atomic.Uint32
 }
 
 type clusterState struct {
@@ -991,15 +996,12 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 	}
 }
 
-func (c *clusterState) slotClosestNode(
-	slot int,
-	tolerance time.Duration,
-	picker routing.ShardPicker,
-) (*clusterNode, error) {
-	nodes := c.slotNodes(slot)
-	if len(nodes) == 0 {
+func (c *clusterState) slotClosestNode(slot int, tolerance time.Duration) (*clusterNode, error) {
+	entry := c.slotEntry(slot)
+	if entry == nil || len(entry.nodes) == 0 {
 		return c.nodes.Random()
 	}
+	nodes := entry.nodes
 
 	// Latency and health are sampled once per node. The background probe updates them
 	// concurrently, so re-reading would let the candidate set disagree with the minimum it
@@ -1059,11 +1061,11 @@ func (c *clusterState) slotClosestNode(
 			}
 		}
 
-		if len(candidates) == 1 || picker == nil {
+		if len(candidates) == 1 {
 			return candidates[0], nil
 		}
 
-		return candidates[picker.Next(len(candidates))], nil
+		return candidates[int(entry.rotation.Add(1)-1)%len(candidates)], nil
 	}
 
 	// Every node is failing. Fall back to the least-slow one, so a transient failure does
@@ -1118,7 +1120,7 @@ func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.Sh
 	return nodes[0], nil
 }
 
-func (c *clusterState) slotNodes(slot int) []*clusterNode {
+func (c *clusterState) slotEntry(slot int) *clusterSlot {
 	i := sort.Search(len(c.slots), func(i int) bool {
 		return c.slots[i].end >= slot
 	})
@@ -1127,6 +1129,13 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 	}
 	x := c.slots[i]
 	if slot >= x.start && slot <= x.end {
+		return x
+	}
+	return nil
+}
+
+func (c *clusterState) slotNodes(slot int) []*clusterNode {
+	if x := c.slotEntry(slot); x != nil {
 		return x.nodes
 	}
 	return nil
@@ -3019,7 +3028,7 @@ func (c *ClusterClient) cmdNodeWithShardPicker(
 
 func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
-		return state.slotClosestNode(slot, c.opt.RouteByLatencyTolerance, c.opt.ShardPicker)
+		return state.slotClosestNode(slot, c.opt.RouteByLatencyTolerance)
 	}
 	if c.opt.RouteRandomly {
 		return state.slotRandomNode(slot)
