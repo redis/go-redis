@@ -164,6 +164,7 @@ type fdInflight struct {
 	advanced   int           // total entries the reader completed this session (progress signal)
 }
 
+//nolint:unused // used by the full-duplex tests; lint runs with tests:false.
 func newFDInflight() *fdInflight { return newFDInflightCap(0) }
 
 // newFDInflightCap presizes the ring so a session at the configured batch size
