@@ -457,6 +457,14 @@ type Options struct {
 	// PoolSize for that held connection — with PoolSize 1, continuous misses
 	// can make unrelated non-cacheable commands wait on the pool.
 	//
+	// Limiter: a coalescer session holds ONE connection and serves MANY misses on
+	// it, so Options.Limiter is admitted (Allow/ReportResult) once PER SESSION —
+	// per held connection — not per coalesced miss, unlike the plain per-command
+	// path. This is inherent to the held-connection model (a per-miss Allow would
+	// defeat the coalescing and re-admit a connection already held). A caller that
+	// needs strict per-command admission or circuit-breaking should not enable
+	// miss coalescing.
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheCoalesceMisses bool
 
