@@ -77,11 +77,11 @@ func (c *PubSub) connWithLock(ctx context.Context) (*pool.Conn, error) {
 }
 
 func (c *PubSub) conn(ctx context.Context, newChannels []string) (*pool.Conn, error) {
-	if c.stickyErr != nil {
-		return nil, c.stickyErr
-	}
 	if c.closed {
 		return nil, pool.ErrClosed
+	}
+	if c.stickyErr != nil {
+		return nil, c.stickyErr
 	}
 	if c.cn != nil {
 		return c.cn, nil
