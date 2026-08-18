@@ -2105,6 +2105,17 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 		clone.cscLifecycleOwner = c
 	}
 	clone.baseClient = c.baseClient.withTimeout(timeout)
+	// Route the clone's CSC push-handler Close through the OWNER wrapper.
+	// clone() copies neither cscDrainHandle nor cscClientWeak, so without this a
+	// custom push handler calling Close() on the cscHandlerClient installed for a
+	// held-conn drain on this clone would fall through to baseClient.Close —
+	// closing the SHARED pools while the owner's drainer and cached autopipeliners
+	// keep running against them. cscLifecycleOwner is the canonical wrapper and is
+	// kept alive by this clone's strong ref, so closeCanonical resolves it and
+	// calls owner.Close() (the full CSC + autopipeliner teardown).
+	if clone.cscLifecycleOwner != nil {
+		clone.baseClient.cscClientWeak = weak.Make(clone.cscLifecycleOwner)
+	}
 	clone.init()
 	return &clone
 }
@@ -2578,26 +2589,34 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	return c.timedPushDrain(ctx, cn)
+	// Readiness is established, so a frame is (probably) present: drain under the
+	// longer fragmented-frame budget the background drainer uses, NOT the 1ms
+	// no-data probe cap. A push can arrive in fragments more than 1ms apart —
+	// notably over TLS, where MaybeHasData only proves that some ciphertext is
+	// readable — and the 1ms cap would then time out after consuming the prefix,
+	// which is treated as fatal and fatally closes a healthy session (failing its
+	// in-flight misses). The 1ms cap is reserved for speculative no-data probes
+	// (timedPushDrain, the opaque-transport fallback).
+	return c.pushDrainWithin(ctx, cn, cscDrainHardReadCap)
 }
 
-// timedPushDrain runs one short-deadline push drain on cn. The 1ms read
-// deadline only needs to cover scheduler pauses, not network waits, when the
-// caller has established data is (probably) present: 10us was routinely lost to
-// scheduling on loaded machines — the peek then timed out with nothing
-// consumed, the processor treated that as "no pending data", and a connection
-// with buffered push bytes was returned to the pool instead of being drained
-// (or removed, when the frame turns out partial). Callers without a readiness
-// signal (the opaque-transport fallback on a held full-duplex connection) pay
-// at most the 1ms when nothing is pending.
+// timedPushDrain runs a speculative no-data push probe under a 1ms hard read
+// deadline: for callers WITHOUT a readiness signal (the opaque-transport
+// fallback on a held full-duplex connection), which pay at most 1ms when
+// nothing is pending. Callers that HAVE established readiness use
+// pushDrainWithin(cscDrainHardReadCap) instead, to tolerate fragmented frames.
 func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
-	// HARD deadline: WithReader would let an active maintenance-relaxed timeout
-	// REPLACE the 1ms probe cap, and a no-data probe would then block the
-	// caller (the FD session tick) for the relaxed duration while holding the
-	// conn — starving a small pool. WithReaderHardDeadline bypasses relaxation
-	// and clears the deadline on exit, so no residue poisons a later
-	// deadline-less read either.
-	return cn.WithReaderHardDeadline(time.Millisecond, func(rd *proto.Reader) error {
+	return c.pushDrainWithin(ctx, cn, time.Millisecond)
+}
+
+// pushDrainWithin runs one push drain on cn under a HARD read deadline of d.
+// HARD (not WithReader): a maintenance-relaxed timeout would otherwise REPLACE
+// the cap, blocking the caller (e.g. the FD session tick) for the relaxed
+// duration while holding the conn and starving a small pool.
+// WithReaderHardDeadline bypasses relaxation and clears the deadline on exit, so
+// no residue poisons a later deadline-less read.
+func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
+	return cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
 		handlerCtx := c.pushNotificationHandlerContext(cn)
 		// Nonblocking Close adapter, like the background drainer's: this drain
 		// runs on CSC-held paths (the FD session tick among them), where a

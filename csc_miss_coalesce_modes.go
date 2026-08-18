@@ -286,6 +286,16 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			buf = mc.grabInto(buf[:0], req)
 			mc.countBatch(buf)
 
+			// Attribute every request in this batch to the session connection up
+			// front. A write-side failure (WithWriter error, or ctx cancel during the
+			// inflight handoff below) settles via settleAllErr before the reply path
+			// runs, so without this the error metric and processCached would report a
+			// nil connection and zero attempts for commands that did reach cn. buf is
+			// []*cscMissReq, so this persists to the reply path (which re-sets it).
+			for _, r := range buf {
+				r.servedBy = cn
+			}
+
 			// sctx directly, NOT c.context(sctx): c.context() strips the engine's
 			// cancellable session ctx under ContextTimeoutEnabled=false, and with
 			// per-op timeouts disabled a blocked read/write could then never be
