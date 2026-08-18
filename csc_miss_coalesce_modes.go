@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,22 +171,30 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	cn, err := c.getConn(getCtx)
 	getCancel()
 	if err != nil {
-		// acquireCtx derives its context from context.Background() and is cancelled
-		// ONLY by mc.stop (its sole non-deadline cancel source), so a context.Canceled
-		// here means the coalescer is tearing down, not that the caller's context or the
-		// pool failed. Settle retry-uncached — like the other stop paths (fetch, the
-		// serving-disabled branch below, stopCSCMissCoalescer) — so processCached re-runs
-		// each read on the still-open pool instead of surfacing a spurious cancellation,
-		// and report stopped so the loop exits without backing off.
-		if errors.Is(err, context.Canceled) {
+		// Distinguish a teardown cancellation from a genuine acquire failure by
+		// checking mc.stop DIRECTLY, not by err's value: getConn runs the dialer,
+		// credentials callbacks, and init hooks, any of which can return
+		// context.Canceled from their OWN context while the coalescer is NOT
+		// stopping. mc.stop is closed only by stopWorkers, and close(mc.stop) is
+		// ordered before acquireCtx cancels its context (which is ordered before
+		// getConn returns), so a real teardown is always visible here.
+		select {
+		case <-mc.stop:
+			// Tearing down: settle retry-uncached — like the other stop paths (fetch,
+			// the serving-disabled branch below, stopCSCMissCoalescer) — so processCached
+			// re-runs each read on the still-open pool instead of surfacing a spurious
+			// cancellation, and report stopped so the loop exits without backing off.
 			mc.settleErr(first, errCSCRetryUncached)
 			mc.drainQueueErr(errCSCRetryUncached)
 			return true, false // stop requested: exit the loop
+		default:
 		}
-		// No connection: fail the first miss plus everything queued so a caller on
-		// a deadline-less context is not blocked forever and no reservation leaks
-		// IN_PROGRESS. The caller backs off and retries; requests arriving during
-		// backoff are failed on the next attempt's drain.
+		// Genuine acquire failure (dial error, pool exhaustion, an unrelated
+		// context.Canceled from a custom dialer/creds/init hook). Fail the first miss
+		// plus everything queued so a caller on a deadline-less context is not blocked
+		// forever and no reservation leaks IN_PROGRESS, then back off and retry so the
+		// sole worker stays alive — requests arriving during backoff are failed on the
+		// next attempt's drain.
 		mc.settleErr(first, err)
 		mc.drainQueueErr(err)
 		return false, true // error end: the loop backs off before re-acquiring
