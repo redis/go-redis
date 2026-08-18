@@ -650,6 +650,16 @@ func pipelinePoolOptions(opt *Options) *Options {
 		pipelineOpt.PoolSize = DefaultPipelinePoolSize
 	}
 	pipelineOpt.MinIdleConns = 0
+	// Re-resolve MaxConcurrentDials for the pipeline pool. Options.init already
+	// defaulted/capped it to the MAIN pool size, so a pipeline pool larger than the
+	// main pool (e.g. PoolSize:1 with the default 10-slot pipeline pool) would
+	// otherwise dial only one connection at a time — an initial burst serializes
+	// slow dials and can hit PoolTimeout or spill despite idle pipeline slots.
+	// Default to the pipeline pool size; preserve an explicitly configured lower
+	// limit (post-init it survives as a value strictly below the main pool size).
+	if pipelineOpt.MaxConcurrentDials >= opt.PoolSize || pipelineOpt.MaxConcurrentDials > pipelineOpt.PoolSize {
+		pipelineOpt.MaxConcurrentDials = pipelineOpt.PoolSize
+	}
 	return pipelineOpt
 }
 
@@ -1315,14 +1325,23 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
+	return c.processStartingAt(ctx, cmd, 0)
+}
+
+// processStartingAt runs cmd like process() but starts the retry loop at
+// startAttempt. The full-duplex divert (retryOnNormalConn) passes 1 for a command
+// that already spent its initial attempt on the FD socket and came back with a
+// retryable reply, so the retry budget (MaxRetries) is not exceeded by one; it
+// passes 0 for a redirect, where the FD attempt did not execute the command.
+func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int) error {
 	opDurationCallback := otel.GetOperationDurationCallback()
 	if opDurationCallback == nil {
-		return c.processCommand(ctx, cmd, nil)
+		return c.processCommand(ctx, cmd, nil, startAttempt)
 	}
 
 	start := time.Now()
 	var state processState
-	err := c.processCommand(ctx, cmd, &state)
+	err := c.processCommand(ctx, cmd, &state, startAttempt)
 	opDurationCallback(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn, c.opt.DB)
 	return err
 }
@@ -1332,31 +1351,47 @@ type processState struct {
 	lastConn *pool.Conn
 }
 
-func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState) error {
+func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *processState, startAttempt int) error {
 	// Reject commands that would make one pooled connection diverge from CSC's
 	// tracking or database assumptions. Pipelines mirror this guard below.
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
 	if c.csc != nil && isCacheable(cmd) {
+		// The cached path does not run the MaxRetries loop, so startAttempt (only
+		// nonzero on the FD divert, which is never a cache-served read) does not apply.
 		return c.processCached(ctx, cmd, state)
 	}
-	return c.processWithRetry(ctx, cmd, nil, state)
+	return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 }
 
 // processWithRetry runs cmd through the retry loop. capture (optional) is
 // filled by the successful attempt's reply read for the CSC fetch path (see
 // cscFetchCapture).
 func (c *baseClient) processWithRetry(
-	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState,
+	ctx context.Context, cmd Cmder, capture *cscFetchCapture, state *processState, startAttempt int,
 ) error {
 	var lastConn *pool.Conn
 
 	var lastErr error
-	totalAttempts := 0
 	maxRetries := c.opt.MaxRetries
 	himportRetried := false
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	// startAttempt > 0 accounts for attempts already spent elsewhere: the
+	// full-duplex divert passes 1 when a command already used its initial attempt
+	// on the FD socket (a retryable reply), so the total (FD attempt + this loop)
+	// does not exceed MaxRetries+1. Clamp so a caller can never disable execution:
+	// startAttempt <= maxRetries guarantees the loop runs at least once.
+	if startAttempt < 0 {
+		startAttempt = 0
+	}
+	if startAttempt > maxRetries {
+		startAttempt = maxRetries
+	}
+	// Seed with startAttempt so state.attempts (reported to the OTel duration
+	// callback) counts attempts already spent before this loop — e.g. the FD socket
+	// attempt on a diverted retryable command — not just this loop's iterations.
+	totalAttempts := startAttempt
+	for attempt := startAttempt; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		attempt := attempt
 

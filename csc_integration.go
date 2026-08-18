@@ -809,25 +809,25 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// Once the drainer has stopped (owner Close, or the owner dropped without
 	// Close), no invalidations flow — a surviving clone must not serve stale hits.
 	if a := c.cscActive; a != nil && !a.Load() {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, 0)
 	}
 
 	rawKey, ok := buildCacheKey(cmd)
 	if !ok {
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, 0)
 	}
 
 	redisKeys := extractRedisKeys(cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, 0)
 	}
 
 	keyPrefix := c.cscKeyPrefix
 	if keyPrefix == "" {
 		// A successfully attached client always has a namespace. Fail closed if
 		// an incomplete custom baseClient reaches this path.
-		return c.processWithRetry(ctx, cmd, nil, state)
+		return c.processWithRetry(ctx, cmd, nil, state, 0)
 	}
 	key := cscNamespacedKey(keyPrefix, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
@@ -876,7 +876,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		}()
 	}
 
-	err := c.processWithRetry(ctx, cmd, capture, state)
+	err := c.processWithRetry(ctx, cmd, capture, state, 0)
 
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel

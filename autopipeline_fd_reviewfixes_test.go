@@ -34,6 +34,14 @@ func TestFullDuplexHandoffRecyclesPromptly(t *testing.T) {
 		t.Fatal("full-duplex engine not active")
 	}
 
+	// The FD handoff recycle Puts the moving conn so the maintnotifications OnPut
+	// hook can hand it off. This test does not wire up that manager, so install a
+	// stand-in hook that takes a marked conn out of rotation on Put — otherwise the
+	// marked conn would be handed straight back and the recycle would livelock.
+	if pp := c.getPipelinePool(); pp != nil {
+		pp.AddPoolHook(handoffSimHook{})
+	}
+
 	// Start a session and wait until the engine holds a connection.
 	if err := ap.Set(ctx, "fd:handoff:k", "v", 0).Err(); err != nil {
 		t.Fatalf("initial set: %v", err)

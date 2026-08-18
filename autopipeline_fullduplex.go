@@ -56,13 +56,18 @@ var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited"
 // error values and permanently fail innocent in-flight commands).
 var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
 
-// errFDConnMoving marks a session ended because the held connection was marked
-// for handoff (MOVING/FAILING_OVER) while a recovered carry was still being
-// replayed. Distinct from errFDReaderGone so logs and the retry decision can tell
-// a live handoff from a dead reader. Wrapped into the replay set like the other
-// desync sentinels: a handoff is by definition replayable — the whole accepted
-// tail must be re-issued on a fresh connection (which the pool routes to the new
-// endpoint), never failed.
+// errFDConnMoving signals that carry replay stopped early because the held
+// connection was marked for handoff (MOVING/FAILING_OVER) while a recovered carry
+// was still being written. The connection is still alive, so writeCarryChunked
+// returns the UNWRITTEN suffix out-of-band (NOT pushed into the in-flight deque);
+// the session then drains the already-written prefix to completion (those callers
+// get real replies — never re-executed) and Puts the connection back through a
+// clean fdRecycle, so the maintnotifications OnPut hook performs the seamless
+// handoff (queueHandoff + MarkQueuedForHandoff clears ShouldHandoff, so the conn is
+// re-usable and the worker moves it to the new endpoint). ONLY the never-sent
+// suffix is replayed on the next lease. Contrast errFDReaderGone / write errors,
+// where the connection is dead: there the suffix IS pushed into the deque and the
+// whole unacked tail is recovered and replayed, because a clean drain is impossible.
 var errFDConnMoving = errors.New("redis: autopipeline: full-duplex connection moving")
 
 // Full-duplex tuning defaults, applied by newFDEngine when the corresponding
@@ -481,7 +486,19 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 // process() is the raw exec (no hook chain) — with hooks installed the FD
 // hostHook still brackets the command and reports via req.complete(). Background
 // ctx: the command was already accepted, so it completes even under a Close.
-func (fd *fdEngine) retryOnNormalConn(req fdReq) {
+// retryStartAttempt returns the normal-path retry loop's starting attempt for an
+// FD command diverted after a MOVING/ASK redirect (0 — the command did not execute
+// on the FD socket, so it gets the full MaxRetries+1 budget) or a retryable reply
+// such as LOADING/READONLY/TRYAGAIN (1 — the initial attempt was already spent on
+// the FD socket, so counting it keeps the total at MaxRetries+1, not +2).
+func retryStartAttempt(moved, ask bool) int {
+	if moved || ask {
+		return 0
+	}
+	return 1
+}
+
+func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 	// Bound concurrent off-pipe retries to the FD window: a sustained retryable
 	// stream would otherwise spawn one goroutine per reply, all parked in
 	// backoff/pool acquisition. Blocking here blocks the READER, which stops
@@ -533,7 +550,11 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq) {
 		if req.ctx != nil {
 			rctx = context.WithoutCancel(req.ctx)
 		}
-		err := fd.ap.pipeliner.process(rctx, req.cmd)
+		// processStartingAt, not pipeliner.process: fd.client IS the pipeliner
+		// (fdClient is the *Client behind it), so this is the same raw exec, but it
+		// starts the retry loop at startAttempt — 1 for a retryable reply that already
+		// spent an attempt on the FD socket, 0 for a redirect that did not execute.
+		err := fd.client.processStartingAt(rctx, req.cmd, startAttempt)
 		req.cmd.SetErr(err)
 		req.complete()
 	}()
@@ -592,10 +613,13 @@ func (fd *fdEngine) run() {
 			// loop-top wait keeps an idle engine from churning Get/Put.
 			carry, leaseAttempts, retryAttempts = nil, 0, 0
 		case fdRecycle:
-			// Max-hold reached; conn returned cleanly. Work is pending — re-lease
-			// immediately.
+			// Conn returned cleanly (max-hold, or a mid-carry handoff clean recycle).
+			// unacked carries the never-sent suffix from a handoff recycle (nil for a
+			// plain max-hold recycle); replay it on the next lease — it was never
+			// written, so no command is re-executed. A handoff-marked conn was handed
+			// off by the OnPut hook when attempt() Put it.
 			fd.recycles.Add(1)
-			carry, leaseAttempts, retryAttempts = nil, 0, 0
+			carry, leaseAttempts, retryAttempts = unacked, 0, 0
 		case fdLeaseErr:
 			// Could not lease/init a connection for a new session (server down, pool
 			// saturated). Retry for a transient outage; once retries are exhausted,
@@ -664,8 +688,7 @@ func (fd *fdEngine) run() {
 			// permanently fail innocent in-flight commands. The NoRetry guard
 			// below still protects non-idempotent writes.
 			replayable := shouldRetry(aerr, true) ||
-				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered) ||
-				errors.Is(aerr, errFDConnMoving)
+				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered)
 			if len(unacked) > 0 && replayable &&
 				retryAttempts < fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: replay the retryable PREFIX and fail
@@ -727,8 +750,9 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 		// an unread reply tail, a partial write, or a reader protocol error — so it
 		// MUST be removed; Put()ing it would poison the pool. Keying on result (not
 		// isBadConn) is deliberate: errFDReaderGone or a plain write timeout are not
-		// classified bad-conn, yet the conn is still unusable. Clean ends go through
-		// releaseConnToPool (drains pending pushes before Put; removes if desynced).
+		// classified bad-conn, yet the conn is still unusable. Clean ends (including a
+		// handoff recycle) go through releaseConnToPool: it drains pending pushes and
+		// Puts, so the OnPut hook can perform the maintenance handoff on a marked conn.
 		if result == fdConnErr {
 			fd.pool.Remove(bg, cn, aerr)
 		} else {
@@ -863,7 +887,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// still run attempt zero, re-sending a command whose retry the caller
 					// explicitly disabled — surface the Redis error instead.
 					if moved || ask || (shouldRetry(e, false) && fd.client.opt.MaxRetries > 0) {
-						fd.retryOnNormalConn(req)
+						fd.retryOnNormalConn(req, retryStartAttempt(moved, ask))
 						done++
 						continue
 					}
@@ -936,7 +960,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	// in the SAME MaxBatchSize/MaxBatchBytes-capped chunks as freshly drained work —
 	// it can hold up to fd.window commands, so one flush would ignore MaxBatchBytes
 	// and hit a write-timeout/burst on the new connection.
-	writeErr := fd.writeCarryChunked(bg, cn, inflight, carry, readerDone)
+	carrySuffix, writeErr := fd.writeCarryChunked(bg, cn, inflight, carry, readerDone)
 	if writeErr == nil {
 		scratch := make([]fdReq, 0, fd.maxBatch)
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
@@ -1054,8 +1078,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		}
 	}
 	if writeErr != nil {
-		failOnce(writeErr)
-		result = fdConnErr
+		if errors.Is(writeErr, errFDConnMoving) {
+			// Handoff mid-carry-replay on a LIVE conn. Route to the clean fdRecycle arm
+			// below: the reader drains the already-written prefix so those callers
+			// complete normally (not re-executed), attempt then PUTS the conn so the
+			// maintnotifications OnPut hook performs the seamless handoff, and run()
+			// replays only the never-sent carrySuffix. Do NOT failOnce — nothing failed.
+			result = fdRecycle
+		} else {
+			failOnce(writeErr)
+			result = fdConnErr
+		}
 	}
 
 	switch result {
@@ -1066,10 +1099,10 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// boundary. A flush write error surfaces via the sharedErr path below.
 		if e := fd.flushBacklogForClose(bg, cn, inflight, readerDone); e != nil {
 			// The backlog write failed partway: some flushed commands have no reply
-			// coming and writeCarryChunked pushed the unwritten suffix into inflight, so
-			// closeGraceful would park the reader on replies that never arrive. Take the
-			// connection-error path: close the conn to wake the reader, then fail the
-			// whole unacked tail (accepted suffix included).
+			// coming and the unwritten suffix is in inflight (flushBacklogForClose pushes
+			// it back on any early stop), so closeGraceful would park the reader on
+			// replies that never arrive. Take the connection-error path: close the conn to
+			// wake the reader, then fail the whole unacked tail (accepted suffix included).
 			failOnce(e)
 			inflight.hardClose()
 			_ = cn.Close()
@@ -1088,17 +1121,28 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		}
 		return nil, fdGraceful, nil
 	case fdIdle, fdRecycle:
-		// Clean return: no more pushes, reader drains remaining replies, then the
-		// conn is at a RESP boundary and safe to Put back to the pool.
+		// Clean return: no more pushes, the reader drains the remaining replies (the
+		// already-written carry PREFIX included, so those callers complete normally and
+		// are NOT replayed), then the conn is at a RESP boundary and safe to Put back —
+		// a handoff-marked conn is handed off seamlessly by the OnPut hook, and run()
+		// replays only the never-sent suffix (carrySuffix).
 		inflight.closeGraceful()
 		<-readerDone
 		if sharedErr != nil {
-			// Reader failed while draining for the clean return: recover the unacked
-			// tail for replay and report the error so the conn is removed instead of
-			// Put back poisoned.
-			return inflight.takeRemaining(), fdConnErr, sharedErr
+			// Reader failed while draining for the clean return: recover the unacked tail
+			// for replay and report the error so the conn is removed instead of reused
+			// poisoned. Append carrySuffix (never-sent) after the drained tail, in order.
+			// Fresh slice — takeRemaining returns a deque-owned backing array, so
+			// appending onto it could corrupt the deque.
+			rem := inflight.takeRemaining()
+			out := make([]fdReq, 0, len(rem)+len(carrySuffix))
+			out = append(out, rem...)
+			out = append(out, carrySuffix...)
+			return out, fdConnErr, sharedErr
 		}
-		return nil, result, nil
+		// carrySuffix is the never-sent suffix to replay on the next lease (nil for a
+		// plain idle/recycle; the unwritten tail on a handoff recycle).
+		return carrySuffix, result, nil
 	default: // fdConnErr
 		// Stop the reader, wait for it to exit, THEN take the unacked tail: the reader
 		// advances every command it completes, so taking only after <-readerDone is
@@ -1176,8 +1220,19 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 
 // writeCarryChunked re-issues a recovered tail on a fresh connection in the same
 // capped chunks as freshly drained work (see fdBatchEnd), so a large recovered
-// window is not flushed in one oversized write. Returns the first write error.
-func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq, readerDone <-chan struct{}) error {
+// window is not flushed in one oversized write.
+//
+// Returns (unwritten, err):
+//   - (nil, nil): the whole carry was written.
+//   - (suffix, errFDConnMoving): the connection was marked for handoff mid-replay
+//     on a still-alive connection. The unwritten suffix is returned OUT-OF-BAND
+//     (not pushed into inflight) so the caller can drain the already-written prefix
+//     to completion, REMOVE the moving connection, and replay ONLY the never-sent
+//     suffix on a fresh connection — the written prefix is not re-executed.
+//   - (nil, errFDReaderGone | write error): the connection is dead; the unwritten
+//     suffix is pushed into inflight so the whole unacked tail is recovered and
+//     replayed at-least-once (a clean drain is impossible).
+func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq, readerDone <-chan struct{}) (unwritten []fdReq, err error) {
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	// stuck becomes true if the reader is observed not draining under a full
 	// window; from then on we stop window-gating and just write, so a graceful
@@ -1195,21 +1250,20 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			select {
 			case <-readerDone:
 				inflight.pushBatch(carry[i:])
-				return errFDReaderGone
+				return nil, errFDReaderGone
 			default:
 			}
 		}
 		// Between chunks, stop if the connection was marked for handoff, exactly as
 		// the serve loop polls ShouldHandoff: a MOVING/FAILING_OVER push drained by
 		// the reader marks cn, and carry replay runs BEFORE the serve loop, so a
-		// large replay must not keep streaming to a moving node and delay the
-		// handoff past its deadline. Push the unwritten remainder and return
-		// errFDConnMoving so run() replays the whole accepted tail on a fresh
-		// connection (which the pool routes to the new endpoint). ShouldHandoff() is
-		// an atomic load, safe to poll here while the reader sets it.
+		// large replay must not keep streaming to a moving node. The connection is
+		// still ALIVE, so return the unwritten suffix OUT-OF-BAND (do NOT push it into
+		// inflight): the caller drains the already-written prefix to completion (no
+		// re-execution), REMOVES the moving connection, and replays only the suffix on
+		// a fresh one. ShouldHandoff() is an atomic load, safe to poll here.
 		if cn.ShouldHandoff() {
-			inflight.pushBatch(carry[i:])
-			return errFDConnMoving
+			return carry[i:], errFDConnMoving
 		}
 		// Bound in-flight to the window between chunks, like the serve loop — which
 		// uses a PREDICATE LOOP, not a one-shot wait: inflight.room is a cap-1
@@ -1227,10 +1281,10 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// terminating Close outranks a transient teardown overshoot.
 		for !stuck && readerDone != nil && inflight.len() >= fd.window {
 			// Poll handoff on every wake too, like the serve loop's window gate, so a
-			// MOVING mark under backpressure recycles within one drained reply.
+			// MOVING mark under backpressure recycles within one drained reply. Suffix
+			// out-of-band (no push), same as the between-chunk check above.
 			if cn.ShouldHandoff() {
-				inflight.pushBatch(carry[i:])
-				return errFDConnMoving
+				return carry[i:], errFDConnMoving
 			}
 			timer := time.NewTimer(fdCloseFlushWait)
 			select {
@@ -1238,7 +1292,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			case <-readerDone:
 				timer.Stop()
 				inflight.pushBatch(carry[i:])
-				return errFDReaderGone
+				return nil, errFDReaderGone
 			case <-timer.C:
 				stuck = true
 			}
@@ -1265,11 +1319,11 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			if end < len(carry) {
 				inflight.pushBatch(carry[end:])
 			}
-			return e
+			return nil, e
 		}
 		i = end
 	}
-	return nil
+	return nil, nil
 }
 
 // fdFirstNoRetry returns the index of the first NoRetry command in reqs, or
@@ -1458,7 +1512,16 @@ func (fd *fdEngine) flushBacklogForClose(bg context.Context, cn *pool.Conn, infl
 		case r := <-fd.ch:
 			backlog = append(backlog, r)
 		default:
-			return fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone)
+			// Close flush: if a handoff mark fires mid-flush, writeCarryChunked returns
+			// the unwritten suffix out-of-band; push it into inflight so the caller's
+			// conn-error path (takeRemaining) recovers/fails it instead of hanging its
+			// callers. The dead-conn paths already pushed their suffix and return an
+			// empty one, so this never double-pushes.
+			suffix, e := fd.writeCarryChunked(bg, cn, inflight, backlog, readerDone)
+			if len(suffix) > 0 {
+				inflight.pushBatch(suffix)
+			}
+			return e
 		}
 	}
 }

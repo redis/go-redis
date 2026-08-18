@@ -899,6 +899,25 @@ func (c *failWriteNetConn) Write(b []byte) (int, error) {
 // BEFORE writing it, so when a multi-chunk carry write fails the un-written
 // suffix must be pushed too — otherwise those accepted commands are in neither
 // fd.ch nor the deque and their callers hang. Deterministic and dial-free.
+// handoffSimHook stands in for the maintnotifications OnPut hook in tests that do
+// not wire up the full manager: a connection marked for handoff is taken out of
+// rotation on Put, so the FD writer's clean handoff recycle (which Puts the conn)
+// makes progress. The real hook instead clears the mark (MarkQueuedForHandoff) and
+// reconnects the conn seamlessly; either way a moving conn is never handed straight
+// back to the writer still marked, which is what this hook guarantees for the test.
+type handoffSimHook struct{}
+
+func (handoffSimHook) OnGet(context.Context, *pool.Conn, bool) (bool, error) { return true, nil }
+
+func (handoffSimHook) OnPut(_ context.Context, cn *pool.Conn) (shouldPool, shouldRemove bool, err error) {
+	if cn.ShouldHandoff() {
+		return false, true, nil // moving conn: take it out of rotation (fresh dial next lease)
+	}
+	return true, false, nil
+}
+
+func (handoffSimHook) OnRemove(context.Context, *pool.Conn, error) {}
+
 func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 	cn := pool.NewConn(&failWriteNetConn{})
 	fd := &fdEngine{
@@ -914,7 +933,7 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v")}
 	}
 
-	if err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, nil); err == nil {
+	if _, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, nil); err == nil {
 		t.Fatal("writeCarryChunked returned nil error despite a failing write")
 	}
 	// The failing chunk was pushed by writeBatch; the suffix must be pushed too, so
@@ -925,14 +944,16 @@ func TestWriteCarryChunkedRecoversSuffixOnWriteError(t *testing.T) {
 	}
 }
 
-// TestWriteCarryChunkedStopsOnHandoff pins the P1 fix (review thread on #3964):
-// a connection marked for handoff (MOVING/FAILING_OVER) while a recovered carry
-// is being replayed must stop promptly — not stream the whole tail to a moving
-// node — return errFDConnMoving, and push the entire carry so run() replays it on
-// a fresh connection instead of failing (errFDConnMoving is in the replayable set).
+// TestWriteCarryChunkedStopsOnHandoff pins the clean-recycle contract (#3964
+// review): a connection marked for handoff (MOVING/FAILING_OVER) while a recovered
+// carry is being replayed must stop promptly and return the UNWRITTEN suffix
+// out-of-band (errFDConnMoving) WITHOUT pushing it into the in-flight deque — so
+// the caller drains the already-written prefix and replays only the never-sent
+// suffix, never re-executing an already-sent command on the still-alive node.
 func TestWriteCarryChunkedStopsOnHandoff(t *testing.T) {
-	// A failing-write conn is fine: the handoff guard is at the TOP of the loop,
-	// before any write, so a marked conn must return before writeBatch is reached.
+	// Marked for handoff up front: the guard is at the TOP of the loop, before any
+	// write, so the whole carry is the unwritten suffix and nothing is sent. A
+	// failing-write conn is fine — writeBatch is never reached.
 	cn := pool.NewConn(&failWriteNetConn{})
 	if err := cn.MarkForHandoff(":6379", 1); err != nil {
 		t.Fatalf("MarkForHandoff: %v", err)
@@ -952,13 +973,18 @@ func TestWriteCarryChunkedStopsOnHandoff(t *testing.T) {
 
 	// readerDone open (not closed) so the handoff branch fires, not the reader-gone one.
 	readerDone := make(chan struct{})
-	err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone)
+	suffix, err := fd.writeCarryChunked(context.Background(), cn, inflight, carry, readerDone)
 	if !errors.Is(err, errFDConnMoving) {
 		t.Fatalf("writeCarryChunked returned %v, want errFDConnMoving after the conn was marked for handoff", err)
 	}
-	// The whole carry must be recoverable so run() can replay it on a fresh conn.
-	if got := inflight.len(); got != n {
-		t.Fatalf("in-flight deque holds %d of %d carry commands after handoff — the tail was dropped (callers would hang or lose commands)", got, n)
+	// The whole (unwritten) carry is returned as the suffix to replay on the next lease.
+	if len(suffix) != n {
+		t.Fatalf("returned suffix has %d of %d carry commands — the tail was dropped (callers would hang)", len(suffix), n)
+	}
+	// Critically, the suffix must NOT be in the in-flight deque: a clean drain of the
+	// (empty) written prefix must not wait on replies for commands that were never sent.
+	if got := inflight.len(); got != 0 {
+		t.Fatalf("in-flight deque holds %d entries after a clean handoff recycle — the unwritten suffix must stay out-of-band, not be pushed", got)
 	}
 }
 
@@ -1623,10 +1649,12 @@ func TestFullDuplexRetryDivertsToNormalConn(t *testing.T) {
 	}
 
 	// As the reader does on a retryable error: hand an FD request to the divert.
+	// startAttempt 1 mirrors the retryable-reply path (the FD socket attempt is
+	// already spent), so the normal-path loop stays within the retry budget.
 	cmd := NewStringCmd(ctx, "get", "fd:retry:k")
 	b := newAPBatch()
 	cmd.setReady(b)
-	ap.fd.retryOnNormalConn(fdReq{cmd: cmd, batch: b})
+	ap.fd.retryOnNormalConn(fdReq{cmd: cmd, batch: b}, 1)
 
 	select {
 	case <-b.done:
@@ -1635,6 +1663,29 @@ func TestFullDuplexRetryDivertsToNormalConn(t *testing.T) {
 	}
 	if v, err := cmd.Result(); err != nil || v != "v" {
 		t.Fatalf("diverted GET = %q err=%v, want \"v\" (re-run on the normal path)", v, err)
+	}
+}
+
+// TestRetryStartAttempt pins the retry-budget accounting for FD diverts (#3964
+// review): a MOVING/ASK redirect did not execute on the FD socket, so it gets the
+// full budget (startAttempt 0); a retryable reply (LOADING/READONLY/TRYAGAIN)
+// already spent the initial attempt on the FD socket, so the normal-path loop
+// starts at attempt 1 — otherwise the command runs MaxRetries+2 times, one over
+// budget.
+func TestRetryStartAttempt(t *testing.T) {
+	cases := []struct {
+		name        string
+		moved, ask  bool
+		wantAttempt int
+	}{
+		{"moved", true, false, 0},
+		{"ask", false, true, 0},
+		{"retryable", false, false, 1},
+	}
+	for _, tc := range cases {
+		if got := retryStartAttempt(tc.moved, tc.ask); got != tc.wantAttempt {
+			t.Errorf("retryStartAttempt(moved=%v, ask=%v) = %d, want %d", tc.moved, tc.ask, got, tc.wantAttempt)
+		}
 	}
 }
 
