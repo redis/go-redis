@@ -281,6 +281,7 @@ type fdEngine struct {
 
 	recycles    atomic.Int64               // clean returns (idle + max-hold); observability/tests
 	curInflight atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
+	curConn     atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
 
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
 	closed   bool         // set once run() is tearing down; submit then rejects new work
@@ -468,20 +469,25 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq) {
 	// pool, independent of the reader waiting here.
 	// Interruptible acquire: the reader must not park here past Close. A wait is
 	// otherwise BOUNDED — every slot holder is a retry running through process(),
-	// whose own timeouts/backoff guarantee it releases — but on Close nothing
-	// should keep the reader from observing teardown, so fail the request
-	// directly instead.
+	// whose own timeouts/backoff guarantee it releases. On Close, though, the
+	// command was already ACCEPTED and came back with a retryable/redirect reply,
+	// so failing it ErrClosed would break Close's accepted-work drain contract (and
+	// every subsequent retryable reply in the tail would hit the same path). So on
+	// ap.ctx cancellation, run the retry WITHOUT the sem bound — there is no
+	// sustained new load during teardown — still tracked by retryWg so Close waits
+	// for it to settle with its real outcome.
+	acquired := false
 	select {
 	case fd.retrySem <- struct{}{}:
+		acquired = true
 	case <-fd.ap.ctx.Done():
-		req.cmd.SetErr(ErrClosed)
-		req.complete()
-		return
 	}
 	fd.retryWg.Add(1)
 	go func() {
 		defer func() {
-			<-fd.retrySem
+			if acquired {
+				<-fd.retrySem
+			}
 			fd.retryWg.Done()
 		}()
 		// process runs user code (hooks, arg encoders) and can panic; without
@@ -712,7 +718,21 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// It records the create-time metric, unwraps the init error, and Removes the
 	// conn on any failure (so the defer, seeing cn=nil, does not double-release); it
 	// does NOT Put the conn, which suits the held-conn model.
-	if e := fd.client.initPooledConn(bg, fd.pool, cn); e != nil {
+	//
+	// Initialize with the SESSION-INITIATING caller's context (values only, via
+	// WithoutCancel), not context.Background(): a CredentialsProviderContext
+	// derives credentials from context values, and Background made those invisible
+	// so such providers rejected FD sessions or authed with fallback identity.
+	// Full-duplex holds ONE connection for MANY callers, so credentials are
+	// necessarily SESSION-scoped (the first caller's), not per-call — the same
+	// limitation every shared/pooled connection has; documented on FullDuplex.
+	// WithoutCancel keeps the values but drops the caller's deadline/cancel, so one
+	// caller's ctx expiry cannot abort an init the whole session depends on.
+	initCtx := bg
+	if len(carry) > 0 && carry[0].ctx != nil {
+		initCtx = context.WithoutCancel(carry[0].ctx)
+	}
+	if e := fd.client.initPooledConn(initCtx, fd.pool, cn); e != nil {
 		cn = nil // initPooledConn already Removed it
 		return carry, fdLeaseErr, e
 	}
@@ -726,6 +746,8 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
 	inflight := newFDInflight()
 	fd.curInflight.Store(inflight) // test observability (peak in-flight)
+	fd.curConn.Store(cn)           // test observability (handoff)
+	defer fd.curConn.Store(nil)
 	readerDone := make(chan struct{})
 
 	// Honor opt.ReadTimeout as-is for each per-reply read: options.go maps a
@@ -908,6 +930,19 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			case <-readerDone:
 				break serve // result stays fdConnErr; unacked tail is recovered
 			default:
+			}
+			// A maintenance MOVING/FAILING_OVER push (drained by the reader) marks
+			// the held connection for handoff. The pool queues the handoff only when
+			// the conn is Put back, so end this session promptly with a CLEAN recycle
+			// (drain in-flight to a RESP boundary, then Put) instead of continuing to
+			// write to a node known to be moving until idle/max-hold — otherwise the
+			// handoff can miss its deadline. ShouldHandoff() is an atomic load, so it
+			// is safe to poll here while the reader sets it; room fires on every
+			// reader advance, so a writer parked on the window gate above re-checks
+			// this within one drained reply.
+			if cn.ShouldHandoff() {
+				result = fdRecycle
+				break serve
 			}
 			select {
 			case req := <-fd.ch:
@@ -1111,6 +1146,23 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 				inflight.pushBatch(carry[i:])
 				return errFDReaderGone
 			default:
+			}
+		}
+		// Bound in-flight to the window between chunks, exactly as the serve loop
+		// does. On graceful Close this writes the backlog on top of replies still
+		// in flight, so without the gate a small FullDuplexWindow is exceeded by
+		// up to ~2x (window + buffered backlog), violating the option's documented
+		// hard bound. Wait for the reader to drain below the window; if the reader
+		// is gone, stop and push the remainder for recovery (same as the check
+		// above). The reader is live on every path that reaches here, so this
+		// cannot outlast reply progress any longer than the existing <-readerDone
+		// drain already does.
+		for readerDone != nil && inflight.len() >= fd.window {
+			select {
+			case <-inflight.room:
+			case <-readerDone:
+				inflight.pushBatch(carry[i:])
+				return errFDReaderGone
 			}
 		}
 		end := fdBatchEnd(carry, i, fd.maxBatch, byteLimit)
