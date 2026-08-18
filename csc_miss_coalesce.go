@@ -277,6 +277,24 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// claimed cmd, wait rather than race by reusing cmd. Either way return the
 		// context error, matching the non-coalesced path (processWithRetry), so a
 		// cancelled Get never returns a value depending on who won the CAS.
+		//
+		// Report the cancellation metric here, like processWithRetry: the reader may
+		// still complete the background fetch (a success via applyAndSettle, or its
+		// own error via settleErr), so neither of those records THIS caller's
+		// context cancellation — without this the cancellation rate is undercounted
+		// whenever miss coalescing is enabled. Attribute against the caller's ctx.
+		//
+		// Pass a nil conn deliberately: req.servedBy is written by the session and
+		// only safe to read AFTER the req.done receive (that receive is the
+		// happens-before edge, see the field doc), which has NOT happened on this
+		// branch — reading it here would race the engine's write and, on a
+		// cancellation that beats the serve, be nil anyway. The metric recorder
+		// treats a nil conn as "no peer attributes", matching processWithRetry when
+		// it cancels before a connection is obtained.
+		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+			errorType, statusCode, isInternal := classifyCommandError(ctx.Err())
+			errorCallback(ctx, errorType, nil, statusCode, isInternal, 0)
+		}
 		if !req.claimAbandon() {
 			<-req.done
 			return req.servedBy, ctx.Err()
