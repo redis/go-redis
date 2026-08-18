@@ -606,13 +606,15 @@ func (opt *Options) init() {
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// auto-detect endpoint type if not specified
-	endpointType := opt.MaintNotificationsConfig.EndpointType
-	if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
-		// Auto-detect endpoint type if not specified
-		endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+	// skip endpoint detection when maint notifications are disabled.
+	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		endpointType := opt.MaintNotificationsConfig.EndpointType
+		// auto-detect endpoint type if not specified
+		if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
+			endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+		}
+		opt.MaintNotificationsConfig.EndpointType = endpointType
 	}
-	opt.MaintNotificationsConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {

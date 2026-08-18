@@ -1875,7 +1875,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
-	return proto.Scan([]byte(cmd.val), val)
+	return proto.Scan(util.StringToBytes(cmd.val), val)
 }
 
 func (cmd *StringCmd) String() string {
