@@ -436,6 +436,14 @@ type apBatch struct {
 	// registered — which is every standalone batch, always, and a cluster
 	// batch outside its node fan-out window.
 	nodeCount atomic.Int32
+	// pooled marks a batch drawn from fdBlockingBatchPool: its done channel is
+	// buffered(1) and completion signals via a non-blocking SEND (see close) so
+	// the channel is reusable, instead of the close()-once unbuffered channel
+	// every other batch uses. Only the full-duplex BLOCKING face produces these
+	// — the one path where the batch is a single-waiter completion signal that
+	// is never installed on the command (no setReady) and is discarded after
+	// Wait. Immutable for the batch's lifecycle; set at construction.
+	pooled bool
 }
 
 // enterNodeDispatch registers the calling goroutine as an executor of this
@@ -539,9 +547,63 @@ func registerBatchExecutors(cmds []Cmder) func() {
 
 func newAPBatch() *apBatch { return &apBatch{done: make(chan struct{})} }
 
-// close completes the batch exactly once, waking every waiter.
+// fdBlockingBatchPool recycles apBatch objects for the full-duplex BLOCKING
+// face — the single path where a batch is a pure, single-waiter completion
+// signal: that face never setReady()s the command (so the batch is invisible to
+// await/readyBatch/resultReady — verified: those all read cmd.ready, set only by
+// setReady) and discards the batch right after Wait returns. Pooled batches use
+// a buffered(1) done channel signalled by a non-blocking SEND (see close), so
+// the channel — the bulk of newAPBatch's ~190 B/op — is reused rather than
+// closed and thrown away. Every other batch (async face, shared flush batches
+// with many/repeat readers) keeps the unbuffered close()-once channel.
+var fdBlockingBatchPool = sync.Pool{
+	New: func() any { return &apBatch{done: make(chan struct{}, 1), pooled: true} },
+}
+
+// getFDBlockingBatch returns a reset pooled batch. Fields are cleared
+// individually (go vet copylocks forbids *b = apBatch{} because of nodeMu); a
+// stale closed=true would make the next completion signal a no-op and park the
+// caller forever, so the reset is not optional.
+func getFDBlockingBatch() *apBatch {
+	b := fdBlockingBatchPool.Get().(*apBatch)
+	b.closed.Store(false)
+	b.dispGid.Store(0)
+	b.nodeCount.Store(0)
+	b.nodeGids = nil
+	// Drain any stray signal so the reused channel starts empty. Insurance: the
+	// blocking face always drains done in Wait, so this is normally a no-op.
+	select {
+	case <-b.done:
+	default:
+	}
+	return b
+}
+
+// putFDBlockingBatch returns a pooled batch after its single waiter has woken.
+// Safe only once the batch is complete and unreferenced (see processBlocking).
+func putFDBlockingBatch(b *apBatch) {
+	if b == nil || !b.pooled {
+		return
+	}
+	fdBlockingBatchPool.Put(b)
+}
+
+// close completes the batch exactly once, waking its waiter(s).
 func (b *apBatch) close() {
 	if b.closed.CompareAndSwap(false, true) {
+		if b.pooled {
+			// Buffered(1) done: signal with a non-blocking send so the channel
+			// stays reusable (a closed channel cannot be reused). The CAS makes
+			// exactly one send and cap 1 makes it never block; the one blocking
+			// waiter (AutoFuture.Wait) drains it. Every completer — reader,
+			// failReqs, shutdownFlush, flushBacklogForClose — funnels through
+			// here, so this single branch covers them all.
+			select {
+			case b.done <- struct{}{}:
+			default:
+			}
+			return
+		}
 		close(b.done)
 	}
 }
@@ -1601,7 +1663,20 @@ func (ap *AutoPipeliner) processAsync(ctx context.Context, cmd Cmder) error {
 // MaxConcurrentBatches: a caller cannot issue its next command until this one
 // returns, so its commands execute in submit order.
 func (ap *AutoPipeliner) processBlocking(ctx context.Context, cmd Cmder) error {
-	return ap.submit(ctx, cmd).Wait()
+	f := ap.submit(ctx, cmd)
+	err := f.Wait()
+	// Recycle the pooled completion batch. After Wait the batch is complete and
+	// unreferenced: the blocking face never installs it on the command (no
+	// setReady), and the reader drops its fdReq — and with it the batch pointer —
+	// as it advances past the just-completed command, so processBlocking is the
+	// last holder. Gate on pooled (excludes completedBatch and every non-FD /
+	// diverted / async path, all of which use newAPBatch) and dispGid==0
+	// (insurance: a stamped dispatcher gid would mean an executor-goroutine Wait
+	// path that can return without draining done).
+	if b := f.batch; b != nil && b.pooled && b.dispGid.Load() == 0 {
+		putFDBlockingBatch(b)
+	}
+	return err
 }
 
 // completedBatch is a reusable already-completed batch: returned both for

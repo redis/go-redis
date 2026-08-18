@@ -443,10 +443,20 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
-	b := newAPBatch()
 	var hookDone chan struct{}
 	if fd.ap.pipeliner.hookCount() > 0 {
 		hookDone = make(chan struct{})
+	}
+	// Hook-free blocking face: the batch is a single-waiter completion signal
+	// discarded after Wait, so draw it from the pool (buffered done, recycled in
+	// processBlocking). Every other shape — the async face (batch installed on
+	// the command, read repeatedly) and the hooked path (host goroutine owns
+	// completion) — needs the close()-once channel.
+	var b *apBatch
+	if hookDone == nil && fd.ap.blocking {
+		b = getFDBlockingBatch()
+	} else {
+		b = newAPBatch()
 	}
 	req := fdReq{cmd: cmd, batch: b, hookDone: hookDone, ctx: ctx, attempts: 1}
 
