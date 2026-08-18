@@ -247,7 +247,9 @@ type Options struct {
 
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
 	// Setting this alone is enough to create the dedicated pipeline pool; the
-	// pipeline buffer sizes then default to ReadBufferSize/WriteBufferSize.
+	// pipeline buffer sizes then default to the LARGER of the regular buffer size
+	// (ReadBufferSize/WriteBufferSize) and DefaultPipelineBufferSize (64 KiB), so
+	// each pipeline connection allocates at least 64 KiB per direction.
 	//
 	// Pipelining typically needs fewer connections than regular operations because
 	// batching reduces connection contention. A smaller pool saves memory while

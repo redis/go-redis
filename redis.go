@@ -2087,7 +2087,17 @@ func NewClient(opt *Options) *Client {
 	}
 
 	if opt.StreamingCredentialsProvider != nil {
-		c.streamingCredentialsManager = streaming.NewManager(c.connPool, c.opt.PoolTimeout)
+		// Size the re-auth worker semaphore for the COMBINED ceiling of every pool
+		// the hook is registered on: the same hook drives the main pool AND the
+		// (possibly larger) dedicated pipeline pool, so a credential rotation must
+		// be able to re-AUTH connections from both concurrently. Sizing to only the
+		// main PoolSize would serialize pipeline re-auths behind PoolSize workers,
+		// leaving pipeline capacity unavailable well past reAuthTimeout.
+		workers := c.connPool.Size()
+		if pp := c.getPipelinePool(); pp != nil {
+			workers += pp.Size()
+		}
+		c.streamingCredentialsManager = streaming.NewManagerWithWorkers(c.connPool, c.opt.PoolTimeout, workers)
 		c.connPool.AddPoolHook(c.streamingCredentialsManager.PoolHook())
 		if pp := c.getPipelinePool(); pp != nil {
 			pp.AddPoolHook(c.streamingCredentialsManager.PoolHook())

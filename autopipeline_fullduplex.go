@@ -862,11 +862,15 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// Per-command OTel duration (write→reply): the FD reader bypasses
 				// process, which is what normally emits it. Inline-completed commands
 				// only — a diverted command emits its own through process.
+				// req.ctx carries the caller's span for telemetry correlation
+				// (exemplars, context-scoped attrs); fall back to bg only when nil.
+				// Shared by the duration and error callbacks so both attribute to the
+				// request context, matching process().
+				octx := req.ctx
+				if octx == nil {
+					octx = bg
+				}
 				if cb := otel.GetOperationDurationCallback(); cb != nil {
-					octx := req.ctx
-					if octx == nil {
-						octx = bg
-					}
 					cb(octx, time.Since(req.writtenAt), req.cmd, 1, e, cn, fd.client.opt.DB)
 				}
 				// Same parity for errors: an inline-completed non-retryable Redis error
@@ -875,7 +879,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				if e != nil {
 					if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 						errorType, statusCode, isInternal := classifyCommandError(e)
-						errorCallback(bg, errorType, cn, statusCode, isInternal, 0)
+						errorCallback(octx, errorType, cn, statusCode, isInternal, 0)
 					}
 				}
 				req.complete() // wake the caller, or hand off to the hook host
