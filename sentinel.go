@@ -48,6 +48,8 @@ type FailoverOptions struct {
 	// Allows routing read-only commands to the closest master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteByLatency bool
+	// RouteByLatencyTolerance is passed through to ClusterOptions; see its documentation.
+	RouteByLatencyTolerance time.Duration
 	// Allows routing read-only commands to the random master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteRandomly bool
@@ -328,9 +330,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MaxRedirects: opt.MaxRetries,
 
-		ReadOnly:       opt.ReplicaOnly,
-		RouteByLatency: opt.RouteByLatency,
-		RouteRandomly:  opt.RouteRandomly,
+		ReadOnly:                opt.ReplicaOnly,
+		RouteByLatency:          opt.RouteByLatency,
+		RouteByLatencyTolerance: opt.RouteByLatencyTolerance,
+		RouteRandomly:           opt.RouteRandomly,
 
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
