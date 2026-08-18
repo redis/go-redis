@@ -674,4 +674,17 @@ var _ = Describe("PubSub", func() {
 		Expect(msg.Channel).To(Equal("mychannel"))
 		Expect(msg.Payload).To(Equal(text))
 	})
+
+	It("closes Channel when PubSub with sticky error is closed", func() {
+		ring := redis.NewRing(&redis.RingOptions{})
+		defer ring.Close()
+
+		// Ring.Subscribe with no channels returns a failedPubSub with stickyErr
+		pubsub := ring.Subscribe(ctx)
+
+		ch := pubsub.Channel()
+		Expect(pubsub.Close()).To(Succeed())
+
+		Eventually(ch, 5*time.Second).Should(BeClosed())
+	})
 })
