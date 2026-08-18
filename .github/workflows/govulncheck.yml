@@ -3,7 +3,7 @@ name: govulncheck
 
 on:
   pull_request:
-    branches: [master, v9, v9.7, v9.8, "ndyakov/**", "ofekshenawa/**", "ce/**", "feature/**"]
+    branches: [master, v9, v9.7, v9.8, "ndyakov/**", "ofekshenawa/**","vkotsev/**", "ce/**", "feature/**"]
   push:
     branches: [master, v9, "v9.*"]
   schedule:
@@ -33,7 +33,7 @@ jobs:
           cache: true
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
 
       - name: Run govulncheck (all modules)
         shell: bash
