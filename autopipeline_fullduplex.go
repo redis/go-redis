@@ -67,6 +67,13 @@ const (
 	fdDefaultMaxHold = 5 * time.Second
 )
 
+// fdCloseFlushWait bounds how long the graceful-Close backlog flush waits for
+// the reader to drain below the window before giving up the window bound (see
+// writeCarryChunked). Long enough that a live reader always drains within it,
+// short enough that a stuck reader (quiet peer, ReadTimeout disabled) does not
+// stall Close.
+const fdCloseFlushWait = time.Second
+
 // fdResult is why a full-duplex session ended.
 type fdResult int
 
@@ -417,14 +424,18 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	// crash the process (and leave the caller blocked on b). Recover, fail the
 	// command, and close the batch so the waiter always wakes — mirroring the
 	// dispatch path's recoverDispatchPanic.
-	nextCalled := false
+	// awaited tracks whether hookDone has already been received, so no path awaits
+	// it twice. hookDone is closed (not sent) by complete(), so a second receive is
+	// harmless in practice, but tracking it keeps the recover path unambiguously
+	// free of a redundant await regardless of where a panic lands.
+	awaited := false
 	defer func() {
 		if r := recover(); r != nil {
 			// The command was already streamed, so the reader still owns cmd and will
-			// write its reply into it. A panic BEFORE next() means hookDone was never
-			// awaited — await it here so the reader's writes happen-before the caller's
-			// reads. After next() it was already awaited.
-			if !nextCalled {
+			// write its reply into it. If hookDone was not yet awaited (a panic before
+			// next(), or before the short-circuit await below), await it here so the
+			// reader's writes happen-before the caller's reads.
+			if !awaited {
 				<-hookDone
 			}
 			if cmd.rawErr() == nil {
@@ -435,8 +446,8 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 		}
 	}()
 	err := fd.ap.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
-		nextCalled = true
-		<-hookDone          // reply landed (or the command was failed)
+		<-hookDone // reply landed (or the command was failed)
+		awaited = true
 		return cmd.rawErr() // direct read: cmd.Err() would await batch.done, which
 		//                     this goroutine itself closes below → self-deadlock.
 	})
@@ -444,8 +455,9 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	// hookDone, but the command is already on the wire and the reader will still
 	// write into cmd: await that before releasing the caller. The command still
 	// executed; the hook's error is honored anyway (see the FullDuplex GoDoc).
-	if !nextCalled {
+	if !awaited {
 		<-hookDone
+		awaited = true
 	}
 	cmd.SetErr(err) // honor a hook that rewrote / short-circuited the result
 	b.close()       // now wake the waiter
@@ -501,7 +513,18 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq) {
 				req.complete()
 			}
 		}()
-		err := fd.ap.pipeliner.process(context.Background(), req.cmd)
+		// Retry on the caller's context with cancellation removed (like the FD
+		// lease init): a CredentialsProviderContext derives credentials from
+		// context values, so context.Background() here would reject the retry or
+		// authenticate it as the wrong identity even though the FD session
+		// initialized correctly. WithoutCancel keeps the values but drops the
+		// caller's deadline/cancel, so the accepted command still completes its
+		// retry under a Close.
+		rctx := context.Background()
+		if req.ctx != nil {
+			rctx = context.WithoutCancel(req.ctx)
+		}
+		err := fd.ap.pipeliner.process(rctx, req.cmd)
 		req.cmd.SetErr(err)
 		req.complete()
 	}()
@@ -910,6 +933,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// a slow/stalled peer cannot grow in-flight without bound. Done here
 			// (not mid-batch) so no drained work is ever held during the wait.
 			for inflight.len() >= fd.window {
+				// Poll handoff here too, not just after the gate: under sustained
+				// backpressure the writer can sit in this loop, and room fires on
+				// every reader advance, so a MOVING mark is observed within one
+				// drained reply instead of waiting for max-hold.
+				if cn.ShouldHandoff() {
+					result = fdRecycle
+					break serve
+				}
 				select {
 				case <-inflight.room:
 				case <-readerDone:
@@ -1134,6 +1165,12 @@ func fdBatchEnd(reqs []fdReq, start, maxBatch int, byteLimit int64) int {
 // window is not flushed in one oversized write. Returns the first write error.
 func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, inflight *fdInflight, carry []fdReq, readerDone <-chan struct{}) error {
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
+	// stuck becomes true if the reader is observed not draining under a full
+	// window; from then on we stop window-gating and just write, so a graceful
+	// Close cannot hang here waiting on a reader that never advances (a quiet peer
+	// with ReadTimeout disabled). A truly stuck reader is caught downstream by the
+	// graceful-drain <-readerDone / Close backstop.
+	stuck := false
 	for i := 0; i < len(carry); {
 		// Between chunks, stop if the reader is gone (decode panic, protocol
 		// error mid-replay): writing further chunks to a reader-less connection
@@ -1148,24 +1185,38 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			default:
 			}
 		}
-		// Bound in-flight to the window between chunks, exactly as the serve loop
-		// does. On graceful Close this writes the backlog on top of replies still
-		// in flight, so without the gate a small FullDuplexWindow is exceeded by
-		// up to ~2x (window + buffered backlog), violating the option's documented
-		// hard bound. Wait for the reader to drain below the window; if the reader
-		// is gone, stop and push the remainder for recovery (same as the check
-		// above). The reader is live on every path that reaches here, so this
-		// cannot outlast reply progress any longer than the existing <-readerDone
-		// drain already does.
-		for readerDone != nil && inflight.len() >= fd.window {
+		// Bound in-flight to the window between chunks, like the serve loop. On
+		// graceful Close this writes the backlog on top of replies still in flight,
+		// so without the gate a small FullDuplexWindow is exceeded by up to ~2x
+		// (window + buffered backlog). The serve loop keys its wait on ap.ctx, but
+		// here ap.ctx is already cancelled (that is why we are flushing), so the
+		// wait is BOUNDED instead: if the reader does not drain within the bound,
+		// stop gating (set stuck) so Close cannot block forever — correctness of a
+		// terminating Close outranks a transient teardown overshoot.
+		if !stuck && readerDone != nil && inflight.len() >= fd.window {
+			timer := time.NewTimer(fdCloseFlushWait)
 			select {
 			case <-inflight.room:
 			case <-readerDone:
+				timer.Stop()
 				inflight.pushBatch(carry[i:])
 				return errFDReaderGone
+			case <-timer.C:
+				stuck = true
+			}
+			timer.Stop()
+		}
+		// Cap this chunk to the remaining window room (not just MaxBatchSize): right
+		// after the wait releases, a full MaxBatchSize chunk on top of window-1
+		// in-flight would still nearly double the bound. Once stuck, write full
+		// chunks to finish the flush promptly.
+		lim := fd.maxBatch
+		if !stuck {
+			if room := fd.window - inflight.len(); room > 0 && room < lim {
+				lim = room
 			}
 		}
-		end := fdBatchEnd(carry, i, fd.maxBatch, byteLimit)
+		end := fdBatchEnd(carry, i, lim, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
 			// writeBatch pushed carry[i:end] into inflight before the failed write, but
 			// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
