@@ -585,7 +585,9 @@ func (c *PubSub) Channel(opts ...ChannelOption) <-chan *Message {
 	if c.msgCh == nil {
 		// Already using ChannelWithSubscriptions — return a closed channel
 		// instead of panicking so callers can recover (issue #3761).
-		internal.Logger.Printf(c.getContext(),
+		// Use Background: getContext reads c.cmd which the other channel's
+		// Receive loop may write concurrently (data race under -race).
+		internal.Logger.Printf(context.Background(),
 			"redis: Channel can't be called after ChannelWithSubscriptions")
 		ch := make(chan *Message)
 		close(ch)
@@ -615,7 +617,9 @@ func (c *PubSub) ChannelWithSubscriptions(opts ...ChannelOption) <-chan interfac
 	if c.allCh == nil {
 		// Already using Channel — return a closed channel instead of panicking
 		// so callers can recover (issue #3761).
-		internal.Logger.Printf(c.getContext(),
+		// Use Background: getContext reads c.cmd which the other channel's
+		// Receive loop may write concurrently (data race under -race).
+		internal.Logger.Printf(context.Background(),
 			"redis: ChannelWithSubscriptions can't be called after Channel")
 		ch := make(chan interface{})
 		close(ch)
