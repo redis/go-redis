@@ -214,3 +214,23 @@ func TestRouteByLatencyToleranceFromUniversalOptions(t *testing.T) {
 		t.Fatalf("Failover() tolerance = %v, want 300us", got)
 	}
 }
+
+// With the option unset, selection must stay on the pre-existing hot path: no candidate
+// slice, no allocation per command.
+func TestSlotClosestNodeToleranceDisabledDoesNotAllocate(t *testing.T) {
+	state := toleranceTestState(
+		toleranceTestNode(t, 100*time.Microsecond, false),
+		toleranceTestNode(t, 120*time.Microsecond, false),
+		toleranceTestNode(t, 900*time.Microsecond, false),
+	)
+
+	allocs := testing.AllocsPerRun(200, func() {
+		if _, err := state.slotClosestNode(0, 0, nil); err != nil {
+			t.Fatalf("slotClosestNode: %v", err)
+		}
+	})
+
+	if allocs != 0 {
+		t.Fatalf("zero tolerance allocated %.0f times per call, want 0", allocs)
+	}
+}

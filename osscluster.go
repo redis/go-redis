@@ -1017,6 +1017,12 @@ func (c *clusterState) slotClosestNode(
 		minHealthyLatency  = time.Duration(math.MaxInt64)
 	)
 
+	// Only the tolerance path needs the samples. With the option unset this stays nil, so
+	// the existing strict-minimum behaviour allocates nothing.
+	if tolerance > 0 {
+		healthy = make([]sample, 0, len(nodes))
+	}
+
 	for _, n := range nodes {
 		latency := n.Latency()
 		if latency < minLatency {
@@ -1027,9 +1033,12 @@ func (c *clusterState) slotClosestNode(
 			continue
 		}
 
+		if tolerance > 0 {
+			healthy = append(healthy, sample{node: n, latency: latency})
+		}
+
 		// Tracked separately: a healthy node that is not the outright fastest must still be
 		// preferred over a failing one.
-		healthy = append(healthy, sample{node: n, latency: latency})
 		if latency < minHealthyLatency {
 			closestHealthyNode, minHealthyLatency = n, latency
 		}
