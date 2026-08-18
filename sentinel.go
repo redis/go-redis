@@ -465,6 +465,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MasterName = q.string("master_name")
 	o.ClientName = q.string("client_name")
 	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatencyTolerance = q.duration("route_by_latency_tolerance")
 	o.RouteRandomly = q.bool("route_randomly")
 	o.ReplicaOnly = q.bool("replica_only")
 	o.UseDisconnectedReplicas = q.bool("use_disconnected_replicas")

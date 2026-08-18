@@ -390,6 +390,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatencyTolerance = q.duration("route_by_latency_tolerance")
 	o.RouteRandomly = q.bool("route_randomly")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
@@ -1000,11 +1001,20 @@ func (c *clusterState) slotClosestNode(
 		return c.nodes.Random()
 	}
 
+	// Latency and health are sampled once per node. The background probe updates them
+	// concurrently, so re-reading would let the candidate set disagree with the minimum it
+	// is compared against - and could leave that set empty.
+	type sample struct {
+		node    *clusterNode
+		latency time.Duration
+	}
+
 	var (
-		closestNode           *clusterNode
-		closestNonFailingNode *clusterNode
-		minLatency            = time.Duration(math.MaxInt64)
-		minNonFailingLatency  = time.Duration(math.MaxInt64)
+		healthy            []sample
+		closestNode        *clusterNode
+		closestHealthyNode *clusterNode
+		minLatency         = time.Duration(math.MaxInt64)
+		minHealthyLatency  = time.Duration(math.MaxInt64)
 	)
 
 	for _, n := range nodes {
@@ -1012,19 +1022,39 @@ func (c *clusterState) slotClosestNode(
 		if latency < minLatency {
 			closestNode, minLatency = n, latency
 		}
-		// Tracked separately: a healthy node that is not the outright fastest must still
-		// be preferred over a failing one.
-		if !n.Failing() && latency < minNonFailingLatency {
-			closestNonFailingNode, minNonFailingLatency = n, latency
+
+		if n.Failing() {
+			continue
+		}
+
+		// Tracked separately: a healthy node that is not the outright fastest must still be
+		// preferred over a failing one.
+		healthy = append(healthy, sample{node: n, latency: latency})
+		if latency < minHealthyLatency {
+			closestHealthyNode, minHealthyLatency = n, latency
 		}
 	}
 
-	if closestNonFailingNode != nil {
+	if closestHealthyNode != nil {
 		if tolerance <= 0 {
-			return closestNonFailingNode, nil
+			return closestHealthyNode, nil
 		}
 
-		return closestWithinTolerance(nodes, minNonFailingLatency, tolerance, picker), nil
+		candidates := make([]*clusterNode, 0, len(healthy))
+		for _, s := range healthy {
+			// Subtraction rather than minHealthyLatency+tolerance, which would overflow for
+			// a very large tolerance. Always true for closestHealthyNode, so candidates is
+			// never empty here.
+			if s.latency-minHealthyLatency <= tolerance {
+				candidates = append(candidates, s.node)
+			}
+		}
+
+		if len(candidates) == 1 || picker == nil {
+			return candidates[0], nil
+		}
+
+		return candidates[picker.Next(len(candidates))], nil
 	}
 
 	// Every node is failing. Fall back to the least-slow one, so a transient failure does
@@ -1037,31 +1067,6 @@ func (c *clusterState) slotClosestNode(
 	// If all nodes are having the maximum latency(all pings are failing) - return a random node across the cluster
 	internal.Logger.Printf(context.TODO(), "redis: pings to all nodes are failing, picking a random node across the cluster")
 	return c.nodes.Random()
-}
-
-// closestWithinTolerance round-robins over the healthy nodes no more than tolerance slower
-// than the fastest, so nodes that are equally close in practice share the read load.
-func closestWithinTolerance(
-	nodes []*clusterNode,
-	minLatency, tolerance time.Duration,
-	picker routing.ShardPicker,
-) *clusterNode {
-	var candidates []*clusterNode
-
-	for _, n := range nodes {
-		if !n.Failing() && n.Latency() <= minLatency+tolerance {
-			candidates = append(candidates, n)
-		}
-	}
-
-	switch {
-	case len(candidates) == 0:
-		return nil
-	case len(candidates) == 1 || picker == nil:
-		return candidates[0]
-	default:
-		return candidates[picker.Next(len(candidates))]
-	}
 }
 
 func (c *clusterState) slotRandomNode(slot int) (*clusterNode, error) {
