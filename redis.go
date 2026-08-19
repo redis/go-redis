@@ -2663,11 +2663,21 @@ func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.
 		// only push frames, but the NotificationProcessor interface does not promise
 		// that. On the buffered path the buffered bytes can be a coalesced REPLY, not
 		// a push (HasBufferedData is true after a prior reply read). So peek the frame
-		// type first. If it is not a push, return without a read. A custom processor
-		// that read here could consume the reply, cache it under the wrong key, and
-		// desync the stream. This peek is bounded by the hard read deadline of this
-		// closure, so it is safe even if it must touch the socket.
-		if t, err := rd.PeekReplyType(); err != nil || t != proto.RespPush {
+		// type first. This peek is bounded by the hard read deadline of this closure.
+		t, err := rd.PeekReplyType()
+		if err != nil {
+			// Propagate the error; do not swallow it. PeekReplyType can partially
+			// consume a fragmented RESP3 attribute (DiscardNext) before it errors,
+			// which desyncs the stream. The session must then fail and drop the
+			// connection, as the built-in buffered path does. Returning nil here would
+			// reuse a desynced connection, and later fragments could be read as a
+			// command reply and cached under the wrong key.
+			return err
+		}
+		if t != proto.RespPush {
+			// A real reply, not a push. Leave it for the caller's read. A custom
+			// processor that read here could consume the reply and cache it under the
+			// wrong key.
 			return nil
 		}
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
