@@ -909,41 +909,37 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// keep their error.
 				if e != nil && !req.cmd.NoRetry() {
 					moved, ask, _ := isMovedError(e)
-					// MOVED/ASK are redirects, not retries — always follow them (the fixed
-					// FD socket cannot). A retryable error diverts only when retries are
-					// enabled: with MaxRetries normalized to 0 the divert's process() would
-					// still run attempt zero, re-sending a command whose retry the caller
-					// explicitly disabled — surface the Redis error instead.
-					// Divert a retryable reply only while retries are enabled AND the
+					// Do NOT divert a redirect. FD is enabled only for a standalone
+					// *Client, whose normal path cannot follow a MOVED/ASK — it neither
+					// re-routes to the target node nor sends ASKING, it just re-hits the
+					// same endpoint. Diverting would waste a round trip and return the
+					// redirect anyway, so surface it inline (below), exactly as a plain
+					// standalone command does. (A cluster-capable FD/CSC would route it
+					// here instead — follow-up.)
+					//
+					// Divert a RETRYABLE reply only while retries are enabled AND the
 					// budget is not already spent. req.attempts counts FD attempts spent
 					// (1 at submit, +1 on each fdConnErr carry replay); once it reaches
-					// MaxRetries+1 (req.attempts > MaxRetries) another execution would
-					// exceed the budget, so fall through to the inline settle below, which
-					// surfaces the retryable reply as the final error and reports the true
-					// attempt count. Without this guard the startAttempt clamp in
-					// processWithRetry would turn the exhausted budget into one more send.
-					// Redirects (MOVED/ASK) are followed unconditionally.
-					retryBudgetLeft := shouldRetry(e, false) &&
+					// MaxRetries+1 another execution would exceed the budget, so fall
+					// through to the inline settle, which surfaces the reply as the final
+					// error and reports the true attempt count. Without this guard the
+					// startAttempt clamp in processWithRetry would turn an exhausted budget
+					// into one more send.
+					if !moved && !ask &&
+						shouldRetry(e, false) &&
 						fd.client.opt.MaxRetries > 0 &&
-						req.attempts <= fd.client.opt.MaxRetries
-					if moved || ask || retryBudgetLeft {
-						// A retryable reply means the command executed on the FD socket, so
-						// the divert starts one attempt in. Also account for FD attempts
-						// already spent: add req.attempts-1 to the retryable base so a
-						// carried-then-diverted command does not run the full retry loop from
-						// the base. The guard above keeps this within MaxRetries+1. A redirect
-						// (MOVED/ASK) keeps the base 0: the FD socket did not execute the
-						// command, and a redirect is not charged to the retry budget (as in r7).
-						startAttempt := retryStartAttempt(moved, ask)
-						if !moved && !ask {
-							startAttempt += req.attempts - 1
-						}
-						fd.retryOnNormalConn(req, startAttempt)
+						req.attempts <= fd.client.opt.MaxRetries {
+						// The retryable reply executed on the FD socket, so the divert starts
+						// one attempt in; add req.attempts-1 for FD attempts already spent on
+						// carry replays so a carried-then-diverted command does not run the
+						// full loop from the base. The guard above keeps this within
+						// MaxRetries+1.
+						fd.retryOnNormalConn(req, retryStartAttempt(false, false)+req.attempts-1)
 						done++
 						continue
 					}
 				}
-				req.cmd.SetErr(e) // nil or a non-retryable Redis error (WRONGTYPE, …)
+				req.cmd.SetErr(e) // nil, a redirect (MOVED/ASK), or a non-retryable Redis error
 				// Per-command OTel duration (write→reply): the FD reader bypasses
 				// process, which is what normally emits it. Inline-completed commands
 				// only — a diverted command emits its own through process.

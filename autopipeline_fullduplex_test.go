@@ -1623,9 +1623,11 @@ func TestFullDuplexLimiterPerSession(t *testing.T) {
 }
 
 // TestFullDuplexRetryDivertsToNormalConn verifies the mechanism the FD reader
-// uses for a retryable Redis error (LOADING/READONLY/…) or a redirect (MOVED/ASK):
-// the command is re-run on the client's normal path and the caller is settled with
-// that result — not left with the FD error. It drives retryOnNormalConn directly
+// uses for a retryable Redis error (LOADING/READONLY/…): the command is re-run on
+// the client's normal path and the caller is settled with that result — not left
+// with the FD error. (Redirects no longer divert on the standalone FD path — they
+// settle inline, since the normal path cannot route a MOVED/ASK anyway.) It drives
+// retryOnNormalConn directly
 // (a deterministic stand-in for the reader's divert) since inducing a real LOADING
 // on a live server is not reproducible.
 func TestFullDuplexRetryDivertsToNormalConn(t *testing.T) {
