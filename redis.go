@@ -359,6 +359,12 @@ func (h *onCloseHooks) run() error {
 type pipelinePoolRef struct {
 	pool *pool.ConnPool
 	name string
+	// lastSpillLogNs limits the "pipeline pool full, spilling" hint. The hint
+	// prints at most one time per pipelineSpillLogInterval. Thus a long burst wider
+	// than the pool cannot flood the log. WithTimeout clones share this field
+	// through the single atomic publication of the ref. The code uses the field
+	// only through the *pipelinePoolRef, never by value, so the atomic is safe.
+	lastSpillLogNs atomic.Int64
 }
 
 type baseClient struct {
@@ -1225,6 +1231,36 @@ func (c *baseClient) spillToMainPool(ctx context.Context, fn func(context.Contex
 	return fnErr
 }
 
+// pipelineSpillLogInterval limits the pipeline-pool full hint. A long burst that
+// spills to the main pool cannot flood the log.
+const pipelineSpillLogInterval = 30 * time.Second
+
+// logPipelineSpill prints a throttled hint. The hint tells the operator that the
+// pipeline pool is full and that operations now spill to the main pool. The
+// operator can then raise PipelinePoolSize. Call this only on the ErrPoolTryFull
+// spill path. The hint prints at most one time per pipelineSpillLogInterval per
+// pool-set. A lock-free timestamp CAS makes the limit, so the spill path stays
+// cheap under a burst.
+func (c *baseClient) logPipelineSpill(ctx context.Context, ref *pipelinePoolRef) {
+	if ref == nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	last := ref.lastSpillLogNs.Load()
+	if now-last < int64(pipelineSpillLogInterval) {
+		return
+	}
+	// Only the goroutine that wins the CAS prints. The others skip until the next
+	// window.
+	if !ref.lastSpillLogNs.CompareAndSwap(last, now) {
+		return
+	}
+	internal.Logger.Printf(ctx,
+		"redis: pipeline pool %q is full; operations now spill to the main pool. "+
+			"Increase PipelinePoolSize to keep pipelines on the dedicated pool.",
+		ref.name)
+}
+
 // withPipelineConn executes fn with a connection from the pipeline pool when
 // one is configured (PipelineReadBufferSize/PipelineWriteBufferSize set),
 // otherwise it falls back to the regular pool via withConn.
@@ -1292,16 +1328,27 @@ func (c *baseClient) withPipelineConn(
 		// capacity for heavy concurrent Pipelined callers, who previously shared the
 		// main pool.
 		//
-		// Spill on ErrPoolExhausted too, not just ErrPoolTimeout: pipelinePoolOptions
-		// clones the client options, so a positive MaxActiveConns smaller than the
-		// pipeline PoolSize (e.g. MaxActiveConns:1 with the default 10-slot pipeline
-		// pool) makes TryGet return the hard-ceiling ErrPoolExhausted. Failing there
-		// would break the advertised spill behavior even while the main pool is idle.
-		// If the main pool is also at its ceiling, withConn surfaces the genuine
-		// exhaustion (spill is one-shot; it does not spill back).
-		if errors.Is(retErr, pool.ErrPoolTimeout) || errors.Is(retErr, pool.ErrPoolExhausted) {
-			// spillToMainPool, not withConn: the Limiter was already charged above and
-			// is reported in this function's defer, so the spill must not charge it again.
+		// Spill on ErrPoolExhausted too, not only ErrPoolTryFull. pipelinePoolOptions
+		// clones the client options. So a positive MaxActiveConns smaller than the
+		// pipeline PoolSize makes TryGet return the hard-ceiling ErrPoolExhausted.
+		// (For example: MaxActiveConns 1 with the default 10-slot pipeline pool.) A
+		// failure here would break the spill behavior while the main pool is idle. If
+		// the main pool is also at its ceiling, withConn returns the real exhaustion.
+		// The spill is one-shot; it does not spill back.
+		//
+		// ErrPoolTryFull is the non-wait "pool is full" signal (TryGet never waits).
+		// It is not a timeout. The distinct sentinel keeps getConn's timeout count
+		// off this deliberate spill.
+		if errors.Is(retErr, pool.ErrPoolTryFull) || errors.Is(retErr, pool.ErrPoolExhausted) {
+			// A full pipeline pool is actionable: raise PipelinePoolSize. So print a
+			// hint on the ErrPoolTryFull path. The hint is throttled, because a burst
+			// spills many times. The ErrPoolExhausted path is a MaxActiveConns ceiling.
+			// That needs a different fix, so do not hint there.
+			if errors.Is(retErr, pool.ErrPoolTryFull) {
+				c.logPipelineSpill(ctx, ref)
+			}
+			// Use spillToMainPool, not withConn. The Limiter was charged above and is
+			// reported in this function's defer. So the spill must not charge it again.
 			return c.spillToMainPool(ctx, fn)
 		}
 		return retErr
@@ -1369,9 +1416,12 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 		return err
 	}
 	if c.csc != nil && isCacheable(cmd) {
-		// The cached path does not run the MaxRetries loop, so startAttempt (only
-		// nonzero on the FD divert, which is never a cache-served read) does not apply.
-		return c.processCached(ctx, cmd, state)
+		// A cacheable command can still reach the cached path on the full-duplex
+		// divert (retryOnNormalConn). The command spent its first attempt on the FD
+		// socket. So startAttempt must go into processCached. On a cache miss
+		// processCached runs the MaxRetries loop. If startAttempt is lost, the
+		// diverted command runs one attempt more than MaxRetries+1.
+		return c.processCached(ctx, cmd, state, startAttempt)
 	}
 	return c.processWithRetry(ctx, cmd, nil, state, startAttempt)
 }

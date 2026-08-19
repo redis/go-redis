@@ -64,6 +64,14 @@ var (
 	// ErrPoolTimeout timed out waiting to get a connection from the connection pool.
 	ErrPoolTimeout = errors.New("redis: connection pool timeout")
 
+	// ErrPoolTryFull is the result of TryGet (the non-waiting acquire) when the
+	// pool has no free turn now. It is not a timeout, because nothing waited. A
+	// caller with a fallback uses it to spill at once. The pipeline pool spills to
+	// the main pool this way. ErrPoolTryFull is different from ErrPoolTimeout on
+	// purpose. Thus getConn does not record a false pool timeout (Stats.Timeouts or
+	// POOL_TIMEOUT) for a non-wait. A real wait still returns ErrPoolTimeout.
+	ErrPoolTryFull = errors.New("redis: connection pool has no free turn")
+
 	// ErrConnUnusableTimeout is returned when a connection is not usable and we timed out trying to mark it as unusable.
 	ErrConnUnusableTimeout = errors.New("redis: timed out trying to mark connection as unusable")
 
@@ -850,11 +858,13 @@ func (p *ConnPool) Get(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, true)
 }
 
-// TryGet returns a connection only if a pool turn is immediately available (a free
-// slot, or room to dial a new one); it never waits out PoolTimeout for a busy
-// pool, returning ErrPoolTimeout at once instead. It lets a caller with a fallback
-// — the dedicated pipeline pool spilling to the main pool — spill without stalling.
-// Dialing a new connection under an acquired turn still happens normally.
+// TryGet returns a connection only if a pool turn is free now. A free turn is an
+// open slot or room to dial a new connection. TryGet never waits out PoolTimeout
+// for a full pool. It returns ErrPoolTryFull at once instead. This lets a caller
+// with a fallback (the pipeline pool) spill without a stall. ErrPoolTryFull is
+// different from ErrPoolTimeout: no wait happened, so getConn does not count the
+// spill as a pool timeout. A hard MaxActiveConns ceiling still returns
+// ErrPoolExhausted. TryGet still dials a new connection under an acquired turn.
 func (p *ConnPool) TryGet(ctx context.Context) (*Conn, error) {
 	return p.getConn(ctx, false)
 }
@@ -1184,11 +1194,12 @@ func (p *ConnPool) waitTurn(ctx context.Context, wait bool) error {
 		return nil
 	}
 
-	// Non-waiting acquire (TryGet): the pool is at capacity and no turn is
-	// immediately free, so return at once instead of waiting out PoolTimeout — the
-	// caller (a pipeline pool spilling to the main pool) falls back immediately.
+	// Non-waiting acquire (TryGet): the pool is full and no turn is free now.
+	// Return at once. Do not wait out PoolTimeout. The caller (the pipeline pool)
+	// then spills to the main pool at once. Return ErrPoolTryFull, not
+	// ErrPoolTimeout, because nothing waited. Thus getConn does not count a timeout.
 	if !wait {
-		return ErrPoolTimeout
+		return ErrPoolTryFull
 	}
 
 	// Slow path: need to wait
