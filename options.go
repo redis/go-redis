@@ -311,6 +311,14 @@ type Options struct {
 	// preserve an explicit dial cap for the pipeline pool instead of expanding it.
 	maxConcurrentDialsSet bool
 
+	// maxConcurrentDialsInit latches maxConcurrentDialsSet on the first init().
+	// A caller may reuse one *Options across more than one NewClient call. The
+	// first init() normalizes an unset MaxConcurrentDials (0) to PoolSize, so a
+	// second init() would recompute maxConcurrentDialsSet from the normalized value
+	// and wrongly mark it explicit, which stops the pipeline pool from widening its
+	// dial cap. The latch preserves the first decision. Clones copy both flags.
+	maxConcurrentDialsInit bool
+
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
 	//
@@ -538,9 +546,13 @@ func (opt *Options) init() {
 
 	// Record explicit-vs-default BEFORE normalizing (a 0 becomes PoolSize below),
 	// so pipelinePoolOptions can tell an explicit MaxConcurrentDials==PoolSize from
-	// the default. init() runs once per Options (one call per client constructor;
-	// clones copy this flag rather than re-init), so capturing here is exact.
-	opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0
+	// the default. Latch on the FIRST init only: a caller may reuse one *Options
+	// across NewClient calls, and a second init() would see the already-normalized
+	// value and wrongly mark it explicit. Clones copy the latched flags.
+	if !opt.maxConcurrentDialsInit {
+		opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0
+		opt.maxConcurrentDialsInit = true
+	}
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
 	} else if opt.MaxConcurrentDials > opt.PoolSize {

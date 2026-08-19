@@ -190,6 +190,31 @@ func TestClusterPipelinePoolWidensDials(t *testing.T) {
 	}
 }
 
+// TestReusedOptionsPreserveUnsetDials locks the round-10 fix. A caller may reuse
+// one *Options across more than one NewClient call. The first init normalizes an
+// unset MaxConcurrentDials to PoolSize. A second init must not then mark it
+// explicit, because that would stop the second client's pipeline pool from
+// widening its dial cap.
+func TestReusedOptionsPreserveUnsetDials(t *testing.T) {
+	opt := &Options{Addr: "127.0.0.1:0", PoolSize: 1, PipelinePoolSize: 8}
+
+	opt.init() // first construction
+	if opt.maxConcurrentDialsSet {
+		t.Fatal("first init marked an unset MaxConcurrentDials explicit")
+	}
+
+	opt.init() // second construction reusing the same *Options
+	if opt.maxConcurrentDialsSet {
+		t.Fatal("second init on a reused *Options marked MaxConcurrentDials explicit; " +
+			"the pipeline pool would stop widening its dial cap")
+	}
+
+	if po := pipelinePoolOptions(opt); po.MaxConcurrentDials != 8 {
+		t.Fatalf("pipeline MaxConcurrentDials = %d after reuse, want 8 (PipelinePoolSize)",
+			po.MaxConcurrentDials)
+	}
+}
+
 // TestFailoverPipelinePoolCreated: NewFailoverClient builds its pools in its
 // own constructor (it duplicated — and drifted from — NewClient's creation
 // logic once before), so pin the always-on rule and the opt-out there too.
