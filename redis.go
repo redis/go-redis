@@ -1383,7 +1383,7 @@ func (c *baseClient) cscTrackingRequested() bool {
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
-	return c.processStartingAt(ctx, cmd, 0)
+	return c.processStartingAt(ctx, cmd, 0, time.Time{})
 }
 
 // processStartingAt runs cmd like process() but starts the retry loop at
@@ -1391,13 +1391,21 @@ func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
 // that already spent its initial attempt on the FD socket and came back with a
 // retryable reply, so the retry budget (MaxRetries) is not exceeded by one; it
 // passes 0 for a redirect, where the FD attempt did not execute the command.
-func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int) error {
+//
+// start is the operation start time for the OTel duration metric. The FD divert
+// passes req.writtenAt so the reported duration spans the initial FD write to
+// final completion, matching the inline FD path and the attempt count (which
+// already includes the FD attempt). A zero start defaults to now, so the normal
+// path measures from here.
+func (c *baseClient) processStartingAt(ctx context.Context, cmd Cmder, startAttempt int, start time.Time) error {
 	opDurationCallback := otel.GetOperationDurationCallback()
 	if opDurationCallback == nil {
 		return c.processCommand(ctx, cmd, nil, startAttempt)
 	}
 
-	start := time.Now()
+	if start.IsZero() {
+		start = time.Now()
+	}
 	var state processState
 	err := c.processCommand(ctx, cmd, &state, startAttempt)
 	opDurationCallback(ctx, time.Since(start), cmd, state.attempts, err, state.lastConn, c.opt.DB)

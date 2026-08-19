@@ -560,7 +560,10 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 		// (fdClient is the *Client behind it), so this is the same raw exec, but it
 		// starts the retry loop at startAttempt — 1 for a retryable reply that already
 		// spent an attempt on the FD socket, 0 for a redirect that did not execute.
-		err := fd.client.processStartingAt(rctx, req.cmd, startAttempt)
+		// Pass req.writtenAt as the operation start so the duration metric spans the
+		// initial FD write, not just this diverted attempt (the attempt count already
+		// includes the FD attempt).
+		err := fd.client.processStartingAt(rctx, req.cmd, startAttempt, req.writtenAt)
 		req.cmd.SetErr(err)
 		req.complete()
 	}()
@@ -613,7 +616,18 @@ func (fd *fdEngine) run() {
 		unacked, result, aerr := fd.attempt(bg, carry)
 		switch result {
 		case fdGraceful:
-			return // Close: attempt drained written work; queue failed there.
+			// Close: attempt() drained the written work and released the session conn
+			// via its defer — Put, so the OnPut hook can hand a marked conn off, or
+			// Remove if that release drain failed — and reported the per-session
+			// Limiter. Here unacked is the never-WRITTEN handoff suffix (nil on a plain
+			// Close), NOT written commands to re-execute; complete it on a fresh
+			// connection and permit now that attempt() freed both. Doing it here rather
+			// than inside session avoids failing the suffix against a capped Limiter or a
+			// saturated pool while the session conn is still held.
+			if len(unacked) > 0 {
+				fd.shutdownFlush(bg, unacked)
+			}
+			return
 		case fdIdle:
 			// Conn returned cleanly to the pool (its per-conn hooks can run); the
 			// loop-top wait keeps an idle engine from churning Get/Put.
@@ -1161,13 +1175,14 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			return nil, fdConnErr, sharedErr
 		}
 		// Handoff mid-flush: the prefix drained cleanly and the conn will be Put
-		// (OnPut handoff). Complete the never-sent suffix on ANOTHER connection through
-		// the normal pipeline — accepted ⇒ completes — instead of failing it. Empty on
-		// a plain Close with no handoff.
-		if len(unwritten) > 0 {
-			fd.shutdownFlush(bg, unwritten)
-		}
-		return nil, fdGraceful, nil
+		// (OnPut handoff). RETURN the never-sent suffix so run() completes it on
+		// ANOTHER connection AFTER attempt() has Put this conn and reported the
+		// per-session Limiter — accepted ⇒ completes. Flushing it HERE would run while
+		// attempt() still holds this conn and its Limiter permit, so a concurrency-
+		// capping Limiter at its cap (or both pools saturated) would deterministically
+		// fail the suffix. Empty on a plain Close with no handoff. Mirrors the recycle
+		// path, which likewise returns its suffix for run() to replay.
+		return unwritten, fdGraceful, nil
 	case fdIdle, fdRecycle:
 		// Clean return: no more pushes, the reader drains the remaining replies (the
 		// already-written carry PREFIX included, so those callers complete normally and
