@@ -1065,7 +1065,9 @@ func (c *clusterState) slotClosestNode(slot int, tolerance time.Duration) (*clus
 			return candidates[0], nil
 		}
 
-		return candidates[int(entry.rotation.Add(1)-1)%len(candidates)], nil
+		// Reduced in the unsigned domain: the cursor wraps, and on 32-bit builds converting a
+		// value past 2^31 to int before the modulo would make the index negative.
+		return candidates[(entry.rotation.Add(1)-1)%uint32(len(candidates))], nil
 	}
 
 	// Every node is failing. Fall back to the least-slow one, so a transient failure does

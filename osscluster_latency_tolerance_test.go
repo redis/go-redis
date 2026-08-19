@@ -244,3 +244,29 @@ func TestSlotClosestNodeToleranceRotatesPerSlot(t *testing.T) {
 		}
 	}
 }
+
+// The rotation cursor is a uint32 and wraps. Reducing it to an index must stay in the unsigned
+// domain: on 32-bit builds int is 32 bits, so converting a cursor past 2^31 before the modulo
+// yields a negative index and panics. Run with GOARCH=386 to exercise that.
+func TestSlotClosestNodeToleranceRotationPastIntMax(t *testing.T) {
+	first := toleranceTestNode(t, 100*time.Microsecond, false)
+	second := toleranceTestNode(t, 110*time.Microsecond, false)
+	state := toleranceTestState(first, second)
+	state.slots[0].rotation.Store(math.MaxInt32)
+
+	seen := map[*clusterNode]int{}
+	for i := 0; i < 8; i++ {
+		got, err := state.slotClosestNode(0, 50*time.Microsecond)
+		if err != nil {
+			t.Fatalf("slotClosestNode: %v", err)
+		}
+		if got != first && got != second {
+			t.Fatalf("unexpected node %p", got)
+		}
+		seen[got]++
+	}
+
+	if len(seen) != 2 {
+		t.Fatalf("rotation stalled across the uint32 boundary: %v", seen)
+	}
+}
