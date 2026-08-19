@@ -914,18 +914,26 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// enabled: with MaxRetries normalized to 0 the divert's process() would
 					// still run attempt zero, re-sending a command whose retry the caller
 					// explicitly disabled — surface the Redis error instead.
-					if moved || ask || (shouldRetry(e, false) && fd.client.opt.MaxRetries > 0) {
+					// Divert a retryable reply only while retries are enabled AND the
+					// budget is not already spent. req.attempts counts FD attempts spent
+					// (1 at submit, +1 on each fdConnErr carry replay); once it reaches
+					// MaxRetries+1 (req.attempts > MaxRetries) another execution would
+					// exceed the budget, so fall through to the inline settle below, which
+					// surfaces the retryable reply as the final error and reports the true
+					// attempt count. Without this guard the startAttempt clamp in
+					// processWithRetry would turn the exhausted budget into one more send.
+					// Redirects (MOVED/ASK) are followed unconditionally.
+					retryBudgetLeft := shouldRetry(e, false) &&
+						fd.client.opt.MaxRetries > 0 &&
+						req.attempts <= fd.client.opt.MaxRetries
+					if moved || ask || retryBudgetLeft {
 						// A retryable reply means the command executed on the FD socket, so
 						// the divert starts one attempt in. Also account for FD attempts
-						// already spent: req.attempts is 1 at submit and grows by 1 on each
-						// fdConnErr carry replay, so a carried-then-diverted command spent more
-						// than one FD attempt. Add req.attempts-1 to the retryable base;
-						// without this a carried command runs the full retry loop from the base
-						// and can exceed MaxRetries+1. processWithRetry clamps the start to
-						// maxRetries, so the command still runs at least once. A redirect
+						// already spent: add req.attempts-1 to the retryable base so a
+						// carried-then-diverted command does not run the full retry loop from
+						// the base. The guard above keeps this within MaxRetries+1. A redirect
 						// (MOVED/ASK) keeps the base 0: the FD socket did not execute the
-						// command, and a redirect is followed unconditionally, not charged to
-						// the retry budget (as in r7).
+						// command, and a redirect is not charged to the retry budget (as in r7).
 						startAttempt := retryStartAttempt(moved, ask)
 						if !moved && !ask {
 							startAttempt += req.attempts - 1
