@@ -41,6 +41,14 @@ func cscRegisterCleanups(c *Client) {
 	// receive gives each request exactly one consumer).
 	active := c.baseClient.cscActive
 	mc := c.baseClient.cscMissCoalescer.Load()
+	// Capture the refresh handle too (set during attach; nil when refresh is off):
+	// runCSCRefresher parks on its ticker/queue and holds *baseClient, so a client
+	// dropped WITHOUT Close would leak the refresher goroutine and everything it
+	// retains (cache, pools) — the coalescer/drainer stops below would not reach it.
+	// signalStop is idempotent and non-blocking, matching the other stops here. The
+	// handle is channels only (no *Client), so capturing it keeps the wrapper
+	// collectible.
+	rh := c.baseClient.cscRefreshHandle
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
 		if active != nil {
 			active.Store(false)
@@ -51,6 +59,9 @@ func cscRegisterCleanups(c *Client) {
 			// alive re-runs the read on the (possibly still open) pool instead
 			// of surfacing a spurious ErrClosed.
 			mc.drainQueueErr(errCSCRetryUncached)
+		}
+		if rh != nil {
+			rh.signalStop()
 		}
 		h.signalStop()
 	}, h)

@@ -1,12 +1,21 @@
 package redis
 
+import "sync"
+
 // Support shims for refresh-on-invalidate and reader-miss coalescing, kept in
 // one file so the feature is a clean addition over the CSC base.
 
 // cscRevalidateHandle is the stop/join handle for a background CSC goroutine.
 type cscRevalidateHandle struct {
-	stop chan struct{}
-	done chan struct{}
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+// signalStop closes stop at most once (so stopCSCRefresher and the AddCleanup
+// safety net cannot double-close) and does not join — a GC cleanup must not block.
+func (h *cscRevalidateHandle) signalStop() {
+	h.stopOnce.Do(func() { close(h.stop) })
 }
 
 // LRUClock returns the current global recency token; the refresher uses it as

@@ -412,7 +412,7 @@ func (c *baseClient) stopCSCRefresher() {
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
 		ih.clearRefreshQueue(c.cscRefreshQueue)
 	}
-	close(h.stop)
+	h.signalStop()
 	<-h.done
 }
 
