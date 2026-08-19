@@ -234,11 +234,12 @@ func (opt *ClusterOptions) init() {
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 5 * runtime.GOMAXPROCS(0)
 	}
-	if opt.MaxConcurrentDials <= 0 {
-		opt.MaxConcurrentDials = opt.PoolSize
-	} else if opt.MaxConcurrentDials > opt.PoolSize {
-		opt.MaxConcurrentDials = opt.PoolSize
-	}
+	// Do NOT normalize MaxConcurrentDials here. clientOptions() copies this value
+	// into each node's Options, and the per-node Options.init() normalizes it for
+	// the node's main pool. Setting it here would make the per-node init treat an
+	// unset value as explicit (maxConcurrentDialsSet), which makes the pipeline
+	// pool inherit the node PoolSize as its dial cap instead of widening to
+	// PipelinePoolSize, and so serializes pipeline dials.
 	if opt.ReadBufferSize == 0 {
 		opt.ReadBufferSize = proto.DefaultBufferSize
 	}

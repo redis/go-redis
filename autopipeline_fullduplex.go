@@ -901,7 +901,22 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// still run attempt zero, re-sending a command whose retry the caller
 					// explicitly disabled — surface the Redis error instead.
 					if moved || ask || (shouldRetry(e, false) && fd.client.opt.MaxRetries > 0) {
-						fd.retryOnNormalConn(req, retryStartAttempt(moved, ask))
+						// A retryable reply means the command executed on the FD socket, so
+						// the divert starts one attempt in. Also account for FD attempts
+						// already spent: req.attempts is 1 at submit and grows by 1 on each
+						// fdConnErr carry replay, so a carried-then-diverted command spent more
+						// than one FD attempt. Add req.attempts-1 to the retryable base;
+						// without this a carried command runs the full retry loop from the base
+						// and can exceed MaxRetries+1. processWithRetry clamps the start to
+						// maxRetries, so the command still runs at least once. A redirect
+						// (MOVED/ASK) keeps the base 0: the FD socket did not execute the
+						// command, and a redirect is followed unconditionally, not charged to
+						// the retry budget (as in r7).
+						startAttempt := retryStartAttempt(moved, ask)
+						if !moved && !ask {
+							startAttempt += req.attempts - 1
+						}
+						fd.retryOnNormalConn(req, startAttempt)
 						done++
 						continue
 					}
