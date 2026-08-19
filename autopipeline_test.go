@@ -240,9 +240,7 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-		})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -471,9 +469,7 @@ var _ = Describe("AutoPipeline Cmdable Interface", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-		})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -2151,15 +2147,14 @@ var _ = Describe("AutoPipeline", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-			AutoPipelineOptions: &redis.AutoPipelineOptions{
-				MaxBatchSize:         10,
-				MaxFlushDelay:        50 * time.Millisecond,
-				MaxConcurrentBatches: 5,
-				Unordered:            true,
-			},
-		})
+		opt := redisOptions()
+		opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+			MaxBatchSize:         10,
+			MaxFlushDelay:        50 * time.Millisecond,
+			MaxConcurrentBatches: 5,
+			Unordered:            true,
+		}
+		client = redis.NewClient(opt)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -2372,15 +2367,14 @@ var _ = Describe("AutoPipeline", func() {
 
 	It("should respect MaxConcurrentBatches", func() {
 		// Create autopipeliner with low concurrency limit
-		client2 := redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-			AutoPipelineOptions: &redis.AutoPipelineOptions{
-				MaxBatchSize:         5,
-				MaxFlushDelay:        10 * time.Millisecond,
-				MaxConcurrentBatches: 2,
-				Unordered:            true,
-			},
-		})
+		opt := redisOptions()
+		opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+			MaxBatchSize:         5,
+			MaxFlushDelay:        10 * time.Millisecond,
+			MaxConcurrentBatches: 2,
+			Unordered:            true,
+		}
+		client2 := redis.NewClient(opt)
 		defer client2.Close()
 
 		ap2, err := client2.AutoPipeline()
