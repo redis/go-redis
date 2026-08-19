@@ -2580,13 +2580,37 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	// Also drain when the reader already has buffered bytes (HasBufferedData),
-	// not just when the socket is readable (MaybeHasData): a reply and a trailing
-	// invalidation can arrive in one socket read, leaving the invalidation in the
-	// reader buffer with an empty socket — MaybeHasData alone would skip it and
-	// serve stale until the next miss/MaxStaleness (#3965).
-	if !cn.MaybeHasData() && !cn.HasBufferedData() {
+	// Also drain when the reader already holds buffered bytes (HasBufferedData),
+	// not only when the socket is readable (MaybeHasData). A reply and a trailing
+	// invalidation can arrive in one socket read. The invalidation then stays in
+	// the reader buffer while the socket is empty. MaybeHasData alone would skip
+	// it and serve stale data until the next miss or MaxStaleness (#3965).
+	buffered := cn.HasBufferedData()
+	if !buffered && !cn.MaybeHasData() {
 		return nil
+	}
+
+	// Use the bare-socket-readiness path only for the built-in processor.
+	// HasBufferedData means the proto reader already holds a decoded frame. These
+	// are real RESP bytes, and any TLS is already unwrapped. Such a frame is a real
+	// push notification and is safe for any processor. MaybeHasData without
+	// buffered data proves only that the raw socket is readable. Over TLS that can
+	// be a post-handshake control record with zero RESP bytes. (conn_check.go's
+	// connCheck refuses to unwrap TLS for this reason. maybeHasData does unwrap
+	// it.) A custom processor that gets such input under the hard cap can time out
+	// on an empty read. The FD session reader treats that timeout as fatal and
+	// closes a healthy connection, and its in-flight misses fail. The built-in
+	// buffered processor accepts the empty read. So a custom processor drains only
+	// on real buffered data. Tradeoff: a push notification that arrives as bare
+	// socket readiness on a custom and idle FD session waits for the next reply
+	// read, the session recycle, or the MaxStaleness backstop. The connection
+	// stays open. This tick is the only drainer for such a session. This mirrors
+	// the built-in-only guard on the opaque-transport probe in the FD session tick
+	// (csc_miss_coalesce_modes.go).
+	if !buffered {
+		if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
+			return nil
+		}
 	}
 
 	// Readiness is established, so a frame is (probably) present: drain under the
