@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2400,11 +2401,13 @@ const (
 // when the read loop exited before consuming all N+2 replies, leaving bytes
 // on the wire.
 type txOutcome struct {
-	kind          txOutcomeKind
-	err           error
-	addr          string
-	execErr       error
-	unreadReplies bool
+	kind             txOutcomeKind
+	err              error
+	addr             string
+	execErr          error
+	himportedIndexes map[int]struct{}
+	readCount        int
+	unreadReplies    bool
 }
 
 // txRedirect records the first queue-stage redirect (MOVED/ASK/TRYAGAIN) seen
@@ -2520,9 +2523,14 @@ func (c *ClusterClient) processTxPipeline(ctx context.Context, cmds []Cmder) (re
 			// Mark every queued-but-never-executed command with the abort
 			// error; the command that triggered EXECABORT already has its
 			// own error and keeps it, so callers can tell what went wrong.
+			// Skip HIMPORT slots that were already drained with a real EXEC
+			// reply — their value is set and they keep their own error.
 			abortErr := cmp.Or(outcome.execErr, outcome.err)
-			for _, cmd := range cmds {
+			for i, cmd := range cmds {
 				if cmd.Err() == nil {
+					if _, ok := outcome.himportedIndexes[i]; ok {
+						continue
+					}
 					cmd.SetErr(abortErr)
 				}
 			}
@@ -2657,8 +2665,18 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 			return nil
 		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
-		if outcome != nil && outcome.kind == txSuccess {
-			node.Client.himportAfterBatch(cn, injected, cmds)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			filtered := make([]Cmder, len(cmds))
+			for i, cmd := range cmds {
+				if _, ok := cmd.(himportCmder); !ok {
+					filtered[i] = cmd
+					continue
+				}
+				if _, ok := outcome.himportedIndexes[i]; ok {
+					filtered[i] = cmd
+				}
+			}
+			node.Client.himportAfterBatch(cn, injected, filtered)
 		}
 		return nil
 	})
@@ -2708,6 +2726,24 @@ func (c *ClusterClient) readTxPipelineReplies(
 			continue // +QUEUED
 		}
 		if !isRedisError(err) {
+			// Transport error reading a +QUEUED reply. If a queue-phase
+			// root cause was already observed, preserve it in the wrapper
+			// so typed-error helpers still see it; the connection is
+			// desynced (unread replies) so it is discarded.
+			if firstFatal != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err}, unreadReplies: true}
+			}
+			if firstRedirect != nil {
+				wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err}
+				switch {
+				case firstRedirect.moved:
+					return &txOutcome{kind: txRetryMoved, err: wrapped, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.ask:
+					return &txOutcome{kind: txRetryAsk, err: wrapped, addr: firstRedirect.addr, unreadReplies: true}
+				case firstRedirect.tryAgain:
+					return &txOutcome{kind: txRetryTryAgain, err: wrapped, unreadReplies: true}
+				}
+			}
 			return c.txReadFatal(err) // IO error
 		}
 		if moved, ask, addr := isMovedError(err); moved || ask {
@@ -2734,30 +2770,161 @@ func (c *ClusterClient) readTxPipelineReplies(
 	c.txProcessPush(ctx, node, cn, rd)
 	line, err := rd.ReadLine()
 	if err != nil {
-		if !isRedisError(err) {
-			return c.txReadFatal(err) // IO error
-		}
 		return c.classifyExecError(err, firstRedirect, firstFatal)
 	}
 
 	if line[0] != proto.RespArray {
-		err := fmt.Errorf("redis: unexpected EXEC reply %q", line)
-		setCmdsErr(cmds, err)
+		protoErr := fmt.Errorf("redis: unexpected EXEC reply %q", line)
+		if firstFatal != nil {
+			wrapped := &txQueuedReadError{queuedErr: firstFatal, readErr: protoErr, forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		if firstRedirect != nil {
+			wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: protoErr, forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		setCmdsErr(cmds, protoErr)
 		// A non-array aggregate reply may carry an unread payload.
-		return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
+		return &txOutcome{kind: txFatal, err: protoErr, unreadReplies: true}
+	}
+
+	if firstFatal != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			wrapped := &txQueuedReadError{queuedErr: firstFatal, readErr: fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err), forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		if n < 0 {
+			wrapped := &txQueuedReadError{queuedErr: firstFatal, readErr: fmt.Errorf("redis: invalid EXEC array length %d", n), forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		hasHImport := false
+		himportedIndexes := make(map[int]struct{})
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
+			}
+			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						wrapped := &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
+						cmds[i].SetErr(wrapped)
+						return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true, himportedIndexes: himportedIndexes}
+					}
+					himportedIndexes[i] = struct{}{}
+					continue
+				}
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
+			}
+		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		for i := 0; i < readCount; i++ {
+			if _, ok := himportedIndexes[i]; ok {
+				continue
+			}
+			setCmdsErr(cmds[i:i+1], firstFatal)
+		}
+		setCmdsErr(cmds[readCount:], firstFatal)
+		return &txOutcome{kind: txFatal, err: firstFatal, himportedIndexes: himportedIndexes, readCount: readCount}
+	}
+	if firstRedirect != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err), forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		if n < 0 {
+			wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: fmt.Errorf("redis: invalid EXEC array length %d", n), forceBad: true}
+			setCmdsErr(cmds, wrapped)
+			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
+		}
+		if n == 0 {
+			return txRedirectOutcome(firstRedirect, firstRedirect.err, false)
+		}
+		hasHImport := false
+		himportedIndexes := make(map[int]struct{})
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
+			}
+			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
+						cmds[i].SetErr(wrapped)
+						return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true, himportedIndexes: himportedIndexes}
+					}
+					himportedIndexes[i] = struct{}{}
+					continue
+				}
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
+			}
+		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		return &txOutcome{kind: txFatal, err: firstRedirect.err, himportedIndexes: himportedIndexes, readCount: readCount}
 	}
 
 	// Success: read the N command results.
+	hasHImport := false
+	himportedIndexes := make(map[int]struct{})
+	for _, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); ok {
+			hasHImport = true
+			break
+		}
+	}
 	if err := node.Client.pipelineReadCmds(ctx, cn, rd, cmds); err != nil && !isRedisError(err) {
 		return c.txReadFatal(err) // IO error mid-results
 	}
-	return &txOutcome{kind: txSuccess}
+	if hasHImport {
+		for i, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				himportedIndexes[i] = struct{}{}
+			}
+		}
+	}
+	return &txOutcome{kind: txSuccess, himportedIndexes: himportedIndexes, readCount: len(cmds)}
 }
 
 func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {
 	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
+}
+
+func (c *ClusterClient) txProcessPushErr(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) error {
+	return node.Client.processPendingPushNotificationWithReader(ctx, cn, rd)
 }
 
 // txReadFatal classifies a read-phase IO error. The MULTI..EXEC batch was
@@ -2785,8 +2952,62 @@ func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutco
 	return &txOutcome{kind: txFatal, err: err, unreadReplies: true}
 }
 
-// classifyExecError turns an EXEC reply error into a retry/fatal outcome.
+// txRedirectOutcome builds a retry outcome from a firstRedirect, preserving
+// the redirect kind (MOVED/ASK/TRYAGAIN) so the caller retries on the right
+// node. When unreadReplies is true, the connection is desynced and will be
+// discarded. himportedIndexes carries HIMPORT slots that were already drained
+// so the caller can run himportAfterBatch for them.
+func txRedirectOutcome(r *txRedirect, err error, unreadReplies bool, himportedIndexes ...map[int]struct{}) *txOutcome {
+	var hi map[int]struct{}
+	if len(himportedIndexes) > 0 {
+		hi = himportedIndexes[0]
+	}
+	switch {
+	case r.moved:
+		return &txOutcome{kind: txRetryMoved, err: err, addr: r.addr, unreadReplies: unreadReplies, himportedIndexes: hi}
+	case r.ask:
+		return &txOutcome{kind: txRetryAsk, err: err, addr: r.addr, unreadReplies: unreadReplies, himportedIndexes: hi}
+	case r.tryAgain:
+		return &txOutcome{kind: txRetryTryAgain, err: err, unreadReplies: unreadReplies, himportedIndexes: hi}
+	default:
+		return &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx redirect outcome missing"), unreadReplies: true}
+	}
+}
+
+// classifyExecError turns the EXEC reply into a retry/fatal outcome.
+//
+// execErr is the result of reading the EXEC reply line: a typed Redis error
+// (EXECABORT, MOVED, TRYAGAIN, CLUSTERDOWN, ...) when the server returned an
+// error, or a transport error (i/o timeout / EOF) when the reply never
+// arrived. firstRedirect and firstFatal carry any queue-phase redirect or
+// fatal error already observed.
+//
+// On official Redis a cluster tx pipeline always receives exactly N+2 (or
+// N+3 with a leading ASKING) replies, so a Redis EXEC error means the
+// reply was fully consumed and the connection is reusable. A transport
+// error means the stream may be desynced with unread bytes, so the
+// connection is discarded (unreadReplies) and any queued root cause is
+// wrapped via txQueuedReadError to preserve it for typed-error helpers.
 func (c *ClusterClient) classifyExecError(execErr error, firstRedirect *txRedirect, firstFatal error) *txOutcome {
+	if !isRedisError(execErr) {
+		// Transport error reading the EXEC line: replies unread, the
+		// connection must be discarded. Preserve any queued root cause.
+		if firstFatal != nil {
+			return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: execErr}, unreadReplies: true}
+		}
+		if firstRedirect != nil {
+			wrapped := &txQueuedReadError{queuedErr: firstRedirect.err, readErr: execErr}
+			switch {
+			case firstRedirect.moved:
+				return &txOutcome{kind: txRetryMoved, err: wrapped, addr: firstRedirect.addr, unreadReplies: true}
+			case firstRedirect.ask:
+				return &txOutcome{kind: txRetryAsk, err: wrapped, addr: firstRedirect.addr, unreadReplies: true}
+			case firstRedirect.tryAgain:
+				return &txOutcome{kind: txRetryTryAgain, err: wrapped, unreadReplies: true}
+			}
+		}
+		return c.txReadFatal(execErr)
+	}
 	if moved, ask, addr := isMovedError(execErr); moved || ask {
 		// Narrow race: the slot moved after every command was queued.
 		if ask {
