@@ -164,6 +164,7 @@ type cscRefreshQueue struct {
 	enqueued      atomic.Uint64
 	dropped       atomic.Uint64
 	refreshed     atomic.Uint64
+	refreshFailed atomic.Uint64
 	demandFlushes atomic.Uint64
 }
 
@@ -205,6 +206,12 @@ type CSCRefreshStats struct {
 	Dropped   uint64
 	Refreshed uint64
 
+	// RefreshFailed counts refresh round trips that errored (a connection or
+	// protocol failure during the batch). Those keys stay evicted and a later read
+	// repopulates them, so a rising count means refresh is degrading to plain
+	// eviction. Counted per errored batch, not per key.
+	RefreshFailed uint64
+
 	// DemandFlushes counts collection windows flushed early because a reader
 	// missed a key still sitting in the window (vs flushed by the window timer or
 	// the size cap). High relative to total flushes means the demand trigger is
@@ -231,6 +238,7 @@ func (c *Client) CSCRefreshStats() CSCRefreshStats {
 		Enqueued:      q.enqueued.Load(),
 		Dropped:       q.dropped.Load(),
 		Refreshed:     q.refreshed.Load(),
+		RefreshFailed: q.refreshFailed.Load(),
 		DemandFlushes: q.demandFlushes.Load(),
 	}
 	if lc, ok := c.baseClient.csc.(*LocalCache); ok {
@@ -351,10 +359,16 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			}
 			n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
 			q.refreshed.Add(uint64(n))
-			if err != nil && time.Since(lastWarn) > cscRefreshWarnEvery {
-				lastWarn = time.Now()
-				internal.Logger.Printf(context.Background(),
-					"csc: refresh-on-invalidate batch failed: %v", err)
+			if err != nil {
+				// One count per errored round trip: those keys were not refreshed and
+				// stay evicted (a reader repopulates them). This is the signal that
+				// refresh is degrading to plain eviction.
+				q.refreshFailed.Add(1)
+				if time.Since(lastWarn) > cscRefreshWarnEvery {
+					lastWarn = time.Now()
+					internal.Logger.Printf(context.Background(),
+						"csc: refresh-on-invalidate batch failed: %v", err)
+				}
 			}
 		}
 		cancel()
