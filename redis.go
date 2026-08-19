@@ -2641,47 +2641,45 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 // no residue poisons a later deadline-less read.
 func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
 	return cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
-		handlerCtx := c.pushNotificationHandlerContext(cn)
-		// Nonblocking Close adapter, like the background drainer's: this drain
-		// runs on CSC-held paths (the FD session tick among them), where a
-		// custom handler calling Close() on the raw client would deadlock —
-		// Close waits on the coalescer's WaitGroup, which includes the very
-		// goroutine parked in the handler.
-		handlerCtx.Client = cscHandlerClient{baseClient: c}
-		// Built-in processor: use the Buffered variant (as drainPushNotifications
-		// does) so an error AFTER partially consuming a fragmented frame — e.g. a
-		// RESP3 attribute whose remainder arrives slower than the hard cap — is
-		// PROPAGATED, not swallowed. A swallowed mid-frame error would leave the
-		// connection desynchronized and later fragments could be misread as command
-		// replies and cached under the wrong key. Custom processors keep the
-		// unbuffered call (their contract is "invoked when notifications are known
-		// present").
-		if processor, ok := c.pushProcessor.(*push.Processor); ok {
-			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
-		}
-		// Custom processor. The built-in processor peeks the frame type and consumes
-		// only push frames, but the NotificationProcessor interface does not promise
-		// that. On the buffered path the buffered bytes can be a coalesced REPLY, not
-		// a push (HasBufferedData is true after a prior reply read). So peek the frame
-		// type first. This peek is bounded by the hard read deadline of this closure.
-		t, err := rd.PeekReplyType()
-		if err != nil {
-			// Propagate the error; do not swallow it. PeekReplyType can partially
-			// consume a fragmented RESP3 attribute (DiscardNext) before it errors,
-			// which desyncs the stream. The session must then fail and drop the
-			// connection, as the built-in buffered path does. Returning nil here would
-			// reuse a desynced connection, and later fragments could be read as a
-			// command reply and cached under the wrong key.
-			return err
-		}
-		if t != proto.RespPush {
-			// A real reply, not a push. Leave it for the caller's read. A custom
-			// processor that read here could consume the reply and cache it under the
-			// wrong key.
-			return nil
-		}
-		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+		return c.drainPushFrames(ctx, cn, rd)
 	})
+}
+
+// drainPushFrames processes pending push notifications on rd. The caller already
+// holds rd under a read deadline (WithReader or WithReaderHardDeadline); this
+// helper does not set one, so it is safe to call from a reader that must keep
+// reading afterward (the CSC miss reader reads the command reply next).
+//
+// The built-in processor uses the Buffered variant so an error AFTER partially
+// consuming a fragmented frame — e.g. a RESP3 attribute whose remainder arrives
+// slowly — is PROPAGATED, not swallowed. A swallowed mid-frame error would leave
+// the connection desynchronized and later fragments could be read as a command
+// reply and cached under the wrong key.
+//
+// A custom processor is handed only a confirmed push frame: the interface does
+// not promise the built-in's peek-and-consume-only-push behavior, and on a
+// buffered path the next frame can be a coalesced REPLY. Peek the type first,
+// propagate the peek error (PeekReplyType can partially consume an attribute via
+// DiscardNext before it errors), and skip a non-push frame so a custom processor
+// cannot consume the reply.
+func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	// Nonblocking Close adapter: this drain runs on CSC-held paths (the FD
+	// session reader and tick among them), where a custom handler calling Close()
+	// on the raw client would deadlock — Close waits on the coalescer's
+	// WaitGroup, which includes the very goroutine parked in the handler.
+	handlerCtx.Client = cscHandlerClient{baseClient: c}
+	if processor, ok := c.pushProcessor.(*push.Processor); ok {
+		return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+	}
+	t, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	if t != proto.RespPush {
+		return nil
+	}
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // cscFallbackProbeInterval bounds how often an idle connection without a

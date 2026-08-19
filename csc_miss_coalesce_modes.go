@@ -365,18 +365,15 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				// the raw client would self-deadlock (Close waits on mc.wg while
 				// the reader is parked inside the handler). The adapter's Close
 				// signals and defers the blocking teardown to a goroutine.
-				handlerCtx := c.pushNotificationHandlerContext(cn)
-				handlerCtx.Client = cscHandlerClient{baseClient: c}
-				if e := c.pushProcessor.ProcessPendingNotifications(sctx, handlerCtx, rd); e != nil {
-					// FATAL, not log-and-continue: a surfaced processor error
-					// means bytes may have been consumed mid-frame (the built-in
-					// processor swallows benign boundary timeouts and surfaces
-					// only mid-frame failures; a custom processor's contract
-					// cannot prove no bytes were consumed). Continuing into
-					// ReadRawReply on a desynchronized stream could apply a push
-					// fragment as this request's reply AND publish it to the
-					// cache. Same policy as drainPushNotifications: fail the
-					// session so the connection is closed and removed.
+				// Drain server pushes before reading this request's reply, through the
+				// shared helper: the built-in processor uses the Buffered variant so a
+				// mid-frame error PROPAGATES, and a custom processor is handed only a
+				// confirmed push frame (peek first). FATAL, not log-and-continue: a
+				// drain error means bytes may have been consumed mid-frame, so
+				// continuing into ReadRawReply on a desynchronized stream could apply a
+				// push fragment as this request's reply and publish it to the cache
+				// under the wrong key. Fail the session so the connection is removed.
+				if e := c.drainPushFrames(sctx, cn, rd); e != nil {
 					internal.Logger.Printf(sctx, "csc: miss-coalesce push drain: %v", e)
 					return e
 				}
