@@ -499,9 +499,15 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 				// could publish a push fragment under the wrong cache key — abort so
 				// withConn retires the connection.
 				if c.opt.Protocol == 3 && c.pushProcessor != nil {
-					handlerCtx := c.pushNotificationHandlerContext(cn)
-					handlerCtx.Client = cscHandlerClient{baseClient: c}
-					if err := c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd); err != nil {
+					// Route through the shared helper: the built-in processor uses the
+					// Buffered variant so a mid-frame error PROPAGATES, and a custom
+					// processor is handed only a confirmed push frame (peek first). The
+					// raw unbuffered call swallowed a mid-frame DiscardNext desync on a
+					// fragmented attribute, after which ReadRawReply below read a shifted
+					// stream and could publish a push fragment under the wrong cache key.
+					// The helper sets no read deadline, so this reader's ReadRawReply is
+					// unaffected.
+					if err := c.drainPushFrames(ctx, cn, rd); err != nil {
 						internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
 						return err
 					}

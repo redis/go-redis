@@ -1362,9 +1362,21 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 	var retryTimeout atomic.Uint32
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
-		// Process any pending push notifications before executing the command
+		// Process any pending push notifications before executing the command. A
+		// non-nil error means the drain may have stopped mid-frame (a fragmented
+		// push straddling its hard read cap), leaving the reader desynced. Do NOT
+		// ignore it: reading this command's reply on the conn would then return
+		// shifted bytes — a wrong result, or a wrong-key cache on the CSC capture
+		// path. Close the conn so releaseConn removes it, mark the error retryable,
+		// and let processWithRetry re-run on a fresh conn. Benign cases return nil
+		// (peekAndProcessPushNotifications gates on MaybeHasData; the built-in
+		// processor propagates only genuine mid-frame errors and a custom processor
+		// is peeked first), so this fires only on a real desync.
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
+			internal.Logger.Printf(ctx, "push: pre-command drain failed, retiring conn: %v", err)
+			_ = cn.Close()
+			retryTimeout.Store(1)
+			return err
 		}
 
 		// HIMPORT bookkeeping: pending discards for this session and the
