@@ -2659,6 +2659,17 @@ func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
 		}
+		// Custom processor. The built-in processor peeks the frame type and consumes
+		// only push frames, but the NotificationProcessor interface does not promise
+		// that. On the buffered path the buffered bytes can be a coalesced REPLY, not
+		// a push (HasBufferedData is true after a prior reply read). So peek the frame
+		// type first. If it is not a push, return without a read. A custom processor
+		// that read here could consume the reply, cache it under the wrong key, and
+		// desync the stream. This peek is bounded by the hard read deadline of this
+		// closure, so it is safe even if it must touch the socket.
+		if t, err := rd.PeekReplyType(); err != nil || t != proto.RespPush {
+			return nil
+		}
 		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 	})
 }
