@@ -657,7 +657,7 @@ func TestProcessCached_HitHonorsCanceledContext(t *testing.T) {
 	}
 	cancel()
 
-	if err := c.processCached(ctx, cmd, nil); !errors.Is(err, context.Canceled) {
+	if err := c.processCached(ctx, cmd, nil, 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cached hit with canceled context: got %v, want context.Canceled", err)
 	}
 }
@@ -681,7 +681,7 @@ func TestProcessCached_NilHitIsTerminal(t *testing.T) {
 		t.Fatal("failed to seed negative cache entry")
 	}
 
-	if err := c.processCached(ctx, cmd, nil); err != Nil {
+	if err := c.processCached(ctx, cmd, nil, 0); err != Nil {
 		t.Fatalf("negative cache hit: got %v, want redis.Nil", err)
 	}
 	if cache.Len() != 1 {
