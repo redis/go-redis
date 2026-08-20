@@ -36,6 +36,32 @@ func apTestAddr() string {
 	return ":6379"
 }
 
+// apRELoadOnce guards a lazy, one-time load of the Redis Enterprise connection
+// for the plain go tests in this file. redisOptions() resolves reConn in the
+// ginkgo BeforeSuite, but plain TestXxx funcs may run before it, so
+// apTestOptions() loads it on first use instead.
+var apRELoadOnce sync.Once
+
+// apTestOptions returns the base options for the plain go tests: the resolved
+// Redis Enterprise database (address, credentials, TLS) when running against an
+// external RE cluster (RE_CLUSTER=true and REDIS_ENDPOINTS_CONFIG_PATH set),
+// otherwise Addr: apTestAddr(). Unlike redisOptions() it does not depend on
+// BeforeSuite, so it is safe to call from plain TestXxx funcs. Callers that need
+// extra options mutate the returned struct before NewClient.
+func apTestOptions() *redis.Options {
+	apRELoadOnce.Do(func() {
+		if reConn != nil {
+			return
+		}
+		if re, _ := strconv.ParseBool(os.Getenv("RE_CLUSTER")); re && os.Getenv("REDIS_ENDPOINTS_CONFIG_PATH") != "" {
+			reConn, _ = loadREConnection()
+		}
+	})
+	opt := &redis.Options{Addr: apTestAddr()}
+	applyREConnection(opt) // no-op when reConn is nil (non-RE runs)
+	return opt
+}
+
 // ===== from autopipeline_accessor_test.go =====
 // TestAutoPipelineSecondaryAccessors guards a regression where the deferred
 // await() was injected only on the canonical Val()/Result() of each command
@@ -45,7 +71,7 @@ func apTestAddr() string {
 // real value, not the zero value. Run under -race to catch the missing barrier.
 func TestAutoPipelineSecondaryAccessors(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 	// The deferred face is where secondary accessors must block until the
@@ -123,7 +149,9 @@ func TestAutoPipelineSecondaryAccessors(t *testing.T) {
 // the enqueue/permit/flush path under a producer that outruns per-command waits.
 func TestAutoPipelineWindowedNoDeadlock(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), PoolSize: 20})
+	opt := apTestOptions()
+	opt.PoolSize = 20
+	client := redis.NewClient(opt)
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -182,7 +210,9 @@ func TestAutoPipelineSoak(t *testing.T) {
 		t.Skip("soak skipped in -short")
 	}
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), PoolSize: 20})
+	opt := apTestOptions()
+	opt.PoolSize = 20
+	client := redis.NewClient(opt)
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -240,9 +270,7 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-		})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -303,10 +331,9 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 // Autopipeline + zero-copy GetToBuffer/SetFromBuffer, standalone, concurrent.
 func TestAPZeroCopyBuffer(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true}
+	c := redis.NewClient(opt)
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AutoPipeline()
@@ -386,7 +413,7 @@ func TestAPZeroCopyBuffer(t *testing.T) {
 func TestAutoPipelineCloseRace(t *testing.T) {
 	for iter := 0; iter < 50; iter++ {
 		ctx := context.Background()
-		c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+		c := redis.NewClient(apTestOptions())
 		ap, err := c.AutoPipeline()
 		if err != nil {
 			t.Fatal(err)
@@ -436,7 +463,7 @@ func TestAutoPipelineCloseRace(t *testing.T) {
 // the autopipeliner would report open after the client is gone.
 func TestClientCloseClosesAutoPipeliner(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	c.FlushDB(ctx)
 
 	ap, err := c.AutoPipeline()
@@ -471,9 +498,7 @@ var _ = Describe("AutoPipeline Cmdable Interface", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-		})
+		client = redis.NewClient(redisOptions())
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -692,7 +717,7 @@ func TestAutoPipelineOptionsNotMutated(t *testing.T) {
 // batched SET/GET before and after the BLPOP all return their correct replies.
 func TestAutoPipelineBlockingCommandIsolation(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -736,7 +761,7 @@ func TestAutoPipelineBlockingCommandIsolation(t *testing.T) {
 // not panic (it may return an error, but must not crash or hang).
 func TestAutoPipelineDoubleClose(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -766,7 +791,7 @@ func TestAutoPipelineDoubleClose(t *testing.T) {
 // result is still produced.
 func TestAPContextCancelDoesNotCancelExecution(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -797,7 +822,7 @@ func TestAPContextCancelDoesNotCancelExecution(t *testing.T) {
 // Wait returns the real result.
 func TestAPWaitContextAbandonsWaitOnly(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -826,7 +851,7 @@ func TestAPWaitContextAbandonsWaitOnly(t *testing.T) {
 // AP-C3: WaitContext returns the real result when the batch completes first.
 func TestAPWaitContextReturnsResult(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -850,7 +875,9 @@ func TestAPWaitContextReturnsResult(t *testing.T) {
 // path (unlike batched commands, which execute on Background).
 func TestAPBlockingCommandHonorsContext(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), ContextTimeoutEnabled: true})
+	opt := apTestOptions()
+	opt.ContextTimeoutEnabled = true
+	client := redis.NewClient(opt)
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -879,7 +906,7 @@ func TestAPBlockingCommandHonorsContext(t *testing.T) {
 // AP-C5: submitting after Close returns ErrClosed.
 func TestAPSubmitAfterCloseErrClosed(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -911,10 +938,9 @@ func TestAPZeroFutureWaitContext(t *testing.T) {
 // got exactly what it wrote.
 func TestAPNoCrossTalk(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{MaxBatchSize: 200, MaxConcurrentBatches: 50, Unordered: true}
+	c := redis.NewClient(opt)
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AutoPipeline()
@@ -974,10 +1000,9 @@ func TestAPNoCrossTalk(t *testing.T) {
 // the right command).
 func TestAPPerGoroutineOrder(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{MaxBatchSize: 100, MaxConcurrentBatches: 30, Unordered: true}
+	c := redis.NewClient(opt)
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AutoPipeline()
@@ -1013,10 +1038,9 @@ func TestAPPerGoroutineOrder(t *testing.T) {
 // count keys; must be exactly N.
 func TestAPNoLostCommands(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 256, MaxConcurrentBatches: 64, Unordered: true},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{MaxBatchSize: 256, MaxConcurrentBatches: 64, Unordered: true}
+	c := redis.NewClient(opt)
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AutoPipeline()
@@ -1053,10 +1077,9 @@ func TestAPNoLostCommands(t *testing.T) {
 // corrupt sibling commands sharing the same batch.
 func TestAPErrorIsolation(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{MaxBatchSize: 64, MaxConcurrentBatches: 16, Unordered: true},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{MaxBatchSize: 64, MaxConcurrentBatches: 16, Unordered: true}
+	c := redis.NewClient(opt)
 	defer c.Close()
 	c.FlushDB(ctx)
 	// Seed a list key so INCR on it errors with WRONGTYPE.
@@ -1107,7 +1130,7 @@ func atomicAdd(p *int64) {
 // the returned cmd already holds its result without an explicit further wait.
 func TestBlockingFaceExecutesOnCall(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AutoPipeline() // blocking face
@@ -1147,7 +1170,7 @@ func TestBlockingFaceExecutesOnCall(t *testing.T) {
 // is read later. Windowed submit then read works.
 func TestAsyncFaceDeferred(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 	ap, err := c.AsyncAutoPipeline() // deferred face, ordered default
@@ -1174,7 +1197,7 @@ func TestAsyncFaceDeferred(t *testing.T) {
 // with the result deferred until read. No cross-talk across goroutines.
 func TestFutureFaceTyped(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 	fap, err := c.AsyncAutoPipeline()
@@ -1218,7 +1241,7 @@ func TestFutureFaceTyped(t *testing.T) {
 // strict per-key ordering even though it never blocks between submits.
 func TestOrderedModeWindowed(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 	// Deferred face: submits genuinely don't block, so the windowed claim is
@@ -1293,7 +1316,7 @@ func TestAutoPipelineOptionsValidate(t *testing.T) {
 // with an error (not a panic): AsyncAutoPipeline runs from a post-init call, so a
 // bad config surfaces as a returned error the caller can handle.
 func TestAutoPipelineErrorsOnUnsafeConfig(t *testing.T) {
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{MaxConcurrentBatches: 8})
 	if err == nil {
@@ -1637,7 +1660,7 @@ func runWithWatchdog(t *testing.T, timeout time.Duration, fn func()) {
 
 func testAsyncHookPeek(t *testing.T, before bool) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.AddHook(resultPeekHook{before: before})
 	c.FlushDB(ctx)
@@ -1682,7 +1705,7 @@ func TestAsyncAutoPipelineHookSoloCommand(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		t.Run(fmt.Sprintf("before=%v", before), func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			c.AddHook(resultPeekHook{before: before})
 			c.FlushDB(ctx)
@@ -1714,7 +1737,7 @@ func TestBlockingAutoPipelineHookReads(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		t.Run(fmt.Sprintf("before=%v", before), func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			c.AddHook(resultPeekHook{before: before})
 			c.FlushDB(ctx)
@@ -1742,7 +1765,7 @@ func TestAsyncAutoPipelineDoHookReads(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		t.Run(fmt.Sprintf("before=%v", before), func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			c.AddHook(resultPeekHook{before: before})
 
@@ -1768,7 +1791,9 @@ func TestAsyncAutoPipelineDoHookReads(t *testing.T) {
 // flushers AND dispatcher workers all exit on Close, nothing leaks.
 func TestAutoPipelineNoGoroutineLeak(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr(), PoolSize: 50})
+	opt := apTestOptions()
+	opt.PoolSize = 50
+	client := redis.NewClient(opt)
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -1944,15 +1969,14 @@ func TestAutoPipelineRetryExhaustionSurfacesError(t *testing.T) {
 func TestAutoPipelineSequential(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{
-			MaxBatchSize:         10,
-			MaxFlushDelay:        50 * time.Millisecond,
-			MaxConcurrentBatches: 5,
-			Unordered:            true,
-		},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+		MaxBatchSize:         10,
+		MaxFlushDelay:        50 * time.Millisecond,
+		MaxConcurrentBatches: 5,
+		Unordered:            true,
+	}
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -1996,15 +2020,14 @@ func TestAutoPipelineSequential(t *testing.T) {
 func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{
-			MaxBatchSize:         1000,                  // Large batch size
-			MaxFlushDelay:        20 * time.Millisecond, // Rely on timer
-			MaxConcurrentBatches: 5,
-			Unordered:            true,
-		},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+		MaxBatchSize:         1000,                  // Large batch size
+		MaxFlushDelay:        20 * time.Millisecond, // Rely on timer
+		MaxConcurrentBatches: 5,
+		Unordered:            true,
+	}
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -2047,15 +2070,14 @@ func TestAutoPipelineSequentialSmallBatches(t *testing.T) {
 func TestAutoPipelineSequentialMixed(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{
-			MaxBatchSize:         5,
-			MaxFlushDelay:        50 * time.Millisecond,
-			MaxConcurrentBatches: 5,
-			Unordered:            true,
-		},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+		MaxBatchSize:         5,
+		MaxFlushDelay:        50 * time.Millisecond,
+		MaxConcurrentBatches: 5,
+		Unordered:            true,
+	}
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -2101,7 +2123,7 @@ func TestAutoPipelineSequentialMixed(t *testing.T) {
 // and pipeline pool. Every concurrent caller must observe the SAME instance.
 func TestAutoPipelineConcurrentFirstCall(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	c.FlushDB(ctx)
 
@@ -2151,15 +2173,14 @@ var _ = Describe("AutoPipeline", func() {
 	var ap *redis.AutoPipeliner
 
 	BeforeEach(func() {
-		client = redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-			AutoPipelineOptions: &redis.AutoPipelineOptions{
-				MaxBatchSize:         10,
-				MaxFlushDelay:        50 * time.Millisecond,
-				MaxConcurrentBatches: 5,
-				Unordered:            true,
-			},
-		})
+		opt := redisOptions()
+		opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+			MaxBatchSize:         10,
+			MaxFlushDelay:        50 * time.Millisecond,
+			MaxConcurrentBatches: 5,
+			Unordered:            true,
+		}
+		client = redis.NewClient(opt)
 		Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
 
 		var err error
@@ -2372,15 +2393,14 @@ var _ = Describe("AutoPipeline", func() {
 
 	It("should respect MaxConcurrentBatches", func() {
 		// Create autopipeliner with low concurrency limit
-		client2 := redis.NewClient(&redis.Options{
-			Addr: apTestAddr(),
-			AutoPipelineOptions: &redis.AutoPipelineOptions{
-				MaxBatchSize:         5,
-				MaxFlushDelay:        10 * time.Millisecond,
-				MaxConcurrentBatches: 2,
-				Unordered:            true,
-			},
-		})
+		opt := redisOptions()
+		opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+			MaxBatchSize:         5,
+			MaxFlushDelay:        10 * time.Millisecond,
+			MaxConcurrentBatches: 2,
+			Unordered:            true,
+		}
+		client2 := redis.NewClient(opt)
 		defer client2.Close()
 
 		ap2, err := client2.AutoPipeline()
@@ -2438,15 +2458,14 @@ var _ = Describe("AutoPipeline", func() {
 func TestAutoPipelineBasic(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{
-			MaxBatchSize:         10,
-			MaxFlushDelay:        50 * time.Millisecond,
-			MaxConcurrentBatches: 5,
-			Unordered:            true,
-		},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+		MaxBatchSize:         10,
+		MaxFlushDelay:        50 * time.Millisecond,
+		MaxConcurrentBatches: 5,
+		Unordered:            true,
+	}
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -2491,15 +2510,14 @@ func TestAutoPipelineBasic(t *testing.T) {
 func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-		AutoPipelineOptions: &redis.AutoPipelineOptions{
-			MaxBatchSize:         1000, // Large batch size so only timer triggers flush
-			MaxFlushDelay:        50 * time.Millisecond,
-			MaxConcurrentBatches: 5,
-			Unordered:            true,
-		},
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = &redis.AutoPipelineOptions{
+		MaxBatchSize:         1000, // Large batch size so only timer triggers flush
+		MaxFlushDelay:        50 * time.Millisecond,
+		MaxConcurrentBatches: 5,
+		Unordered:            true,
+	}
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -2558,10 +2576,9 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 func TestAutoPipelineConcurrency(t *testing.T) {
 	ctx := context.Background()
 
-	client := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = redis.DefaultAutoPipelineOptions()
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	if err := client.FlushDB(ctx).Err(); err != nil {
@@ -2612,10 +2629,9 @@ func TestAutoPipelineConcurrency(t *testing.T) {
 // TestAutoPipelineSingleCommandNoBlock verifies that single commands don't block
 func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = redis.DefaultAutoPipelineOptions()
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	ap, err := client.AutoPipeline()
@@ -2654,10 +2670,9 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 // TestAutoPipelineSequentialSingleThread verifies sequential single-threaded execution
 func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr:                apTestAddr(),
-		AutoPipelineOptions: redis.DefaultAutoPipelineOptions(),
-	})
+	opt := apTestOptions()
+	opt.AutoPipelineOptions = redis.DefaultAutoPipelineOptions()
+	client := redis.NewClient(opt)
 	defer client.Close()
 
 	ap, err := client.AutoPipeline()
@@ -2699,9 +2714,7 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 // work correctly with autopipelining and block until execution.
 func TestAutoPipelineTypedCommands(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-	})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 
 	// Skip if Redis is not available
@@ -2739,9 +2752,7 @@ func TestAutoPipelineTypedCommands(t *testing.T) {
 // TestAutoPipelineTypedCommandsMultiple tests multiple typed commands
 func TestAutoPipelineTypedCommandsMultiple(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-	})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 
 	// Skip if Redis is not available
@@ -2792,9 +2803,7 @@ func TestAutoPipelineTypedCommandsMultiple(t *testing.T) {
 // TestAutoPipelineTypedCommandsVal tests the Val() method
 func TestAutoPipelineTypedCommandsVal(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{
-		Addr: apTestAddr(),
-	})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 
 	// Skip if Redis is not available
@@ -2871,7 +2880,7 @@ func TestUniversalClientAutoPipeline(t *testing.T) {
 // surface (PoolStats, Do, ...) delegates to the underlying client.
 func TestAutoPipelinerAsUniversalClient(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3414,7 +3423,7 @@ func TestAutoPipelineHookShortCircuit(t *testing.T) {
 	}{{"blocking", false}, {"async", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			if err := c.Ping(ctx).Err(); err != nil {
 				t.Skipf("no redis: %v", err)
@@ -3466,7 +3475,7 @@ func TestAutoPipelineHookShortCircuit(t *testing.T) {
 // delegating AddHook) take effect and may read results without deadlocking.
 func TestAutoPipelineHookAddedAfterCreate(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3507,7 +3516,7 @@ func TestAutoPipelineHookAddedAfterCreate(t *testing.T) {
 // hung) by the shutdown drain.
 func TestAutoPipelineCloseFlushesPendingFutures(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3579,7 +3588,7 @@ func TestAutoPipelineClientLevelOptionsApply(t *testing.T) {
 // and still deliver its result through the usual accessors.
 func TestAsyncAutoPipelineBlockingCommand(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3617,7 +3626,7 @@ func TestAsyncAutoPipelineBlockingCommand(t *testing.T) {
 // tested; no command had ever executed under this configuration).
 func TestAdaptiveDelayEndToEnd(t *testing.T) {
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3732,7 +3741,7 @@ func TestAutoPipelineDoRawOutsidePipeline(t *testing.T) {
 	}{{"blocking", false}, {"async", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			if err := c.Ping(ctx).Err(); err != nil {
 				t.Skipf("no redis: %v", err)
@@ -3857,7 +3866,7 @@ func TestAutoPipelineHookPostNextError(t *testing.T) {
 	}{{"blocking", false}, {"async", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+			c := redis.NewClient(apTestOptions())
 			defer c.Close()
 			if err := c.Ping(ctx).Err(); err != nil {
 				t.Skipf("no redis: %v", err)
@@ -3916,7 +3925,7 @@ func TestAutoPipelineHookPostNextError(t *testing.T) {
 func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
 	errInjected := errors.New("hook injected after next")
 	ctx := context.Background()
-	c := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	c := redis.NewClient(apTestOptions())
 	defer c.Close()
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -3966,7 +3975,7 @@ func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
 // on the first command was enough to trigger it. rawErr() is the fix.
 func TestAsyncAutoPipelineErrorFirstReplyNoHooks(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 
 	// Forced single batch: everything lands in one flush, first reply is a
@@ -4000,7 +4009,7 @@ func TestAsyncAutoPipelineErrorFirstReplyNoHooks(t *testing.T) {
 // HIMPORT support too: the reads happen regardless of the reply.
 func TestAsyncAutoPipelineHImportBatchNoHooks(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 
 	ap, err := client.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
@@ -4036,7 +4045,7 @@ func TestAsyncAutoPipelineHImportBatchNoHooks(t *testing.T) {
 // flush delay — i.e. without waiting for any result.
 func TestAsyncAutoPipelinePublishDoesNotAwait(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4222,7 +4231,7 @@ func TestClusterNodeHookPostNextError(t *testing.T) {
 // the caller. Next() now awaits the fetch before reading.
 func TestAsyncAutoPipelineScanIterator(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4350,7 +4359,7 @@ func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
 // -race on the unfixed code).
 func TestAutoPipelineSubmitReadBeforeWait(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4424,7 +4433,7 @@ func TestAutoPipelineMaxBatchBytes(t *testing.T) {
 	value := strings.Repeat("x", payload)
 
 	run := func(maxBytes int) []int {
-		client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+		client := redis.NewClient(apTestOptions())
 		defer client.Close()
 		if err := client.Ping(ctx).Err(); err != nil {
 			t.Skipf("no redis: %v", err)
@@ -4518,7 +4527,7 @@ func (h panicPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) r
 // descriptive error, and the engine must stay usable afterwards.
 func TestAutoPipelinePanicInDispatchWakesWaiters(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4562,7 +4571,7 @@ func TestAutoPipelinePanicInDispatchWakesWaiters(t *testing.T) {
 // the executed result.
 func TestAPBlockingContextCancelDoesNotCancelExecution(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4596,7 +4605,7 @@ func TestAPBlockingContextCancelDoesNotCancelExecution(t *testing.T) {
 // inline, so an async ap.BLPop froze the caller for the full block duration.
 func TestAsyncAutoPipelineBlockingCommandDoesNotStallSubmit(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
@@ -4628,7 +4637,7 @@ func TestAsyncAutoPipelineBlockingCommandDoesNotStallSubmit(t *testing.T) {
 // building fresh flushers against dead pools.
 func TestWithTimeoutCloneCloseBlocksParentResurrection(t *testing.T) {
 	ctx := context.Background()
-	parent := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	parent := redis.NewClient(apTestOptions())
 	if err := parent.Ping(ctx).Err(); err != nil {
 		parent.Close()
 		t.Skipf("no redis: %v", err)
@@ -4655,7 +4664,7 @@ func TestWithTimeoutCloneCloseBlocksParentResurrection(t *testing.T) {
 // dispatch at a time (codex on #3942).
 func TestWithTimeoutCloneCloseStopsCachedAutoPipeliner(t *testing.T) {
 	ctx := context.Background()
-	parent := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	parent := redis.NewClient(apTestOptions())
 	if err := parent.Ping(ctx).Err(); err != nil {
 		parent.Close()
 		t.Skipf("no redis: %v", err)
@@ -4739,7 +4748,7 @@ func TestAPClusterWideCommandsDelegate(t *testing.T) {
 // also calls String and relies on the dispatch-gid guard in await.
 func TestAsyncCommandStringAwaits(t *testing.T) {
 	ctx := context.Background()
-	client := redis.NewClient(&redis.Options{Addr: apTestAddr()})
+	client := redis.NewClient(apTestOptions())
 	defer client.Close()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
