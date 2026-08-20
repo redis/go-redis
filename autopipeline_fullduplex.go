@@ -769,7 +769,17 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	var cn *pool.Conn
 	defer func() {
 		if limited {
-			fd.client.opt.Limiter.ReportResult(aerr)
+			// Map a Close-driven cancel to a nil result. When our own Close cancels
+			// fd.ap.ctx mid-session the attempt fails with context.Canceled, which
+			// is a deliberate shutdown, not an upstream failure; reporting it would
+			// make a circuit breaker back off (or open) on every graceful Close.
+			// Any other error, including a caller-context cancel while the engine is
+			// still running, is reported as-is.
+			rr := aerr
+			if rr != nil && errors.Is(rr, context.Canceled) && fd.ap.ctx.Err() != nil {
+				rr = nil
+			}
+			fd.client.opt.Limiter.ReportResult(rr)
 		}
 		if cn == nil {
 			return // nothing acquired, or already Removed inline below
