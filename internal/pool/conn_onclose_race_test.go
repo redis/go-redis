@@ -8,16 +8,17 @@ import (
 )
 
 // TestConnOnCloseRaceWithInitConn is a regression test for a data race on
-// Conn.onClose between a connection being (re)initialized and a concurrent
-// Close.
+// the Conn close hooks (onClose and onCscClose) between a connection being
+// (re)initialized and a concurrent Close.
 //
-// baseClient.initConn installs the close callback via SetOnClose (e.g. the
-// StreamingCredentialsProvider unsubscribe). initConn runs inside
+// baseClient.initConn installs the close callbacks via SetOnClose (the
+// StreamingCredentialsProvider unsubscribe) and SetOnCscClose (the
+// client-side-caching eviction hook). initConn runs inside
 // SetNetConnAndInitConn while the connection is in the INITIALIZING state.
-// Conn.Close transitions to CLOSED from any state, then reads and nils
-// onClose without synchronization. A pool shutdown (or connection removal)
+// Conn.Close transitions to CLOSED from any state, then reads and nils the
+// hooks without synchronization. A pool shutdown (or connection removal)
 // that closes a connection whose init is still in flight therefore races the
-// setter.
+// setters.
 func TestConnOnCloseRaceWithInitConn(t *testing.T) {
 	iterations := 5000
 	if testing.Short() {
@@ -29,9 +30,12 @@ func TestConnOnCloseRaceWithInitConn(t *testing.T) {
 
 		cn := NewConn(c1)
 		cn.SetInitConnFunc(func(ctx context.Context, c *Conn) error {
-			// Mirror baseClient.initConn: install the close hook, then mark
-			// the connection idle so it is ready for use.
+			// Mirror baseClient.initConn: install the close hooks (the
+			// streaming-credentials unsubscribe and the client-side-caching
+			// eviction hook), then mark the connection idle so it is ready
+			// for use.
 			c.SetOnClose(func() error { return nil })
+			c.SetOnCscClose(func() error { return nil })
 			c.GetStateMachine().Transition(StateIdle)
 			return nil
 		})

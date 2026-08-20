@@ -143,23 +143,23 @@ type Conn struct {
 	// if counter reaches 0, we clear the relaxed timeouts
 	relaxedCounter atomic.Int32
 
-	// onCloseAtomic replaces the plain onClose field below: it is read and
-	// cleared by Close while initConn (running inside SetNetConnAndInitConn
-	// under the INITIALIZING state) installs it via SetOnClose; Close
-	// transitions to CLOSED from any state, so the two race when a pool
-	// shutdown closes a connection mid-init. Stored as an atomic pointer so
-	// the setter and Close don't need a mutex (keeping Conn slim).
-	onCloseAtomic atomic.Pointer[func() error]
+	// onClose is read and cleared by Close while initConn (running inside
+	// SetNetConnAndInitConn under the INITIALIZING state) installs it via
+	// SetOnClose; Close transitions to CLOSED from any state, so the two
+	// race when a pool shutdown closes a connection mid-init. Stored as an
+	// atomic pointer so the setter and Close don't need a mutex (keeping
+	// Conn slim).
+	onClose atomic.Pointer[func() error]
 
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	onClose func() error
-
 	// onCscClose is the client-side-caching close hook, kept separate from
 	// onClose (streaming-credentials cleanup) so neither clobbers the other.
-	// Both keep overwrite semantics, so re-running initConn can't accumulate them.
-	onCscClose func() error
+	// Both keep overwrite semantics, so re-running initConn can't accumulate
+	// them. Atomic for the same init-vs-Close race as onClose: it is also
+	// installed by initConn and read and cleared by Close.
+	onCscClose atomic.Pointer[func() error]
 
 	// onCscReinit runs after the connection is claimed for reinitialization but
 	// before its socket is replaced. CSC uses it to invalidate entries whose
@@ -674,16 +674,20 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 // closure" hazard described above.
 func (cn *Conn) SetOnClose(fn func() error) {
 	if fn == nil {
-		cn.onCloseAtomic.Store(nil)
+		cn.onClose.Store(nil)
 		return
 	}
-	cn.onCloseAtomic.Store(&fn)
+	cn.onClose.Store(&fn)
 }
 
 // SetOnCscClose sets the client-side-caching close hook, overwriting any
 // previous one. It runs on Close in addition to the SetOnClose callback.
 func (cn *Conn) SetOnCscClose(fn func() error) {
-	cn.onCscClose = fn
+	if fn == nil {
+		cn.onCscClose.Store(nil)
+		return
+	}
+	cn.onCscClose.Store(&fn)
 }
 
 // SetOnCscReinit sets the client-side-caching pre-reinitialization hook,
@@ -1134,14 +1138,13 @@ func (cn *Conn) Close() error {
 		}
 	}
 
-	if fn := cn.onCloseAtomic.Swap(nil); fn != nil {
+	if fn := cn.onClose.Swap(nil); fn != nil {
 		// ignore error
 		_ = (*fn)()
 	}
-	if cn.onCscClose != nil {
+	if fn := cn.onCscClose.Swap(nil); fn != nil {
 		// ignore error
-		_ = cn.onCscClose()
-		cn.onCscClose = nil
+		_ = (*fn)()
 	}
 
 	// Lock-free netConn access for better performance
