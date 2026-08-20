@@ -28,6 +28,10 @@ const (
 	// authentication error during re-authentication.
 	CloseReasonAuthError = "auth_error"
 
+	// CloseReasonMonitor indicates a dedicated MONITOR connection was closed,
+	// either by MonitorCmd.Stop or because the connection failed.
+	CloseReasonMonitor = "monitor_closed"
+
 	// CloseReasonTest is used in tests when closing connections.
 	CloseReasonTest = "test"
 
