@@ -62,6 +62,39 @@ func apTestOptions() *redis.Options {
 	return opt
 }
 
+// apBaselineRTT returns a conservative baseline round-trip time to the test
+// server so latency-bound assertions can scale to the endpoint (localhost vs a
+// remote Redis Enterprise database) instead of assuming a fixed local bound. It
+// warms the connection, then returns the minimum of a few PINGs (least noisy);
+// on error it returns 0 and callers fall back to their fixed floor.
+func apBaselineRTT(ctx context.Context, c *redis.Client) time.Duration {
+	_ = c.Ping(ctx).Err() // warm dial + handshake
+	best := time.Duration(0)
+	for i := 0; i < 5; i++ {
+		start := time.Now()
+		if err := c.Ping(ctx).Err(); err != nil {
+			return 0
+		}
+		if d := time.Since(start); best == 0 || d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+// apLatencyBudget scales a per-round-trip time budget to the measured RTT, with
+// a fixed floor so localhost (near-zero RTT) still enforces a tight ceiling.
+// roundTrips is the number of sequential server round trips the timed section
+// makes; the 2x factor plus 20ms leaves headroom for scheduling/jitter without
+// masking a real per-command coalescing regression.
+func apLatencyBudget(rtt time.Duration, roundTrips int, floor time.Duration) time.Duration {
+	scaled := time.Duration(roundTrips)*rtt*2 + 20*time.Millisecond
+	if scaled < floor {
+		return floor
+	}
+	return scaled
+}
+
 // ===== from autopipeline_accessor_test.go =====
 // TestAutoPipelineSecondaryAccessors guards a regression where the deferred
 // await() was injected only on the canonical Val()/Result() of each command
@@ -291,6 +324,7 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 
 		// BLPOP should execute immediately without autopipelining.
 		// ap.Do returns a generic *redis.Cmd; use its typed accessors.
+		rtt := apBaselineRTT(ctx, client)
 		start := time.Now()
 		result := ap.Do(ctx, "BLPOP", "list", "1")
 		val, err := result.StringSlice()
@@ -298,8 +332,9 @@ var _ = Describe("AutoPipeline Blocking Commands", func() {
 
 		Expect(err).NotTo(HaveOccurred())
 		Expect(val).To(Equal([]string{"list", "value"}))
-		// Should complete quickly since value is available
-		Expect(elapsed).To(BeNumerically("<", 100*time.Millisecond))
+		// Value is available, so this is ~one round trip; bound scales to the
+		// measured RTT (100ms floor for localhost).
+		Expect(elapsed).To(BeNumerically("<", apLatencyBudget(rtt, 1, 100*time.Millisecond)))
 	})
 
 	It("should mix blocking and non-blocking commands", func() {
@@ -2529,6 +2564,7 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ap.Close()
+	rtt := apBaselineRTT(ctx, client)
 
 	// Send commands slowly, one at a time
 	// They should be flushed by the timer, not by batch size
@@ -2564,10 +2600,11 @@ func TestAutoPipelineMaxFlushDelay(t *testing.T) {
 		}
 	}
 
-	// Should complete in roughly 10 * 10ms = 100ms + some flush intervals
-	// If timer doesn't work, commands would wait until Close() is called
-	if elapsed > 500*time.Millisecond {
-		t.Fatalf("Commands took too long (%v), flush interval may not be working", elapsed)
+	// Roughly 10*10ms sends + a few flush intervals; if the timer doesn't work,
+	// commands would wait until Close(). Bound scales to RTT (500ms floor).
+	bound := apLatencyBudget(rtt, 10, 500*time.Millisecond)
+	if elapsed > bound {
+		t.Fatalf("Commands took too long (%v, bound %v, rtt %v), flush interval may not be working", elapsed, bound, rtt)
 	}
 
 	t.Logf("Completed in %v (flush interval working correctly)", elapsed)
@@ -2645,6 +2682,7 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 	if err := ap.Ping(ctx).Err(); err != nil {
 		t.Fatal(err)
 	}
+	rtt := apBaselineRTT(ctx, client)
 
 	start := time.Now()
 	cmd := ap.Ping(ctx)
@@ -2658,10 +2696,11 @@ func TestAutoPipelineSingleCommandNoBlock(t *testing.T) {
 		t.Fatalf("Ping = %q, want PONG", cmd.Val())
 	}
 
-	// A warmed lone caller flushes immediately (no coalescing wait); 50ms is
-	// a generous bound for one local round trip.
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("Single command took too long: %v (should be < 50ms)", elapsed)
+	// A warmed lone caller flushes immediately (no coalescing wait): one round
+	// trip. The bound scales to the measured RTT (50ms floor for localhost).
+	bound := apLatencyBudget(rtt, 1, 50*time.Millisecond)
+	if elapsed > bound {
+		t.Errorf("Single command took too long: %v (bound %v, rtt %v)", elapsed, bound, rtt)
 	}
 
 	t.Logf("Single command completed in %v", elapsed)
@@ -2685,6 +2724,7 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	if err := ap.Ping(ctx).Err(); err != nil {
 		t.Fatal(err)
 	}
+	rtt := apBaselineRTT(ctx, client)
 
 	// Execute 10 commands sequentially in a single thread
 	start := time.Now()
@@ -2701,9 +2741,11 @@ func TestAutoPipelineSequentialSingleThread(t *testing.T) {
 	}
 	elapsed := time.Since(start)
 
-	// Should complete reasonably fast (< 100ms for 10 commands)
-	if elapsed > 100*time.Millisecond {
-		t.Errorf("10 sequential commands took too long: %v (should be < 100ms)", elapsed)
+	// Ten sequential round trips: the bound scales to the measured RTT so this
+	// holds against a remote endpoint, with a 100ms floor to keep localhost tight.
+	bound := apLatencyBudget(rtt, 10, 100*time.Millisecond)
+	if elapsed > bound {
+		t.Errorf("10 sequential commands took too long: %v (bound %v, rtt %v)", elapsed, bound, rtt)
 	}
 
 	t.Logf("10 sequential commands completed in %v (avg: %v per command)", elapsed, elapsed/10)

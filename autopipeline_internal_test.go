@@ -322,6 +322,9 @@ func TestDoBypassesPipeline(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
 	defer client.Close()
 
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushAll(ctx).Err(); err != nil {
 		t.Fatalf("flushall: %v", err)
 	}
