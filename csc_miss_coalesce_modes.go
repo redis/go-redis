@@ -366,14 +366,18 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				// the reader is parked inside the handler). The adapter's Close
 				// signals and defers the blocking teardown to a goroutine.
 				// Drain server pushes before reading this request's reply, through the
-				// shared helper: the built-in processor uses the Buffered variant so a
-				// mid-frame error PROPAGATES, and a custom processor is handed only a
-				// confirmed push frame (peek first). FATAL, not log-and-continue: a
-				// drain error means bytes may have been consumed mid-frame, so
-				// continuing into ReadRawReply on a desynchronized stream could apply a
-				// push fragment as this request's reply and publish it to the cache
-				// under the wrong key. Fail the session so the connection is removed.
-				if e := c.drainPushFrames(sctx, cn, rd); e != nil {
+				// shared helper in BLOCKING mode: block on the socket and skip pushes
+				// until the reply is the next frame, so a second invalidation still on
+				// the socket ahead of the reply is not read by ReadRawReply as this
+				// request's reply. (The Buffered variant stopped at buffer-empty and let
+				// such a socket-pending push through, shifting the reply stream by one
+				// frame.) A custom processor is handed only a confirmed push frame (peek
+				// first). FATAL, not log-and-continue: a drain error means bytes may have
+				// been consumed mid-frame, so continuing into ReadRawReply on a
+				// desynchronized stream could apply a push fragment as this request's
+				// reply and publish it to the cache under the wrong key. Fail the session
+				// so the connection is removed.
+				if e := c.drainPushFrames(sctx, cn, rd, true); e != nil {
 					internal.Logger.Printf(sctx, "csc: miss-coalesce push drain: %v", e)
 					return e
 				}

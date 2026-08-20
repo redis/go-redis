@@ -513,15 +513,17 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 				// could publish a push fragment under the wrong cache key — abort so
 				// withConn retires the connection.
 				if c.opt.Protocol == 3 && c.pushProcessor != nil {
-					// Route through the shared helper: the built-in processor uses the
-					// Buffered variant so a mid-frame error PROPAGATES, and a custom
-					// processor is handed only a confirmed push frame (peek first). The
-					// raw unbuffered call swallowed a mid-frame DiscardNext desync on a
-					// fragmented attribute, after which ReadRawReply below read a shifted
-					// stream and could publish a push fragment under the wrong cache key.
-					// The helper sets no read deadline, so this reader's ReadRawReply is
-					// unaffected.
-					if err := c.drainPushFrames(ctx, cn, rd); err != nil {
+					// Route through the shared helper in BLOCKING mode: block on the
+					// socket and skip pushes until the refetch reply is the next frame, so
+					// a second invalidation still on the socket ahead of the reply is not
+					// read by ReadRawReply below and published under the wrong cache key.
+					// (The Buffered variant stopped at buffer-empty and let such a
+					// socket-pending push through.) A custom processor is handed only a
+					// confirmed push frame (peek first); PeekReplyType is attribute-aware,
+					// so a fragmented attribute prefix is handled without a separate
+					// buffered scan. The helper sets no read deadline, so this reader's
+					// ReadRawReply is unaffected.
+					if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
 						internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
 						return err
 					}

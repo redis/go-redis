@@ -1071,6 +1071,14 @@ func (cn *Conn) WithReader(
 		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
 			return err
 		}
+	} else {
+		// A negative timeout skips SetReadDeadline, and thus deadline(), which is
+		// the only per-I/O usedAt update. Record usage anyway so a long
+		// deadline-free hold (e.g. a full-duplex CSC session under ReadTimeout=-2)
+		// is not misjudged as idle-expired by the pool on the next Get and
+		// needlessly closed + redialed. Cheap: one atomic store, only on the rare
+		// deadline-free path; harmless on a nil netConn.
+		cn.SetUsedAtNs(getCachedTimeNs())
 	}
 	return fn(cn.rd)
 }
@@ -1114,6 +1122,11 @@ func (cn *Conn) WithWriter(
 			// Connection is not available - return preallocated error
 			return errConnNotAvailableForWrite
 		}
+	} else {
+		// See WithReader: keep usedAt fresh on the deadline-free write path too so
+		// a long-held conn (ReadTimeout/WriteTimeout=-2) is not misjudged as
+		// idle-expired by the pool on the next Get.
+		cn.SetUsedAtNs(getCachedTimeNs())
 	}
 
 	// Reset the buffered writer if needed, should not happen

@@ -2576,6 +2576,74 @@ func TestReleaseConnRemovesConnectionAfterPartialPushRead(t *testing.T) {
 	}
 }
 
+// TestCSCMissReadDrainsSocketPendingPushBeforeReply pins Finding A: a
+// reply-expected CSC reader must block past a push that is still ON THE SOCKET
+// (not yet buffered) ahead of the command reply. The old Buffered drain stopped
+// the instant the reader buffer emptied, so a second invalidation arriving after
+// the first was consumed would be read by ReadRawReply as the command's reply and
+// cached under the wrong key. The blocking drain (drainPushFrames(..., true))
+// keeps skipping pushes until a non-push frame is next.
+func TestCSCMissReadDrainsSocketPendingPushBeforeReply(t *testing.T) {
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	cn := pool.NewConn(client)
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		pushProcessor: push.NewProcessor(),
+	}
+
+	pushX := []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\nx\r\n")
+	pushY := []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\ny\r\n")
+	reply := []byte("$5\r\nhello\r\n")
+
+	type res struct {
+		raw []byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		var raw []byte
+		err := cn.WithReader(context.Background(), 5*time.Second, func(rd *proto.Reader) error {
+			if e := c.drainPushFrames(context.Background(), cn, rd, true); e != nil {
+				return e
+			}
+			var e error
+			raw, e = rd.ReadRawReply()
+			return e
+		})
+		done <- res{raw, err}
+	}()
+
+	// First push, then a pause long enough for the reader to consume it and EMPTY
+	// its buffer while blocked on the next frame — the exact window the Buffered
+	// drain used to return in. Then a SECOND push ahead of the real reply.
+	if _, err := server.Write(pushX); err != nil {
+		t.Fatalf("write first push: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := server.Write(pushY); err != nil {
+		t.Fatalf("write second push: %v", err)
+	}
+	if _, err := server.Write(reply); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("reader failed: %v", r.err)
+		}
+		if string(r.raw) != string(reply) {
+			t.Fatalf("blocking drain must skip both pushes and return the reply; got %q want %q",
+				r.raw, reply)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reader did not complete")
+	}
+}
+
 // bufferedNetConn models a wrapper such as tls.Conn: bytes may already be
 // buffered inside the wrapper while NetConn's raw socket is empty.
 type bufferedNetConn struct {

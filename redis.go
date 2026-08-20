@@ -2653,7 +2653,9 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 // no residue poisons a later deadline-less read.
 func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
 	return cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
-		return c.drainPushFrames(ctx, cn, rd)
+		// A speculative probe on a possibly-idle conn: stop when the reader buffer
+		// empties (Buffered variant) rather than block waiting for a reply.
+		return c.drainPushFrames(ctx, cn, rd, false)
 	})
 }
 
@@ -2662,19 +2664,42 @@ func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.
 // helper does not set one, so it is safe to call from a reader that must keep
 // reading afterward (the CSC miss reader reads the command reply next).
 //
-// The built-in processor uses the Buffered variant so an error AFTER partially
-// consuming a fragmented frame — e.g. a RESP3 attribute whose remainder arrives
-// slowly — is PROPAGATED, not swallowed. A swallowed mid-frame error would leave
-// the connection desynchronized and later fragments could be read as a command
-// reply and cached under the wrong key.
+// blocking selects the built-in processor's drain discipline:
 //
-// A custom processor is handed only a confirmed push frame: the interface does
-// not promise the built-in's peek-and-consume-only-push behavior, and on a
-// buffered path the next frame can be a coalesced REPLY. Peek the type first,
-// propagate the peek error (PeekReplyType can partially consume an attribute via
-// DiscardNext before it errors), and skip a non-push frame so a custom processor
-// cannot consume the reply.
-func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *proto.Reader) error {
+//   - blocking=true (reply-expected readers: the CSC miss and refresh readers):
+//     block on the socket and skip push frames until a NON-push frame — the
+//     command reply — is next, then return leaving it buffered. This is the same
+//     non-buffered discipline the full-duplex reader already uses. The Buffered
+//     variant instead stops the instant the reader buffer empties; if a second
+//     invalidation is still on the socket ahead of the reply, the caller's
+//     ReadRawReply would then read THAT push as the reply and cache it under the
+//     wrong key — a one-frame shift that cascades to every later reply. Note
+//     PeekReplyType is attribute-aware (it discards a RESP3 attribute prefix and
+//     recurses), so a fragmented attribute needs no separate buffered scan. A
+//     boundary-peek TIMEOUT the non-buffered loop swallows is caught by the
+//     caller's shared read deadline: ReadRawReply hits the same expired deadline
+//     and fails the session. This is the same non-buffered discipline the
+//     full-duplex reader already runs; a swallowed NON-timeout peek error would
+//     need a malformed RESP3 attribute mid-push (a server protocol bug), so this
+//     path is no weaker than that one. Pub/sub-named pushes, which the drain
+//     leaves buffered, cannot reach a CSC-held conn: subscriptions route to
+//     PubSub-owned connections.
+//
+//   - blocking=false (readiness-established probes: pushDrainWithin, the FD
+//     session tick, the background drainer): use the Buffered variant, which
+//     drains the current batch and stops when the reader buffer empties so the
+//     probe never blocks waiting for a reply that will not come on an idle conn.
+//     An error AFTER partially consuming a fragmented frame is PROPAGATED, not
+//     swallowed, so a mid-frame desync cannot later be read as a command reply.
+//
+// A custom processor is handed only a confirmed push frame in either mode: the
+// interface does not promise the built-in's peek-and-consume-only-push behavior,
+// and the next frame can be a coalesced REPLY. Peek the type first, propagate the
+// peek error (PeekReplyType can partially consume an attribute via DiscardNext
+// before it errors), and skip a non-push frame so a custom processor cannot
+// consume the reply; ProcessPendingNotifications then blocks and skips pushes
+// until a non-push is next, matching the built-in blocking discipline.
+func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *proto.Reader, blocking bool) error {
 	handlerCtx := c.pushNotificationHandlerContext(cn)
 	// Nonblocking Close adapter: this drain runs on CSC-held paths (the FD
 	// session reader and tick among them), where a custom handler calling Close()
@@ -2682,6 +2707,9 @@ func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *pro
 	// WaitGroup, which includes the very goroutine parked in the handler.
 	handlerCtx.Client = cscHandlerClient{baseClient: c}
 	if processor, ok := c.pushProcessor.(*push.Processor); ok {
+		if blocking {
+			return processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+		}
 		return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
 	}
 	t, err := rd.PeekReplyType()

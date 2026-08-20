@@ -49,6 +49,17 @@ func cscRegisterCleanups(c *Client) {
 	// handle is channels only (no *Client), so capturing it keeps the wrapper
 	// collectible.
 	rh := c.baseClient.cscRefreshHandle
+	// Capture this client's refresh queue too: signalStop stops the refresher
+	// goroutine, but with a SHARED cache+processor the invalidate handler still
+	// holds this queue as (possibly) the active refresh binding. If a sibling
+	// client survives, invalidations would keep feeding a stopped queue and the
+	// shared cache's refresh-on-invalidate would silently degrade to plain
+	// eviction. clearRefreshQueue unbinds it and restores the sibling's binding,
+	// mirroring stopCSCRefresher on the clean Close path. A queue is only ever
+	// created inside attachSharedTrackingCSC, which also builds the drain handle
+	// (startBackgroundDrainer), so h.invalidateHandler is set whenever q is
+	// non-nil; a Conn() clone bails before startCSCRefresher and never has one.
+	q := c.baseClient.cscRefreshQueue
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
 		if active != nil {
 			active.Store(false)
@@ -62,6 +73,9 @@ func cscRegisterCleanups(c *Client) {
 		}
 		if rh != nil {
 			rh.signalStop()
+		}
+		if q != nil && h.invalidateHandler != nil {
+			h.invalidateHandler.clearRefreshQueue(q)
 		}
 		h.signalStop()
 	}, h)
