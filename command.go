@@ -8012,7 +8012,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 				case 'T':
 					info.Flags |= ClientNoTouch
 				default:
-					return nil, fmt.Errorf("redis: unexpected client info flags(%s)", string(val[i]))
+					// Forward compatibility: servers can return client-flag
+					// characters this client does not recognize (new flags are
+					// added over time). Skip them instead of failing, as the
+					// CLIENT LIST/INFO docs advise for version-safe parsing, and
+					// matching the "skip unknown fields" behaviour of the field
+					// switch below.
 				}
 			}
 		case "db":
