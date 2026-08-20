@@ -167,9 +167,16 @@ type fdInflight struct {
 //nolint:unused // used by the full-duplex tests; lint runs with tests:false.
 func newFDInflight() *fdInflight { return newFDInflightCap(0) }
 
-// newFDInflightCap presizes the ring so a session at the configured batch size
-// takes no reallocations in steady state (session passes maxBatch). Tests use
-// the zero-cap no-arg form and let it grow.
+// newFDInflightCap presizes the ring so a busy session avoids repeated early
+// reallocations, capping the initial size at min(maxBatch, window). The window is
+// the hard ceiling on live count — the writer blocks once in-flight reaches it
+// and caps each drain by the remaining window room — so a MaxBatchSize larger
+// than the window (MaxBatchSize is an uncapped soft per-flush threshold) must not
+// presize beyond it: a huge MaxBatchSize with a small window would otherwise
+// allocate that many entries up front (tens of MB, or an OOM) and again after
+// every idle/recycle. Capping at maxBatch as well keeps the common small-batch
+// default unchanged. grow() is the backstop up to the window as load ramps. Tests
+// use the zero-cap no-arg form and let it grow.
 func newFDInflightCap(initialCap int) *fdInflight {
 	f := &fdInflight{room: make(chan struct{}, 1)}
 	if initialCap > 0 {
@@ -478,6 +485,10 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 	fd.submitMu.RLock()
 	if fd.closed {
 		fd.submitMu.RUnlock()
+		// Recycle the pooled completion batch drawn above but never admitted, so a
+		// rejection does not discard one pooled batch + channel per command (a no-op
+		// for the newAPBatch shape, which is not pooled).
+		putFDBlockingBatch(b)
 		cmd.SetErr(ErrClosed)
 		// Submit-time rejection: return the shared completedBatch sentinel (no host
 		// was started) so processAsync surfaces the error from raw Process(ctx,cmd),
@@ -502,10 +513,12 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// started, so this is a submit-time failure — return the completedBatch sentinel
 		// so raw Process(ctx,cmd) reports the ctx error.
 		fd.submitMu.RUnlock()
+		putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
 		cmd.SetErr(ctx.Err())
 		return completedBatch
 	case <-fd.ap.ctx.Done():
 		fd.submitMu.RUnlock()
+		putFDBlockingBatch(b) // recycle the unadmitted pooled batch (no-op if not pooled)
 		cmd.SetErr(ErrClosed)
 		return completedBatch
 	}
@@ -928,9 +941,9 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 // session runs the writer (this goroutine) + reader (spawned) on one connection
 // until Close (graceful) or a connection error (returns the unacked tail).
 func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	inflight := newFDInflightCap(fd.maxBatch)
-	fd.curInflight.Store(inflight) // test observability (peak in-flight)
-	fd.curConn.Store(cn)           // test observability (handoff)
+	inflight := newFDInflightCap(min(fd.maxBatch, fd.window)) // capped by the window (peak) and the batch; grow() backstops
+	fd.curInflight.Store(inflight)                            // test observability (peak in-flight)
+	fd.curConn.Store(cn)                                      // test observability (handoff)
 	defer fd.curConn.Store(nil)
 	readerDone := make(chan struct{})
 
