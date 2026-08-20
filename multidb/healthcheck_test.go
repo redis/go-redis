@@ -203,6 +203,48 @@ H8PD6BY8JK7P5K8K0K8K0K8K0K8K0K8K0K8K0A==
 	})
 }
 
+// trackingBody records whether a response body was read to EOF and closed.
+type trackingBody struct {
+	r       io.Reader
+	drained bool
+	closed  bool
+}
+
+func (b *trackingBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err == io.EOF {
+		b.drained = true
+	}
+	return n, err
+}
+
+func (b *trackingBody) Close() error { b.closed = true; return nil }
+
+type stubHTTPClient struct{ resp *http.Response }
+
+func (c *stubHTTPClient) Do(*http.Request) (*http.Response, error) { return c.resp, nil }
+
+func TestLagAwareDrainsMalformedBDBResponse(t *testing.T) {
+	// A 200 with undecodable JSON must still be drained: a misbehaving admin
+	// API that keeps producing bad responses sits in a health-check loop,
+	// and an undrained body makes the transport burn a new TCP/TLS
+	// connection per probe instead of reusing the keep-alive one.
+	body := &trackingBody{r: strings.NewReader("not json at all, with trailing bytes the decoder never touches")}
+	hc := NewLagAwareHealthCheck(
+		WithLagAwareHTTPClient(&stubHTTPClient{resp: &http.Response{StatusCode: 200, Body: body}}),
+	)
+
+	if _, err := hc.getBDBs(context.Background(), "http://cluster.example/v1/bdbs"); err == nil {
+		t.Fatal("expected a decode error for malformed JSON")
+	}
+	if !body.drained {
+		t.Error("malformed response body was not drained — the keep-alive connection cannot be reused")
+	}
+	if !body.closed {
+		t.Error("response body was not closed")
+	}
+}
+
 func TestLagAwareIsFailbackOnly(t *testing.T) {
 	// The lag-aware REST check may only gate routing traffic TO a member
 	// (candidate probes, auto-fallback, initial selection): replication lag

@@ -455,6 +455,10 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 	}
 	var bdbs []bdbInfo
 	if err := json.NewDecoder(resp.Body).Decode(&bdbs); err != nil {
+		// Drain the malformed body too: a misbehaving admin API that keeps
+		// answering 200 with undecodable JSON sits in a health-check loop,
+		// and an undrained body burns a TCP/TLS handshake per probe.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return nil, err
 	}
 	// Drain any trailing bytes so the keep-alive connection is reusable.
