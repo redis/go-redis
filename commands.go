@@ -554,7 +554,15 @@ func (c cmdable) ClientInfo(ctx context.Context) *ClientInfoCmd {
 
 // ClientMaintNotifications enables or disables maintenance notifications for maintenance upgrades.
 // When enabled, the client will receive push notifications about Redis maintenance events.
-func (c cmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+//
+// CLIENT MAINT_NOTIFICATIONS is per-connection state, exactly like CLIENT
+// TRACKING: it lives on statefulCmdable and is directly usable on a dedicated
+// connection (Client.Conn) and inside Pipeline/Tx. The library enables it on
+// every connection automatically during connection init when
+// Options.MaintNotificationsConfig is set — that is the supported way to turn
+// it on for a whole client. The pooled clients keep a same-named method for
+// interface compatibility that returns an explanatory error.
+func (c statefulCmdable) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
 	args := []interface{}{"client", "maint_notifications"}
 	if enabled {
 		if endpointType == "" {
@@ -591,7 +599,16 @@ type ClientTrackingOptions struct {
 // configured with Options.ClientSideCache or ClientSideCacheConfig this
 // command is rejected, because changing a pool connection's tracking state
 // would silently break the cache's invalidation.
-func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+//
+// CLIENT TRACKING is per-connection state, so this lives on statefulCmdable
+// next to ClientSetName/ClientSetInfo: it is directly usable on a dedicated
+// connection (Client.Conn) and inside Pipeline/Tx. The pooled clients keep
+// same-named methods for interface compatibility, but those return an error
+// explaining that the command must target a specific connection — on a pooled
+// client it would land on an arbitrary connection that is immediately
+// returned to the pool, so subsequent reads run on other connections and the
+// invalidation pushes arrive on a connection nothing is reading.
+func (c statefulCmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
 	if !on {
 		return c.ClientTrackingOff(ctx)
 	}
@@ -600,7 +617,7 @@ func (c cmdable) ClientTracking(ctx context.Context, on bool, opt *ClientTrackin
 
 // ClientTrackingOn enables tracking on the serving connection. See
 // ClientTracking for the pooled-client and built-in-CSC caveats.
-func (c cmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+func (c statefulCmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
 	args := []interface{}{"client", "tracking", "on"}
 	if opt != nil {
 		if err := validateClientTrackingOptions(opt); err != nil {
@@ -617,7 +634,7 @@ func (c cmdable) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOption
 
 // ClientTrackingOff disables tracking on the serving connection. See
 // ClientTracking for the pooled-client and built-in-CSC caveats.
-func (c cmdable) ClientTrackingOff(ctx context.Context) *StatusCmd {
+func (c statefulCmdable) ClientTrackingOff(ctx context.Context) *StatusCmd {
 	cmd := NewStatusCmd(ctx, "client", "tracking", "off")
 	_ = c(ctx, cmd)
 	return cmd

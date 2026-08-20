@@ -1607,13 +1607,23 @@ type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
 ) error {
-	// Pipeline commands never pass through process, so apply the same CSC state
-	// guard here. initConn's internal client is exempt.
+	// Pipelines bypass process, so apply the CSC state guard here (initConn's
+	// internal client is exempt); it runs first so a CSC client gets the
+	// CSC-specific error. Then surface any queued pooled-state rejection
+	// (stateRejectedErr) before dispatch.
 	for _, cmd := range cmds {
 		if err := c.cscCommandError(cmd); err != nil {
+			// Overwrite a queued pooled-state rejection's pre-set error: on a CSC
+			// client the CSC-specific error wins, and Exec's return and the
+			// command's Err() must agree (setCmdsErr skips already-errored cmds).
+			cmd.SetErr(err)
 			setCmdsErr(cmds, err)
 			return err
 		}
+	}
+	if err := stateRejectedErr(cmds); err != nil {
+		setCmdsErr(cmds, err)
+		return err
 	}
 	// Only call time.Now() if pipeline operation duration callback is set to avoid overhead
 	var operationStart time.Time
@@ -2122,6 +2132,76 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
+// errClientTrackingOnPooledClient and errClientMaintNotificationsOnPooledClient
+// reject the per-connection commands on pooled clients. Both commands mutate
+// connection state: issued through a pool they would land on an arbitrary
+// connection that is immediately returned to the pool, so the flag applies to
+// a connection the caller cannot address again (and, for CLIENT TRACKING, the
+// invalidation pushes arrive on a connection nothing is reading). The methods
+// exist on the pooled clients only to keep the Cmdable interface intact; they
+// fail with guidance instead of silently misconfiguring one random connection.
+var (
+	errClientTrackingOnPooledClient = errors.New(
+		"redis: CLIENT TRACKING is per-connection state and cannot be applied through a connection pool; " +
+			"use a dedicated connection (Client.Conn), " +
+			"or configure the built-in client-side cache (the ClientSideCacheConfig option) instead")
+	errClientMaintNotificationsOnPooledClient = errors.New(
+		"redis: CLIENT MAINT_NOTIFICATIONS is per-connection state and cannot be applied through a connection pool; " +
+			"set the MaintNotificationsConfig option to enable it on every connection automatically, " +
+			"or use a dedicated connection (Client.Conn) for manual control")
+)
+
+// pooledConnStateCmd builds the pre-failed StatusCmd the pooled-client
+// variants of the per-connection commands return. The args mirror the real
+// command so instrumentation that inspects command names still sees them.
+func pooledConnStateCmd(ctx context.Context, err error, args ...interface{}) *StatusCmd {
+	cmd := NewStatusCmd(ctx, args...)
+	cmd.SetErr(err)
+	return cmd
+}
+
+// ClientTracking on a pooled client fails with guidance: CLIENT TRACKING is
+// per-connection state. Use Client.Conn, a Pipeline/Tx, or the built-in
+// client-side cache. See the statefulCmdable method for the working variant.
+func (c *Client) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+// ClientTrackingOn on a pooled client fails with guidance; see ClientTracking.
+func (c *Client) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, args...)
+}
+
+// ClientTrackingOff on a pooled client fails with guidance; see ClientTracking.
+func (c *Client) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	return pooledConnStateCmd(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+// ClientMaintNotifications on a pooled client fails with guidance: the
+// supported way to enable maintenance notifications for a whole client is
+// Options.MaintNotificationsConfig, which applies it to every connection
+// during connection init. See the statefulCmdable method for the working
+// per-connection variant.
+func (c *Client) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return pooledConnStateCmd(ctx, errClientMaintNotificationsOnPooledClient, args...)
+}
+
 func (c *Client) Conn() *Conn {
 	// Share the HIMPORT fieldset registry: the sticky pool borrows
 	// connections from this client's pool, so fieldsets prepared on them
@@ -2470,7 +2550,8 @@ func (c *Conn) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder
 
 func (c *Conn) Pipeline() Pipeliner {
 	pipe := Pipeline{
-		exec: c.processPipelineHook,
+		exec:   c.processPipelineHook,
+		sticky: true, // dedicated connection: per-connection state commands are allowed
 	}
 	pipe.init()
 	return &pipe
@@ -2487,6 +2568,7 @@ func (c *Conn) TxPipeline() Pipeliner {
 			cmds = wrapMultiExec(ctx, cmds)
 			return c.processTxPipelineHook(ctx, cmds)
 		},
+		sticky: true, // dedicated connection: per-connection state commands are allowed
 	}
 	pipe.init()
 	return &pipe

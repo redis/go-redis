@@ -453,22 +453,55 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("should reject invalid ClientTracking option combinations", func() {
-			err := client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+			// Option validation lives on the per-connection (statefulCmdable)
+			// variant: the pooled-client methods reject the command outright
+			// (per-connection state), so validation is only reachable on a
+			// dedicated connection or in a pipeline.
+			conn := rawClient.Conn()
+			defer conn.Close()
+
+			err := conn.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
 				OptIn:  true,
 				OptOut: true,
 			}).Err()
 			Expect(err).To(MatchError(ContainSubstring("OPTIN and OPTOUT")))
 
-			err = client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+			err = conn.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
 				Bcast: true,
 				OptIn: true,
 			}).Err()
 			Expect(err).To(MatchError(ContainSubstring("BCAST cannot be combined")))
 
-			err = client.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
+			err = conn.ClientTrackingOn(ctx, &redis.ClientTrackingOptions{
 				Prefixes: []string{"k:"},
 			}).Err()
 			Expect(err).To(MatchError(ContainSubstring("PREFIX requires BCAST")))
+		})
+
+		It("should reject per-connection commands on pooled clients", func() {
+			// CLIENT TRACKING and CLIENT MAINT_NOTIFICATIONS are per-connection
+			// state: through a pool they would land on an arbitrary connection,
+			// so the pooled-client methods fail with guidance instead. The
+			// subject may be the raw client or an autopipeliner face — both
+			// must reject identically.
+			for _, cmd := range []*redis.StatusCmd{
+				client.ClientTracking(ctx, true, nil),
+				client.ClientTrackingOn(ctx, nil),
+				client.ClientTrackingOff(ctx),
+			} {
+				Expect(cmd.Err()).To(MatchError(ContainSubstring("per-connection state")))
+			}
+			Expect(client.ClientMaintNotifications(ctx, true, "none").Err()).
+				To(MatchError(ContainSubstring("per-connection state")))
+
+			// The dedicated-connection variant keeps working — gated, since
+			// CLIENT TRACKING may be unavailable on RE/ACL-restricted targets
+			// (the pooled-rejection assertions above are client-side, no gate).
+			skipIfClientTrackingUnavailable(ctx, rawClient)
+			conn := rawClient.Conn()
+			defer conn.Close()
+			Expect(conn.ClientTrackingOn(ctx, nil).Err()).NotTo(HaveOccurred())
+			Expect(conn.ClientTrackingOff(ctx).Err()).NotTo(HaveOccurred())
 		})
 
 		It("should ConfigGet", func() {

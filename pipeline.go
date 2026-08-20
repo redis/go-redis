@@ -57,11 +57,77 @@ type Pipeline struct {
 
 	exec pipelineExecer
 	cmds []Cmder
+	// sticky marks a Pipeline whose connection is pinned for its whole lifetime
+	// (a dedicated *Conn, or a *Tx — WATCH pins until Close). Per-connection
+	// state commands (CLIENT TRACKING / MAINT_NOTIFICATIONS) are allowed only
+	// then: on a pooled Pipeline the conn is borrowed for Exec and returned, so
+	// queuing them would strand state on an arbitrary pool connection — the
+	// overrides below reject them there.
+	sticky bool
 }
 
 func (c *Pipeline) init() {
 	c.cmdable = c.Process
 	c.statefulCmdable = c.Process
+}
+
+// ClientTracking / ClientTrackingOn / ClientTrackingOff / ClientMaintNotifications:
+// queued normally on a sticky pipeline, rejected with guidance on a pooled one
+// (see the sticky field doc).
+func (c *Pipeline) ClientTracking(ctx context.Context, on bool, opt *ClientTrackingOptions) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTracking(ctx, on, opt)
+	}
+	if !on {
+		return c.ClientTrackingOff(ctx)
+	}
+	return c.ClientTrackingOn(ctx, opt)
+}
+
+func (c *Pipeline) ClientTrackingOn(ctx context.Context, opt *ClientTrackingOptions) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTrackingOn(ctx, opt)
+	}
+	args := []interface{}{"client", "tracking", "on"}
+	if opt != nil {
+		args = appendClientTrackingOptions(args, opt)
+	}
+	return c.rejectPooledState(ctx, errClientTrackingOnPooledClient, args...)
+}
+
+func (c *Pipeline) ClientTrackingOff(ctx context.Context) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientTrackingOff(ctx)
+	}
+	return c.rejectPooledState(ctx, errClientTrackingOnPooledClient, "client", "tracking", "off")
+}
+
+func (c *Pipeline) ClientMaintNotifications(ctx context.Context, enabled bool, endpointType string) *StatusCmd {
+	if c.sticky {
+		return c.statefulCmdable.ClientMaintNotifications(ctx, enabled, endpointType)
+	}
+	args := []interface{}{"client", "maint_notifications"}
+	if enabled {
+		if endpointType == "" {
+			endpointType = "none"
+		}
+		args = append(args, "on", "moving-endpoint-type", endpointType)
+	} else {
+		args = append(args, "off")
+	}
+	return c.rejectPooledState(ctx, errClientMaintNotificationsOnPooledClient, args...)
+}
+
+// rejectPooledState queues a pre-failed state command (flagged stateRejected)
+// so Exec/Pipelined surface the guidance error even when the caller ignores the
+// returned command, and the pipeline executors return it without dispatching.
+// Queuing — rather than a pipeline-level pending error — lets Discard clear it
+// like any other queued command.
+func (c *Pipeline) rejectPooledState(ctx context.Context, err error, args ...interface{}) *StatusCmd {
+	cmd := pooledConnStateCmd(ctx, err, args...)
+	cmd.markStateRejected()
+	_ = c.Process(ctx, cmd)
+	return cmd
 }
 
 // Len returns the number of queued commands.
