@@ -592,6 +592,193 @@ func TestSharedCacheSeparatesFixedCredentialIdentities(t *testing.T) {
 	}
 }
 
+// TestInvalBatchWindowRebuildOnChange pins #3965: a running batcher's window is
+// fixed at creation, so when a second client binds to the same shared handler
+// with a different window, setInvalBatchWindow must drop the running batcher so
+// the next invalidation starts a fresh one with the new (e.g. stricter) window.
+func TestInvalBatchWindowRebuildOnChange(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+
+	h.setInvalBatchWindow(time.Second)
+	b1 := h.ensureBatcher()
+	if b1 == nil || b1.window != time.Second {
+		t.Fatalf("first batcher window = %v, want 1s", b1)
+	}
+
+	// Stricter window from a second binding: the running batcher must be dropped.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	h.mu.Lock()
+	running := h.batcher
+	h.mu.Unlock()
+	if running != nil {
+		t.Fatal("batcher not dropped on window change — the stale window would be kept")
+	}
+	b2 := h.ensureBatcher()
+	if b2 == nil || b2.window != 10*time.Millisecond {
+		t.Fatalf("rebuilt batcher window = %v, want 10ms", b2)
+	}
+	if b2 == b1 {
+		t.Fatal("expected a fresh batcher after the window change")
+	}
+
+	// Same window again must not churn the batcher.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	h.mu.Lock()
+	same := h.batcher
+	h.mu.Unlock()
+	if same != b2 {
+		t.Fatal("setInvalBatchWindow with an unchanged window must not rebuild the batcher")
+	}
+
+	// LOOSER window from a later binding must NOT apply: the effective window is
+	// the strictest across attached clients, or the 10ms client's staleness bound
+	// would be silently violated by a 1s attach.
+	h.setInvalBatchWindow(time.Second)
+	h.mu.Lock()
+	kept, keptWindow := h.batcher, h.invalBatchWindow
+	h.mu.Unlock()
+	if kept != b2 || keptWindow != 10*time.Millisecond {
+		t.Fatalf("a looser window applied over a stricter one: batcher rebuilt=%v window=%v, want kept 10ms", kept != b2, keptWindow)
+	}
+
+	// Explicit 0 (batching off, inline deletes) is strictest of all and must win.
+	h.setInvalBatchWindow(0)
+	h.mu.Lock()
+	zeroWindow, zeroBatcher := h.invalBatchWindow, h.batcher
+	h.mu.Unlock()
+	if zeroWindow != 0 || zeroBatcher != nil {
+		t.Fatalf("explicit 0 window must win (inline) and drop the batcher: window=%v batcher=%v", zeroWindow, zeroBatcher)
+	}
+	// ...and a later nonzero window must not loosen past it.
+	h.setInvalBatchWindow(time.Second)
+	h.mu.Lock()
+	afterZero := h.invalBatchWindow
+	h.mu.Unlock()
+	if afterZero != 0 {
+		t.Fatalf("nonzero window applied over an explicit 0: window=%v, want 0 (inline stays strictest)", afterZero)
+	}
+}
+
+// TestInvalBatchStopAppliesQueuedDeletes pins #3965 (cursor High): stopping the
+// batcher — as a window-change rebuild does — must apply the deletes still
+// buffered in its channel, not just the in-progress batch, or the cache serves
+// pre-invalidation values until TTL/MaxStaleness.
+func TestInvalBatchStopAppliesQueuedDeletes(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour) // never fires on its own in this test
+
+	nsKey := cscNamespacedKey("p:", "sq")
+	cacheKey := cscNamespacedKey("p:", "get:sq")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("stale")) {
+		t.Fatal("seed")
+	}
+	// Queue the delete on the batcher (1h window: buffered, not applied).
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, []interface{}{"sq"}}); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	if _, ok := cache.Get(ctx, cacheKey); !ok {
+		t.Fatal("delete applied before the window elapsed — batching not in effect, test proves nothing")
+	}
+
+	// Tighten the window: the rebuild stops the 1h batcher, whose stop path must
+	// drain + apply the queued delete.
+	h.setInvalBatchWindow(10 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := cache.Get(ctx, cacheKey); !ok {
+			break // delete applied
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("queued delete lost by the batcher stop/rebuild — entry still served")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestInvalBatchEnqueueAfterStopAppliesInline pins #3965 (cursor): a handler
+// goroutine can hold a batcher pointer across a concurrent stop (window-change
+// rebuild mid-enqueue-loop). enqueue on a stopped batcher must apply the delete
+// inline — a key parked in a channel nothing drains would serve
+// pre-invalidation values until TTL/MaxStaleness.
+func TestInvalBatchEnqueueAfterStopAppliesInline(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour)
+	b := h.ensureBatcher()
+	if b == nil {
+		t.Fatal("no batcher")
+	}
+
+	nsKey := cscNamespacedKey("p:", "as")
+	cacheKey := cscNamespacedKey("p:", "get:as")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("stale")) {
+		t.Fatal("seed")
+	}
+
+	b.stop()
+	b.enqueue(nsKey) // stopped: must delete inline, not park in b.ch
+	if _, ok := cache.Get(ctx, cacheKey); ok {
+		t.Fatal("enqueue on a stopped batcher parked the delete — entry still served")
+	}
+}
+
+// TestInvalBatchDroppedOnFlush pins #3965: a full cache Flush (FLUSHDB/FLUSHALL)
+// must discard the batcher's queued per-key deletes, or a delete queued before
+// the flush fires afterward and evicts an entry repopulated post-flush.
+func TestInvalBatchDroppedOnFlush(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(80 * time.Millisecond) // batched; long enough not to fire before the flush
+
+	nsKey := cscNamespacedKey("p:", "x")
+	cacheKey := cscNamespacedKey("p:", "get:x")
+	if !cache.set(cacheKey, []string{nsKey}, []byte("v1")) {
+		t.Fatal("seed")
+	}
+
+	// Batched invalidation for x: queued, not yet applied (window not elapsed).
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, []interface{}{"x"}}); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	// Full flush: clears the cache AND must drop the queued delete for x.
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, nil}); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	// Repopulate x after the flush, then wait past the window: the dropped delete
+	// must NOT fire and evict the fresh entry.
+	if !cache.set(cacheKey, []string{nsKey}, []byte("v2")) {
+		t.Fatal("repopulate")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if v, ok := cache.Get(ctx, cacheKey); !ok || string(v) != "v2" {
+		t.Fatalf("repopulated entry evicted by a stale batched delete after flush: got %q ok=%v, want v2", v, ok)
+	}
+}
+
 func TestAttachCSC_HandlerConflictDoesNotEnableTracking(t *testing.T) {
 	proc := push.NewProcessor()
 	if err := proc.RegisterHandler(invalidatePushName, &recordingHandler{}, true); err != nil {
@@ -2361,9 +2548,99 @@ func TestReleaseConnRemovesConnectionAfterPartialPushRead(t *testing.T) {
 	}
 	c.releaseConn(context.Background(), cn, nil)
 
+	// The invariant is no PARTIALLY-CONSUMED conn is ever re-pooled. On a loaded
+	// runner the drain's short probe deadline can expire before consuming any
+	// byte — a benign timeout: nothing was read, the frame is intact in the
+	// socket, and re-pooling is safe (the next drain consumes it whole). Only a
+	// Put after bytes moved into the reader is the desync bug. An empty reader
+	// buffer alone does NOT prove zero consumption (a partial parse can eat
+	// every available byte and still leave the buffer empty), so before
+	// skipping, prove the stream is intact: complete the frame and require the
+	// whole push to parse. A parse failure means a desynced conn was re-pooled
+	// — exactly the regression this test pins.
+	if cp.puts == 1 && cp.removes == 0 && !cn.HasBufferedData() {
+		if _, err := server.Write([]byte("o\r\n")); err != nil {
+			t.Fatalf("completing push frame: %v", err)
+		}
+		if err := cn.WithReader(context.Background(), 2*time.Second, func(rd *proto.Reader) error {
+			_, err := rd.ReadReply()
+			return err
+		}); err != nil {
+			t.Fatalf("re-pooled conn is desynced: completed push failed to parse: %v", err)
+		}
+		t.Skip("probe timed out before consuming anything; conn re-pooled intact (whole-frame parse verified) — mid-frame path not exercised this run")
+	}
 	if cp.removes != 1 || cp.puts != 0 {
 		t.Fatalf("partial push read must remove, not re-pool, the connection: removes=%d puts=%d",
 			cp.removes, cp.puts)
+	}
+}
+
+// TestCSCMissReadDrainsSocketPendingPushBeforeReply pins Finding A: a
+// reply-expected CSC reader must block past a push that is still ON THE SOCKET
+// (not yet buffered) ahead of the command reply. The old Buffered drain stopped
+// the instant the reader buffer emptied, so a second invalidation arriving after
+// the first was consumed would be read by ReadRawReply as the command's reply and
+// cached under the wrong key. The blocking drain (drainPushFrames(..., true))
+// keeps skipping pushes until a non-push frame is next.
+func TestCSCMissReadDrainsSocketPendingPushBeforeReply(t *testing.T) {
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	cn := pool.NewConn(client)
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		pushProcessor: push.NewProcessor(),
+	}
+
+	pushX := []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\nx\r\n")
+	pushY := []byte(">2\r\n$10\r\ninvalidate\r\n*1\r\n$1\r\ny\r\n")
+	reply := []byte("$5\r\nhello\r\n")
+
+	type res struct {
+		raw []byte
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		var raw []byte
+		err := cn.WithReader(context.Background(), 5*time.Second, func(rd *proto.Reader) error {
+			if e := c.drainPushFrames(context.Background(), cn, rd, true); e != nil {
+				return e
+			}
+			var e error
+			raw, e = rd.ReadRawReply()
+			return e
+		})
+		done <- res{raw, err}
+	}()
+
+	// First push, then a pause long enough for the reader to consume it and EMPTY
+	// its buffer while blocked on the next frame — the exact window the Buffered
+	// drain used to return in. Then a SECOND push ahead of the real reply.
+	if _, err := server.Write(pushX); err != nil {
+		t.Fatalf("write first push: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := server.Write(pushY); err != nil {
+		t.Fatalf("write second push: %v", err)
+	}
+	if _, err := server.Write(reply); err != nil {
+		t.Fatalf("write reply: %v", err)
+	}
+
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("reader failed: %v", r.err)
+		}
+		if string(r.raw) != string(reply) {
+			t.Fatalf("blocking drain must skip both pushes and return the reply; got %q want %q",
+				r.raw, reply)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reader did not complete")
 	}
 }
 

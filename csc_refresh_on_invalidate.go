@@ -2,8 +2,6 @@ package redis
 
 import (
 	"context"
-	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,9 +52,9 @@ import (
 // operation — withPipelineConn takes whichever is free. Noted as a follow-up; it
 // is a robustness question, not a correctness or invalidation-count one.
 
-// cscNoRefreshOnInvalidate force-disables the feature so a benchmark can A/B it
-// against the same binary.
-var cscNoRefreshOnInvalidate = os.Getenv("GOREDIS_CSC_NO_REFRESH_ON_INVAL") != ""
+// cscNoRefreshOnInvalidate force-disables the feature. The gate is
+// Options.ClientSideCacheRefreshOnInvalidate; this stays constant false.
+const cscNoRefreshOnInvalidate = false
 
 const (
 	// cscRefreshQueueDepth bounds the pending-refresh backlog. Bounded, and it
@@ -83,8 +81,9 @@ const (
 // window is flushed early by demand (a reader touching a collected key) or by the
 // size cap; whichever comes first. Longer window = fewer, larger round trips (the
 // point: it lets refresh work at a small pipeline pool) at the cost of staleness
-// bounded by the window for keys nobody reads.
-var cscRefreshWindow = envDurationMs("GOREDIS_CSC_REFRESH_WINDOW_MS", 500*time.Millisecond)
+// bounded by the window for keys nobody reads. A var (not const) so a test can
+// take the timer out of the picture.
+var cscRefreshWindow = 500 * time.Millisecond
 
 // cscRefreshWindowMaxKeys flushes the window early once this many distinct keys
 // have collected, so a burst cannot outrun the window ahead of the queue's own
@@ -95,8 +94,8 @@ const cscRefreshWindowMaxKeys = 4 * cscRefreshBatchMax
 // sitting in the window flushes the whole window immediately, so an actively-read
 // batch refreshes in ~one RTT instead of waiting out the window, while an idle
 // batch waits the full window (and nobody is reading it, so the wait is free).
-// Off: window + size cap only — kept as an A/B knob to price the trigger.
-var cscDemandRefresh = os.Getenv("GOREDIS_CSC_REFRESH_DEMAND") != "0"
+// Off: window + size cap only. On by default.
+const cscDemandRefresh = true
 
 // cscRefreshCooldown optionally suppresses a refresh for an entry published within
 // this window. DEFAULT 0, meaning off — measurement said to leave it off.
@@ -124,23 +123,10 @@ var cscDemandRefresh = os.Getenv("GOREDIS_CSC_REFRESH_DEMAND") != "0"
 // (93.6% -> 93.0%). Doing the extra work was cheaper than skipping some of the
 // useful part.
 //
-// Left as a tunable (GOREDIS_CSC_REFRESH_COOLDOWN_MS) for a deployment that would
-// rather cap refresh traffic than maximise the hit rate.
-var cscRefreshCooldown = envDurationMs("GOREDIS_CSC_REFRESH_COOLDOWN_MS", 0)
-
-// envDurationMs reads a millisecond count from the environment, so the cooldown
-// can be swept (including to 0, which disables dedup) without a rebuild.
-func envDurationMs(name string, def time.Duration) time.Duration {
-	v := os.Getenv(name)
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
-		return def
-	}
-	return time.Duration(n) * time.Millisecond
-}
+// Left defaulted to 0 (off); measurement said to leave it off.
+//
+//nolint:unused // deliberately-off, kept as a documented measured knob (see above) for the follow-up that wires cooldown; referencing it now would misrepresent the shipped behavior.
+var cscRefreshCooldown time.Duration
 
 // cscRefreshTarget is one entry to re-fetch: the cache key doubles as the wire
 // form of the command that produced it, and redisKeys are already namespaced, so
@@ -178,6 +164,7 @@ type cscRefreshQueue struct {
 	enqueued      atomic.Uint64
 	dropped       atomic.Uint64
 	refreshed     atomic.Uint64
+	refreshFailed atomic.Uint64
 	demandFlushes atomic.Uint64
 }
 
@@ -219,6 +206,12 @@ type CSCRefreshStats struct {
 	Dropped   uint64
 	Refreshed uint64
 
+	// RefreshFailed counts refresh round trips that errored (a connection or
+	// protocol failure during the batch). Those keys stay evicted and a later read
+	// repopulates them, so a rising count means refresh is degrading to plain
+	// eviction. Counted per errored batch, not per key.
+	RefreshFailed uint64
+
 	// DemandFlushes counts collection windows flushed early because a reader
 	// missed a key still sitting in the window (vs flushed by the window timer or
 	// the size cap). High relative to total flushes means the demand trigger is
@@ -245,6 +238,7 @@ func (c *Client) CSCRefreshStats() CSCRefreshStats {
 		Enqueued:      q.enqueued.Load(),
 		Dropped:       q.dropped.Load(),
 		Refreshed:     q.refreshed.Load(),
+		RefreshFailed: q.refreshFailed.Load(),
 		DemandFlushes: q.demandFlushes.Load(),
 	}
 	if lc, ok := c.baseClient.csc.(*LocalCache); ok {
@@ -365,10 +359,16 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			}
 			n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
 			q.refreshed.Add(uint64(n))
-			if err != nil && time.Since(lastWarn) > cscRefreshWarnEvery {
-				lastWarn = time.Now()
-				internal.Logger.Printf(context.Background(),
-					"csc: refresh-on-invalidate batch failed: %v", err)
+			if err != nil {
+				// One count per errored round trip: those keys were not refreshed and
+				// stay evicted (a reader repopulates them). This is the signal that
+				// refresh is degrading to plain eviction.
+				q.refreshFailed.Add(1)
+				if time.Since(lastWarn) > cscRefreshWarnEvery {
+					lastWarn = time.Now()
+					internal.Logger.Printf(context.Background(),
+						"csc: refresh-on-invalidate batch failed: %v", err)
+				}
 			}
 		}
 		cancel()
@@ -420,10 +420,13 @@ func (c *baseClient) stopCSCRefresher() {
 		return
 	}
 	c.cscRefreshHandle = nil
+	// Clear only OUR binding: a sibling client sharing this cache/processor may
+	// have re-attached its own queue after ours, and an unconditional nil here
+	// would sever the survivor's refresher (see clearRefreshQueue).
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
-		ih.setRefreshQueue(nil)
+		ih.clearRefreshQueue(c.cscRefreshQueue)
 	}
-	close(h.stop)
+	h.signalStop()
 	<-h.done
 }
 
@@ -471,7 +474,12 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 	}()
 
 	published := 0
-	err := c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+	// Publish on the MAIN pool (tracked). On this base the dedicated pipeline pool
+	// is deliberately EXCLUDED from CLIENT TRACKING (PR #3959), so a refetch
+	// published via withPipelineConn would be un-invalidatable and serve stale
+	// until TTL. withConn lands on a CLIENT TRACKING ON connection, same as the
+	// miss-coalescer.
+	err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		connID := cn.GetID()
 		// Coverage generation captured BEFORE the reads: if this conn loses
 		// tracking mid-batch, every reply is discarded rather than published, the
@@ -495,8 +503,30 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 			for i := range kept {
 				// Invalidation pushes share this connection with replies, so drain
 				// them first or a push frame would be read as a value and cached.
-				if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-					internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
+				// Use the nonblocking Close adapter (like the miss-coalescer and
+				// background drainer): this reader is part of the refresher's
+				// waitgroup, so a custom push handler calling Close() on the raw
+				// client would self-deadlock (Close waits on the very goroutine
+				// parked in the handler). And PROPAGATE a processor error instead of
+				// logging and continuing: a surfaced error means bytes may have been
+				// consumed mid-frame, so reading the next reply on a desynced stream
+				// could publish a push fragment under the wrong cache key — abort so
+				// withConn retires the connection.
+				if c.opt.Protocol == 3 && c.pushProcessor != nil {
+					// Route through the shared helper in BLOCKING mode: block on the
+					// socket and skip pushes until the refetch reply is the next frame, so
+					// a second invalidation still on the socket ahead of the reply is not
+					// read by ReadRawReply below and published under the wrong cache key.
+					// (The Buffered variant stopped at buffer-empty and let such a
+					// socket-pending push through.) A custom processor is handed only a
+					// confirmed push frame (peek first); PeekReplyType is attribute-aware,
+					// so a fragmented attribute prefix is handled without a separate
+					// buffered scan. The helper sets no read deadline, so this reader's
+					// ReadRawReply is unaffected.
+					if err := c.drainPushFrames(ctx, cn, rd, true); err != nil {
+						internal.Logger.Printf(ctx, "csc: refresh push drain: %v", err)
+						return err
+					}
 				}
 				raw, err := rd.ReadRawReply()
 				if err != nil {

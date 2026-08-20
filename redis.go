@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
@@ -406,7 +407,17 @@ type baseClient struct {
 	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
 	cscRefreshQueue  *cscRefreshQueue
 	cscRefreshHandle *cscRevalidateHandle
-	cscMissCoalescer *cscMissCoalescer
+	// cscClientWeak points (weakly) back at the canonical *Client wrapper, so
+	// the CSC push-handler adapter can close through Client.Close — which also
+	// stops the cached autopipeliners — instead of baseClient.Close. WEAK on
+	// purpose: a strong back-reference would make the wrapper reachable from
+	// the drainer goroutine and the drop-without-Close cleanup
+	// (cscRegisterCleanups) could never fire.
+	cscClientWeak weak.Pointer[Client]
+	// cscMissCoalescer is atomic: a miss (processCached) races Close, which
+	// Swaps it to nil — readers Load once (a double-load could call fetch on a
+	// nil receiver) and exactly one closer wins the Swap.
+	cscMissCoalescer atomic.Pointer[cscMissCoalescer]
 
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
 	// process and generalProcessPipeline). Set only on initConn's internal conn
@@ -467,6 +478,10 @@ func (c *baseClient) clone() *baseClient {
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
 	}
+	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
+	// in the literal above); a clone shares the OWNER's coalescer, whose
+	// lifecycle stays owner-only — a clone's Close does not stop it.
+	clone.cscMissCoalescer.Store(c.cscMissCoalescer.Load())
 	return clone
 }
 
@@ -486,6 +501,16 @@ func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
 
 	clone := c.clone()
 	clone.opt = opt
+
+	// Do not route the clone's misses through the OWNER's coalescer when the
+	// timeouts diverge: the shared engine's writer/reader/acquire budgets and
+	// backstops all read the owner's options, so a coalesced miss would honor
+	// the owner's deadlines, not the clone's — defeating WithTimeout's whole
+	// point. The clone still serves cache hits and still caches its uncached
+	// fetches (the pre-coalescer CSC path); only miss COALESCING is bypassed.
+	if timeout != c.opt.ReadTimeout || timeout != c.opt.WriteTimeout {
+		clone.cscMissCoalescer.Store(nil)
+	}
 
 	return clone
 }
@@ -1337,9 +1362,21 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 	var retryTimeout atomic.Uint32
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
-		// Process any pending push notifications before executing the command
+		// Process any pending push notifications before executing the command. A
+		// non-nil error means the drain may have stopped mid-frame (a fragmented
+		// push straddling its hard read cap), leaving the reader desynced. Do NOT
+		// ignore it: reading this command's reply on the conn would then return
+		// shifted bytes — a wrong result, or a wrong-key cache on the CSC capture
+		// path. Close the conn so releaseConn removes it, mark the error retryable,
+		// and let processWithRetry re-run on a fresh conn. Benign cases return nil
+		// (peekAndProcessPushNotifications gates on MaybeHasData; the built-in
+		// processor propagates only genuine mid-frame errors and a custom processor
+		// is peeked first), so this fires only on a real desync.
 		if err := c.processPushNotifications(ctx, cn); err != nil {
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before command: %v", err)
+			internal.Logger.Printf(ctx, "push: pre-command drain failed, retiring conn: %v", err)
+			_ = cn.Close()
+			retryTimeout.Store(1)
+			return err
 		}
 
 		// HIMPORT bookkeeping: pending discards for this session and the
@@ -2080,6 +2117,17 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 		clone.cscLifecycleOwner = c
 	}
 	clone.baseClient = c.baseClient.withTimeout(timeout)
+	// Route the clone's CSC push-handler Close through the OWNER wrapper.
+	// clone() copies neither cscDrainHandle nor cscClientWeak, so without this a
+	// custom push handler calling Close() on the cscHandlerClient installed for a
+	// held-conn drain on this clone would fall through to baseClient.Close —
+	// closing the SHARED pools while the owner's drainer and cached autopipeliners
+	// keep running against them. cscLifecycleOwner is the canonical wrapper and is
+	// kept alive by this clone's strong ref, so closeCanonical resolves it and
+	// calls owner.Close() (the full CSC + autopipeliner teardown).
+	if clone.cscLifecycleOwner != nil {
+		clone.baseClient.cscClientWeak = weak.Make(clone.cscLifecycleOwner)
+	}
 	clone.init()
 	return &clone
 }
@@ -2544,21 +2592,134 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	if !cn.MaybeHasData() {
+	// Also drain when the reader already holds buffered bytes (HasBufferedData),
+	// not only when the socket is readable (MaybeHasData). A reply and a trailing
+	// invalidation can arrive in one socket read. The invalidation then stays in
+	// the reader buffer while the socket is empty. MaybeHasData alone would skip
+	// it and serve stale data until the next miss or MaxStaleness (#3965).
+	buffered := cn.HasBufferedData()
+	if !buffered && !cn.MaybeHasData() {
 		return nil
 	}
 
-	// Short read timeout: MaybeHasData confirmed kernel-buffered bytes, so
-	// the first read returns immediately — the deadline only needs to cover
-	// scheduler pauses, not network waits. 10us was routinely lost to
-	// scheduling on loaded machines: the peek then timed out with nothing
-	// consumed, the processor treated that as "no pending data", and a
-	// connection with buffered push bytes was returned to the pool instead
-	// of being drained (or removed, when the frame turns out partial).
-	return cn.WithReader(ctx, time.Millisecond, func(rd *proto.Reader) error {
-		handlerCtx := c.pushNotificationHandlerContext(cn)
-		return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+	// Use the bare-socket-readiness path only for the built-in processor.
+	// HasBufferedData means the proto reader already holds a decoded frame. These
+	// are real RESP bytes, and any TLS is already unwrapped. Such a frame is a real
+	// push notification and is safe for any processor. MaybeHasData without
+	// buffered data proves only that the raw socket is readable. Over TLS that can
+	// be a post-handshake control record with zero RESP bytes. (conn_check.go's
+	// connCheck refuses to unwrap TLS for this reason. maybeHasData does unwrap
+	// it.) A custom processor that gets such input under the hard cap can time out
+	// on an empty read. The FD session reader treats that timeout as fatal and
+	// closes a healthy connection, and its in-flight misses fail. The built-in
+	// buffered processor accepts the empty read. So a custom processor drains only
+	// on real buffered data. Tradeoff: a push notification that arrives as bare
+	// socket readiness on a custom and idle FD session waits for the next reply
+	// read, the session recycle, or the MaxStaleness backstop. The connection
+	// stays open. This tick is the only drainer for such a session. This mirrors
+	// the built-in-only guard on the opaque-transport probe in the FD session tick
+	// (csc_miss_coalesce_modes.go).
+	if !buffered {
+		if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
+			return nil
+		}
+	}
+
+	// Readiness is established, so a frame is (probably) present: drain under the
+	// longer fragmented-frame budget the background drainer uses, NOT the 1ms
+	// no-data probe cap. A push can arrive in fragments more than 1ms apart —
+	// notably over TLS, where MaybeHasData only proves that some ciphertext is
+	// readable — and the 1ms cap would then time out after consuming the prefix,
+	// which is treated as fatal and fatally closes a healthy session (failing its
+	// in-flight misses). The 1ms cap is reserved for speculative no-data probes
+	// (timedPushDrain, the opaque-transport fallback).
+	return c.pushDrainWithin(ctx, cn, cscDrainHardReadCap)
+}
+
+// timedPushDrain runs a speculative no-data push probe under a 1ms hard read
+// deadline: for callers WITHOUT a readiness signal (the opaque-transport
+// fallback on a held full-duplex connection), which pay at most 1ms when
+// nothing is pending. Callers that HAVE established readiness use
+// pushDrainWithin(cscDrainHardReadCap) instead, to tolerate fragmented frames.
+func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
+	return c.pushDrainWithin(ctx, cn, time.Millisecond)
+}
+
+// pushDrainWithin runs one push drain on cn under a HARD read deadline of d.
+// HARD (not WithReader): a maintenance-relaxed timeout would otherwise REPLACE
+// the cap, blocking the caller (e.g. the FD session tick) for the relaxed
+// duration while holding the conn and starving a small pool.
+// WithReaderHardDeadline bypasses relaxation and clears the deadline on exit, so
+// no residue poisons a later deadline-less read.
+func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
+	return cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
+		// A speculative probe on a possibly-idle conn: stop when the reader buffer
+		// empties (Buffered variant) rather than block waiting for a reply.
+		return c.drainPushFrames(ctx, cn, rd, false)
 	})
+}
+
+// drainPushFrames processes pending push notifications on rd. The caller already
+// holds rd under a read deadline (WithReader or WithReaderHardDeadline); this
+// helper does not set one, so it is safe to call from a reader that must keep
+// reading afterward (the CSC miss reader reads the command reply next).
+//
+// blocking selects the built-in processor's drain discipline:
+//
+//   - blocking=true (reply-expected readers: the CSC miss and refresh readers):
+//     block on the socket and skip push frames until a NON-push frame — the
+//     command reply — is next, then return leaving it buffered. This is the same
+//     non-buffered discipline the full-duplex reader already uses. The Buffered
+//     variant instead stops the instant the reader buffer empties; if a second
+//     invalidation is still on the socket ahead of the reply, the caller's
+//     ReadRawReply would then read THAT push as the reply and cache it under the
+//     wrong key — a one-frame shift that cascades to every later reply. Note
+//     PeekReplyType is attribute-aware (it discards a RESP3 attribute prefix and
+//     recurses), so a fragmented attribute needs no separate buffered scan. A
+//     boundary-peek TIMEOUT the non-buffered loop swallows is caught by the
+//     caller's shared read deadline: ReadRawReply hits the same expired deadline
+//     and fails the session. This is the same non-buffered discipline the
+//     full-duplex reader already runs; a swallowed NON-timeout peek error would
+//     need a malformed RESP3 attribute mid-push (a server protocol bug), so this
+//     path is no weaker than that one. Pub/sub-named pushes, which the drain
+//     leaves buffered, cannot reach a CSC-held conn: subscriptions route to
+//     PubSub-owned connections.
+//
+//   - blocking=false (readiness-established probes: pushDrainWithin, the FD
+//     session tick, the background drainer): use the Buffered variant, which
+//     drains the current batch and stops when the reader buffer empties so the
+//     probe never blocks waiting for a reply that will not come on an idle conn.
+//     An error AFTER partially consuming a fragmented frame is PROPAGATED, not
+//     swallowed, so a mid-frame desync cannot later be read as a command reply.
+//
+// A custom processor is handed only a confirmed push frame in either mode: the
+// interface does not promise the built-in's peek-and-consume-only-push behavior,
+// and the next frame can be a coalesced REPLY. Peek the type first, propagate the
+// peek error (PeekReplyType can partially consume an attribute via DiscardNext
+// before it errors), and skip a non-push frame so a custom processor cannot
+// consume the reply; ProcessPendingNotifications then blocks and skips pushes
+// until a non-push is next, matching the built-in blocking discipline.
+func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *proto.Reader, blocking bool) error {
+	handlerCtx := c.pushNotificationHandlerContext(cn)
+	// Nonblocking Close adapter: this drain runs on CSC-held paths (the FD
+	// session reader and tick among them), where a custom handler calling Close()
+	// on the raw client would deadlock — Close waits on the coalescer's
+	// WaitGroup, which includes the very goroutine parked in the handler.
+	handlerCtx.Client = cscHandlerClient{baseClient: c}
+	if processor, ok := c.pushProcessor.(*push.Processor); ok {
+		if blocking {
+			return processor.ProcessPendingNotifications(ctx, handlerCtx, rd)
+		}
+		return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
+	}
+	t, err := rd.PeekReplyType()
+	if err != nil {
+		return err
+	}
+	if t != proto.RespPush {
+		return nil
+	}
+	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // cscFallbackProbeInterval bounds how often an idle connection without a
@@ -2590,6 +2751,17 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	if !readPending && !periodicReadPending && !hasData {
 		return false, nil
 	}
+
+	// The hard-deadline reads below (probe and drain) leave their deadline armed.
+	// A NEGATIVE ReadTimeout never re-arms (WithReader skips SetReadDeadline), so
+	// without this clear a drained conn reused within the residue window fails
+	// its first read with a spurious timeout. No-op on a removed conn.
+	defer func() {
+		if c.opt.ReadTimeout < 0 {
+			_ = cn.WithReader(context.Background(), 0, func(*proto.Reader) error { return nil })
+		}
+	}()
+
 	if !hasData {
 		// TLS and opaque wrappers can hide bytes from the socket readiness
 		// check. Probe one byte without consuming it under a tiny deadline;
@@ -2611,7 +2783,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})

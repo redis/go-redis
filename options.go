@@ -437,6 +437,50 @@ type Options struct {
 	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
 	// their invalidation arrives, instead of waiting for a reader to miss.
 	ClientSideCacheRefreshOnInvalidate bool
+
+	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they
+	// stream on a held tracked full-duplex connection instead of each taking a
+	// pool connection: a lone miss is written immediately (no batching delay —
+	// the caller is waiting), concurrent misses share writes opportunistically,
+	// and new misses go out while earlier replies are still in flight (~1 RTT
+	// per miss, no batch phase-lock). Cuts pool contention and the churn p99
+	// tail at a small pool.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache): the coalescer's publish path (fetch capture, refresh
+	// integration, hot-entry collection) is LocalCache-specific. With a custom
+	// Cache implementation the option is ignored and every miss fetches on its
+	// caller's connection as usual.
+	//
+	// Pool sizing: under sustained miss traffic the engine holds one pool
+	// connection (released after a 1s idle gap and at the recycle age). Size
+	// PoolSize for that held connection — with PoolSize 1, continuous misses
+	// can make unrelated non-cacheable commands wait on the pool.
+	//
+	// Limiter: a coalescer session holds ONE connection and serves MANY misses on
+	// it, so Options.Limiter is admitted (Allow/ReportResult) once PER SESSION —
+	// per held connection — not per coalesced miss, unlike the plain per-command
+	// path. This is inherent to the held-connection model (a per-miss Allow would
+	// defeat the coalescing and re-admit a connection already held). A caller that
+	// needs strict per-command admission or circuit-breaking should not enable
+	// miss coalescing.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheCoalesceMisses bool
+
+	// ClientSideCacheInvalidationBatchWindow coalesces invalidation-driven cache
+	// deletes into windowed background batches instead of applying them inline on
+	// the connection reader. 0 (default) applies invalidations inline. Set it no
+	// larger than the cache MaxStaleness: deferring a delete by up to the window
+	// lets a reader see the pre-invalidation value for up to that long.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache), like ClientSideCacheCoalesceMisses: the batcher's
+	// hot-entry refresh integration is LocalCache-specific. With a custom Cache
+	// implementation the window is ignored and deletes apply inline.
+	//
+	// Experimental: this API may change in a minor release.
+	ClientSideCacheInvalidationBatchWindow time.Duration
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via
@@ -578,13 +622,15 @@ func (opt *Options) init() {
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// auto-detect endpoint type if not specified
-	endpointType := opt.MaintNotificationsConfig.EndpointType
-	if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
-		// Auto-detect endpoint type if not specified
-		endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+	// skip endpoint detection when maint notifications are disabled.
+	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		endpointType := opt.MaintNotificationsConfig.EndpointType
+		// auto-detect endpoint type if not specified
+		if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
+			endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+		}
+		opt.MaintNotificationsConfig.EndpointType = endpointType
 	}
-	opt.MaintNotificationsConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {

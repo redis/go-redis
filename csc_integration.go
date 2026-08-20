@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"weak"
 
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/pool"
@@ -26,12 +27,55 @@ func cscRegisterCleanups(c *Client) {
 	if h == nil {
 		return
 	}
+	// Weak back-reference for the push-handler adapter's canonical close (see
+	// baseClient.cscClientWeak): must be weak or this cleanup never fires.
+	c.baseClient.cscClientWeak = weak.Make(c)
 	// Capture cscActive (a standalone *atomic.Bool, not *Client) so the cleanup
-	// also stops clones from serving once the drainer is gone.
+	// also stops clones from serving once the drainer is gone. Capture the miss
+	// coalescer too (set during attach; nil when off): its sessions wait on
+	// their own stop channel, so a client dropped WITHOUT Close would leak them
+	// and everything they retain (cache, pools). stopWorkers is idempotent and
+	// signal-only, keeping the cleanup non-blocking; the drain-cancel then
+	// settles any queued request whose reservation would otherwise stay
+	// IN_PROGRESS and block a cache-sharing client until StaleTimeout (channel
+	// receive gives each request exactly one consumer).
 	active := c.baseClient.cscActive
+	mc := c.baseClient.cscMissCoalescer.Load()
+	// Capture the refresh handle too (set during attach; nil when refresh is off):
+	// runCSCRefresher parks on its ticker/queue and holds *baseClient, so a client
+	// dropped WITHOUT Close would leak the refresher goroutine and everything it
+	// retains (cache, pools) — the coalescer/drainer stops below would not reach it.
+	// signalStop is idempotent and non-blocking, matching the other stops here. The
+	// handle is channels only (no *Client), so capturing it keeps the wrapper
+	// collectible.
+	rh := c.baseClient.cscRefreshHandle
+	// Capture this client's refresh queue too: signalStop stops the refresher
+	// goroutine, but with a SHARED cache+processor the invalidate handler still
+	// holds this queue as (possibly) the active refresh binding. If a sibling
+	// client survives, invalidations would keep feeding a stopped queue and the
+	// shared cache's refresh-on-invalidate would silently degrade to plain
+	// eviction. clearRefreshQueue unbinds it and restores the sibling's binding,
+	// mirroring stopCSCRefresher on the clean Close path. A queue is only ever
+	// created inside attachSharedTrackingCSC, which also builds the drain handle
+	// (startBackgroundDrainer), so h.invalidateHandler is set whenever q is
+	// non-nil; a Conn() clone bails before startCSCRefresher and never has one.
+	q := c.baseClient.cscRefreshQueue
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
 		if active != nil {
 			active.Store(false)
+		}
+		if mc != nil {
+			mc.stopWorkers()
+			// Retry-uncached, matching every other stop path: a clone still
+			// alive re-runs the read on the (possibly still open) pool instead
+			// of surfacing a spurious ErrClosed.
+			mc.drainQueueErr(errCSCRetryUncached)
+		}
+		if rh != nil {
+			rh.signalStop()
+		}
+		if q != nil && h.invalidateHandler != nil {
+			h.invalidateHandler.clearRefreshQueue(q)
 		}
 		h.signalStop()
 	}, h)
@@ -80,14 +124,166 @@ type invalidateHandler struct {
 	users     int
 
 	// refresh, when set, receives evicted-but-hot entries for immediate refetch.
-	// Feeding it must never block the invalidation-delivery path.
+	// Feeding it must never block the invalidation-delivery path. It is the TOP
+	// of refreshStack: clients sharing this handler each attach their own queue
+	// and the newest attachment is active; when it clears, the next-newest live
+	// binding is RESTORED (closing the newest owner must not sever an older
+	// sibling's still-running refresher).
 	refresh *cscRefreshQueue
+
+	// refreshStack holds every live refresh binding in attach order (older
+	// first). Guarded by mu. Small: one entry per client sharing the handler.
+	refreshStack []*cscRefreshQueue
+
+	// batcher offloads invalidation cache-deletes to a windowed background
+	// goroutine (Options.ClientSideCacheInvalidationBatchWindow). Lazily started
+	// (ensureBatcher) and nil when disabled; guarded by mu. Stopped and cleared
+	// when the last user releases (releaseLocked), so its goroutine does not live
+	// past the binding re-arming its timer forever; a later re-acquire starts a
+	// fresh one (picking up the successor's window).
+	batcher *cscInvalBatcher
+
+	// invalBatchWindow is the EFFECTIVE coalescing window for the batcher above:
+	// the strictest window folded in across attached clients (see
+	// setInvalBatchWindow — 0/inline strictest, then smaller nonzero). 0
+	// (default) deletes inline. invalBatchWindowSet distinguishes "no client has
+	// attached a window yet" from an explicit 0 (inline) that must win over any
+	// later nonzero window. Read under mu alongside cache/keyPrefix/refresh.
+	invalBatchWindow    time.Duration
+	invalBatchWindowSet bool
+}
+
+// setInvalBatchWindow folds one client's window into the shared handler's
+// effective window at attach time. Clients sharing a handler may configure
+// different windows but the handler runs ONE batcher, so the effective window
+// is the STRICTEST attached: smallest nonzero, with explicit zero (inline
+// deletes) strictest of all — tightening can never violate a client's staleness
+// bound, while taking the latest as-is could loosen an earlier stricter one.
+// Not re-loosened on close (bindings carry no identity; staying stricter costs
+// only efficiency). On a tighten the running batcher (window fixed at creation)
+// is stopped — stop() flushes, so no queued delete is lost — and the next
+// invalidation rebuilds via ensureBatcher.
+func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.invalBatchWindowSet {
+		cur := h.invalBatchWindow
+		// Strictness: 0 (inline) is strictest; among nonzero, smaller is stricter.
+		stricter := (w == 0 && cur != 0) || (w != 0 && cur != 0 && w < cur)
+		if !stricter {
+			return
+		}
+	}
+	h.invalBatchWindowSet = true
+	h.invalBatchWindow = w
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
+}
+
+// ensureBatcher lazily starts the windowed invalidation batcher. The common
+// case (already started) is a shared RLock; only first-start takes the write
+// lock, so the hot invalidation path stays cheap.
+func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
+	h.mu.RLock()
+	b := h.batcher
+	h.mu.RUnlock()
+	if b != nil {
+		return b
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Do not start a batcher for a released binding. releaseLocked stops+nils the
+	// batcher under this same lock when users hits 0, so a push racing that last
+	// release must NOT resurrect a goroutine that nothing would ever stop (once
+	// users is 0, release() no longer runs). The caller falls back to the inline
+	// delete path when this returns nil.
+	if h.users == 0 {
+		return nil
+	}
+	// Read the window under this lock (not a caller snapshot a concurrent
+	// tighten could supersede). 0 = batching off: return nil, caller deletes
+	// inline.
+	w := h.invalBatchWindow
+	if w <= 0 {
+		return nil
+	}
+	if h.batcher == nil {
+		h.batcher = &cscInvalBatcher{
+			window: w,
+			// Snapshot the binding for the batcher's lifetime (⊂ the binding's:
+			// releaseLocked stops it before clearing these) so the release-time
+			// stop-drain still applies queued deletes after h.cache is nilled.
+			cache:   h.cache,
+			refresh: h.refresh,
+			ch:      make(chan cscInvalItem, 8192),
+			stopCh:  make(chan struct{}),
+		}
+		go h.batcher.run()
+	}
+	return h.batcher
+}
+
+// clearRefreshQueue clears the handler's refresh binding ONLY while it still
+// points at q: two clients sharing one cache and push processor each attach
+// their own queue (last attach wins), and a closing client must not clobber
+// the binding of a live sibling that re-attached after it — invalidations
+// would keep deleting entries but silently stop feeding the survivor's
+// refresher.
+func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
+	if q == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, b := range h.refreshStack {
+		if b == q {
+			h.refreshStack = append(h.refreshStack[:i], h.refreshStack[i+1:]...)
+			break
+		}
+	}
+	if h.refresh != q {
+		return // a newer sibling owns the active binding; nothing else changes
+	}
+	// Restore the next-newest live binding (nil when none): the surviving
+	// sibling's refresher keeps getting fed after the newest owner closes.
+	h.refresh = nil
+	if n := len(h.refreshStack); n > 0 {
+		h.refresh = h.refreshStack[n-1]
+	}
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
 }
 
 func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if q != nil {
+		found := false
+		for _, b := range h.refreshStack {
+			if b == q {
+				found = true
+				break
+			}
+		}
+		if !found {
+			h.refreshStack = append(h.refreshStack, q)
+		}
+	}
+	if h.refresh == q {
+		return
+	}
 	h.refresh = q
-	h.mu.Unlock()
+	// A running batcher snapshotted the previous refresh binding at creation;
+	// drop it so the next invalidation rebuilds with the new one (stop()
+	// flushes, so no queued delete is lost).
+	if h.batcher != nil {
+		h.batcher.stop()
+		h.batcher = nil
+	}
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
@@ -97,6 +293,8 @@ func (h *invalidateHandler) HandlePushNotification(
 ) error {
 	h.mu.RLock()
 	cache, keyPrefix, refresh := h.cache, h.keyPrefix, h.refresh
+	window := h.invalBatchWindow
+	batcher := h.batcher
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -104,8 +302,42 @@ func (h *invalidateHandler) HandlePushNotification(
 
 	switch payload := notification[1].(type) {
 	case nil:
+		// Supersede queued per-key deletes BEFORE flushing: drop() bumps the
+		// batcher epoch, so anything already enqueued (pre-flush, redundant by
+		// the flush) is skipped at apply, while an invalidation racing in from
+		// another tracked connection AFTER this point carries the new epoch and
+		// still applies — its post-flush delete must not be lost.
+		if batcher != nil {
+			batcher.drop()
+		}
 		cache.Flush()
 	case []interface{}:
+		// Offload path: enqueue keys to the windowed background batcher instead of
+		// deleting inline, so invalidation work does not steal time from the
+		// coalescer's miss-reply reader (the low-concurrency churn p99 tail).
+		if window > 0 {
+			if _, ok := cache.(*LocalCache); ok {
+				// nil when the binding was just released (users==0) or when a
+				// concurrent window change turned batching off: fall through to
+				// the inline delete path below rather than enqueue on a nil
+				// batcher (which would panic).
+				if b := h.ensureBatcher(); b != nil {
+					for _, k := range payload {
+						var name string
+						switch v := k.(type) {
+						case string:
+							name = v
+						case []byte:
+							name = string(v)
+						default:
+							continue
+						}
+						b.enqueue(cscNamespacedKey(keyPrefix, name))
+					}
+					return nil
+				}
+			}
+		}
 		var hot []cscRefreshTarget
 		lc, canRefresh := cache.(*LocalCache)
 		canRefresh = canRefresh && refresh != nil
@@ -146,6 +378,23 @@ func (h *invalidateHandler) releaseLocked() {
 	if h.users == 0 {
 		h.cache = nil
 		h.keyPrefix = ""
+		// Stop the windowed batcher so its goroutine does not outlive the binding
+		// (re-arming its timer forever). stop() only closes a channel — it never
+		// touches h.mu and does not wait — so it is safe under the lock. A later
+		// re-acquire starts a fresh batcher via ensureBatcher.
+		if h.batcher != nil {
+			h.batcher.stop()
+			h.batcher = nil
+		}
+		// A fresh binding folds in its own window; do not inherit this one's.
+		h.invalBatchWindow = 0
+		h.invalBatchWindowSet = false
+		// Clear the refresh bindings with the binding itself: a client dropped
+		// without Close never runs clearRefreshQueue, and a successor reusing
+		// this handler must not inherit (or later restore) a dead queue whose
+		// consumer is gone — hot entries offered there would vanish silently.
+		h.refresh = nil
+		h.refreshStack = nil
 	}
 }
 
@@ -296,6 +545,12 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 	if err := registerInvalidateHandler(c.pushProcessor, cache, c.cscKeyPrefix); err != nil {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
+	}
+	// Thread the invalidation-batch window from Options before any push can
+	// arrive, so the batcher (if enabled) sees the configured window on the very
+	// first invalidation rather than a zero default.
+	if ih := lookupInvalidateHandler(c.pushProcessor); ih != nil {
+		ih.setInvalBatchWindow(c.opt.ClientSideCacheInvalidationBatchWindow)
 	}
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
@@ -545,32 +800,38 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 // args, and pipelines — are also caught: the guard matches on the command's
 // leading args, not the typed method.
 var errClientTrackingWithCSC = errors.New(
-	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled")
+	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled",
+)
 
 // errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
 // keys use Options.DB, while SELECT mutates only the chosen pool connection.
 var errSelectWithCSC = errors.New(
-	"redis: SELECT is not allowed when client-side caching is enabled")
+	"redis: SELECT is not allowed when client-side caching is enabled",
+)
 
 // errAuthWithCSC rejects runtime authentication because it can change one
 // connection's ACL identity without changing the client's fixed cache namespace.
 var errAuthWithCSC = errors.New(
-	"redis: AUTH is not allowed when client-side caching is enabled")
+	"redis: AUTH is not allowed when client-side caching is enabled",
+)
 
 // errHelloWithCSC rejects HELLO with arguments because it can switch a tracked
 // connection out of RESP3 (and can also change authentication).
 var errHelloWithCSC = errors.New(
-	"redis: HELLO with arguments is not allowed when client-side caching is enabled")
+	"redis: HELLO with arguments is not allowed when client-side caching is enabled",
+)
 
 // errResetWithCSC rejects RESET because it disables tracking and switches the
 // connection to RESP2.
 var errResetWithCSC = errors.New(
-	"redis: RESET is not allowed when client-side caching is enabled")
+	"redis: RESET is not allowed when client-side caching is enabled",
+)
 
 // errSubscribeWithCSC rejects raw subscriptions on the ordinary pool. The
 // typed Subscribe methods use dedicated PubSub connections and remain allowed.
 var errSubscribeWithCSC = errors.New(
-	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled")
+	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled",
+)
 
 // cscCommandError rejects commands that can make a pooled connection's state
 // diverge from the assumptions used by CSC.
@@ -624,10 +885,22 @@ type cscHandlerClient struct {
 	*baseClient
 }
 
+// closeCanonical closes through the canonical *Client wrapper while it is
+// still alive — Client.Close also stops the cached autopipeliners, which
+// baseClient.Close does not, so closing only the baseClient would leave flush
+// goroutines running against closed pools. Falls back to baseClient.Close if
+// the wrapper was already collected (weak ref: see baseClient.cscClientWeak).
+func (c cscHandlerClient) closeCanonical() error {
+	if cl := c.cscClientWeak.Value(); cl != nil {
+		return cl.Close()
+	}
+	return c.baseClient.Close()
+}
+
 func (c cscHandlerClient) Close() error {
 	h := c.cscDrainHandle
 	if h == nil {
-		return c.baseClient.Close()
+		return c.closeCanonical()
 	}
 	h.handlerCloseOnce.Do(func() {
 		// Close has logically started: stop cache hits immediately and let the
@@ -637,7 +910,7 @@ func (c cscHandlerClient) Close() error {
 		}
 		h.signalStop()
 		go func() {
-			if err := c.baseClient.Close(); err != nil {
+			if err := c.closeCanonical(); err != nil {
 				internal.Logger.Printf(context.Background(), "csc: deferred client close failed: %v", err)
 			}
 		}()
@@ -781,12 +1054,16 @@ func (c *baseClient) stopBackgroundDrainer() {
 		return
 	}
 	h.teardownOnce.Do(func() {
-		c.stopCSCRefresher()
-		c.stopCSCMissCoalescer()
-		// Stop serving cache hits on any clone before the drainer is gone.
+		// Deactivate serving FIRST: with the flag still true a clone's miss
+		// could route to the just-stopped coalescer and fail with ErrClosed
+		// while the pool is still open. Once false, racing reads take the
+		// plain uncached path (fetch's stop returns errCSCRetryUncached as the
+		// backstop for requests already in flight).
 		if c.cscActive != nil {
 			c.cscActive.Store(false)
 		}
+		c.stopCSCRefresher()
+		c.stopCSCMissCoalescer()
 		h.signalStop()
 		<-h.done
 		// The drainer's exit defer revoked and evicted this pool's coverage
@@ -801,6 +1078,18 @@ func (c *baseClient) stopBackgroundDrainer() {
 // replaying it through the command's own readReply.
 func applyCachedReply(cmd Cmder, raw []byte) error {
 	return cmd.readReply(proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1))
+}
+
+// classifyCachedReply reports the same error applyCachedReply would, without a
+// caller command to populate. The miss coalescer uses it on the abandoned path
+// (the caller returned and owns its Cmder again) to decide cache-vs-cancel: a
+// value or Nil is cacheable, a top-level RESP error is not. It reads the frame
+// generically, so it can only diverge from a concrete cmd's readReply on a
+// well-formed reply of an unexpected shape — which the next reader re-parses and
+// drops (see processCached), so a rare mis-cache self-heals.
+func classifyCachedReply(raw []byte) error {
+	_, err := proto.NewReaderSize(bytes.NewReader(raw), len(raw)+1).ReadReply()
+	return err
 }
 
 // isCacheableReplyResult reports whether a fully read Redis reply can be
@@ -894,13 +1183,30 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			c.csc.DeleteByCacheKey(key)
 		}
 		// Original fetcher cancelled or its value was invalidated; try to take
-		// over so later waiters still benefit from the cache.
+		// over so later waiters still benefit from the cache. This is the 2x-RTT
+		// path under churn: we waited a round trip and still must fetch ourselves.
 		token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
 	}
 
-	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when off).
-	if shouldFetch && c.cscMissCoalescer != nil {
-		return c.cscMissCoalescer.fetch(ctx, cmd, key, token)
+	// Reader-miss coalescing: hand the reserved miss to the batcher (no-op when
+	// off). Load the pointer ONCE: a concurrent Close swaps it to nil, and a
+	// second load after the nil-check would call fetch on a nil receiver.
+	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
+		served, err := mc.fetch(ctx, cmd, key, token)
+		if err == errCSCRetryUncached {
+			// CSC was disabled mid-miss; the command is fine and the reservation is
+			// already cancelled — run it uncached instead of surfacing ErrClosed.
+			return c.processWithRetry(ctx, cmd, nil, state)
+		}
+		// Native-recorder attribution: the coalesced fetch contacted Redis on
+		// the session's held connection — report it as one attempt on that conn
+		// so operation-duration metrics carry a real server.address instead of
+		// zero attempts and a nil connection.
+		if state != nil && served != nil {
+			state.attempts++
+			state.lastConn = served
+		}
+		return err
 	}
 
 	var fc cscFetchCapture
