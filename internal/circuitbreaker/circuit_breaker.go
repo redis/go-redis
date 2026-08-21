@@ -278,45 +278,62 @@ func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 // RecordFailure records a failed operation.
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.lastFailure.Store(time.Now().UnixNano())
-	state := State(cb.state.Load())
+	// The loop re-settles when a half-open transition is lost: a closing
+	// success can win the race between the state load and the CAS below, and
+	// dropping the failure there would leave the circuit closed with a zero
+	// failure count right after a recovery probe failed. Each retry observes
+	// the freshly published state, so the failure lands exactly once.
+	for {
+		state := State(cb.state.Load())
 
-	switch state {
-	case StateClosed:
-		failures := cb.failures.Add(1)
-		if int(failures) >= cb.config.FailureThreshold {
-			if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
-				// A Reset that completed between the timestamp store above and
-				// this CAS wiped lastFailure; repair it (CAS so a concurrent
-				// newer failure's timestamp is kept), or the zero-timestamp
-				// guard in CheckState would wedge the circuit open. A Reset
-				// that wipes after this repair also publishes Closed after,
-				// so the circuit does not stay Open with a zero timestamp.
+		switch state {
+		case StateClosed:
+			failures := cb.failures.Add(1)
+			if int(failures) >= cb.config.FailureThreshold {
+				if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
+					// A Reset that completed between the timestamp store above and
+					// this CAS wiped lastFailure; repair it (CAS so a concurrent
+					// newer failure's timestamp is kept), or the zero-timestamp
+					// guard in CheckState would wedge the circuit open. A Reset
+					// that wipes after this repair also publishes Closed after,
+					// so the circuit does not stay Open with a zero timestamp.
+					cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
+					// Notify callbacks before clearing the half-open counters so
+					// observers see the failure count that triggered the
+					// transition, matching the half-open -> closed/open paths.
+					cb.notifyCallbacks(StateClosed, StateOpen)
+					// successes and requests should already be 0 in Closed (they
+					// are only incremented while half-open, and every half-open
+					// exit zeroes them). Reset defensively so the invariant
+					// "successes/requests are clean on entry to Open" is upheld
+					// consistently across all transitions into Open, even if a
+					// future change starts touching those counters in Closed.
+					cb.successes.Store(0)
+					cb.requests.Store(0)
+				}
+			}
+			return
+		case StateHalfOpen:
+			// Any failure in half-open state opens the circuit.
+			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
+				// Same timestamp repair as the closed -> open transition above.
 				cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-				// Notify callbacks before clearing the half-open counters so
-				// observers see the failure count that triggered the
-				// transition, matching the half-open -> closed/open paths.
-				cb.notifyCallbacks(StateClosed, StateOpen)
-				// successes and requests should already be 0 in Closed (they
-				// are only incremented while half-open, and every half-open
-				// exit zeroes them). Reset defensively so the invariant
-				// "successes/requests are clean on entry to Open" is upheld
-				// consistently across all transitions into Open, even if a
-				// future change starts touching those counters in Closed.
+				// Notify callbacks before resetting counters so they observe the
+				// counts that triggered the transition, matching the half-open ->
+				// closed path in RecordSuccess.
+				cb.notifyCallbacks(StateHalfOpen, StateOpen)
 				cb.successes.Store(0)
 				cb.requests.Store(0)
+				return
 			}
-		}
-	case StateHalfOpen:
-		// Any failure in half-open state opens the circuit.
-		if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
-			// Same timestamp repair as the closed -> open transition above.
-			cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-			// Notify callbacks before resetting counters so they observe the
-			// counts that triggered the transition, matching the half-open ->
-			// closed path in RecordSuccess.
-			cb.notifyCallbacks(StateHalfOpen, StateOpen)
-			cb.successes.Store(0)
-			cb.requests.Store(0)
+			// Lost the transition race — typically to the closing success of
+			// another probe. Re-read and settle in the new state instead of
+			// dropping the failure.
+			continue
+		default:
+			// Open: the timestamp store above already restarted the grace
+			// period; nothing else to record.
+			return
 		}
 	}
 }

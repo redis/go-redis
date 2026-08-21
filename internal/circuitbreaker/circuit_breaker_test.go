@@ -750,6 +750,41 @@ func TestExecuteClosedAdmissionDoesNotFreeProbeSlot(t *testing.T) {
 	}
 }
 
+// TestHalfOpenFailureRacingClosureIsNotDropped hammers a half-open breaker
+// with a concurrent closing success and a probe failure. Whatever the
+// interleaving, the failure must not vanish: either it re-opens the
+// half-open circuit directly, or — when the success's CAS to Closed wins —
+// it must count against the fresh closed window (threshold 1 => re-open).
+// A final Closed state means the failure was dropped entirely and normal
+// traffic flows to an endpoint whose recovery probe just failed.
+func TestHalfOpenFailureRacingClosureIsNotDropped(t *testing.T) {
+	for round := 0; round < 20000; round++ {
+		cb := New(Config{
+			FailureThreshold:    1,
+			SuccessThreshold:    1,
+			MaxHalfOpenRequests: 1,
+			OpenTimeout:         time.Nanosecond,
+		})
+		cb.RecordFailure()
+		time.Sleep(time.Microsecond) // let the 1ns grace elapse past clock granularity
+		if cb.CheckState() != StateHalfOpen {
+			t.Fatalf("round %d: setup: expected half-open", round)
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; cb.RecordSuccess() }()
+		go func() { defer wg.Done(); <-start; cb.RecordFailure() }()
+		close(start)
+		wg.Wait()
+
+		if got := State(cb.state.Load()); got != StateOpen {
+			t.Fatalf("round %d: state = %v, want Open — the probe failure was dropped", round, got)
+		}
+	}
+}
+
 // TestRecordFailureResetRaceKeepsTimestamp hammers RecordFailure against
 // Reset: when Reset fully completes between RecordFailure's timestamp store
 // and its CAS into Open, the circuit must not end up Open with a zero
