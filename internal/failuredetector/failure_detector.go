@@ -6,6 +6,7 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -184,6 +185,17 @@ func (d *CommandFailureDetector) RecordSuccess() {
 // signal about the database's health.
 func (d *CommandFailureDetector) RecordFailure(err error) {
 	if err == nil {
+		return
+	}
+	// Dial errors mean the TCP connection was never established — the
+	// canonical unreachable-database signal. Checked BEFORE the context
+	// filter below, mirroring the root retry classifier: a dial that expires
+	// through DialTimeout surfaces as *net.OpError wrapping
+	// context.DeadlineExceeded, and filtering it as a client-side context
+	// error would keep the detector from ever tripping on a dead endpoint.
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		d.bucketFor(d.now().UnixNano()).failures.Add(1)
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

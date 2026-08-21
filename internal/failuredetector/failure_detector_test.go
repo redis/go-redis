@@ -3,6 +3,8 @@ package failuredetector
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -169,6 +171,39 @@ func TestCommandFailureDetector_TreatsReplyErrorsAsSuccess(t *testing.T) {
 	fd.RecordFailure(proto.RedisError("LOADING Redis is loading the dataset in memory"))
 	if _, failures := fd.Stats(); failures != 1 {
 		t.Errorf("expected 1 failure for the LOADING reply, got %d", failures)
+	}
+}
+
+func TestCommandFailureDetector_CountsDialDeadlinesAsFailures(t *testing.T) {
+	config := CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	}
+	fd := NewCommandFailureDetector(config)
+
+	// A dial that expires through DialTimeout surfaces as *net.OpError
+	// wrapping context.DeadlineExceeded (net's timeoutError matches it via
+	// Is). That is the canonical unreachable-database signal — the root
+	// retry classifier checks Op == "dial" BEFORE its context filter for
+	// exactly this reason — and the detector must count it, or an
+	// unreachable active never trips detector-driven failover.
+	for i := 0; i < 3; i++ {
+		fd.RecordFailure(&net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded})
+	}
+	if _, failures := fd.Stats(); failures != 3 {
+		t.Errorf("expected 3 failures for dial deadlines, got %d", failures)
+	}
+	if !fd.ShouldFailover() {
+		t.Error("should failover when every dial times out")
+	}
+
+	// Plain context errors (no transport op) stay client-side and ignored.
+	fd2 := NewCommandFailureDetector(config)
+	fd2.RecordFailure(context.DeadlineExceeded)
+	fd2.RecordFailure(fmt.Errorf("wrapped: %w", context.Canceled))
+	if _, failures := fd2.Stats(); failures != 0 {
+		t.Errorf("expected 0 failures for bare context errors, got %d", failures)
 	}
 }
 
