@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -377,7 +379,15 @@ var _ MultiDBCtrl = (*MultiDBClient)(nil)
 // See the Active-Active client design for details.
 type MultiDBClient struct {
 	cmdable
+	hooksMixin
+
 	core *multidbCore
+
+	// Cached autopipeliner instances, mirroring *Client (see Client.AutoPipeline).
+	autopipelinerMu     *sync.Mutex
+	autopipeliner       *AutoPipeliner
+	asyncAutopipeliner  *AutoPipeliner
+	autopipelinerClosed bool
 }
 
 // NewMultiDBClient creates a MultiDBClient for the configured member
@@ -435,21 +445,45 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 	core.startBackgroundLoop()
 
-	c := &MultiDBClient{core: core}
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
 	c.cmdable = c.Process
+	c.initHooks(hooks{
+		process:    core.process,
+		pipeline:   core.processPipeline,
+		txPipeline: core.processTxPipeline,
+	})
 	return c, nil
 }
 
 // Process routes the command to the active database, feeding the circuit
 // breaker and failure detector, and retrying against the newly selected
-// database after a failover.
+// database after a failover. MultiDB-level hooks (AddHook) wrap this path.
 func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.core.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
-// Close stops the background loop and closes every underlying client.
+// Close stops the autopipeliners, the background loop, and every underlying
+// client.
 func (c *MultiDBClient) Close() error {
-	return c.core.close()
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerClosed = true
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.core.close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // ActiveIndex implements MultiDBCtrl.
@@ -465,8 +499,32 @@ func (c *MultiDBClient) ForceActiveIndex(ctx context.Context, index int) error {
 	return c.core.setActiveIndex(ctx, index, false)
 }
 
-// AddDatabase implements MultiDBCtrl.
+// AddDatabase implements MultiDBCtrl. Adding a cluster member is refused
+// while a live autopipeliner instance exists: the cached autopipeliner was
+// built without the cluster-specific safeguards and a later failover onto the
+// new member would route merged batches around them. Close the autopipeliners
+// first, add the member, then recreate them (closed instances do not block).
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
+	if cfg.ClusterOptions != nil {
+		// Hold autopipelinerMu across the check AND the membership change so
+		// a concurrent first AutoPipeline call (which creates the pipeliner
+		// under the same mutex and re-checks membership there) cannot
+		// interleave between them.
+		c.autopipelinerMu.Lock()
+		defer c.autopipelinerMu.Unlock()
+		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
+			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
+		if hasLiveAP {
+			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
+		}
+		// Known narrow window: AutoPipeliner.Close flips its closed flag
+		// before draining already-accepted batches, so an AddDatabase racing
+		// a direct ap.Close() can pass this check while the drain is still
+		// flushing. Those batches only reach the new cluster member if a
+		// failover selects it during that same drain. For strict guarantees,
+		// let Close return before calling AddDatabase (MultiDBClient.Close
+		// already serializes both on autopipelinerMu).
+	}
 	return c.core.addDatabase(ctx, cfg)
 }
 
@@ -588,7 +646,11 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // prepared on the active member is silently missing on the member a failover
 // switches to. Until registrations fan out across members (tracked as
 // follow-up work in the design doc), rejecting loudly beats half-working.
-var errMultiDBHImport = errors.New("redis: multidb: HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
+// A RedisError, not a plain error: the autopipeliner's sequential dispatch
+// treats a non-Redis error from one sub-batch as a fatal abort for the groups
+// behind it, and a rejected HIMPORT must fail only itself — never unrelated
+// commands that happened to be queued after it.
+var errMultiDBHImport = proto.RedisError("MULTIDB HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
 
 // HImportPrepare is not supported on MultiDBClient; see errMultiDBHImport.
 func (c *MultiDBClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
