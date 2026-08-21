@@ -1934,8 +1934,24 @@ func TestAutoPipelineRetriesOnNetworkError(t *testing.T) {
 	}
 	defer ap.Close()
 
-	// Arm after the handshake: the pooled conn is healthy, so it passes the
-	// pool health check, and the batch's first write dies on the wire.
+	// Warm the DEDICATED PIPELINE POOL connection first: creating the
+	// autopipeliner created the pipeline pool (lazily), and BATCHES run there,
+	// not on the main-pool conn the Ping dialed. Without this warm-up the
+	// batch's first dispatch dials a fresh pipeline conn and the dial count
+	// reads one high for a reason unrelated to the retry. The warm-up must be
+	// a real multi-command batch: a lone command takes the solo fast path
+	// (Process on the main pool) and would not touch the pipeline pool.
+	w1 := ap.Set(ctx, "apr:warm", 1, 0)
+	w2 := ap.Incr(ctx, "apr:warm2")
+	if err := w1.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Arm after the handshake: the pipeline-pool conn is healthy, so it passes
+	// the pool health check, and the batch's first write dies on the wire.
 	dialsBefore := dials.Load()
 	failNextWrite.Store(true)
 
@@ -3978,7 +3994,6 @@ func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
 	if err := c.Set(ctx, "pnp:present", "v", 0).Err(); err != nil {
 		t.Fatal(err)
 	}
-	c.AddHook(postNextErrorHook{err: errInjected})
 
 	// Wide flush window so all three commands deterministically land in ONE
 	// pipeline batch (the rule is per-batch: hooks fire per batch).
@@ -3990,6 +4005,23 @@ func TestAutoPipelineHookPostNextErrorPartialBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ap.Close()
+
+	// Initialize the dedicated pipeline-pool connection BEFORE installing the
+	// error-injecting hook: connection init runs its handshake pipeline through
+	// the client's hook chain (newConn shares hooksMixin), so a hook that
+	// unconditionally injects an error would fail the pipeline conn's init and
+	// this test would measure init poisoning instead of the post-next rule.
+	// Must be a real multi-command batch — a lone command takes the solo fast
+	// path (Process on the main pool) and would not init the pipeline conn.
+	w1 := ap.Set(ctx, "pnp:warm", 1, 0)
+	w2 := ap.Set(ctx, "pnp:warm2", 1, 0)
+	if err := w1.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Err(); err != nil {
+		t.Fatal(err)
+	}
+	c.AddHook(postNextErrorHook{err: errInjected})
 
 	runWithWatchdog(t, 30*time.Second, func() {
 		// One batch: a hit, a miss (redis.Nil), and a write.
