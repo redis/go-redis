@@ -245,6 +245,31 @@ func TestLagAwareDrainsMalformedBDBResponse(t *testing.T) {
 	}
 }
 
+func TestLagAwareBDBMatchesEquivalentIPText(t *testing.T) {
+	hc := NewLagAwareHealthCheck()
+	bdb := bdbInfo{
+		UID: 7,
+		Endpoints: []bdbEndpoint{
+			{DNSName: "db.example.com", Addr: []string{"2001:db8::1", "10.0.0.1"}, Port: 6379},
+		},
+	}
+
+	// IPv6 text is not canonical: the client's configured address and the
+	// REST API's JSON can spell the same IP differently. Equivalent
+	// representations must match, or a healthy member reports unavailable.
+	for _, host := range []string{"2001:0db8::1", "2001:db8:0:0:0:0:0:1", "2001:db8::1"} {
+		if !hc.bdbMatchesHost(bdb, host, 6379) {
+			t.Errorf("bdbMatchesHost(%q) = false, want true (equivalent IPv6 text)", host)
+		}
+	}
+	if !hc.bdbMatchesHost(bdb, "10.0.0.1", 6379) {
+		t.Error("bdbMatchesHost(10.0.0.1) = false, want true")
+	}
+	if hc.bdbMatchesHost(bdb, "2001:db8::2", 6379) {
+		t.Error("bdbMatchesHost(2001:db8::2) = true, want false (different IP)")
+	}
+}
+
 func TestLagAwareIsFailbackOnly(t *testing.T) {
 	// The lag-aware REST check may only gate routing traffic TO a member
 	// (candidate probes, auto-fallback, initial selection): replication lag

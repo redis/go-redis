@@ -337,8 +337,13 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 		shardCtx, cancel = context.WithDeadline(ctx, time.Now().Add(time.Until(deadline)/4))
 		defer cancel()
 	}
-	_ = client.ForEachShard(shardCtx, func(_ context.Context, shard *redis.Client) error {
-		add(shard.Options().Addr)
+	// Masters only, matching the PING check: MultiDB rejects the
+	// replica-routing options so member traffic never reaches replicas, and
+	// a replica node's local endpoint availability must not mark a candidate
+	// healthy while the master it would actually route to is unavailable or
+	// lagging.
+	_ = client.ForEachMaster(shardCtx, func(_ context.Context, master *redis.Client) error {
+		add(master.Options().Addr)
 		return nil
 	})
 	for _, addr := range opts.Addrs {
@@ -470,6 +475,7 @@ func (h *LagAwareHealthCheck) getBDBs(ctx context.Context, url string) ([]bdbInf
 // host and, when both sides carry one, its Redis port — several Redis
 // Enterprise databases can share a DNS name and differ only by port.
 func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int) bool {
+	hostIP := net.ParseIP(host)
 	for _, ep := range bdb.Endpoints {
 		if port != 0 && ep.Port != 0 && ep.Port != port {
 			continue
@@ -482,6 +488,14 @@ func (h *LagAwareHealthCheck) bdbMatchesHost(bdb bdbInfo, host string, port int)
 		for _, addr := range ep.Addr {
 			if addr == host {
 				return true
+			}
+			// IPv6 text is not canonical ("2001:0db8::1" vs "2001:db8::1"):
+			// compare parsed IPs so equivalent spellings on the two sides do
+			// not report a healthy member as unavailable.
+			if hostIP != nil {
+				if epIP := net.ParseIP(addr); epIP != nil && epIP.Equal(hostIP) {
+					return true
+				}
 			}
 		}
 	}
