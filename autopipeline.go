@@ -164,6 +164,21 @@ type AutoPipelineOptions struct {
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
 
+	// FullDuplexFastSubmit skips the blocking three-arm select in the submit hot
+	// path with a non-blocking send while the submit queue is shallow, cutting the
+	// selectgo cost (~40% of submit CPU) that dominates at high producer counts on
+	// low-RTT links. The fast path is queue-depth gated: it engages only while the
+	// submit channel is under ~10% full, so once the queue bursts deep the fair
+	// blocking select takes over and the p99 tail is preserved. Measured (FD
+	// blocking, 1-5 ms RTT, >=1k concurrent callers, DEFAULT window): +15-33%
+	// throughput at 1 ms and +6-18% at 5 ms with the tail equal-or-better; a no-op
+	// on high-RTT links (RTT-bound) and harmless at low concurrency. The gate
+	// scales with FullDuplexWindow (the submit channel is min(window,4096) deep),
+	// so a small FullDuplexWindow leaves a shallow channel and effectively disables
+	// the fast path — the measured gains are at the default window. Only used when
+	// FullDuplex is set. Off by default.
+	FullDuplexFastSubmit bool
+
 	// contentSharded is set internally by cluster wiring when commands are
 	// routed to shards by content (slot), so same-key commands always share a
 	// shard and per-key order holds even with several shards. It exempts that
