@@ -62,6 +62,17 @@ type ClusterOptions struct {
 	// Allows routing read-only commands to the closest master or slave node.
 	// It automatically enables ReadOnly.
 	RouteByLatency bool
+	// RouteByLatencyTolerance widens RouteByLatency from "the single fastest node" to
+	// "any node within this much of the fastest", round-robining between them.
+	//
+	// RouteByLatency alone takes a strict minimum, so when several nodes are equally
+	// close - replicas sharing an availability zone, say - every client picks the same
+	// one and the others take no read traffic. Latency is estimated from ten pings and
+	// refreshed at most every 10s, so a difference well inside the noise can decide the
+	// whole read load for the next interval.
+	//
+	// Zero keeps the strict-minimum behaviour. Has no effect unless RouteByLatency is set.
+	RouteByLatencyTolerance time.Duration
 	// Allows routing read-only commands to the random master or slave node.
 	// It automatically enables ReadOnly.
 	RouteRandomly bool
@@ -379,6 +390,7 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MaxRedirects = q.int("max_redirects")
 	o.ReadOnly = q.bool("read_only")
 	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatencyTolerance = q.duration("route_by_latency_tolerance")
 	o.RouteRandomly = q.bool("route_randomly")
 	o.MaxRetries = q.int("max_retries")
 	o.MinRetryBackoff = q.duration("min_retry_backoff")
@@ -812,6 +824,11 @@ type clusterSlot struct {
 	start int
 	end   int
 	nodes []*clusterNode
+
+	// rotation cursor for RouteByLatencyTolerance. Per slot on purpose: a counter shared
+	// across slots is advanced by the other slots between two visits to this one, so with a
+	// regular interleaving each slot keeps landing on the same candidate index.
+	rotation atomic.Uint32
 }
 
 type clusterState struct {
@@ -979,39 +996,82 @@ func (c *clusterState) slotSlaveNode(slot int) (*clusterNode, error) {
 	}
 }
 
-func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
-	nodes := c.slotNodes(slot)
-	if len(nodes) == 0 {
+func (c *clusterState) slotClosestNode(slot int, tolerance time.Duration) (*clusterNode, error) {
+	entry := c.slotEntry(slot)
+	if entry == nil || len(entry.nodes) == 0 {
 		return c.nodes.Random()
 	}
+	nodes := entry.nodes
 
-	allNodesFailing := true
+	// Latency and health are sampled once per node. The background probe updates them
+	// concurrently, so re-reading would let the candidate set disagree with the minimum it
+	// is compared against - and could leave that set empty.
+	type sample struct {
+		node    *clusterNode
+		latency time.Duration
+	}
+
 	var (
-		closestNonFailingNode *clusterNode
-		closestNode           *clusterNode
-		minLatency            time.Duration
+		healthy            []sample
+		closestNode        *clusterNode
+		closestHealthyNode *clusterNode
+		minLatency         = time.Duration(math.MaxInt64)
+		minHealthyLatency  = time.Duration(math.MaxInt64)
 	)
 
-	// setting the max possible duration as zerovalue for minlatency
-	minLatency = time.Duration(math.MaxInt64)
+	// Only the tolerance path needs the samples. With the option unset this stays nil, so
+	// the existing strict-minimum behaviour allocates nothing.
+	if tolerance > 0 {
+		healthy = make([]sample, 0, len(nodes))
+	}
 
 	for _, n := range nodes {
-		if closestNode == nil || n.Latency() < minLatency {
-			closestNode = n
-			minLatency = n.Latency()
-			if !n.Failing() {
-				closestNonFailingNode = n
-				allNodesFailing = false
-			}
+		latency := n.Latency()
+		if latency < minLatency {
+			closestNode, minLatency = n, latency
+		}
+
+		if n.Failing() {
+			continue
+		}
+
+		if tolerance > 0 {
+			healthy = append(healthy, sample{node: n, latency: latency})
+		}
+
+		// Tracked separately: a healthy node that is not the outright fastest must still be
+		// preferred over a failing one.
+		if latency < minHealthyLatency {
+			closestHealthyNode, minHealthyLatency = n, latency
 		}
 	}
 
-	// pick the healthly node with the lowest latency
-	if !allNodesFailing && closestNonFailingNode != nil {
-		return closestNonFailingNode, nil
+	if closestHealthyNode != nil {
+		if tolerance <= 0 {
+			return closestHealthyNode, nil
+		}
+
+		candidates := make([]*clusterNode, 0, len(healthy))
+		for _, s := range healthy {
+			// Subtraction rather than minHealthyLatency+tolerance, which would overflow for
+			// a very large tolerance. Always true for closestHealthyNode, so candidates is
+			// never empty here.
+			if s.latency-minHealthyLatency <= tolerance {
+				candidates = append(candidates, s.node)
+			}
+		}
+
+		if len(candidates) == 1 {
+			return candidates[0], nil
+		}
+
+		// Reduced in the unsigned domain: the cursor wraps, and on 32-bit builds converting a
+		// value past 2^31 to int before the modulo would make the index negative.
+		return candidates[(entry.rotation.Add(1)-1)%uint32(len(candidates))], nil
 	}
 
-	// if all nodes are failing, we will pick the temporarily failing node with lowest latency
+	// Every node is failing. Fall back to the least-slow one, so a transient failure does
+	// not take the slot down.
 	if minLatency < maximumNodeLatency && closestNode != nil {
 		internal.Logger.Printf(context.TODO(), "redis: all nodes are marked as failed, picking the temporarily failing node with lowest latency")
 		return closestNode, nil
@@ -1062,7 +1122,7 @@ func (c *clusterState) slotShardPickerSlaveNode(slot int, shardPicker routing.Sh
 	return nodes[0], nil
 }
 
-func (c *clusterState) slotNodes(slot int) []*clusterNode {
+func (c *clusterState) slotEntry(slot int) *clusterSlot {
 	i := sort.Search(len(c.slots), func(i int) bool {
 		return c.slots[i].end >= slot
 	})
@@ -1071,6 +1131,13 @@ func (c *clusterState) slotNodes(slot int) []*clusterNode {
 	}
 	x := c.slots[i]
 	if slot >= x.start && slot <= x.end {
+		return x
+	}
+	return nil
+}
+
+func (c *clusterState) slotNodes(slot int) []*clusterNode {
+	if x := c.slotEntry(slot); x != nil {
 		return x.nodes
 	}
 	return nil
@@ -2963,7 +3030,7 @@ func (c *ClusterClient) cmdNodeWithShardPicker(
 
 func (c *ClusterClient) slotReadOnlyNode(state *clusterState, slot int) (*clusterNode, error) {
 	if c.opt.RouteByLatency {
-		return state.slotClosestNode(slot)
+		return state.slotClosestNode(slot, c.opt.RouteByLatencyTolerance)
 	}
 	if c.opt.RouteRandomly {
 		return state.slotRandomNode(slot)
