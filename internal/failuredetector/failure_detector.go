@@ -341,7 +341,11 @@ func (d *CommandFailureDetector) snapshot() (successes, failures uint64) {
 	cutoff := nowNano - d.windowNano - d.bucketWidthNano
 	for i := range d.buckets {
 		st := d.buckets[i].state.Load()
-		if st != nil && st.epochNano > cutoff {
+		// The upper bound guards against wall-clock rollback (VM restore,
+		// NTP step): buckets written before the step carry epochs later than
+		// the new now, and counting them would pin stale failures into
+		// ShouldFailover for the rollback duration plus the window.
+		if st != nil && st.epochNano > cutoff && st.epochNano <= nowNano {
 			successes += st.successes.Load()
 			failures += st.failures.Load()
 		}
