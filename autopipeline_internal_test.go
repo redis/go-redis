@@ -42,6 +42,9 @@ func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -94,6 +97,9 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -186,6 +192,9 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -233,6 +242,10 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 
 	ap, err := client.AutoPipeline()
 	if err != nil {
@@ -309,6 +322,9 @@ func TestDoBypassesPipeline(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
 	defer client.Close()
 
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushAll(ctx).Err(); err != nil {
 		t.Fatalf("flushall: %v", err)
 	}
