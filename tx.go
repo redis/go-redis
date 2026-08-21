@@ -186,7 +186,7 @@ func (c *Tx) TxPipeline() Pipeliner {
 			// the MULTI reply) or on a broken connection, so leave watchArmed set
 			// and let Close send UNWATCH rather than risk leaving a watch on a
 			// pooled connection.
-			if err == nil || errors.Is(err, TxFailedErr) || IsExecAbortError(err) {
+			if err == nil || errors.Is(err, TxFailedErr) || IsExecAbortError(err) || errors.As(err, new(*txQueuedExecArrayError)) {
 				c.watchArmed = false
 			}
 			return err

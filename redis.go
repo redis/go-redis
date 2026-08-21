@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1829,6 +1830,39 @@ func (c *baseClient) txPipelineProcessCmds(
 		trimmedCmds := cmds[1 : len(cmds)-1]
 
 		if err := c.txPipelineReadQueued(ctx, cn, rd, statusCmd, trimmedCmds); err != nil {
+			var execArrayErr *txQueuedExecArrayError
+			var readErr *txQueuedReadError
+			if errors.As(err, &execArrayErr) && len(execArrayErr.himportedIndexes) > 0 {
+				c.himportAfterBatch(cn, injected, himportFilteredCmds(trimmedCmds, execArrayErr.himportedIndexes))
+			} else if errors.As(err, &readErr) && len(readErr.himportedIndexes) > 0 {
+				c.himportAfterBatch(cn, injected, himportFilteredCmds(trimmedCmds, readErr.himportedIndexes))
+			}
+			if errors.As(err, &execArrayErr) {
+				setCmdsErr(cmds[:1], err)
+				for i := 0; i < execArrayErr.readCount; i++ {
+					if _, ok := execArrayErr.himportedIndexes[i]; ok {
+						continue
+					}
+					setCmdsErr(trimmedCmds[i:i+1], err)
+				}
+				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
+				setCmdsErr(cmds[len(cmds)-1:], err)
+				return err
+			}
+			// txQueuedReadError or another non-array error: stamp all commands
+			// except successfully-drained HIMPORT slots, which keep their own
+			// reply and error so callers can inspect the real HIMPORT result.
+			if readErr != nil && len(readErr.himportedIndexes) > 0 {
+				setCmdsErr(cmds[:1], err)
+				for i, cmd := range trimmedCmds {
+					if _, ok := readErr.himportedIndexes[i]; ok && cmd.Err() == nil {
+						continue
+					}
+					setCmdsErr(trimmedCmds[i:i+1], err)
+				}
+				setCmdsErr(cmds[len(cmds)-1:], err)
+				return err
+			}
 			setCmdsErr(cmds, err)
 			return err
 		}
@@ -1846,6 +1880,81 @@ func (c *baseClient) txPipelineProcessCmds(
 	return false, nil
 }
 
+type txQueuedExecAbortError struct {
+	queuedErr error
+	execErr   error
+}
+
+type txQueuedExecArrayError struct {
+	queuedErr        error
+	himportedIndexes map[int]struct{}
+	readCount        int
+}
+
+type txQueuedReadError struct {
+	queuedErr        error
+	readErr          error
+	forceBad         bool
+	himportedIndexes map[int]struct{}
+}
+
+func (e *txQueuedExecAbortError) Error() string {
+	return fmt.Sprintf("%v (exec: %v)", e.queuedErr, e.execErr)
+}
+
+func (e *txQueuedExecAbortError) Unwrap() []error {
+	return []error{e.queuedErr, e.execErr}
+}
+
+func (e *txQueuedExecArrayError) Error() string {
+	return e.queuedErr.Error()
+}
+
+func (e *txQueuedExecArrayError) Unwrap() error {
+	return e.queuedErr
+}
+
+func (e *txQueuedReadError) Error() string {
+	return fmt.Sprintf("%v (queued command failed: %v)", e.readErr, e.queuedErr)
+}
+
+func (e *txQueuedReadError) Unwrap() []error {
+	return []error{e.queuedErr, e.readErr}
+}
+
+// himportFilteredCmds returns a copy of cmds with only HIMPORT commands
+// whose index is in himportedIndexes, plus all non-HIMPORT commands,
+// suitable for passing to himportAfterBatch.
+func himportFilteredCmds(cmds []Cmder, himportedIndexes map[int]struct{}) []Cmder {
+	filtered := make([]Cmder, len(cmds))
+	for i, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); !ok {
+			filtered[i] = cmd
+			continue
+		}
+		if _, ok := himportedIndexes[i]; ok {
+			filtered[i] = cmd
+		}
+	}
+	return filtered
+}
+
+func discardExecResult(rd *proto.Reader) error {
+	for {
+		line, err := rd.ReadLine()
+		if err != nil {
+			return err
+		}
+		if line[0] == proto.RespAttr {
+			if err := rd.Discard(line); err != nil {
+				return err
+			}
+			continue
+		}
+		return rd.Discard(line)
+	}
+}
+
 // txPipelineReadQueued reads queued replies from the Redis server.
 // It returns an error if the server returns an error or if the number of replies does not match the number of commands.
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
@@ -1859,21 +1968,36 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 	}
 
 	// Parse +QUEUED.
+	var queuedErr error
 	for _, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			if queuedErr != nil {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+			}
 			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 		}
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
 			if !isRedisError(err) {
+				if queuedErr != nil {
+					wrapped := &txQueuedReadError{queuedErr: queuedErr, readErr: err}
+					cmd.SetErr(wrapped)
+					return wrapped
+				}
 				return err
+			}
+			if queuedErr == nil {
+				queuedErr = err
 			}
 		}
 	}
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+		if queuedErr != nil {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+		}
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
 	}
 	// Parse number of replies.
@@ -1882,11 +2006,65 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if err == Nil {
 			err = TxFailedErr
 		}
+		if queuedErr != nil && !isRedisError(err) {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
+		}
+		if queuedErr != nil && isRedisError(err) {
+			return &txQueuedExecAbortError{queuedErr: queuedErr, execErr: err}
+		}
 		return err
 	}
 
 	if line[0] != proto.RespArray {
-		return fmt.Errorf("redis: expected '*', but got line %q", line)
+		protoErr := fmt.Errorf("redis: expected '*', but got line %q", line)
+		if queuedErr != nil {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: protoErr, forceBad: true}
+		}
+		return protoErr
+	}
+
+	if queuedErr != nil {
+		n, err := strconv.Atoi(string(line[1:]))
+		if err != nil {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: fmt.Errorf("redis: can't parse array reply length in %q: %w", line, err), forceBad: true}
+		}
+		if n < 0 {
+			return &txQueuedReadError{queuedErr: queuedErr, readErr: fmt.Errorf("redis: invalid EXEC array length %d", n), forceBad: true}
+		}
+		hasHImport := false
+		himportedIndexes := make(map[int]struct{})
+		for _, cmd := range cmds {
+			if _, ok := cmd.(himportCmder); ok {
+				hasHImport = true
+				break
+			}
+		}
+		for i := 0; i < n; i++ {
+			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
+			}
+			if hasHImport && i < len(cmds) {
+				if _, ok := cmds[i].(himportCmder); ok {
+					err := cmds[i].readReply(rd)
+					cmds[i].SetErr(err)
+					if err != nil && !isRedisError(err) {
+						wrapped := &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
+						cmds[i].SetErr(wrapped)
+						return wrapped
+					}
+					himportedIndexes[i] = struct{}{}
+					continue
+				}
+			}
+			if err := discardExecResult(rd); err != nil && !isRedisError(err) {
+				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
+			}
+		}
+		readCount := n
+		if readCount > len(cmds) {
+			readCount = len(cmds)
+		}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes, readCount: readCount}
 	}
 
 	return nil
