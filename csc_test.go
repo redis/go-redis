@@ -48,10 +48,12 @@ func TestIsCacheable_AllowedCommands(t *testing.T) {
 		"GEODIST", "GEOHASH", "GEOPOS", "GEOSEARCH",
 		"GEORADIUSBYMEMBER_RO", "GEORADIUS_RO",
 		"XLEN", "XRANGE", "XREVRANGE",
-		"JSON.GET", "JSON.MGET", "JSON.ARRINDEX", "JSON.ARRLEN",
+		// JSON.MGET is absent: the server tracks only its first key.
+		"JSON.GET", "JSON.ARRINDEX", "JSON.ARRLEN",
 		"JSON.OBJKEYS", "JSON.OBJLEN", "JSON.RESP",
 		"JSON.STRLEN", "JSON.TYPE",
-		"TS.GET", "TS.INFO", "TS.RANGE", "TS.REVRANGE",
+		// TS.INFO is absent: the module marks it dont_cache.
+		"TS.GET", "TS.RANGE", "TS.REVRANGE",
 	}
 	for _, name := range allowed {
 		// Use lower-case name as first arg (matching how go-redis sends commands)
@@ -89,11 +91,8 @@ func TestIsCacheable_XReadRejected(t *testing.T) {
 	}
 }
 
-// TestExtractRedisKeys_WireFaithfulTypesOnly: the invalidation index must hold
-// keys exactly as proto.Writer sends them, or the server's invalidation pushes
-// never match and stale entries are served forever. Types whose fmt.Sprint
-// rendering diverges from the wire form (pointers, bools, durations, floats...)
-// must make extraction fail (want nil) so the command is served uncached.
+// Keys must be extracted exactly as they go on the wire; other types make
+// extraction fail so the command is served uncached.
 func TestExtractRedisKeys_WireFaithfulTypesOnly(t *testing.T) {
 	key := "real-key"
 	cases := []struct {
@@ -141,11 +140,157 @@ func TestIsCacheable_XPendingRejected(t *testing.T) {
 }
 
 func TestIsCacheable_KeylessCommandRejected(t *testing.T) {
-	// PING has no keys; even if someone added it to the allow-list it
-	// should be rejected because cmdFirstKeyPos returns 0.
-	cmd := makeCmd("ping")
-	if isCacheable(cmd) {
-		t.Error("expected keyless command PING to NOT be cacheable")
+	// Keyless commands are not cached even when read-only.
+	for _, cmd := range []Cmder{
+		makeCmd("ping"),
+		makeCmd("KEYS", "pattern*"),
+		makeCmd("scan", "0"),
+	} {
+		if isCacheable(cmd) {
+			t.Errorf("expected keyless command %v to NOT be cacheable", cmd.Args())
+		}
+	}
+}
+
+// Pins the HLD's named cases and the probe-verified overrides.
+func TestIsCacheable_HLDNormativeCases(t *testing.T) {
+	notCacheable := []struct {
+		reason string
+		cmd    Cmder
+	}{
+		{"FR.14 KEYS is keyless", makeCmd("keys", "*")},
+		{"FR.15 XPENDING has nondeterministic_output", makeCmd("xpending", "s", "grp")},
+		{"FR.16 EVAL_RO has script_runner", makeCmd("eval_ro", "return 1", 1, "k")},
+		{"FR.16 EVALSHA_RO has script_runner", makeCmd("evalsha_ro", "sha", 1, "k")},
+		{"FR.16 FCALL_RO has script_runner", makeCmd("fcall_ro", "fn", 1, "k")},
+		{"FR.17 TOUCH is overridden dont_cache", makeCmd("touch", "k1", "k2")},
+		{"contradictory metadata override: CF.COMPACT really writes", makeCmd("cf.compact", "filter")},
+		{"server tracks only the first key: JSON.MGET", makeCmd("json.mget", "j1", "j2", "$")},
+		{"server tracks no keys at all: TS.NRANGE", makeCmd("ts.nrange", 2, "s1", "s2", "-", "+")},
+		{"server tracks no keys at all: TS.NREVRANGE", makeCmd("ts.nrevrange", 2, "s1", "s2", "-", "+")},
+		{"group mutations don't invalidate: XINFO STREAM", makeCmd("xinfo", "stream", "s")},
+		{"group mutations don't invalidate: XINFO GROUPS", makeCmd("xinfo", "groups", "s")},
+		{"FR.18 XREADGROUP is not readonly", makeCmd("xreadgroup", "GROUP", "g", "c", "STREAMS", "s", ">")},
+		{"FR.9 unknown commands fail closed", makeCmd("some.unknown", "k")},
+		{"dont_cache tip (module): TS.INFO", makeCmd("ts.info", "series")},
+		{"dont_cache tip (module): FT.SEARCH", makeCmd("ft.search", "idx", "q")},
+		{"dont_cache tip (module): BF.INFO", makeCmd("bf.info", "filter")},
+		{"nondeterministic_output: TTL", makeCmd("ttl", "k")},
+		{"nondeterministic_output: DUMP", makeCmd("dump", "k")},
+		{"nondeterministic_output: HRANDFIELD", makeCmd("hrandfield", "h")},
+		{"nondeterministic_output: SRANDMEMBER", makeCmd("srandmember", "s")},
+		{"nondeterministic_output override: VRANDMEMBER", makeCmd("vrandmember", "vs")},
+		{"blocking / unproven keys: XREAD", makeCmd("xread", "STREAMS", "s", "0")},
+	}
+	for _, tc := range notCacheable {
+		if isCacheable(tc.cmd) {
+			t.Errorf("%s: expected %v to NOT be cacheable", tc.reason, tc.cmd.Args())
+		}
+	}
+}
+
+// Commands the old hand-list missed but whose metadata proves cacheable.
+func TestIsCacheable_MetadataEligible(t *testing.T) {
+	cacheable := []Cmder{
+		makeCmd("pfcount", "hll1", "hll2"),
+		makeCmd("zintercard", 2, "z1", "z2"),
+		makeCmd("expiretime", "k"),
+		makeCmd("pexpiretime", "k"),
+		makeCmd("bf.exists", "filter", "item"),
+		makeCmd("cf.exists", "filter", "item"),
+		makeCmd("topk.query", "sketch", "item"),
+		makeCmd("cms.query", "sketch", "item"),
+		makeCmd("tdigest.quantile", "sketch", "0.5"),
+		makeCmd("ft.sugget", "sugkey", "pref"),
+		makeCmd("vcard", "vs"),
+		makeCmd("vsim", "vs", "ELE", "e"),
+	}
+	for _, cmd := range cacheable {
+		if !isCacheable(cmd) {
+			t.Errorf("expected %v to be cacheable per COMMAND metadata", cmd.Args())
+		}
+	}
+}
+
+// cscWireSmuggler renders one value on the wire and another via stringArg.
+type cscWireSmuggler struct{ wire, str string }
+
+func (s cscWireSmuggler) MarshalBinary() ([]byte, error) { return []byte(s.wire), nil }
+func (s cscWireSmuggler) String() string                 { return s.str }
+
+func TestIsCacheable_PolicyTokensMustBeWireFaithful(t *testing.T) {
+	// Tokens that drive the decision (name, subcommand, numkeys) must be
+	// wire-faithful; anything else fails closed.
+	if cmd := makeCmd("xinfo", cscWireSmuggler{wire: "consumers", str: "stream"}, "s", "g"); isCacheable(cmd) {
+		t.Error("non-wire-faithful subcommand token must not be cacheable")
+	}
+
+	if cmd := makeCmd(cscWireSmuggler{wire: "set", str: "get"}, "k", "v"); isCacheable(cmd) {
+		t.Error("non-wire-faithful command name must not be cacheable")
+	}
+
+	cmd := makeCmd("zintercard", cscWireSmuggler{wire: "2", str: "1"}, "z1", "z2")
+	if keys := extractRedisKeys(cmd); keys != nil {
+		t.Errorf("non-wire-faithful numkeys must fail extraction, got %v", keys)
+	}
+	// []byte and *string are wire-faithful and keep working.
+	if cmd := makeCmd("memory", []byte("usage"), "k"); !isCacheable(cmd) {
+		t.Error("[]byte subcommand token should resolve (MEMORY USAGE)")
+	}
+	if cmd := makeCmd([]byte("get"), "k"); !isCacheable(cmd) {
+		t.Error("[]byte command name should resolve (GET)")
+	}
+	get, usage := "get", "usage"
+	if cmd := makeCmd(&get, "k"); !isCacheable(cmd) {
+		t.Error("*string command name should resolve (GET)")
+	}
+	if cmd := makeCmd("memory", &usage, "k"); !isCacheable(cmd) {
+		t.Error("*string subcommand token should resolve (MEMORY USAGE)")
+	}
+	var nilName *string
+	if cmd := makeCmd(nilName, "k"); isCacheable(cmd) {
+		t.Error("nil *string command name must fail closed")
+	}
+}
+
+func TestCSCOverrides(t *testing.T) {
+	// Overrides must be negative-only, must shadow a live generated entry,
+	// and must survive into the resolved table.
+	for name, override := range cscCommandOverrides {
+		if override.bits&^cscNegativeBits != 0 || override.extract != cscKeyExtractNone {
+			t.Errorf("override %q must be negative-only, got %+v", name, override)
+		}
+		if _, ok := cscCommandTable[name]; !ok {
+			t.Errorf("override %q has no generated table entry; re-audit or remove it", name)
+		}
+		if _, ok := cscResolvedCommandTable[name]; !ok {
+			t.Errorf("override %q did not survive into the resolved table (bare container-parent key?)", name)
+		}
+	}
+}
+
+// Container commands resolve by their "parent|child" name.
+func TestIsCacheable_ContainerSubcommands(t *testing.T) {
+	if cmd := makeCmd("memory", "usage", "k"); !isCacheable(cmd) {
+		t.Error("MEMORY USAGE should be cacheable (readonly, keyed, no negative metadata)")
+	}
+	if cmd := makeCmd("MEMORY", "USAGE", "k"); !isCacheable(cmd) {
+		t.Error("MEMORY USAGE lookup must be case-insensitive")
+	}
+	if cmd := makeCmd("xinfo", "stream", "s"); isCacheable(cmd) {
+		t.Error("XINFO STREAM must not be cacheable: group mutations don't invalidate the stream key")
+	}
+	if cmd := makeCmd("object", "encoding", "k"); isCacheable(cmd) {
+		t.Error("OBJECT ENCODING has nondeterministic_output and must not be cacheable")
+	}
+	if cmd := makeCmd("xinfo", "consumers", "s", "g"); isCacheable(cmd) {
+		t.Error("XINFO CONSUMERS has nondeterministic_output and must not be cacheable")
+	}
+	if cmd := makeCmd("memory", "doctor"); isCacheable(cmd) {
+		t.Error("MEMORY DOCTOR is keyless and must not be cacheable")
+	}
+	if cmd := makeCmd("memory"); isCacheable(cmd) {
+		t.Error("bare container parent must not be cacheable")
 	}
 }
 
@@ -348,7 +493,6 @@ func TestExtractRedisKeys_MultiKeyExists(t *testing.T) {
 func TestExtractRedisKeys_NumKeysPattern(t *testing.T) {
 	// ZDIFF numkeys key [key ...]
 	cmd := makeCmd("ZDIFF", 2, "zs1", "zs2")
-	cmd.(*Cmd).SetFirstKeyPos(2)
 	keys := extractRedisKeys(cmd)
 	if len(keys) != 2 || keys[0] != "zs1" || keys[1] != "zs2" {
 		t.Errorf("ZDIFF: expected [zs1 zs2], got %v", keys)
@@ -360,6 +504,89 @@ func TestExtractRedisKeys_NumKeysPattern(t *testing.T) {
 	if len(keys) != 2 || keys[0] != "s1" || keys[1] != "s2" {
 		t.Errorf("SINTERCARD: expected [s1 s2], got %v", keys)
 	}
+
+	cmd = makeCmd("ZINTERCARD", 3, "z1", "z2", "z3")
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 3 || keys[0] != "z1" || keys[2] != "z3" {
+		t.Errorf("ZINTERCARD: expected [z1 z2 z3], got %v", keys)
+	}
+}
+
+func TestExtractRedisKeys_NumKeysFailClosed(t *testing.T) {
+	// A numkeys larger than the argument list must give nil, not a
+	// truncated key list.
+	for _, cmd := range []Cmder{
+		makeCmd("ZDIFF", 5, "z1", "z2"),
+		makeCmd("ZDIFF", 0, "z1"),
+		makeCmd("ZDIFF", "not-a-number", "z1"),
+		makeCmd("ZDIFF"),
+		makeCmd("ZDIFF", "999999999999999999", "z1"),
+	} {
+		if keys := extractRedisKeys(cmd); keys != nil {
+			t.Errorf("%v: expected nil keys, got %v", cmd.Args(), keys)
+		}
+	}
+}
+
+func TestExtractRedisKeys_RangeShortArgsFailClosed(t *testing.T) {
+	// Too few arguments must give nil, not a partial key list.
+	for _, cmd := range []Cmder{
+		makeCmd("LCS", "k1"),
+		makeCmd("LCS"),
+		makeCmd("GET"),
+	} {
+		if keys := extractRedisKeys(cmd); keys != nil {
+			t.Errorf("%v: expected nil keys, got %v", cmd.Args(), keys)
+		}
+	}
+}
+
+func TestCSCTableExtractionInvariants(t *testing.T) {
+	// Extraction positions in the table must be coherent.
+	for name, meta := range cscResolvedCommandTable {
+		switch meta.extract {
+		case cscKeyExtractRange:
+			if meta.firstKey <= 0 || meta.step <= 0 {
+				t.Errorf("%s: range extraction with firstKey=%d step=%d", name, meta.firstKey, meta.step)
+			}
+		case cscKeyExtractKeynum:
+			if meta.numkeysAt <= 0 || meta.firstKey <= 0 || meta.step <= 0 {
+				t.Errorf("%s: keynum extraction with numkeysAt=%d firstKey=%d step=%d",
+					name, meta.numkeysAt, meta.firstKey, meta.step)
+			}
+		}
+	}
+}
+
+func TestCSCSubcommandMetadataNotShadowedByParent(t *testing.T) {
+	// A bare parent entry (e.g. "ft.config") must not shadow its
+	// subcommands' metadata.
+	meta, ok := cscCommandMetaFor(makeCmd("ft.config", "get", "param"))
+	if !ok {
+		t.Fatal("expected ft.config|get metadata to resolve")
+	}
+	if meta.bits&cscTipDontCache == 0 {
+		t.Error("expected the ft.config|get subcommand entry (dont_cache), got the bare parent's")
+	}
+
+	if _, ok := cscResolvedCommandTable["ft.config"]; ok {
+		t.Error("bare container-parent entries must be dropped from the resolved table")
+	}
+}
+
+func TestExtractRedisKeys_MultiKeyNewlyEligible(t *testing.T) {
+	// Every PFCOUNT key must land in the invalidation index.
+	cmd := makeCmd("PFCOUNT", "h1", "h2", "h3")
+	keys := extractRedisKeys(cmd)
+	if len(keys) != 3 || keys[0] != "h1" || keys[2] != "h3" {
+		t.Errorf("PFCOUNT: expected [h1 h2 h3], got %v", keys)
+	}
+
+	cmd = makeCmd("MEMORY", "USAGE", "k")
+	keys = extractRedisKeys(cmd)
+	if len(keys) != 1 || keys[0] != "k" {
+		t.Errorf("MEMORY USAGE: expected [k], got %v", keys)
+	}
 }
 
 func TestExtractRedisKeys_LCS(t *testing.T) {
@@ -370,12 +597,11 @@ func TestExtractRedisKeys_LCS(t *testing.T) {
 	}
 }
 
-func TestExtractRedisKeys_JSONMGet(t *testing.T) {
-	// JSON.MGET key [key ...] path
-	cmd := makeCmd("JSON.MGET", "j1", "j2", "$.name")
-	keys := extractRedisKeys(cmd)
-	if len(keys) != 2 || keys[0] != "j1" || keys[1] != "j2" {
-		t.Errorf("JSON.MGET: expected [j1 j2], got %v", keys)
+func TestIsCacheable_JSONMGetRejected(t *testing.T) {
+	// The server tracks only JSON.MGET's first key, so writes to the others
+	// never invalidate (verified live); it must not be cached.
+	if isCacheable(makeCmd("JSON.MGET", "j1", "j2", "$.name")) {
+		t.Error("JSON.MGET must not be cacheable while server tracking covers only its first key")
 	}
 }
 
@@ -388,12 +614,10 @@ func TestExtractRedisKeys_KeylessCommand(t *testing.T) {
 }
 
 func TestIsCacheable_SortRO_ByGetExcluded(t *testing.T) {
-	// Plain SORT_RO reads only the sorted key: cacheable.
 	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA"); !isCacheable(cmd) {
 		t.Error("plain SORT_RO should be cacheable")
 	}
-	// BY/GET forms read pattern-derived keys the reverse index cannot cover:
-	// their invalidations would be dropped, serving stale results forever.
+	// BY/GET forms read pattern keys the cache cannot watch.
 	if cmd := makeCmd("sort_ro", "mylist", "BY", "weight_*"); isCacheable(cmd) {
 		t.Error("SORT_RO ... BY must not be cacheable")
 	}
