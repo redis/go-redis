@@ -1875,7 +1875,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
-	return proto.Scan([]byte(cmd.val), val)
+	return proto.Scan(util.StringToBytes(cmd.val), val)
 }
 
 func (cmd *StringCmd) String() string {
@@ -8012,7 +8012,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 				case 'T':
 					info.Flags |= ClientNoTouch
 				default:
-					return nil, fmt.Errorf("redis: unexpected client info flags(%s)", string(val[i]))
+					// Forward compatibility: servers can return client-flag
+					// characters this client does not recognize (new flags are
+					// added over time). Skip them instead of failing, as the
+					// CLIENT LIST/INFO docs advise for version-safe parsing, and
+					// matching the "skip unknown fields" behaviour of the field
+					// switch below.
 				}
 			}
 		case "db":

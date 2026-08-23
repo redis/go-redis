@@ -441,7 +441,12 @@ var _ = Describe("Commands", func() {
 
 			info, err := conn.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+			// Redis Enterprise's proxy does not surface the client-tracking flag in
+			// CLIENT INFO, so assert it only against a direct server. Tracking still
+			// works on RE (the command returns OK and CSC operates).
+			if !RECluster {
+				Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+			}
 
 			status, err = conn.ClientTrackingOff(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -468,8 +473,13 @@ var _ = Describe("Commands", func() {
 
 			info, err := conn.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
-			Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
+			// Redis Enterprise's proxy does not surface tracking flags in CLIENT
+			// INFO, so assert them only against a direct server (tracking still
+			// works on RE).
+			if !RECluster {
+				Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+				Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
+			}
 			// Redis does not expose the NOLOOP flag in CLIENT INFO; it is only
 			// observable via CLIENT TRACKINGINFO.
 
