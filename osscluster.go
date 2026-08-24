@@ -1110,9 +1110,32 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 			}
 		}
 
-		// Everything in the band is loading: fall back to the strict-minimum choice rather
-		// than failing, which is what this path did before the filter.
 		if len(ready) == 0 {
+			// Every node inside the band is loading. closestHealthyNode is itself in the band,
+			// so returning it hands back a node we just observed loading. Widen the search to
+			// the healthy nodes outside the band and take the closest ready one - which in a
+			// multi-AZ layout is typically the master, still serving while the local replicas
+			// reload together after a resync. Only reached in this exceptional case, so the
+			// extra Loading() calls are off the hot path, and the latency comparison is
+			// evaluated first so most of them are skipped.
+			var (
+				fallback        *clusterNode
+				fallbackLatency = time.Duration(math.MaxInt64)
+			)
+			for _, s := range healthy {
+				if s.latency-minHealthyLatency <= tolerance {
+					continue // in the band, already known to be loading
+				}
+				if s.latency < fallbackLatency && !s.node.Loading() {
+					fallback, fallbackLatency = s.node, s.latency
+				}
+			}
+			if fallback != nil {
+				return fallback, nil
+			}
+
+			// Nothing is ready anywhere. Return the closest healthy node so the caller still
+			// gets a node to retry against, which is what this path did before the filter.
 			return closestHealthyNode, nil
 		}
 
