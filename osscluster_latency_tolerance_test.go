@@ -12,6 +12,9 @@ func toleranceTestNode(t *testing.T, latency time.Duration, failing bool) *clust
 	n := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
 	t.Cleanup(func() { _ = n.Client.Close() })
 
+	// Steady state: the node has answered a PING at least once, so Loading() takes its
+	// cached path instead of dialling a dead address for 100ms per candidate.
+	n.loaded.Store(1)
 	n.latency.Store(uint32(latency / time.Microsecond))
 	if failing {
 		n.MarkAsFailing()
@@ -271,5 +274,32 @@ func TestSlotNodeWithinLatencyRotationPastIntMax(t *testing.T) {
 
 	if len(seen) != 2 {
 		t.Fatalf("rotation stalled across the uint32 boundary: %v", seen)
+	}
+}
+
+// A node that has not yet been confirmed loaded must still be selectable: Loading() only
+// reports true for an actual LOADING reply, and a connection error is not one. Guards
+// against the tolerance filter over-excluding and shrinking the rotation to nothing.
+func TestSlotNodeWithinLatencyKeepsUnconfirmedNode(t *testing.T) {
+	fast := toleranceTestNode(t, 100*time.Microsecond, false)
+	unconfirmed := toleranceTestNode(t, 110*time.Microsecond, false)
+	unconfirmed.loaded.Store(0)
+
+	state := toleranceTestState(fast, unconfirmed)
+
+	seen := map[*clusterNode]bool{}
+	for i := 0; i < 8; i++ {
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
+		if err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
+		}
+		if got == nil {
+			t.Fatal("slotNodeWithinLatency returned nil")
+		}
+		seen[got] = true
+	}
+
+	if !seen[unconfirmed] {
+		t.Fatal("node with loaded=0 was excluded from the rotation; a connection error is not a LOADING reply")
 	}
 }

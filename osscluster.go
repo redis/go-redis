@@ -1096,13 +1096,33 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 			}
 		}
 
-		if len(candidates) == 1 {
-			return candidates[0], nil
+		// Drop nodes that are still loading, matching slotSlaveNode. Checked here rather than
+		// in the pass above so Loading() - which can cost a Ping when the node is not known
+		// loaded - is only paid for nodes actually eligible for this read. Widening the
+		// candidate set is what makes this matter: under a strict minimum a loading replica
+		// has to be the fastest to be picked, within a tolerance band it merely has to be
+		// close, and a replica is loading precisely after the full resync that a too-small
+		// replication backlog causes.
+		ready := candidates[:0]
+		for _, n := range candidates {
+			if !n.Loading() {
+				ready = append(ready, n)
+			}
+		}
+
+		// Everything in the band is loading: fall back to the strict-minimum choice rather
+		// than failing, which is what this path did before the filter.
+		if len(ready) == 0 {
+			return closestHealthyNode, nil
+		}
+
+		if len(ready) == 1 {
+			return ready[0], nil
 		}
 
 		// Reduced in the unsigned domain: the cursor wraps, and on 32-bit builds converting a
 		// value past 2^31 to int before the modulo would make the index negative.
-		return candidates[(entry.nodesByLatencyRotation.Add(1)-1)%uint32(len(candidates))], nil
+		return ready[(entry.nodesByLatencyRotation.Add(1)-1)%uint32(len(ready))], nil
 	}
 
 	// Every node is failing. Fall back to the least-slow one, so a transient failure does
