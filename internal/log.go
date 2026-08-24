@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync/atomic"
 )
 
 // TODO (ned): Revisit logging
@@ -28,11 +29,62 @@ func NewDefaultLogger() Logging {
 	}
 }
 
+// atomicLogger holds the active Logging behind an atomic pointer so
+// redis.SetLogger, logging.Enable and logging.Disable can swap it while pool
+// and background goroutines read it through Printf. The interface is stored via
+// a pointer rather than atomic.Value, whose single-concrete-type rule the
+// swappable implementations (DefaultLogger, VoidLogger, custom loggers) break.
+type atomicLogger struct {
+	v atomic.Pointer[Logging]
+}
+
+func (a *atomicLogger) Store(l Logging) { a.v.Store(&l) }
+
+func (a *atomicLogger) Load() Logging {
+	if p := a.v.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+func (a *atomicLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+	if l := a.Load(); l != nil {
+		l.Printf(ctx, format, v...)
+	}
+}
+
+func newAtomicLogger(l Logging) *atomicLogger {
+	a := &atomicLogger{}
+	a.Store(l)
+	return a
+}
+
 // Logger calls Output to print to the stderr.
 // Arguments are handled in the manner of fmt.Print.
-var Logger Logging = NewDefaultLogger()
+// Swap it with redis.SetLogger; read it through Logger.Printf.
+var Logger = newAtomicLogger(NewDefaultLogger())
 
-var LogLevel LogLevelT = LogLevelError
+// atomicLogLevel stores the active level as an int32 so redis.SetLogLevel can
+// change it while the level guards (isHealthyConn on the Get path, the
+// maintnotifications loggers) read it through the *OrAbove helpers.
+type atomicLogLevel struct {
+	v atomic.Int32
+}
+
+func (a *atomicLogLevel) Store(l LogLevelT) { a.v.Store(int32(l)) }
+func (a *atomicLogLevel) Load() LogLevelT   { return LogLevelT(a.v.Load()) }
+
+func (a *atomicLogLevel) WarnOrAbove() bool  { return a.Load().WarnOrAbove() }
+func (a *atomicLogLevel) InfoOrAbove() bool  { return a.Load().InfoOrAbove() }
+func (a *atomicLogLevel) DebugOrAbove() bool { return a.Load().DebugOrAbove() }
+
+func newAtomicLogLevel(l LogLevelT) *atomicLogLevel {
+	a := &atomicLogLevel{}
+	a.Store(l)
+	return a
+}
+
+var LogLevel = newAtomicLogLevel(LogLevelError)
 
 // LogLevelT represents the logging level
 type LogLevelT int

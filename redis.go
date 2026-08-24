@@ -42,12 +42,12 @@ func SetLogger(logger internal.Logging) {
 	if logger == nil {
 		return
 	}
-	internal.Logger = logger
+	internal.Logger.Store(logger)
 }
 
 // SetLogLevel sets the log level for the library.
 func SetLogLevel(logLevel internal.LogLevelT) {
-	internal.LogLevel = logLevel
+	internal.LogLevel.Store(logLevel)
 }
 
 //------------------------------------------------------------------------------
