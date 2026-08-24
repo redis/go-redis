@@ -56,17 +56,20 @@ type HandoffState struct {
 	SeqID         int64  // Sequence ID from MOVING notification
 }
 
-// atomicNetConn is a wrapper to ensure consistent typing in atomic.Value
+// atomicNetConn is a wrapper to ensure consistent typing in atomic.Value.
+// It is always stored and accessed by pointer, so the embedded atomic.Bool is
+// never copied.
 type atomicNetConn struct {
 	conn net.Conn
+	// closed claims teardown of this specific transport generation. Close
+	// CAS-claims it before calling conn.Close, so a given socket is closed
+	// exactly once. A handoff installs a fresh wrapper (closed=false) via
+	// setNetConn, so a replacement socket is a new generation claimed by the
+	// next Close rather than skipped under a stale flag. The wrapper is left in
+	// place on Close (not swapped out) so getNetConn keeps returning the closed
+	// conn, preserving RemoteAddr/LocalAddr and the connCheck health path.
+	closed atomic.Bool
 }
-
-// closedNetConn is the sentinel Close swaps into netConnAtomic to take ownership
-// of the current transport. atomic.Value panics on nil and on mismatched
-// concrete types, so the sentinel keeps the *atomicNetConn type while its nil
-// conn makes getNetConn report "no transport". Sharing one immutable value
-// avoids a per-close allocation.
-var closedNetConn = &atomicNetConn{}
 
 // generateConnID generates a fast unique identifier for a connection with zero allocations
 func generateConnID() uint64 {
@@ -1165,24 +1168,30 @@ func (cn *Conn) Close() error {
 		_ = (*fn)()
 	}
 
-	// Atomically take ownership of the current transport and close it. Swapping
-	// (rather than a sticky "closed" flag) closes exactly the socket installed
-	// when this Close ran: every value stored in netConnAtomic is closed by the
-	// one caller that swaps it out, and a socket a concurrent handoff installs
-	// afterwards is a fresh generation closed by the next Close. This keeps the
-	// close exactly-once (repeat/concurrent closes swap out the sentinel and
-	// return nil, avoiding a spurious "use of closed network connection" to
-	// callers such as ConnPool.closeConnsIf) without leaking a replacement
-	// socket when a Close races SetNetConnAndInitConn and init resurrects the
-	// conn to IDLE.
+	// Close the current transport generation exactly once, claiming it via the
+	// wrapper's per-generation flag. The wrapper is left in netConnAtomic (not
+	// nil-ed or swapped out) so getNetConn keeps returning the closed conn,
+	// preserving the pre-fix contract that RemoteAddr/LocalAddr and the
+	// connCheck health path rely on.
 	//
-	// A handoff may also close the pre-handoff socket directly
-	// (handoff_worker.go captures oldConn and closes it); if that races this
-	// swap the socket is closed twice, which is harmless — the second close is
+	// Load-then-CAS is deliberately not a single atomic step: if a concurrent
+	// handoff installs a new wrapper between the Load and the CAS, this Close
+	// claims and closes the OLD generation (which still needs closing) while the
+	// replacement is a fresh wrapper (closed=false) claimed by the next Close.
+	// That is the correct outcome and is what makes teardown generation-bound
+	// rather than leaking a socket installed after a Close set a lifetime flag.
+	//
+	// Repeat/concurrent closes of the same generation lose the CAS and return
+	// nil, so no spurious "use of closed network connection" reaches callers
+	// such as ConnPool.closeConnsIf. A handoff may also close the pre-handoff
+	// socket directly (handoff_worker.go captures oldConn); if that races this
+	// path the socket is closed twice, which is harmless — the extra close is
 	// discarded.
-	if v := cn.netConnAtomic.Swap(closedNetConn); v != nil {
+	if v := cn.netConnAtomic.Load(); v != nil {
 		if wrapper, ok := v.(*atomicNetConn); ok && wrapper.conn != nil {
-			return wrapper.conn.Close()
+			if wrapper.closed.CompareAndSwap(false, true) {
+				return wrapper.conn.Close()
+			}
 		}
 	}
 	return nil

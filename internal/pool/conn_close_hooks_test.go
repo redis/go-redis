@@ -314,10 +314,10 @@ func TestConn_CloseAfterStateClosedStillCleansUp(t *testing.T) {
 
 // TestConn_DoubleCloseCleansUpExactlyOnce asserts teardown idempotence:
 // closing a connection more than once must run each close callback and the
-// transport close exactly once. Close atomically swaps the transport out, so
-// only the first Close closes the socket and returns its result; later closes
-// swap out the sentinel and return nil rather than a spurious double-close
-// error (which ConnPool paths such as closeConnsIf would otherwise propagate).
+// transport close exactly once. Close claims the transport generation with a
+// CAS, so only the first Close closes the socket and returns its result; later
+// closes lose the CAS and return nil rather than a spurious double-close error
+// (which ConnPool paths such as closeConnsIf would otherwise propagate).
 func TestConn_DoubleCloseCleansUpExactlyOnce(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -398,5 +398,29 @@ func TestConn_CloseThenSocketReplacedClosesNewTransport(t *testing.T) {
 	}
 	if got := recB.closes.Load(); got != 1 {
 		t.Fatalf("replacement transport close calls: got %d want 1 (socket leaked under stale claim)", got)
+	}
+}
+
+// TestConn_GetNetConnSurvivesClose guards the post-close contract that other
+// subsystems depend on: after Close the connection must still expose its
+// (now closed) transport via getNetConn, so RemoteAddr/LocalAddr keep working
+// and connCheck receives a non-nil conn. Sentinel's Filter closes an in-use
+// connection while leaving it in the pool and later calls cn.RemoteAddr(); the
+// pool health check calls connCheck(cn.getNetConn()). A Close that cleared the
+// transport would turn both into nil-pointer panics.
+func TestConn_GetNetConnSurvivesClose(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	cn := NewConn(client)
+	if err := cn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if cn.getNetConn() == nil {
+		t.Fatal("getNetConn returned nil after Close; RemoteAddr/connCheck callers would panic")
+	}
+	if cn.RemoteAddr() == nil {
+		t.Fatal("RemoteAddr returned nil after Close")
 	}
 }
