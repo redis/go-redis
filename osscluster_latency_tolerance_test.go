@@ -24,7 +24,7 @@ func toleranceTestState(nodes ...*clusterNode) *clusterState {
 	return &clusterState{slots: []*clusterSlot{{start: 0, end: 16383, nodes: nodes}}}
 }
 
-func TestSlotClosestNodeToleranceZeroKeepsStrictMinimum(t *testing.T) {
+func TestRouteByLatencyToleranceZeroKeepsStrictMinimum(t *testing.T) {
 	fastest := toleranceTestNode(t, 100*time.Microsecond, false)
 	state := toleranceTestState(
 		fastest,
@@ -33,7 +33,7 @@ func TestSlotClosestNodeToleranceZeroKeepsStrictMinimum(t *testing.T) {
 	)
 
 	for i := 0; i < 20; i++ {
-		got, err := state.slotClosestNode(0, 0)
+		got, err := state.slotClosestNode(0)
 		if err != nil {
 			t.Fatalf("slotClosestNode: %v", err)
 		}
@@ -43,7 +43,7 @@ func TestSlotClosestNodeToleranceZeroKeepsStrictMinimum(t *testing.T) {
 	}
 }
 
-func TestSlotClosestNodeToleranceSpreadsAcrossCloseNodes(t *testing.T) {
+func TestSlotNodeWithinLatencySpreadsAcrossCloseNodes(t *testing.T) {
 	a := toleranceTestNode(t, 100*time.Microsecond, false)
 	b := toleranceTestNode(t, 120*time.Microsecond, false)
 	far := toleranceTestNode(t, 900*time.Microsecond, false)
@@ -52,9 +52,9 @@ func TestSlotClosestNodeToleranceSpreadsAcrossCloseNodes(t *testing.T) {
 	counts := map[*clusterNode]int{}
 
 	for i := 0; i < 100; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond)
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
 		if err != nil {
-			t.Fatalf("slotClosestNode: %v", err)
+			t.Fatalf("slotNodeWithinLatency: %v", err)
 		}
 		counts[got]++
 	}
@@ -70,14 +70,14 @@ func TestSlotClosestNodeToleranceSpreadsAcrossCloseNodes(t *testing.T) {
 	}
 }
 
-func TestSlotClosestNodeToleranceSkipsFailingNodes(t *testing.T) {
+func TestSlotNodeWithinLatencySkipsFailingNodes(t *testing.T) {
 	healthy := toleranceTestNode(t, 120*time.Microsecond, false)
 	state := toleranceTestState(toleranceTestNode(t, 100*time.Microsecond, true), healthy)
 
 	for i := 0; i < 10; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond)
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
 		if err != nil {
-			t.Fatalf("slotClosestNode: %v", err)
+			t.Fatalf("slotNodeWithinLatency: %v", err)
 		}
 		if got != healthy {
 			t.Fatal("a failing node was selected")
@@ -89,20 +89,23 @@ func TestSlotClosestNodeToleranceSkipsFailingNodes(t *testing.T) {
 // Previously the healthy candidate was only recorded while scanning for a new minimum, so
 // a healthy-but-slower node could be skipped and selection fell through to the
 // all-nodes-failing path.
-func TestSlotClosestNodePrefersSlowerHealthyNode(t *testing.T) {
+// Exercises slotNodeWithinLatency rather than slotClosestNode: preferring a slower healthy
+// node over a faster failing one is behaviour of the new path. slotClosestNode is left as it
+// was on master, latent bug included - see the PR discussion.
+func TestSlotNodeWithinLatencyPrefersSlowerHealthyNode(t *testing.T) {
 	healthy := toleranceTestNode(t, 800*time.Microsecond, false)
 	state := toleranceTestState(toleranceTestNode(t, 100*time.Microsecond, true), healthy)
 
-	got, err := state.slotClosestNode(0, 0)
+	got, err := state.slotNodeWithinLatency(0, 0)
 	if err != nil {
-		t.Fatalf("slotClosestNode: %v", err)
+		t.Fatalf("slotNodeWithinLatency: %v", err)
 	}
 	if got != healthy {
 		t.Fatal("expected the slower healthy node rather than the failing fastest one")
 	}
 }
 
-func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
+func TestSlotNodeWithinLatencyNeverReturnsNilWithHealthyNode(t *testing.T) {
 	nodes := []*clusterNode{
 		toleranceTestNode(t, 100*time.Microsecond, false),
 		toleranceTestNode(t, 120*time.Microsecond, false),
@@ -127,9 +130,9 @@ func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
 	}()
 
 	for i := 0; i < 5000; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond)
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
 		if err != nil {
-			t.Fatalf("slotClosestNode: %v", err)
+			t.Fatalf("slotNodeWithinLatency: %v", err)
 		}
 		if got == nil {
 			t.Fatal("returned nil despite healthy nodes being available")
@@ -137,14 +140,14 @@ func TestSlotClosestNodeToleranceNeverReturnsNilWithHealthyNode(t *testing.T) {
 	}
 }
 
-func TestSlotClosestNodeToleranceHandlesHugeTolerance(t *testing.T) {
+func TestSlotNodeWithinLatencyHandlesHugeTolerance(t *testing.T) {
 	a := toleranceTestNode(t, 100*time.Microsecond, false)
 	state := toleranceTestState(a, toleranceTestNode(t, 900*time.Microsecond, false))
 
 	// A tolerance near the maximum must not overflow into a negative comparison.
-	got, err := state.slotClosestNode(0, time.Duration(math.MaxInt64))
+	got, err := state.slotNodeWithinLatency(0, time.Duration(math.MaxInt64))
 	if err != nil {
-		t.Fatalf("slotClosestNode: %v", err)
+		t.Fatalf("slotNodeWithinLatency: %v", err)
 	}
 	if got == nil {
 		t.Fatal("returned nil for a very large tolerance")
@@ -193,7 +196,7 @@ func TestRouteByLatencyToleranceFromUniversalOptions(t *testing.T) {
 
 // With the option unset, selection must stay on the pre-existing hot path: no candidate
 // slice, no allocation per command.
-func TestSlotClosestNodeToleranceDisabledDoesNotAllocate(t *testing.T) {
+func TestSlotClosestNodeStillDoesNotAllocate(t *testing.T) {
 	state := toleranceTestState(
 		toleranceTestNode(t, 100*time.Microsecond, false),
 		toleranceTestNode(t, 120*time.Microsecond, false),
@@ -201,8 +204,8 @@ func TestSlotClosestNodeToleranceDisabledDoesNotAllocate(t *testing.T) {
 	)
 
 	allocs := testing.AllocsPerRun(200, func() {
-		if _, err := state.slotClosestNode(0, 0); err != nil {
-			t.Fatalf("slotClosestNode: %v", err)
+		if _, err := state.slotClosestNode(0); err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
 		}
 	})
 
@@ -214,7 +217,7 @@ func TestSlotClosestNodeToleranceDisabledDoesNotAllocate(t *testing.T) {
 // Rotation state is per slot. A counter shared across slots is advanced by the other slots
 // between two visits to this one, so with a regular interleaving each slot keeps landing on
 // the same candidate index and one replica per shard takes all of that shard's reads.
-func TestSlotClosestNodeToleranceRotatesPerSlot(t *testing.T) {
+func TestSlotNodeWithinLatencyRotatesPerSlot(t *testing.T) {
 	nodesFor := func() []*clusterNode {
 		return []*clusterNode{
 			toleranceTestNode(t, 100*time.Microsecond, false),
@@ -230,9 +233,9 @@ func TestSlotClosestNodeToleranceRotatesPerSlot(t *testing.T) {
 	counts := map[*clusterNode]int{}
 	for i := 0; i < 100; i++ {
 		for _, slot := range []int{50, 150} { // alternate slots, the interleaving that breaks a shared counter
-			got, err := state.slotClosestNode(slot, 50*time.Microsecond)
+			got, err := state.slotNodeWithinLatency(slot, 50*time.Microsecond)
 			if err != nil {
-				t.Fatalf("slotClosestNode: %v", err)
+				t.Fatalf("slotNodeWithinLatency: %v", err)
 			}
 			counts[got]++
 		}
@@ -248,17 +251,17 @@ func TestSlotClosestNodeToleranceRotatesPerSlot(t *testing.T) {
 // The rotation cursor is a uint32 and wraps. Reducing it to an index must stay in the unsigned
 // domain: on 32-bit builds int is 32 bits, so converting a cursor past 2^31 before the modulo
 // yields a negative index and panics. Run with GOARCH=386 to exercise that.
-func TestSlotClosestNodeToleranceRotationPastIntMax(t *testing.T) {
+func TestSlotNodeWithinLatencyRotationPastIntMax(t *testing.T) {
 	first := toleranceTestNode(t, 100*time.Microsecond, false)
 	second := toleranceTestNode(t, 110*time.Microsecond, false)
 	state := toleranceTestState(first, second)
-	state.slots[0].rotation.Store(math.MaxInt32)
+	state.slots[0].nodesByLatencyRotation.Store(math.MaxInt32)
 
 	seen := map[*clusterNode]int{}
 	for i := 0; i < 8; i++ {
-		got, err := state.slotClosestNode(0, 50*time.Microsecond)
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
 		if err != nil {
-			t.Fatalf("slotClosestNode: %v", err)
+			t.Fatalf("slotNodeWithinLatency: %v", err)
 		}
 		if got != first && got != second {
 			t.Fatalf("unexpected node %p", got)
