@@ -9445,7 +9445,16 @@ var _ = Describe("Commands", func() {
 				WithDist:  true,
 				WithCoord: true,
 			}
-			val, err := client.GeoSearchLocation(ctx, "Sicily", q).Result()
+			cmd := client.GeoSearchLocation(ctx, "Sicily", q)
+			Expect(cmd.Args()).To(Equal([]interface{}{
+				"geosearch", "Sicily",
+				"fromlonlat", float64(15), float64(37),
+				"byradius", float64(200), "km",
+				"asc",
+				"withcoord", "withdist", "withhash",
+			}))
+
+			val, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.GeoLocation{
 				{
