@@ -12,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9/auth"
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
@@ -123,6 +125,19 @@ type FailoverOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure the separate connection pool used for pipelining, with its own
+	// (typically larger) buffers. See the same-named fields on Options for
+	// details. NewFailoverClient creates this pool by default; set
+	// PipelinePoolSize < 0 to opt out (pipelines then run on the main pool).
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
+	// AutoPipelineOptions is the default config for the client's autopipeliner
+	// faces. See Options.AutoPipelineOptions.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	PoolFIFO bool
 
 	PoolSize int
@@ -176,7 +191,7 @@ type FailoverOptions struct {
 	// seamlessly. Requires Protocol: 3 (RESP3) for push notifications.
 	// If nil, maintnotifications upgrades are disabled.
 	// (however if Mode is nil, it defaults to "auto" - enable if server supports it)
-	//MaintNotificationsConfig *maintnotifications.Config
+	// MaintNotificationsConfig *maintnotifications.Config
 }
 
 func (opt *FailoverOptions) clientOptions() *Options {
@@ -201,6 +216,11 @@ func (opt *FailoverOptions) clientOptions() *Options {
 
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -317,6 +337,11 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		ReadBufferSize:  opt.ReadBufferSize,
 		WriteBufferSize: opt.WriteBufferSize,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+		AutoPipelineOptions:     opt.AutoPipelineOptions,
 
 		DialTimeout:        opt.DialTimeout,
 		DialerRetries:      opt.DialerRetries,
@@ -458,6 +483,11 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
+	// Pipeline pool (created by default): allow URL opt-out
+	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
@@ -536,8 +566,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 
 	rdb := &Client{
 		baseClient: &baseClient{
-			opt:     opt,
-			onClose: &onCloseHooks{},
+			apClosed: &atomic.Bool{},
+			opt:      opt,
+			onClose:  &onCloseHooks{},
+			himport:  newHImportRegistry(),
 		},
 	}
 	rdb.init()
@@ -561,12 +593,37 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
+	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
+	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
+	if opt.PipelinePoolSize >= 0 {
+		ref, err := rdb.buildPipelinePool(mainPoolName + "_pipeline")
+		if err != nil {
+			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
+		}
+		rdb.pipelinePool = ref
+	}
+
+	// Register pools for OTel async gauge metrics, matching NewClient (the
+	// failover client previously registered none, so pool gauges were silent
+	// for the identical standalone setup). The pipeline pool is nil when not
+	// configured.
+	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
+
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
 	failover.mu.Lock()
 	failover.onFailover = func(ctx context.Context, addr string) {
 		if connPool, ok := rdb.connPool.(*pool.ConnPool); ok {
 			_ = connPool.Filter(func(cn *pool.Conn) bool {
+				return cn.RemoteAddr().String() != addr
+			})
+		}
+		// Drop stale pipeline-pool connections dialed to the demoted master too;
+		// otherwise pipelined traffic keeps using the old address after failover.
+		// The pipeline pool is created at construction (before this callback can
+		// fire), so the ref is simply read here.
+		if ref := rdb.loadPipelinePool(); ref != nil {
+			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr
 			})
 		}
@@ -599,8 +656,8 @@ func masterReplicaDialer(
 		}
 
 		netDialer := &net.Dialer{
-			Timeout:   failover.opt.DialTimeout,
-			KeepAlive: 5 * time.Minute,
+			Timeout:         failover.opt.DialTimeout,
+			KeepAliveConfig: defaultKeepAliveConfig,
 		}
 		if failover.opt.TLSConfig == nil {
 			return netDialer.DialContext(ctx, network, addr)
@@ -625,8 +682,9 @@ func NewSentinelClient(opt *Options) *SentinelClient {
 	opt.init()
 	c := &SentinelClient{
 		baseClient: &baseClient{
-			opt:     opt,
-			onClose: &onCloseHooks{},
+			apClosed: &atomic.Bool{},
+			opt:      opt,
+			onClose:  &onCloseHooks{},
 		},
 	}
 

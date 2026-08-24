@@ -74,3 +74,58 @@ func TestCmdFirstKeyPosWithInfo_UsesCommandInfoWhenWarm(t *testing.T) {
 		t.Fatalf("post-Get: got %d, want 0", pos)
 	}
 }
+
+// TestCmdFirstKeyPosWithInfo_PolicyTableKeyless checks that a module command
+// registered keyless in the static policy table routes as keyless even on a
+// cold command-info cache, and that key-carrying or specially-routed module
+// commands are not affected.
+func TestCmdFirstKeyPosWithInfo_PolicyTableKeyless(t *testing.T) {
+	ctx := context.Background()
+
+	// Keyless per the policy table: the index argument must not be treated
+	// as a key while the command-info cache is cold.
+	for _, name := range []string{"ft.aliaslist", "ft.aliasadd", "ft.search", "ft.spellcheck"} {
+		cmd := NewCmd(ctx, name, "idx")
+		if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 0 {
+			t.Errorf("%s cold cache: got %d, want 0 (keyless)", name, got)
+		}
+	}
+
+	// Slot-from-key (RespDefaultHashSlot) and special request routing
+	// (ReqSpecial) keep the hardcoded fallback.
+	for _, name := range []string{"ft.suglen", "ft.sugdel", "ft.cursor"} {
+		cmd := NewCmd(ctx, name, "key")
+		if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 1 {
+			t.Errorf("%s cold cache: got %d, want 1", name, got)
+		}
+	}
+
+	// Unregistered module commands are untouched.
+	cmd := NewCmd(ctx, "mymodule.cmd", "arg1")
+	if got := cmdFirstKeyPosWithInfo(cmd, nil); got != 1 {
+		t.Errorf("unregistered module cmd: got %d, want 1", got)
+	}
+}
+
+// TestCmdFirstKeyPosWithInfo_MsetEx checks that msetex's first key is
+// resolved to position 2 (after the command name and the numkeys arg),
+// unlike mset/msetnx where the first key sits at position 1 immediately
+// after the command name.
+func TestCmdFirstKeyPosWithInfo_MsetEx(t *testing.T) {
+	ctx := context.Background()
+
+	msetex := NewCmd(ctx, "msetex", 2, "key1", "val1", "key2", "val2", "ex", 10)
+	if got := cmdFirstKeyPosWithInfo(msetex, nil); got != 2 {
+		t.Errorf("msetex cold cache: got %d, want 2", got)
+	}
+
+	mset := NewCmd(ctx, "mset", "key1", "val1", "key2", "val2")
+	if got := cmdFirstKeyPosWithInfo(mset, nil); got != 1 {
+		t.Errorf("mset cold cache: got %d, want 1", got)
+	}
+
+	msetnx := NewCmd(ctx, "msetnx", "key1", "val1", "key2", "val2")
+	if got := cmdFirstKeyPosWithInfo(msetnx, nil); got != 1 {
+		t.Errorf("msetnx cold cache: got %d, want 1", got)
+	}
+}

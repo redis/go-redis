@@ -142,6 +142,19 @@ type ClusterOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
+	// configure an optional separate connection pool used for pipelining on
+	// each node, with its own (typically larger) buffers. See the same-named
+	// fields on Options for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
+	// AutoPipelineOptions is the default config for BOTH autopipeliner faces
+	// (AutoPipeline and AsyncAutoPipeline), applied when they are called
+	// without explicit options. See Options.AutoPipelineOptions.
+	AutoPipelineOptions *AutoPipelineOptions
+
 	TLSConfig *tls.Config
 
 	// DisableRoutingPolicies disables the request/response policy routing system.
@@ -190,7 +203,9 @@ type ClusterOptions struct {
 	ShardPicker routing.ShardPicker
 
 	// ClusterStateReloadInterval is the interval for reloading the cluster state.
-	// Default is 10 seconds.
+	// MOVED/ASK redirects still trigger an immediate reactive reload, so this
+	// only bounds how stale a topology can get without traffic errors.
+	// Default is 60 seconds.
 	ClusterStateReloadInterval time.Duration
 }
 
@@ -235,7 +250,7 @@ func (opt *ClusterOptions) init() {
 	case -1:
 		opt.ReadTimeout = 0
 	case 0:
-		opt.ReadTimeout = 3 * time.Second
+		opt.ReadTimeout = 5 * time.Second
 	}
 	switch opt.WriteTimeout {
 	case -1:
@@ -251,13 +266,13 @@ func (opt *ClusterOptions) init() {
 	case -1:
 		opt.MinRetryBackoff = 0
 	case 0:
-		opt.MinRetryBackoff = 8 * time.Millisecond
+		opt.MinRetryBackoff = 10 * time.Millisecond
 	}
 	switch opt.MaxRetryBackoff {
 	case -1:
 		opt.MaxRetryBackoff = 0
 	case 0:
-		opt.MaxRetryBackoff = 512 * time.Millisecond
+		opt.MaxRetryBackoff = time.Second
 	}
 
 	if opt.NewClient == nil {
@@ -273,7 +288,7 @@ func (opt *ClusterOptions) init() {
 	}
 
 	if opt.ClusterStateReloadInterval == 0 {
-		opt.ClusterStateReloadInterval = 10 * time.Second
+		opt.ClusterStateReloadInterval = 60 * time.Second
 	}
 }
 
@@ -379,6 +394,11 @@ func setupClusterQueryParams(u *url.URL, o *ClusterOptions) (*ClusterOptions, er
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
+	// Pipeline pool (per node, created by default): allow URL opt-out
+	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.PoolTimeout = q.duration("pool_timeout")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	if q.has("conn_max_lifetime_jitter") {
@@ -455,11 +475,15 @@ func (opt *ClusterOptions) clientOptions() *Options {
 		ConnMaxLifetimeJitter: opt.ConnMaxLifetimeJitter,
 		ReadBufferSize:        opt.ReadBufferSize,
 		WriteBufferSize:       opt.WriteBufferSize,
-		DisableIdentity:       opt.DisableIdentity,
-		DisableIndentity:      opt.DisableIdentity,
-		IdentitySuffix:        opt.IdentitySuffix,
-		FailingTimeoutSeconds: opt.FailingTimeoutSeconds,
-		TLSConfig:             opt.TLSConfig,
+
+		PipelineReadBufferSize:  opt.PipelineReadBufferSize,
+		PipelineWriteBufferSize: opt.PipelineWriteBufferSize,
+		PipelinePoolSize:        opt.PipelinePoolSize,
+		DisableIdentity:         opt.DisableIdentity,
+		DisableIndentity:        opt.DisableIndentity,
+		IdentitySuffix:          opt.IdentitySuffix,
+		FailingTimeoutSeconds:   opt.FailingTimeoutSeconds,
+		TLSConfig:               opt.TLSConfig,
 		// If ClusterSlots is populated, then we probably have an artificial
 		// cluster whose nodes are not in clustering mode (otherwise there isn't
 		// much use for ClusterSlots config).  This means we cannot execute the
@@ -1153,6 +1177,17 @@ type ClusterClient struct {
 	cmdInfoResolver *commandInfoResolver
 	cmdable
 	hooksMixin
+
+	// himport is the cluster-wide HIMPORT fieldset registry, shared with
+	// every node client (masters and replicas alike — roles change with the
+	// topology) so any connection serving an HIMPORT SET can lazily replay
+	// the PREPARE (see himport.go, himport_cluster.go).
+	himport *himportRegistry
+
+	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
+	autopipeliner       *AutoPipeliner // blocking face (ClusterClient.AutoPipeline)
+	asyncAutopipeliner  *AutoPipeliner // deferred face (ClusterClient.AsyncAutoPipeline)
+	autopipelinerClosed bool           // set by Close: refuse to resurrect a pipeliner on a closed client
 }
 
 // NewClusterClient returns a Redis Cluster client as described in
@@ -1165,9 +1200,18 @@ func NewClusterClient(opt *ClusterOptions) *ClusterClient {
 	opt.init()
 
 	c := &ClusterClient{
-		opt:   opt,
-		nodes: newClusterNodes(opt),
+		opt:             opt,
+		nodes:           newClusterNodes(opt),
+		himport:         newHImportRegistry(),
+		autopipelinerMu: &sync.Mutex{},
 	}
+
+	// Every node client shares the cluster-wide fieldset registry, replicas
+	// included: a promoted replica's connections carry no prepared flags, so
+	// the first HIMPORT SET routed to it replays the PREPARE lazily.
+	c.nodes.OnNewNode(func(nodeClient *Client) {
+		nodeClient.himport = c.himport
+	})
 
 	c.cmdsInfoCache = newCmdsInfoCache(c.cmdsInfo)
 
@@ -1223,7 +1267,26 @@ func (c *ClusterClient) ReloadState(ctx context.Context) {
 // It is rare to Close a ClusterClient, as the ClusterClient is meant
 // to be long-lived and shared between many goroutines.
 func (c *ClusterClient) Close() error {
-	return c.nodes.Close()
+	// Stop both cached autopipeliners (blocking and async faces) before
+	// closing nodes, so its background flusher goroutines don't outlive the
+	// client. AutoPipeliner.Close is idempotent and nil-safe here.
+	c.autopipelinerMu.Lock()
+	ap, async := c.autopipeliner, c.asyncAutopipeliner
+	c.autopipeliner, c.asyncAutopipeliner = nil, nil
+	c.autopipelinerClosed = true // getters refuse to resurrect on a closed client
+	c.autopipelinerMu.Unlock()
+	var firstErr error
+	for _, p := range []*AutoPipeliner{ap, async} {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := c.nodes.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *ClusterClient) Process(ctx context.Context, cmd Cmder) error {
@@ -1461,38 +1524,52 @@ func (c *ClusterClient) ForEachShard(
 // PoolStats returns accumulated connection pool stats.
 func (c *ClusterClient) PoolStats() *PoolStats {
 	var acc PoolStats
+	var pipe pool.Stats
+	havePipe := false
 
 	state, _ := c.state.Get(context.TODO())
 	if state == nil {
 		return &acc
 	}
 
+	foldNode := func(client *Client) {
+		s := client.connPool.Stats()
+		acc.Hits += s.Hits
+		acc.Misses += s.Misses
+		acc.Timeouts += s.Timeouts
+		acc.WaitCount += s.WaitCount
+		acc.WaitDurationNs += s.WaitDurationNs
+
+		acc.TotalConns += s.TotalConns
+		acc.IdleConns += s.IdleConns
+		acc.StaleConns += s.StaleConns
+
+		// The dedicated pipeline pool is now created per node by default; fold its
+		// stats into acc.PipelineStats so cluster monitoring reflects it too.
+		if pp := client.getPipelinePool(); pp != nil {
+			ps := pp.Stats()
+			pipe.Hits += ps.Hits
+			pipe.Misses += ps.Misses
+			pipe.Timeouts += ps.Timeouts
+			pipe.WaitCount += ps.WaitCount
+			pipe.WaitDurationNs += ps.WaitDurationNs
+			pipe.TotalConns += ps.TotalConns
+			pipe.IdleConns += ps.IdleConns
+			pipe.StaleConns += ps.StaleConns
+			havePipe = true
+		}
+	}
+
 	for _, node := range state.Masters {
-		s := node.Client.connPool.Stats()
-		acc.Hits += s.Hits
-		acc.Misses += s.Misses
-		acc.Timeouts += s.Timeouts
-		acc.WaitCount += s.WaitCount
-		acc.WaitDurationNs += s.WaitDurationNs
-
-		acc.TotalConns += s.TotalConns
-		acc.IdleConns += s.IdleConns
-		acc.StaleConns += s.StaleConns
+		foldNode(node.Client)
 	}
-
 	for _, node := range state.Slaves {
-		s := node.Client.connPool.Stats()
-		acc.Hits += s.Hits
-		acc.Misses += s.Misses
-		acc.Timeouts += s.Timeouts
-		acc.WaitCount += s.WaitCount
-		acc.WaitDurationNs += s.WaitDurationNs
-
-		acc.TotalConns += s.TotalConns
-		acc.IdleConns += s.IdleConns
-		acc.StaleConns += s.StaleConns
+		foldNode(node.Client)
 	}
 
+	if havePipe {
+		acc.PipelineStats = &pipe
+	}
 	return &acc
 }
 
@@ -1553,6 +1630,155 @@ func (c *ClusterClient) Pipeline() Pipeliner {
 	}
 	pipe.init()
 	return &pipe
+}
+
+// clusterAutoPipelineOptions applies the cluster shard-count default: commands
+// are routed to shards by slot (see installAutoPipelineSharding), so unlike a
+// standalone client — which defaults to a single deep queue — a cluster client
+// wants several shards to keep concurrent nodes' batches separate. The caller's
+// config is copied before the default is filled in, never mutated.
+func clusterAutoPipelineOptions(cfg *AutoPipelineOptions) *AutoPipelineOptions {
+	c2 := *cfg
+	if c2.NumShards == 0 {
+		c2.NumShards = numAutoPipelineShards()
+	}
+	// A cluster always routes by slot, so per-key order holds regardless of shard
+	// count; mark it so construction's NumShards ordering check (which targets
+	// round-robin sharding) does not reject the cluster default or an explicit
+	// NumShards on the deferred (async) face.
+	c2.contentSharded = true
+	return &c2
+}
+
+// AutoPipeline returns the blocking autopipeliner for this cluster client: each
+// command call blocks until executed (drop-in shape) while the engine batches
+// concurrent callers into pipelines. Commands keep per-goroutine order; across
+// nodes, ordering is per key (slot routing keeps a key on one shard and node
+// sub-pipelines execute concurrently). Use AutoPipelineWithOptions to override
+// DefaultBlockingAutoPipelineOptions. Cached/shared; first call's config wins.
+// Close it (or the client) to release its goroutines.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+func (c *ClusterClient) AutoPipeline() (*AutoPipeliner, error) {
+	return c.AutoPipelineWithOptions(nil)
+}
+
+// AutoPipelineWithOptions is AutoPipeline with explicit options instead of
+// ClusterOptions.AutoPipelineOptions / the default. Cached/shared; first call wins.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+func (c *ClusterClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
+			}
+			return DefaultBlockingAutoPipelineOptions()
+		},
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			ap, err := newAutoPipeliner(c, clusterAutoPipelineOptions(cfg), true)
+			if err != nil {
+				return nil, err
+			}
+			c.installAutoPipelineSharding(ap)
+			return ap, nil
+		})
+}
+
+// installAutoPipelineSharding routes commands to shards by cluster slot so each
+// shard's batch lands on a single master node, keeping per-node pipelines deep
+// instead of splitting every batch across all nodes at flush. Cluster slots are
+// contiguous per node, so bucketing by slot range (slot*shards/16384) keeps a
+// node's slots together. Keyless commands hash to slot -1 → bucket 0; multi-node
+// commands are already rejected from pipelines, so only single-node commands
+// reach here.
+func (c *ClusterClient) installAutoPipelineSharding(ap *AutoPipeliner) {
+	// Reject commands whose request policy cannot ride a pipeline (ReqAllNodes/
+	// ReqAllShards/ReqMultiShard) at submit, BEFORE they can join a merged
+	// batch: mapCmdsByNode fails a whole mapping on such a command (user
+	// pipelines are all-or-nothing), and one autopipeline caller must not be
+	// able to poison unrelated callers' batches. Rejecting here also keeps the
+	// lone-command fast path consistent with batched dispatch — the command is
+	// refused regardless of what it happens to coalesce with.
+	ap.setPreflight(func(ctx context.Context, cmd Cmder) error {
+		if c.cmdInfoResolver == nil {
+			return nil
+		}
+		if policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd); policy != nil && !policy.CanBeUsedInPipeline() {
+			return fmt.Errorf(
+				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
+			)
+		}
+		return nil
+	})
+	// Commands whose routing is not slot-derived must not be coalesced: a solo
+	// flush reaches ClusterClient.process and its special handling (FT.CURSOR
+	// READ/DEL are sticky to the node holding the cursor), but inside a batch
+	// mapCmdsByNode routes by slot and can hit the wrong shard — visible only
+	// under concurrent traffic, which is the worst way to find it. Divert them
+	// instead of rejecting: they work fine on their own connection (review
+	// finding by codex on #3942).
+	ap.setMustDivert(func(ctx context.Context, cmd Cmder) bool {
+		if c.cmdInfoResolver == nil {
+			return false
+		}
+		policy := c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
+		return policy != nil && policy.Request == routing.ReqSpecial
+	})
+
+	const slots = 16384
+	n := ap.numShards()
+	ap.setShardFn(func(cmd Cmder) int {
+		// Compute the exact slot once and cache it on the command; the flush
+		// router (mapCmdsByNode) reuses the cached value, so the slot is resolved
+		// once per command, not twice. Keyless (slot -1) buckets to shard 0.
+		slot := c.cmdSlot(cmd, -1)
+		if slot < 0 {
+			return 0
+		}
+		return slot * n / slots
+	})
+}
+
+// AsyncAutoPipeline returns the deferred autopipeliner: command calls return
+// immediately and the result accessors block. Submit a window then read results
+// for the highest throughput. By default,
+// ClusterOptions.AutoPipelineOptions is used if set, otherwise
+// DefaultAutoPipelineOptions. Ordering across nodes is per key: slot routing
+// keeps a key on one shard, and node sub-pipelines execute concurrently. Use
+// AsyncAutoPipelineWithOptions to override. Cached/shared; first call's config wins.
+//
+// It returns an error if the supplied config is invalid (e.g. MaxConcurrentBatches>1
+// without Unordered, or a negative size); on error no instance is cached.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+func (c *ClusterClient) AsyncAutoPipeline() (*AutoPipeliner, error) {
+	return c.AsyncAutoPipelineWithOptions(nil)
+}
+
+// AsyncAutoPipelineWithOptions is AsyncAutoPipeline with an explicit config
+// instead of ClusterOptions.AutoPipelineOptions / the default. Cached/shared.
+//
+// EXPERIMENTAL: this API is subject to change, use with caution.
+func (c *ClusterClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
+		func() *AutoPipelineOptions {
+			if c.opt.AutoPipelineOptions != nil {
+				return c.opt.AutoPipelineOptions
+			}
+			return DefaultAutoPipelineOptions()
+		},
+		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
+			ap, err := newAutoPipeliner(c, clusterAutoPipelineOptions(cfg), false)
+			if err != nil {
+				return nil, err
+			}
+			c.installAutoPipelineSharding(ap)
+			return ap, nil
+		})
 }
 
 func (c *ClusterClient) Pipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
@@ -1638,9 +1864,18 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 				policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 			}
 			if policy != nil && !policy.CanBeUsedInPipeline() {
-				return fmt.Errorf(
+				// All-or-nothing: a user Pipeline() relies on the whole batch
+				// either dispatching or failing before anything executes, so a
+				// non-pipelineable command fails the entire mapping pre-dispatch.
+				// Autopipeline batches never reach here with such a command: the
+				// cluster face rejects them at submit (see the preflight installed
+				// by installAutoPipelineSharding), so one caller's bad command
+				// cannot poison a merged batch.
+				err := fmt.Errorf(
 					"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
 				)
+				setCmdsErr(cmds, err)
+				return err
 			}
 			slot := c.cmdSlot(cmd, -1)
 			var node *clusterNode
@@ -1675,9 +1910,18 @@ func (c *ClusterClient) mapCmdsByNode(ctx context.Context, cmdsMap *cmdsMap, cmd
 			policy = c.cmdInfoResolver.GetCommandPolicy(ctx, cmd)
 		}
 		if policy != nil && !policy.CanBeUsedInPipeline() {
-			return fmt.Errorf(
+			// All-or-nothing: a user Pipeline() relies on the whole batch
+			// either dispatching or failing before anything executes, so a
+			// non-pipelineable command fails the entire mapping pre-dispatch.
+			// Autopipeline batches never reach here with such a command: the
+			// cluster face rejects them at submit (see the preflight installed
+			// by installAutoPipelineSharding), so one caller's bad command
+			// cannot poison a merged batch.
+			err := fmt.Errorf(
 				"redis: cannot pipeline command %q with request policy ReqAllNodes/ReqAllShards/ReqMultiShard; Note: This behavior is subject to change in the future", cmd.Name(),
 			)
+			setCmdsErr(cmds, err)
+			return err
 		}
 		slot := c.cmdSlot(cmd, -1)
 		var node *clusterNode
@@ -1712,31 +1956,76 @@ func (c *ClusterClient) cmdsAreReadOnly(ctx context.Context, cmds []Cmder) bool 
 func (c *ClusterClient) processPipelineNode(
 	ctx context.Context, node *clusterNode, cmds []Cmder, failedCmds *cmdsMap,
 ) {
-	_ = node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+	// This call runs on a per-node fan-out goroutine, so register it as an
+	// executor of every deferred-face batch among cmds: a NODE-level hook
+	// (OnNewNode — redisotel's tracing) reading a result before next() must
+	// get the not-yet-executed view from the accessor guards instead of
+	// blocking on a batch only this call chain completes (reproduced as a
+	// permanent wedge with a rediscmd-shaped Err() peek).
+	unregister := registerBatchExecutors(cmds)
+	defer unregister()
+
+	// executed guards against a node-level hook short-circuiting (returning
+	// without calling next): the inner callback then never runs, and without
+	// surfacing the chain's error the cluster pipeline would report success
+	// for commands that were never sent.
+	executed := false
+	err := node.Client.withProcessPipelineHook(ctx, cmds, func(ctx context.Context, cmds []Cmder) error {
+		executed = true
+		// Acquire through the node's dedicated pipeline pool when one is
+		// configured (Pipeline*BufferSize propagate to node clients via
+		// clientOptions); withPipelineConn falls back to the main pool
+		// otherwise, preserving the previous behavior. entered distinguishes
+		// an acquisition failure (fn never ran) from an execution error.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			return c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
+		})
+		if err != nil && !entered {
 			if !isContextError(err) {
 				node.MarkAsFailing()
 			}
 			_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 			setCmdsErr(cmds, err)
-			return err
 		}
-
-		var processErr error
-		defer func() {
-			node.Client.releaseConn(ctx, cn, processErr)
-		}()
-		processErr = c.processPipelineNodeConn(ctx, node, cn, cmds, failedCmds)
-
-		return processErr
+		return err
 	})
+	if !executed {
+		// A hook returned without calling next. If it supplied an error that is
+		// a deliberate abort: set it and do not remap for retry (a retry would
+		// re-run the same hook). If it returned nil it short-circuited
+		// SUCCESSFULLY, having served the batch itself — the same thing a plain
+		// Pipeline hook may do — so setCmdsErr(nil) leaves the values it set
+		// intact (review finding by codex on #3942).
+		setCmdsErr(cmds, err)
+		return
+	}
+	if err != nil && cmdsFirstErr(cmds) == nil {
+		// Post-next verdict from a node-level hook on an all-clean sub-batch:
+		// the exec fully succeeded, so the error can only be the hook's own —
+		// apply it, mirroring AutoPipeliner.dispatchCmds. On a mixed batch the
+		// exec-recorded outcomes win (hooks conventionally echo next's error,
+		// and stamping the echo would overwrite successful replies). No remap:
+		// retrying would re-run the same hook.
+		setCmdsErr(cmds, err)
+	}
 }
 
 func (c *ClusterClient) processPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, cmds []Cmder, failedCmds *cmdsMap,
 ) error {
+	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
+	// for registered fieldsets the batch references get written ahead of
+	// the batch (see himport.go).
+	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, cmds)
 	}); err != nil {
 		if isBadConn(err, false, node.Client.getAddr()) {
@@ -1750,18 +2039,56 @@ func (c *ClusterClient) processPipelineNodeConn(
 	}
 
 	return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
-		return c.pipelineReadCmds(ctx, node, rd, cmds, failedCmds)
+		if err := node.Client.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with the batch replies unread: same handling
+			// as a write error — the batch may be retried on a fresh
+			// connection.
+			if isBadConn(err, false, node.Client.getAddr()) {
+				node.MarkAsFailing()
+			}
+			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+				_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
+			}
+			setCmdsErr(cmds, err)
+			return err
+		}
+		err := c.pipelineReadCmds(ctx, node, cn, rd, cmds, failedCmds)
+		if err == nil || isRedisError(err) {
+			node.Client.himportAfterBatch(cn, injected, cmds)
+			// SETs of registered fieldsets that lost their session state
+			// re-queue for the next attempt, which re-prepares lazily —
+			// the cluster equivalent of himportRetryFailedSets, bounded by
+			// the pipeline's attempt budget. A non-nil redis error here
+			// means pipelineReadCmds already re-queued the whole batch
+			// (retryable first-command error); adding the SETs again would
+			// duplicate them in the next attempt.
+			if err == nil {
+				c.himportRequeueFailedSets(ctx, cmds, failedCmds)
+			}
+		}
+		return err
 	})
 }
 
 func (c *ClusterClient) pipelineReadCmds(
 	ctx context.Context,
 	node *clusterNode,
+	cn *pool.Conn,
 	rd *proto.Reader,
 	cmds []Cmder,
 	failedCmds *cmdsMap,
 ) error {
 	for i, cmd := range cmds {
+		// Drain any buffered RESP3 push notifications before reading each
+		// reply — otherwise a push frame (e.g. a maintnotifications MOVING
+		// notification) is consumed AS the command's reply and every
+		// subsequent reply in the pipeline shifts by one command. The
+		// standalone pipeline and the cluster TxPipeline read loops already
+		// do this; this loop was the only push-blind reader, and the
+		// autopipeliner routes all cluster traffic through it.
+		if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
+			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		}
 		err := cmd.readReply(rd)
 		cmd.SetErr(err)
 
@@ -1786,7 +2113,8 @@ func (c *ClusterClient) pipelineReadCmds(
 		}
 	}
 
-	if err := cmds[0].Err(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
+	// rawErr: execution path; never await an async command's batch here.
+	if err := cmds[0].rawErr(); err != nil && shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 		_ = c.mapCmdsByNode(ctx, failedCmds, cmds)
 		return err
 	}
@@ -2075,29 +2403,47 @@ func (c *ClusterClient) processTxPipelineNode(
 	}
 
 	var outcome *txOutcome
-	_ = node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
-		cn, err := node.Client.getConn(ctx)
-		if err != nil {
+	// executed guards against a node-level hook short-circuiting (returning
+	// without calling next) — same treatment as processPipelineNode.
+	executed := false
+	chainErr := node.Client.withProcessPipelineHook(ctx, wire, func(ctx context.Context, wire []Cmder) error {
+		executed = true
+		// Acquire through the node's dedicated pipeline pool when configured
+		// (same routing as processPipelineNode); withPipelineConn falls back
+		// to the main pool otherwise. The inner fn's return value drives the
+		// connection release exactly like the explicit releaseConn did:
+		// redis errors keep the conn poolable, unread replies poison it.
+		entered := false
+		err := node.Client.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
+			entered = true
+			outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
+			connErr := outcome.err
+			if isRedisError(outcome.err) {
+				connErr = nil
+			}
+			if outcome.unreadReplies {
+				connErr = errTxDirtyConn
+			}
+			return connErr
+		})
+		if !entered && err != nil {
+			// Connection acquisition failed — fn never ran.
 			if shouldRetry(err, true) && !cmdsContainNoRetry(cmds) {
 				outcome = &txOutcome{kind: txRetryConn, err: err}
 			} else {
 				outcome = &txOutcome{kind: txFatal, err: err}
 			}
-			return err
 		}
-
-		outcome = c.processTxPipelineNodeConn(ctx, node, cn, wire, cmds, asking)
-		connErr := outcome.err
-		if isRedisError(outcome.err) {
-			connErr = nil
-		}
-		if outcome.unreadReplies {
-			connErr = errTxDirtyConn
-		}
-		node.Client.releaseConn(ctx, cn, connErr)
-		return connErr
+		return err
 	})
 
+	if !executed && chainErr != nil {
+		// A node-level hook aborted with an error: surface its verdict. A hook
+		// that returned nil short-circuited successfully (it served the batch),
+		// which is legal for plain pipelines too, so it is not turned into a
+		// fatal outcome (review finding by codex on #3942).
+		outcome = &txOutcome{kind: txFatal, err: chainErr}
+	}
 	if outcome == nil {
 		outcome = &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx pipeline produced no outcome")}
 	}
@@ -2107,7 +2453,17 @@ func (c *ClusterClient) processTxPipelineNode(
 func (c *ClusterClient) processTxPipelineNodeConn(
 	ctx context.Context, node *clusterNode, cn *pool.Conn, wire []Cmder, cmds []Cmder, asking bool,
 ) *txOutcome {
+	// HIMPORT bookkeeping: pending discards and PREPAREs for registered
+	// fieldsets the transaction references get written ahead of the wire
+	// batch (before ASKING/MULTI; the session state is visible at EXEC).
+	injected := node.Client.himportInjectedCmds(ctx, cn, cmds)
+
 	if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
 		return writeCmds(wr, wire)
 	}); err != nil {
 		// Write failure: re-route the whole tx on a fresh connection.
@@ -2119,7 +2475,16 @@ func (c *ClusterClient) processTxPipelineNodeConn(
 
 	var outcome *txOutcome
 	readErr := cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		if err := node.Client.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			// Transport error with the tx replies unread; the batch was
+			// written and may have committed — fatal, discard the conn.
+			outcome = c.txReadFatal(err)
+			return nil
+		}
 		outcome = c.readTxPipelineReplies(ctx, node, cn, rd, cmds, asking)
+		if outcome != nil && outcome.kind == txSuccess {
+			node.Client.himportAfterBatch(cn, injected, cmds)
+		}
 		return nil
 	})
 
@@ -2525,8 +2890,22 @@ func (c *ClusterClient) cmdInfoPeek(name string) *CommandInfo {
 }
 
 func (c *ClusterClient) cmdSlot(cmd Cmder, prefferedSlot int) int {
+	// Serve/populate the per-command slot cache only on the natural-slot path
+	// (prefferedSlot == -1). A forced prefferedSlot (retry re-routing) must not be
+	// cached or served from cache. The cache lets the autopipeline shard router
+	// and the pipeline-flush router (mapCmdsByNode) share one slot computation
+	// instead of each recomputing it.
+	if prefferedSlot == -1 {
+		if slot, ok := cmd.cachedSlot(); ok {
+			return slot
+		}
+	}
 	info := c.cmdInfoPeek(cmd.Name())
-	return c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	slot := c.cmdSlotWithPos(cmd, cmdFirstKeyPosWithInfo(cmd, info), prefferedSlot)
+	if prefferedSlot == -1 && slot >= 0 {
+		cmd.setCachedSlot(slot)
+	}
+	return slot
 }
 
 // cmdSlotWithPos computes the cluster slot for cmd given a pre-resolved first key

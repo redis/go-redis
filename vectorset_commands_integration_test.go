@@ -35,12 +35,14 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 	ctx := context.TODO()
 
 	setupRedisClient := func(protocolVersion int) *redis.Client {
-		return redis.NewClient(&redis.Options{
+		opt := &redis.Options{
 			Addr:          "localhost:6379",
 			DB:            0,
 			Protocol:      protocolVersion,
 			UnstableResp3: true,
-		})
+		}
+		applyREConnection(opt)
+		return redis.NewClient(opt)
 	}
 
 	protocols := []int{2, 3}
@@ -48,17 +50,24 @@ var _ = Describe("Redis VectorSet commands", Label("vectorset"), func() {
 		protocol := protocol
 
 		Context(fmt.Sprintf("with protocol version %d", protocol), func() {
-			var client *redis.Client
+			var client redis.UniversalClient
+			var rawClient *redis.Client
+			var closeSubject func() error
 
 			BeforeEach(func() {
-				client = setupRedisClient(protocol)
-				Expect(client.FlushAll(ctx).Err()).NotTo(HaveOccurred())
+				rawClient = setupRedisClient(protocol)
+				client, closeSubject = newUniversalSubject(rawClient)
+				Expect(rawClient.FlushAll(ctx).Err()).NotTo(HaveOccurred())
 			})
 
 			AfterEach(func() {
 				if client != nil {
-					client.FlushDB(ctx)
-					client.Close()
+					// Flush through the SUBJECT: ordered after queued writes
+					// (see json_test.go); awaiting Err() forces it to execute, and
+					// both steps are asserted so a failed teardown cannot silently
+					// leak state into later specs.
+					Expect(client.FlushDB(ctx).Err()).NotTo(HaveOccurred())
+					Expect(closeSubject()).NotTo(HaveOccurred())
 				}
 			})
 

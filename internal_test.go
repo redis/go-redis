@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,28 @@ import (
 )
 
 var ctx = context.TODO()
+
+type capturingLogger struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (l *capturingLogger) Printf(_ context.Context, format string, v ...interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logs = append(l.logs, fmt.Sprintf(format, v...))
+}
+
+func (l *capturingLogger) contains(substr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, msg := range l.logs {
+		if strings.Contains(msg, substr) {
+			return true
+		}
+	}
+	return false
+}
 
 var _ = Describe("newClusterState", func() {
 	var state *clusterState
@@ -686,7 +709,10 @@ func (e timeoutErr) Error() string {
 	return "i/o timeout"
 }
 
-var _ = Describe("withConn", func() {
+// NonRedisEnterprise: exercises connection-pool replacement internals against a
+// local Redis and requires a localhost server; not meaningful against a remote
+// Enterprise cluster.
+var _ = Describe("withConn", Label("NonRedisEnterprise"), func() {
 	var client *Client
 
 	BeforeEach(func() {
@@ -1182,4 +1208,3 @@ func TestPubSubConn_PassesPersistedChannelsToNewConn(t *testing.T) {
 		})
 	}
 }
-

@@ -31,6 +31,8 @@ type TimeseriesCmdable interface {
 	TSInfoWithArgs(ctx context.Context, key string, options *TSInfoOptions) *MapStringInterfaceCmd
 	TSMAdd(ctx context.Context, ktvSlices [][]interface{}) *IntSliceCmd
 	TSQueryIndex(ctx context.Context, filterExpr []string) *StringSliceCmd
+	TSQueryLabels(ctx context.Context, filterExpr []string) *StringSliceCmd
+	TSQueryLabelValues(ctx context.Context, label string, filterExpr []string) *StringSliceCmd
 	TSRevRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
 	TSRevRangeWithArgs(ctx context.Context, key string, fromTimestamp int, toTimestamp int, options *TSRevRangeOptions) *TSTimestampValueSliceCmd
 	TSRange(ctx context.Context, key string, fromTimestamp int, toTimestamp int) *TSTimestampValueSliceCmd
@@ -283,24 +285,30 @@ type TSMGetOptions struct {
 }
 
 type TSNRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []float64 // exactly two elements: [min, max]
-	Count           int
-	Align           interface{}
-	Aggregators     []Aggregator
+	Latest        bool
+	FilterByTS    []int
+	FilterByValue []float64 // exactly two elements: [min, max]
+	Count         int
+	Align         interface{}
+	// Aggregators holds exactly one aggregator spec per key. Each spec lists one or
+	// more aggregators applied to that key and is sent as a single comma-joined token
+	// (e.g. {{Min, Max}, {Sum}} -> AGGREGATION MIN,MAX SUM <bucketDuration>).
+	Aggregators     [][]Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
 }
 
 type TSNRevRangeOptions struct {
-	Latest          bool
-	FilterByTS      []int
-	FilterByValue   []float64 // exactly two elements: [min, max]
-	Count           int
-	Align           interface{}
-	Aggregators     []Aggregator
+	Latest        bool
+	FilterByTS    []int
+	FilterByValue []float64 // exactly two elements: [min, max]
+	Count         int
+	Align         interface{}
+	// Aggregators holds exactly one aggregator spec per key. Each spec lists one or
+	// more aggregators applied to that key and is sent as a single comma-joined token
+	// (e.g. {{Min, Max}, {Sum}} -> AGGREGATION MIN,MAX SUM <bucketDuration>).
+	Aggregators     [][]Aggregator
 	BucketDuration  int
 	BucketTimestamp interface{}
 	Empty           bool
@@ -614,6 +622,7 @@ func newTSTimestampValueCmd(ctx context.Context, args ...interface{}) *TSTimesta
 }
 
 func (cmd *TSTimestampValueCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -622,10 +631,12 @@ func (cmd *TSTimestampValueCmd) SetVal(val TSTimestampValue) {
 }
 
 func (cmd *TSTimestampValueCmd) Result() (TSTimestampValue, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSTimestampValueCmd) Val() TSTimestampValue {
+	cmd.await()
 	return cmd.val
 }
 
@@ -715,6 +726,53 @@ func (c cmdable) TSQueryIndex(ctx context.Context, filterExpr []string) *StringS
 	cmd := NewStringSliceCmd(ctx, args...)
 	_ = c(ctx, cmd)
 	return cmd
+}
+
+// TSQueryLabels - Returns the set of label names present on the time series
+// matching the filter expressions. Passing no filter expressions queries all
+// indexed series. The reply is unordered and already deduplicated by the
+// server; it includes the label names used in the filter itself, and an
+// empty reply is a valid result, not an error.
+// filterExpr uses the same filter language as TSQueryIndex and is passed to
+// the server verbatim. Available since Redis 8.10.
+// For more information - https://redis.io/commands/ts.querylabels/
+func (c cmdable) TSQueryLabels(ctx context.Context, filterExpr []string) *StringSliceCmd {
+	args := []interface{}{"TS.QUERYLABELS", "LABELS"}
+	args = appendTSFilter(args, filterExpr)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// TSQueryLabelValues - Returns the set of values assigned to the given label
+// name across the time series matching the filter expressions. Passing no
+// filter expressions queries all indexed series. The label name is matched
+// byte-exactly; a label present on no matching series yields an empty reply,
+// not an error. The reply is unordered and already deduplicated by the
+// server.
+// filterExpr uses the same filter language as TSQueryIndex and is passed to
+// the server verbatim. Available since Redis 8.10.
+// For more information - https://redis.io/commands/ts.querylabels/
+func (c cmdable) TSQueryLabelValues(ctx context.Context, label string, filterExpr []string) *StringSliceCmd {
+	args := []interface{}{"TS.QUERYLABELS", "VALUES", label}
+	args = appendTSFilter(args, filterExpr)
+	cmd := NewStringSliceCmd(ctx, args...)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// appendTSFilter appends the FILTER token followed by the filter expressions,
+// or nothing when no expressions are given: the server rejects a bare FILTER
+// token, and omitting it is the documented way to query all indexed series.
+func appendTSFilter(args []interface{}, filterExpr []string) []interface{} {
+	if len(filterExpr) == 0 {
+		return args
+	}
+	args = append(args, "FILTER")
+	for _, f := range filterExpr {
+		args = append(args, f)
+	}
+	return args
 }
 
 // TSRevRange - Returns a range of samples from a time-series key in reverse order.
@@ -898,6 +956,7 @@ func newTSTimestampValueSliceCmd(ctx context.Context, args ...interface{}) *TSTi
 }
 
 func (cmd *TSTimestampValueSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -906,10 +965,12 @@ func (cmd *TSTimestampValueSliceCmd) SetVal(val []TSTimestampValue) {
 }
 
 func (cmd *TSTimestampValueSliceCmd) Result() ([]TSTimestampValue, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSTimestampValueSliceCmd) Val() []TSTimestampValue {
+	cmd.await()
 	return cmd.val
 }
 
@@ -1210,7 +1271,9 @@ func (c cmdable) TSMGetWithArgs(ctx context.Context, filters []string, options *
 }
 
 // TSNRangePivotRow represents a single row in the pivot response from TS.NRANGE / TS.NREVRANGE.
-// Timestamp is the row's timestamp, Values holds one float64 per input key in input-key order.
+// Timestamp is the row's timestamp. Without aggregation, Values holds one float64 per input key
+// in input-key order. With aggregation, Values holds one float64 per requested (key, aggregator)
+// pair, flattened in input-key order with each key's aggregators in spec order.
 // Missing samples and missing aggregation buckets are represented as NaN.
 type TSNRangePivotRow struct {
 	Timestamp int64
@@ -1233,6 +1296,7 @@ func newTSNRangePivotRowSliceCmd(ctx context.Context, args ...interface{}) *TSNR
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) String() string {
+	cmd.await()
 	return cmdString(cmd, cmd.val)
 }
 
@@ -1241,10 +1305,12 @@ func (cmd *TSNRangePivotRowSliceCmd) SetVal(val []TSNRangePivotRow) {
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) Result() ([]TSNRangePivotRow, error) {
+	cmd.await()
 	return cmd.val, cmd.err
 }
 
 func (cmd *TSNRangePivotRowSliceCmd) Val() []TSNRangePivotRow {
+	cmd.await()
 	return cmd.val
 }
 
@@ -1302,22 +1368,31 @@ func (cmd *TSNRangePivotRowSliceCmd) Clone() Cmder {
 	}
 }
 
-// buildNRangeAggregationArgs validates and returns one aggregator string per key for TS.NRANGE / TS.NREVRANGE.
-// The number of aggregators must equal the number of keys. Aggregators are emitted as separate wire tokens.
-func buildNRangeAggregationArgs(keys []string, aggregators []Aggregator) ([]string, error) {
+// buildNRangeAggregationArgs validates and returns one aggregator spec string per key for
+// TS.NRANGE / TS.NREVRANGE. The number of specs must equal the number of keys. Each spec
+// lists one or more aggregators for its key and is emitted as a single comma-joined wire
+// token; specs for different keys are separate wire tokens.
+func buildNRangeAggregationArgs(keys []string, aggregators [][]Aggregator) ([]string, error) {
 	if len(aggregators) != len(keys) {
-		return nil, fmt.Errorf("redis: TS.NRANGE/TS.NREVRANGE requires exactly %d aggregator(s), got %d", len(keys), len(aggregators))
+		return nil, fmt.Errorf("redis: TS.NRANGE/TS.NREVRANGE requires exactly %d aggregator spec(s), got %d", len(keys), len(aggregators))
 	}
 	parts := make([]string, len(aggregators))
-	for i, agg := range aggregators {
-		if agg == Invalid {
-			return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d: Invalid (%d)", i, agg)
+	for i, spec := range aggregators {
+		if len(spec) == 0 {
+			return nil, fmt.Errorf("redis: empty timeseries aggregator spec at index %d", i)
 		}
-		s := agg.String()
-		if s == "" {
-			return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d: %d", i, agg)
+		names := make([]string, len(spec))
+		for j, agg := range spec {
+			if agg == Invalid {
+				return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d[%d]: Invalid (%d)", i, j, agg)
+			}
+			s := agg.String()
+			if s == "" {
+				return nil, fmt.Errorf("redis: invalid timeseries aggregator at index %d[%d]: %d", i, j, agg)
+			}
+			names[j] = s
 		}
-		parts[i] = s
+		parts[i] = strings.Join(names, ",")
 	}
 	return parts, nil
 }
@@ -1331,7 +1406,7 @@ func appendNRangeOptions(
 	filterByValue []float64,
 	count int,
 	align interface{},
-	aggregators []Aggregator,
+	aggregators [][]Aggregator,
 	bucketDuration int,
 	bucketTimestamp interface{},
 	empty bool,
@@ -1397,7 +1472,8 @@ func (c cmdable) TSNRange(ctx context.Context, keys []string, fromTimestamp inte
 // TSNRangeWithArgs - Queries multiple time-series keys and returns a pivot response in forward (ascending) order with additional options.
 // This function allows for specifying additional options such as:
 // Latest, FilterByTS, FilterByValue, Count, Align, Aggregators, BucketDuration, BucketTimestamp and Empty.
-// Aggregators must contain exactly one entry per key; they are emitted as separate wire tokens.
+// Aggregators must contain exactly one spec per key; each spec lists one or more aggregators
+// for its key and is emitted as a single comma-joined wire token.
 // For more information - https://redis.io/commands/ts.nrange/
 func (c cmdable) TSNRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRangeOptions) *TSNRangePivotRowSliceCmd {
 	args := make([]interface{}, 0, 3+len(keys))
@@ -1442,7 +1518,8 @@ func (c cmdable) TSNRevRange(ctx context.Context, keys []string, fromTimestamp i
 // TSNRevRangeWithArgs - Queries multiple time-series keys and returns a pivot response in reverse (descending) order with additional options.
 // This function allows for specifying additional options such as:
 // Latest, FilterByTS, FilterByValue, Count, Align, Aggregators, BucketDuration, BucketTimestamp and Empty.
-// Aggregators must contain exactly one entry per key; they are emitted as separate wire tokens.
+// Aggregators must contain exactly one spec per key; each spec lists one or more aggregators
+// for its key and is emitted as a single comma-joined wire token.
 // For more information - https://redis.io/commands/ts.nrevrange/
 func (c cmdable) TSNRevRangeWithArgs(ctx context.Context, keys []string, fromTimestamp interface{}, toTimestamp interface{}, options *TSNRevRangeOptions) *TSNRangePivotRowSliceCmd {
 	args := make([]interface{}, 0, 3+len(keys))
