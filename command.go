@@ -330,8 +330,12 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
-		// CommandInfo (if available) gives the correct answer
-		// otherwise the hardcoded fallback applies.
+	// CommandInfo (if available) gives the correct answer
+	// otherwise the hardcoded fallback applies.
+
+	case "msetex":
+		return 2
+
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
