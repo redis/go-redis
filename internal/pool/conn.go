@@ -1125,10 +1125,17 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
+	// Transition to CLOSED. When the connection is already CLOSED, fall through
+	// to the cleanup below rather than returning early: a rejected initConn
+	// marks the connection CLOSED to report failure *before* any teardown runs
+	// (see redis.go initConn failure paths), so the pool's subsequent Close must
+	// still release the transport and run the close callbacks. Returning early
+	// on StateClosed leaked the socket and skipped the streaming-credentials
+	// unsubscribe / CSC close callbacks (issue #3982).
 	for {
 		state := cn.stateMachine.GetState()
 		if state == StateClosed {
-			return nil
+			break
 		}
 		if cn.stateMachine.TryTransitionFast(state, StateClosed) {
 			// TryTransitionFast deliberately skips waiter notification; Close
@@ -1138,6 +1145,10 @@ func (cn *Conn) Close() error {
 		}
 	}
 
+	// Callbacks are cleared with an atomic swap so each runs at most once even
+	// across concurrent or repeated Close calls, and independently of the state
+	// machine — the CLOSED state may have been set by a failed initialization
+	// rather than here.
 	if fn := cn.onClose.Swap(nil); fn != nil {
 		// ignore error
 		_ = (*fn)()
@@ -1147,7 +1158,8 @@ func (cn *Conn) Close() error {
 		_ = (*fn)()
 	}
 
-	// Lock-free netConn access for better performance
+	// Lock-free netConn access for better performance. net.Conn.Close is safe
+	// to call more than once, so no extra guard is needed here.
 	if netConn := cn.getNetConn(); netConn != nil {
 		return netConn.Close()
 	}

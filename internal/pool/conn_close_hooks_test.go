@@ -244,3 +244,101 @@ func TestConn_CscReinitHookRunsBeforeSocketReplacement(t *testing.T) {
 		t.Fatalf("SetNetConnAndInitConn: %v", err)
 	}
 }
+
+// closeCountingConn wraps a net.Conn and records how many times Close is
+// called, so tests can assert the underlying socket is torn down exactly once.
+type closeCountingConn struct {
+	net.Conn
+	closes atomic.Int32
+}
+
+func (c *closeCountingConn) Close() error {
+	c.closes.Add(1)
+	return c.Conn.Close()
+}
+
+// TestConn_CloseAfterStateClosedStillCleansUp is a regression test for #3982.
+// baseClient.initConn transitions a connection to CLOSED to report an
+// initialization/authentication failure *before* any teardown runs; the pool
+// then removes the rejected connection and calls Close. Close must not treat
+// the pre-existing CLOSED state as proof that cleanup already happened: it has
+// to close the transport and run the installed close callbacks exactly once,
+// otherwise repeated init failures leak sockets/file descriptors.
+func TestConn_CloseAfterStateClosedStillCleansUp(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	rec := &closeCountingConn{Conn: client}
+	cn := NewConn(rec)
+
+	var onCloseCalls, onCscCloseCalls atomic.Int32
+	cn.SetOnClose(func() error {
+		onCloseCalls.Add(1)
+		return nil
+	})
+	cn.SetOnCscClose(func() error {
+		onCscCloseCalls.Add(1)
+		return nil
+	})
+
+	// Mirror the initConn failure path: mark the connection CLOSED without any
+	// resource teardown.
+	cn.GetStateMachine().Transition(StateClosed)
+
+	// The pool removal path then closes the rejected connection.
+	if err := cn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := rec.closes.Load(); got != 1 {
+		t.Fatalf("net.Conn.Close calls: got %d want 1 (socket leaked after StateClosed)", got)
+	}
+	if got := onCloseCalls.Load(); got != 1 {
+		t.Fatalf("onClose calls: got %d want 1", got)
+	}
+	if got := onCscCloseCalls.Load(); got != 1 {
+		t.Fatalf("onCscClose calls: got %d want 1", got)
+	}
+	if cn.onClose.Load() != nil || cn.onCscClose.Load() != nil {
+		t.Fatal("Close must clear both close callbacks")
+	}
+}
+
+// TestConn_DoubleCloseRunsCallbacksExactlyOnce asserts idempotence of the
+// callback teardown: closing a connection more than once must run each close
+// callback exactly once (they are cleared with an atomic swap) and must always
+// reach the transport close. net.Conn.Close is itself safe to call repeatedly,
+// so the socket is closed at least once — Close does not add its own guard.
+func TestConn_DoubleCloseRunsCallbacksExactlyOnce(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+
+	rec := &closeCountingConn{Conn: client}
+	cn := NewConn(rec)
+
+	var onCloseCalls, onCscCloseCalls atomic.Int32
+	cn.SetOnClose(func() error {
+		onCloseCalls.Add(1)
+		return nil
+	})
+	cn.SetOnCscClose(func() error {
+		onCscCloseCalls.Add(1)
+		return nil
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := cn.Close(); err != nil && i == 0 {
+			t.Fatalf("first Close: %v", err)
+		}
+	}
+
+	if got := rec.closes.Load(); got < 1 {
+		t.Fatalf("net.Conn.Close calls: got %d want >= 1 (transport must be closed)", got)
+	}
+	if got := onCloseCalls.Load(); got != 1 {
+		t.Fatalf("onClose calls: got %d want 1", got)
+	}
+	if got := onCscCloseCalls.Load(); got != 1 {
+		t.Fatalf("onCscClose calls: got %d want 1", got)
+	}
+}
