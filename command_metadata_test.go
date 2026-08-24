@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -166,6 +167,43 @@ func TestCommandMetadataFetchErrorRetries(t *testing.T) {
 	s.onConnInit()
 	if !waitForCondition(t, 5*time.Second, func() bool { return s.view().live }) {
 		t.Fatalf("refresh never recovered after transient errors (%d calls)", calls.Load())
+	}
+}
+
+func TestCommandMetadataPeriodicRefreshRetriesWhileLive(t *testing.T) {
+	oldMin := cmdMetaBackoffMin
+	cmdMetaBackoffMin = time.Millisecond
+	defer func() { cmdMetaBackoffMin = oldMin }()
+
+	var calls atomic.Int32
+	periodicFailed := make(chan struct{})
+	s := newCommandMetadataStore(&CommandMetadataConfig{
+		Mode:            CommandMetadataPreferLive,
+		RefreshInterval: 500 * time.Millisecond,
+	}, func(context.Context) (map[string]*CommandInfo, error) {
+		switch calls.Add(1) {
+		case 1:
+			return testTrustedLiveRecords(nil), nil
+		case 2:
+			close(periodicFailed)
+			return nil, errors.New("transient periodic refresh failure")
+		default:
+			return testTrustedLiveRecords(nil), nil
+		}
+	})
+	defer s.stopAndJoin()
+
+	s.onConnInit()
+	if !waitForCondition(t, 5*time.Second, func() bool { return s.view().live }) {
+		t.Fatal("initial live view was never published")
+	}
+	select {
+	case <-periodicFailed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic refresh never ran")
+	}
+	if !waitForCondition(t, 100*time.Millisecond, func() bool { return calls.Load() >= 3 }) {
+		t.Fatalf("failed periodic refresh was not retried promptly (%d calls)", calls.Load())
 	}
 }
 
@@ -572,6 +610,23 @@ func TestCommandMetadataStraddledFetchNotPublished(t *testing.T) {
 	}
 }
 
+func TestCommandMetadataPublishRechecksServerFingerprint(t *testing.T) {
+	s := newCommandMetadataStore(&CommandMetadataConfig{Mode: CommandMetadataPreferLive}, nil)
+	defer s.stopAndJoin()
+	s.mu.Lock()
+	s.serverFp = "srvNew"
+	s.mu.Unlock()
+
+	view := buildCommandMetadataView(testTrustedLiveRecords(nil), nil)
+	view.live = true
+	if s.publishLiveView("srvOld", view) {
+		t.Fatal("publish succeeded for a stale server fingerprint")
+	}
+	if s.view().live {
+		t.Fatal("metadata fetched for an old fingerprint was published")
+	}
+}
+
 func TestCSCLiveCannotClearSnapshotNegatives(t *testing.T) {
 	// An older module's live record may predate its dont_cache tip (e.g.
 	// TS.INFO); the snapshot's negative signal must stick.
@@ -640,6 +695,13 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	}
 	if cscIsClientSideCacheable(cscDeriveMeta(bad)) {
 		t.Error("record with wrapped positions must not be cacheable")
+	}
+
+	badArity := "*1\r\n" +
+		"*6\r\n$3\r\nbad\r\n:128\r\n*1\r\n$8\r\nreadonly\r\n:1\r\n:1\r\n:1\r\n"
+	cmd = NewCommandsInfoCmd(context.Background(), "command")
+	if err := cmd.readReply(proto.NewReader(strings.NewReader(badArity))); err == nil {
+		t.Fatal("out-of-range command arity must fail instead of wrapping")
 	}
 }
 
@@ -747,6 +809,29 @@ func TestCommandMetadataPreferLiveE2E(t *testing.T) {
 	ctx := context.Background()
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no server at %s: %v", addr, err)
+	}
+	info, err := client.Info(ctx, "server").Result()
+	if err != nil {
+		t.Fatalf("INFO server: %v", err)
+	}
+	version := ""
+	for _, line := range strings.Split(info, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "redis_version:"); ok {
+			version = v
+			break
+		}
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 2 {
+		t.Fatalf("could not parse Redis version from INFO server: %q", version)
+	}
+	major, majorErr := strconv.Atoi(parts[0])
+	minor, minorErr := strconv.Atoi(parts[1])
+	if majorErr != nil || minorErr != nil {
+		t.Fatalf("could not parse Redis version from INFO server: %q", version)
+	}
+	if major < 8 || major == 8 && minor < 10 {
+		t.Skipf("live command metadata requires Redis 8.10 or newer (server is %s)", version)
 	}
 
 	if client.baseClient.cmdMeta == nil {

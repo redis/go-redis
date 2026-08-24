@@ -210,8 +210,8 @@ func buildCommandMetadataView(live, overrides map[string]*CommandInfo) *commandM
 	}
 }
 
-// cloneCommandInfo deep-copies an application-supplied record so a published
-// view stays immutable if the caller mutates it later.
+// cloneCommandInfo deep-copies a record so the copy can be mutated or
+// published independently of the source.
 func cloneCommandInfo(info *CommandInfo) *CommandInfo {
 	cp := *info
 	cp.Flags = append([]string(nil), info.Flags...)
@@ -364,16 +364,16 @@ func (s *commandMetadataStore) onServerHello(fp string) {
 	changed := fp != s.serverFp
 	if changed {
 		s.serverFp = fp
+		s.untrusted.Store(false)
+		if v := s.current.Load(); v != nil && v.live {
+			// Decide on static metadata until the new server's arrives.
+			s.current.Store(s.static)
+		}
 	}
 	s.mu.Unlock()
 	if !changed {
 		s.onConnInit()
 		return
-	}
-	s.untrusted.Store(false)
-	if v := s.current.Load(); v != nil && v.live {
-		// Decide on static metadata until the new server's arrives.
-		s.current.Store(s.static)
 	}
 	s.requestRefresh()
 }
@@ -382,6 +382,21 @@ func (s *commandMetadataStore) serverFingerprint() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.serverFp
+}
+
+// publishLiveView publishes only if the fetched server is still current.
+// Holding mu across the recheck and store closes the failover race with
+// onServerHello: either the old view lands first and is retired, or it never
+// lands at all.
+func (s *commandMetadataStore) publishLiveView(fp string, view *commandMetadataView) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serverFp != fp {
+		return false
+	}
+	s.untrusted.Store(false)
+	s.current.Store(view)
+	return true
 }
 
 // requestRefresh schedules one background refresh; pending requests coalesce.
@@ -412,7 +427,7 @@ func (s *commandMetadataStore) startWorker() {
 }
 
 // cmdMetaBackoffMin/Max bound the retry backoff after a failed refresh, and
-// cmdMetaRetryCap bounds self-scheduled retries (later external triggers —
+// cmdMetaRetryCap bounds automatic retries (later external triggers —
 // conn init, periodic refresh — still attempt once each). Vars so tests can
 // shrink them.
 var (
@@ -435,33 +450,31 @@ func (s *commandMetadataStore) run() {
 	backoff := cmdMetaBackoffMin
 	consecFail := 0
 	attempt := func() {
-		err := s.refreshOnce()
-		if err == nil {
-			backoff = cmdMetaBackoffMin
-			consecFail = 0
-			return
-		}
-		consecFail++
-		// Damp the log for persistent failures (e.g. COMMAND denied by ACL).
-		if consecFail <= cmdMetaRetryCap || consecFail%10 == 0 {
-			internal.Logger.Printf(context.Background(),
-				"redis: command metadata refresh failed (attempt %d): %v", consecFail, err)
-		}
-		if consecFail >= cmdMetaRetryCap {
-			// Stop self-retrying; the next external trigger tries again.
-			return
-		}
-		select {
-		case <-s.stop:
-			return
-		case <-time.After(backoff):
-		}
-		if backoff *= 2; backoff > cmdMetaBackoffMax {
-			backoff = cmdMetaBackoffMax
-		}
-		select {
-		case s.refresh <- struct{}{}:
-		default:
+		for {
+			err := s.refreshOnce()
+			if err == nil {
+				backoff = cmdMetaBackoffMin
+				consecFail = 0
+				return
+			}
+			consecFail++
+			// Damp the log for persistent failures (e.g. COMMAND denied by ACL).
+			if consecFail <= cmdMetaRetryCap || consecFail%10 == 0 {
+				internal.Logger.Printf(context.Background(),
+					"redis: command metadata refresh failed (attempt %d): %v", consecFail, err)
+			}
+			if consecFail >= cmdMetaRetryCap {
+				// Stop self-retrying; the next external trigger tries again.
+				return
+			}
+			select {
+			case <-s.stop:
+				return
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > cmdMetaBackoffMax {
+				backoff = cmdMetaBackoffMax
+			}
 		}
 	}
 	for {
@@ -533,21 +546,27 @@ func (s *commandMetadataStore) refreshOnce() (err error) {
 		// publishing it would make commands look safer than they are. Not an
 		// error: the server will not change until restarted or upgraded, so
 		// only a periodic refresh rechecks.
-		if s.untrusted.CompareAndSwap(false, true) {
-			internal.Logger.Printf(context.Background(),
-				"redis: ignoring live command metadata: the server does not expose the Redis >= 8.10 eligibility signals")
+		s.mu.Lock()
+		if s.serverFp != fpStart {
+			s.mu.Unlock()
+			return nil
 		}
+		firstUntrusted := s.untrusted.CompareAndSwap(false, true)
 		if v := s.current.Load(); v != nil && v.live {
 			// The endpoint downgraded (failover, LB swap): retire the previous
 			// server's live view rather than keep deciding on its metadata.
 			s.current.Store(s.static)
 		}
+		s.mu.Unlock()
+		if firstUntrusted {
+			internal.Logger.Printf(context.Background(),
+				"redis: ignoring live command metadata: the server does not expose the Redis >= 8.10 eligibility signals")
+		}
 		return nil
 	}
-	s.untrusted.Store(false)
 	view := buildCommandMetadataView(records, s.overrides)
 	view.live = true
-	s.current.Store(view)
+	s.publishLiveView(fpStart, view)
 	return nil
 }
 

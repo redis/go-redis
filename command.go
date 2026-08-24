@@ -5420,6 +5420,13 @@ func fitsInt8(v int64) bool {
 	return v >= math.MinInt8 && v <= math.MaxInt8
 }
 
+func fitsInt(v int64) bool {
+	if strconv.IntSize == 64 {
+		return true
+	}
+	return v >= math.MinInt32 && v <= math.MaxInt32
+}
+
 func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
 	nn, err := rd.ReadArrayLen()
 	if err != nil {
@@ -5441,6 +5448,9 @@ func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
 	arity, err := rd.ReadInt()
 	if err != nil {
 		return err
+	}
+	if !fitsInt8(arity) {
+		return fmt.Errorf("redis: COMMAND arity %d overflows int8", arity)
 	}
 	cmdInfo.Arity = int8(arity)
 
@@ -5651,10 +5661,10 @@ func readKeySpecSection(rd *proto.Reader, ks *KeySpec, beginSearch bool) error {
 					if err != nil {
 						return err
 					}
-					iv := int(v)
-					if int64(iv) != v {
+					if !fitsInt(v) {
 						return fmt.Errorf("redis: COMMAND key spec %q value %d overflows int", name, v)
 					}
+					iv := int(v)
 					switch name {
 					case "index":
 						ks.Index = iv
@@ -5692,39 +5702,7 @@ func (cmd *CommandsInfoCmd) Clone() Cmder {
 		val = make(map[string]*CommandInfo, len(cmd.val))
 		for k, v := range cmd.val {
 			if v != nil {
-				newInfo := &CommandInfo{
-					Name:          v.Name,
-					Arity:         v.Arity,
-					FirstKeyPos:   v.FirstKeyPos,
-					LastKeyPos:    v.LastKeyPos,
-					StepCount:     v.StepCount,
-					ReadOnly:      v.ReadOnly,
-					CommandPolicy: v.CommandPolicy, // CommandPolicy can be shared as it's immutable
-				}
-				if v.Flags != nil {
-					newInfo.Flags = make([]string, len(v.Flags))
-					copy(newInfo.Flags, v.Flags)
-				}
-				if v.ACLFlags != nil {
-					newInfo.ACLFlags = make([]string, len(v.ACLFlags))
-					copy(newInfo.ACLFlags, v.ACLFlags)
-				}
-				if v.Tips != nil {
-					newInfo.Tips = make([]string, len(v.Tips))
-					copy(newInfo.Tips, v.Tips)
-				}
-				if v.KeySpecs != nil {
-					newInfo.KeySpecs = make([]KeySpec, len(v.KeySpecs))
-					for i, ks := range v.KeySpecs {
-						if ks.Flags != nil {
-							flags := make([]string, len(ks.Flags))
-							copy(flags, ks.Flags)
-							ks.Flags = flags
-						}
-						newInfo.KeySpecs[i] = ks
-					}
-				}
-				val[k] = newInfo
+				val[k] = cloneCommandInfo(v)
 			}
 		}
 	}
