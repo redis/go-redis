@@ -5414,13 +5414,24 @@ const (
 	numArgRedis7 = 10 // Also matches redis 8
 )
 
-// readCommandInfoEntry parses one COMMAND entry into m, recursively
-// flattening subcommands (named "parent|child" on the wire).
+// Redis command hierarchies are shallow; this generous limit makes malformed
+// server input fail closed before recursive parsing can exhaust the Go stack.
+const maxCommandInfoDepth = 16
+
 func fitsInt8(v int64) bool {
 	return v >= math.MinInt8 && v <= math.MaxInt8
 }
 
+// readCommandInfoEntry parses one COMMAND entry into m, recursively
+// flattening subcommands (named "parent|child" on the wire).
 func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
+	return readCommandInfoEntryAtDepth(rd, m, 0)
+}
+
+func readCommandInfoEntryAtDepth(rd *proto.Reader, m map[string]*CommandInfo, depth int) error {
+	if depth > maxCommandInfoDepth {
+		return fmt.Errorf("redis: COMMAND subcommands exceed maximum depth %d", maxCommandInfoDepth)
+	}
 	nn, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -5557,7 +5568,7 @@ func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
 			return err
 		}
 		for s := 0; s < subLen; s++ {
-			if err := readCommandInfoEntry(rd, m); err != nil {
+			if err := readCommandInfoEntryAtDepth(rd, m, depth+1); err != nil {
 				return err
 			}
 		}

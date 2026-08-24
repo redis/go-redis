@@ -494,6 +494,61 @@ func TestCommandMetadataFetchRejectsDifferentServer(t *testing.T) {
 	}
 }
 
+func TestCommandMetadataFetchPreservesCSCEntries(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go serveTestRESPConn(conn, func(command string) string {
+				switch command {
+				case "hello":
+					return "%1\r\n+version\r\n+8.10.0\r\n"
+				case "command":
+					return "*0\r\n"
+				case "get":
+					return "$1\r\nv\r\n"
+				default:
+					return "+OK\r\n"
+				}
+			})
+		}
+	}()
+
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	client := NewClient(&Options{
+		Addr:            ln.Addr().String(),
+		Protocol:        3,
+		PoolSize:        1,
+		MaxRetries:      -1,
+		DisableIdentity: true,
+		ClientSideCache: cache,
+	})
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = ln.Close()
+	})
+
+	ctx := context.Background()
+	if got, getErr := client.Get(ctx, "k").Result(); getErr != nil || got != "v" {
+		t.Fatalf("GET: got %q, %v; want %q, nil", got, getErr, "v")
+	}
+	if cache.Len() != 1 {
+		t.Fatalf("GET did not populate CSC: Len=%d", cache.Len())
+	}
+	if _, fetchErr := client.baseClient.fetchCommandMetadata(ctx); fetchErr != nil {
+		t.Fatalf("fetchCommandMetadata: %v", fetchErr)
+	}
+	if cache.Len() != 1 {
+		t.Fatalf("metadata fetch evicted an unchanged CSC entry: Len=%d", cache.Len())
+	}
+}
+
 func TestCommandMetadataServerChangeRefreshesLiveView(t *testing.T) {
 	keyed := func(name string) *CommandInfo {
 		return &CommandInfo{
@@ -710,6 +765,21 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 		proto.NewReader(strings.NewReader(overflowKeySpec)), &KeySpec{}, true,
 	); err == nil {
 		t.Fatal("out-of-range key-spec position must fail instead of narrowing")
+	}
+}
+
+func TestCommandsInfoRejectsExcessiveSubcommandDepth(t *testing.T) {
+	entry := "*10\r\n$3\r\ncmd\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n" +
+		"*0\r\n*0\r\n*0\r\n*0\r\n"
+	for range maxCommandInfoDepth + 1 {
+		entry = "*10\r\n$3\r\ncmd\r\n:-1\r\n*0\r\n:0\r\n:0\r\n:0\r\n" +
+			"*0\r\n*0\r\n*0\r\n*1\r\n" + entry
+	}
+
+	cmd := NewCommandsInfoCmd(context.Background(), "command")
+	err := cmd.readReply(proto.NewReader(strings.NewReader("*1\r\n" + entry)))
+	if err == nil || !strings.Contains(err.Error(), "maximum depth") {
+		t.Fatalf("deeply nested subcommands returned %v, want maximum-depth error", err)
 	}
 }
 

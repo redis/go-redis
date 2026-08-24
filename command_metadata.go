@@ -676,17 +676,17 @@ func (c *baseClient) fetchCommandMetadata(ctx context.Context) (map[string]*Comm
 	fetchClient.hooksMixin = c.hooksMixin.clone()
 	fetchClient.opt.ContextTimeoutEnabled = true
 
-	// Pin HELLO and COMMAND to one physical connection. During a maintenance
-	// handoff the parent pool can temporarily contain connections to both the
-	// old and new endpoints; comparing a global HELLO fingerprint around an
-	// arbitrary pooled COMMAND cannot prove which server supplied the reply.
+	// Send HELLO and COMMAND in one pipeline. Each pipeline attempt holds one
+	// physical connection for its entire write/read cycle, which proves which
+	// server supplied the COMMAND reply even while a maintenance handoff leaves
+	// connections to both endpoints in the pool. Do not wrap the pool in a
+	// StickyConnPool: claiming a tracked connection there revokes its parent CSC
+	// coverage and unnecessarily evicts that connection's cache entries on every
+	// refresh.
 	expectedFp := ""
 	if c.cmdMeta != nil {
 		expectedFp = c.cmdMeta.serverFingerprint()
 	}
-	sticky := c.newStickyConnPool()
-	defer func() { _ = sticky.Close() }()
-	fetchClient.connPool = sticky
 	fetchClient.pipelinePool = nil
 	// Initialization of the borrowed connection must not change the target
 	// identity while this fetch is validating it; the parent connection init
