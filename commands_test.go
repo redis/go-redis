@@ -10046,6 +10046,14 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Warm the autopipeline face's dedicated pipeline pool before lowering
+			// the slowlog threshold. That pool dials lazily on the first flush, so
+			// its HELLO + CLIENT SETINFO handshake would otherwise be recorded as
+			// slow queries once slowlog-log-slower-than is 0 and inflate the count.
+			// Read the result so the dial has completed before we reset. Harmless
+			// on the default (non-autopipeline) subject.
+			Expect(client.Set(ctx, "test", "true", 0).Err()).NotTo(HaveOccurred())
+
 			// Reset slowlog
 			err := rawClient.SlowLogReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())
