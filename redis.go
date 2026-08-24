@@ -1344,11 +1344,23 @@ func (c *baseClient) cscTrackingRequested() bool {
 	return c.opt.DB == 0
 }
 
-// autopipelineCSCActive reports whether client-side caching can serve this
-// client; the autopipeliner captures it at construction to gate cacheable-solo
-// routing through the cache-honoring Process path.
+// autopipelineCSCActive reports whether client-side caching can currently serve
+// this client. AutoPipeline's per-command eligibility gate checks it at dispatch
+// time because CSC can disable itself after client construction.
 func (c *baseClient) autopipelineCSCActive() bool {
 	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
+}
+
+// autopipelineCSCEligible reports whether cmd must take AutoPipeliner's
+// cache-honoring Process path under the client's current metadata view. The
+// view is resolved per dispatch so live metadata upgrades and application
+// overrides take effect without rebuilding the AutoPipeliner.
+func (c *baseClient) autopipelineCSCEligible(cmd Cmder) bool {
+	if !c.autopipelineCSCActive() {
+		return false
+	}
+	_, ok := cscEligibleMeta(c.metadataView(), cmd)
+	return ok
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {

@@ -1489,8 +1489,8 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 // routed through the cache-honoring Process path (main pool) ONLY when the
 // client has client-side caching active. A non-CSC client (the default) must
 // keep cacheable solos on the pipeline pool the straggler gate probed, so
-// the live gate (cscActiveFn) must report false there and true for a CSC
-// client — and false again after CSC disables itself mid-life.
+// the live eligibility gate must report false there and true for a cacheable
+// command on a CSC client — and false again after CSC disables itself mid-life.
 func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	ctx := context.Background()
 
@@ -1502,8 +1502,8 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline: %v", err)
 	}
 	defer ap.Close()
-	if ap.cscActiveFn != nil && ap.cscActiveFn() {
-		t.Fatal("non-CSC client: gate reports active, want inactive — a cacheable solo would wrongly use the main pool instead of the pipeline pool")
+	if ap.cscEligibleFn == nil || ap.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
+		t.Fatal("non-CSC client: GET is eligible for the cache-honoring solo path")
 	}
 
 	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
@@ -1527,13 +1527,43 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 		t.Fatalf("AsyncAutoPipeline (csc): %v", err)
 	}
 	defer apc.Close()
-	if apc.cscActiveFn == nil || !apc.cscActiveFn() {
-		t.Fatal("CSC client: gate reports inactive, want active — cacheable solos must honor the cache")
+	if apc.cscEligibleFn == nil || !apc.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
+		t.Fatal("CSC client: GET is not eligible for the cache-honoring solo path")
+	}
+	if apc.cscEligibleFn(NewDurationCmd(ctx, time.Second, "ttl", "k")) {
+		t.Fatal("CSC client: TTL must stay on the pipeline path")
 	}
 	// Mid-life disable (RESP3 fallback, processor damping): the LIVE gate must
 	// flip so cacheable solos return to the pipeline pool.
 	cscC.disableCSCServing(ctx, "test: mid-life disable")
-	if apc.cscActiveFn() {
-		t.Fatal("gate still reports active after CSC disabled itself mid-life")
+	if apc.cscEligibleFn(NewStringCmd(ctx, "get", "k")) {
+		t.Fatal("eligibility gate still reports GET after CSC disabled itself mid-life")
+	}
+}
+
+func TestAutopipelineCSCEligibilityUsesMetadataOverrides(t *testing.T) {
+	active := &atomic.Bool{}
+	active.Store(true)
+	store := newCommandMetadataStore(&CommandMetadataConfig{
+		Overrides: map[string]*CommandInfo{
+			"get": nil,
+			"module.read": {
+				Name: "module.read", Flags: []string{"readonly"},
+				FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
+			},
+		},
+	}, nil)
+	defer store.stopAndJoin()
+
+	c := &baseClient{
+		csc:       NewLocalCache(CacheConfig{MaxEntries: 8}),
+		cscActive: active,
+		cmdMeta:   store,
+	}
+	if c.autopipelineCSCEligible(NewStringCmd(context.Background(), "get", "k")) {
+		t.Fatal("nil GET override must disable the cache-honoring solo path")
+	}
+	if !c.autopipelineCSCEligible(NewStringCmd(context.Background(), "module.read", "k")) {
+		t.Fatal("cacheable application override must enable the cache-honoring solo path")
 	}
 }
