@@ -83,11 +83,27 @@ var _ = Describe("Commands", func() {
 			Expect(cmds[0].Err().Error()).To(authErr)
 
 			stats := rawClient.PoolStats()
-			Expect(stats.Hits).To(Equal(uint32(2)))
-			Expect(stats.Misses).To(Equal(uint32(1)))
-			Expect(stats.Timeouts).To(Equal(uint32(0)))
-			Expect(stats.TotalConns).To(Equal(uint32(1)))
-			Expect(stats.IdleConns).To(Equal(uint32(1)))
+			if stats.PipelineStats != nil {
+				// The autopipeline subject faces create the dedicated pipeline
+				// pool lazily, so the two Pipelined calls above ran there: the
+				// first dialed (miss), the second reused (hit). The main pool
+				// served only the BeforeEach FlushDB.
+				Expect(stats.PipelineStats.Hits).To(Equal(uint32(1)))
+				Expect(stats.PipelineStats.Misses).To(Equal(uint32(1)))
+				Expect(stats.PipelineStats.Timeouts).To(Equal(uint32(0)))
+				Expect(stats.PipelineStats.TotalConns).To(Equal(uint32(1)))
+				Expect(stats.PipelineStats.IdleConns).To(Equal(uint32(1)))
+				Expect(stats.Hits).To(Equal(uint32(0)))
+				Expect(stats.Misses).To(Equal(uint32(1)))
+			} else {
+				// No dedicated pipeline pool: FlushDB dialed the one connection
+				// (miss) and both Pipelined calls reused it (hits).
+				Expect(stats.Hits).To(Equal(uint32(2)))
+				Expect(stats.Misses).To(Equal(uint32(1)))
+				Expect(stats.Timeouts).To(Equal(uint32(0)))
+				Expect(stats.TotalConns).To(Equal(uint32(1)))
+				Expect(stats.IdleConns).To(Equal(uint32(1)))
+			}
 		})
 
 		It("should hello", func() {
@@ -393,8 +409,16 @@ var _ = Describe("Commands", func() {
 				}()
 				pipe.ClientSetInfo(ctx, libInfo)
 			}).To(Panic())
-			// Test setting the default options for libName, libName suffix and libVer
-			clientInfo := rawClient.ClientInfo(ctx).Val()
+			// Test setting the default options for libName, libName suffix and libVer.
+			// CLIENT SETINFO is per-connection state, so read CLIENT INFO through the
+			// same pipeline path that issued the SETINFOs above: when the client has a
+			// dedicated pipeline pool (the autopipeline subject faces create one
+			// lazily), those ran on a pipeline-pool connection and rawClient.ClientInfo
+			// would inspect a different, main-pool connection.
+			infoCmd := pipe.ClientInfo(ctx)
+			_, err = pipe.Exec(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			clientInfo := infoCmd.Val()
 			Expect(clientInfo.LibName).To(ContainSubstring("go-redis(go-redis,"))
 			// Test setting the libName suffix in options
 			opt := redisOptions()
