@@ -22,7 +22,7 @@ func TestAutoPipelineCapturesPipelinePool(t *testing.T) {
 	if c.getPipelinePool() == nil {
 		t.Fatal("getPipelinePool() returned nil for a client configured with a pipeline pool")
 	}
-	if c.getPipelinePool() != c.pipelinePool {
+	if c.getPipelinePool() != c.pipelinePool.pool {
 		t.Fatal("getPipelinePool() did not return the client's pipeline pool")
 	}
 
@@ -46,8 +46,11 @@ func TestAutoPipelineCapturesPipelinePool(t *testing.T) {
 // TestAutoPipelineNilPipelinePoolConservative verifies the safe fallback: a
 // client with no pipeline pool captures nil and the gate stays conservative
 // (pipelineHasFreeConn() == false → the original long hold is kept).
+//
+// The pipeline pool is now always-on (PipelinePoolSize >= 0), so the nil path
+// is reached via the explicit opt-out, PipelinePoolSize: -1.
 func TestAutoPipelineNilPipelinePoolConservative(t *testing.T) {
-	c := NewClient(&Options{Addr: ":6379"}) // no pipeline buffers => no pipeline pool
+	c := NewClient(&Options{Addr: ":6379", PipelinePoolSize: -1}) // opt out => no pipeline pool
 	defer c.Close()
 
 	if c.getPipelinePool() != nil {
