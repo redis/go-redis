@@ -247,13 +247,21 @@ func TestConn_CscReinitHookRunsBeforeSocketReplacement(t *testing.T) {
 
 // closeCountingConn wraps a net.Conn and records how many times Close is
 // called, so tests can assert the underlying socket is torn down exactly once.
+// The second and later closes return an error, mirroring real transports (a
+// *net.TCPConn returns "use of closed network connection") rather than the
+// silent net.Pipe behavior, so tests can verify Close does not surface a
+// double-close error to its caller.
 type closeCountingConn struct {
 	net.Conn
 	closes atomic.Int32
 }
 
+var errAlreadyClosedTransport = errors.New("use of closed network connection")
+
 func (c *closeCountingConn) Close() error {
-	c.closes.Add(1)
+	if c.closes.Add(1) > 1 {
+		return errAlreadyClosedTransport
+	}
 	return c.Conn.Close()
 }
 
@@ -304,12 +312,13 @@ func TestConn_CloseAfterStateClosedStillCleansUp(t *testing.T) {
 	}
 }
 
-// TestConn_DoubleCloseRunsCallbacksExactlyOnce asserts idempotence of the
-// callback teardown: closing a connection more than once must run each close
-// callback exactly once (they are cleared with an atomic swap) and must always
-// reach the transport close. net.Conn.Close is itself safe to call repeatedly,
-// so the socket is closed at least once — Close does not add its own guard.
-func TestConn_DoubleCloseRunsCallbacksExactlyOnce(t *testing.T) {
+// TestConn_DoubleCloseCleansUpExactlyOnce asserts teardown idempotence:
+// closing a connection more than once must run each close callback and the
+// transport close exactly once. The transport close is CAS-claimed, so only
+// the first Close closes the socket and returns its result; later closes must
+// return nil rather than a spurious double-close error (which ConnPool paths
+// such as closeConnsIf would otherwise propagate).
+func TestConn_DoubleCloseCleansUpExactlyOnce(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
 
@@ -327,13 +336,17 @@ func TestConn_DoubleCloseRunsCallbacksExactlyOnce(t *testing.T) {
 	})
 
 	for i := 0; i < 3; i++ {
-		if err := cn.Close(); err != nil && i == 0 {
+		err := cn.Close()
+		if i == 0 && err != nil {
 			t.Fatalf("first Close: %v", err)
+		}
+		if i > 0 && err != nil {
+			t.Fatalf("repeat Close #%d returned %v, want nil (no double-close error)", i, err)
 		}
 	}
 
-	if got := rec.closes.Load(); got < 1 {
-		t.Fatalf("net.Conn.Close calls: got %d want >= 1 (transport must be closed)", got)
+	if got := rec.closes.Load(); got != 1 {
+		t.Fatalf("net.Conn.Close calls: got %d want 1 (transport must close exactly once)", got)
 	}
 	if got := onCloseCalls.Load(); got != 1 {
 		t.Fatalf("onClose calls: got %d want 1", got)

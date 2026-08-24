@@ -161,6 +161,19 @@ type Conn struct {
 	// installed by initConn and read and cleared by Close.
 	onCscClose atomic.Pointer[func() error]
 
+	// transportClosed claims the net.Conn teardown so it happens exactly once.
+	// Close CAS-claims it and only then calls net.Conn.Close, so repeated or
+	// concurrent Close calls (and the initConn-failure path where the pool
+	// closes a connection already marked CLOSED) do not double-close the socket
+	// or surface a spurious "use of closed network connection" error to callers
+	// that collect it (e.g. ConnPool.closeConnsIf).
+	//
+	// Invariant: the claim is never stale. The socket is only replaced by
+	// SetNetConnAndInitConn, which gates on non-CLOSED states, so no socket
+	// replacement can follow a Close (Close transitions to CLOSED). A given
+	// Conn therefore only ever closes the transport it was claimed on.
+	transportClosed atomic.Bool
+
 	// onCscReinit runs after the connection is claimed for reinitialization but
 	// before its socket is replaced. CSC uses it to invalidate entries whose
 	// server-side tracking coverage belongs to the old socket.
@@ -1158,10 +1171,13 @@ func (cn *Conn) Close() error {
 		_ = (*fn)()
 	}
 
-	// Lock-free netConn access for better performance. net.Conn.Close is safe
-	// to call more than once, so no extra guard is needed here.
+	// Lock-free netConn access for better performance. transportClosed claims
+	// the teardown with a CAS so the socket is closed exactly once; repeated or
+	// concurrent Close calls return nil rather than a double-close error.
 	if netConn := cn.getNetConn(); netConn != nil {
-		return netConn.Close()
+		if cn.transportClosed.CompareAndSwap(false, true) {
+			return netConn.Close()
+		}
 	}
 	return nil
 }
