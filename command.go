@@ -5420,13 +5420,6 @@ func fitsInt8(v int64) bool {
 	return v >= math.MinInt8 && v <= math.MaxInt8
 }
 
-func fitsInt(v int64) bool {
-	if strconv.IntSize == 64 {
-		return true
-	}
-	return v >= math.MinInt32 && v <= math.MaxInt32
-}
-
 func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
 	nn, err := rd.ReadArrayLen()
 	if err != nil {
@@ -5661,7 +5654,10 @@ func readKeySpecSection(rd *proto.Reader, ks *KeySpec, beginSearch bool) error {
 					if err != nil {
 						return err
 					}
-					if !fitsInt(v) {
+					// Keep key-spec positions portable across 32- and 64-bit
+					// platforms and make the narrowing bounds explicit. Values
+					// outside this range cannot describe usable command arguments.
+					if v < math.MinInt32 || v > math.MaxInt32 {
 						return fmt.Errorf("redis: COMMAND key spec %q value %d overflows int", name, v)
 					}
 					iv := int(v)

@@ -703,6 +703,14 @@ func TestCommandsInfoMalformedKeyPositionsFailClosed(t *testing.T) {
 	if err := cmd.readReply(proto.NewReader(strings.NewReader(badArity))); err == nil {
 		t.Fatal("out-of-range command arity must fail instead of wrapping")
 	}
+
+	overflowKeySpec := "*2\r\n$4\r\nspec\r\n" +
+		"*2\r\n$5\r\nindex\r\n:2147483648\r\n"
+	if err := readKeySpecSection(
+		proto.NewReader(strings.NewReader(overflowKeySpec)), &KeySpec{}, true,
+	); err == nil {
+		t.Fatal("out-of-range key-spec position must fail instead of narrowing")
+	}
 }
 
 func TestHelloServerFingerprint(t *testing.T) {
