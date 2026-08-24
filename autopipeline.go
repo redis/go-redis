@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/cpu"
 
 	"github.com/redis/go-redis/v9/internal"
+	"github.com/redis/go-redis/v9/internal/pool"
 )
 
 // AutoPipelineOptions configures the autopipelining behavior.
@@ -545,7 +546,22 @@ type AutoPipeliner struct {
 	cmdable // Embed cmdable to get all Redis command methods
 
 	pipeliner cmdableClient
-	config    *AutoPipelineOptions
+	// pipelinePool is the connection pool that backs autopipelined batch
+	// dispatch (distinct from the client's main pool). Captured once at
+	// construction via an in-package assertion; nil when the underlying client
+	// does not expose one (e.g. *ClusterClient). The straggler-hold reads it to
+	// tell whether flushing a tiny batch now would contend for a scarce pooled
+	// connection — see awaitExpectedArrivals / pipelineHasFreeConn.
+	pipelinePool pool.Pooler
+	// cscActiveFn reports whether client-side caching is CURRENTLY active on the
+	// underlying client (nil when the client type exposes none). Consulted per
+	// solo dispatch — not captured as a bool — because CSC can disable itself
+	// mid-life (RESP3 fallback, processor damping), after which cacheable solos
+	// should return to the pipeline pool instead of the main pool. Gates the
+	// cacheable-solo routing: only an active-CSC client routes through Process
+	// (which honors the cache).
+	cscActiveFn func() bool
+	config      *AutoPipelineOptions
 	// blocking selects how the typed command surface (Set, Get, ...) behaves:
 	// when true the command call itself blocks until the command has executed
 	// (drop-in, synchronous shape); when false the call returns immediately and
@@ -792,6 +808,17 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		blocking:  blocking,
 		ctx:       ctx,
 		cancel:    cancel,
+	}
+	// Capture the pipeline pool (in-package, promoted to *Client). nil for a
+	// client that has none (e.g. *ClusterClient) — the straggler-hold then
+	// keeps its conservative long hold rather than guess at pool pressure.
+	if pp, ok := pipeliner.(interface{ getPipelinePool() pool.Pooler }); ok {
+		ap.pipelinePool = pp.getPipelinePool()
+	}
+	// CSC probe (in-package assertion; *ClusterClient does not expose it) — see
+	// the cscActiveFn field doc.
+	if cc, ok := pipeliner.(interface{ autopipelineCSCActive() bool }); ok {
+		ap.cscActiveFn = cc.autopipelineCSCActive
 	}
 
 	// Route the typed command surface. Blocking: the command call blocks until
@@ -1820,6 +1847,23 @@ const (
 // near-empty flush; once nothing is in flight, any size flushes immediately.
 const coalesceMinFlush = 8
 
+// stragglerHoldGaps bounds the straggler-hold WHEN the pipeline pool has a free
+// connection (see awaitExpectedArrivals): at most this many silence gaps (each
+// clamp(execEWMA/8, 200µs, 2ms), so the bound tracks the round trip) pass before
+// queued stragglers flush. The old behavior re-armed until
+// autoPipelinePermitBackstop — effectively until the in-flight batch's reply
+// landed, ~1 RTT — so a straggler that enqueued behind an in-flight batch waited
+// a full round trip BEFORE its own, i.e. every such op paid ~2x RTT (measured
+// with a phase trace on a deterministic 50ms link: uncached p95 pinned at 2x RTT
+// / 107ms at low-to-mid concurrency, straggler-hold avg == 1 RTT; the bound
+// collapsed that to ~1 RTT / 62ms). The bound is applied ONLY when a pooled
+// connection is idle or dial-able — when the pool is saturated the long hold is
+// kept, because flushing tiny batches into a full pool thrashes it and cuts
+// throughput (measured ~7x at a squeezed pool). The 30s
+// autoPipelinePermitBackstop remains the absolute safety ceiling on the flush
+// path itself (a wedged connection).
+const stragglerHoldGaps = 3
+
 // observeBatchExec folds one batch execution duration into execEWMA.
 func (ap *AutoPipeliner) observeBatchExec(d time.Duration) {
 	sample := int64(d)
@@ -1845,6 +1889,29 @@ func (ap *AutoPipeliner) silenceGap() time.Duration {
 		return silenceGapCeil
 	}
 	return g
+}
+
+// pipelineHasFreeConn reports whether the pipeline pool can serve another batch
+// without blocking: an idle connection is ready, or the pool has not yet dialed
+// to capacity (the pipeline pool runs MinIdleConns=0, so it dials on demand up
+// to Size). When the pool is unknown (nil — e.g. a cluster client) it returns
+// false, so the straggler-hold keeps its conservative long hold. Called only on
+// a gap fire, not per command.
+//
+// Prefer the pool's own HasFreeCapacity probe (all *ConnPool implement it): the
+// plain IdleLen()/Len()<Size() heuristic below ignores MaxActiveConns, so a pool
+// with MaxActiveConns < PoolSize and no idle conn would report free even though
+// the flush's Get would hit ErrPoolExhausted (codex #3962). The heuristic stays
+// as a fallback for any Pooler that does not implement the probe.
+func (ap *AutoPipeliner) pipelineHasFreeConn() bool {
+	p := ap.pipelinePool
+	if p == nil {
+		return false
+	}
+	if hc, ok := p.(interface{ HasFreeCapacity() bool }); ok {
+		return hc.HasFreeCapacity()
+	}
+	return p.IdleLen() > 0 || p.Len() < p.Size()
 }
 
 // awaitExpectedArrivals holds the flusher while related work is in motion, so
@@ -1905,15 +1972,33 @@ func (s *apShard) awaitExpectedArrivals(batchSize int) {
 				// flushing a near-empty pipeline burns a connection for a full
 				// round trip (measured at high WAN concurrency: straggler
 				// flushes of 1-3 commands starved the connection pool and
-				// doubled p50). Hold them — the next completed batch's wave
-				// sweeps them along, and the wave path below flushes promptly.
-				// The hold is bounded like the permit wait: with read timeouts
-				// disabled a wedged batch could pin inFlight forever, and the
-				// held stragglers must not hang with it.
+				// doubled p50). How long to hold depends on whether the pipeline
+				// pool has a connection to spare:
+				//
+				//   - a connection is free -> bound the hold at stragglerHoldGaps
+				//     silence gaps (a few ms). Flushing then costs an otherwise-
+				//     idle connection and saves the straggler ~1 RTT. Waiting a
+				//     whole round trip here (the old behavior) is what pinned
+				//     low-concurrency stragglers at 2x RTT.
+				//   - the pool is saturated -> keep the original long hold. Tiny
+				//     flushes into a full pool thrash it: they cannot coalesce
+				//     into the deep pipelines the scarce connections need, and
+				//     throughput collapses (measured at a squeezed pool: an
+				//     unconditional few-ms bound cut throughput ~7x). Holding
+				//     lets the next completed batch's wave sweep the stragglers
+				//     along.
+				//
+				// A wedged in-flight batch cannot hang the held stragglers past
+				// the bound (the free-conn case caps at a few ms; the flush path
+				// keeps its own autoPipelinePermitBackstop safety ceiling).
 				if holdStart.IsZero() {
 					holdStart = time.Now()
 				}
-				if time.Since(holdStart) < autoPipelinePermitBackstop {
+				stragCap := autoPipelinePermitBackstop
+				if ap.pipelineHasFreeConn() {
+					stragCap = stragglerHoldGaps * gap
+				}
+				if time.Since(holdStart) < stragCap {
 					lastSeenExpected = ap.expectedArrivals.Load()
 					fallback.Reset(gap)
 					continue
@@ -2328,7 +2413,16 @@ func (s *apShard) flushBatchSlice() {
 			// deadlock-free via the dispGid guard stamped above.
 			// A successful short-circuit stays successful (see dispatchCmds).
 			err := ap.pipeliner.withProcessHook(context.Background(), solo, func(ctx context.Context, cmd Cmder) error {
-				return ap.pipeliner.process(ctx, cmd)
+				// A cacheable solo on a CSC client goes through Process so the cache
+				// is honored (processPipeline bypasses processCached). Gated on
+				// the LIVE CSC state: without active CSC, Process would just run on
+				// the MAIN pool, ignoring the pipeline pool the straggler gate probed.
+				if ap.cscActiveFn != nil && ap.cscActiveFn() && isCacheable(cmd) {
+					return ap.pipeliner.process(ctx, cmd)
+				}
+				// One-command pipeline on the PIPELINE pool (falls back to the main
+				// pool when none exists).
+				return ap.pipeliner.processPipeline(ctx, []Cmder{cmd})
 			})
 			solo.SetErr(err)
 			ap.observeBatchExec(time.Since(execStart))
