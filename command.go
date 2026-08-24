@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"regexp"
 	"strconv"
@@ -5316,15 +5317,38 @@ func (cmd *GeoPosCmd) Clone() Cmder {
 
 //------------------------------------------------------------------------------
 
+// KeySpec is one COMMAND key specification. BeginSearch and FindKeys carry
+// the type names from the reply ("index"/"keyword"/"unknown",
+// "range"/"keynum"/"unknown"); position fields are relative per the COMMAND
+// docs.
+type KeySpec struct {
+	Flags []string // e.g. RO, RW, access, update, incomplete, not_key
+
+	BeginSearch string
+	Index       int
+	Keyword     string
+	StartFrom   int
+
+	FindKeys  string
+	LastKey   int
+	KeyStep   int
+	Limit     int
+	KeyNumIdx int
+	FirstKey  int
+}
+
 type CommandInfo struct {
-	Name          string
-	Arity         int8
-	Flags         []string
-	ACLFlags      []string
-	FirstKeyPos   int8
-	LastKeyPos    int8
-	StepCount     int8
-	ReadOnly      bool
+	Name        string
+	Arity       int8
+	Flags       []string
+	ACLFlags    []string
+	FirstKeyPos int8
+	LastKeyPos  int8
+	StepCount   int8
+	ReadOnly    bool
+	// Tips holds the raw command tips (e.g. "nondeterministic_output").
+	Tips          []string
+	KeySpecs      []KeySpec
 	CommandPolicy *routing.CommandPolicy
 }
 
@@ -5366,10 +5390,6 @@ func (cmd *CommandsInfoCmd) String() string {
 }
 
 func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
-	const numArgRedis5 = 6
-	const numArgRedis6 = 7
-	const numArgRedis7 = 10 // Also matches redis 8
-
 	n, err := rd.ReadArrayLen()
 	if err != nil {
 		return err
@@ -5377,123 +5397,289 @@ func (cmd *CommandsInfoCmd) readReply(rd *proto.Reader) error {
 	cmd.val = make(map[string]*CommandInfo, n)
 
 	for i := 0; i < n; i++ {
-		nn, err := rd.ReadArrayLen()
-		if err != nil {
+		if err := readCommandInfoEntry(rd, cmd.val); err != nil {
 			return err
 		}
+	}
 
-		switch nn {
-		case numArgRedis5, numArgRedis6, numArgRedis7:
-			// ok
+	return nil
+}
+
+const (
+	numArgRedis5 = 6
+	numArgRedis6 = 7
+	numArgRedis7 = 10 // Also matches redis 8
+)
+
+// readCommandInfoEntry parses one COMMAND entry into m, recursively
+// flattening subcommands (named "parent|child" on the wire).
+func fitsInt8(v int64) bool {
+	return v >= math.MinInt8 && v <= math.MaxInt8
+}
+
+func readCommandInfoEntry(rd *proto.Reader, m map[string]*CommandInfo) error {
+	nn, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+
+	switch nn {
+	case numArgRedis5, numArgRedis6, numArgRedis7:
+		// ok
+	default:
+		return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7/10", nn)
+	}
+
+	cmdInfo := &CommandInfo{}
+	if cmdInfo.Name, err = rd.ReadString(); err != nil {
+		return err
+	}
+
+	arity, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	cmdInfo.Arity = int8(arity)
+
+	flagLen, err := rd.ReadArrayLen()
+	if err != nil {
+		return err
+	}
+	cmdInfo.Flags = make([]string, flagLen)
+	for f := 0; f < len(cmdInfo.Flags); f++ {
+		switch s, err := rd.ReadString(); {
+		case err == Nil:
+			cmdInfo.Flags[f] = ""
+		case err != nil:
+			return err
 		default:
-			return fmt.Errorf("redis: got %d elements in COMMAND reply, wanted 6/7/10", nn)
+			if !cmdInfo.ReadOnly && s == "readonly" {
+				cmdInfo.ReadOnly = true
+			}
+			cmdInfo.Flags[f] = s
 		}
+	}
 
-		cmdInfo := &CommandInfo{}
-		if cmdInfo.Name, err = rd.ReadString(); err != nil {
-			return err
-		}
+	firstKeyPos, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	lastKeyPos, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	stepCount, err := rd.ReadInt()
+	if err != nil {
+		return err
+	}
+	// The public fields are int8; a value that does not fit would silently
+	// wrap into a DIFFERENT valid key position (e.g. firstkey 257 -> 1).
+	// Zero the triple instead: "key positions unknown" fails closed.
+	if fitsInt8(firstKeyPos) && fitsInt8(lastKeyPos) && fitsInt8(stepCount) {
+		cmdInfo.FirstKeyPos = int8(firstKeyPos)
+		cmdInfo.LastKeyPos = int8(lastKeyPos)
+		cmdInfo.StepCount = int8(stepCount)
+	}
 
-		arity, err := rd.ReadInt()
+	if nn >= numArgRedis6 {
+		aclFlagLen, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
 		}
-		cmdInfo.Arity = int8(arity)
-
-		flagLen, err := rd.ReadArrayLen()
-		if err != nil {
-			return err
-		}
-		cmdInfo.Flags = make([]string, flagLen)
-		for f := 0; f < len(cmdInfo.Flags); f++ {
+		cmdInfo.ACLFlags = make([]string, aclFlagLen)
+		for f := 0; f < len(cmdInfo.ACLFlags); f++ {
 			switch s, err := rd.ReadString(); {
 			case err == Nil:
-				cmdInfo.Flags[f] = ""
+				cmdInfo.ACLFlags[f] = ""
 			case err != nil:
 				return err
 			default:
-				if !cmdInfo.ReadOnly && s == "readonly" {
-					cmdInfo.ReadOnly = true
-				}
-				cmdInfo.Flags[f] = s
+				cmdInfo.ACLFlags[f] = s
 			}
 		}
+	}
 
-		firstKeyPos, err := rd.ReadInt()
+	if nn >= numArgRedis7 {
+		// The 8th argument is an array of tips.
+		tipsLen, err := rd.ReadArrayLen()
 		if err != nil {
 			return err
 		}
-		cmdInfo.FirstKeyPos = int8(firstKeyPos)
 
-		lastKeyPos, err := rd.ReadInt()
-		if err != nil {
-			return err
+		cmdInfo.Tips = make([]string, 0, tipsLen)
+		rawTips := make(map[string]string, tipsLen)
+		if cmdInfo.ReadOnly {
+			rawTips[routing.ReadOnlyCMD] = ""
 		}
-		cmdInfo.LastKeyPos = int8(lastKeyPos)
-
-		stepCount, err := rd.ReadInt()
-		if err != nil {
-			return err
-		}
-		cmdInfo.StepCount = int8(stepCount)
-
-		if nn >= numArgRedis6 {
-			aclFlagLen, err := rd.ReadArrayLen()
+		for f := 0; f < tipsLen; f++ {
+			tip, err := rd.ReadString()
 			if err != nil {
 				return err
 			}
-			cmdInfo.ACLFlags = make([]string, aclFlagLen)
-			for f := 0; f < len(cmdInfo.ACLFlags); f++ {
-				switch s, err := rd.ReadString(); {
-				case err == Nil:
-					cmdInfo.ACLFlags[f] = ""
-				case err != nil:
-					return err
-				default:
-					cmdInfo.ACLFlags[f] = s
-				}
+			cmdInfo.Tips = append(cmdInfo.Tips, tip)
+
+			k, v, ok := strings.Cut(tip, ":")
+			if !ok {
+				// Handle tips that don't have a colon (like "nondeterministic_output")
+				rawTips[tip] = ""
+			} else {
+				// Handle normal key:value tips
+				rawTips[k] = v
 			}
 		}
+		cmdInfo.CommandPolicy = parseCommandPolicies(rawTips, cmdInfo.FirstKeyPos)
 
-		if nn >= numArgRedis7 {
-			// The 8th argument is an array of tips.
-			tipsLen, err := rd.ReadArrayLen()
-			if err != nil {
-				return err
-			}
-
-			rawTips := make(map[string]string, tipsLen)
-			if cmdInfo.ReadOnly {
-				rawTips[routing.ReadOnlyCMD] = ""
-			}
-			for f := 0; f < tipsLen; f++ {
-				tip, err := rd.ReadString()
+		// The 9th argument is the key specifications.
+		specsLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		if specsLen > 0 {
+			cmdInfo.KeySpecs = make([]KeySpec, 0, specsLen)
+			for s := 0; s < specsLen; s++ {
+				ks, err := readKeySpec(rd)
 				if err != nil {
 					return err
 				}
-
-				k, v, ok := strings.Cut(tip, ":")
-				if !ok {
-					// Handle tips that don't have a colon (like "nondeterministic_output")
-					rawTips[tip] = ""
-				} else {
-					// Handle normal key:value tips
-					rawTips[k] = v
-				}
+				cmdInfo.KeySpecs = append(cmdInfo.KeySpecs, ks)
 			}
-			cmdInfo.CommandPolicy = parseCommandPolicies(rawTips, cmdInfo.FirstKeyPos)
+		}
 
-			if err := rd.DiscardNext(); err != nil {
+		// The 10th argument is the subcommands, flattened into m.
+		subLen, err := rd.ReadArrayLen()
+		if err != nil {
+			return err
+		}
+		for s := 0; s < subLen; s++ {
+			if err := readCommandInfoEntry(rd, m); err != nil {
 				return err
 			}
+		}
+	}
+
+	m[cmdInfo.Name] = cmdInfo
+	return nil
+}
+
+// readKeySpec parses one key specification. ReadMapLen handles both wire
+// shapes (RESP3 map, RESP2 field-value array).
+func readKeySpec(rd *proto.Reader) (KeySpec, error) {
+	var ks KeySpec
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return ks, err
+	}
+	for i := 0; i < n; i++ {
+		field, err := rd.ReadString()
+		if err != nil {
+			return ks, err
+		}
+		switch field {
+		case "flags":
+			fn, err := rd.ReadArrayLen()
+			if err != nil {
+				return ks, err
+			}
+			ks.Flags = make([]string, 0, fn)
+			for f := 0; f < fn; f++ {
+				flag, err := rd.ReadString()
+				if err != nil {
+					return ks, err
+				}
+				ks.Flags = append(ks.Flags, flag)
+			}
+		case "begin_search":
+			if err := readKeySpecSection(rd, &ks, true); err != nil {
+				return ks, err
+			}
+		case "find_keys":
+			if err := readKeySpecSection(rd, &ks, false); err != nil {
+				return ks, err
+			}
+		default:
+			if err := rd.DiscardNext(); err != nil {
+				return ks, err
+			}
+		}
+	}
+	return ks, nil
+}
+
+// readKeySpecSection parses a {"type": ..., "spec": {...}} section; the spec
+// field names are disjoint between begin_search and find_keys.
+func readKeySpecSection(rd *proto.Reader, ks *KeySpec, beginSearch bool) error {
+	n, err := rd.ReadMapLen()
+	if err != nil {
+		return err
+	}
+	for i := 0; i < n; i++ {
+		field, err := rd.ReadString()
+		if err != nil {
+			return err
+		}
+		switch field {
+		case "type":
+			typ, err := rd.ReadString()
+			if err != nil {
+				return err
+			}
+			if beginSearch {
+				ks.BeginSearch = typ
+			} else {
+				ks.FindKeys = typ
+			}
+		case "spec":
+			sn, err := rd.ReadMapLen()
+			if err != nil {
+				return err
+			}
+			for j := 0; j < sn; j++ {
+				name, err := rd.ReadString()
+				if err != nil {
+					return err
+				}
+				switch name {
+				case "keyword":
+					if ks.Keyword, err = rd.ReadString(); err != nil {
+						return err
+					}
+				case "index", "startfrom", "lastkey", "keystep", "limit", "keynumidx", "firstkey":
+					v, err := rd.ReadInt()
+					if err != nil {
+						return err
+					}
+					iv := int(v)
+					if int64(iv) != v {
+						return fmt.Errorf("redis: COMMAND key spec %q value %d overflows int", name, v)
+					}
+					switch name {
+					case "index":
+						ks.Index = iv
+					case "startfrom":
+						ks.StartFrom = iv
+					case "lastkey":
+						ks.LastKey = iv
+					case "keystep":
+						ks.KeyStep = iv
+					case "limit":
+						ks.Limit = iv
+					case "keynumidx":
+						ks.KeyNumIdx = iv
+					case "firstkey":
+						ks.FirstKey = iv
+					}
+				default:
+					if err := rd.DiscardNext(); err != nil {
+						return err
+					}
+				}
+			}
+		default:
 			if err := rd.DiscardNext(); err != nil {
 				return err
 			}
 		}
-
-		cmd.val[cmdInfo.Name] = cmdInfo
 	}
-
 	return nil
 }
 
@@ -5519,6 +5705,21 @@ func (cmd *CommandsInfoCmd) Clone() Cmder {
 				if v.ACLFlags != nil {
 					newInfo.ACLFlags = make([]string, len(v.ACLFlags))
 					copy(newInfo.ACLFlags, v.ACLFlags)
+				}
+				if v.Tips != nil {
+					newInfo.Tips = make([]string, len(v.Tips))
+					copy(newInfo.Tips, v.Tips)
+				}
+				if v.KeySpecs != nil {
+					newInfo.KeySpecs = make([]KeySpec, len(v.KeySpecs))
+					for i, ks := range v.KeySpecs {
+						if ks.Flags != nil {
+							flags := make([]string, len(ks.Flags))
+							copy(flags, ks.Flags)
+							ks.Flags = flags
+						}
+						newInfo.KeySpecs[i] = ks
+					}
 				}
 				val[k] = newInfo
 			}
@@ -9540,10 +9741,12 @@ func (cmd *IncrEXIntCmd) Val() IncrEXIntResult {
 	cmd.await()
 	return cmd.val
 }
+
 func (cmd *IncrEXIntCmd) Result() (IncrEXIntResult, error) {
 	cmd.await()
 	return cmd.val, cmd.err
 }
+
 func (cmd *IncrEXIntCmd) String() string {
 	cmd.await()
 	return cmdString(cmd, cmd.val)
@@ -9601,10 +9804,12 @@ func (cmd *IncrEXFloatCmd) Val() IncrEXFloatResult {
 	cmd.await()
 	return cmd.val
 }
+
 func (cmd *IncrEXFloatCmd) Result() (IncrEXFloatResult, error) {
 	cmd.await()
 	return cmd.val, cmd.err
 }
+
 func (cmd *IncrEXFloatCmd) String() string {
 	cmd.await()
 	return cmdString(cmd, cmd.val)

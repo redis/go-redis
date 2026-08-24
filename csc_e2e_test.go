@@ -625,6 +625,42 @@ func TestCSCXInfoGroupStateStaysFresh(t *testing.T) {
 	}
 }
 
+// Guards the MEMORY USAGE dont_cache override: a key's memory usage changes
+// on mutations that never signal the key (XGROUP CREATE), so re-enabling
+// caching would serve stale usage forever.
+func TestCSCMemoryUsageStaysFresh(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	key := "csc-memuse:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+	if err := mutator.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: map[string]interface{}{"f": "v"}}).Err(); err != nil {
+		t.Fatalf("XADD: %v", err)
+	}
+
+	usage := func() int64 {
+		n, err := c.MemoryUsage(ctx, key).Result()
+		if err != nil {
+			t.Fatalf("MEMORY USAGE: %v", err)
+		}
+		return n
+	}
+
+	before := usage()
+	usage() // a second read would come from the cache if it were cacheable
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("MEMORY USAGE populated the cache (len=%d) — its dont_cache override is gone", n)
+	}
+
+	// Grow the key's group metadata: the server sends no invalidation for it.
+	if err := mutator.XGroupCreate(ctx, key, "g", "$").Err(); err != nil {
+		t.Fatalf("XGROUP CREATE: %v", err)
+	}
+	if after := usage(); after == before {
+		t.Fatalf("MEMORY USAGE did not change after XGROUP CREATE (%d) — served from a cache no invalidation can evict", after)
+	}
+}
+
 func TestCSCStrategyDefaultIsSharedTracking(t *testing.T) {
 	var strategy redis.CSCStrategy
 	if strategy != redis.CSCStrategySharedTracking {

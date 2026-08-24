@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bytes"
+	"math"
 	"strconv"
 	"strings"
 
@@ -9,15 +10,15 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// A command may be cached only when its COMMAND metadata shows it is read-only,
-// takes keys, is deterministic, does not run scripts, and is not marked
-// dont_cache. Unknown commands are never cached. Metadata comes from the
-// generated cscCommandTable with cscCommandOverrides overlaid at init.
+// CSC eligibility: a command may be cached only when its COMMAND metadata
+// shows it is read-only, keyed, deterministic, non-blocking, not a script
+// runner, and not marked dont_cache; unknown commands are never cached.
+// Records resolve into a commandMetadataView (see command_metadata.go), and
+// every invocation reads exactly one view.
 
-//go:generate go run ./internal/csccmdgen -addr localhost:6379 -out csc_command_table.go
+//go:generate go run ./internal/cmdmetagen -addr localhost:6379 -out command_info_snapshot.go
 
-// cscCmdBits holds the command flags and tips the eligibility check uses,
-// named after the COMMAND metadata they come from.
+// cscCmdBits mirrors the COMMAND flags/tips the eligibility check uses.
 type cscCmdBits uint8
 
 const (
@@ -26,29 +27,23 @@ const (
 	cscFlagBlocking
 	cscTipNondeterministicOutput
 	cscTipDontCache
-	// cscHasKeySpec: the command has at least one complete key spec.
-	// Incomplete or not_key specs don't count — they can't prove which keys
-	// the command reads.
+	// Set only for COMPLETE key specs; incomplete/not_key specs can't prove
+	// which keys the command reads.
 	cscHasKeySpec
 )
 
-// cscKeyExtract says how extractRedisKeys finds a command's key arguments.
-// None means the keys can't be listed reliably, so the command is never
-// cached even if it looks eligible.
+// cscKeyExtract: how key arguments are located. None = keys can't be listed
+// reliably, so the command is never cached even if eligible.
 type cscKeyExtract uint8
 
 const (
 	cscKeyExtractNone cscKeyExtract = iota
-	// Keys at firstKey..lastKey every step args; negative lastKey counts
-	// from the end.
+	// firstKey..lastKey every step args; negative lastKey counts from the end.
 	cscKeyExtractRange
-	// The arg at numkeysAt holds the key count; keys start at firstKey
-	// (ZDIFF-style "numkeys key ...").
+	// The arg at numkeysAt holds the key count; keys start at firstKey.
 	cscKeyExtractKeynum
 )
 
-// cscCommandMeta is the metadata for one command, keyed by its lowercase
-// name ("get", "json.mget", "memory|usage").
 type cscCommandMeta struct {
 	bits    cscCmdBits
 	extract cscKeyExtract
@@ -59,97 +54,157 @@ type cscCommandMeta struct {
 	numkeysAt int16
 }
 
-// cscCommandOverrides excludes commands whose server metadata or server-side
-// invalidation delivery is known to be broken. Entries must use leaf names
-// ("parent|child" for subcommands) and carry only negative bits, so an
-// override can never make a command cacheable (TestCSCOverrides enforces
-// this). Remove an entry only after a tracking probe shows the server
-// invalidates correctly (tracked read -> external write -> expect a push).
-var cscCommandOverrides = map[string]cscCommandMeta{
+// cscMetadataCorrections excludes commands whose server metadata or
+// invalidation delivery is known broken (each verified live). Corrections
+// are extra tips ADDED to the resolved record — snapshot or live — so they
+// survive a live upgrade and never discard the record's other metadata; being
+// tips-only they can never make a command cacheable. Remove an entry only
+// after a tracking probe shows the server invalidates correctly.
+var cscMetadataCorrections = map[string][]string{
 	// Read-only on paper, but its purpose is to bump key LRU/LFU state.
-	"touch": {bits: cscTipDontCache},
+	"touch": {"dont_cache"},
 
 	// Random output; the server doesn't tag it yet (its siblings are tagged).
-	"vrandmember": {bits: cscTipNondeterministicOutput},
+	"vrandmember": {"nondeterministic_output"},
 
 	// Flagged readonly but actually rewrites the filter; caching its OK reply
 	// would suppress repeated compactions.
-	"cf.compact": {bits: cscTipDontCache},
+	"cf.compact": {"dont_cache"},
 
 	// The module declares one key but the command reads N, and the server
 	// tracks only that first key: writes to the other keys never send an
 	// invalidation.
-	"json.mget": {bits: cscTipDontCache},
+	"json.mget": {"dont_cache"},
 
 	// The server registers no tracking for any of their series: writes never
 	// send an invalidation.
-	"ts.nrange":    {bits: cscTipDontCache},
-	"ts.nrevrange": {bits: cscTipDontCache},
+	"ts.nrange":    {"dont_cache"},
+	"ts.nrevrange": {"dont_cache"},
 
 	// Replies include consumer-group state, but group changes (XGROUP
 	// CREATE/SETID) never invalidate the stream key.
-	"xinfo|stream": {bits: cscTipDontCache},
-	"xinfo|groups": {bits: cscTipDontCache},
+	"xinfo|stream": {"dont_cache"},
+	"xinfo|groups": {"dont_cache"},
+
+	// Usage changes on mutations that never signal the key (e.g. XGROUP CREATE).
+	"memory|usage": {"dont_cache"},
 }
 
-// cscNegativeBits are the bits that each rule out caching. Overrides may
-// carry only these.
+// cscNegativeBits are the bits that each rule out caching.
 const cscNegativeBits = cscFlagScriptRunner | cscFlagBlocking |
 	cscTipNondeterministicOutput | cscTipDontCache
 
-// cscResolvedCommandTable is the generated table with overrides applied,
-// built once at init and read lock-free afterwards.
-var cscResolvedCommandTable = func() map[string]cscCommandMeta {
-	merged := make(map[string]cscCommandMeta, len(cscCommandTable)+len(cscCommandOverrides))
-	for name, meta := range cscCommandTable {
-		merged[name] = meta
+// cscAckExtraKeySpecs: commands whose extra unknown key specs are handled
+// elsewhere (sort_ro's is the BY/GET patterns, rejected per invocation).
+var cscAckExtraKeySpecs = map[string]bool{
+	"sort_ro": true,
+}
+
+// cscSpecComplete: incomplete specs can't say which keys are read, and
+// not_key marks a channel/pattern — neither proves key positions.
+func cscSpecComplete(ks KeySpec) bool {
+	if (ks.BeginSearch != "index" && ks.BeginSearch != "keyword") ||
+		(ks.FindKeys != "range" && ks.FindKeys != "keynum") {
+		return false
 	}
-	for name, override := range cscCommandOverrides {
-		merged[name] = override
-	}
-	// Drop bare parents that have subcommand entries (e.g. "ft.config" next
-	// to "ft.config|get"): container commands resolve by "parent|child", and
-	// a leftover bare entry would shadow the subcommand's metadata.
-	for name := range merged {
-		if i := strings.IndexByte(name, '|'); i > 0 {
-			delete(merged, name[:i])
+	for _, f := range ks.Flags {
+		if f == "incomplete" || f == "not_key" {
+			return false
 		}
 	}
-	return merged
-}()
+	return true
+}
 
-// cscContainerParents lists the parents of "parent|child" entries, so lookups
-// know when to retry with the subcommand name.
-var cscContainerParents = func() map[string]struct{} {
-	parents := make(map[string]struct{})
-	for name := range cscResolvedCommandTable {
-		if i := strings.IndexByte(name, '|'); i > 0 {
-			parents[name[:i]] = struct{}{}
+// cscDeriveMeta compresses a record into the hot-path form. Extraction is
+// emitted only when key positions are unambiguous (at most one complete spec:
+// a partial key list would mean dropped invalidations and stale entries).
+func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
+	var meta cscCommandMeta
+	// The readonly FLAG is the normative source; the ReadOnly convenience
+	// bool is deliberately ignored.
+	for _, f := range info.Flags {
+		switch f {
+		case "readonly":
+			meta.bits |= cscFlagReadonly
+		case "script_runner":
+			meta.bits |= cscFlagScriptRunner
+		case "blocking":
+			meta.bits |= cscFlagBlocking
 		}
 	}
-	return parents
-}()
+	for _, t := range info.Tips {
+		switch t {
+		case "nondeterministic_output":
+			meta.bits |= cscTipNondeterministicOutput
+		case "dont_cache":
+			meta.bits |= cscTipDontCache
+		}
+	}
 
-// cscCommandMetaFor resolves cmd's metadata; ok is false for unknown
-// commands, which are never cached.
-func cscCommandMetaFor(cmd Cmder) (cscCommandMeta, bool) {
+	var complete, other int
+	var keynum KeySpec
+	for _, ks := range info.KeySpecs {
+		if cscSpecComplete(ks) {
+			complete++
+			if ks.FindKeys == "keynum" {
+				keynum = ks
+			}
+		} else {
+			other++
+		}
+	}
+	if complete > 0 {
+		meta.bits |= cscHasKeySpec
+	}
+
+	meta.firstKey = int16(info.FirstKeyPos)
+	meta.lastKey = int16(info.LastKeyPos)
+	meta.step = int16(info.StepCount)
+
+	canExtract := (other == 0 && complete <= 1) || cscAckExtraKeySpecs[internal.ToLower(info.Name)]
+	switch {
+	case canExtract && info.FirstKeyPos > 0 && info.StepCount > 0:
+		meta.extract = cscKeyExtractRange
+	case canExtract && complete == 1 && keynum.FindKeys == "keynum" && keynum.BeginSearch == "index":
+		// Validate every component before adding or narrowing. Checking only
+		// the sums would let hostile positive/negative offsets cancel into a
+		// plausible position and pass the per-call bounds checks.
+		if keynum.Index < 1 || keynum.Index > math.MaxInt16 ||
+			keynum.KeyNumIdx < 0 || keynum.KeyNumIdx > math.MaxInt16 ||
+			keynum.FirstKey < 1 || keynum.FirstKey > math.MaxInt16 ||
+			keynum.KeyStep < 1 || keynum.KeyStep > math.MaxInt16 {
+			break // malformed positions: no extraction, never cached
+		}
+		numkeysAt := keynum.Index + keynum.KeyNumIdx
+		firstKey := keynum.Index + keynum.FirstKey
+		if numkeysAt < 1 || numkeysAt > math.MaxInt16 ||
+			firstKey < 1 || firstKey > math.MaxInt16 {
+			break // malformed positions: no extraction, never cached
+		}
+		meta.extract = cscKeyExtractKeynum
+		meta.numkeysAt = int16(numkeysAt)
+		meta.firstKey = int16(firstKey)
+		meta.step = int16(keynum.KeyStep)
+	}
+	return meta
+}
+
+// cscLookupMeta resolves cmd's metadata in view; ok is false for unknown
+// commands. Name and subcommand tokens must be wire-faithful (see
+// cscWireFaithfulText).
+func cscLookupMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) {
 	args := cmd.Args()
-	if len(args) == 0 {
-		return cscCommandMeta{}, false
-	}
-	// The name decides which metadata applies, so it must be wire-faithful.
-	if !cscWireFaithfulText(args[0]) {
+	if len(args) == 0 || !cscWireFaithfulText(args[0]) {
 		return cscCommandMeta{}, false
 	}
 	name := cmd.Name()
-	if meta, ok := cscResolvedCommandTable[name]; ok {
+	if meta, ok := view.cscTable[name]; ok {
 		return meta, true
 	}
-	if _, ok := cscContainerParents[name]; ok {
-		// Same for the subcommand token.
+	if _, ok := view.cscParents[name]; ok {
 		if len(args) > 1 && cscWireFaithfulText(args[1]) {
 			if sub := cmd.stringArg(1); sub != "" {
-				meta, ok := cscResolvedCommandTable[name+"|"+internal.ToLower(sub)]
+				meta, ok := view.cscTable[name+"|"+internal.ToLower(sub)]
 				return meta, ok
 			}
 		}
@@ -157,9 +212,8 @@ func cscCommandMetaFor(cmd Cmder) (cscCommandMeta, bool) {
 	return cscCommandMeta{}, false
 }
 
-// cscWireFaithfulText reports whether v always reads the same via stringArg
-// as it is sent by proto.Writer. Other types (e.g. a BinaryMarshaler whose
-// String differs) could classify one command while the wire runs another.
+// cscWireFaithfulText: policy tokens must read the same via stringArg as they
+// go on the wire, or one command could be classified while another runs.
 func cscWireFaithfulText(v interface{}) bool {
 	switch v.(type) {
 	case string, []byte, *string:
@@ -169,43 +223,35 @@ func cscWireFaithfulText(v interface{}) bool {
 	}
 }
 
-// cscIsClientSideCacheable is the HLD eligibility rule: readonly, provably
-// keyed, and none of the negative signals.
+// cscIsClientSideCacheable is the HLD's six-rule eligibility check.
 func cscIsClientSideCacheable(meta cscCommandMeta) bool {
 	return meta.bits&cscNegativeBits == 0 &&
 		meta.bits&cscFlagReadonly != 0 &&
 		cscHasKeyArgument(meta)
 }
 
-// cscHasKeyArgument: a complete key spec, or legacy firstKey/step metadata.
-// lastKey is not consulted; it is -1 for variadic key lists.
+// lastKey is never consulted: it is -1 for variadic key lists.
 func cscHasKeyArgument(meta cscCommandMeta) bool {
 	return meta.bits&cscHasKeySpec != 0 || (meta.firstKey > 0 && meta.step > 0)
 }
 
-// isCacheable reports whether cmd's COMMAND metadata allows caching. This is
-// per command; whether a specific call can be cached is decided by
-// extractRedisKeys, and processCached consults both.
-func isCacheable(cmd Cmder) bool {
-	// Streaming commands (RawWriteToCmd) must not be buffered for the cache.
+// cscEligibleMeta is the command-level decision: it resolves cmd's metadata
+// in view and applies the eligibility check. Whether a specific call can be
+// cached is decided later by extractRedisKeys.
+func cscEligibleMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) {
+	// Streaming replies (RawWriteToCmd) must not be buffered for the cache.
 	if cmd.NoRetry() {
-		return false
+		return cscCommandMeta{}, false
 	}
-	meta, ok := cscCommandMetaFor(cmd)
+	meta, ok := cscLookupMeta(view, cmd)
 	if !ok || !cscIsClientSideCacheable(meta) {
-		return false
+		return cscCommandMeta{}, false
 	}
-	// SORT_RO with BY/GET reads pattern keys we can't list, so its
-	// invalidations would be missed. Plain SORT_RO is fine.
-	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
-		return false
-	}
-	return true
+	return meta, true
 }
 
-// sortROHasByGet reports whether a SORT_RO call uses BY or GET. Argument
-// types whose wire form can differ from stringArg disqualify the call
-// outright rather than risk missing the keyword.
+// sortROHasByGet reports whether a SORT_RO call uses BY or GET; arg types
+// whose wire form can differ from stringArg disqualify outright.
 func sortROHasByGet(cmd Cmder) bool {
 	args := cmd.Args()
 	for i := 2; i < len(args); i++ {
@@ -263,8 +309,7 @@ func isSubscribeCmd(cmd Cmder) bool {
 	}
 }
 
-// buildCacheKey returns the RESP encoding of the full argument list as a
-// collision-free cache key; ok is false when the args can't be marshaled.
+// buildCacheKey: the RESP encoding of the args is the collision-free key.
 func buildCacheKey(cmd Cmder) (string, bool) {
 	args := cmd.Args()
 	if len(args) == 0 {
@@ -277,10 +322,9 @@ func buildCacheKey(cmd Cmder) (string, bool) {
 	return buf.String(), true
 }
 
-// keyArg renders the argument at pos exactly as it goes on the wire, so
-// invalidation lookups match the server's key names. Types whose rendering
-// can differ (pointers, floats, marshalers, ...) return ok=false and the
-// caller skips caching — a mismatched key would be served stale forever.
+// keyArg renders the arg at pos exactly as it goes on the wire; a mismatched
+// key would never match its invalidation and be served stale forever, so
+// types whose rendering can differ return ok=false (caller skips caching).
 func keyArg(cmd Cmder, pos int) (string, bool) {
 	args := cmd.Args()
 	if pos < 0 || pos >= len(args) {
@@ -295,12 +339,12 @@ func keyArg(cmd Cmder, pos int) (string, bool) {
 	return "", false
 }
 
-// extractRedisKeys lists the key arguments the cache must watch for
-// invalidations. It returns nil — and the command is served uncached — when
-// the keys can't be listed for this call; a partial list is never returned.
-func extractRedisKeys(cmd Cmder) []string {
-	meta, ok := cscCommandMetaFor(cmd)
-	if !ok {
+// cscExtractRedisKeys lists the keys the cache must watch for a call to a
+// command already resolved to meta. nil = serve this call uncached; a
+// PARTIAL list is never returned.
+func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
+	// SORT_RO with BY/GET reads pattern keys this call cannot list.
+	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
 		return nil
 	}
 	argsLen := len(cmd.Args())
@@ -325,7 +369,7 @@ func extractRedisKeys(cmd Cmder) []string {
 		if nkPos <= 0 || nkPos >= argsLen {
 			return nil
 		}
-		// numkeys decides which positions are keys, so read it wire-faithfully.
+		// numkeys decides which positions are keys: read it wire-faithfully.
 		raw, ok := keyArg(cmd, nkPos)
 		if !ok {
 			return nil
@@ -338,8 +382,7 @@ func extractRedisKeys(cmd Cmder) []string {
 		if first <= 0 || step <= 0 {
 			return nil
 		}
-		// The count must fit the argument list; the division form avoids
-		// overflow for any step.
+		// The count must fit the args; division avoids overflow for any step.
 		if numKeys > argsLen || (argsLen-1-first)/step < numKeys-1 {
 			return nil
 		}
@@ -348,8 +391,7 @@ func extractRedisKeys(cmd Cmder) []string {
 	return nil
 }
 
-// cscCollectKeys renders n keys starting at first, step apart, returning nil
-// (never a partial list) if any key can't be rendered wire-faithfully.
+// cscCollectKeys returns nil — never a partial list — if any key fails keyArg.
 func cscCollectKeys(cmd Cmder, first, step, n int) []string {
 	keys := make([]string, 0, n)
 	for i, k := first, 0; k < n; i, k = i+step, k+1 {

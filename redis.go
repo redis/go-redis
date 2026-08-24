@@ -403,6 +403,11 @@ type baseClient struct {
 	// identity. It is computed once during attachment and copied with the cache.
 	cscKeyPrefix string
 
+	// cmdMeta publishes the client's command-metadata views (see
+	// command_metadata.go); nil when the client uses the shared static
+	// default. Shared with clones; only the owner's Close stops its worker.
+	cmdMeta *commandMetadataStore
+
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
 	// process and generalProcessPipeline). Set only on initConn's internal conn
 	// wrapper, whose init pipeline legitimately issues CLIENT TRACKING ON;
@@ -461,6 +466,9 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		// Must travel with the cache, or a clone would silently ignore
+		// Options.CommandMetadata.
+		cmdMeta: c.cmdMeta,
 	}
 	return clone
 }
@@ -790,7 +798,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// be used. Remember that negotiated fallback: configured Protocol remains 3,
 	// but CSC must not serve without RESP3 invalidations.
 	helloFallbackToRESP2 := false
-	if initErr = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); initErr == nil {
+	helloCmd := conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName)
+	if initErr = helloCmd.Err(); initErr == nil {
 		// Authentication successful with HELLO command
 		helloOK = true
 	} else if !isRedisError(initErr) {
@@ -1029,6 +1038,17 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	// A connection exists, so a live command-metadata upgrade can proceed. A
+	// changed server identity in the HELLO reply (failover, handoff, upgrade,
+	// module load) also retires a previously fetched live view.
+	if s := c.cmdMeta; s != nil && helloOK {
+		if reply, replyErr := helloCmd.Result(); replyErr == nil {
+			s.onServerHello(helloServerFingerprint(reply))
+		} else {
+			s.onConnInit()
+		}
+	}
+
 	return nil
 }
 
@@ -1193,8 +1213,13 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	if c.csc != nil && isCacheable(cmd) {
-		return c.processCached(ctx, cmd, state)
+	if c.csc != nil {
+		// One view per invocation: eligibility, key extraction, and the cache
+		// key all come from the same metadata generation.
+		view := c.metadataView()
+		if meta, ok := cscEligibleMeta(view, cmd); ok {
+			return c.processCached(ctx, cmd, state, view, meta)
+		}
 	}
 	return c.processWithRetry(ctx, cmd, nil, state)
 }
@@ -1551,8 +1576,10 @@ func (c *baseClient) closeResources() error {
 	var firstErr error
 
 	// CSC teardown (no-op when CSC is not active): stop the background
-	// invalidation drainer before the pool it walks is torn down.
+	// invalidation drainer and the command-metadata worker before the pools
+	// they use are torn down.
 	c.stopBackgroundDrainer()
+	c.cmdMeta.stopAndJoin()
 
 	// Close maintnotifications manager first
 	if err := c.disableMaintNotificationsUpgrades(); err != nil {
@@ -2013,6 +2040,14 @@ func NewClient(opt *Options) *Client {
 		// *baseClient (never *Client), so dropping *Client (returned as &c)
 		// triggers these cleanups, which stop them. See cscRegisterCleanups.
 		cscRegisterCleanups(&c)
+	}
+	// The metadata store exists only when client-side caching attached; a
+	// non-default config on a client without CSC would otherwise be dropped
+	// with no signal.
+	if cfg := opt.CommandMetadata; cfg != nil && c.baseClient.cmdMeta == nil &&
+		(cfg.Mode != CommandMetadataStatic || len(cfg.Overrides) > 0) {
+		internal.Logger.Printf(context.Background(),
+			"redis: Options.CommandMetadata is ignored because client-side caching is not active")
 	}
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3

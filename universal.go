@@ -174,6 +174,12 @@ type UniversalOptions struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// CommandMetadata configures the standalone client's command-metadata
+	// resolution. See Options.CommandMetadata.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
 }
 
 // Cluster returns cluster options created from the universal options.
@@ -366,6 +372,7 @@ func (o *UniversalOptions) Simple() *Options {
 		ClientSideCacheConfig:     o.ClientSideCacheConfig,
 		ClientSideCache:           o.ClientSideCache,
 		ClientSideCacheStrategy:   o.ClientSideCacheStrategy,
+		CommandMetadata:           o.CommandMetadata,
 	}
 }
 

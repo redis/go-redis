@@ -18,10 +18,13 @@ import (
 )
 
 // cscRegisterCleanups arranges for a client dropped without Close to stop its
-// background CSC drainer. The drainer's exit path revokes its pool's cache
-// coverage; the runtime cleanup itself stays non-blocking and never captures
-// *Client, so the wrapper remains collectible.
+// background CSC goroutines (drainer, command-metadata worker). The drainer's
+// exit path revokes its pool's cache coverage; the runtime cleanups stay
+// non-blocking and never capture *Client, so the wrapper remains collectible.
 func cscRegisterCleanups(c *Client) {
+	if s := c.baseClient.cmdMeta; s != nil {
+		runtime.AddCleanup(c, func(s *commandMetadataStore) { s.signalStop() }, s)
+	}
 	h := c.baseClient.cscDrainHandle
 	if h == nil {
 		return
@@ -276,6 +279,8 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
 	}
+	// nil for the static zero config; those clients share the default view.
+	c.cmdMeta = newCommandMetadataStore(c.opt.CommandMetadata, c.fetchCommandMetadata)
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
@@ -798,10 +803,21 @@ const cscDrainProbeReadCap = 50 * time.Microsecond
 // redialing) a connection per tick indefinitely.
 const cscDrainCustomErrCap = 8
 
+// cscEntryKey embeds the metadata fingerprint in the cache-entry key so
+// entries cached under different eligibility decisions never mix. The
+// Redis-key invalidation index stays fingerprint-free, so invalidations reach
+// every generation.
+func cscEntryKey(keyPrefix, fingerprint, rawKey string) string {
+	return keyPrefix + fingerprint + cscNamespaceSep + rawKey
+}
+
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
 // Only invoked after process has verified that CSC is active and cmd is
-// eligible.
-func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState) error {
+// eligible under view; meta is cmd's resolution in that same view.
+func (c *baseClient) processCached(
+	ctx context.Context, cmd Cmder, state *processState,
+	view *commandMetadataView, meta cscCommandMeta,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -817,7 +833,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 
-	redisKeys := extractRedisKeys(cmd)
+	redisKeys := cscExtractRedisKeys(meta, cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
 		return c.processWithRetry(ctx, cmd, nil, state)
@@ -829,16 +845,23 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		// an incomplete custom baseClient reaches this path.
 		return c.processWithRetry(ctx, cmd, nil, state)
 	}
-	key := cscNamespacedKey(keyPrefix, rawKey)
+	key := cscEntryKey(keyPrefix, view.cscFingerprint, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
 	for i, k := range redisKeys {
 		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
 	}
 
-	// Serve hits straight from the cache.
+	// Serve hits straight from the cache. A hit is served only while the
+	// captured view's DECISIONS are still current (fingerprint compare, not
+	// pointer identity: a refresh that changed nothing must not suppress
+	// hits); after a decision change the entry belongs to a retired
+	// generation.
 	if data, ok := c.csc.Get(ctx, key); ok {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.metadataView().cscFingerprint != view.cscFingerprint {
+			return c.processWithRetry(ctx, cmd, nil, state)
 		}
 		if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
 			return err
@@ -852,6 +875,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if c.metadataView().cscFingerprint != view.cscFingerprint {
+				return c.processWithRetry(ctx, cmd, nil, state)
 			}
 			if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
 				return err
@@ -881,7 +907,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
 		if isCacheableReplyResult(err) {
-			c.fulfillCached(key, token, &fc)
+			c.fulfillCached(key, token, &fc, view)
 		} else {
 			c.csc.Cancel(key, token)
 		}
@@ -897,8 +923,17 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 // the hook's init-generation changes, so a reply whose invalidation coverage
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
-func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
+func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture, view *commandMetadataView) bool {
 	if active := c.cscActive; active != nil && !active.Load() {
+		c.csc.Cancel(key, token)
+		return false
+	}
+	// A decision change retired this fetch's generation mid-flight: cancel so
+	// waiters re-decide under the current view. Best-effort (a publish can
+	// still race a swap landing after this check): a leaked entry sits under
+	// the retired fingerprint, unreachable for new lookups, still deleted by
+	// invalidations, reclaimed by eviction.
+	if c.metadataView().cscFingerprint != view.cscFingerprint {
 		c.csc.Cancel(key, token)
 		return false
 	}
