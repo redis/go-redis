@@ -314,10 +314,10 @@ func TestConn_CloseAfterStateClosedStillCleansUp(t *testing.T) {
 
 // TestConn_DoubleCloseCleansUpExactlyOnce asserts teardown idempotence:
 // closing a connection more than once must run each close callback and the
-// transport close exactly once. The transport close is CAS-claimed, so only
-// the first Close closes the socket and returns its result; later closes must
-// return nil rather than a spurious double-close error (which ConnPool paths
-// such as closeConnsIf would otherwise propagate).
+// transport close exactly once. Close atomically swaps the transport out, so
+// only the first Close closes the socket and returns its result; later closes
+// swap out the sentinel and return nil rather than a spurious double-close
+// error (which ConnPool paths such as closeConnsIf would otherwise propagate).
 func TestConn_DoubleCloseCleansUpExactlyOnce(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()
@@ -353,5 +353,50 @@ func TestConn_DoubleCloseCleansUpExactlyOnce(t *testing.T) {
 	}
 	if got := onCscCloseCalls.Load(); got != 1 {
 		t.Fatalf("onCscClose calls: got %d want 1", got)
+	}
+}
+
+// TestConn_CloseThenSocketReplacedClosesNewTransport is a regression test for
+// the handoff race reported on #3985: a Close during SetNetConnAndInitConn's
+// INITIALIZING window closes the original socket, then init stores a
+// replacement socket and unconditionally transitions the conn back to IDLE
+// (Transition is a plain Store). A later Close must close that replacement
+// socket. A teardown flag retained for the Conn's lifetime would stay set and
+// leak the replacement; binding the close to the transport generation (Close
+// swaps the socket out) closes each generation exactly once.
+//
+// The interleaving is reproduced deterministically rather than with goroutines.
+func TestConn_CloseThenSocketReplacedClosesNewTransport(t *testing.T) {
+	serverA, clientA := net.Pipe()
+	defer serverA.Close()
+	serverB, clientB := net.Pipe()
+	defer serverB.Close()
+
+	recA := &closeCountingConn{Conn: clientA}
+	recB := &closeCountingConn{Conn: clientB}
+
+	cn := NewConn(recA)
+
+	// Enter the handoff/init window and close from it, mirroring a pool
+	// shutdown that races an in-flight reinitialization.
+	cn.GetStateMachine().Transition(StateInitializing)
+	if err := cn.Close(); err != nil {
+		t.Fatalf("Close in INITIALIZING: %v", err)
+	}
+	if got := recA.closes.Load(); got != 1 {
+		t.Fatalf("original transport close calls: got %d want 1", got)
+	}
+
+	// Init proceeds: it stores the replacement socket and resurrects the conn
+	// to IDLE (Transition overwrites the CLOSED state set above).
+	cn.SetNetConn(recB)
+	cn.GetStateMachine().Transition(StateIdle)
+
+	// The replacement socket must be closed by the next Close.
+	if err := cn.Close(); err != nil {
+		t.Fatalf("Close after socket replacement: %v", err)
+	}
+	if got := recB.closes.Load(); got != 1 {
+		t.Fatalf("replacement transport close calls: got %d want 1 (socket leaked under stale claim)", got)
 	}
 }

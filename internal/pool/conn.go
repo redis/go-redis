@@ -61,6 +61,13 @@ type atomicNetConn struct {
 	conn net.Conn
 }
 
+// closedNetConn is the sentinel Close swaps into netConnAtomic to take ownership
+// of the current transport. atomic.Value panics on nil and on mismatched
+// concrete types, so the sentinel keeps the *atomicNetConn type while its nil
+// conn makes getNetConn report "no transport". Sharing one immutable value
+// avoids a per-close allocation.
+var closedNetConn = &atomicNetConn{}
+
 // generateConnID generates a fast unique identifier for a connection with zero allocations
 func generateConnID() uint64 {
 	return connIDCounter.Add(1)
@@ -160,19 +167,6 @@ type Conn struct {
 	// them. Atomic for the same init-vs-Close race as onClose: it is also
 	// installed by initConn and read and cleared by Close.
 	onCscClose atomic.Pointer[func() error]
-
-	// transportClosed claims the net.Conn teardown so it happens exactly once.
-	// Close CAS-claims it and only then calls net.Conn.Close, so repeated or
-	// concurrent Close calls (and the initConn-failure path where the pool
-	// closes a connection already marked CLOSED) do not double-close the socket
-	// or surface a spurious "use of closed network connection" error to callers
-	// that collect it (e.g. ConnPool.closeConnsIf).
-	//
-	// Invariant: the claim is never stale. The socket is only replaced by
-	// SetNetConnAndInitConn, which gates on non-CLOSED states, so no socket
-	// replacement can follow a Close (Close transitions to CLOSED). A given
-	// Conn therefore only ever closes the transport it was claimed on.
-	transportClosed atomic.Bool
 
 	// onCscReinit runs after the connection is claimed for reinitialization but
 	// before its socket is replaced. CSC uses it to invalidate entries whose
@@ -1171,12 +1165,24 @@ func (cn *Conn) Close() error {
 		_ = (*fn)()
 	}
 
-	// Lock-free netConn access for better performance. transportClosed claims
-	// the teardown with a CAS so the socket is closed exactly once; repeated or
-	// concurrent Close calls return nil rather than a double-close error.
-	if netConn := cn.getNetConn(); netConn != nil {
-		if cn.transportClosed.CompareAndSwap(false, true) {
-			return netConn.Close()
+	// Atomically take ownership of the current transport and close it. Swapping
+	// (rather than a sticky "closed" flag) closes exactly the socket installed
+	// when this Close ran: every value stored in netConnAtomic is closed by the
+	// one caller that swaps it out, and a socket a concurrent handoff installs
+	// afterwards is a fresh generation closed by the next Close. This keeps the
+	// close exactly-once (repeat/concurrent closes swap out the sentinel and
+	// return nil, avoiding a spurious "use of closed network connection" to
+	// callers such as ConnPool.closeConnsIf) without leaking a replacement
+	// socket when a Close races SetNetConnAndInitConn and init resurrects the
+	// conn to IDLE.
+	//
+	// A handoff may also close the pre-handoff socket directly
+	// (handoff_worker.go captures oldConn and closes it); if that races this
+	// swap the socket is closed twice, which is harmless — the second close is
+	// discarded.
+	if v := cn.netConnAtomic.Swap(closedNetConn); v != nil {
+		if wrapper, ok := v.(*atomicNetConn); ok && wrapper.conn != nil {
+			return wrapper.conn.Close()
 		}
 	}
 	return nil
