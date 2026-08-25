@@ -210,6 +210,7 @@ func NewConnWithBufferSize(netConn net.Conn, readBufSize, writeBufSize int) *Con
 func (cn *Conn) UsedAt() time.Time {
 	return time.Unix(0, cn.usedAt.Load())
 }
+
 func (cn *Conn) SetUsedAt(tm time.Time) {
 	cn.usedAt.Store(tm.UnixNano())
 }
@@ -217,6 +218,7 @@ func (cn *Conn) SetUsedAt(tm time.Time) {
 func (cn *Conn) UsedAtNs() int64 {
 	return cn.usedAt.Load()
 }
+
 func (cn *Conn) SetUsedAtNs(ns int64) {
 	cn.usedAt.Store(ns)
 }
@@ -224,6 +226,7 @@ func (cn *Conn) SetUsedAtNs(ns int64) {
 func (cn *Conn) LastPutAtNs() int64 {
 	return cn.lastPutAt.Load()
 }
+
 func (cn *Conn) SetLastPutAtNs(ns int64) {
 	cn.lastPutAt.Store(ns)
 }
@@ -559,6 +562,22 @@ func (cn *Conn) HasRelaxedTimeout() bool {
 
 	// If deadline is set, check if it's still in the future
 	return time.Now().UnixNano() < deadlineNs
+}
+
+// EffectiveReadTimeout reports the read timeout a read on this conn would use
+// right now: the active relaxed timeout (maintenance notifications) when set
+// and unexpired, else normalTimeout. Callers that bound how long a blocked
+// read may legitimately take (e.g. the CSC full-duplex drain backstop) must
+// use this rather than the configured ReadTimeout, or a relaxed read gets cut
+// short.
+func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
+	return cn.getEffectiveReadTimeout(normalTimeout)
+}
+
+// EffectiveWriteTimeout is the write-side counterpart of EffectiveReadTimeout,
+// for callers bounding how long a blocked write may legitimately take.
+func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
+	return cn.getEffectiveWriteTimeout(normalTimeout)
 }
 
 // getEffectiveReadTimeout returns the timeout to use for read operations.
@@ -979,6 +998,13 @@ func (cn *Conn) ClearHandoffState() {
 	cn.stateMachine.Transition(StateIdle)
 }
 
+// ExpiresAt returns the connection's absolute lifetime expiry (zero when no
+// ConnMaxLifetime applies; jitter included). Set once at dial, so a plain read
+// is safe. Long-holding callers bound their hold by the REMAINING lifetime.
+func (cn *Conn) ExpiresAt() time.Time {
+	return cn.expiresAt
+}
+
 // HasBufferedData safely checks if the connection has buffered data.
 // This method is used to avoid data races when checking for push notifications.
 func (cn *Conn) HasBufferedData() bool {
@@ -1045,6 +1071,14 @@ func (cn *Conn) WithReader(
 		if err := netConn.SetReadDeadline(cn.deadline(ctx, effectiveTimeout)); err != nil {
 			return err
 		}
+	} else {
+		// A negative timeout skips SetReadDeadline, and thus deadline(), which is
+		// the only per-I/O usedAt update. Record usage anyway so a long
+		// deadline-free hold (e.g. a full-duplex CSC session under ReadTimeout=-2)
+		// is not misjudged as idle-expired by the pool on the next Get and
+		// needlessly closed + redialed. Cheap: one atomic store, only on the rare
+		// deadline-free path; harmless on a nil netConn.
+		cn.SetUsedAtNs(getCachedTimeNs())
 	}
 	return fn(cn.rd)
 }
@@ -1088,6 +1122,11 @@ func (cn *Conn) WithWriter(
 			// Connection is not available - return preallocated error
 			return errConnNotAvailableForWrite
 		}
+	} else {
+		// See WithReader: keep usedAt fresh on the deadline-free write path too so
+		// a long-held conn (ReadTimeout/WriteTimeout=-2) is not misjudged as
+		// idle-expired by the pool on the next Get.
+		cn.SetUsedAtNs(getCachedTimeNs())
 	}
 
 	// Reset the buffered writer if needed, should not happen

@@ -2005,12 +2005,19 @@ func (p *ConnPool) isHealthyConn(cn *Conn, nowNs int64) bool {
 			// before the OnGet state check rejects it.
 			if replyType, err := cn.PeekReplyTypeForCheck(); err == nil && replyType == proto.RespPush {
 				// For RESP3 connections with push notifications, we allow some buffered data
-				// The client will process these notifications before using the connection
-				internal.Logger.Printf(
-					context.Background(),
-					"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
-					cn.GetID(),
-				)
+				// The client will process these notifications before using the connection.
+				// This is the normal healthy path for any client with server-side
+				// invalidation or maintenance notifications (client-side caching parks
+				// an invalidate frame on idle conns after every tracked write), so it
+				// logs at debug level only — at default level it would flood the log
+				// on every pool Get under a write-heavy tracked workload.
+				if internal.LogLevel.DebugOrAbove() {
+					internal.Logger.Printf(
+						context.Background(),
+						"push: conn[%d] has buffered data, likely push notifications - will be processed by client",
+						cn.GetID(),
+					)
+				}
 
 				// Update timestamp for healthy connection
 				cn.SetUsedAtNs(nowNs)
