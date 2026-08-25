@@ -125,15 +125,23 @@ func (b *cscInvalBatcher) drop() {
 	b.applyMu.Unlock()
 }
 
-// countDuplicateInvalidation records a duplicate incoming invalidation the batch
-// dedup dropped, so InvalidationStats counts incoming pushes rather than deduped
-// uniques (see add). A dropped duplicate is a redundant delete, so it counts as
-// one invalidation and one noop — matching the inline (window=0) path. Only the
-// built-in *LocalCache exposes these counters; other Cache impls have no stats.
-func (b *cscInvalBatcher) countDuplicateInvalidation() {
+// addInvalidationStats records incoming invalidations the batcher accounts for
+// itself rather than through deleteByRedisKeyCollectingHot, so CSCRefreshStats
+// still reflects incoming pushes under the window batcher and the spill-cap
+// fallback. Two callers: dedup-dropped duplicates (noop=true — a redundant
+// delete, matching the inline path) and items superseded by the overflow
+// full-Flush (noop=false — real incoming pushes the flush handles wholesale;
+// their per-key match is unknown post-flush, so they are not attributed as
+// no-ops). Only the built-in *LocalCache exposes these counters.
+func (b *cscInvalBatcher) addInvalidationStats(n uint64, noop bool) {
+	if n == 0 {
+		return
+	}
 	if lc, ok := b.cache.(*LocalCache); ok {
-		lc.invalidations.Add(1)
-		lc.invalidationsNoop.Add(1)
+		lc.invalidations.Add(n)
+		if noop {
+			lc.invalidationsNoop.Add(n)
+		}
 	}
 }
 
@@ -165,8 +173,13 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		// case is a pathological invalidation flood where the cache is churning
 		// wholesale anyway. Needed because the invalidatable keyset is not bounded
 		// by cache size (the server tracks keys past local LRU eviction).
+		discarded := 0
 		b.spillMu.Lock()
 		if len(b.spill) >= cscInvalSpillMax {
+			// The cleared backlog plus this item are superseded by the coming
+			// full-Flush and never reach deleteByRedisKeyCollectingHot; count them
+			// so InvalidationStats doesn't undercount a flood (see addInvalidationStats).
+			discarded = len(b.spill) + 1
 			b.spill = b.spill[:0]
 			// Set flushReq BEFORE releasing stopMu. stop() takes stopMu.Lock, so it
 			// cannot close stopCh until this store is visible; the worker's stop-drain
@@ -179,6 +192,7 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		}
 		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
+		b.addInvalidationStats(uint64(discarded), false)
 		b.spilled.Add(1)
 		select {
 		case b.wake <- struct{}{}:
@@ -275,7 +289,7 @@ func (b *cscInvalBatcher) run() {
 			// (the duplicate-invalidation ratio the stats exist to measure). A repeat
 			// delete matches nothing → invalidation + noop, exactly what the inline
 			// (window=0) path records for a second push of the same key.
-			b.countDuplicateInvalidation()
+			b.addInvalidationStats(1, true)
 		}
 		if len(pending) >= cscInvalBatchMax {
 			flush()
@@ -308,6 +322,10 @@ func (b *cscInvalBatcher) run() {
 				b.cache.Flush()
 			}
 		}()
+		// The pending batch is superseded by the Flush and never applied, so count
+		// it here too (see addInvalidationStats) — otherwise these incoming pushes
+		// would vanish from InvalidationStats under a flood.
+		b.addInvalidationStats(uint64(len(pending)), false)
 		pending = pending[:0]
 		for k := range seen {
 			delete(seen, k)

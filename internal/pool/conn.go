@@ -522,15 +522,48 @@ func (cn *Conn) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Dur
 // ClearRelaxedTimeout removes relaxed timeouts, returning to normal timeout behavior.
 // Uses atomic operations for lock-free access.
 func (cn *Conn) ClearRelaxedTimeout() {
-	// Atomically decrement counter and check if we should clear
-	newCount := cn.relaxedCounter.Add(-1)
+	// Clamped decrement: never drive the counter below zero. A deadline expiry
+	// (expireRelaxedTimeout) may have already fully cleared the window, so a
+	// still-outstanding holder clearing here must be a no-op rather than a negative
+	// that would stop a later SetRelaxedTimeout from taking effect.
+	var newCount int32
+	for {
+		cur := cn.relaxedCounter.Load()
+		if cur <= 0 {
+			return // already cleared (e.g. by deadline expiry)
+		}
+		if cn.relaxedCounter.CompareAndSwap(cur, cur-1) {
+			newCount = cur - 1
+			break
+		}
+	}
+	// Keep the deadline gate: after an explicit clear the window may still hold
+	// relaxed timeouts until the safety deadline (post-settlement), so only clear
+	// when the last holder drops AND the deadline is unset or already past.
 	deadlineNs := cn.relaxedDeadlineNs.Load()
 	if newCount <= 0 && (deadlineNs == 0 || time.Now().UnixNano() >= deadlineNs) {
-		// Use atomic load to get current value for CAS to avoid stale value race
-		current := cn.relaxedCounter.Load()
-		if current <= 0 && cn.relaxedCounter.CompareAndSwap(current, 0) {
+		if current := cn.relaxedCounter.Load(); current <= 0 && cn.relaxedCounter.CompareAndSwap(current, 0) {
 			cn.clearRelaxedTimeout()
 		}
+	}
+}
+
+// expireRelaxedTimeout is the deadline safety net: once the relaxed window's
+// deadline has passed, reset the WHOLE window exactly once, regardless of how
+// many holders (relax notifications) are still outstanding — a passed deadline
+// ends the window, and this also recovers a LOST unrelax notification (otherwise
+// the counter would never return to 0, drift up across windows, and the next
+// SetRelaxedTimeout would start from a wrong base).
+//
+// It is NOT a per-I/O decrement (I/O is not a notification): the CAS on the
+// shared relaxedDeadlineNs makes exactly one of the concurrent reader/writer/
+// drainBackstop callers on a full-duplex connection perform the reset; the rest
+// no-op. The old code decremented per call here, which raced those concurrent
+// callers into a negative counter and wedged later relaxations.
+func (cn *Conn) expireRelaxedTimeout(deadlineNs int64) {
+	if cn.relaxedDeadlineNs.CompareAndSwap(deadlineNs, 0) {
+		internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
+		cn.clearRelaxedTimeout()
 	}
 }
 
@@ -580,18 +613,20 @@ func (cn *Conn) HasRelaxedTimeout() bool {
 // use this rather than the configured ReadTimeout, or a relaxed read gets cut
 // short.
 //
-// Not a pure getter: if a relaxed maintenance timeout has already EXPIRED, this
-// decrements the relaxed counter and may clear the relaxed timeout (identical to
-// the side effect a real read incurs). It never strips an ACTIVE (unexpired)
-// relaxed timeout, so calling it mid-handoff is safe.
+// Returns the relaxed timeout while the relaxed window is unexpired, else
+// normalTimeout. Safe to call concurrently (reader/writer/drainBackstop of a
+// full-duplex conn): the only mutation is the deadline safety net — when the
+// relaxed deadline has passed it resets the whole window exactly once (a single
+// deadline-triggered event via a CAS on the shared deadline, NOT a per-call
+// decrement; see expireRelaxedTimeout). It never strips an ACTIVE (unexpired)
+// relaxed window.
 func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveReadTimeout(normalTimeout)
 }
 
 // EffectiveWriteTimeout is the write-side counterpart of EffectiveReadTimeout,
 // for callers bounding how long a blocked write may legitimately take. Same
-// not-a-pure-getter note as EffectiveReadTimeout (post-expiry relaxed-counter
-// decrement only).
+// deadline-safety-net note (single reset on expiry, not a per-call decrement).
 func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveWriteTimeout(normalTimeout)
 }
@@ -619,15 +654,13 @@ func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Durati
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
 		return time.Duration(readTimeoutNs)
-	} else {
-		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
-		newCount := cn.relaxedCounter.Add(-1)
-		if newCount <= 0 {
-			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
-			cn.clearRelaxedTimeout()
-		}
-		return normalTimeout
 	}
+	// Deadline has passed: reset the window once (deadline safety net, also
+	// recovers a lost unrelax notification — see expireRelaxedTimeout) and use the
+	// normal timeout. The reset is a single deadline-triggered event, NOT a
+	// per-I/O decrement.
+	cn.expireRelaxedTimeout(deadlineNs)
+	return normalTimeout
 }
 
 // getEffectiveWriteTimeout returns the timeout to use for write operations.
@@ -653,15 +686,11 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 	if nowNs < deadlineNs {
 		// Deadline is in the future, use relaxed timeout
 		return time.Duration(writeTimeoutNs)
-	} else {
-		// Deadline has passed, clear relaxed timeouts atomically and use normal timeout
-		newCount := cn.relaxedCounter.Add(-1)
-		if newCount <= 0 {
-			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
-			cn.clearRelaxedTimeout()
-		}
-		return normalTimeout
 	}
+	// Deadline has passed: reset the window once (see expireRelaxedTimeout) and use
+	// the normal timeout.
+	cn.expireRelaxedTimeout(deadlineNs)
+	return normalTimeout
 }
 
 // SetOnClose installs fn as the callback invoked exactly once when this
