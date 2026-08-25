@@ -40,6 +40,29 @@ func newTestBatcher(cache Cache, chCap int, window time.Duration) *cscInvalBatch
 	}
 }
 
+// TestInvalBatcherEnqueueSnapshotsSinceToken pins the #16 horizon snapshot across
+// the atomic.Pointer conversion of the batcher's refresh field: enqueue must read
+// the CURRENT refresh binding's sinceToken and stamp it on the item, so a
+// batch-window delay cannot chill a key that was hot when the invalidation
+// arrived.
+func TestInvalBatcherEnqueueSnapshotsSinceToken(t *testing.T) {
+	b := newTestBatcher(&countingCache{}, 4, time.Hour) // worker not started: item stays on ch
+	q := &cscRefreshQueue{}
+	q.sinceToken.Store(4242)
+	b.refresh.Store(q)
+
+	b.enqueue("k")
+
+	select {
+	case it := <-b.ch:
+		if it.sinceToken != 4242 {
+			t.Fatalf("enqueued item sinceToken = %d, want 4242 (snapshot at enqueue)", it.sinceToken)
+		}
+	default:
+		t.Fatal("enqueue did not land on ch")
+	}
+}
+
 // A full ch must send overflow to spill, never apply a delete inline on the
 // caller (which, on the coalescer's reply reader, would stall miss replies).
 func TestInvalBatcherOverflowSpillsNotInline(t *testing.T) {

@@ -3483,3 +3483,38 @@ func TestInvalidationStatsSplitByDedup(t *testing.T) {
 		t.Fatalf("Invalidations - Deletions = %d, want 199 (the dedup gap)", got)
 	}
 }
+
+// TestBatcherRepointedToSurvivorOnRefreshClose pins the cursor finding: when the
+// active refresh owner closes, clearRefreshQueue must repoint the running batcher
+// at the surviving sibling BEFORE stopping it, so the stop-drain feeds evicted-hot
+// keys to the live survivor's refresher rather than the closed owner's (whose
+// drainer is gone). Asserting the pointer is enough: it is the whole fix.
+func TestBatcherRepointedToSurvivorOnRefreshClose(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour)
+
+	qA := &cscRefreshQueue{}
+	qB := &cscRefreshQueue{}
+	h.setRefreshQueue(qA)
+	h.setRefreshQueue(qB) // B is the active owner
+
+	b := h.ensureBatcher()
+	if b == nil {
+		t.Fatal("expected a windowed batcher")
+	}
+	if got := b.refresh.Load(); got != qB {
+		t.Fatalf("batcher refresh = %p, want active owner qB %p", got, qB)
+	}
+
+	// Active owner B closes: survivor A is restored AND the batcher is repointed at
+	// A before its stop-drain.
+	h.clearRefreshQueue(qB)
+	if got := b.refresh.Load(); got != qA {
+		t.Fatalf("after owner close: batcher refresh = %p, want survivor qA %p (stop-drain would feed the dead owner)", got, qA)
+	}
+}

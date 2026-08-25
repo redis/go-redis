@@ -212,15 +212,17 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 	if h.batcher == nil {
 		h.batcher = &cscInvalBatcher{
 			window: w,
-			// Snapshot the binding for the batcher's lifetime (⊂ the binding's:
-			// releaseLocked stops it before clearing these) so the release-time
+			// Snapshot the cache for the batcher's lifetime (⊂ the binding's:
+			// releaseLocked stops it before clearing it) so the release-time
 			// stop-drain still applies queued deletes after h.cache is nilled.
-			cache:   h.cache,
-			refresh: h.refresh,
-			ch:      make(chan cscInvalItem, 8192),
-			wake:    make(chan struct{}, 1),
-			stopCh:  make(chan struct{}),
+			cache:  h.cache,
+			ch:     make(chan cscInvalItem, 8192),
+			wake:   make(chan struct{}, 1),
+			stopCh: make(chan struct{}),
 		}
+		// refresh is atomic so set/clearRefreshQueue can repoint it before stop;
+		// seed it with the current binding before the worker starts.
+		h.batcher.refresh.Store(h.refresh)
 		go h.batcher.run()
 	}
 	return h.batcher
@@ -254,6 +256,12 @@ func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
 		h.refresh = h.refreshStack[n-1]
 	}
 	if h.batcher != nil {
+		// Repoint the batcher at the surviving binding (nil if none) BEFORE stopping
+		// it, so the stop-drain offers evicted-hot keys to the live survivor's
+		// refresher, not the closing owner's — whose drainer is already gone, so its
+		// offers would just be dropped. An in-flight apply already holding the old
+		// pointer feeds its current batch to the old queue: a bounded, benign residual.
+		h.batcher.refresh.Store(h.refresh)
 		h.batcher.stop()
 		h.batcher = nil
 	}
@@ -278,10 +286,12 @@ func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 		return
 	}
 	h.refresh = q
-	// A running batcher snapshotted the previous refresh binding at creation;
-	// drop it so the next invalidation rebuilds with the new one (stop()
-	// flushes, so no queued delete is lost).
+	// A running batcher was created with the previous binding; drop it so the next
+	// invalidation rebuilds with the new one (stop() flushes, so no queued delete
+	// is lost). Repoint it at the new binding first, so the stop-drain feeds hot
+	// keys to q rather than the superseded refresher.
 	if h.batcher != nil {
+		h.batcher.refresh.Store(h.refresh)
 		h.batcher.stop()
 		h.batcher = nil
 	}

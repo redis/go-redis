@@ -54,12 +54,17 @@ type cscInvalItem struct {
 
 type cscInvalBatcher struct {
 	window time.Duration
-	// cache/refresh are snapshotted at creation (batcher lifetime is inside the
-	// binding lifetime): the release-time stop-drain must still apply queued
-	// deletes AFTER releaseLocked nils h.cache, or a successor reusing the
-	// shared cache serves stale until TTL/MaxStaleness.
-	cache   Cache
-	refresh *cscRefreshQueue
+	// cache is snapshotted at creation (batcher lifetime is inside the binding
+	// lifetime): the release-time stop-drain must still apply queued deletes AFTER
+	// releaseLocked nils h.cache, or a successor reusing the shared cache serves
+	// stale until TTL/MaxStaleness.
+	cache Cache
+	// refresh is the active refresh binding. Atomic (not a plain snapshot) because
+	// set/clearRefreshQueue can REPOINT it — under h.mu, before stopping the
+	// batcher — at the surviving/new binding, so the stop-drain feeds hot keys to
+	// the live refresher instead of the dead one the batcher was created with. Read
+	// by both the producer (enqueue) and the worker (apply).
+	refresh atomic.Pointer[cscRefreshQueue]
 
 	ch       chan cscInvalItem
 	stopCh   chan struct{}
@@ -143,8 +148,8 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 	// Snapshot the refresh recency horizon NOW (enqueue time), so a batch-window
 	// delay can't advance it out from under apply's hot-entry check (see the field
 	// doc). Cheap: one atomic load, no lock. Left 0 when refresh is off.
-	if b.refresh != nil {
-		it.sinceToken = b.refresh.sinceToken.Load()
+	if r := b.refresh.Load(); r != nil {
+		it.sinceToken = r.sinceToken.Load()
 	}
 	b.stopMu.RLock()
 	if b.stopped {
@@ -204,10 +209,11 @@ func (b *cscInvalBatcher) takeSpill() []cscInvalItem {
 	return s
 }
 
-// apply deletes the namespaced keys and feeds evicted-hot entries to the
-// refresher, using the creation-time snapshot (see the struct fields).
+// apply deletes the namespaced keys and feeds evicted-hot entries to the current
+// refresh binding (b.refresh, which set/clearRefreshQueue may have repointed at a
+// survivor before the stop-drain — see the struct field).
 func (b *cscInvalBatcher) apply(items []cscInvalItem) {
-	cache, refresh := b.cache, b.refresh
+	cache, refresh := b.cache, b.refresh.Load()
 	if cache == nil {
 		return
 	}
