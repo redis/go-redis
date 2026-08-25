@@ -1686,6 +1686,63 @@ func (p *ConnPool) Size() int {
 	return int(p.cfg.PoolSize)
 }
 
+// HasFreeCapacity reports whether the pool can likely serve another Get without
+// blocking — a best-effort probe for the autopipeline straggler-hold gate (a
+// false positive only costs a spill / short hold, never correctness). Checks,
+// in order: a truly servable idle conn (usableIdleLen — plain IdleLen counts
+// not-usable and handoff-marked entries an OnGet hook would divert); a free
+// pool turn (accounts for in-use conns AND in-flight dials); room under
+// PoolSize and MaxActiveConns (newConn's hard dial gate); a free dial slot
+// (MaxConcurrentDials below PoolSize can saturate slots while a turn is free);
+// and the dial circuit breaker not being open (a saturated dialErrorsNum makes
+// the Get fail fast rather than serve).
+func (p *ConnPool) HasFreeCapacity() bool {
+	// Turn check comes FIRST: Get acquires a turn before popIdle, so with the
+	// semaphore exhausted even a usable idle conn is not immediately servable
+	// (putConnWithoutTurn can re-pool a conn while its turn stays held, so
+	// idle > 0 does not imply a free turn).
+	if p.semaphore.Available() <= 0 {
+		return false
+	}
+	if p.usableIdleLen() > 0 {
+		return true
+	}
+	size := p.poolSize.Load()
+	if size >= p.cfg.PoolSize {
+		return false
+	}
+	if m := p.cfg.MaxActiveConns; m > 0 && size >= m {
+		return false
+	}
+	if c := cap(p.dialsInProgress); c > 0 && len(p.dialsInProgress) >= c {
+		return false
+	}
+	// Dial circuit breaker open (dialConn fails fast until a background probe
+	// succeeds): the Get would need this dial and error immediately, so there is
+	// no capacity to report.
+	if p.dialErrorsNum.Load() >= uint32(p.cfg.PoolSize) {
+		return false
+	}
+	return true
+}
+
+// usableIdleLen counts idle connections a Get would actually serve, unlike
+// IdleLen(): it excludes not-usable conns (mid state transition) and
+// handoff-marked conns (still StateIdle/usable, but the OnGet pool hook diverts
+// them to handoff). Best-effort — a re-auth-marked conn is a rare residual
+// false positive. The idle slice is bounded by PoolSize, so the scan is cheap.
+func (p *ConnPool) usableIdleLen() int {
+	p.connsMu.Lock()
+	n := 0
+	for _, cn := range p.idleConns {
+		if cn.IsUsable() && !cn.ShouldHandoff() {
+			n++
+		}
+	}
+	p.connsMu.Unlock()
+	return n
+}
+
 func (p *ConnPool) Stats() *Stats {
 	return &Stats{
 		Hits:            atomic.LoadUint32(&p.stats.Hits),
