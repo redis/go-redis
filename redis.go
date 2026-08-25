@@ -2752,15 +2752,13 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 		return false, nil
 	}
 
-	// The hard-deadline reads below (probe and drain) leave their deadline armed.
-	// A NEGATIVE ReadTimeout never re-arms (WithReader skips SetReadDeadline), so
-	// without this clear a drained conn reused within the residue window fails
-	// its first read with a spurious timeout. No-op on a removed conn.
-	defer func() {
-		if c.opt.ReadTimeout < 0 {
-			_ = cn.WithReader(context.Background(), 0, func(*proto.Reader) error { return nil })
-		}
-	}()
+	// No deadline cleanup is needed here: WithReaderHardDeadline (the probe and
+	// drain reads below) already restores a cleared read deadline in its own defer
+	// (SetReadDeadline(time.Time{}) — see its doc). A previous WithReader(ctx, 0)
+	// cleanup here was both redundant and wrong: under an active relaxed
+	// maintenance timeout it re-armed a relaxed deadline (getEffectiveReadTimeout
+	// returns the relaxed value even for timeout 0), which a ReadTimeout<0 conn
+	// then never clears on its next read, causing a spurious timeout later.
 
 	if !hasData {
 		// TLS and opaque wrappers can hide bytes from the socket readiness

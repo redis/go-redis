@@ -218,6 +218,7 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 			cache:   h.cache,
 			refresh: h.refresh,
 			ch:      make(chan cscInvalItem, 8192),
+			wake:    make(chan struct{}, 1),
 			stopCh:  make(chan struct{}),
 		}
 		go h.batcher.run()

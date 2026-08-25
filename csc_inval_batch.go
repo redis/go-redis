@@ -1,9 +1,12 @@
 package redis
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal"
 )
 
 // Windowed background invalidation batcher.
@@ -42,6 +45,21 @@ type cscInvalBatcher struct {
 	ch       chan cscInvalItem
 	stopCh   chan struct{}
 	stopOnce sync.Once
+	// spill absorbs invalidations that arrive while ch is full, so an overflow
+	// never applies a delete inline on the producer — critically the coalescer's
+	// reply reader, where inline apply (lock-held cache work) stalls miss replies
+	// (head-of-line). The worker drains spill through the SAME seen/pending dedup
+	// pipeline as ch, so a burst of duplicate keys collapses to one delete per
+	// key; distinct keys are bounded by the tracked keyset (⊂ cache capacity), so
+	// spill needs no hard cap — the worker catches up. wake nudges the worker to
+	// drain promptly (cap 1, coalescing: one wake drains the whole slice).
+	spillMu sync.Mutex
+	spill   []cscInvalItem
+	wake    chan struct{}
+	// spilled counts overflow events (ch full at send time). Internal; read by
+	// tests and available for a future stat, so the feature's degradation under
+	// invalidation bursts is observable instead of silent.
+	spilled atomic.Uint64
 	// epoch versions enqueued invalidations against full-cache flushes: drop()
 	// bumps it, and apply skips items from an older epoch. applyMu serializes
 	// the two: without it, apply could snapshot the epoch, a concurrent
@@ -89,9 +107,11 @@ func (b *cscInvalBatcher) drop() {
 	b.applyMu.Unlock()
 }
 
-// enqueue hands a namespaced key to the batcher without blocking the caller. On
-// a full queue — or once the batcher is stopped (see stopMu) — it applies the
-// delete inline so an invalidation is never dropped.
+// enqueue hands a namespaced key to the batcher without blocking the caller and
+// without ever applying a delete inline on the producer (see the spill field):
+// on a full ch it appends to spill and nudges the worker; only once the batcher
+// is stopped (no worker left to drain, see stopMu) does it apply inline so an
+// invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
 	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load()}
 	b.stopMu.RLock()
@@ -104,9 +124,31 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 	case b.ch <- it:
 		b.stopMu.RUnlock()
 	default:
+		// ch full: park on spill (off the producer's read path) for the worker
+		// to drain, instead of applying inline here. Correctness is unchanged —
+		// the item carries its enqueue-time epoch and the worker applies it under
+		// applyMu with the same epoch check as the ch path.
+		b.spillMu.Lock()
+		b.spill = append(b.spill, it)
+		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
-		b.apply([]cscInvalItem{it})
+		b.spilled.Add(1)
+		select {
+		case b.wake <- struct{}{}:
+		default:
+		}
 	}
+}
+
+// takeSpill swaps out the accumulated spill for the worker to drain. Returns nil
+// when empty. The swapped slice is owned by the caller; b.spill starts fresh so
+// concurrent enqueues never race the drain.
+func (b *cscInvalBatcher) takeSpill() []cscInvalItem {
+	b.spillMu.Lock()
+	s := b.spill
+	b.spill = nil
+	b.spillMu.Unlock()
+	return s
 }
 
 // apply deletes the namespaced keys and feeds evicted-hot entries to the
@@ -154,41 +196,68 @@ func (b *cscInvalBatcher) run() {
 		if len(pending) == 0 {
 			return
 		}
-		b.apply(pending)
+		// Recover so a panic in a cache/refresh call can never kill the worker:
+		// overflow is parked on the unbounded spill buffer, so a dead worker would
+		// let spill grow without bound. Log and keep looping instead.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					internal.Logger.Printf(context.Background(),
+						"redis: csc invalidation batch apply panic: %v", r)
+				}
+			}()
+			b.apply(pending)
+		}()
 		pending = pending[:0]
 		for k := range seen {
 			delete(seen, k)
+		}
+	}
+	// add runs one item through the epoch-scoped dedup and size-flushes at the
+	// cap. Shared by the ch, spill, and stop-drain paths so spilled items get the
+	// SAME dedup as fast-path items — a burst of duplicate keys collapses to one
+	// delete per key.
+	add := func(it cscInvalItem) {
+		if e, dup := seen[it.key]; !dup || e != it.epoch {
+			seen[it.key] = it.epoch
+			pending = append(pending, it)
+		}
+		if len(pending) >= cscInvalBatchMax {
+			flush()
+			t.Reset(b.window)
+		}
+	}
+	drainSpill := func() {
+		for _, it := range b.takeSpill() {
+			add(it)
 		}
 	}
 	for {
 		select {
 		case <-b.stopCh:
 			// Stopped (last release, or a window-change rebuild where queued deletes
-			// are still live and must not be lost): drain ch into the batch, flush
-			// once, exit.
+			// are still live and must not be lost): drain spill AND ch into the
+			// batch, flush once, exit. enqueue appends spill under stopMu.RLock, so
+			// anything spilled before stop set stopped=true is visible here.
+			drainSpill()
 			for draining := true; draining; {
 				select {
 				case it := <-b.ch:
-					if e, dup := seen[it.key]; !dup || e != it.epoch {
-						seen[it.key] = it.epoch
-						pending = append(pending, it)
-					}
+					add(it)
 				default:
 					draining = false
 				}
 			}
+			drainSpill() // catch keys spilled during the ch drain
 			flush()
 			return
 		case it := <-b.ch:
-			if e, dup := seen[it.key]; !dup || e != it.epoch {
-				seen[it.key] = it.epoch
-				pending = append(pending, it)
-			}
-			if len(pending) >= cscInvalBatchMax {
-				flush()
-				t.Reset(b.window)
-			}
+			add(it)
+		case <-b.wake:
+			// An overflow parked keys on spill; drain them off the producer.
+			drainSpill()
 		case <-t.C:
+			drainSpill()
 			flush()
 			t.Reset(b.window)
 		}

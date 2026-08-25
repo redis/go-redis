@@ -57,6 +57,13 @@ const (
 	// cscFullDuplexDepth caps in-flight commands on the single-connection
 	// full-duplex engine (flow control for the writer).
 	cscFullDuplexDepth = 4096
+	// cscMissBatchBytes soft-caps the serialized size of one coalesced write
+	// batch so a burst of large commands cannot buffer an unbounded write on the
+	// held connection. The first miss always goes (latency-first — a lone large
+	// command must not stall), so this bounds only the OPPORTUNISTIC coalescing
+	// of already-queued misses; anything not packed stays queued for the next
+	// batch. It does not bound reply sizes, which are inherent to the workload.
+	cscMissBatchBytes = 1 << 20 // 1 MiB
 )
 
 // cscCoalesceMissesEnabled is read once, at coalescer construction (per client).
@@ -421,13 +428,18 @@ func (mc *cscMissCoalescer) drainQueueErr(err error) {
 }
 
 // grabInto appends first plus whatever else is already queued (non-blocking, up
-// to cscMissBatchMax) into dst, reusing dst's backing array.
+// to cscMissBatchMax commands OR cscMissBatchBytes of serialized payload) into
+// dst, reusing dst's backing array. first is always included regardless of size
+// (latency-first: a lone large command must not stall); the byte cap only bounds
+// how many additional already-queued misses are packed onto the same write.
 func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) []*cscMissReq {
 	dst = append(dst, first)
-	for len(dst) < cscMissBatchMax {
+	nbytes := len(first.wire)
+	for len(dst) < cscMissBatchMax && nbytes < cscMissBatchBytes {
 		select {
 		case more := <-mc.ch:
 			dst = append(dst, more)
+			nbytes += len(more.wire)
 		default:
 			return dst
 		}

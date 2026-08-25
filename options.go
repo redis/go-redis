@@ -514,6 +514,20 @@ func (opt *Options) init() {
 			opt.ClientSideCacheStrategy)
 		opt.ClientSideCacheStrategy = CSCStrategySharedTracking
 	}
+	// Deferring invalidation deletes by more than the cache's MaxStaleness lets a
+	// reader see a value past the point a received invalidation should have evicted
+	// it — beyond the staleness contract. Warn (not clamp): the field is
+	// experimental and a caller may accept it knowingly, but a window larger than
+	// MaxStaleness is almost always a misconfiguration. Only checkable for the
+	// built-in cache; a custom Cache has no MaxStaleness to compare against.
+	if opt.ClientSideCacheInvalidationBatchWindow > 0 && opt.ClientSideCacheConfig != nil &&
+		opt.ClientSideCacheConfig.MaxStaleness > 0 &&
+		opt.ClientSideCacheInvalidationBatchWindow > opt.ClientSideCacheConfig.MaxStaleness {
+		internal.Logger.Printf(context.Background(),
+			"redis: ClientSideCacheInvalidationBatchWindow (%s) exceeds the cache MaxStaleness (%s); "+
+				"invalidations can be deferred past the staleness bound, serving stale values",
+			opt.ClientSideCacheInvalidationBatchWindow, opt.ClientSideCacheConfig.MaxStaleness)
+	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {
 			opt.Network = "unix"
