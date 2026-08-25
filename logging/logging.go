@@ -40,7 +40,7 @@ func Disable() {
 //
 // It will override any custom logger that was set before and set the DefaultLogger.
 func Enable() {
-	internal.Logger.Store(internal.NewDefaultLogger())
+	internal.Logger.Store(internal.NewDefaultLogger(3))
 }
 
 // SetLogLevel sets the log level for the library.
@@ -51,14 +51,18 @@ func SetLogLevel(logLevel LogLevelT) {
 // NewBlacklistLogger returns a new logger that filters out messages containing any of the substrings.
 // This can be used to filter out messages containing sensitive information.
 func NewBlacklistLogger(substr []string) internal.Logging {
-	l := internal.NewDefaultLogger()
+	// calldepth 4: filterLogger.Printf adds a frame on top of the
+	// atomicLogger.Printf forwarding frame.
+	l := internal.NewDefaultLogger(4)
 	return &filterLogger{logger: l, substr: substr, blacklist: true}
 }
 
 // NewWhitelistLogger returns a new logger that only logs messages containing any of the substrings.
 // This can be used to only log messages related to specific commands or patterns.
 func NewWhitelistLogger(substr []string) internal.Logging {
-	l := internal.NewDefaultLogger()
+	// calldepth 4: filterLogger.Printf adds a frame on top of the
+	// atomicLogger.Printf forwarding frame.
+	l := internal.NewDefaultLogger(4)
 	return &filterLogger{logger: l, substr: substr, blacklist: false}
 }
 
