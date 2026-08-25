@@ -258,7 +258,7 @@ func TestSlotNodeWithinLatencyRotationPastIntMax(t *testing.T) {
 	first := toleranceTestNode(t, 100*time.Microsecond, false)
 	second := toleranceTestNode(t, 110*time.Microsecond, false)
 	state := toleranceTestState(first, second)
-	state.slots[0].nodesByLatencyRotation.Store(math.MaxInt32)
+	state.slots[0].latencyBandNodeCursor.Store(math.MaxInt32)
 
 	seen := map[*clusterNode]int{}
 	for i := 0; i < 8; i++ {

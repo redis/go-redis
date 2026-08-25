@@ -825,10 +825,12 @@ type clusterSlot struct {
 	end   int
 	nodes []*clusterNode
 
-	// Rotation cursor for RouteByLatencyTolerance. Per slot on purpose: a counter shared
+	// Round-robin cursor over the nodes inside the RouteByLatencyTolerance band. Latency
+	// decides only which nodes are in the band; within it they are treated as equally close
+	// and picked in turn, so this does not order them. Per slot on purpose: a counter shared
 	// across slots is advanced by the other slots between two visits to this one, so with a
 	// regular interleaving each slot keeps landing on the same candidate index.
-	nodesByLatencyRotation atomic.Uint32
+	latencyBandNodeCursor atomic.Uint32
 }
 
 type clusterState struct {
@@ -1145,7 +1147,7 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 
 		// Reduced in the unsigned domain: the cursor wraps, and on 32-bit builds converting a
 		// value past 2^31 to int before the modulo would make the index negative.
-		return ready[(entry.nodesByLatencyRotation.Add(1)-1)%uint32(len(ready))], nil
+		return ready[(entry.latencyBandNodeCursor.Add(1)-1)%uint32(len(ready))], nil
 	}
 
 	// Every node is failing. Fall back to the least-slow one, so a transient failure does
