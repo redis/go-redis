@@ -42,6 +42,14 @@ const cscInvalSpillMax = 1 << 16 // 65536
 type cscInvalItem struct {
 	key   string
 	epoch uint64
+	// sinceToken is the refresh "recently-read" horizon snapshotted at ENQUEUE,
+	// used by apply for the hot-entry check instead of a live load. A batch window
+	// >= the recency tick (200ms) would otherwise let the horizon advance during
+	// the wait, so a key that was hot when the invalidation arrived fails the
+	// check by apply time and silently degrades to plain eviction. Free size-wise:
+	// it fits the 8-byte alignment padding the struct already carries. 0 when
+	// refresh is off (the hot path is skipped anyway).
+	sinceToken int64
 }
 
 type cscInvalBatcher struct {
@@ -125,26 +133,6 @@ func (b *cscInvalBatcher) drop() {
 	b.applyMu.Unlock()
 }
 
-// addInvalidationStats records incoming invalidations the batcher accounts for
-// itself rather than through deleteByRedisKeyCollectingHot, so CSCRefreshStats
-// still reflects incoming pushes under the window batcher and the spill-cap
-// fallback. Two callers: dedup-dropped duplicates (noop=true — a redundant
-// delete, matching the inline path) and items superseded by the overflow
-// full-Flush (noop=false — real incoming pushes the flush handles wholesale;
-// their per-key match is unknown post-flush, so they are not attributed as
-// no-ops). Only the built-in *LocalCache exposes these counters.
-func (b *cscInvalBatcher) addInvalidationStats(n uint64, noop bool) {
-	if n == 0 {
-		return
-	}
-	if lc, ok := b.cache.(*LocalCache); ok {
-		lc.invalidations.Add(n)
-		if noop {
-			lc.invalidationsNoop.Add(n)
-		}
-	}
-}
-
 // enqueue hands a namespaced key to the batcher without blocking the caller and
 // without ever applying a delete inline on the producer (see the spill field):
 // on a full ch it appends to spill and nudges the worker; only once the batcher
@@ -152,6 +140,12 @@ func (b *cscInvalBatcher) addInvalidationStats(n uint64, noop bool) {
 // invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
 	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load()}
+	// Snapshot the refresh recency horizon NOW (enqueue time), so a batch-window
+	// delay can't advance it out from under apply's hot-entry check (see the field
+	// doc). Cheap: one atomic load, no lock. Left 0 when refresh is off.
+	if b.refresh != nil {
+		it.sinceToken = b.refresh.sinceToken.Load()
+	}
 	b.stopMu.RLock()
 	if b.stopped {
 		b.stopMu.RUnlock()
@@ -173,13 +167,12 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		// case is a pathological invalidation flood where the cache is churning
 		// wholesale anyway. Needed because the invalidatable keyset is not bounded
 		// by cache size (the server tracks keys past local LRU eviction).
-		discarded := 0
 		b.spillMu.Lock()
 		if len(b.spill) >= cscInvalSpillMax {
 			// The cleared backlog plus this item are superseded by the coming
-			// full-Flush and never reach deleteByRedisKeyCollectingHot; count them
-			// so InvalidationStats doesn't undercount a flood (see addInvalidationStats).
-			discarded = len(b.spill) + 1
+			// full-Flush and never reach deleteByRedisKeyCollectingHot. They were
+			// already counted as incoming invalidations at the handler; they simply
+			// won't become deletions — the Flush supersedes them wholesale.
 			b.spill = b.spill[:0]
 			// Set flushReq BEFORE releasing stopMu. stop() takes stopMu.Lock, so it
 			// cannot close stopCh until this store is visible; the worker's stop-drain
@@ -192,7 +185,6 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		}
 		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
-		b.addInvalidationStats(uint64(discarded), false)
 		b.spilled.Add(1)
 		select {
 		case b.wake <- struct{}{}:
@@ -238,7 +230,10 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 			cache.DeleteByRedisKey(k)
 			continue
 		}
-		hot = lc.deleteByRedisKeyCollectingHot(k, refresh.sinceToken.Load(), hot[:0])
+		// Use the horizon snapshotted at ENQUEUE, not a live load: a batch-window
+		// delay advances the live horizon and would chill keys that were hot when
+		// the invalidation arrived (see cscInvalItem.sinceToken).
+		hot = lc.deleteByRedisKeyCollectingHot(k, it.sinceToken, hot[:0])
 		for i := range hot {
 			refresh.offer(hot[i])
 		}
@@ -282,15 +277,11 @@ func (b *cscInvalBatcher) run() {
 		if e, dup := seen[it.key]; !dup || e != it.epoch {
 			seen[it.key] = it.epoch
 			pending = append(pending, it)
-		} else {
-			// Same key already queued this window: apply() will delete it once, so
-			// deleteByRedisKeyCollectingHot never counts THIS incoming push. Count it
-			// here so InvalidationStats reflects incoming pushes, not deduped uniques
-			// (the duplicate-invalidation ratio the stats exist to measure). A repeat
-			// delete matches nothing → invalidation + noop, exactly what the inline
-			// (window=0) path records for a second push of the same key.
-			b.addInvalidationStats(1, true)
 		}
+		// A duplicate key in the same epoch is dropped here: apply() deletes the key
+		// once, so it becomes a single deletion. The incoming push was already
+		// counted at the handler, so the dropped duplicate needs no accounting — it
+		// just won't add a deletion, which is exactly the dedup signal.
 		if len(pending) >= cscInvalBatchMax {
 			flush()
 			t.Reset(b.window)
@@ -322,10 +313,9 @@ func (b *cscInvalBatcher) run() {
 				b.cache.Flush()
 			}
 		}()
-		// The pending batch is superseded by the Flush and never applied, so count
-		// it here too (see addInvalidationStats) — otherwise these incoming pushes
-		// would vanish from InvalidationStats under a flood.
-		b.addInvalidationStats(uint64(len(pending)), false)
+		// The pending batch is superseded by the Flush and never applied as
+		// individual deletions (the Flush invalidates wholesale). Incoming pushes
+		// were already counted at the handler, so just reset the batch.
 		pending = pending[:0]
 		for k := range seen {
 			delete(seen, k)

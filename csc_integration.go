@@ -325,6 +325,20 @@ func (h *invalidateHandler) HandlePushNotification(
 		}
 		h.mu.RUnlock()
 	case []interface{}:
+		// Count incoming invalidations at the choke point: one per key named in the
+		// push, BEFORE batching/dedup/spill. Applied deletes are counted separately
+		// (DeleteByRedisKey / deleteByRedisKeyCollectingHot) and diverge from this
+		// under dedup — that gap is the signal (see CSCRefreshStats).
+		if lc, ok := cache.(*LocalCache); ok {
+			var n uint64
+			for _, k := range payload {
+				switch k.(type) {
+				case string, []byte:
+					n++
+				}
+			}
+			lc.invalidations.Add(n)
+		}
 		// Offload path: enqueue keys to the windowed background batcher instead of
 		// deleting inline, so invalidation work does not steal time from the
 		// coalescer's miss-reply reader (the low-concurrency churn p99 tail).

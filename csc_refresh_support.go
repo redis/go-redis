@@ -22,11 +22,18 @@ func (h *cscRevalidateHandle) signalStop() {
 // the "recently read" horizon.
 func (c *LocalCache) LRUClock() int64 { return lruSequence.Load() }
 
-// InvalidationStats reports invalidation-push accounting. invalidations counts
-// keys named in incoming pushes; noop counts those that matched no live entry
-// (the duplicate-invalidation signature).
-func (c *LocalCache) InvalidationStats() (invalidations, noop uint64) {
-	return c.invalidations.Load(), c.invalidationsNoop.Load()
+// InvalidationStats reports INCOMING invalidation pushes: the count of keys named
+// in server invalidation messages, tallied at the handler before dedup/batching.
+func (c *LocalCache) InvalidationStats() (invalidations uint64) {
+	return c.invalidations.Load()
+}
+
+// DeletionStats reports APPLIED invalidations. deletions counts keys the cache
+// actually processed for removal (post-dedup, so <= InvalidationStats under
+// duplicate pushes); noop counts those that matched no live entry, the direct
+// duplicate-invalidation signature.
+func (c *LocalCache) DeletionStats() (deletions, noop uint64) {
+	return c.deletions.Load(), c.deletionsNoop.Load()
 }
 
 // deleteByRedisKeyCollectingHot deletes every cache entry tracked under redisKey
@@ -40,9 +47,11 @@ func (c *LocalCache) deleteByRedisKeyCollectingHot(redisKey string, sinceToken i
 		dst, n = c.shards[i].collectHotAndDelete(redisKey, sinceToken, dst)
 		removed += n
 	}
-	c.invalidations.Add(1)
+	// Applied-delete accounting (refresh-on path). Twin of DeleteByRedisKey; the
+	// incoming push was already counted at the handler.
+	c.deletions.Add(1)
 	if removed == 0 {
-		c.invalidationsNoop.Add(1)
+		c.deletionsNoop.Add(1)
 	}
 	return dst
 }

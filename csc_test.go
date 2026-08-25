@@ -3424,3 +3424,62 @@ func TestBackgroundDrainerCleanupOnGC(t *testing.T) {
 		}
 	}
 }
+
+// TestInvalidationStatsSplitByDedup proves the invalidation/deletion split that
+// #3 introduced: Invalidations counts every key named in incoming pushes (at the
+// handler choke point, BEFORE dedup), while Deletions counts the keys the window
+// batcher actually applied (AFTER dedup). Their gap is the dedup — the signal the
+// split exists to expose, and the invariant every prior stats-counting round
+// violated.
+func TestInvalidationStatsSplitByDedup(t *testing.T) {
+	ctx := context.Background()
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	t.Cleanup(func() { h.release() })
+	h.setInvalBatchWindow(time.Hour) // buffer everything; flush deterministically via stop-drain
+
+	// One push naming 'hot' 200 times plus 'cold' once: 201 incoming keys.
+	keys := make([]interface{}, 0, 201)
+	for i := 0; i < 200; i++ {
+		keys = append(keys, "hot")
+	}
+	keys = append(keys, "cold")
+	if err := h.HandlePushNotification(ctx, push.NotificationHandlerContext{},
+		[]interface{}{invalidatePushName, keys}); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+
+	// Invalidations are counted at the handler, before dedup: all 201.
+	if inv := cache.InvalidationStats(); inv != 201 {
+		t.Fatalf("InvalidationStats = %d, want 201 (every incoming key, pre-dedup)", inv)
+	}
+
+	// Deletions are applied post-dedup by the window batcher. The 1h window never
+	// fires on its own — force the flush via the stop-drain.
+	h.mu.RLock()
+	b := h.batcher
+	h.mu.RUnlock()
+	if b == nil {
+		t.Fatal("expected a windowed batcher for a nonzero window")
+	}
+	b.stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if del, _ := cache.DeletionStats(); del >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	del, _ := cache.DeletionStats()
+	if del != 2 {
+		t.Fatalf("deletions = %d, want 2 (dedup collapses 200 'hot' + 1 'cold')", del)
+	}
+	// The gap between incoming and applied IS the dedup.
+	if got := cache.InvalidationStats() - del; got != 199 {
+		t.Fatalf("Invalidations - Deletions = %d, want 199 (the dedup gap)", got)
+	}
+}

@@ -224,9 +224,15 @@ type LocalCache struct {
 	hits      atomic.Uint64
 	misses    atomic.Uint64
 
-	// Invalidation-push accounting for refresh-on-invalidate (InvalidationStats).
-	invalidations     atomic.Uint64
-	invalidationsNoop atomic.Uint64
+	// Invalidation accounting for refresh-on-invalidate (see CSCRefreshStats).
+	// invalidations counts keys named in INCOMING pushes, tallied once at the
+	// handler choke point before dedup/batching. deletions/deletionsNoop count
+	// APPLIED deletes (post-dedup) and the subset that matched no live entry. The
+	// gap between invalidations and deletions is the direct measure of dedup +
+	// duplicate invalidations (and, under a flood, the spill-cap full-Flush).
+	invalidations atomic.Uint64
+	deletions     atomic.Uint64
+	deletionsNoop atomic.Uint64
 }
 
 var _ Cache = (*LocalCache)(nil)
@@ -548,11 +554,18 @@ func (c *LocalCache) Cancel(cacheKey string, token uint64) bool {
 	return true
 }
 
-// DeleteByRedisKey removes entries associated with redisKey.
+// DeleteByRedisKey removes entries associated with redisKey. It is the applied-
+// delete path used when refresh-on-invalidate is off (the collecting variant is
+// used when it is on); counting deletions here keeps DeletionStats accurate on
+// both paths. The two are disjoint — neither calls the other — so no double count.
 func (c *LocalCache) DeleteByRedisKey(redisKey string) int {
 	removed := 0
 	for i := range c.shards {
 		removed += c.shards[i].deleteByRedisKey(redisKey)
+	}
+	c.deletions.Add(1)
+	if removed == 0 {
+		c.deletionsNoop.Add(1)
 	}
 	return removed
 }

@@ -91,6 +91,40 @@ func TestLocalCache_DeleteByRedisKey_MultiKey(t *testing.T) {
 	}
 }
 
+// TestLocalCache_DeletionStats locks the applied-delete counters at both cache
+// choke points: DeleteByRedisKey (refresh-off path) and
+// deleteByRedisKeyCollectingHot (refresh-on path). A delete that matches a live
+// entry bumps deletions; one that matches nothing bumps deletions AND noop. The
+// incoming-push counter (InvalidationStats) is independent and must not move.
+func TestLocalCache_DeletionStats(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
+	cache.set("get:a", []string{"a"}, []byte("1"))
+
+	if removed := cache.DeleteByRedisKey("a"); removed != 1 {
+		t.Fatalf("DeleteByRedisKey(matching) removed = %d, want 1", removed)
+	}
+	if removed := cache.DeleteByRedisKey("a"); removed != 0 {
+		t.Fatalf("DeleteByRedisKey(missing) removed = %d, want 0", removed)
+	}
+	if del, noop := cache.DeletionStats(); del != 2 || noop != 1 {
+		t.Fatalf("after DeleteByRedisKey: DeletionStats = (%d, %d), want (2, 1)", del, noop)
+	}
+
+	// The collecting variant counts on the SAME counters (no double count: the two
+	// delete paths are disjoint).
+	cache.set("get:b", []string{"b"}, []byte("2"))
+	cache.deleteByRedisKeyCollectingHot("b", 0, nil) // matches -> deletion, not noop
+	cache.deleteByRedisKeyCollectingHot("b", 0, nil) // missing -> deletion + noop
+	if del, noop := cache.DeletionStats(); del != 4 || noop != 2 {
+		t.Fatalf("after collecting deletes: DeletionStats = (%d, %d), want (4, 2)", del, noop)
+	}
+
+	// Applied deletes are NOT incoming pushes: the invalidation counter stays 0.
+	if inv := cache.InvalidationStats(); inv != 0 {
+		t.Fatalf("InvalidationStats = %d, want 0 (deletes must not bump the incoming count)", inv)
+	}
+}
+
 func TestLocalCache_Flush(t *testing.T) {
 	cache := NewLocalCache(CacheConfig{MaxEntries: 16})
 	cache.set("get:a", []string{"a"}, []byte("1"))

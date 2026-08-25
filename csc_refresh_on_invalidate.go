@@ -228,11 +228,17 @@ type CSCRefreshStats struct {
 	// waiting out the window.
 	DemandFlushes uint64
 
-	// Invalidations counts keys named in incoming pushes; InvalidationsNoop counts
-	// those that matched no entry, which is the direct measure of DUPLICATE
-	// invalidations.
-	Invalidations     uint64
-	InvalidationsNoop uint64
+	// Invalidations counts keys named in INCOMING invalidation pushes, tallied at
+	// the handler before dedup/batching. Deletions counts keys the cache actually
+	// processed for removal; under duplicate pushes Deletions < Invalidations
+	// because the batcher dedups (and, under an invalidation flood, the spill-cap
+	// full-Flush supersedes queued deletes wholesale — those count as invalidations
+	// but not deletions). So Invalidations - Deletions measures dedup + flood
+	// fallback, not dedup alone. DeletionsNoop counts applied deletes that matched
+	// no live entry, the direct duplicate-invalidation signature.
+	Invalidations uint64
+	Deletions     uint64
+	DeletionsNoop uint64
 }
 
 // CSCRefreshStats returns the client's refresh-on-invalidate counters.
@@ -251,7 +257,8 @@ func (c *Client) CSCRefreshStats() CSCRefreshStats {
 		DemandFlushes: q.demandFlushes.Load(),
 	}
 	if lc, ok := c.baseClient.csc.(*LocalCache); ok {
-		st.Invalidations, st.InvalidationsNoop = lc.InvalidationStats()
+		st.Invalidations = lc.InvalidationStats()
+		st.Deletions, st.DeletionsNoop = lc.DeletionStats()
 	}
 	return st
 }
