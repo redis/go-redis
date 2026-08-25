@@ -994,6 +994,18 @@ func (c *baseClient) startBackgroundDrainer() {
 				hook.invalidateAllCoverage()
 			}
 			if h.invalidateHandler != nil {
+				// Unbind this client's refresh queue BEFORE releasing the handler
+				// user. On a clean Close stopCSCRefresher already did this; but on a
+				// SELF-DISABLE exit (custom-processor damping, RESP3/tracking
+				// downgrade) stopCSCRefresher never runs, so without this the dead
+				// client's queue stays atop refreshStack and a sibling sharing the
+				// cache+processor keeps feeding invalidations to a refresher whose
+				// cscActive is false — silently breaking the survivor's refresh.
+				// clearRefreshQueue restores the previous live binding; idempotent,
+				// so the redundant clean-Close call is harmless.
+				if c.cscRefreshQueue != nil {
+					h.invalidateHandler.clearRefreshQueue(c.cscRefreshQueue)
+				}
 				h.invalidateHandler.release()
 			}
 			close(h.done)

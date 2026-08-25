@@ -125,6 +125,18 @@ func (b *cscInvalBatcher) drop() {
 	b.applyMu.Unlock()
 }
 
+// countDuplicateInvalidation records a duplicate incoming invalidation the batch
+// dedup dropped, so InvalidationStats counts incoming pushes rather than deduped
+// uniques (see add). A dropped duplicate is a redundant delete, so it counts as
+// one invalidation and one noop — matching the inline (window=0) path. Only the
+// built-in *LocalCache exposes these counters; other Cache impls have no stats.
+func (b *cscInvalBatcher) countDuplicateInvalidation() {
+	if lc, ok := b.cache.(*LocalCache); ok {
+		lc.invalidations.Add(1)
+		lc.invalidationsNoop.Add(1)
+	}
+}
+
 // enqueue hands a namespaced key to the batcher without blocking the caller and
 // without ever applying a delete inline on the producer (see the spill field):
 // on a full ch it appends to spill and nudges the worker; only once the batcher
@@ -153,19 +165,20 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		// case is a pathological invalidation flood where the cache is churning
 		// wholesale anyway. Needed because the invalidatable keyset is not bounded
 		// by cache size (the server tracks keys past local LRU eviction).
-		capped := false
 		b.spillMu.Lock()
 		if len(b.spill) >= cscInvalSpillMax {
 			b.spill = b.spill[:0]
-			capped = true
+			// Set flushReq BEFORE releasing stopMu. stop() takes stopMu.Lock, so it
+			// cannot close stopCh until this store is visible; the worker's stop-drain
+			// then sees the request via fullFlushIfRequested instead of exiting and
+			// losing the flush (which would leave the flood's entries stale). Setting
+			// it after RUnlock would race stop() and drop the flush.
+			b.flushReq.Store(true)
 		} else {
 			b.spill = append(b.spill, it)
 		}
 		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
-		if capped {
-			b.flushReq.Store(true)
-		}
 		b.spilled.Add(1)
 		select {
 		case b.wake <- struct{}{}:
@@ -255,6 +268,14 @@ func (b *cscInvalBatcher) run() {
 		if e, dup := seen[it.key]; !dup || e != it.epoch {
 			seen[it.key] = it.epoch
 			pending = append(pending, it)
+		} else {
+			// Same key already queued this window: apply() will delete it once, so
+			// deleteByRedisKeyCollectingHot never counts THIS incoming push. Count it
+			// here so InvalidationStats reflects incoming pushes, not deduped uniques
+			// (the duplicate-invalidation ratio the stats exist to measure). A repeat
+			// delete matches nothing → invalidation + noop, exactly what the inline
+			// (window=0) path records for a second push of the same key.
+			b.countDuplicateInvalidation()
 		}
 		if len(pending) >= cscInvalBatchMax {
 			flush()

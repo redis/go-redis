@@ -52,10 +52,20 @@ func (mc *cscMissCoalescer) acquireCtx() (context.Context, context.CancelFunc) {
 	if pt := opt.PoolTimeout; pt > d {
 		d = pt
 	}
-	// Options.init resolves the dial knobs to nonzero defaults. A custom
-	// DialerRetryBackoff returning delays beyond DialerRetryTimeout is not
-	// observable here; such configs should raise PoolTimeout to match.
-	if db := time.Duration(opt.DialerRetries)*(opt.DialTimeout+opt.DialerRetryTimeout) + opt.DialTimeout; db > d {
+	// Options.init resolves the dial knobs to nonzero defaults. Match the pool's
+	// ACTUAL backoff schedule: when a custom DialerRetryBackoff is set the pool
+	// uses it (not the flat DialerRetryTimeout), so a backoff returning delays
+	// beyond DialerRetryTimeout would otherwise make this outer deadline shorter
+	// than the dial sequence and cancel Get mid-retries — failing a coalesced miss
+	// where an ordinary fetch would keep retrying. Sum the per-attempt backoffs.
+	backoffs := time.Duration(opt.DialerRetries) * opt.DialerRetryTimeout
+	if opt.DialerRetryBackoff != nil {
+		backoffs = 0
+		for i := 0; i < opt.DialerRetries; i++ {
+			backoffs += opt.DialerRetryBackoff(i)
+		}
+	}
+	if db := time.Duration(opt.DialerRetries)*opt.DialTimeout + backoffs + opt.DialTimeout; db > d {
 		d = db
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), d)
