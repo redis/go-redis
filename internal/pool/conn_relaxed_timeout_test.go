@@ -167,6 +167,66 @@ func TestRelaxedTimeoutOverlappingHandoffsClear(t *testing.T) {
 	}
 }
 
+// TestRelaxedTimeoutConcurrentSetAndRead schedules the exact interleaving
+// relaxedMu closes: a setter repeatedly (re)installs a deadline-scoped window with
+// alternating past/future deadlines while 64 readers hammer Effective* (which may
+// observe an expiry and take the lock via expireRelaxedTimeout). Under -race this
+// must stay clean (the lock-free reads of the atomics are data-race-free by
+// construction), the counter must never go negative or drift above one holder, and
+// a relaxation installed afterward must still take effect (no wedge/clobber).
+func TestRelaxedTimeoutConcurrentSetAndRead(t *testing.T) {
+	netConn := &net.TCPConn{}
+	cn := NewConn(netConn)
+	defer cn.Close()
+
+	const iters = 500
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			if i%2 == 0 {
+				cn.SetRelaxedTimeoutWithDeadline(time.Second, time.Second, time.Now().Add(-time.Minute))
+			} else {
+				cn.SetRelaxedTimeoutWithDeadline(time.Second, time.Second, time.Now().Add(time.Hour))
+			}
+		}
+	}()
+	for r := 0; r < 64; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				cn.EffectiveReadTimeout(time.Millisecond)
+				cn.EffectiveWriteTimeout(time.Millisecond)
+				if c := cn.relaxedCounter.Load(); c < 0 {
+					t.Errorf("relaxed counter went negative (%d) under concurrent set/read", c)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	// One setter never stacks holders (the deadline slot is reused), so the counter
+	// is always 0 or 1 — never negative, never drifting up.
+	if c := cn.relaxedCounter.Load(); c < 0 || c > 1 {
+		t.Fatalf("relaxed counter = %d after storm, want 0 or 1", c)
+	}
+	// Drain any residual holder, then prove a fresh relaxation still takes effect.
+	for cn.relaxedCounter.Load() > 0 {
+		cn.ClearRelaxedTimeout()
+	}
+	cn.SetRelaxedTimeout(2*time.Second, 2*time.Second)
+	if !cn.HasRelaxedTimeout() {
+		t.Fatal("relaxation not restored after concurrent set/read storm — state wedged")
+	}
+	if got := cn.EffectiveReadTimeout(time.Millisecond); got != 2*time.Second {
+		t.Fatalf("effective read = %v, want restored relaxed 2s", got)
+	}
+}
+
 func TestRelaxedTimeoutCounterRaceCondition(t *testing.T) {
 	netConn := &net.TCPConn{}
 	cn := NewConn(netConn)
