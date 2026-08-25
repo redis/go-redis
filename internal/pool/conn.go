@@ -11,10 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	uberatomic "go.uber.org/atomic"
+
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/maintnotifications/logs"
 	"github.com/redis/go-redis/v9/internal/proto"
-	uberatomic "go.uber.org/atomic"
 )
 
 var noDeadline = time.Time{}
@@ -578,12 +579,19 @@ func (cn *Conn) HasRelaxedTimeout() bool {
 // read may legitimately take (e.g. the CSC full-duplex drain backstop) must
 // use this rather than the configured ReadTimeout, or a relaxed read gets cut
 // short.
+//
+// Not a pure getter: if a relaxed maintenance timeout has already EXPIRED, this
+// decrements the relaxed counter and may clear the relaxed timeout (identical to
+// the side effect a real read incurs). It never strips an ACTIVE (unexpired)
+// relaxed timeout, so calling it mid-handoff is safe.
 func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveReadTimeout(normalTimeout)
 }
 
 // EffectiveWriteTimeout is the write-side counterpart of EffectiveReadTimeout,
-// for callers bounding how long a blocked write may legitimately take.
+// for callers bounding how long a blocked write may legitimately take. Same
+// not-a-pure-getter note as EffectiveReadTimeout (post-expiry relaxed-counter
+// decrement only).
 func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveWriteTimeout(normalTimeout)
 }

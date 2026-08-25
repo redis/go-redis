@@ -26,6 +26,17 @@ import (
 
 const cscInvalBatchMax = 4096 // size-cap flush regardless of the timer
 
+// cscInvalSpillMax hard-caps the overflow spill buffer. The spill is normally
+// self-limiting (duplicate keys collapse in the worker's dedup), but the set of
+// keys a server can invalidate is NOT bounded by the local cache size: Redis
+// keeps CLIENT TRACKING for every key a connection read, even after the local
+// LRU evicted it (no per-key untrack), so a workload that reads far more than
+// MaxEntries and then invalidates them can grow the spill without bound. At this
+// many buffered items the batcher stops spilling and schedules ONE full cache
+// Flush instead — a correctness-preserving, O(1)-memory fallback (a flush can
+// never serve stale) that also keeps the reader unblocked.
+const cscInvalSpillMax = 1 << 16 // 65536
+
 // cscInvalItem is one queued invalidation, tagged with the batcher epoch it
 // was enqueued under so a full-cache flush can supersede it (see drop()).
 type cscInvalItem struct {
@@ -50,12 +61,19 @@ type cscInvalBatcher struct {
 	// reply reader, where inline apply (lock-held cache work) stalls miss replies
 	// (head-of-line). The worker drains spill through the SAME seen/pending dedup
 	// pipeline as ch, so a burst of duplicate keys collapses to one delete per
-	// key; distinct keys are bounded by the tracked keyset (⊂ cache capacity), so
-	// spill needs no hard cap — the worker catches up. wake nudges the worker to
-	// drain promptly (cap 1, coalescing: one wake drains the whole slice).
+	// key. The worker normally catches up, but the spill is hard-capped at
+	// cscInvalSpillMax: the invalidatable keyset is NOT bounded by cache capacity
+	// (the server tracks keys past local LRU eviction), so at the cap the batcher
+	// schedules one full Flush (flushReq) instead of growing spill. wake nudges
+	// the worker to drain promptly (cap 1, coalescing: one wake drains the whole
+	// slice).
 	spillMu sync.Mutex
 	spill   []cscInvalItem
 	wake    chan struct{}
+	// flushReq: spill hit cscInvalSpillMax, so the worker must drop() + full-Flush
+	// the cache instead of applying a huge backlog. Set by enqueue, consumed by the
+	// worker (CAS to false).
+	flushReq atomic.Bool
 	// spilled counts overflow events (ch full at send time). Internal; read by
 	// tests and available for a future stat, so the feature's degradation under
 	// invalidation bursts is observable instead of silent.
@@ -128,10 +146,26 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		// to drain, instead of applying inline here. Correctness is unchanged —
 		// the item carries its enqueue-time epoch and the worker applies it under
 		// applyMu with the same epoch check as the ch path.
+		//
+		// At the hard cap, stop growing spill: drop this item, clear the backlog,
+		// and ask the worker to full-Flush the cache. Safe because a Flush drops
+		// everything (nothing stale can survive), and correct because the capped
+		// case is a pathological invalidation flood where the cache is churning
+		// wholesale anyway. Needed because the invalidatable keyset is not bounded
+		// by cache size (the server tracks keys past local LRU eviction).
+		capped := false
 		b.spillMu.Lock()
-		b.spill = append(b.spill, it)
+		if len(b.spill) >= cscInvalSpillMax {
+			b.spill = b.spill[:0]
+			capped = true
+		} else {
+			b.spill = append(b.spill, it)
+		}
 		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
+		if capped {
+			b.flushReq.Store(true)
+		}
 		b.spilled.Add(1)
 		select {
 		case b.wake <- struct{}{}:
@@ -232,6 +266,32 @@ func (b *cscInvalBatcher) run() {
 			add(it)
 		}
 	}
+	// fullFlushIfRequested consumes a flushReq set by enqueue when spill hit its
+	// cap: drop the whole backlog (epoch bump skips any stale-epoch delete still
+	// queued/in-flight) and Flush the cache — the O(1)-memory, correctness-
+	// preserving fallback for an invalidation flood. Recover so a Flush panic can't
+	// kill the worker (its death would let spill grow unbounded again).
+	fullFlushIfRequested := func() {
+		if !b.flushReq.CompareAndSwap(true, false) {
+			return
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					internal.Logger.Printf(context.Background(),
+						"redis: csc invalidation full-flush panic: %v", r)
+				}
+			}()
+			b.drop()
+			if b.cache != nil {
+				b.cache.Flush()
+			}
+		}()
+		pending = pending[:0]
+		for k := range seen {
+			delete(seen, k)
+		}
+	}
 	for {
 		select {
 		case <-b.stopCh:
@@ -239,6 +299,7 @@ func (b *cscInvalBatcher) run() {
 			// are still live and must not be lost): drain spill AND ch into the
 			// batch, flush once, exit. enqueue appends spill under stopMu.RLock, so
 			// anything spilled before stop set stopped=true is visible here.
+			fullFlushIfRequested()
 			drainSpill()
 			for draining := true; draining; {
 				select {
@@ -254,9 +315,12 @@ func (b *cscInvalBatcher) run() {
 		case it := <-b.ch:
 			add(it)
 		case <-b.wake:
-			// An overflow parked keys on spill; drain them off the producer.
+			// An overflow parked keys on spill (or hit the cap and asked for a full
+			// flush); handle the flush request first, then drain what's left.
+			fullFlushIfRequested()
 			drainSpill()
 		case <-t.C:
+			fullFlushIfRequested()
 			drainSpill()
 			flush()
 			t.Reset(b.window)

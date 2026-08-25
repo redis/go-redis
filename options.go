@@ -456,6 +456,13 @@ type Options struct {
 
 	// ClientSideCacheRefreshOnInvalidate re-fetches recently-read keys as soon as
 	// their invalidation arrives, instead of waiting for a reader to miss.
+	//
+	// Requires the built-in cache (ClientSideCacheConfig, or ClientSideCache set
+	// to a *LocalCache), like the other CSC knobs: the refresher's hot-entry
+	// collection and publish path are LocalCache-specific. With a custom Cache
+	// implementation the option is ignored.
+	//
+	// Experimental: this API may change in a minor release.
 	ClientSideCacheRefreshOnInvalidate bool
 
 	// ClientSideCacheCoalesceMisses coalesces concurrent cache misses so they

@@ -2748,23 +2748,28 @@ func (c *baseClient) peekAndProcessPushNotifications(ctx context.Context, cn *po
 		return nil
 	}
 
-	// Use the bare-socket-readiness path only for the built-in processor.
-	// HasBufferedData means the proto reader already holds a decoded frame. These
-	// are real RESP bytes, and any TLS is already unwrapped. Such a frame is a real
-	// push notification and is safe for any processor. MaybeHasData without
-	// buffered data proves only that the raw socket is readable. Over TLS that can
-	// be a post-handshake control record with zero RESP bytes. (conn_check.go's
-	// connCheck refuses to unwrap TLS for this reason. maybeHasData does unwrap
-	// it.) A custom processor that gets such input under the hard cap can time out
-	// on an empty read. The FD session reader treats that timeout as fatal and
-	// closes a healthy connection, and its in-flight misses fail. The built-in
-	// buffered processor accepts the empty read. So a custom processor drains only
-	// on real buffered data. Tradeoff: a push notification that arrives as bare
-	// socket readiness on a custom and idle FD session waits for the next reply
-	// read, the session recycle, or the MaxStaleness backstop. The connection
-	// stays open. This tick is the only drainer for such a session. This mirrors
-	// the built-in-only guard on the opaque-transport probe in the FD session tick
-	// (csc_miss_coalesce_modes.go).
+	// Drain even for a custom processor only when the reader already holds buffered
+	// bytes. NOTE: HasBufferedData is byte-level (rd.Buffered() > 0), NOT proof of a
+	// COMPLETE frame — a reply plus a partial trailing push in one socket read
+	// leaves a partial push buffered. Handing that to a custom processor lets it
+	// block to complete the frame under the hard cap; a mid-frame timeout surfaces
+	// an error and the caller retires the (now-desynced) connection. That outcome
+	// is SAFE (retiring a desynced conn is correct), but it does NOT eliminate
+	// conn churn for custom processors — the earlier "buffered == a complete, safe
+	// frame" claim was wrong.
+	//
+	// The gate is still worth it against the WORSE case: MaybeHasData WITHOUT
+	// buffered data proves only that the raw socket is readable, which over TLS can
+	// be a post-handshake control record with zero RESP bytes (conn_check.go
+	// refuses to unwrap TLS for this reason; maybeHasData does). A custom processor
+	// handed that empty input times out on an empty read → the FD session reader
+	// treats the timeout as fatal and closes a HEALTHY connection, failing its
+	// in-flight misses. The built-in buffered processor accepts the empty read. So
+	// a custom processor drains only on real buffered data. Tradeoff: a push that
+	// arrives as bare socket readiness on a custom, idle FD session waits for the
+	// next reply read, the session recycle, or the MaxStaleness backstop; the
+	// connection stays open. Mirrors the built-in-only guard on the opaque-
+	// transport probe in the FD session tick (csc_miss_coalesce_modes.go).
 	if !buffered {
 		if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
 			return nil

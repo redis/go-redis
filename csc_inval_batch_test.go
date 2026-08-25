@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 type countingCache struct {
 	Cache
 	deletes atomic.Int64
+	flushes atomic.Int64
 	mu      sync.Mutex
 	keys    []string
 }
@@ -25,6 +27,8 @@ func (c *countingCache) DeleteByRedisKey(k string) int {
 	c.mu.Unlock()
 	return 1
 }
+
+func (c *countingCache) Flush() int { c.flushes.Add(1); return 0 }
 
 func newTestBatcher(cache Cache, chCap int, window time.Duration) *cscInvalBatcher {
 	return &cscInvalBatcher{
@@ -91,5 +95,39 @@ func TestInvalBatcherWorkerDrainsSpillDedup(t *testing.T) {
 	}
 	if got := cache.deletes.Load(); got != 2 {
 		t.Fatalf("applied %d deletes; want 2 (dedup must collapse %d 'hot' + 1 'cold')", got, dups)
+	}
+}
+
+// Past the spill hard cap, enqueue stops growing spill and asks the worker to
+// full-Flush the cache instead (bounded-memory fallback for an invalidation
+// flood on a keyset larger than the local cache).
+func TestInvalBatcherSpillCapTriggersFlush(t *testing.T) {
+	cache := &countingCache{}
+	b := newTestBatcher(cache, 2, time.Hour)
+
+	// Worker not running: fill ch, then overflow past the cap with distinct keys.
+	for i := 0; i < cscInvalSpillMax+16; i++ {
+		b.enqueue("k" + strconv.Itoa(i))
+	}
+
+	if !b.flushReq.Load() {
+		t.Fatal("spill exceeded the cap but flushReq was not set")
+	}
+	b.spillMu.Lock()
+	n := len(b.spill)
+	b.spillMu.Unlock()
+	if n >= cscInvalSpillMax {
+		t.Fatalf("spill = %d, want < cap %d (cap must clear the backlog)", n, cscInvalSpillMax)
+	}
+
+	// The worker must consume flushReq and Flush the whole cache exactly.
+	go b.run()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cache.flushes.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	b.stop()
+	if cache.flushes.Load() == 0 {
+		t.Fatal("worker did not full-Flush the cache after the spill cap was hit")
 	}
 }

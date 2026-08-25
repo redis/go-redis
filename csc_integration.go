@@ -295,7 +295,6 @@ func (h *invalidateHandler) HandlePushNotification(
 	h.mu.RLock()
 	cache, keyPrefix, refresh := h.cache, h.keyPrefix, h.refresh
 	window := h.invalBatchWindow
-	batcher := h.batcher
 	h.mu.RUnlock()
 	if cache == nil || len(notification) < 2 {
 		return nil
@@ -308,10 +307,23 @@ func (h *invalidateHandler) HandlePushNotification(
 		// the flush) is skipped at apply, while an invalidation racing in from
 		// another tracked connection AFTER this point carries the new epoch and
 		// still applies — its post-flush delete must not be lost.
-		if batcher != nil {
-			batcher.drop()
+		//
+		// Hold h.mu across the drop()+Flush() and read the batcher/cache fresh
+		// under it (not the snapshot above): every batcher rebuild
+		// (setInvalBatchWindow / set/clearRefreshQueue) runs under h.mu.Lock, so a
+		// snapshot-then-drop could bump a STALE batcher's epoch while the NEW
+		// batcher's already-queued deletes (new epoch) survive the flush and evict
+		// post-flush repopulations. RLock (not Lock) is enough — it blocks the
+		// write-locked rebuilds — and drop()/Flush() take their own locks, not h.mu,
+		// so there is no lock-order cycle.
+		h.mu.RLock()
+		if h.batcher != nil {
+			h.batcher.drop()
 		}
-		cache.Flush()
+		if h.cache != nil {
+			h.cache.Flush()
+		}
+		h.mu.RUnlock()
 	case []interface{}:
 		// Offload path: enqueue keys to the windowed background batcher instead of
 		// deleting inline, so invalidation work does not steal time from the
@@ -1168,7 +1180,12 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	}
 
 	// Demand trigger: a miss for a key still in the refresher's collection window
-	// flushes that window now (no-op when refresh/coalescing is off).
+	// flushes that window now (no-op when refresh/coalescing is off). Scope: this
+	// signals THIS client's own refresh queue. With a shared cache+processor across
+	// clients the active refresh binding is the last-attached client's queue, so a
+	// miss on one client does not early-flush a sibling's window — the sibling's
+	// window timer is the backstop. Correctness is unaffected (the key still
+	// refreshes); only the early-flush latency is client-local.
 	c.cscRefreshQueue.signalDemand(key)
 
 	token, shouldFetch := c.csc.Reserve(key, nsRedisKeys)

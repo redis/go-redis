@@ -30,6 +30,15 @@ import (
 // remove. So the entry is dropped first and re-inserted through the ordinary
 // Reserve/Fulfil path.
 //
+// Residual (not the same bug): because this republishes a value nobody asked for,
+// a SECOND write whose invalidation is still on the refresh connection's socket
+// behind the reply can be applied after the republish, so a reader briefly gets a
+// stale HIT where, without refresh, they'd have taken a fresh MISS. It self-heals
+// — the republish is on a CLIENT TRACKING conn, so that pending invalidation is
+// delivered and deletes the entry — and is bounded by the drain interval /
+// MaxStaleness. This is a narrower window than the "stale value readable for the
+// whole refresh RTT" case above, not a reintroduction of it.
+//
 // That has a useful consequence: Reserve single-flights. If a reader misses the
 // key while a background refresh is already in flight, it waits on that
 // reservation instead of issuing a second fetch — so the key is fetched once, by
@@ -104,7 +113,7 @@ const cscDemandRefresh = true
 // by the server once per connection, so ONE write produces one invalidation push
 // per registration, and that happens routinely: when a batched read finds another
 // fetch already in flight it declines the reservation and goes to the wire anyway
-// rather than stall the batch (see cscTryServePipelined), registering the key a
+// rather than stall the batch (the miss-coalescer path), registering the key a
 // second time. Measured: 34-38% of incoming invalidation pushes match no entry at
 // all, which is the signature of exactly this.
 //
@@ -351,27 +360,41 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		// self-healed during the window (a reader missed and repopulated them) are
 		// now Valid, so Reserve inside refreshInvalidatedBatch declines them for
 		// free — no MGET slot is spent rewriting fresh data.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		for start := 0; start < len(targets); start += cscRefreshBatchMax {
-			end := start + cscRefreshBatchMax
-			if end > len(targets) {
-				end = len(targets)
-			}
-			n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
-			q.refreshed.Add(uint64(n))
-			if err != nil {
-				// One count per errored round trip: those keys were not refreshed and
-				// stay evicted (a reader repopulates them). This is the signal that
-				// refresh is degrading to plain eviction.
-				q.refreshFailed.Add(1)
-				if time.Since(lastWarn) > cscRefreshWarnEvery {
-					lastWarn = time.Now()
+		// defer cancel (not a bare cancel at the end) and recover inside a closure so
+		// a panic in refreshInvalidatedBatch (cache/RESP/network path) neither leaks
+		// the 5s timer nor kills the refresher goroutine — which would silently and
+		// permanently degrade refresh-on-invalidate to plain eviction for the client's
+		// lifetime. Mirrors the invalidation batcher's flush guard.
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			defer func() {
+				if r := recover(); r != nil {
+					q.refreshFailed.Add(1)
 					internal.Logger.Printf(context.Background(),
-						"csc: refresh-on-invalidate batch failed: %v", err)
+						"csc: refresh-on-invalidate batch panic (recovered): %v", r)
+				}
+			}()
+			for start := 0; start < len(targets); start += cscRefreshBatchMax {
+				end := start + cscRefreshBatchMax
+				if end > len(targets) {
+					end = len(targets)
+				}
+				n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
+				q.refreshed.Add(uint64(n))
+				if err != nil {
+					// One count per errored round trip: those keys were not refreshed and
+					// stay evicted (a reader repopulates them). This is the signal that
+					// refresh is degrading to plain eviction.
+					q.refreshFailed.Add(1)
+					if time.Since(lastWarn) > cscRefreshWarnEvery {
+						lastWarn = time.Now()
+						internal.Logger.Printf(context.Background(),
+							"csc: refresh-on-invalidate batch failed: %v", err)
+					}
 				}
 			}
-		}
-		cancel()
+		}()
 	}
 
 	for {
@@ -454,7 +477,12 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 	kept := make([]cscRefreshTarget, 0, len(targets))
 	for _, t := range targets {
 		token, shouldFetch := c.csc.Reserve(t.cacheKey, t.redisKeys)
-		if !shouldFetch {
+		// token==0 with shouldFetch==true is Reserve's "fetch uncached" signal
+		// (oversized entry / over-capacity / lost race), not an owned reservation.
+		// Skipping it avoids spending an MGET slot on a reply we'd discard and, more
+		// importantly, registering server-side tracking for a key we never cache
+		// (which would manufacture one spurious future invalidation).
+		if !shouldFetch || token == 0 {
 			continue
 		}
 		t.token = token
@@ -486,7 +514,14 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		// same discipline fulfillCached and revalidateBatch use.
 		capturedGen := c.cscConnInitGen(connID)
 
-		if err := cn.WithWriter(c.context(ctx), c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		// Pass the refresher's internally-bounded ctx (5s) DIRECTLY, not
+		// c.context(ctx): c.context applies the user's ContextTimeoutEnabled policy,
+		// which — when disabled (the default) — swaps our ctx for context.Background,
+		// stripping our own deadline. With ReadTimeout/WriteTimeout also disabled
+		// (-1/-2) a stalled Redis would then hang this reader forever, and Close
+		// (stopCSCRefresher waits on the refresher goroutine) would wedge. The
+		// miss-coalescer passes its session ctx directly for the same reason.
+		if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
 			for i := range kept {
 				// The cache key is the namespaced RESP encoding of the command that
 				// produced the entry; strip the namespace and it is already wire form.
@@ -499,7 +534,7 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 			return err
 		}
 
-		return cn.WithReader(c.context(ctx), c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
 			for i := range kept {
 				// Invalidation pushes share this connection with replies, so drain
 				// them first or a push frame would be read as a value and cached.
