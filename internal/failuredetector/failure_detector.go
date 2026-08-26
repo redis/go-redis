@@ -309,16 +309,16 @@ func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 
 	for {
 		st := b.state.Load()
-		if st != nil {
-			if st.epochNano == bucketStart {
-				return st
-			}
-			if st.epochNano > bucketStart {
-				// Clock skew or a concurrent writer already moved this slot
-				// past the current instant; tolerate it.
-				return st
-			}
+		if st != nil && st.epochNano == bucketStart {
+			return st
 		}
+		// st is nil (slot never used), holds an older epoch (a previous lap of
+		// the ring), or holds a FUTURE epoch left by a backward wall-clock step
+		// (VM restore, NTP step). None describe the current bucket, so stamp a
+		// fresh one. Rebasing the future-epoch case is what keeps outcomes
+		// recorded after a rollback visible to snapshot (which excludes future
+		// epochs); returning the stale slot would silently drop them until wall
+		// time caught back up.
 		fresh := &bucketState{epochNano: bucketStart}
 		if b.state.CompareAndSwap(st, fresh) {
 			return fresh

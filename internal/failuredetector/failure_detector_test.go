@@ -197,6 +197,30 @@ func TestCommandFailureDetector_IgnoresFutureBucketsAfterClockRollback(t *testin
 	}
 }
 
+func TestCommandFailureDetector_CountsFailuresRecordedAfterClockRollback(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.0,
+		FailureDetectionWindow: time.Hour,
+	})
+	advance := withFakeClock(fd, time.Unix(1_000_000, 0))
+
+	// Populate the slot at T, then step the clock back by two ring periods so
+	// that slot's epoch is now in the future AND a fresh write aliases onto it.
+	fd.RecordFailure(errors.New("pre-rollback"))
+	advance(-2 * time.Hour)
+
+	// A failure recorded AFTER the rollback must be counted, not swallowed by
+	// the stale future-epoch bucket occupying its slot.
+	fd.RecordFailure(errors.New("post-rollback"))
+	if _, failures := fd.Stats(); failures == 0 {
+		t.Fatal("failure recorded after clock rollback was swallowed by a future-epoch bucket")
+	}
+	if !fd.ShouldFailover() {
+		t.Error("post-rollback failure must be visible to ShouldFailover")
+	}
+}
+
 func TestCommandFailureDetector_CountsDialDeadlinesAsFailures(t *testing.T) {
 	config := CommandFailureDetectorConfig{
 		MinNumFailures:         1,
