@@ -57,14 +57,36 @@ const (
 	// cscFullDuplexDepth caps in-flight commands on the single-connection
 	// full-duplex engine (flow control for the writer).
 	cscFullDuplexDepth = 4096
-	// cscMissBatchBytes soft-caps the serialized size of one coalesced write
-	// batch so a burst of large commands cannot buffer an unbounded write on the
-	// held connection. The first miss always goes (latency-first — a lone large
-	// command must not stall), so this bounds only the OPPORTUNISTIC coalescing
-	// of already-queued misses; anything not packed stays queued for the next
-	// batch. It does not bound reply sizes, which are inherent to the workload.
+	// cscMissBatchBytes is the top limit on the serialized size of a coalesced write
+	// batch. It bounds the buffered write even when the configured write buffer is
+	// very large. The effective cap is the smaller of this value and the write
+	// buffer (see cscMissWriteBatchBytes). A batch larger than the write buffer makes
+	// bufio flush in the middle of the batch, which can deadlock the write and the
+	// read. The first miss always goes, because a single large command must not
+	// stall. So the cap bounds only the extra already-queued misses that share the
+	// write.
 	cscMissBatchBytes = 1 << 20 // 1 MiB
 )
+
+// cscMissWriteBatchBytes returns the effective per-batch size cap. It is the
+// connection's write buffer, limited to at most cscMissBatchBytes. When a batch
+// fits the write buffer, bufio flushes it once, at the end of WithWriter, not in
+// the middle. So the reader, which waits until the whole batch is written, starts
+// to drain replies before any request that could block the writer is on the wire.
+// This closes the write and read deadlock window for large payloads.
+func cscMissWriteBatchBytes(opt *Options) int {
+	wb := 0
+	if opt != nil {
+		wb = opt.WriteBufferSize
+	}
+	if wb <= 0 {
+		wb = proto.DefaultBufferSize
+	}
+	if wb > cscMissBatchBytes {
+		wb = cscMissBatchBytes
+	}
+	return wb
+}
 
 // cscCoalesceMissesEnabled is read once, at coalescer construction (per client).
 func cscCoalesceMissesEnabled(opt *Options) bool {
@@ -132,6 +154,15 @@ type cscMissCoalescer struct {
 	stopOnce sync.Once // guards close(stop): Close and the GC cleanup can both stop
 	wg       sync.WaitGroup
 
+	// maxBatchBytes bounds the serialized size of one coalesced write batch to the
+	// connection's write buffer (see cscMissWriteBatchBytes). This keeps bufio from
+	// a flush in the middle of a batch. The reason: the reader waits until the whole
+	// batch is written, because the writer fills inflight only after the write. A
+	// mid-batch flush would put request bytes on the wire and let the server reply
+	// into buffers that nobody drains yet. On large payloads this can deadlock the
+	// write and the read. Set once at construction.
+	maxBatchBytes int
+
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
 	failed     atomic.Uint64 // reqs settled as errors (conn failure)
@@ -155,9 +186,10 @@ func (c *baseClient) startCSCMissCoalescer() {
 		return
 	}
 	mc := &cscMissCoalescer{
-		c:    c,
-		ch:   make(chan *cscMissReq, cscMissQueueDepth),
-		stop: make(chan struct{}),
+		c:             c,
+		ch:            make(chan *cscMissReq, cscMissQueueDepth),
+		stop:          make(chan struct{}),
+		maxBatchBytes: cscMissWriteBatchBytes(c.opt),
 	}
 	c.cscMissCoalescer.Store(mc)
 	// N independent full-duplex sessions, each holding its own connection and
@@ -390,17 +422,30 @@ func (mc *cscMissCoalescer) countBatch(batch []*cscMissReq) {
 	}
 }
 
-// settleErr cancels the reservation and fails one waiting caller. It emits the
-// native error metric (parity with processWithRetry and the FD autopipeline
-// engine's failReqs) — except for the retry-uncached sentinel, whose command
-// re-runs on the fully instrumented uncoalesced path and would double-count.
+// cscSessionError tags an error that comes from a coalescer session or transport
+// failure (settleErr), not from the command's own reply (applyAndSettle).
+// processCached uses this tag to tell the two apart. It re-runs a session failure
+// on the normal path, which applies MaxRetries and backoff. It returns a
+// reply-level result as-is (for example redis.Nil, WRONGTYPE, or a retryable reply
+// such as LOADING), because that result is the answer. cscSessionError unwraps, so
+// errors.Is and errors.As still see the cause.
+type cscSessionError struct{ err error }
+
+func (e cscSessionError) Error() string { return e.err.Error() }
+func (e cscSessionError) Unwrap() error { return e.err }
+
+// settleErr cancels the reservation and fails one waiting caller. It tags the
+// error as cscSessionError, except the retry-uncached sentinel, which
+// processCached matches by identity. The tag makes the caller re-run the read on
+// the normal, fully instrumented path instead of surfacing a raw transport
+// failure. That re-run emits the native error metric, so settleErr does not. To
+// emit it here as well would double-count a re-run that fails, and would wrongly
+// flag a re-run that succeeds. The retry-uncached path already used this rule.
+// Every session failure now re-runs, so the rule applies to all of them.
 func (mc *cscMissCoalescer) settleErr(req *cscMissReq, err error) {
 	mc.c.csc.Cancel(req.cacheKey, req.token)
 	if err != errCSCRetryUncached {
-		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-			errorType, statusCode, isInternal := classifyCommandError(err)
-			errorCallback(context.Background(), errorType, req.servedBy, statusCode, isInternal, 0)
-		}
+		err = cscSessionError{err}
 	}
 	req.done <- err
 	mc.failed.Add(1)
@@ -427,24 +472,36 @@ func (mc *cscMissCoalescer) drainQueueErr(err error) {
 	}
 }
 
-// grabInto appends first plus whatever else is already queued (non-blocking, up
-// to cscMissBatchMax commands OR cscMissBatchBytes of serialized payload) into
-// dst, reusing dst's backing array. first is always included regardless of size
-// (latency-first: a lone large command must not stall); the byte cap only bounds
-// how many additional already-queued misses are packed onto the same write.
-func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) []*cscMissReq {
+// grabInto appends first, plus any misses already queued, into dst. It does not
+// block. It stops at cscMissBatchMax commands or at mc.maxBatchBytes of serialized
+// payload. It reuses dst's backing array. first always goes, whatever its size,
+// because a single large command must not stall. The byte cap bounds only the
+// extra already-queued misses that share the write.
+//
+// grabInto returns the batch and a carry. The carry is the one request it pulled
+// that would push the batch past the byte cap. To pack that request on would
+// exceed the write buffer and risk the mid-batch-flush deadlock. grabInto does NOT
+// put the carry back on mc.ch; it returns it to the writer, which sends it as the
+// first request of the next batch. This keeps the request in the writer's own
+// state (never stranded on mc.ch during shutdown) and guarantees progress: a lone
+// large request ships next as its own batch. The carry is nil when nothing was
+// deferred.
+func (mc *cscMissCoalescer) grabInto(dst []*cscMissReq, first *cscMissReq) ([]*cscMissReq, *cscMissReq) {
 	dst = append(dst, first)
 	nbytes := len(first.wire)
-	for len(dst) < cscMissBatchMax && nbytes < cscMissBatchBytes {
+	for len(dst) < cscMissBatchMax {
 		select {
 		case more := <-mc.ch:
+			if nbytes+len(more.wire) > mc.maxBatchBytes {
+				return dst, more // defer: carry it to the next batch
+			}
 			dst = append(dst, more)
 			nbytes += len(more.wire)
 		default:
-			return dst
+			return dst, nil
 		}
 	}
-	return dst
+	return dst, nil
 }
 
 // Coalescer observability is the client's normal telemetry (the otel operation

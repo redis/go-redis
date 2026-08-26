@@ -382,10 +382,23 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 						"csc: refresh-on-invalidate batch panic (recovered): %v", r)
 				}
 			}()
-			for start := 0; start < len(targets); start += cscRefreshBatchMax {
-				end := start + cscRefreshBatchMax
-				if end > len(targets) {
-					end = len(targets)
+			// Chunk by count (cscRefreshBatchMax) and by serialized bytes (the write
+			// buffer). Like the miss-coalescer, the refresh writes the whole chunk
+			// before it reads the replies. A chunk larger than the write buffer would
+			// flush mid-write and risk a write and read deadlock on large keys. The
+			// first target in a chunk always goes, even if it alone exceeds the budget,
+			// so the loop always makes progress.
+			writeBudget := cscMissWriteBatchBytes(c.opt)
+			prefixLen := len(c.cscKeyPrefix)
+			for start := 0; start < len(targets); {
+				end, nbytes := start, 0
+				for end < len(targets) && end-start < cscRefreshBatchMax {
+					w := len(targets[end].cacheKey) - prefixLen // cache key sans prefix is wire form
+					if end > start && nbytes+w > writeBudget {
+						break
+					}
+					nbytes += w
+					end++
 				}
 				n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
 				q.refreshed.Add(uint64(n))
@@ -400,6 +413,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 							"csc: refresh-on-invalidate batch failed: %v", err)
 					}
 				}
+				start = end
 			}
 		}()
 	}

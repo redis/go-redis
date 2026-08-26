@@ -1247,9 +1247,19 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	// second load after the nil-check would call fetch on a nil receiver.
 	if mc := c.cscMissCoalescer.Load(); shouldFetch && mc != nil {
 		served, err := mc.fetch(ctx, cmd, key, token)
-		if err == errCSCRetryUncached {
-			// CSC was disabled mid-miss; the command is fine and the reservation is
-			// already cancelled — run it uncached instead of surfacing ErrClosed.
+		// Re-run on the normal path when the coalescer bailed (errCSCRetryUncached)
+		// or hit a session or transport failure (tagged cscSessionError by
+		// settleErr). Then a coalesced miss gets the same MaxRetries and backoff as
+		// any other command, instead of a raw io.EOF or ErrClosed to the caller (Ofek
+		// review #3989). The coalescer always cancels the reservation on failure, so
+		// the re-run starts clean, and processWithRetry handles a cancelled caller
+		// context itself. A command result is not tagged (for example redis.Nil,
+		// WRONGTYPE, or a retryable reply such as LOADING). It is the command's
+		// answer, already applied to cmd, so it is returned as-is. This keeps the
+		// coalesced path's documented tradeoff: no per-command retry for reply-level
+		// errors.
+		var sessErr cscSessionError
+		if err == errCSCRetryUncached || errors.As(err, &sessErr) {
 			return c.processWithRetry(ctx, cmd, nil, state)
 		}
 		// Native-recorder attribution: the coalesced fetch contacted Redis on

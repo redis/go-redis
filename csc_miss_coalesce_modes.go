@@ -307,7 +307,11 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				case req = <-mc.ch:
 				}
 			}
-			buf = mc.grabInto(buf[:0], req)
+			// grabInto may defer one over-budget request; carry it in pending so the
+			// next iteration writes it as the first request of its own batch. Held in
+			// the writer's own state, never put back on mc.ch, so a shutdown cannot
+			// strand it there. The error paths below settle it if this batch fails.
+			buf, pending = mc.grabInto(buf[:0], req)
 			mc.countBatch(buf)
 
 			// Attribute every request in this batch to the session connection up
@@ -340,6 +344,11 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			if werr != nil {
 				fail(werr)
 				mc.settleAllErr(buf, 0, werr)
+				// pending (the carry) is never an element of buf: grabInto returns it
+				// instead of appending it. So this settles it once, not twice.
+				if pending != nil {
+					mc.settleErr(pending, werr)
+				}
 				return
 			}
 			for i, r := range buf {
@@ -347,6 +356,11 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 				case inflight <- r:
 				case <-sctx.Done():
 					mc.settleAllErr(buf, i, reasonErr())
+					// pending (the carry) is never an element of buf (see above), so
+					// this settles it once, not twice.
+					if pending != nil {
+						mc.settleErr(pending, reasonErr())
+					}
 					return
 				}
 			}

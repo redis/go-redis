@@ -3,6 +3,8 @@ package redis
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"strconv"
 	"sync"
 	"testing"
@@ -380,5 +382,91 @@ func TestFullDuplexDisabledMidMissRetriesUncached(t *testing.T) {
 	// StaleTimeout: a fresh Reserve must again own the fetch.
 	if _, again := cached.csc.Reserve(nsKey, []string{nsKey}); !again {
 		t.Fatal("reservation left IN_PROGRESS after retry-uncached settle")
+	}
+}
+
+// TestGrabIntoBoundsBatchToWriteBuffer pins the write-buffer bound on coalesced
+// batches (Ofek review #3989). A request that would push the batch past
+// maxBatchBytes is returned as the carry, not packed on. So bufio does not flush
+// in the middle of a batch while the reader waits, which could deadlock the write
+// and the read on large payloads. The first request always goes. The carry stays
+// in the writer's own state, not on mc.ch, so a shutdown cannot strand it.
+func TestGrabIntoBoundsBatchToWriteBuffer(t *testing.T) {
+	mc := &cscMissCoalescer{
+		ch:            make(chan *cscMissReq, 8),
+		maxBatchBytes: 100,
+	}
+	first := &cscMissReq{wire: make([]byte, 40)}
+	small := &cscMissReq{wire: make([]byte, 40)} // 40+40=80 <= 100: fits
+	big := &cscMissReq{wire: make([]byte, 80)}   // 80 more would overshoot 100: carried
+	mc.ch <- small
+	mc.ch <- big
+
+	batch, carry := mc.grabInto(nil, first)
+	if len(batch) != 2 || batch[0] != first || batch[1] != small {
+		t.Fatalf("batch = %d reqs, want [first, small] within the byte cap", len(batch))
+	}
+	if carry != big {
+		t.Fatalf("carry = %p, want the overshooting request %p", carry, big)
+	}
+	// The carry must not be put back on mc.ch.
+	select {
+	case <-mc.ch:
+		t.Fatal("overshooting request was put back on mc.ch instead of carried")
+	default:
+	}
+}
+
+// TestSettleErrTagsTransportFailureForRetry checks the retry path (Ofek review
+// #3989). settleErr tags a coalescer session or transport failure as
+// cscSessionError, so processCached re-runs it on the normal path with MaxRetries
+// instead of a raw io.EOF. The retry-uncached sentinel stays matchable by
+// identity. A command reply stays untagged and is returned as-is.
+func TestSettleErrTagsTransportFailureForRetry(t *testing.T) {
+	mc := &cscMissCoalescer{c: &baseClient{csc: NewLocalCache(CacheConfig{MaxEntries: 4})}}
+
+	// A transport failure is tagged and still unwraps to the cause.
+	req := &cscMissReq{cacheKey: "k", done: make(chan error, 1)}
+	mc.settleErr(req, io.EOF)
+	got := <-req.done
+	var se cscSessionError
+	if !errors.As(got, &se) {
+		t.Fatalf("settleErr(io.EOF) = %T, want cscSessionError so the caller re-runs", got)
+	}
+	if !errors.Is(got, io.EOF) {
+		t.Fatal("cscSessionError must unwrap to the underlying cause")
+	}
+
+	// The retry-uncached sentinel is matched by identity, not tagged.
+	req2 := &cscMissReq{cacheKey: "k", done: make(chan error, 1)}
+	mc.settleErr(req2, errCSCRetryUncached)
+	if got := <-req2.done; got != errCSCRetryUncached {
+		t.Fatalf("settleErr(sentinel) = %v, want errCSCRetryUncached unwrapped", got)
+	}
+
+	// A command reply (redis.Nil) applied by applyAndSettle is NOT a session error:
+	// processCached returns it as-is, keeping the no-per-command-retry tradeoff.
+	if errors.As(error(Nil), &se) {
+		t.Fatal("redis.Nil must not classify as a session error")
+	}
+}
+
+// TestGrabIntoAlwaysIncludesFirst: a lone first larger than the cap still goes
+// (latency-first), and anything queued behind it is carried.
+func TestGrabIntoAlwaysIncludesFirst(t *testing.T) {
+	mc := &cscMissCoalescer{
+		ch:            make(chan *cscMissReq, 8),
+		maxBatchBytes: 100,
+	}
+	first := &cscMissReq{wire: make([]byte, 200)} // alone exceeds the cap
+	more := &cscMissReq{wire: make([]byte, 10)}
+	mc.ch <- more
+
+	batch, carry := mc.grabInto(nil, first)
+	if len(batch) != 1 || batch[0] != first {
+		t.Fatalf("batch = %d reqs, want just the oversized first", len(batch))
+	}
+	if carry != more {
+		t.Fatalf("carry = %p, want the deferred request %p", carry, more)
 	}
 }
