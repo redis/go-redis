@@ -446,6 +446,14 @@ type Options struct {
 	// Experimental: this API may change in a minor release.
 	ClientSideCache Cache
 
+	// CommandMetadata configures how the client resolves the COMMAND metadata
+	// that drives client-side-cache eligibility: static (shipped snapshot,
+	// the default), live-upgraded in the background, and per-command
+	// overrides. Nil is the static default.
+	//
+	// Experimental: this API may change in a minor release.
+	CommandMetadata *CommandMetadataConfig
+
 	// ClientSideCacheStrategy selects the invalidation architecture used when
 	// client-side caching is enabled (via ClientSideCacheConfig or
 	// ClientSideCache); it is ignored when CSC is disabled. The zero value is

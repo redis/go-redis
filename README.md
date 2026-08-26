@@ -290,6 +290,14 @@ rdb := redis.NewClient(&redis.Options{
 })
 ```
 
+### Redis Cluster fan-out safety
+
+Cluster-wide operations and distributed DDL can affect multiple shards and are
+not atomic across them, whether fan-out is performed by go-redis or by a Redis
+server/coordinator. If one shard fails, earlier shards may already have applied
+the command. There is no automatic rollback of those successful operations;
+inspect the error and be prepared for manual intervention or cleanup.
+
 ### Client-side caching
 
 go-redis supports server-assisted client-side caching for standalone clients.

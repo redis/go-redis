@@ -43,6 +43,10 @@ const (
 
 const Nil = RedisError("redis: nil") // nolint:errname
 
+// ErrInvalidVerbatimString reports a malformed, fully consumed RESP3 verbatim
+// string. Parsing may resume at the next frame.
+var ErrInvalidVerbatimString = errors.New("redis: invalid verbatim string")
+
 type RedisError string
 
 func (e RedisError) Error() string { return string(e) }
@@ -103,6 +107,19 @@ func (r *Reader) PeekReplyType() (byte, error) {
 		return r.PeekReplyType()
 	}
 	return b[0], nil
+}
+
+// ReadAttributeLen consumes a RESP3 attribute header and returns its pair
+// count, leaving the pairs and wrapped reply unread.
+func (r *Reader) ReadAttributeLen() (int, error) {
+	line, err := r.readLine()
+	if err != nil {
+		return 0, err
+	}
+	if line[0] != RespAttr {
+		return 0, fmt.Errorf("redis: can't parse attribute reply: %.100q", line)
+	}
+	return replyLen(line)
 }
 
 // MinRESP3ReadBufferSize is the minimum buffer size used when RESP3 push
@@ -418,7 +435,7 @@ func (r *Reader) readVerb(line []byte) (string, error) {
 		return "", err
 	}
 	if len(s) < 4 || s[3] != ':' {
-		return "", fmt.Errorf("redis: can't parse verbatim string reply: %q", line)
+		return "", fmt.Errorf("%w: %q", ErrInvalidVerbatimString, line)
 	}
 	return s[4:], nil
 }

@@ -569,7 +569,17 @@ var _ = Describe("ClusterClient", func() {
 			lostScript := redis.NewScript(lostScriptSrc)
 
 			script.Load(ctx, client)
-			client.Do(ctx, "script", "load", lostScriptSrc)
+			// Load one master so SCRIPT EXISTS must aggregate false across shards.
+			var once sync.Once
+			var loadErr error
+			err := client.ForEachMaster(ctx, func(ctx context.Context, master *redis.Client) error {
+				once.Do(func() {
+					loadErr = master.ScriptLoad(ctx, lostScriptSrc).Err()
+				})
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(loadErr).NotTo(HaveOccurred())
 
 			val, _ := client.ScriptExists(ctx, script.Hash(), lostScript.Hash()).Result()
 
@@ -1295,7 +1305,7 @@ var _ = Describe("ClusterClient", func() {
 
 					Expect(node.ReplicationOffset).To(BeNumerically(">=", 0))
 
-					validHealthStatuses := []string{"online", "failed", "loading"}
+					validHealthStatuses := []string{"online", "fail", "failed", "loading"}
 					Expect(validHealthStatuses).To(ContainElement(node.Health))
 				}
 			}
@@ -1422,7 +1432,8 @@ var _ = Describe("ClusterClient", func() {
 			}
 
 			for i := 0; i < nkeys*10; i++ {
-				key := client.RandomKey(ctx).Val()
+				key, err := client.RandomKey(ctx).Result()
+				Expect(err).NotTo(HaveOccurred())
 				addKey(key)
 			}
 
@@ -2050,7 +2061,7 @@ var _ = Describe("ClusterClient timeout", func() {
 
 		It("should timeout Pipeline", func() {
 			_, err := client.Pipelined(ctx, func(pipe redis.Pipeliner) error {
-				pipe.Ping(ctx)
+				pipe.Echo(ctx, "timeout")
 				return nil
 			})
 			Expect(err).To(HaveOccurred())

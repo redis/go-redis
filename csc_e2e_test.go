@@ -11,6 +11,7 @@ import (
 
 	. "github.com/bsm/ginkgo/v2"
 	. "github.com/bsm/gomega"
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -348,17 +349,13 @@ func TestCSCNonZeroDBRejected(t *testing.T) {
 	}
 }
 
-// TestCSCReadYourWrites covers the canonical Phase 1 read-your-writes path:
-// after a write to a tracked key, a subsequent roundtrip on the tracking
-// conn must process the invalidate frame and the cache entry must be
-// evicted. Phase 1's documented Window-1 staleness is that a hit served
-// before the invalidate is consumed may be stale; the drain inside
-// processCached (10µs peek) shrinks but does not eliminate this window.
-// This test mirrors the Ginkgo pattern: PING after the mutator's write to
-// force the invalidate through, then assert the cache has been evicted.
-func TestCSCReadYourWrites(t *testing.T) {
-	cache := redis.NewLocalCache(redis.CacheConfig{MaxEntries: 32})
-	c := redis.NewClient(&redis.Options{
+// newTrackedCSCClient builds a PoolSize-1 RESP3 client with a fresh
+// LocalCache plus a plain mutator client, skipping when Redis or CLIENT
+// TRACKING is unavailable.
+func newTrackedCSCClient(t *testing.T) (c, mutator *redis.Client, cache *redis.LocalCache) {
+	t.Helper()
+	cache = redis.NewLocalCache(redis.CacheConfig{MaxEntries: 32})
+	c = redis.NewClient(&redis.Options{
 		Addr:            cscNativeAddr(),
 		Protocol:        3,
 		ClientSideCache: cache,
@@ -367,7 +364,7 @@ func TestCSCReadYourWrites(t *testing.T) {
 	})
 	t.Cleanup(func() { _ = c.Close() })
 
-	mutator := redis.NewClient(&redis.Options{Addr: cscNativeAddr()})
+	mutator = redis.NewClient(&redis.Options{Addr: cscNativeAddr()})
 	t.Cleanup(func() { _ = mutator.Close() })
 
 	ctx := context.Background()
@@ -381,6 +378,52 @@ func TestCSCReadYourWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probe CLIENT TRACKING: %v", err)
 	}
+	return c, mutator, cache
+}
+
+// driveUntilCached re-drives read until the cache holds an entry (a racing
+// invalidate can legitimately suppress the first fill).
+func driveUntilCached(t *testing.T, cache *redis.LocalCache, read func()) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cache.Len() < 1 {
+		time.Sleep(20 * time.Millisecond)
+		read()
+	}
+	if cache.Len() < 1 {
+		t.Fatalf("cache should hold the entry after the read, len=%d", cache.Len())
+	}
+}
+
+// driveUntilEvicted PINGs the tracking conn until the buffered invalidate is
+// consumed and the cache drains. The budget exceeds one read timeout so a
+// stalled roundtrip on a loaded runner can't blow it.
+func driveUntilEvicted(t *testing.T, c *redis.Client, cache *redis.LocalCache) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(5 * time.Second)
+	for cache.Len() != 0 {
+		if err := c.Ping(ctx).Err(); err != nil {
+			t.Fatalf("PING: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("invalidate never observed after PING storm: cache.Len=%d", cache.Len())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestCSCReadYourWrites covers the canonical Phase 1 read-your-writes path:
+// after a write to a tracked key, a subsequent roundtrip on the tracking
+// conn must process the invalidate frame and the cache entry must be
+// evicted. Phase 1's documented Window-1 staleness is that a hit served
+// before the invalidate is consumed may be stale; the drain inside
+// processCached (10µs peek) shrinks but does not eliminate this window.
+// This test mirrors the Ginkgo pattern: PING after the mutator's write to
+// force the invalidate through, then assert the cache has been evicted.
+func TestCSCReadYourWrites(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
 
 	// Only touch this test's own key — never FLUSHDB: the target may be a
 	// shared instance the suite was never pointed at. The per-run nonce keeps
@@ -397,45 +440,224 @@ func TestCSCReadYourWrites(t *testing.T) {
 	if got := c.Get(ctx, key).Val(); got != "v1" {
 		t.Fatalf("first GET: got %q want v1", got)
 	}
-	// Cache must hold the entry after Fulfill. If an invalidate (e.g. a flush
-	// from an unrelated actor) races the first GET's in-flight fetch, that
-	// fill is (correctly) suppressed — re-drive the GET until the fill lands.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && cache.Len() < 1 {
-		time.Sleep(20 * time.Millisecond)
+	driveUntilCached(t, cache, func() {
 		if got := c.Get(ctx, key).Val(); got != "v1" {
 			t.Fatalf("re-driven GET: got %q want v1", got)
 		}
-	}
-	if cache.Len() < 1 {
-		t.Fatalf("cache should hold the entry after first GET, len=%d", cache.Len())
-	}
+	})
 
-	// Mutate via a separate client. The tracking conn receives an
-	// invalidate frame; we drive a PING roundtrip to consume it.
+	// Mutate via a separate client, then drive the invalidate through.
 	if err := mutator.Set(ctx, key, "v2", 0).Err(); err != nil {
 		t.Fatalf("SET v2: %v", err)
 	}
-
-	// Drive the tracking conn until the invalidate is consumed and the
-	// cache entry is evicted. PING is a non-cacheable roundtrip so it
-	// goes through processPendingPushNotificationWithReader. The budget is
-	// deliberately larger than one default read timeout (3s) so a single
-	// stalled roundtrip on a loaded runner can't blow it.
-	deadline = time.Now().Add(5 * time.Second)
-	for cache.Len() != 0 {
-		if err := c.Ping(ctx).Err(); err != nil {
-			t.Fatalf("PING: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("invalidate never observed after PING storm: cache.Len=%d", cache.Len())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	driveUntilEvicted(t, c, cache)
 
 	// Final GET must return the fresh value.
 	if got := c.Get(ctx, key).Val(); got != "v2" {
 		t.Fatalf("post-invalidate GET: got %q want v2", got)
+	}
+}
+
+// A cached multi-key entry must be evicted when ANY of its keys changes,
+// not just the first.
+func TestCSCMultiKeyInvalidationNonFirstKey(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	k1, k2 := "csc-mk1:"+nonce, "csc-mk2:"+nonce
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), k1, k2).Err() })
+	if err := mutator.Set(ctx, k1, "a", 0).Err(); err != nil {
+		t.Fatalf("SET %s: %v", k1, err)
+	}
+	if err := mutator.Set(ctx, k2, "b", 0).Err(); err != nil {
+		t.Fatalf("SET %s: %v", k2, err)
+	}
+
+	mget := func() []interface{} {
+		vals, err := c.MGet(ctx, k1, k2).Result()
+		if err != nil {
+			t.Fatalf("MGET: %v", err)
+		}
+		return vals
+	}
+
+	if vals := mget(); vals[0] != "a" || vals[1] != "b" {
+		t.Fatalf("first MGET: got %v want [a b]", vals)
+	}
+	driveUntilCached(t, cache, func() { mget() })
+
+	// Mutate the SECOND key only.
+	if err := mutator.Set(ctx, k2, "b2", 0).Err(); err != nil {
+		t.Fatalf("SET %s: %v", k2, err)
+	}
+	driveUntilEvicted(t, c, cache)
+
+	if vals := mget(); vals[0] != "a" || vals[1] != "b2" {
+		t.Fatalf("post-invalidate MGET: got %v want [a b2] (stale non-first key)", vals)
+	}
+}
+
+// Guards the JSON.MGET dont_cache override: the server tracks only its
+// first key, so re-enabling caching would serve stale data here.
+func TestCSCJSONMGetNonFirstKeyStaysFresh(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	k1, k2 := "csc-jmk1:"+nonce, "csc-jmk2:"+nonce
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), k1, k2).Err() })
+	if err := mutator.Do(ctx, "json.set", k1, "$", `{"x":1}`).Err(); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+			t.Skipf("ReJSON not available: %v", err)
+		}
+		t.Fatalf("JSON.SET %s: %v", k1, err)
+	}
+	if err := mutator.Do(ctx, "json.set", k2, "$", `{"x":2}`).Err(); err != nil {
+		t.Fatalf("JSON.SET %s: %v", k2, err)
+	}
+
+	mget := func() string {
+		v, err := c.Do(ctx, "json.mget", k1, k2, "$.x").Result()
+		if err != nil {
+			t.Fatalf("JSON.MGET: %v", err)
+		}
+		return fmt.Sprint(v)
+	}
+
+	before := mget()
+	mget() // a second read would come from the cache if it were cacheable
+
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("JSON.MGET populated the cache (len=%d) — its dont_cache override is gone", n)
+	}
+
+	// The server sends no invalidation for the second key.
+	if err := mutator.Do(ctx, "json.set", k2, "$", `{"x":9}`).Err(); err != nil {
+		t.Fatalf("JSON.SET mutate %s: %v", k2, err)
+	}
+
+	after := mget()
+	if after == before {
+		t.Fatalf("JSON.MGET reply did not change after mutating the second key: %q — it is being served from a cache no invalidation can evict", after)
+	}
+}
+
+// Guards the TS.NRANGE dont_cache override: the server registers no
+// tracking for its series, so re-enabling caching would serve stale data.
+func TestCSCTSNRangeStaysFresh(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	nonce := strconv.FormatInt(time.Now().UnixNano(), 10)
+	s1, s2 := "csc-tsn1:"+nonce, "csc-tsn2:"+nonce
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), s1, s2).Err() })
+	if err := mutator.Do(ctx, "ts.create", s1).Err(); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+			t.Skipf("RedisTimeSeries not available: %v", err)
+		}
+		t.Fatalf("TS.CREATE %s: %v", s1, err)
+	}
+	if err := mutator.Do(ctx, "ts.create", s2).Err(); err != nil {
+		t.Fatalf("TS.CREATE %s: %v", s2, err)
+	}
+
+	nrange := func() string {
+		v, err := c.Do(ctx, "ts.nrange", 2, s1, s2, "-", "+").Result()
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+				t.Skipf("TS.NRANGE not available (requires TimeSeries >= 8.10): %v", err)
+			}
+			t.Fatalf("TS.NRANGE: %v", err)
+		}
+		return fmt.Sprint(v)
+	}
+
+	before := nrange()
+	nrange() // a second read would come from the cache if it were cacheable
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("TS.NRANGE populated the cache (len=%d) — its dont_cache override is gone", n)
+	}
+
+	// The server sends no invalidation for this write.
+	if err := mutator.Do(ctx, "ts.add", s2, 1, 1).Err(); err != nil {
+		t.Fatalf("TS.ADD: %v", err)
+	}
+	if after := nrange(); after == before {
+		t.Fatalf("TS.NRANGE reply did not change after TS.ADD: %q — served from a cache no invalidation can evict", after)
+	}
+}
+
+// Guards the XINFO STREAM/GROUPS dont_cache overrides: group mutations do
+// not signal the stream key.
+func TestCSCXInfoGroupStateStaysFresh(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	key := "csc-xinfo:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+	if err := mutator.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: map[string]interface{}{"f": "v"}}).Err(); err != nil {
+		t.Fatalf("XADD: %v", err)
+	}
+
+	groups := func() int64 {
+		info, err := c.XInfoStream(ctx, key).Result()
+		if err != nil {
+			t.Fatalf("XINFO STREAM: %v", err)
+		}
+		return info.Groups
+	}
+
+	if got := groups(); got != 0 {
+		t.Fatalf("fresh stream reports %d groups, want 0", got)
+	}
+	groups() // a second read would come from the cache if it were cacheable
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("XINFO STREAM populated the cache (len=%d) — its dont_cache override is gone", n)
+	}
+
+	// Group creation sends no invalidation.
+	if err := mutator.XGroupCreate(ctx, key, "g", "$").Err(); err != nil {
+		t.Fatalf("XGROUP CREATE: %v", err)
+	}
+	if got := groups(); got != 1 {
+		t.Fatalf("XINFO STREAM reports %d groups after XGROUP CREATE, want 1 — served from a cache no invalidation can evict", got)
+	}
+}
+
+// Guards the MEMORY USAGE dont_cache override: a key's memory usage changes
+// on mutations that never signal the key (XGROUP CREATE), so re-enabling
+// caching would serve stale usage forever.
+func TestCSCMemoryUsageStaysFresh(t *testing.T) {
+	c, mutator, cache := newTrackedCSCClient(t)
+	ctx := context.Background()
+
+	key := "csc-memuse:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	t.Cleanup(func() { _ = mutator.Del(context.Background(), key).Err() })
+	if err := mutator.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: map[string]interface{}{"f": "v"}}).Err(); err != nil {
+		t.Fatalf("XADD: %v", err)
+	}
+
+	usage := func() int64 {
+		n, err := c.MemoryUsage(ctx, key).Result()
+		if err != nil {
+			t.Fatalf("MEMORY USAGE: %v", err)
+		}
+		return n
+	}
+
+	before := usage()
+	usage() // a second read would come from the cache if it were cacheable
+	if n := cache.Len(); n != 0 {
+		t.Fatalf("MEMORY USAGE populated the cache (len=%d) — its dont_cache override is gone", n)
+	}
+
+	// Grow the key's group metadata: the server sends no invalidation for it.
+	if err := mutator.XGroupCreate(ctx, key, "g", "$").Err(); err != nil {
+		t.Fatalf("XGROUP CREATE: %v", err)
+	}
+	if after := usage(); after == before {
+		t.Fatalf("MEMORY USAGE did not change after XGROUP CREATE (%d) — served from a cache no invalidation can evict", after)
 	}
 }
 

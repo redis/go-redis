@@ -416,6 +416,11 @@ type baseClient struct {
 	// identity. It is computed once during attachment and copied with the cache.
 	cscKeyPrefix string
 
+	// cmdMeta publishes the client's command-metadata views (see
+	// command_metadata.go); nil when the client uses the shared static
+	// default. Shared with clones; only the owner's Close stops its worker.
+	cmdMeta *commandMetadataStore
+
 	// allowClientTracking exempts a client from the CLIENT TRACKING guard (see
 	// process and generalProcessPipeline). Set only on initConn's internal conn
 	// wrapper, whose init pipeline legitimately issues CLIENT TRACKING ON;
@@ -475,6 +480,8 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		// Derived clients share the owner's immutable metadata view.
+		cmdMeta: c.cmdMeta,
 	}
 	return clone
 }
@@ -901,7 +908,8 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	// be used. Remember that negotiated fallback: configured Protocol remains 3,
 	// but CSC must not serve without RESP3 invalidations.
 	helloFallbackToRESP2 := false
-	if initErr = conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName).Err(); initErr == nil {
+	helloCmd := conn.Hello(ctx, c.opt.Protocol, username, password, c.opt.ClientName)
+	if initErr = helloCmd.Err(); initErr == nil {
 		// Authentication successful with HELLO command
 		helloOK = true
 	} else if !isRedisError(initErr) {
@@ -1146,6 +1154,20 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
+	// A connection enables live metadata. HELLO identity changes retire its
+	// view; without HELLO, the fetcher adopts the identity atomically.
+	if s := c.cmdMeta; s != nil {
+		if helloOK {
+			if reply, replyErr := helloCmd.Result(); replyErr == nil {
+				s.onServerHello(helloServerFingerprint(reply))
+			} else {
+				s.onConnInit()
+			}
+		} else {
+			s.onConnInit()
+		}
+	}
+
 	return nil
 }
 
@@ -1324,11 +1346,23 @@ func (c *baseClient) cscTrackingRequested() bool {
 	return c.opt.DB == 0
 }
 
-// autopipelineCSCActive reports whether client-side caching can serve this
-// client; the autopipeliner captures it at construction to gate cacheable-solo
-// routing through the cache-honoring Process path.
+// autopipelineCSCActive reports whether client-side caching can currently serve
+// this client. AutoPipeline's per-command eligibility gate checks it at dispatch
+// time because CSC can disable itself after client construction.
 func (c *baseClient) autopipelineCSCActive() bool {
 	return c.csc != nil && c.cscActive != nil && c.cscActive.Load()
+}
+
+// autopipelineCSCEligible reports whether cmd must take AutoPipeliner's
+// cache-honoring Process path under the client's current metadata view. The
+// view is resolved per dispatch so live metadata upgrades and application
+// overrides take effect without rebuilding the AutoPipeliner.
+func (c *baseClient) autopipelineCSCEligible(cmd Cmder) bool {
+	if !c.autopipelineCSCActive() {
+		return false
+	}
+	_, ok := cscEligibleMeta(c.metadataView(), cmd)
+	return ok
 }
 
 func (c *baseClient) process(ctx context.Context, cmd Cmder) error {
@@ -1355,8 +1389,13 @@ func (c *baseClient) processCommand(ctx context.Context, cmd Cmder, state *proce
 	if err := c.cscCommandError(cmd); err != nil {
 		return err
 	}
-	if c.csc != nil && isCacheable(cmd) {
-		return c.processCached(ctx, cmd, state)
+	if c.csc != nil {
+		// One view per invocation: eligibility, key extraction, and the cache
+		// key all come from the same metadata generation.
+		view := c.metadataView()
+		if meta, ok := cscEligibleMeta(view, cmd); ok {
+			return c.processCached(ctx, cmd, state, view, meta)
+		}
 	}
 	return c.processWithRetry(ctx, cmd, nil, state)
 }
@@ -1712,9 +1751,9 @@ func (c *baseClient) Close() error {
 func (c *baseClient) closeResources() error {
 	var firstErr error
 
-	// CSC teardown (no-op when CSC is not active): stop the background
-	// invalidation drainer before the pool it walks is torn down.
+	// Stop metadata and CSC workers before closing their pools.
 	c.stopBackgroundDrainer()
+	c.cmdMeta.stopAndJoin()
 
 	// Close maintnotifications manager first
 	if err := c.disableMaintNotificationsUpgrades(); err != nil {
@@ -2065,10 +2104,9 @@ type Client struct {
 	*baseClient
 	cmdable
 
-	// cscLifecycleOwner keeps the canonical Client wrapper (the one whose GC
-	// cleanup owns the drainer) reachable while a WithTimeout clone can still
-	// serve from its cache. Nil on the canonical wrapper and on non-CSC clones.
-	cscLifecycleOwner *Client
+	// lifecycleOwner keeps the client that owns shared CSC/metadata workers
+	// reachable from WithTimeout clones.
+	lifecycleOwner *Client
 
 	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
 	autopipeliner       *AutoPipeliner // blocking face (Client.AutoPipeline)
@@ -2142,6 +2180,10 @@ func NewClient(opt *Options) *Client {
 		}
 	}
 
+	// Create metadata independently of CSC. The zero config reuses the package
+	// default without allocating a store.
+	c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
 	if opt.Protocol == 3 {
@@ -2155,11 +2197,9 @@ func NewClient(opt *Options) *Client {
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
 
-		// Safety net for a client dropped without Close: the goroutines hold
-		// *baseClient (never *Client), so dropping *Client (returned as &c)
-		// triggers these cleanups, which stop them. See cscRegisterCleanups.
-		cscRegisterCleanups(&c)
 	}
+	// Stop metadata and CSC workers if the client is collected without Close.
+	cscRegisterCleanups(&c)
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
@@ -2215,10 +2255,10 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	c.autopipelinerMu.Lock()
 	clone := *c
 	c.autopipelinerMu.Unlock()
-	if c.cscLifecycleOwner != nil {
-		clone.cscLifecycleOwner = c.cscLifecycleOwner
-	} else if c.baseClient.cscDrainHandle != nil {
-		clone.cscLifecycleOwner = c
+	if c.lifecycleOwner != nil {
+		clone.lifecycleOwner = c.lifecycleOwner
+	} else if c.baseClient.cscDrainHandle != nil || c.baseClient.cmdMeta != nil {
+		clone.lifecycleOwner = c
 	}
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
@@ -2230,8 +2270,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 // before releasing the underlying resources, so their background flusher
 // goroutines don't outlive the client. AutoPipeliner.Close is idempotent and
 // safe to call here even if autopipelining was never used.
-// A WithTimeout clone delegates CSC teardown to the canonical wrapper that
-// owns the background drainer.
+// WithTimeout clones delegate shared-resource teardown to their owner.
 func (c *Client) Close() error {
 	c.autopipelinerMu.Lock()
 	ap, async := c.autopipeliner, c.asyncAutopipeliner
@@ -2249,7 +2288,7 @@ func (c *Client) Close() error {
 			}
 		}
 	}
-	if c.cscLifecycleOwner != nil {
+	if c.lifecycleOwner != nil {
 		// Delegate through the OWNER's *Client.Close, not its baseClient:
 		// the owner may hold cached autopipeliners of its own whose flusher
 		// goroutines must stop with the shared pools, and its
@@ -2257,7 +2296,7 @@ func (c *Client) Close() error {
 		// resurrect a pipeliner against closed pools. Client.Close is
 		// idempotent through baseClient.Close, so an owner also closed
 		// directly is fine.
-		if err := c.cscLifecycleOwner.Close(); err != nil && firstErr == nil {
+		if err := c.lifecycleOwner.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return firstErr
@@ -2752,7 +2791,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})

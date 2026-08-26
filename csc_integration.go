@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,11 +18,12 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// cscRegisterCleanups arranges for a client dropped without Close to stop its
-// background CSC drainer. The drainer's exit path revokes its pool's cache
-// coverage; the runtime cleanup itself stays non-blocking and never captures
-// *Client, so the wrapper remains collectible.
+// cscRegisterCleanups stops metadata and CSC workers when a client is collected
+// without Close. The non-blocking cleanups do not capture *Client.
 func cscRegisterCleanups(c *Client) {
+	if s := c.baseClient.cmdMeta; s != nil {
+		runtime.AddCleanup(c, func(s *commandMetadataStore) { s.signalStop() }, s)
+	}
 	h := c.baseClient.cscDrainHandle
 	if h == nil {
 		return
@@ -516,32 +518,44 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 // args, and pipelines — are also caught: the guard matches on the command's
 // leading args, not the typed method.
 var errClientTrackingWithCSC = errors.New(
-	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled")
+	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled",
+)
 
 // errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
 // keys use Options.DB, while SELECT mutates only the chosen pool connection.
 var errSelectWithCSC = errors.New(
-	"redis: SELECT is not allowed when client-side caching is enabled")
+	"redis: SELECT is not allowed when client-side caching is enabled",
+)
 
 // errAuthWithCSC rejects runtime authentication because it can change one
 // connection's ACL identity without changing the client's fixed cache namespace.
 var errAuthWithCSC = errors.New(
-	"redis: AUTH is not allowed when client-side caching is enabled")
+	"redis: AUTH is not allowed when client-side caching is enabled",
+)
 
 // errHelloWithCSC rejects HELLO with arguments because it can switch a tracked
 // connection out of RESP3 (and can also change authentication).
 var errHelloWithCSC = errors.New(
-	"redis: HELLO with arguments is not allowed when client-side caching is enabled")
+	"redis: HELLO with arguments is not allowed when client-side caching is enabled",
+)
 
 // errResetWithCSC rejects RESET because it disables tracking and switches the
 // connection to RESP2.
 var errResetWithCSC = errors.New(
-	"redis: RESET is not allowed when client-side caching is enabled")
+	"redis: RESET is not allowed when client-side caching is enabled",
+)
 
 // errSubscribeWithCSC rejects raw subscriptions on the ordinary pool. The
 // typed Subscribe methods use dedicated PubSub connections and remain allowed.
 var errSubscribeWithCSC = errors.New(
-	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled")
+	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled",
+)
+
+// errUnverifiableCommandWithCSC rejects raw tokens whose wire bytes cannot be
+// verified, preventing connection-state commands from bypassing CSC guards.
+var errUnverifiableCommandWithCSC = errors.New(
+	"redis: command token cannot be verified safely when client-side caching is enabled",
+)
 
 // cscCommandError rejects commands that can make a pooled connection's state
 // diverge from the assumptions used by CSC.
@@ -550,6 +564,15 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 	// initConn's internal command wrapper is exempt during library setup.
 	if !c.cscTrackingRequested() || c.allowClientTracking {
 		return nil
+	}
+	name, nameOK := cscCommandToken(cmd, 0)
+	if !nameOK {
+		return errUnverifiableCommandWithCSC
+	}
+	if strings.EqualFold(name, "client") {
+		if _, ok := cscCommandToken(cmd, 1); !ok {
+			return errUnverifiableCommandWithCSC
+		}
 	}
 	switch {
 	case isClientTrackingCmd(cmd):
@@ -798,10 +821,21 @@ const cscDrainProbeReadCap = 50 * time.Microsecond
 // redialing) a connection per tick indefinitely.
 const cscDrainCustomErrCap = 8
 
+// cscEntryKey embeds the metadata fingerprint in the cache-entry key so
+// entries cached under different eligibility decisions never mix. The
+// Redis-key invalidation index stays fingerprint-free, so invalidations reach
+// every generation.
+func cscEntryKey(keyPrefix, fingerprint, rawKey string) string {
+	return keyPrefix + fingerprint + cscNamespaceSep + rawKey
+}
+
 // processCached runs the Get-Reserve-Fulfill lifecycle for a cacheable command.
 // Only invoked after process has verified that CSC is active and cmd is
-// eligible.
-func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *processState) error {
+// eligible under view; meta is cmd's resolution in that same view.
+func (c *baseClient) processCached(
+	ctx context.Context, cmd Cmder, state *processState,
+	view *commandMetadataView, meta cscCommandMeta,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -817,7 +851,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		return c.processWithRetry(ctx, cmd, nil, state)
 	}
 
-	redisKeys := extractRedisKeys(cmd)
+	redisKeys := cscExtractRedisKeys(meta, cmd)
 	if len(redisKeys) == 0 {
 		// Without a key list we cannot react to invalidations for this command.
 		return c.processWithRetry(ctx, cmd, nil, state)
@@ -829,16 +863,23 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		// an incomplete custom baseClient reaches this path.
 		return c.processWithRetry(ctx, cmd, nil, state)
 	}
-	key := cscNamespacedKey(keyPrefix, rawKey)
+	key := cscEntryKey(keyPrefix, view.cscFingerprint, rawKey)
 	nsRedisKeys := make([]string, len(redisKeys))
 	for i, k := range redisKeys {
 		nsRedisKeys[i] = cscNamespacedKey(keyPrefix, k)
 	}
 
-	// Serve hits straight from the cache.
+	// Serve hits straight from the cache. A hit is served only while the
+	// captured view's DECISIONS are still current (fingerprint compare, not
+	// pointer identity: a refresh that changed nothing must not suppress
+	// hits); after a decision change the entry belongs to a retired
+	// generation.
 	if data, ok := c.csc.Get(ctx, key); ok {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if c.metadataView().cscFingerprint != view.cscFingerprint {
+			return c.processWithRetry(ctx, cmd, nil, state)
 		}
 		if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
 			return err
@@ -852,6 +893,9 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		if data, ok := c.csc.Get(ctx, key); ok {
 			if err := ctx.Err(); err != nil {
 				return err
+			}
+			if c.metadataView().cscFingerprint != view.cscFingerprint {
+				return c.processWithRetry(ctx, cmd, nil, state)
 			}
 			if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
 				return err
@@ -881,7 +925,7 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 	if shouldFetch {
 		capture = nil // disarm the deferred Cancel
 		if isCacheableReplyResult(err) {
-			c.fulfillCached(key, token, &fc)
+			c.fulfillCached(key, token, &fc, view)
 		} else {
 			c.csc.Cancel(key, token)
 		}
@@ -897,8 +941,17 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 // the hook's init-generation changes, so a reply whose invalidation coverage
 // was already lost never becomes visible and never wakes waiters with stale
 // data.
-func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture) bool {
+func (c *baseClient) fulfillCached(key string, token uint64, fc *cscFetchCapture, view *commandMetadataView) bool {
 	if active := c.cscActive; active != nil && !active.Load() {
+		c.csc.Cancel(key, token)
+		return false
+	}
+	// A decision change retired this fetch's generation mid-flight: cancel so
+	// waiters re-decide under the current view. Best-effort (a publish can
+	// still race a swap landing after this check): a leaked entry sits under
+	// the retired fingerprint, unreachable for new lookups, still deleted by
+	// invalidations, reclaimed by eviction.
+	if c.metadataView().cscFingerprint != view.cscFingerprint {
 		c.csc.Cancel(key, token)
 		return false
 	}
