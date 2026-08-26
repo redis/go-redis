@@ -212,16 +212,18 @@ type MultiDBOptions struct {
 	ProbeTargetBeforeFailover bool
 
 	// OnFailover is called after an automatic or manual failover switched the
-	// active database from index `from` to index `to`.
+	// active database from `from` to `to`. Delivered asynchronously (FIFO); do
+	// not rely on it running synchronously with the failover. The ctx keeps
+	// the triggering operation's trace/values but not its cancellation.
 	OnFailover func(ctx context.Context, from, to int)
 	// OnActiveDatabaseChanged is called on every active-database change,
-	// including auto-fallback.
+	// including auto-fallback. Delivered asynchronously (FIFO); do not rely on
+	// it running synchronously with the change.
 	OnActiveDatabaseChanged func(from, to int)
 	// OnCircuitStateChanged is called when any database's circuit breaker
-	// changes state ("closed", "open", "half-open"). It is delivered
-	// asynchronously (FIFO per database), so it is safe to call control APIs
-	// (SetActiveIndex, RemoveDatabase, ...) from the callback; do not rely
-	// on it running synchronously with the transition that triggered it.
+	// changes state ("closed", "open", "half-open"). Delivered asynchronously
+	// (FIFO per database); do not rely on it running synchronously with the
+	// transition.
 	OnCircuitStateChanged func(dbIndex int, from, to string)
 }
 

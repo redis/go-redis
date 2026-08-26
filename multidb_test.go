@@ -247,6 +247,11 @@ func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
 	if db2.hook.commands.Load() == 0 {
 		t.Error("db2 did not receive the retried command")
 	}
+	// OnFailover is delivered asynchronously on the announce queue; poll for it.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && (failoverFrom.Load() != 0 || failoverTo.Load() != 1) {
+		time.Sleep(5 * time.Millisecond)
+	}
 	if failoverFrom.Load() != 0 || failoverTo.Load() != 1 {
 		t.Errorf("OnFailover(from=%d,to=%d), want (0,1)", failoverFrom.Load(), failoverTo.Load())
 	}
@@ -470,6 +475,12 @@ func TestMultiDBAutoFallback(t *testing.T) {
 	}
 	if mdb.ActiveIndex() != 0 {
 		t.Fatalf("auto-fallback never returned to db1; active = %d", mdb.ActiveIndex())
+	}
+	// OnActiveDatabaseChanged is delivered asynchronously; give the queue a
+	// beat to drain the second change before asserting the count.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && activeChanges.Load() < 2 {
+		time.Sleep(10 * time.Millisecond)
 	}
 	if activeChanges.Load() < 2 {
 		t.Errorf("OnActiveDatabaseChanged fired %d times, want >= 2", activeChanges.Load())
@@ -1885,9 +1896,9 @@ func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
 	opts.OnActiveDatabaseChanged = func(int, int) { panic("panicky OnActiveDatabaseChanged") }
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
 
-	// The announce closure also runs on the library-owned background loop:
-	// panicking user callbacks must be recovered, and the failover itself
-	// must complete.
+	// The user callbacks are delivered on the announce queue's own goroutine:
+	// a panic there must be recovered (not crash the process), and the
+	// failover itself must complete regardless.
 	dbA.hook.fail.Store(true)
 	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
 		t.Fatalf("Get across failover: %v", err)
@@ -1895,6 +1906,9 @@ func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
 	if got := mdb.ActiveIndex(); got != 1 {
 		t.Fatalf("active = %d, want 1", got)
 	}
+	// Let the announce queue drain so the panicking callbacks actually run
+	// (and get recovered) before the test returns.
+	time.Sleep(100 * time.Millisecond)
 }
 
 func TestMultiDBProcessRejectsRawHImportCmd(t *testing.T) {

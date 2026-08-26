@@ -234,6 +234,13 @@ type multidbCore struct {
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 	closed atomic.Bool
+
+	// announceQ runs the OnFailover / OnActiveDatabaseChanged callbacks on its
+	// own goroutine (FIFO). They fire from switchActive's announce closure,
+	// which runs on the background loop; running them inline there would
+	// deadlock if a callback called Close() (close() waits on that goroutine
+	// via wg.Wait). Like the per-db cbq, close() does not wait on this queue.
+	announceQ callbackQueue
 }
 
 func newMultidbCore(opts *MultiDBOptions) *multidbCore {
@@ -814,13 +821,12 @@ func (c *multidbCore) recordFailedFailoverLocked() error {
 	return ErrTemporarilyNotAvailable
 }
 
-// switchActive is the single transition point for every active-index change:
-// automatic failover, auto-fallback and manual selection all funnel through
-// it, so callbacks, metrics and PubSub notifications fire exactly once per
-// real change. It returns a non-nil announce closure when the switch
-// happened; callers MUST invoke it AFTER releasing failoverMu — user
-// callbacks may re-enter control APIs (SetActiveIndex, RemoveDatabase, ...)
-// that take the same lock, and invoking them under it would self-deadlock.
+// switchActive is the single point for every active-index change: automatic
+// failover, auto-fallback and manual selection all funnel through it, so
+// callbacks, metrics and PubSub fire once per real change. It returns a
+// non-nil announce closure when the switch happened; callers MUST invoke it
+// AFTER releasing failoverMu. Metrics and the PubSub nudge run synchronously;
+// the user callbacks go through announceQ.
 func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason string, took time.Duration) (announce func()) {
 	if !c.active.CompareAndSwap(int32(from), int32(to)) {
 		return nil
@@ -837,20 +843,32 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	internal.Logger.Printf(ctx, "multidb: active database changed %d (%s) -> %d (%s), reason=%s",
 		from, fromFQDN, to, toFQDN, reason)
 
+	// Callbacks run later on announceQ, so detach from the caller ctx (a manual
+	// SetActiveIndex ctx dies on return). Keep trace/values, drop cancel.
+	cbCtx := context.WithoutCancel(ctx)
 	return func() {
 		otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
 		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
 			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
 			if c.opts.OnFailover != nil {
-				// Recovered like the circuit-state callbacks: announce also
-				// runs on the library-owned background loop (health-check
-				// driven failover, auto-fallback), where a panicking user
-				// callback would crash the process.
-				runCallbackSafely(func() { c.opts.OnFailover(ctx, from, to) })
+				// Async via announceQ: running a callback inline here would
+				// deadlock if it called Close(). drain() wraps each in
+				// runCallbackSafely; skip if already closed.
+				c.announceQ.dispatch(func() {
+					if c.closed.Load() {
+						return
+					}
+					c.opts.OnFailover(cbCtx, from, to)
+				})
 			}
 		}
 		if c.opts.OnActiveDatabaseChanged != nil {
-			runCallbackSafely(func() { c.opts.OnActiveDatabaseChanged(from, to) })
+			c.announceQ.dispatch(func() {
+				if c.closed.Load() {
+					return
+				}
+				c.opts.OnActiveDatabaseChanged(from, to)
+			})
 		}
 		c.notifyPubSubs(ctx)
 	}
