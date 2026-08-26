@@ -284,14 +284,6 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		opt := *cfg.Options
 		disableMaintNotificationsIfUnset(&opt)
 		db.c = NewClient(&opt)
-	case cfg.FailoverOptions != nil:
-		// FailoverOptions does not carry a maintnotifications config (not
-		// supported for failover clients), so there is nothing to disable.
-		// Private copy, like the standalone and cluster members: the sentinel
-		// machinery keeps reading these options on its dial path, and a
-		// caller mutating the shared value would change a running member.
-		opt := *cfg.FailoverOptions
-		db.c = NewFailoverClient(&opt)
 	case cfg.ClusterOptions != nil:
 		opt := *cfg.ClusterOptions
 		// The cluster client keeps the options pointer and reads Addrs on
@@ -1251,7 +1243,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 }
 
 // hasStandaloneMember reports whether any member database is served by a
-// standalone (or sentinel) client, i.e. whether PubSub can ever be dialed.
+// standalone client, i.e. whether PubSub can ever be dialed.
 func (c *multidbCore) hasStandaloneMember() bool {
 	c.dbMu.RLock()
 	defer c.dbMu.RUnlock()
@@ -1295,7 +1287,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 				if !c.hasStandaloneMember() {
 					return nil, ErrClosed
 				}
-				return nil, errors.New("redis: multidb: PubSub requires a standalone or sentinel active database")
+				return nil, errors.New("redis: multidb: PubSub requires a standalone active database")
 			}
 			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)
 			if err != nil {

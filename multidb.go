@@ -112,13 +112,11 @@ type MultiDBCircuitBreakerConfig struct {
 	GracePeriod time.Duration
 }
 
-// MultiDBClientConfig describes one member database. Exactly one of Options,
-// FailoverOptions or ClusterOptions must be set.
+// MultiDBClientConfig describes one member database. Exactly one of Options
+// or ClusterOptions must be set.
 type MultiDBClientConfig struct {
 	// Options configures a standalone client for this database.
 	Options *Options
-	// FailoverOptions configures a Sentinel-backed failover client.
-	FailoverOptions *FailoverOptions
 	// ClusterOptions configures a cluster client.
 	ClusterOptions *ClusterOptions
 
@@ -304,20 +302,11 @@ func (cfg *MultiDBClientConfig) validate() error {
 	if cfg.Options != nil {
 		set++
 	}
-	if cfg.FailoverOptions != nil {
-		set++
-	}
 	if cfg.ClusterOptions != nil {
 		set++
 	}
 	if set != 1 {
-		return fmt.Errorf("redis: multidb: exactly one of Options, FailoverOptions or ClusterOptions must be set per database (got %d)", set)
-	}
-	if cfg.FailoverOptions != nil && (cfg.FailoverOptions.RouteByLatency || cfg.FailoverOptions.RouteRandomly) {
-		// NewFailoverClient panics for these options (they require the
-		// failover cluster client); reject them here so a bad member config
-		// surfaces as a constructor error instead of a crash.
-		return errors.New("redis: multidb: RouteByLatency/RouteRandomly are not supported for sentinel member databases")
+		return fmt.Errorf("redis: multidb: exactly one of Options or ClusterOptions must be set per database (got %d)", set)
 	}
 	if cfg.ClusterOptions != nil && (cfg.ClusterOptions.RouteByLatency || cfg.ClusterOptions.RouteRandomly || cfg.ClusterOptions.ReadOnly) {
 		// The cluster health checks (built-in PING and lag-aware) probe masters
@@ -331,8 +320,7 @@ func (cfg *MultiDBClientConfig) validate() error {
 }
 
 // fqdn derives the host-only identifier used for callbacks and metrics:
-// the option's host for standalone/cluster databases, or the Sentinel master
-// name for failover databases.
+// the option's host for standalone and cluster databases.
 func (cfg *MultiDBClientConfig) fqdn() string {
 	hostOnly := func(addr string) string {
 		if host, _, err := net.SplitHostPort(addr); err == nil {
@@ -343,8 +331,6 @@ func (cfg *MultiDBClientConfig) fqdn() string {
 	switch {
 	case cfg.Options != nil:
 		return hostOnly(cfg.Options.Addr)
-	case cfg.FailoverOptions != nil:
-		return cfg.FailoverOptions.MasterName
 	case cfg.ClusterOptions != nil && len(cfg.ClusterOptions.Addrs) > 0:
 		return hostOnly(cfg.ClusterOptions.Addrs[0])
 	}
@@ -378,7 +364,7 @@ type MultiDBCtrl interface {
 var _ MultiDBCtrl = (*MultiDBClient)(nil)
 
 // MultiDBClient routes all commands to a single active database out of N
-// configured member databases (standalone, Sentinel or cluster) and
+// configured member databases (standalone or cluster) and
 // transparently fails over between them based on circuit-breaker state,
 // health checks and a failover strategy. It exposes the full Redis command
 // surface and is a drop-in replacement for *Client in application code; the
@@ -503,8 +489,8 @@ func (c *MultiDBClient) AddDatabaseHook(index int, hook Hook) error {
 
 // Subscribe creates a PubSub subscription that follows the active database:
 // it dials whichever database is active and re-dials when the active database
-// changes. The active database must be standalone or Sentinel-backed;
-// cluster databases are not supported for MultiDB PubSub yet.
+// changes. The active database must be standalone; cluster databases are not
+// supported for MultiDB PubSub yet.
 func (c *MultiDBClient) Subscribe(ctx context.Context, channels ...string) *PubSub {
 	pubsub := c.core.newPubSub()
 	if len(channels) > 0 {

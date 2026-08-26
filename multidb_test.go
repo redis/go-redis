@@ -970,7 +970,7 @@ func TestMultiDBValidation(t *testing.T) {
 		t.Error("zero databases should fail")
 	}
 
-	// Exactly one of Options/FailoverOptions/ClusterOptions per database.
+	// Exactly one of Options/ClusterOptions per database.
 	bad := &redis.MultiDBOptions{Clients: []redis.MultiDBClientConfig{{
 		Options:        &redis.Options{Addr: "127.0.0.1:1"},
 		ClusterOptions: &redis.ClusterOptions{Addrs: []string{"127.0.0.1:2"}},
@@ -1528,38 +1528,6 @@ func TestMultiDBCloseUnblocksPubSubReconnectDial(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Close blocked on an in-flight PubSub reconnect dial")
-	}
-}
-
-func TestMultiDBRejectsUnsupportedSentinelRouting(t *testing.T) {
-	mk := func(mutate func(*redis.FailoverOptions)) error {
-		fo := &redis.FailoverOptions{
-			MasterName:    "mymaster",
-			SentinelAddrs: []string{"127.0.0.1:26379"},
-		}
-		mutate(fo)
-		opts := baseOptions()
-		opts.Clients = []redis.MultiDBClientConfig{{
-			FailoverOptions: fo,
-			Weight:          1,
-			HealthChecks:    []redis.MultiDBHealthCheck{newFakeHealthCheck(true)},
-		}}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		mdb, err := redis.NewMultiDBClient(ctx, opts)
-		if err == nil {
-			_ = mdb.Close()
-		}
-		return err
-	}
-
-	// NewFailoverClient panics for these options; a bad member config must
-	// surface as a constructor error, never a crash.
-	if err := mk(func(fo *redis.FailoverOptions) { fo.RouteByLatency = true }); err == nil {
-		t.Error("RouteByLatency member accepted, want a validation error")
-	}
-	if err := mk(func(fo *redis.FailoverOptions) { fo.RouteRandomly = true }); err == nil {
-		t.Error("RouteRandomly member accepted, want a validation error")
 	}
 }
 
