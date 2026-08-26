@@ -94,8 +94,7 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// Dial errors mean TCP connection was never established — safe to retry even
 	// when wrapped inside context.DeadlineExceeded (from DialTimeout context).
 	// Must be checked before the context error check below.
-	var opErr *net.OpError
-	if errors.As(err, &opErr) && opErr.Op == "dial" {
+	if isDialError(err) {
 		return true
 	}
 
@@ -172,6 +171,11 @@ func shouldRetry(err error, retryTimeout bool) bool {
 	// -SEARCH_TIMEOUT (search-on-timeout fail): retrying would just repeat the
 	// same expensive query.
 	return false
+}
+
+func isDialError(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 func isRedisError(err error) bool {

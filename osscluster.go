@@ -1381,6 +1381,17 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 		}
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
+			if isDialError(lastErr) {
+				// The routed node is gone (connection refused after failover).
+				// Reload topology before the next pick; LazyReload is async and
+				// Get() would still return the stale slot map.
+				if _, err := c.state.Reload(ctx); err != nil {
+					c.state.LazyReload()
+				}
+				node.MarkAsFailing()
+				node = nil
+				continue
+			}
 			// First retry the same node.
 			if attempt == 0 {
 				continue
