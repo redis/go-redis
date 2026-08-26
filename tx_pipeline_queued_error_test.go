@@ -1338,7 +1338,7 @@ func TestTxPipelineExecQueuedErrorDiscardedCmdGetsQueuedErr(t *testing.T) {
 func TestTxPipelineExecQueuedErrorDiscardSkipsRESP3Attrs(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.resp3 = true
-	srv.execReply = "*2\r\n|1\r\n+meta\r\n+PONG\r\n+OK\r\n"
+	srv.execReply = "*2\r\n|1\r\n+meta\r\n+data\r\n+PONG\r\n+OK\r\n"
 	defer func() { _ = srv.Close() }()
 
 	client := NewClient(&Options{
@@ -2012,7 +2012,7 @@ func TestClusterTxPipelineQueuedErrorDiscardSkipsRESP3Attrs(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.resp3 = true
 	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
-	srv.execReply = "*2\r\n|1\r\n+meta\r\n+PONG\r\n+OK\r\n"
+	srv.execReply = "*2\r\n|1\r\n+meta\r\n+data\r\n+PONG\r\n+OK\r\n"
 	defer func() { _ = srv.Close() }()
 
 	ctx := context.Background()

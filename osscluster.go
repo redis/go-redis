@@ -2701,19 +2701,29 @@ func (c *ClusterClient) readTxPipelineReplies(
 	scratch := NewStatusCmd(ctx)
 
 	readStatus := func() error {
-		c.txProcessPush(ctx, node, cn, rd)
+		if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+			return &txPushReadError{err: err}
+		}
 		return scratch.readReply(rd)
 	}
 
 	// Optional top-level ASKING reply (+OK, or a retryable error such as -LOADING).
 	if asking {
 		if err := readStatus(); err != nil {
+			var pushErr *txPushReadError
+			if errors.As(err, &pushErr) {
+				return c.txReadFatal(pushErr)
+			}
 			return c.txPreQueueErrorOutcome(err, cmds)
 		}
 	}
 
 	// MULTI reply (+OK, or an error such as -LOADING during failover).
 	if err := readStatus(); err != nil {
+		var pushErr *txPushReadError
+		if errors.As(err, &pushErr) {
+			return c.txReadFatal(pushErr)
+		}
 		return c.txPreQueueErrorOutcome(err, cmds)
 	}
 
@@ -2767,7 +2777,9 @@ func (c *ClusterClient) readTxPipelineReplies(
 
 	// EXEC reply. ReadLine parses error lines into typed errors, so a non-nil
 	// err means EXEC returned an error rather than the result array.
-	c.txProcessPush(ctx, node, cn, rd)
+	if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
+		return c.txReadFatal(&txPushReadError{err: err})
+	}
 	line, err := rd.ReadLine()
 	if err != nil {
 		return c.classifyExecError(err, firstRedirect, firstFatal)
@@ -2857,7 +2869,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
 		}
 		if n == 0 {
-			return txRedirectOutcome(firstRedirect, firstRedirect.err, false)
+			return txRedirectOutcome(firstRedirect)
 		}
 		hasHImport := false
 		himportedIndexes := make(map[int]struct{})
@@ -2917,12 +2929,6 @@ func (c *ClusterClient) readTxPipelineReplies(
 	return &txOutcome{kind: txSuccess, himportedIndexes: himportedIndexes, readCount: len(cmds)}
 }
 
-func (c *ClusterClient) txProcessPush(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) {
-	if err := node.Client.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
-	}
-}
-
 func (c *ClusterClient) txProcessPushErr(ctx context.Context, node *clusterNode, cn *pool.Conn, rd *proto.Reader) error {
 	return node.Client.processPendingPushNotificationWithReader(ctx, cn, rd)
 }
@@ -2955,20 +2961,15 @@ func (c *ClusterClient) txPreQueueErrorOutcome(err error, cmds []Cmder) *txOutco
 // txRedirectOutcome builds a retry outcome from a firstRedirect, preserving
 // the redirect kind (MOVED/ASK/TRYAGAIN) so the caller retries on the right
 // node. When unreadReplies is true, the connection is desynced and will be
-// discarded. himportedIndexes carries HIMPORT slots that were already drained
-// so the caller can run himportAfterBatch for them.
-func txRedirectOutcome(r *txRedirect, err error, unreadReplies bool, himportedIndexes ...map[int]struct{}) *txOutcome {
-	var hi map[int]struct{}
-	if len(himportedIndexes) > 0 {
-		hi = himportedIndexes[0]
-	}
+// discarded.
+func txRedirectOutcome(r *txRedirect) *txOutcome {
 	switch {
 	case r.moved:
-		return &txOutcome{kind: txRetryMoved, err: err, addr: r.addr, unreadReplies: unreadReplies, himportedIndexes: hi}
+		return &txOutcome{kind: txRetryMoved, err: r.err, addr: r.addr}
 	case r.ask:
-		return &txOutcome{kind: txRetryAsk, err: err, addr: r.addr, unreadReplies: unreadReplies, himportedIndexes: hi}
+		return &txOutcome{kind: txRetryAsk, err: r.err, addr: r.addr}
 	case r.tryAgain:
-		return &txOutcome{kind: txRetryTryAgain, err: err, unreadReplies: unreadReplies, himportedIndexes: hi}
+		return &txOutcome{kind: txRetryTryAgain, err: r.err}
 	default:
 		return &txOutcome{kind: txFatal, err: fmt.Errorf("redis: tx redirect outcome missing"), unreadReplies: true}
 	}

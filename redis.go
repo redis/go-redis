@@ -1437,12 +1437,13 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	errStr := err.Error()
 
 	// Check for timeout errors
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return "TIMEOUT", "TIMEOUT", true
 	}
 
 	// Check for network errors
-	if _, ok := err.(net.Error); ok {
+	if errors.As(err, &netErr) {
 		return "NETWORK", "NETWORK", true
 	}
 
@@ -2016,8 +2017,8 @@ func (c *baseClient) txPipelineProcessCmds(
 			// reply and error so callers can inspect the real HIMPORT result.
 			if readErr != nil && len(readErr.himportedIndexes) > 0 {
 				setCmdsErr(cmds[:1], err)
-				for i, cmd := range trimmedCmds {
-					if _, ok := readErr.himportedIndexes[i]; ok && cmd.Err() == nil {
+				for i := range trimmedCmds {
+					if _, ok := readErr.himportedIndexes[i]; ok {
 						continue
 					}
 					setCmdsErr(trimmedCmds[i:i+1], err)
@@ -2058,6 +2059,18 @@ type txQueuedReadError struct {
 	readErr          error
 	forceBad         bool
 	himportedIndexes map[int]struct{}
+}
+
+type txPushReadError struct {
+	err error
+}
+
+func (e *txPushReadError) Error() string {
+	return e.err.Error()
+}
+
+func (e *txPushReadError) Unwrap() error {
+	return e.err
 }
 
 func (e *txQueuedExecAbortError) Error() string {
@@ -2102,19 +2115,11 @@ func himportFilteredCmds(cmds []Cmder, himportedIndexes map[int]struct{}) []Cmde
 }
 
 func discardExecResult(rd *proto.Reader) error {
-	for {
-		line, err := rd.ReadLine()
-		if err != nil {
-			return err
-		}
-		if line[0] == proto.RespAttr {
-			if err := rd.Discard(line); err != nil {
-				return err
-			}
-			continue
-		}
-		return rd.Discard(line)
+	line, err := rd.ReadLine()
+	if err != nil {
+		return err
 	}
+	return rd.Discard(line)
 }
 
 // txPipelineReadQueued reads queued replies from the Redis server.
@@ -2122,7 +2127,7 @@ func discardExecResult(rd *proto.Reader) error {
 func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd *proto.Reader, statusCmd *StatusCmd, cmds []Cmder) error {
 	// To be sure there are no buffered push notifications, we process them before reading the reply
 	if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		return err
 	}
 	// Parse +OK.
 	if err := statusCmd.readReply(rd); err != nil {
@@ -2137,7 +2142,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			if queuedErr != nil {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 			}
-			internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+			return err
 		}
 		if err := statusCmd.readReply(rd); err != nil {
 			cmd.SetErr(err)
@@ -2160,7 +2165,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if queuedErr != nil {
 			return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true}
 		}
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before reading reply: %v", err)
+		return err
 	}
 	// Parse number of replies.
 	line, err := rd.ReadLine()
