@@ -1564,6 +1564,13 @@ var _ = Describe("ClusterClient", func() {
 				node.AddHook(&hook{
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
+							defer GinkgoRecover()
+							// skip the connection initialization: the node's
+							// pipeline-pool connection initializes lazily, and
+							// its handshake pipeline runs through this hook chain
+							if len(cmds) == 0 || cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return hook(ctx, cmds)
+							}
 							Expect(cmds).To(HaveLen(1))
 							cmdStr := cmds[0].String()
 
@@ -1659,6 +1666,13 @@ var _ = Describe("ClusterClient", func() {
 				node.AddHook(&hook{
 					processPipelineHook: func(hook redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 						return func(ctx context.Context, cmds []redis.Cmder) error {
+							defer GinkgoRecover()
+							// skip the connection initialization: the node's
+							// pipeline-pool connection initializes lazily, and
+							// its handshake pipeline runs through this hook chain
+							if len(cmds) == 0 || cmds[0].Name() == "hello" || cmds[0].Name() == "client" {
+								return hook(ctx, cmds)
+							}
 							Expect(cmds).To(HaveLen(3))
 							Expect(cmds[1].String()).To(Equal("ping: "))
 							mu.Lock()

@@ -19,7 +19,6 @@ import (
 	"github.com/redis/go-redis/v9/internal"
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
-	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 	"github.com/redis/go-redis/v9/push"
 )
@@ -129,9 +128,10 @@ type FailoverOptions struct {
 	WriteBufferSize int
 
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure an optional separate connection pool used for pipelining, with
-	// its own (typically larger) buffers. See the same-named fields on Options
-	// for details. The pool is created only when PipelineReadBufferSize or PipelineWriteBufferSize is set (PipelinePoolSize alone does not enable it).
+	// configure the separate connection pool used for pipelining, with its own
+	// (typically larger) buffers. See the same-named fields on Options for
+	// details. NewFailoverClient creates this pool by default; set
+	// PipelinePoolSize < 0 to opt out (pipelines then run on the main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
@@ -487,6 +487,11 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
+	// Pipeline pool (created by default): allow URL opt-out
+	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
@@ -592,39 +597,21 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
 
-	// Optionally create a separate connection pool for pipelining, with its own
-	// (typically larger) buffers. Enabled when either pipeline buffer size is set.
-	if opt.PipelineReadBufferSize > 0 || opt.PipelineWriteBufferSize > 0 {
-		pipelineOpt := opt.clone()
-		if opt.PipelineReadBufferSize > 0 {
-			pipelineOpt.ReadBufferSize = opt.PipelineReadBufferSize
-			// Same clamp Options.init applies to the main pool: RESP3 push
-			// parsing needs a minimum read buffer, and a tiny pipeline reader
-			// would break push-notification handling on pipeline conns.
-			if pipelineOpt.Protocol == 3 && pipelineOpt.ReadBufferSize < proto.MinRESP3ReadBufferSize {
-				pipelineOpt.ReadBufferSize = proto.MinRESP3ReadBufferSize
-			}
-		}
-		if opt.PipelineWriteBufferSize > 0 {
-			pipelineOpt.WriteBufferSize = opt.PipelineWriteBufferSize
-		}
-		if opt.PipelinePoolSize > 0 {
-			pipelineOpt.PoolSize = opt.PipelinePoolSize
-		} else {
-			pipelineOpt.PoolSize = 10 // default smaller pool for pipelining
-		}
-		rdb.pipelinePoolName = mainPoolName + "_pipeline"
-		rdb.pipelinePool, err = newConnPool(pipelineOpt, rdb.dialHook, rdb.pipelinePoolName)
+	// Create the dedicated pipeline pool unconditionally, mirroring NewClient
+	// via the shared buildPipelinePool helper. PipelinePoolSize < 0 opts out.
+	if opt.PipelinePoolSize >= 0 {
+		ref, err := rdb.buildPipelinePool(mainPoolName + "_pipeline")
 		if err != nil {
 			panic(fmt.Errorf("redis: failed to create pipeline connection pool: %w", err))
 		}
+		rdb.pipelinePool = ref
 	}
 
 	// Register pools for OTel async gauge metrics, matching NewClient (the
 	// failover client previously registered none, so pool gauges were silent
 	// for the identical standalone setup). The pipeline pool is nil when not
 	// configured.
-	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.pipelinePool, opt.Addr)
+	otel.RegisterPools(rdb.connPool, rdb.pubSubPool, rdb.getPipelinePool(), opt.Addr)
 
 	rdb.onClose.register(onCloseHookIDSentinelFailover, failover.Close)
 
@@ -637,8 +624,10 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		}
 		// Drop stale pipeline-pool connections dialed to the demoted master too;
 		// otherwise pipelined traffic keeps using the old address after failover.
-		if pipelinePool, ok := rdb.pipelinePool.(*pool.ConnPool); ok {
-			_ = pipelinePool.Filter(func(cn *pool.Conn) bool {
+		// The pipeline pool is created at construction (before this callback can
+		// fire), so the ref is simply read here.
+		if ref := rdb.loadPipelinePool(); ref != nil {
+			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr
 			})
 		}
