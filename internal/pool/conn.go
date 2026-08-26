@@ -67,6 +67,27 @@ func generateConnID() uint64 {
 	return connIDCounter.Add(1)
 }
 
+// relaxedState is a snapshot of one connection's relaxed-timeout window. Conn
+// publishes it through the relaxed atomic pointer. Do not change a stored
+// relaxedState. Each mutator copies the current snapshot, changes the copy, and
+// installs the copy with a compare-and-swap. A reader that holds an older pointer
+// still sees a consistent window.
+//
+// Two sources use this state (see the relaxed-timeout methods):
+//   - Maintenance notifications. SetRelaxedTimeout adds a holder.
+//     ClearRelaxedTimeout removes it. There is no deadline.
+//   - Handoff. SetRelaxedTimeoutWithDeadline sets a deadline that expires the
+//     window. Handoff never calls Clear.
+//
+// count is the number of current holders. A deadline window holds one slot only,
+// even after re-arms, because there is one deadlineNs.
+type relaxedState struct {
+	readNs     int64 // relaxed read timeout, nanoseconds
+	writeNs    int64 // relaxed write timeout, nanoseconds
+	deadlineNs int64 // auto-expiry, unix nanos; 0 = no deadline
+	count      int32 // number of holders; the window clears when count reaches 0
+}
+
 type Conn struct {
 	// Connection identifier for unique tracking
 	id uint64
@@ -132,27 +153,17 @@ type Conn struct {
 	// by ConnPool.Put.
 	closeOnPutReason uberatomic.String
 
-	// maintenanceNotifications upgrade support: relaxed timeouts during migrations/failovers
-
-	// Using atomic operations for lock-free access to avoid mutex contention
-	relaxedReadTimeoutNs  atomic.Int64 // time.Duration as nanoseconds
-	relaxedWriteTimeoutNs atomic.Int64 // time.Duration as nanoseconds
-	relaxedDeadlineNs     atomic.Int64 // time.Time as nanoseconds since epoch
-
-	// Counter to track multiple relaxed timeout setters if we have nested calls
-	// will be decremented when ClearRelaxedTimeout is called or deadline is reached
-	// if counter reaches 0, we clear the relaxed timeouts
-	relaxedCounter atomic.Int32
-
-	// relaxedMu serializes the MUTATORS of the relaxed-timeout window
-	// (SetRelaxedTimeout, SetRelaxedTimeoutWithDeadline, ClearRelaxedTimeout,
-	// expireRelaxedTimeout) so the four atomics above are always updated or
-	// cleared as one unit. Without it a setter's multi-field store can interleave
-	// with an expiry's clear and leave a window with a future deadline but zeroed
-	// timeouts — active but ineffective. The read path (getEffective*/HasRelaxedTimeout)
-	// stays LOCK-FREE: it only reads the atomics and takes this lock via
-	// expireRelaxedTimeout on the rare occasion it observes an expired deadline.
-	relaxedMu sync.Mutex
+	// relaxed holds the relaxed-timeout window for maintenance notifications
+	// (migrations and failovers). One atomic pointer publishes the whole window: the
+	// read timeout, the write timeout, the optional deadline, and the holder count.
+	// A reader always gets a consistent snapshot. A reader never sees a half-updated
+	// window, such as a new deadline with old timeouts. nil means no relaxation. The
+	// mutators (SetRelaxedTimeout, SetRelaxedTimeoutWithDeadline,
+	// ClearRelaxedTimeout, expireRelaxedTimeout) install a new relaxedState with a
+	// compare-and-swap. The read path (getEffective* and HasRelaxedTimeout) does one
+	// lock-free Load. Each mutation allocates one relaxedState. This cost is small,
+	// because mutations occur per maintenance notification, not per I/O.
+	relaxed atomic.Pointer[relaxedState]
 
 	// onClose is read and cleared by Close while initConn (running inside
 	// SetNetConnAndInitConn under the INITIALIZING state) installs it via
@@ -510,234 +521,198 @@ func (cn *Conn) IsPubSub() bool {
 	return cn.pubsub
 }
 
-// SetRelaxedTimeout sets relaxed timeouts for this connection during maintenanceNotifications upgrades.
-// These timeouts will be used for all subsequent commands until the deadline expires.
-// Uses atomic operations for lock-free access.
-// Note: Metrics should be recorded by the caller (notification handler) which has context about
-// the notification type and pool name.
+// SetRelaxedTimeout sets the relaxed timeouts for this connection during a
+// maintenance-notification upgrade. They apply to every later command until an
+// equal number of ClearRelaxedTimeout calls remove this holder. This method is
+// lock-free. It installs a new snapshot with a compare-and-swap and keeps any
+// deadline that is already in effect.
+// Note: the caller (the notification handler) records the metrics, because it
+// knows the notification type and the pool name.
 func (cn *Conn) SetRelaxedTimeout(readTimeout, writeTimeout time.Duration) {
-	cn.relaxedMu.Lock()
-	defer cn.relaxedMu.Unlock()
-	cn.relaxedCounter.Add(1)
-	cn.relaxedReadTimeoutNs.Store(int64(readTimeout))
-	cn.relaxedWriteTimeoutNs.Store(int64(writeTimeout))
+	for {
+		cur := cn.relaxed.Load()
+		var next relaxedState
+		if cur != nil {
+			next = *cur
+		}
+		next.readNs = int64(readTimeout)
+		next.writeNs = int64(writeTimeout)
+		next.count++
+		if cn.relaxed.CompareAndSwap(cur, &next) {
+			return
+		}
+	}
 }
 
-// SetRelaxedTimeoutWithDeadline sets relaxed timeouts with an expiration deadline.
-// After the deadline, timeouts automatically revert to normal values.
-// Uses atomic operations for lock-free access.
+// SetRelaxedTimeoutWithDeadline sets the relaxed timeouts and a deadline. After
+// the deadline the window reverts on its own, because handoff never calls Clear.
+// Only the first deadline window takes a holder slot. An overlapping handoff
+// re-arms the window: it replaces the deadline in place and does not add a holder.
+// So the later expiry removes exactly one holder and the window clears. The
+// connection does not stay relaxed forever. This method is lock-free.
 func (cn *Conn) SetRelaxedTimeoutWithDeadline(readTimeout, writeTimeout time.Duration, deadline time.Time) {
-	cn.relaxedMu.Lock()
-	defer cn.relaxedMu.Unlock()
-	cn.relaxedReadTimeoutNs.Store(int64(readTimeout))
-	cn.relaxedWriteTimeoutNs.Store(int64(writeTimeout))
-	// Only the FIRST deadline-scoped relaxation takes a holder slot. There is a
-	// single relaxedDeadlineNs field, so an overlapping handoff on the same conn
-	// re-arms by REPLACING the deadline in place rather than stacking a second
-	// holder. The eventual expiry then retires exactly one holder and the window
-	// clears — no permanently-relaxed connection. Pairs with the decrement-by-one
-	// in expireRelaxedTimeout. A cleared window reads 0, so a fresh handoff after
-	// full expiry correctly takes a new holder. relaxedMu makes the store of these
-	// values and the deadline one atomic unit against a concurrent expiry.
-	if cn.relaxedDeadlineNs.Swap(deadline.UnixNano()) == 0 {
-		cn.relaxedCounter.Add(1)
+	deadlineNs := deadline.UnixNano()
+	for {
+		cur := cn.relaxed.Load()
+		var next relaxedState
+		if cur != nil {
+			next = *cur
+		}
+		next.readNs = int64(readTimeout)
+		next.writeNs = int64(writeTimeout)
+		if next.deadlineNs == 0 {
+			// There is no deadline holder yet. Take one. A re-arm already has a
+			// deadline set, so it replaces the deadline and does not add a holder.
+			next.count++
+		}
+		next.deadlineNs = deadlineNs
+		if cn.relaxed.CompareAndSwap(cur, &next) {
+			return
+		}
 	}
 }
 
-// ClearRelaxedTimeout removes relaxed timeouts, returning to normal timeout behavior.
-// Uses atomic operations for lock-free access.
+// ClearRelaxedTimeout removes one holder that SetRelaxedTimeout added. When the
+// last holder is gone and no unexpired deadline remains, it drops the whole
+// window. The count has a lower bound of zero. So a second clear, or a clear after
+// a deadline expiry already emptied the window, does nothing and cannot block a
+// later relaxation. This method is lock-free.
 func (cn *Conn) ClearRelaxedTimeout() {
-	cn.relaxedMu.Lock()
-	defer cn.relaxedMu.Unlock()
-	// Clamped decrement: never drive the counter below zero. A deadline expiry
-	// (expireRelaxedTimeout) may have already fully cleared the window, so a
-	// still-outstanding holder clearing here must be a no-op rather than a negative
-	// that would stop a later SetRelaxedTimeout from taking effect. Serialized by
-	// relaxedMu, so a plain load/store replaces the former CAS retry loops.
-	cur := cn.relaxedCounter.Load()
-	if cur <= 0 {
-		return // already cleared (e.g. by deadline expiry)
-	}
-	cn.relaxedCounter.Store(cur - 1)
-	// Keep the deadline gate: after an explicit clear the window may still hold
-	// relaxed timeouts until the safety deadline (post-settlement), so only clear
-	// the values when the last holder drops AND the deadline is unset or past.
-	deadlineNs := cn.relaxedDeadlineNs.Load()
-	if cur-1 <= 0 && (deadlineNs == 0 || time.Now().UnixNano() >= deadlineNs) {
-		cn.clearRelaxedTimeout()
+	for {
+		cur := cn.relaxed.Load()
+		if cur == nil || cur.count <= 0 {
+			return // already cleared (for example, by a deadline expiry)
+		}
+		next := *cur
+		next.count--
+		// Keep the deadline gate. After an explicit clear the window can still hold
+		// the relaxed timeouts until the safety deadline. Drop the window only when
+		// the last holder leaves and the deadline is unset or already past.
+		newPtr := &next
+		if next.count <= 0 && (next.deadlineNs == 0 || time.Now().UnixNano() >= next.deadlineNs) {
+			newPtr = nil
+		}
+		if cn.relaxed.CompareAndSwap(cur, newPtr) {
+			return
+		}
 	}
 }
 
-// expireRelaxedTimeout is the deadline safety net: once a deadline-scoped relaxed
-// window has passed, it retires exactly ONE holder — the deadline-scoped one —
-// rather than clearing the whole window.
-//
-// It takes relaxedMu and RE-VALIDATES the deadline under it (a generation check):
-// the caller observed the expiry lock-free (in getEffective*), so a concurrent
-// SetRelaxedTimeout* may have installed a new window meanwhile. If the current
-// deadline no longer equals the observed one, a replacement window is live and
-// this expiry is stale — no-op. That serialization is what keeps a setter's
-// multi-field store from interleaving with the clear below and leaving a window
-// with a future deadline but zeroed timeouts (active but ineffective). Exactly one
-// of the concurrent reader/writer/drainBackstop callers on a full-duplex conn
-// finds the deadline still current and acts; the rest re-validate and no-op.
-//
-// It decrements by one instead of full-clearing so a DIFFERENT relaxation sharing
-// this conn — a notification SetRelaxedTimeout (deadline 0) outstanding alongside
-// an expired handoff deadline — is not wiped. The decrement is clamped at zero and
-// only the last holder leaving clears the timeout values. Retiring the deadline
-// holder also recovers a lost unrelax for it, so the counter cannot drift up
-// across windows. Pairs with the holder guard in SetRelaxedTimeoutWithDeadline
-// (one holder slot per deadline-scoped window).
+// expireRelaxedTimeout removes the deadline holder after the deadline passes.
+// getEffective* calls it when a read finds the deadline expired. The
+// compare-and-swap checks that the current snapshot still holds THIS deadline. A
+// concurrent SetRelaxedTimeout* can install a newer window; then this expiry is
+// stale and does nothing. It removes only the deadline holder (count minus one).
+// A notification holder on the same connection stays active. The window clears in
+// full only when the deadline holder was the last holder. One snapshot publishes
+// the whole window, so a reader never sees a half-cleared state.
 func (cn *Conn) expireRelaxedTimeout(deadlineNs int64) {
-	cn.relaxedMu.Lock()
-	defer cn.relaxedMu.Unlock()
-	if cn.relaxedDeadlineNs.Load() != deadlineNs {
-		// A newer window replaced this deadline (or it was already cleared): the
-		// expiry the caller observed lock-free is stale.
-		return
-	}
-	cn.relaxedDeadlineNs.Store(0)
-	internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
-	cur := cn.relaxedCounter.Load()
-	if cur <= 0 {
-		// No holder left to retire (an explicit Clear already drained the window
-		// while this deadline was still live); drop any stale timeout values.
-		cn.clearRelaxedTimeout()
-		return
-	}
-	cn.relaxedCounter.Store(cur - 1)
-	if cur == 1 {
-		cn.clearRelaxedTimeout()
+	for {
+		cur := cn.relaxed.Load()
+		if cur == nil || cur.deadlineNs != deadlineNs {
+			// Already cleared, or replaced by a newer window: stale expiry.
+			return
+		}
+		next := *cur
+		next.deadlineNs = 0
+		if next.count > 0 {
+			next.count--
+		}
+		newPtr := &next
+		if next.count <= 0 {
+			newPtr = nil
+		}
+		if cn.relaxed.CompareAndSwap(cur, newPtr) {
+			internal.Logger.Printf(context.Background(), logs.UnrelaxedTimeoutAfterDeadline(cn.GetID()))
+			return
+		}
 	}
 }
 
-// clearRelaxedTimeout zeroes the whole relaxed-timeout window. The CALLER MUST
-// HOLD relaxedMu (ClearRelaxedTimeout and expireRelaxedTimeout both do), so the
-// four stores land as one unit against a concurrent setter.
-func (cn *Conn) clearRelaxedTimeout() {
-	cn.relaxedReadTimeoutNs.Store(0)
-	cn.relaxedWriteTimeoutNs.Store(0)
-	cn.relaxedDeadlineNs.Store(0)
-	cn.relaxedCounter.Store(0)
-
-	// Note: Metrics for timeout unrelaxing are not recorded here because we don't have
-	// context about which notification type or pool triggered the relaxation.
-	// In practice, relaxed timeouts expire automatically via deadline, so explicit
-	// unrelaxing metrics are less critical than the initial relaxation metrics.
-}
-
-// HasRelaxedTimeout returns true if relaxed timeouts are currently active on this connection.
-// This checks both the timeout values and the deadline (if set).
-// Uses atomic operations for lock-free access.
+// HasRelaxedTimeout returns true when the relaxed timeouts are active on this
+// connection. Active means a holder is present, a timeout is set, and any deadline
+// is still in the future. It does one lock-free snapshot Load.
 func (cn *Conn) HasRelaxedTimeout() bool {
-	// Fast path: no relaxed timeouts are set
-	if cn.relaxedCounter.Load() <= 0 {
+	cur := cn.relaxed.Load()
+	if cur == nil || cur.count <= 0 {
 		return false
 	}
-
-	readTimeoutNs := cn.relaxedReadTimeoutNs.Load()
-	writeTimeoutNs := cn.relaxedWriteTimeoutNs.Load()
-
-	// If no relaxed timeouts are set, return false
-	if readTimeoutNs <= 0 && writeTimeoutNs <= 0 {
+	if cur.readNs <= 0 && cur.writeNs <= 0 {
 		return false
 	}
-
-	deadlineNs := cn.relaxedDeadlineNs.Load()
-	// If no deadline is set, relaxed timeouts are active
-	if deadlineNs == 0 {
+	if cur.deadlineNs == 0 {
 		return true
 	}
-
-	// If deadline is set, check if it's still in the future
-	return time.Now().UnixNano() < deadlineNs
+	return time.Now().UnixNano() < cur.deadlineNs
 }
 
-// EffectiveReadTimeout reports the read timeout a read on this conn would use
-// right now: the active relaxed timeout (maintenance notifications) when set
-// and unexpired, else normalTimeout. Callers that bound how long a blocked
-// read may legitimately take (e.g. the CSC full-duplex drain backstop) must
-// use this rather than the configured ReadTimeout, or a relaxed read gets cut
-// short.
+// EffectiveReadTimeout reports the read timeout that a read on this connection
+// uses now. It returns the active relaxed timeout when the window is set and
+// unexpired. Otherwise it returns normalTimeout. A caller that bounds how long a
+// blocked read may take (for example, the CSC full-duplex drain backstop) must use
+// this method, not the configured ReadTimeout. With ReadTimeout, a relaxed read
+// ends too soon.
 //
-// Returns the relaxed timeout while the relaxed window is unexpired, else
-// normalTimeout. Safe to call concurrently (reader/writer/drainBackstop of a
-// full-duplex conn): the only mutation is the deadline safety net — when the
-// relaxed deadline has passed it retires the deadline holder exactly once (a
-// single deadline-triggered event via a CAS on the shared deadline, NOT a
-// per-call decrement; see expireRelaxedTimeout). It never strips an ACTIVE
-// (unexpired) relaxed window.
+// It is safe to call from several goroutines at once (the reader, the writer, and
+// the drain backstop of a full-duplex connection). It reads one atomic snapshot.
+// The only change it makes is the deadline safety net: when the deadline has
+// passed, it removes the deadline holder once (see expireRelaxedTimeout). It never
+// removes an active, unexpired window. If a notification holder survives that
+// expiry, it returns that holder's relaxed timeout, not normalTimeout.
 func (cn *Conn) EffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveReadTimeout(normalTimeout)
 }
 
-// EffectiveWriteTimeout is the write-side counterpart of EffectiveReadTimeout,
-// for callers bounding how long a blocked write may legitimately take. Same
-// deadline-safety-net note (retires one holder on expiry, not a per-call
-// decrement).
+// EffectiveWriteTimeout is the write side of EffectiveReadTimeout. Use it to bound
+// how long a blocked write may take. It has the same snapshot behavior.
 func (cn *Conn) EffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
 	return cn.getEffectiveWriteTimeout(normalTimeout)
 }
 
-// getEffectiveReadTimeout returns the timeout to use for read operations.
-// If relaxed timeout is set and not expired, it takes precedence over the provided timeout.
-// This method automatically clears expired relaxed timeouts using atomic operations.
+// getEffectiveReadTimeout returns the timeout for read operations. It returns the
+// relaxed read timeout while the window is set and unexpired. Otherwise it returns
+// normalTimeout. When the deadline has passed, it removes the deadline holder and
+// then reads the window again. A surviving notification holder's relaxed timeout
+// still takes priority over normalTimeout.
 func (cn *Conn) getEffectiveReadTimeout(normalTimeout time.Duration) time.Duration {
-	readTimeoutNs := cn.relaxedReadTimeoutNs.Load()
-
-	// Fast path: no relaxed timeout set
-	if readTimeoutNs <= 0 {
+	cur := cn.relaxed.Load()
+	if cur == nil || cur.readNs <= 0 {
 		return normalTimeout
 	}
-
-	deadlineNs := cn.relaxedDeadlineNs.Load()
-	// If no deadline is set, use relaxed timeout
-	if deadlineNs == 0 {
-		return time.Duration(readTimeoutNs)
+	if cur.deadlineNs == 0 {
+		return time.Duration(cur.readNs)
 	}
-
-	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
-	nowNs := getCachedTimeNs()
-	// Check if deadline has passed
-	if nowNs < deadlineNs {
-		// Deadline is in the future, use relaxed timeout
-		return time.Duration(readTimeoutNs)
+	// Use the cached time to avoid an expensive system call. Up to 50 ms of
+	// staleness is acceptable.
+	if getCachedTimeNs() < cur.deadlineNs {
+		return time.Duration(cur.readNs)
 	}
-	// Deadline has passed: retire the deadline holder once (deadline safety net,
-	// also recovers a lost unrelax — see expireRelaxedTimeout) and use the normal
-	// timeout. This is a single deadline-triggered event, NOT a per-I/O decrement.
-	cn.expireRelaxedTimeout(deadlineNs)
+	// The deadline passed. Remove the deadline holder, then read the window again.
+	// A notification holder can still be active with no deadline. Use its relaxed
+	// timeout. Do not end this call early with normalTimeout.
+	cn.expireRelaxedTimeout(cur.deadlineNs)
+	if s := cn.relaxed.Load(); s != nil && s.readNs > 0 && (s.deadlineNs == 0 || getCachedTimeNs() < s.deadlineNs) {
+		return time.Duration(s.readNs)
+	}
 	return normalTimeout
 }
 
-// getEffectiveWriteTimeout returns the timeout to use for write operations.
-// If relaxed timeout is set and not expired, it takes precedence over the provided timeout.
-// This method automatically clears expired relaxed timeouts using atomic operations.
+// getEffectiveWriteTimeout is the write side of getEffectiveReadTimeout.
 func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Duration {
-	writeTimeoutNs := cn.relaxedWriteTimeoutNs.Load()
-
-	// Fast path: no relaxed timeout set
-	if writeTimeoutNs <= 0 {
+	cur := cn.relaxed.Load()
+	if cur == nil || cur.writeNs <= 0 {
 		return normalTimeout
 	}
-
-	deadlineNs := cn.relaxedDeadlineNs.Load()
-	// If no deadline is set, use relaxed timeout
-	if deadlineNs == 0 {
-		return time.Duration(writeTimeoutNs)
+	if cur.deadlineNs == 0 {
+		return time.Duration(cur.writeNs)
 	}
-
-	// Use cached time to avoid expensive syscall (max 50ms staleness is acceptable for timeout checks)
-	nowNs := getCachedTimeNs()
-	// Check if deadline has passed
-	if nowNs < deadlineNs {
-		// Deadline is in the future, use relaxed timeout
-		return time.Duration(writeTimeoutNs)
+	if getCachedTimeNs() < cur.deadlineNs {
+		return time.Duration(cur.writeNs)
 	}
-	// Deadline has passed: retire the deadline holder once (see
-	// expireRelaxedTimeout) and use the normal timeout.
-	cn.expireRelaxedTimeout(deadlineNs)
+	cn.expireRelaxedTimeout(cur.deadlineNs)
+	if s := cn.relaxed.Load(); s != nil && s.writeNs > 0 && (s.deadlineNs == 0 || getCachedTimeNs() < s.deadlineNs) {
+		return time.Duration(s.writeNs)
+	}
 	return normalTimeout
 }
 
