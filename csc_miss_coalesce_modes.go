@@ -278,7 +278,9 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		for {
 			var req *cscMissReq
 			if pending != nil {
-				req, pending = pending, nil
+				// grabInto below overwrites pending with the next carry, so do not
+				// clear it here (that store would be dead).
+				req = pending
 			} else {
 				if !idleT.Stop() {
 					select {
