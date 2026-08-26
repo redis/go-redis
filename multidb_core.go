@@ -762,7 +762,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			// stale after a concurrent switch, and the verdict must be about
 			// the database traffic actually lands on.
 			if db, _ := c.activeSnapshot(); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
-				c.failoverAttempts = 0
+				c.resetFailoverEscalationLocked()
 				c.detector.Reset()
 				return nil
 			}
@@ -803,7 +803,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			// already maintains it.
 			return nil
 		}
-		c.failoverAttempts = 0
+		c.resetFailoverEscalationLocked()
 		c.detector.Reset()
 		return nil
 	}
@@ -819,6 +819,16 @@ func removeCandidate(cands []MultiDBDatabaseState, index int) []MultiDBDatabaseS
 	return out
 }
 
+// resetFailoverEscalationLocked starts a fresh escalation chain: the next
+// failed failover counts from zero. Both the counter and the timestamp must
+// clear — leaving lastFailoverAttempt set would make recordFailedFailoverLocked's
+// FailoverAttemptDelay gate fold the new chain's first failure into the old
+// burst and skip the increment. failoverMu must be held.
+func (c *multidbCore) resetFailoverEscalationLocked() {
+	c.failoverAttempts = 0
+	c.lastFailoverAttempt = time.Time{}
+}
+
 // recordFailedFailoverLocked implements the escalation chain: attempts are
 // rate-limited by FailoverAttemptDelay (a burst within the window counts as
 // one attempt), ErrTemporarilyNotAvailable is returned until
@@ -829,7 +839,7 @@ func (c *multidbCore) recordFailedFailoverLocked() error {
 		// Successful traffic since the last failed attempt: the chain of
 		// consecutive failures is broken, so a fresh outage escalates from
 		// zero instead of a stale count.
-		c.failoverAttempts = 0
+		c.resetFailoverEscalationLocked()
 	}
 	now := time.Now()
 	if c.lastFailoverAttempt.IsZero() || now.Sub(c.lastFailoverAttempt) >= c.opts.FailoverAttemptDelay {
@@ -973,7 +983,7 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	// The operator explicitly selected a healthy member: the chain of failed
 	// failover attempts is over — also when no index change happens, or a
 	// later unrelated outage would escalate from the stale count.
-	c.failoverAttempts = 0
+	c.resetFailoverEscalationLocked()
 	from := int(c.active.Load())
 	if from == index {
 		return nil
@@ -1235,7 +1245,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		// and manual failover paths do — and end the failed-failover chain:
 		// a successful fallback IS a recovery, and a later unrelated outage
 		// must escalate from a clean slate.
-		c.failoverAttempts = 0
+		c.resetFailoverEscalationLocked()
 		c.detector.Reset()
 	}
 }
@@ -1365,16 +1375,32 @@ func (c *multidbCore) notifyPubSubs(ctx context.Context) {
 		return
 	}
 
-	// Reconnect dials and resubscribes synchronously; running it inline
-	// would bill every subscription's recovery to whichever command
-	// happened to trigger the failover. Detach: each reconnect resolves the
-	// active member at dial time, so a late notification still lands on the
-	// current active. The triggering command's context must not cancel
-	// PubSub recovery, only its values are kept.
-	ctx = context.WithoutCancel(ctx)
+	// Reconnect dials and resubscribes synchronously; running it inline would
+	// bill every subscription's recovery to whichever command triggered the
+	// failover. Detach from the caller's context — its cancellation must not
+	// abort recovery — but bind cancellation to client shutdown so close() can
+	// interrupt an in-flight dial instead of blocking on a subscription's lock
+	// (PubSub.Reconnect holds it across the dial). Reconnect each subscription
+	// on its own goroutine so one slow dial cannot stall the others; each
+	// resolves the active member at dial time, so a late reconnect still lands
+	// on the current active.
+	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	reason := errors.New("multidb: active database changed")
+	var wg sync.WaitGroup
+	for _, ps := range subs {
+		wg.Add(1)
+		go func(ps *PubSub) {
+			defer wg.Done()
+			ps.Reconnect(rctx, reason)
+		}(ps)
+	}
 	go func() {
-		for _, ps := range subs {
-			ps.Reconnect(ctx, errors.New("multidb: active database changed"))
+		defer cancel()
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-c.stopCh: // client closing: unblock any in-flight reconnect dial
 		}
 	}()
 }

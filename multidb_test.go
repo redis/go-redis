@@ -305,6 +305,55 @@ func TestMultiDBEscalation(t *testing.T) {
 	}
 }
 
+// After an operator reset (ForceActiveIndex), a fresh outage must escalate
+// from zero. If the reset clears failoverAttempts but not lastFailoverAttempt,
+// the FailoverAttemptDelay gate treats the new chain's first failure as part of
+// the old burst and never escalates — permanently stuck on temporary here,
+// since the delay is an hour.
+func TestMultiDBEscalationResetsTimestampOnOperatorSelection(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.MaxFailoverAttempts = 1          // first counted failed attempt -> permanent
+	opts.FailoverAttemptDelay = time.Hour // wide window: a stale timestamp swallows the next chain
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db1, db2)
+	ctx := context.Background()
+
+	escalateToPermanent := func(phase string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if errors.Is(mdb.Set(ctx, "k", "v", 0).Err(), redis.ErrPermanentlyNotAvailable) {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("%s: never reached ErrPermanentlyNotAvailable", phase)
+	}
+
+	// First outage on both members escalates to permanent and stamps
+	// lastFailoverAttempt.
+	db1.hook.fail.Store(true)
+	db2.hook.fail.Store(true)
+	escalateToPermanent("first outage")
+
+	// Operator forces back to db1: resets the escalation chain.
+	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveIndex: %v", err)
+	}
+
+	// A distinct outage within FailoverAttemptDelay must escalate from zero
+	// again. With the stale timestamp bug this stays temporary forever.
+	escalateToPermanent("outage after operator reset")
+}
+
 func TestMultiDBManualFailover(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, false) // unhealthy target
@@ -1434,6 +1483,51 @@ func TestMultiDBFailoverNotBlockedByPubSubReconnect(t *testing.T) {
 	_ = mdb.Get(context.Background(), "k").Err()
 	if elapsed := time.Since(start); elapsed > 750*time.Millisecond {
 		t.Errorf("command blocked %v on PubSub reconnect work during failover", elapsed)
+	}
+}
+
+// close() must not block on an in-flight PubSub reconnect dial. The reconnect
+// holds the subscription's lock across the dial; unless that dial is bound to
+// client shutdown, Close hangs waiting for the same lock.
+func TestMultiDBCloseUnblocksPubSubReconnectDial(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	// B's dial blocks until its context is canceled, with a long DialTimeout so
+	// only a shutdown-bound reconnect context (not the dial timeout) unblocks
+	// Close in time.
+	dbB.cfg.Options.DialTimeout = 30 * time.Second
+	dbB.cfg.Options.DialerRetries = 1
+	dbB.cfg.Options.Dialer = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	sub := mdb.Subscribe(context.Background(), "ch")
+	defer sub.Close()
+
+	// Fail A -> failover to B -> notifyPubSubs starts a reconnect that dials B
+	// and blocks holding the subscription lock.
+	dbA.hook.fail.Store(true)
+	_ = mdb.Get(context.Background(), "k").Err()
+	time.Sleep(50 * time.Millisecond) // let the reconnect enter the blocking dial
+
+	done := make(chan error, 1)
+	go func() { done <- mdb.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close blocked on an in-flight PubSub reconnect dial")
 	}
 }
 
