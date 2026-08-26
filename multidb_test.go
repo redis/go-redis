@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -528,6 +529,174 @@ func TestMultiDBCloseWithOpenPubSub(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close deadlocked with an open PubSub")
+	}
+}
+
+// ctxWaitHook blocks each command until the caller's context is done, then
+// returns a fixed error — reproducing a dial that a short caller deadline cuts
+// short (so ctx.Err() is set by the time process returns).
+type ctxWaitHook struct{ err error }
+
+func (ctxWaitHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h ctxWaitHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		<-ctx.Done()
+		cmd.SetErr(h.err)
+		return h.err
+	}
+}
+func (ctxWaitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+// A caller context that expires mid-command (typically cutting a dial short)
+// is a client-side signal, not a database-health verdict: it must not record a
+// breaker/detector failure or drive failover.
+func TestMultiDBCallerCanceledDialStaysNeutral(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1, // one recorded failure would open the breaker
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour, // stay open once opened, so the probe is observable
+	}
+	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
+
+	ctxInit, cancelInit := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelInit()
+	mdb, err := redis.NewMultiDBClient(ctxInit, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	// Install ONLY the ctx-wait hook on db1 (NOT the default short-circuit hook,
+	// which answers before a later hook runs); db2 keeps its normal hook so a
+	// failover, if it wrongly happened, would land somewhere observable. db1
+	// returns a dial-phase timeout once the caller's context is already done —
+	// exactly what net.Dialer yields for a short caller deadline.
+	dialErr := &net.OpError{Op: "dial", Err: context.DeadlineExceeded}
+	if err := mdb.AddDatabaseHook(0, ctxWaitHook{err: dialErr}); err != nil {
+		t.Fatalf("AddDatabaseHook(0): %v", err)
+	}
+	if err := mdb.AddDatabaseHook(1, db2.hook); err != nil {
+		t.Fatalf("AddDatabaseHook(1): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := mdb.Get(ctx, "k").Err(); err == nil {
+		t.Fatal("expected the caller-canceled command to return an error")
+	}
+
+	// The dial failed only because the caller's context ended: db1's breaker
+	// must still be closed (reservable), not opened by a phantom failure.
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("caller-canceled dial opened db1 breaker; the outcome must be neutral")
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("active index = %d, want 0 (no failover on caller cancel)", got)
+	}
+}
+
+// A cluster member that routes reads to replicas must be rejected: the cluster
+// health checks probe masters only, so replica routing would let a member look
+// healthy while the replicas serving traffic are down.
+func TestMultiDBRejectsReplicaRoutedClusterMember(t *testing.T) {
+	cases := map[string]*redis.ClusterOptions{
+		"RouteByLatency": {Addrs: []string{"127.0.0.1:1"}, RouteByLatency: true},
+		"RouteRandomly":  {Addrs: []string{"127.0.0.1:1"}, RouteRandomly: true},
+		"ReadOnly":       {Addrs: []string{"127.0.0.1:1"}, ReadOnly: true},
+	}
+	for name, co := range cases {
+		t.Run(name, func(t *testing.T) {
+			opts := baseOptions()
+			opts.Clients = []redis.MultiDBClientConfig{{ClusterOptions: co, Weight: 1}}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			mdb, err := redis.NewMultiDBClient(ctx, opts)
+			if mdb != nil {
+				_ = mdb.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "not supported for cluster member") {
+				t.Fatalf("want rejection error for %s, got %v", name, err)
+			}
+		})
+	}
+}
+
+// gatedHealthCheck returns healthy immediately until armed; once armed it
+// signals `started` on the first probe and blocks until `release` is closed —
+// letting a test open a controlled window inside a probe.
+type gatedHealthCheck struct {
+	armed   atomic.Bool
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newGatedHealthCheck() *gatedHealthCheck {
+	return &gatedHealthCheck{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *gatedHealthCheck) CheckHealth(ctx context.Context, _ *redis.Client) (bool, error) {
+	if !h.armed.Load() {
+		return true, nil // construction-time probes pass without blocking
+	}
+	h.once.Do(func() { close(h.started) })
+	select {
+	case <-h.release:
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func (h *gatedHealthCheck) CheckClusterHealth(context.Context, *redis.ClusterClient) (bool, error) {
+	return true, nil
+}
+
+// setActiveIndex must not mutate state or report success when the client is
+// closed DURING its probe: close() takes no lock, so it can drain the
+// membership while the probe (bounded by HealthCheckTimeout) is still running.
+func TestMultiDBSetActiveIndexLosesToConcurrentClose(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true) // active (higher weight)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
+
+	gate := newGatedHealthCheck()
+	db2.cfg.HealthChecks = []redis.MultiDBHealthCheck{gate}
+
+	opts := baseOptions()
+	opts.HealthCheckTimeout = time.Hour // block on the gate, not on a timeout
+	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
+
+	ctxInit, cancelInit := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancelInit()
+	mdb, err := redis.NewMultiDBClient(ctxInit, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	gate.armed.Store(true) // construction done; the next probe blocks
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- mdb.SetActiveIndex(context.Background(), 1) }()
+
+	<-gate.started // SetActiveIndex is now inside db2's probe, holding failoverMu
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(gate.release) // let the probe finish; setActiveIndex resumes post-probe
+
+	if err := <-errCh; !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("SetActiveIndex racing Close = %v, want ErrClosed", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("active index = %d, want 0 (no switch on a closed client)", got)
 	}
 }
 

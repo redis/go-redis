@@ -319,6 +319,14 @@ func (cfg *MultiDBClientConfig) validate() error {
 		// surfaces as a constructor error instead of a crash.
 		return errors.New("redis: multidb: RouteByLatency/RouteRandomly are not supported for sentinel member databases")
 	}
+	if cfg.ClusterOptions != nil && (cfg.ClusterOptions.RouteByLatency || cfg.ClusterOptions.RouteRandomly || cfg.ClusterOptions.ReadOnly) {
+		// The cluster health checks (built-in PING and lag-aware) probe masters
+		// only. Routing reads to replicas would let a member report healthy
+		// while the replicas actually serving traffic are down or lagging, so
+		// failover never fires. Reject rather than silently health-check the
+		// wrong nodes.
+		return errors.New("redis: multidb: RouteByLatency/RouteRandomly/ReadOnly are not supported for cluster member databases (health checks probe masters only)")
+	}
 	return nil
 }
 

@@ -592,6 +592,21 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		}
 		attempt++
 		err := db.process(ctx, cmd)
+		if err != nil && ctx.Err() != nil {
+			// The caller's own context ended (deadline/cancel) while the
+			// command ran — typically cutting a dial short, which surfaces as
+			// a *net.OpError{Op:"dial"} the classifier would otherwise count
+			// as a database failure. That is a client-side signal, not a
+			// health verdict: recording it would let short caller deadlines
+			// open the breaker and drive false failover. Give back any
+			// reserved half-open slot (as the neutral branch does) and return
+			// without recording an outcome. A genuine unreachable-endpoint
+			// dial, where ctx is still alive, still reaches classifyOutcome.
+			if reserved {
+				db.cb.ReleaseHalfOpen()
+			}
+			return err
+		}
 		switch classifyOutcome(err, retryTimeout) {
 		case outcomeSuccess:
 			// Settle by reservation: a closed-state admission holds no
@@ -774,6 +789,12 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 				return err
 			}
 		}
+		if c.closed.Load() {
+			// Same close-during-probe race as setActiveIndex: close() takes no
+			// lock, so a ProbeTargetBeforeFailover probe can outlast it. Do not
+			// switch the active state on an already-closed client.
+			return ErrClosed
+		}
 		if announce = c.switchActive(ctx, from, best, failoverReasonAutomatic, time.Since(start)); announce == nil {
 			// The CAS lost against a concurrent switch (the caller's `from`
 			// went stale): nothing changed, so nothing may be reset — the
@@ -931,6 +952,13 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 			// a canceled control operation must not switch the active state.
 			return err
 		}
+	}
+	if c.closed.Load() {
+		// close() takes no lock, so it can have drained the membership while
+		// the probe above ran (up to HealthCheckTimeout). Re-check before
+		// mutating breaker/detector/active state or reporting success on an
+		// already-closed client.
+		return ErrClosed
 	}
 	// The operator explicitly selected this database — either a fresh probe
 	// just passed, or ForceActiveIndex is an unconditional override. Reset
