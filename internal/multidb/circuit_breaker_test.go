@@ -161,6 +161,18 @@ func TestCircuitBreaker_Callbacks(t *testing.T) {
 	// Close the circuit
 	cb.RecordSuccess()
 
+	// Callbacks are delivered asynchronously; wait for all three.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(transitions)
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 

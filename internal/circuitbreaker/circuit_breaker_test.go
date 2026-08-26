@@ -211,6 +211,48 @@ func TestCircuitBreaker_ReleaseHalfOpen(t *testing.T) {
 	}
 }
 
+// transitionRecorder captures state-change callbacks (delivered asynchronously)
+// in a race-safe way and lets a test wait for a given count.
+type transitionRecorder struct {
+	mu    sync.Mutex
+	items []recordedTransition
+}
+
+type recordedTransition struct {
+	oldState, newState State
+	stats              Stats
+}
+
+func (r *transitionRecorder) record(oldState, newState State, stats Stats) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.items = append(r.items, recordedTransition{oldState, newState, stats})
+}
+
+func (r *transitionRecorder) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.items)
+}
+
+func (r *transitionRecorder) at(i int) recordedTransition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.items[i]
+}
+
+func (r *transitionRecorder) waitFor(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if r.len() >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d transitions, got %d", n, r.len())
+}
+
 func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	config := Config{
 		FailureThreshold: 2,
@@ -219,10 +261,8 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	}
 	cb := New(config)
 
-	var transitions []struct{ old, new State }
-	cb.OnStateChange(func(oldState, newState State) {
-		transitions = append(transitions, struct{ old, new State }{oldState, newState})
-	})
+	var rec transitionRecorder
+	cb.OnStateChange(rec.record)
 
 	// Open the circuit
 	cb.RecordFailure()
@@ -235,23 +275,17 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	// Close the circuit
 	cb.RecordSuccess()
 
-	if len(transitions) != 3 {
-		t.Fatalf("expected 3 transitions, got %d", len(transitions))
-	}
+	// Callbacks are delivered asynchronously in transition order.
+	rec.waitFor(t, 3)
 
-	// Closed -> Open
-	if transitions[0].old != StateClosed || transitions[0].new != StateOpen {
-		t.Errorf("expected Closed->Open, got %v->%v", transitions[0].old, transitions[0].new)
+	if got := rec.at(0); got.oldState != StateClosed || got.newState != StateOpen {
+		t.Errorf("expected Closed->Open, got %v->%v", got.oldState, got.newState)
 	}
-
-	// Open -> HalfOpen
-	if transitions[1].old != StateOpen || transitions[1].new != StateHalfOpen {
-		t.Errorf("expected Open->HalfOpen, got %v->%v", transitions[1].old, transitions[1].new)
+	if got := rec.at(1); got.oldState != StateOpen || got.newState != StateHalfOpen {
+		t.Errorf("expected Open->HalfOpen, got %v->%v", got.oldState, got.newState)
 	}
-
-	// HalfOpen -> Closed
-	if transitions[2].old != StateHalfOpen || transitions[2].new != StateClosed {
-		t.Errorf("expected HalfOpen->Closed, got %v->%v", transitions[2].old, transitions[2].new)
+	if got := rec.at(2); got.oldState != StateHalfOpen || got.newState != StateClosed {
+		t.Errorf("expected HalfOpen->Closed, got %v->%v", got.oldState, got.newState)
 	}
 }
 
@@ -263,12 +297,8 @@ func TestCircuitBreaker_CallbackObservesSuccessCountOnClose(t *testing.T) {
 	}
 	cb := New(config)
 
-	var closeSuccesses int32 = -1
-	cb.OnStateChange(func(oldState, newState State) {
-		if oldState == StateHalfOpen && newState == StateClosed {
-			closeSuccesses = cb.Stats().Successes
-		}
-	})
+	var rec transitionRecorder
+	cb.OnStateChange(rec.record)
 
 	// Open the circuit, wait for the timeout, then transition to half-open.
 	cb.RecordFailure()
@@ -283,8 +313,17 @@ func TestCircuitBreaker_CallbackObservesSuccessCountOnClose(t *testing.T) {
 	if cb.State() != StateClosed {
 		t.Fatalf("expected state to be Closed, got %v", cb.State())
 	}
-	// The callback must see the success count that triggered the close, not the
-	// post-reset value of 0.
+
+	// Find the HalfOpen->Closed transition; its carried snapshot must show the
+	// success count that triggered the close, not the post-reset value of 0 —
+	// the snapshot is taken at the transition, so async delivery cannot lose it.
+	rec.waitFor(t, 3) // Closed->Open, Open->HalfOpen, HalfOpen->Closed
+	var closeSuccesses int32 = -1
+	for i := 0; i < rec.len(); i++ {
+		if tr := rec.at(i); tr.oldState == StateHalfOpen && tr.newState == StateClosed {
+			closeSuccesses = tr.stats.Successes
+		}
+	}
 	if closeSuccesses != int32(config.SuccessThreshold) {
 		t.Errorf("expected callback to observe %d successes, got %d",
 			config.SuccessThreshold, closeSuccesses)
@@ -329,35 +368,29 @@ func TestCircuitBreaker_ResetNotifiesCallbacks(t *testing.T) {
 	}
 	cb := New(config)
 
-	var transitions []struct{ old, new State }
-	cb.OnStateChange(func(oldState, newState State) {
-		transitions = append(transitions, struct{ old, new State }{oldState, newState})
-	})
+	var rec transitionRecorder
+	cb.OnStateChange(rec.record)
 
 	// Open the circuit
 	cb.RecordFailure()
 	cb.RecordFailure()
-
-	if len(transitions) != 1 {
-		t.Fatalf("expected 1 transition (Closed->Open), got %d", len(transitions))
-	}
+	rec.waitFor(t, 1) // Closed->Open
 
 	// Reset should notify callback
 	cb.Reset()
-
-	if len(transitions) != 2 {
-		t.Fatalf("expected 2 transitions after reset, got %d", len(transitions))
-	}
+	rec.waitFor(t, 2)
 
 	// Verify Open -> Closed transition
-	if transitions[1].old != StateOpen || transitions[1].new != StateClosed {
-		t.Errorf("expected Open->Closed, got %v->%v", transitions[1].old, transitions[1].new)
+	if got := rec.at(1); got.oldState != StateOpen || got.newState != StateClosed {
+		t.Errorf("expected Open->Closed, got %v->%v", got.oldState, got.newState)
 	}
 
-	// Reset when already closed should NOT notify
+	// Reset when already closed should NOT notify. Give any stray delivery a
+	// beat to land, then confirm the count did not grow.
 	cb.Reset()
-	if len(transitions) != 2 {
-		t.Errorf("expected no callback when resetting already-closed circuit, got %d transitions", len(transitions))
+	time.Sleep(20 * time.Millisecond)
+	if got := rec.len(); got != 2 {
+		t.Errorf("expected no callback when resetting already-closed circuit, got %d transitions", got)
 	}
 }
 
@@ -478,9 +511,13 @@ func TestCircuitBreaker_FailureCounterClearedBeforeCloseIsPublished(t *testing.T
 	// Closed) must count against a fresh failure counter. If the counter
 	// still holds the count that opened the circuit, this single failure
 	// re-opens it immediately.
-	cb.OnStateChange(func(oldState, newState State) {
+	fired := make(chan struct{})
+	cb.OnStateChange(func(oldState, newState State, _ Stats) {
+		// A callback re-entering the breaker is supported: it runs on the notify
+		// goroutine, so RecordFailure here does not deadlock.
 		if oldState == StateHalfOpen && newState == StateClosed {
 			cb.RecordFailure()
+			close(fired)
 		}
 	})
 
@@ -488,10 +525,70 @@ func TestCircuitBreaker_FailureCounterClearedBeforeCloseIsPublished(t *testing.T
 	cb.RecordFailure() // -> Open, failures == FailureThreshold
 	time.Sleep(60 * time.Millisecond)
 	cb.CheckState()    // -> HalfOpen
-	cb.RecordSuccess() // -> Closed; callback records one failure
+	cb.RecordSuccess() // -> Closed; callback records one failure (async)
+
+	// Wait for the re-entrant failure to land before asserting.
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("HalfOpen->Closed callback never fired")
+	}
 
 	if got := cb.State(); got != StateClosed {
 		t.Errorf("one failure right after recovery re-opened the circuit: state = %v", got)
+	}
+}
+
+// Under concurrency, callbacks must be delivered in transition order. Winning
+// CAS transitions chain by construction (each new state is the next
+// transition's old state), so the delivered (old,new) pairs must form a
+// contiguous chain. A broken chain means two concurrent transitions reported
+// out of order — the bug this fix addresses.
+func TestCircuitBreaker_CallbackOrderUnderConcurrency(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    1,
+		MaxHalfOpenRequests: 100,
+		OpenTimeout:         time.Nanosecond, // half-open is always reachable
+	}
+	cb := New(config)
+
+	var rec transitionRecorder
+	cb.OnStateChange(rec.record)
+
+	// Hammer the half-open edge: a closing success races an opening failure on
+	// the same transition, round after round.
+	const rounds = 3000
+	for r := 0; r < rounds; r++ {
+		cb.CheckState() // Open (1ns elapsed) -> HalfOpen
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cb.RecordSuccess() }()
+		go func() { defer wg.Done(); cb.RecordFailure() }()
+		wg.Wait()
+	}
+
+	// Wait for the notify queue to drain (delivered count stops growing).
+	deadline := time.Now().Add(3 * time.Second)
+	last := -1
+	for time.Now().Before(deadline) {
+		if n := rec.len(); n == last {
+			break
+		} else {
+			last = n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if rec.len() == 0 {
+		t.Fatal("no transitions recorded")
+	}
+	for i := 1; i < rec.len(); i++ {
+		prev, cur := rec.at(i-1), rec.at(i)
+		if cur.oldState != prev.newState {
+			t.Fatalf("out-of-order delivery at %d: ...->%v then %v->%v (chain broken)",
+				i, prev.newState, cur.oldState, cur.newState)
+		}
 	}
 }
 

@@ -59,11 +59,12 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 	}
 
 	// Register logging callback for state changes
-	cb.inner.OnStateChange(func(oldState, newState circuitbreaker.State) {
+	cb.inner.OnStateChange(func(oldState, newState circuitbreaker.State, stats circuitbreaker.Stats) {
+		// stats is the transition snapshot; the callback runs asynchronously, so
+		// reading cb.inner.Stats() here could show a later state.
 		switch {
 		case oldState == circuitbreaker.StateClosed && newState == circuitbreaker.StateOpen:
 			if internal.LogLevel.WarnOrAbove() {
-				stats := cb.inner.Stats()
 				internal.Logger.Printf(context.Background(), logs.CircuitBreakerOpened(endpoint, int64(stats.Failures)))
 			}
 		case oldState == circuitbreaker.StateOpen && newState == circuitbreaker.StateHalfOpen:
@@ -72,7 +73,6 @@ func newCircuitBreaker(endpoint string, config *Config) *CircuitBreaker {
 			}
 		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateClosed:
 			if internal.LogLevel.InfoOrAbove() {
-				stats := cb.inner.Stats()
 				internal.Logger.Printf(context.Background(), logs.CircuitBreakerClosed(endpoint, int64(stats.Successes)))
 			}
 		case oldState == circuitbreaker.StateHalfOpen && newState == circuitbreaker.StateOpen:

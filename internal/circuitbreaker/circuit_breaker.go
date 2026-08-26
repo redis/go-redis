@@ -81,8 +81,12 @@ func (c *Config) applyDefaults() {
 	}
 }
 
-// StateChangeCallback is called when the circuit breaker state changes.
-type StateChangeCallback func(oldState, newState State)
+// StateChangeCallback is called when the circuit breaker state changes. stats
+// is a snapshot taken at the transition, so it reflects the counters that
+// triggered the change even though the callback runs asynchronously (see
+// notifyQueue): read it instead of calling Stats(), which by delivery time may
+// show a later state.
+type StateChangeCallback func(oldState, newState State, stats Stats)
 
 // CircuitBreaker implements the circuit breaker pattern.
 type CircuitBreaker struct {
@@ -94,12 +98,66 @@ type CircuitBreaker struct {
 	requests    atomic.Int32 // Request count in half-open state
 	lastFailure atomic.Int64 // Unix nano timestamp
 
-	// transitionMu serializes the open -> half-open transition so the
-	// half-open counters can be cleared before the new state is published.
+	// transitionMu serializes ALL state transitions and the enqueue of their
+	// notifications, so callbacks are delivered in transition (CAS) order. It
+	// is held across the counter-clear + CAS + enqueue only, never across the
+	// callback itself.
 	transitionMu sync.Mutex
 
 	mu        sync.RWMutex
 	callbacks []StateChangeCallback
+
+	// notify delivers state-change callbacks on a single goroutine in FIFO
+	// order. Enqueue happens under transitionMu, so the queue order matches the
+	// CAS order; the callbacks run OUTSIDE transitionMu, so two concurrent
+	// transitions cannot report out of order and a callback may safely re-enter
+	// the breaker (RecordFailure/CheckState/Reset) without deadlocking.
+	notify notifyQueue
+}
+
+// stateChange is one queued transition awaiting callback delivery, carrying
+// the Stats snapshot taken at the transition.
+type stateChange struct {
+	oldState, newState State
+	stats              Stats
+}
+
+// notifyQueue delivers state-change notifications on a single goroutine, in
+// FIFO order. It mirrors the enqueue/drain pattern used elsewhere: the drain
+// goroutine is spawned on demand and exits when the queue empties, so an idle
+// breaker holds no goroutine.
+type notifyQueue struct {
+	mu       sync.Mutex
+	queue    []stateChange
+	draining bool
+	fire     func(oldState, newState State, stats Stats)
+}
+
+func (q *notifyQueue) enqueue(oldState, newState State, stats Stats) {
+	q.mu.Lock()
+	q.queue = append(q.queue, stateChange{oldState, newState, stats})
+	if q.draining {
+		q.mu.Unlock()
+		return
+	}
+	q.draining = true
+	q.mu.Unlock()
+	go q.drain()
+}
+
+func (q *notifyQueue) drain() {
+	for {
+		q.mu.Lock()
+		if len(q.queue) == 0 {
+			q.draining = false
+			q.mu.Unlock()
+			return
+		}
+		sc := q.queue[0]
+		q.queue = q.queue[1:]
+		q.mu.Unlock()
+		q.fire(sc.oldState, sc.newState, sc.stats)
+	}
 }
 
 // New creates a new circuit breaker with the given configuration.
@@ -109,6 +167,7 @@ func New(config Config) *CircuitBreaker {
 		config: config,
 	}
 	cb.state.Store(int32(StateClosed))
+	cb.notify.fire = cb.notifyCallbacks
 	return cb
 }
 
@@ -149,8 +208,10 @@ func (cb *CircuitBreaker) CheckState() State {
 				// Closed, and overwriting it with HalfOpen would silently
 				// undo the reset.
 				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+					// Enqueue under the lock so callback order matches CAS order;
+					// the callback itself runs on the notify goroutine.
+					cb.notify.enqueue(StateOpen, StateHalfOpen, cb.Stats())
 					cb.transitionMu.Unlock()
-					cb.notifyCallbacks(StateOpen, StateHalfOpen)
 					return StateHalfOpen
 				}
 			}
@@ -247,18 +308,21 @@ func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 			return
 		}
 		if int(successes) >= cb.config.SuccessThreshold {
+			cb.transitionMu.Lock()
 			// Clear the failure counter BEFORE Closed becomes visible: it
 			// still holds the count that opened the circuit, and a failure
 			// recorded between the state swap and a later reset would
 			// immediately re-open the circuit off that stale count.
 			cb.failures.Store(0)
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateClosed)) {
-				// Notify callbacks before resetting the half-open counters so
-				// they observe the success count that triggered the transition.
-				cb.notifyCallbacks(StateHalfOpen, StateClosed)
+				// Snapshot BEFORE clearing the half-open counters so the
+				// callback observes the success count that triggered the close;
+				// enqueue under the lock so delivery order matches CAS order.
+				cb.notify.enqueue(StateHalfOpen, StateClosed, cb.Stats())
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 			}
+			cb.transitionMu.Unlock()
 			return
 		}
 		if heldSlot {
@@ -290,6 +354,7 @@ func (cb *CircuitBreaker) RecordFailure() {
 		case StateClosed:
 			failures := cb.failures.Add(1)
 			if int(failures) >= cb.config.FailureThreshold {
+				cb.transitionMu.Lock()
 				if cb.state.CompareAndSwap(int32(StateClosed), int32(StateOpen)) {
 					// A Reset that completed between the timestamp store above and
 					// this CAS wiped lastFailure; repair it (CAS so a concurrent
@@ -298,10 +363,10 @@ func (cb *CircuitBreaker) RecordFailure() {
 					// that wipes after this repair also publishes Closed after,
 					// so the circuit does not stay Open with a zero timestamp.
 					cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-					// Notify callbacks before clearing the half-open counters so
-					// observers see the failure count that triggered the
-					// transition, matching the half-open -> closed/open paths.
-					cb.notifyCallbacks(StateClosed, StateOpen)
+					// Snapshot so observers see the failure count that triggered
+					// the transition; enqueue under the lock for CAS-ordered
+					// delivery, matching the half-open -> closed/open paths.
+					cb.notify.enqueue(StateClosed, StateOpen, cb.Stats())
 					// successes and requests should already be 0 in Closed (they
 					// are only incremented while half-open, and every half-open
 					// exit zeroes them). Reset defensively so the invariant
@@ -311,21 +376,25 @@ func (cb *CircuitBreaker) RecordFailure() {
 					cb.successes.Store(0)
 					cb.requests.Store(0)
 				}
+				cb.transitionMu.Unlock()
 			}
 			return
 		case StateHalfOpen:
 			// Any failure in half-open state opens the circuit.
+			cb.transitionMu.Lock()
 			if cb.state.CompareAndSwap(int32(StateHalfOpen), int32(StateOpen)) {
 				// Same timestamp repair as the closed -> open transition above.
 				cb.lastFailure.CompareAndSwap(0, time.Now().UnixNano())
-				// Notify callbacks before resetting counters so they observe the
-				// counts that triggered the transition, matching the half-open ->
-				// closed path in RecordSuccess.
-				cb.notifyCallbacks(StateHalfOpen, StateOpen)
+				// Snapshot before resetting counters so observers see the counts
+				// that triggered the transition; enqueue under the lock for
+				// CAS-ordered delivery, matching the half-open -> closed path.
+				cb.notify.enqueue(StateHalfOpen, StateOpen, cb.Stats())
 				cb.successes.Store(0)
 				cb.requests.Store(0)
+				cb.transitionMu.Unlock()
 				return
 			}
+			cb.transitionMu.Unlock()
 			// Lost the transition race — typically to the closing success of
 			// another probe. Re-read and settle in the new state instead of
 			// dropping the failure.
@@ -345,15 +414,17 @@ func (cb *CircuitBreaker) OnStateChange(callback StateChangeCallback) {
 	cb.callbacks = append(cb.callbacks, callback)
 }
 
-// notifyCallbacks notifies all registered callbacks of a state change.
-func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State) {
+// notifyCallbacks notifies all registered callbacks of a state change. It runs
+// on the notify goroutine (never under transitionMu), so a callback may
+// re-enter the breaker without deadlocking.
+func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State, stats Stats) {
 	cb.mu.RLock()
 	callbacks := make([]StateChangeCallback, len(cb.callbacks))
 	copy(callbacks, cb.callbacks)
 	cb.mu.RUnlock()
 
 	for _, callback := range callbacks {
-		callback(oldState, newState)
+		callback(oldState, newState, stats)
 	}
 }
 
@@ -365,14 +436,18 @@ func (cb *CircuitBreaker) Reset() {
 	// stale one it could immediately re-open the circuit, and the
 	// lastFailure wipe below would then wedge it open past the
 	// zero-timestamp guard in CheckState.
+	// Hold transitionMu across the clear + swap + enqueue so Reset serializes
+	// with the other transitions and its notification keeps CAS order.
+	cb.transitionMu.Lock()
 	cb.failures.Store(0)
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)
 	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
-		cb.notifyCallbacks(oldState, StateClosed)
+		cb.notify.enqueue(oldState, StateClosed, cb.Stats())
 	}
+	cb.transitionMu.Unlock()
 }
 
 // Stats returns current statistics for monitoring.
