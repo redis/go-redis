@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,10 +18,8 @@ import (
 	"github.com/redis/go-redis/v9/push"
 )
 
-// cscRegisterCleanups arranges for a client dropped without Close to stop its
-// background CSC goroutines (drainer, command-metadata worker). The drainer's
-// exit path revokes its pool's cache coverage; the runtime cleanups stay
-// non-blocking and never capture *Client, so the wrapper remains collectible.
+// cscRegisterCleanups stops metadata and CSC workers when a client is collected
+// without Close. The non-blocking cleanups do not capture *Client.
 func cscRegisterCleanups(c *Client) {
 	if s := c.baseClient.cmdMeta; s != nil {
 		runtime.AddCleanup(c, func(s *commandMetadataStore) { s.signalStop() }, s)
@@ -279,8 +278,6 @@ func (c *baseClient) attachSharedTrackingCSC(ctx context.Context, cache Cache) {
 		internal.Logger.Printf(ctx, "csc: failed to register invalidate handler: %v", err)
 		return
 	}
-	// nil for the static zero config; those clients share the default view.
-	c.cmdMeta = newCommandMetadataStore(c.opt.CommandMetadata, c.fetchCommandMetadata)
 	c.csc = cache
 	c.registerConnEvictHook(cache, reg)
 	c.startBackgroundDrainer()
@@ -521,32 +518,44 @@ func (c *baseClient) cscForgetConn(connID uint64) {
 // args, and pipelines — are also caught: the guard matches on the command's
 // leading args, not the typed method.
 var errClientTrackingWithCSC = errors.New(
-	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled")
+	"redis: CLIENT TRACKING is not allowed when client-side caching is enabled",
+)
 
 // errSelectWithCSC rejects runtime SELECT on clients with built-in CSC. Cache
 // keys use Options.DB, while SELECT mutates only the chosen pool connection.
 var errSelectWithCSC = errors.New(
-	"redis: SELECT is not allowed when client-side caching is enabled")
+	"redis: SELECT is not allowed when client-side caching is enabled",
+)
 
 // errAuthWithCSC rejects runtime authentication because it can change one
 // connection's ACL identity without changing the client's fixed cache namespace.
 var errAuthWithCSC = errors.New(
-	"redis: AUTH is not allowed when client-side caching is enabled")
+	"redis: AUTH is not allowed when client-side caching is enabled",
+)
 
 // errHelloWithCSC rejects HELLO with arguments because it can switch a tracked
 // connection out of RESP3 (and can also change authentication).
 var errHelloWithCSC = errors.New(
-	"redis: HELLO with arguments is not allowed when client-side caching is enabled")
+	"redis: HELLO with arguments is not allowed when client-side caching is enabled",
+)
 
 // errResetWithCSC rejects RESET because it disables tracking and switches the
 // connection to RESP2.
 var errResetWithCSC = errors.New(
-	"redis: RESET is not allowed when client-side caching is enabled")
+	"redis: RESET is not allowed when client-side caching is enabled",
+)
 
 // errSubscribeWithCSC rejects raw subscriptions on the ordinary pool. The
 // typed Subscribe methods use dedicated PubSub connections and remain allowed.
 var errSubscribeWithCSC = errors.New(
-	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled")
+	"redis: SUBSCRIBE is not allowed on pooled connections when client-side caching is enabled",
+)
+
+// errUnverifiableCommandWithCSC rejects raw tokens whose wire bytes cannot be
+// verified, preventing connection-state commands from bypassing CSC guards.
+var errUnverifiableCommandWithCSC = errors.New(
+	"redis: command token cannot be verified safely when client-side caching is enabled",
+)
 
 // cscCommandError rejects commands that can make a pooled connection's state
 // diverge from the assumptions used by CSC.
@@ -555,6 +564,15 @@ func (c *baseClient) cscCommandError(cmd Cmder) error {
 	// initConn's internal command wrapper is exempt during library setup.
 	if !c.cscTrackingRequested() || c.allowClientTracking {
 		return nil
+	}
+	name, nameOK := cscCommandToken(cmd, 0)
+	if !nameOK {
+		return errUnverifiableCommandWithCSC
+	}
+	if strings.EqualFold(name, "client") {
+		if _, ok := cscCommandToken(cmd, 1); !ok {
+			return errUnverifiableCommandWithCSC
+		}
 	}
 	switch {
 	case isClientTrackingCmd(cmd):

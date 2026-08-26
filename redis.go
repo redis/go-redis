@@ -480,8 +480,7 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
-		// Must travel with the cache, or a clone would silently ignore
-		// Options.CommandMetadata.
+		// Derived clients share the owner's immutable metadata view.
 		cmdMeta: c.cmdMeta,
 	}
 	return clone
@@ -1155,12 +1154,15 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 		}
 	}
 
-	// A connection exists, so a live command-metadata upgrade can proceed. A
-	// changed server identity in the HELLO reply (failover, handoff, upgrade,
-	// module load) also retires a previously fetched live view.
-	if s := c.cmdMeta; s != nil && helloOK {
-		if reply, replyErr := helloCmd.Result(); replyErr == nil {
-			s.onServerHello(helloServerFingerprint(reply))
+	// A connection enables live metadata. HELLO identity changes retire its
+	// view; without HELLO, the fetcher adopts the identity atomically.
+	if s := c.cmdMeta; s != nil {
+		if helloOK {
+			if reply, replyErr := helloCmd.Result(); replyErr == nil {
+				s.onServerHello(helloServerFingerprint(reply))
+			} else {
+				s.onConnInit()
+			}
 		} else {
 			s.onConnInit()
 		}
@@ -1749,9 +1751,7 @@ func (c *baseClient) Close() error {
 func (c *baseClient) closeResources() error {
 	var firstErr error
 
-	// CSC teardown (no-op when CSC is not active): stop the background
-	// invalidation drainer and the command-metadata worker before the pools
-	// they use are torn down.
+	// Stop metadata and CSC workers before closing their pools.
 	c.stopBackgroundDrainer()
 	c.cmdMeta.stopAndJoin()
 
@@ -2104,10 +2104,9 @@ type Client struct {
 	*baseClient
 	cmdable
 
-	// cscLifecycleOwner keeps the canonical Client wrapper (the one whose GC
-	// cleanup owns the drainer) reachable while a WithTimeout clone can still
-	// serve from its cache. Nil on the canonical wrapper and on non-CSC clones.
-	cscLifecycleOwner *Client
+	// lifecycleOwner keeps the client that owns shared CSC/metadata workers
+	// reachable from WithTimeout clones.
+	lifecycleOwner *Client
 
 	autopipelinerMu     *sync.Mutex    // guards the autopipeliner fields against concurrent first-call creation
 	autopipeliner       *AutoPipeliner // blocking face (Client.AutoPipeline)
@@ -2181,6 +2180,10 @@ func NewClient(opt *Options) *Client {
 		}
 	}
 
+	// Create metadata independently of CSC. The zero config reuses the package
+	// default without allocating a store.
+	c.baseClient.cmdMeta = newCommandMetadataStore(opt.CommandMetadata, c.fetchCommandMetadata)
+
 	// CSC wiring (SharedTracking): shared cache + per-connection CLIENT TRACKING +
 	// background drainer. attachCSC is the strategy dispatch entry.
 	if opt.Protocol == 3 {
@@ -2194,19 +2197,9 @@ func NewClient(opt *Options) *Client {
 		}
 		c.baseClient.attachCSC(context.Background(), cache)
 
-		// Safety net for a client dropped without Close: the goroutines hold
-		// *baseClient (never *Client), so dropping *Client (returned as &c)
-		// triggers these cleanups, which stop them. See cscRegisterCleanups.
-		cscRegisterCleanups(&c)
 	}
-	// The metadata store exists only when client-side caching attached; a
-	// non-default config on a client without CSC would otherwise be dropped
-	// with no signal.
-	if cfg := opt.CommandMetadata; cfg != nil && c.baseClient.cmdMeta == nil &&
-		(cfg.Mode != CommandMetadataStatic || len(cfg.Overrides) > 0) {
-		internal.Logger.Printf(context.Background(),
-			"redis: Options.CommandMetadata is ignored because client-side caching is not active")
-	}
+	// Stop metadata and CSC workers if the client is collected without Close.
+	cscRegisterCleanups(&c)
 
 	// Initialize maintnotifications first if enabled and protocol is RESP3
 	if opt.MaintNotificationsConfig != nil && opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled && opt.Protocol == 3 {
@@ -2262,10 +2255,10 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 	c.autopipelinerMu.Lock()
 	clone := *c
 	c.autopipelinerMu.Unlock()
-	if c.cscLifecycleOwner != nil {
-		clone.cscLifecycleOwner = c.cscLifecycleOwner
-	} else if c.baseClient.cscDrainHandle != nil {
-		clone.cscLifecycleOwner = c
+	if c.lifecycleOwner != nil {
+		clone.lifecycleOwner = c.lifecycleOwner
+	} else if c.baseClient.cscDrainHandle != nil || c.baseClient.cmdMeta != nil {
+		clone.lifecycleOwner = c
 	}
 	clone.baseClient = c.baseClient.withTimeout(timeout)
 	clone.init()
@@ -2277,8 +2270,7 @@ func (c *Client) WithTimeout(timeout time.Duration) *Client {
 // before releasing the underlying resources, so their background flusher
 // goroutines don't outlive the client. AutoPipeliner.Close is idempotent and
 // safe to call here even if autopipelining was never used.
-// A WithTimeout clone delegates CSC teardown to the canonical wrapper that
-// owns the background drainer.
+// WithTimeout clones delegate shared-resource teardown to their owner.
 func (c *Client) Close() error {
 	c.autopipelinerMu.Lock()
 	ap, async := c.autopipeliner, c.asyncAutopipeliner
@@ -2296,7 +2288,7 @@ func (c *Client) Close() error {
 			}
 		}
 	}
-	if c.cscLifecycleOwner != nil {
+	if c.lifecycleOwner != nil {
 		// Delegate through the OWNER's *Client.Close, not its baseClient:
 		// the owner may hold cached autopipeliners of its own whose flusher
 		// goroutines must stop with the shared pools, and its
@@ -2304,7 +2296,7 @@ func (c *Client) Close() error {
 		// resurrect a pipeliner against closed pools. Client.Close is
 		// idempotent through baseClient.Close, so an owner also closed
 		// directly is fine.
-		if err := c.cscLifecycleOwner.Close(); err != nil && firstErr == nil {
+		if err := c.lifecycleOwner.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return firstErr
@@ -2799,7 +2791,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})

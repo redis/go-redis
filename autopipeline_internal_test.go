@@ -539,8 +539,9 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 
 	cmd1 := NewStringCmd(ctx, "get", "k1")
 	cmd2 := NewStringCmd(ctx, "get", "k2")
+	cmds := []Cmder{cmd1, cmd2}
 	failed := newCmdsMap()
-	if err := cc.pipelineReadCmds(ctx, node, cn, rd, []Cmder{cmd1, cmd2}, failed); err != nil {
+	if err := cc.pipelineReadCmdsInView(ctx, node, cn, rd, cmds, failed, cc.resolvePipelineRouting(ctx, cmds)); err != nil {
 		t.Fatalf("pipelineReadCmds: %v", err)
 	}
 	if cmd1.Val() != "v1" || cmd2.Val() != "v2" {
@@ -986,6 +987,7 @@ func (h dispatchGateHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if h.armed.Load() {
@@ -1284,6 +1286,7 @@ func (h cacheHook) ProcessHook(next ProcessHook) ProcessHook {
 		return nil
 	}
 }
+
 func (h cacheHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if !h.armed.Load() {

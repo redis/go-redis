@@ -3741,9 +3741,7 @@ func TestClusterPipelineUsesDedicatedPool(t *testing.T) {
 		PipelineReadBufferSize: 64 * 1024,
 	})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Manual pipeline spanning many slots.
@@ -3856,14 +3854,12 @@ func TestClusterNodeHookShortCircuit(t *testing.T) {
 		Addrs: []string{":16600", ":16601", ":16602"},
 	})
 	defer c.Close()
+	skipIfClusterUnhealthy(t, c)
 	// Install BEFORE any command: OnNewNode only fires for newly created node
 	// clients. The breaker is disarmed during warmup (conn-init handshakes
 	// are pipelines too) and armed just before the asserted round.
 	var armed atomic.Bool
 	c.OnNewNode(func(cl *redis.Client) { cl.AddHook(pipelineBreakerHook{err: errBreaker, armed: &armed}) })
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		// Warm pooled connections on every node so the asserted round doesn't
@@ -4265,13 +4261,11 @@ func TestClusterNodeHookPostNextError(t *testing.T) {
 		Addrs: []string{":16600", ":16601", ":16602"},
 	})
 	defer c.Close()
+	skipIfClusterUnhealthy(t, c)
 	var armed atomic.Bool
 	c.OnNewNode(func(cl *redis.Client) {
 		cl.AddHook(armablePostNextPipelineHook{err: errVerdict, armed: &armed})
 	})
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
 
 	runWithWatchdog(t, 60*time.Second, func() {
 		warm := c.Pipeline()
@@ -4396,9 +4390,7 @@ func TestAPClusterNonPipelinableRejectedAtSubmit(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	markNonPipelinable(c, "getdel")
 
 	ap, err := c.AsyncAutoPipelineWithOptions(&redis.AutoPipelineOptions{
@@ -4777,9 +4769,7 @@ func TestAPClusterWideCommandsDelegate(t *testing.T) {
 	ctx := context.Background()
 	c := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{":16600", ":16601", ":16602"}})
 	defer c.Close()
-	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("no cluster: %v", err)
-	}
+	skipIfClusterUnhealthy(t, c)
 	ap, err := c.AsyncAutoPipeline()
 	if err != nil {
 		t.Fatal(err)

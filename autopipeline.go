@@ -594,6 +594,9 @@ type AutoPipeliner struct {
 	// Client/ClusterClient.Process and keep their special routing.
 	mustDivert func(ctx context.Context, cmd Cmder) bool
 
+	// commandDone releases owner state after a command leaves every execution path.
+	commandDone func(Cmder)
+
 	// sharedClosed, when non-nil, is the owning client's pool-set closed flag
 	// (shared across WithTimeout clones). The getters refuse to build a fresh
 	// pipeliner once it is set; this reference makes an ALREADY-built
@@ -794,7 +797,8 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
-			config.NumShards)
+			config.NumShards,
+		)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -928,6 +932,7 @@ func (ap *AutoPipeliner) Do(ctx context.Context, args ...interface{}) *Cmd {
 // returning while it still holds a pooled connection.
 func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apBatch {
 	if ap.blocking {
+		defer ap.notifyCommandDone(cmd)
 		// The blocking face runs it inline, so the caller's own goroutine holds
 		// the connection; still take the gate so Close cannot decide "nothing
 		// in flight" while this command is executing.
@@ -954,6 +959,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 		ap.divertMu.Unlock()
 		cmd.SetErr(ErrClosed)
 		cmd.setReady(completedBatch)
+		ap.notifyCommandDone(cmd)
 		return completedBatch
 	}
 	b := newAPBatch()
@@ -963,6 +969,7 @@ func (ap *AutoPipeliner) runOutsidePipeline(ctx context.Context, cmd Cmder) *apB
 	go func() {
 		defer ap.divertWg.Done()
 		defer b.close()
+		defer ap.notifyCommandDone(cmd)
 		defer recoverDispatchPanic([]Cmder{cmd})
 		if ap.armSelfDeadlockGuard() {
 			b.dispGid.Store(curGoroutineID())
@@ -1329,6 +1336,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	if !diverted && ap.preflight != nil {
 		if err := ap.preflight(ctx, cmd); err != nil {
 			cmd.SetErr(err)
+			ap.notifyCommandDone(cmd)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 	}
@@ -1344,6 +1352,7 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 		// of running after Close().
 		if ap.isClosed() {
 			cmd.SetErr(ErrClosed)
+			ap.notifyCommandDone(cmd)
 			return finish(AutoFuture{cmd: cmd, batch: completedBatch})
 		}
 		// runOutsidePipeline sets the command ready itself on the deferred
@@ -1353,7 +1362,11 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 	// No finish here: enqueue stamps ready under the stripe lock, before the
 	// command is visible to any drain (the error paths above still go through
 	// finish for uniform accessor behavior).
-	return AutoFuture{cmd: cmd, batch: ap.enqueue(cmd)}
+	batch := ap.enqueue(cmd)
+	if batch == completedBatch {
+		ap.notifyCommandDone(cmd)
+	}
+	return AutoFuture{cmd: cmd, batch: batch}
 }
 
 // ErrSubmitBlockingFace rejects Submit on the blocking face: Submit does not
@@ -1364,7 +1377,8 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrSubmitBlockingFace = errors.New(
-	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do")
+	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do",
+)
 
 // errZeroAutoFuture is returned by Wait/WaitContext on a zero AutoFuture.
 var errZeroAutoFuture = errors.New("redis: Wait on a zero AutoFuture")
@@ -1381,7 +1395,8 @@ var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argu
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrAutoPipelineTimeout = errors.New(
-	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)")
+	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)",
+)
 
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
@@ -1596,6 +1611,17 @@ func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) b
 	ap.mustDivert = fn
 }
 
+// setCommandDone installs the owner completion callback before publication.
+func (ap *AutoPipeliner) setCommandDone(fn func(Cmder)) {
+	ap.commandDone = fn
+}
+
+func (ap *AutoPipeliner) notifyCommandDone(cmd Cmder) {
+	if ap.commandDone != nil {
+		ap.commandDone(cmd)
+	}
+}
+
 // Close stops the autopipeliner and flushes any pending commands. Worst
 // case it blocks up to the internal permit backstop (~30s) PER SHARD if
 // in-flight batches are wedged (e.g. read timeouts disabled against a dead
@@ -1714,7 +1740,8 @@ func (ap *AutoPipeliner) drainAll(timeout time.Duration) error {
 				"redis: autopipeline: Close timed out after %s with %s still in flight; "+
 					"they hold pooled connections until the server or the OS ends them "+
 					"(most often a blocking command with no timeout, or ReadTimeout disabled)",
-				timeout, strings.Join(outstanding, " and "))
+				timeout, strings.Join(outstanding, " and "),
+			)
 		}
 	}
 	return nil
@@ -2330,6 +2357,7 @@ func (s *apShard) flushBatchSlice() {
 			for i := range queues {
 				for _, qc := range queues[i] {
 					qc.SetErr(batchErr)
+					ap.notifyCommandDone(qc)
 				}
 				batches[i].close()
 				putQueueSlice(queues[i])
@@ -2393,6 +2421,8 @@ func (s *apShard) flushBatchSlice() {
 			defer s.sem.Release()
 			defer putQueueSlice(queues[0])
 			defer recoverDispatchPanic(queues[0])
+			solo := queues[0][0]
+			defer ap.notifyCommandDone(solo)
 			// Background for the same reason as the batch goroutine below:
 			// accepted commands execute even under a concurrent Close.
 			execStart := time.Now()
@@ -2400,7 +2430,6 @@ func (s *apShard) flushBatchSlice() {
 			if !ap.blocking && ap.armSelfDeadlockGuard() {
 				b.dispGid.Store(curGoroutineID())
 			}
-			solo := queues[0][0]
 			// Both faces run the user-hook chain via withProcessHook. The
 			// command records the CHAIN's final verdict — exactly what
 			// Client.Process does — before the deferred close wakes the
@@ -2441,6 +2470,9 @@ func (s *apShard) flushBatchSlice() {
 		// populated first.
 		defer func() {
 			for i := range queues {
+				for _, cmd := range queues[i] {
+					ap.notifyCommandDone(cmd)
+				}
 				batches[i].close()
 				putQueueSlice(queues[i])
 			}
@@ -2543,6 +2575,9 @@ func (s *apShard) flushBatchSliceShutdown() {
 			}
 			defer func() {
 				for i := range queues {
+					for _, cmd := range queues[i] {
+						ap.notifyCommandDone(cmd)
+					}
 					batches[i].close()
 					putQueueSlice(queues[i])
 				}

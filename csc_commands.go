@@ -44,9 +44,18 @@ const (
 	cscKeyExtractKeynum
 )
 
+// cscInvocationGuard identifies argument checks that COMMAND cannot express.
+type cscInvocationGuard uint8
+
+const (
+	cscInvocationGuardNone cscInvocationGuard = iota
+	cscInvocationGuardSortRONoByGet
+)
+
 type cscCommandMeta struct {
 	bits    cscCmdBits
 	extract cscKeyExtract
+	guard   cscInvocationGuard
 
 	firstKey  int16
 	lastKey   int16
@@ -54,65 +63,125 @@ type cscCommandMeta struct {
 	numkeysAt int16
 }
 
-// cscMetadataCorrections excludes commands whose server metadata or
-// invalidation delivery is known broken (each verified live). Corrections
-// are extra tips ADDED to the resolved record — snapshot or live — so they
-// survive a live upgrade and never discard the record's other metadata; being
-// tips-only they can never make a command cacheable. Remove an entry only
-// after a tracking probe shows the server invalidates correctly.
-var cscMetadataCorrections = map[string][]string{
+// commandMetadataCorrection patches a verified server metadata gap before CSC
+// and Cluster routing derive their decisions.
+type commandMetadataCorrection struct {
+	tips        []string
+	removeFlags []string
+
+	keySpecs    []KeySpec
+	firstKeyPos int8
+	lastKeyPos  int8
+	stepCount   int8
+}
+
+// commandMetadataCorrections contains verified server metadata fixes shared by
+// CSC and routing. Remove entries only after probing the server fix.
+var commandMetadataCorrections = map[string]commandMetadataCorrection{
 	// Read-only on paper, but its purpose is to bump key LRU/LFU state.
-	"touch": {"dont_cache"},
+	"touch": {tips: []string{"dont_cache"}},
 
 	// Random output; the server doesn't tag it yet (its siblings are tagged).
-	"vrandmember": {"nondeterministic_output"},
+	"vrandmember": {tips: []string{"nondeterministic_output"}},
 
-	// Flagged readonly but actually rewrites the filter; caching its OK reply
-	// would suppress repeated compactions.
-	"cf.compact": {"dont_cache"},
+	// Marked readonly but rewrites the filter; disable caching and replica routing.
+	"cf.compact": {tips: []string{"dont_cache"}, removeFlags: []string{"readonly"}},
 
-	// The module declares one key but the command reads N, and the server
-	// tracks only that first key: writes to the other keys never send an
-	// invalidation.
-	"json.mget": {"dont_cache"},
+	// The server reports and tracks only the first of N keys. Keep caching
+	// disabled and correct the routing range (N keys followed by a path).
+	"json.mget": {
+		tips: []string{"dont_cache"},
+		keySpecs: []KeySpec{{
+			Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1,
+			FindKeys: "range", LastKey: -2, KeyStep: 1,
+		}},
+		firstKeyPos: 1, lastKeyPos: -2, stepCount: 1,
+	},
 
 	// The server registers no tracking for any of their series: writes never
 	// send an invalidation.
-	"ts.nrange":    {"dont_cache"},
-	"ts.nrevrange": {"dont_cache"},
+	"ts.nrange":    {tips: []string{"dont_cache"}},
+	"ts.nrevrange": {tips: []string{"dont_cache"}},
 
 	// Replies include consumer-group state, but group changes (XGROUP
 	// CREATE/SETID) never invalidate the stream key.
-	"xinfo|stream": {"dont_cache"},
-	"xinfo|groups": {"dont_cache"},
+	"xinfo|stream": {tips: []string{"dont_cache"}},
+	"xinfo|groups": {tips: []string{"dont_cache"}},
 
 	// Usage changes on mutations that never signal the key (e.g. XGROUP CREATE).
-	"memory|usage": {"dont_cache"},
+	"memory|usage": {tips: []string{"dont_cache"}},
 }
 
 // cscNegativeBits are the bits that each rule out caching.
 const cscNegativeBits = cscFlagScriptRunner | cscFlagBlocking |
 	cscTipNondeterministicOutput | cscTipDontCache
 
-// cscAckExtraKeySpecs: commands whose extra unknown key specs are handled
-// elsewhere (sort_ro's is the BY/GET patterns, rejected per invocation).
-var cscAckExtraKeySpecs = map[string]bool{
-	"sort_ro": true,
+// cscExtractionOverride handles invocation-level extraction rules that COMMAND
+// cannot express.
+type cscExtractionOverride struct {
+	extraKeySpecs cscExtraKeySpecs
+	guard         cscInvocationGuard
 }
 
-// cscSpecComplete: incomplete specs can't say which keys are read, and
-// not_key marks a channel/pattern — neither proves key positions.
+type cscExtraKeySpecs uint8
+
+const (
+	cscExtraKeySpecsNone cscExtraKeySpecs = iota
+	cscExtraKeySpecsSortROPattern
+)
+
+var cscExtractionOverrides = map[string]cscExtractionOverride{
+	// BY/GET keys are pattern-derived; legacy positions are safe only without them.
+	"sort_ro": {
+		extraKeySpecs: cscExtraKeySpecsSortROPattern,
+		guard:         cscInvocationGuardSortRONoByGet,
+	},
+}
+
+func (kind cscExtraKeySpecs) permits(info *CommandInfo, complete, other int) bool {
+	switch kind {
+	case cscExtraKeySpecsSortROPattern:
+		if len(info.KeySpecs) != 2 || complete != 1 || other != 1 {
+			return false
+		}
+		for _, spec := range info.KeySpecs {
+			if cscSpecComplete(spec) {
+				continue
+			}
+			if spec.BeginSearch != "unknown" || spec.FindKeys != "unknown" {
+				return false
+			}
+			if len(spec.Flags) != 2 {
+				return false
+			}
+			var readOnly, access bool
+			for _, flag := range spec.Flags {
+				switch flag {
+				case "RO":
+					readOnly = true
+				case "access":
+					access = true
+				default:
+					return false
+				}
+			}
+			if !readOnly || !access {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// cscSpecComplete reports whether a spec identifies exact Redis keys.
 func cscSpecComplete(ks KeySpec) bool {
 	if (ks.BeginSearch != "index" && ks.BeginSearch != "keyword") ||
 		(ks.FindKeys != "range" && ks.FindKeys != "keynum") {
 		return false
 	}
-	for _, f := range ks.Flags {
-		if f == "incomplete" || f == "not_key" {
-			return false
-		}
-	}
-	return true
+	return classifyCommandMetadataKeySpecFlags(ks.Flags).cscComplete
 }
 
 // cscDeriveMeta compresses a record into the hot-path form. Extraction is
@@ -120,6 +189,9 @@ func cscSpecComplete(ks KeySpec) bool {
 // a partial key list would mean dropped invalidations and stale entries).
 func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 	var meta cscCommandMeta
+	override := cscExtractionOverrides[internal.ToLower(info.Name)]
+	meta.guard = override.guard
+
 	// The readonly FLAG is the normative source; the ReadOnly convenience
 	// bool is deliberately ignored.
 	for _, f := range info.Flags {
@@ -142,13 +214,11 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 	}
 
 	var complete, other int
-	var keynum KeySpec
+	var completeSpec KeySpec
 	for _, ks := range info.KeySpecs {
 		if cscSpecComplete(ks) {
 			complete++
-			if ks.FindKeys == "keynum" {
-				keynum = ks
-			}
+			completeSpec = ks
 		} else {
 			other++
 		}
@@ -157,34 +227,62 @@ func cscDeriveMeta(info *CommandInfo) cscCommandMeta {
 		meta.bits |= cscHasKeySpec
 	}
 
-	meta.firstKey = int16(info.FirstKeyPos)
-	meta.lastKey = int16(info.LastKeyPos)
-	meta.step = int16(info.StepCount)
+	// Modern key specs are authoritative; never fall back when any are present.
+	if len(info.KeySpecs) == 0 {
+		meta.firstKey = int16(info.FirstKeyPos)
+		meta.lastKey = int16(info.LastKeyPos)
+		meta.step = int16(info.StepCount)
+	}
 
-	canExtract := (other == 0 && complete <= 1) || cscAckExtraKeySpecs[internal.ToLower(info.Name)]
-	switch {
-	case canExtract && info.FirstKeyPos > 0 && info.StepCount > 0:
+	canExtract := (other == 0 && complete <= 1) || override.extraKeySpecs.permits(info, complete, other)
+	if !canExtract {
+		return meta
+	}
+
+	if complete == 1 && completeSpec.BeginSearch == "index" {
+		switch completeSpec.FindKeys {
+		case "range":
+			if completeSpec.Index < 1 || completeSpec.Index > math.MaxInt16 ||
+				completeSpec.KeyStep < 1 || completeSpec.KeyStep > math.MaxInt16 ||
+				completeSpec.Limit != 0 || completeSpec.LastKey < math.MinInt16 {
+				return meta
+			}
+			lastKey := completeSpec.LastKey
+			if lastKey >= 0 {
+				absoluteLast := int64(completeSpec.Index) + int64(lastKey)
+				if absoluteLast > math.MaxInt16 {
+					return meta
+				}
+				lastKey = int(absoluteLast)
+			}
+			meta.extract = cscKeyExtractRange
+			meta.firstKey = int16(completeSpec.Index)
+			meta.lastKey = int16(lastKey)
+			meta.step = int16(completeSpec.KeyStep)
+		case "keynum":
+			// Validate operands before addition to prevent offset cancellation.
+			if completeSpec.Index < 1 || completeSpec.Index > math.MaxInt16 ||
+				completeSpec.KeyNumIdx < 0 || completeSpec.KeyNumIdx > math.MaxInt16 ||
+				completeSpec.FirstKey < 1 || completeSpec.FirstKey > math.MaxInt16 ||
+				completeSpec.KeyStep < 1 || completeSpec.KeyStep > math.MaxInt16 {
+				return meta // malformed positions: no extraction, never cached
+			}
+			numkeysAt := int64(completeSpec.Index) + int64(completeSpec.KeyNumIdx)
+			firstKey := int64(completeSpec.Index) + int64(completeSpec.FirstKey)
+			if numkeysAt < 1 || numkeysAt > math.MaxInt16 ||
+				firstKey < 1 || firstKey > math.MaxInt16 {
+				return meta // malformed positions: no extraction, never cached
+			}
+			meta.extract = cscKeyExtractKeynum
+			meta.numkeysAt = int16(numkeysAt)
+			meta.firstKey = int16(firstKey)
+			meta.step = int16(completeSpec.KeyStep)
+		}
+		return meta
+	}
+
+	if len(info.KeySpecs) == 0 && info.FirstKeyPos > 0 && info.StepCount > 0 {
 		meta.extract = cscKeyExtractRange
-	case canExtract && complete == 1 && keynum.FindKeys == "keynum" && keynum.BeginSearch == "index":
-		// Validate every component before adding or narrowing. Checking only
-		// the sums would let hostile positive/negative offsets cancel into a
-		// plausible position and pass the per-call bounds checks.
-		if keynum.Index < 1 || keynum.Index > math.MaxInt16 ||
-			keynum.KeyNumIdx < 0 || keynum.KeyNumIdx > math.MaxInt16 ||
-			keynum.FirstKey < 1 || keynum.FirstKey > math.MaxInt16 ||
-			keynum.KeyStep < 1 || keynum.KeyStep > math.MaxInt16 {
-			break // malformed positions: no extraction, never cached
-		}
-		numkeysAt := keynum.Index + keynum.KeyNumIdx
-		firstKey := keynum.Index + keynum.FirstKey
-		if numkeysAt < 1 || numkeysAt > math.MaxInt16 ||
-			firstKey < 1 || firstKey > math.MaxInt16 {
-			break // malformed positions: no extraction, never cached
-		}
-		meta.extract = cscKeyExtractKeynum
-		meta.numkeysAt = int16(numkeysAt)
-		meta.firstKey = int16(firstKey)
-		meta.step = int16(keynum.KeyStep)
 	}
 	return meta
 }
@@ -198,18 +296,21 @@ func cscLookupMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool) 
 		return cscCommandMeta{}, false
 	}
 	name := cmd.Name()
-	if meta, ok := view.cscTable[name]; ok {
-		return meta, true
-	}
 	if _, ok := view.cscParents[name]; ok {
-		if len(args) > 1 && cscWireFaithfulText(args[1]) {
-			if sub := cmd.stringArg(1); sub != "" {
-				meta, ok := view.cscTable[name+"|"+internal.ToLower(sub)]
-				return meta, ok
+		if len(args) > 1 {
+			if !cscWireFaithfulText(args[1]) {
+				return cscCommandMeta{}, false
 			}
+			sub := cmd.stringArg(1)
+			if sub == "" {
+				return cscCommandMeta{}, false
+			}
+			meta, ok := view.cscTable[name+"|"+internal.ToLower(sub)]
+			return meta, ok
 		}
 	}
-	return cscCommandMeta{}, false
+	meta, ok := view.cscTable[name]
+	return meta, ok
 }
 
 // cscWireFaithfulText: policy tokens must read the same via stringArg as they
@@ -250,19 +351,22 @@ func cscEligibleMeta(view *commandMetadataView, cmd Cmder) (cscCommandMeta, bool
 	return meta, true
 }
 
-// sortROHasByGet reports whether a SORT_RO call uses BY or GET; arg types
-// whose wire form can differ from stringArg disqualify outright.
+// sortROHasByGet fails closed when an argument's wire text is unknown.
 func sortROHasByGet(cmd Cmder) bool {
 	args := cmd.Args()
 	for i := 2; i < len(args); i++ {
-		switch args[i].(type) {
-		case string, *string, []byte,
-			int, int8, int16, int32, int64,
-			uint, uint8, uint16, uint32, uint64,
-			float32, float64, bool:
-			if s := cmd.stringArg(i); strings.EqualFold(s, "by") || strings.EqualFold(s, "get") {
+		switch arg := args[i].(type) {
+		case string:
+			if strings.EqualFold(arg, "by") || strings.EqualFold(arg, "get") {
 				return true
 			}
+		case []byte:
+			if bytes.EqualFold(arg, []byte("by")) || bytes.EqualFold(arg, []byte("get")) {
+				return true
+			}
+		case int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64,
+			float32, float64, bool:
 		default:
 			return true
 		}
@@ -270,38 +374,71 @@ func sortROHasByGet(cmd Cmder) bool {
 	return false
 }
 
-// isClientTrackingCmd reports whether cmd is CLIENT TRACKING (any mode).
+// cscCommandToken returns tokens with known wire representations without
+// invoking BinaryMarshaler, which may be stateful.
+func cscCommandToken(cmd Cmder, pos int) (string, bool) {
+	args := cmd.Args()
+	if pos < 0 || pos >= len(args) {
+		return "", false
+	}
+	switch value := args[pos].(type) {
+	case string:
+		return value, true
+	case *string:
+		if value == nil {
+			return "", true
+		}
+		return *value, true
+	case []byte:
+		return string(value), true
+	default:
+		return "", false
+	}
+}
+
+// isClientTrackingCmd reports whether cmd is provably CLIENT TRACKING.
 func isClientTrackingCmd(cmd Cmder) bool {
-	return cmd.Name() == "client" && strings.EqualFold(cmd.stringArg(1), "tracking")
+	name, nameOK := cscCommandToken(cmd, 0)
+	subcommand, subcommandOK := cscCommandToken(cmd, 1)
+	return nameOK && subcommandOK && strings.EqualFold(name, "client") &&
+		strings.EqualFold(subcommand, "tracking")
 }
 
 // isSelectCmd: SELECT would desync the connection's DB from the cache
 // namespace, which is fixed at Options.DB.
 func isSelectCmd(cmd Cmder) bool {
-	return cmd.Name() == "select"
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "select")
 }
 
 // isAuthCmd: AUTH would desync the connection's identity from the cache
 // namespace, which is fixed at Options.Username.
 func isAuthCmd(cmd Cmder) bool {
-	return cmd.Name() == "auth"
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "auth")
 }
 
 // isProtocolChangingHelloCmd: HELLO with arguments can switch a tracked
 // connection out of RESP3. A bare HELLO is safe.
 func isProtocolChangingHelloCmd(cmd Cmder) bool {
-	return cmd.Name() == "hello" && len(cmd.Args()) > 1
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "hello") && len(cmd.Args()) > 1
 }
 
 // isResetCmd: RESET disables tracking and switches to RESP2.
 func isResetCmd(cmd Cmder) bool {
-	return cmd.Name() == "reset"
+	name, ok := cscCommandToken(cmd, 0)
+	return ok && strings.EqualFold(name, "reset")
 }
 
 // isSubscribeCmd: raw subscriptions would turn a pooled connection into a
 // Pub/Sub connection the CSC drainer cannot own.
 func isSubscribeCmd(cmd Cmder) bool {
-	switch cmd.Name() {
+	name, ok := cscCommandToken(cmd, 0)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(name) {
 	case "subscribe", "psubscribe", "ssubscribe":
 		return true
 	default:
@@ -313,6 +450,10 @@ func isSubscribeCmd(cmd Cmder) bool {
 func buildCacheKey(cmd Cmder) (string, bool) {
 	args := cmd.Args()
 	if len(args) == 0 {
+		return "", false
+	}
+	// Stateful MarshalBinary calls could make the cache key differ from the command.
+	if !commandArgsRepeatable(cmd) {
 		return "", false
 	}
 	var buf bytes.Buffer
@@ -343,8 +484,15 @@ func keyArg(cmd Cmder, pos int) (string, bool) {
 // command already resolved to meta. nil = serve this call uncached; a
 // PARTIAL list is never returned.
 func cscExtractRedisKeys(meta cscCommandMeta, cmd Cmder) []string {
-	// SORT_RO with BY/GET reads pattern keys this call cannot list.
-	if cmd.Name() == "sort_ro" && sortROHasByGet(cmd) {
+	switch meta.guard {
+	case cscInvocationGuardNone:
+	case cscInvocationGuardSortRONoByGet:
+		// BY/GET keys cannot be enumerated.
+		if sortROHasByGet(cmd) {
+			return nil
+		}
+	default:
+		// Unknown guards cannot prove a complete key list.
 		return nil
 	}
 	argsLen := len(cmd.Args())

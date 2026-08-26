@@ -1,16 +1,9 @@
-// Command cmdmetagen generates command_info_snapshot.go, the shipped snapshot
-// of COMMAND metadata records, fetched through the client's own COMMAND parser
-// (run against the pinned client-libs-test image so module metadata is
-// included):
+// Command cmdmetagen generates command_info_snapshot.go from Redis COMMAND.
+// Use the pinned client-libs-test image to include module commands:
 //
 //	go run ./internal/cmdmetagen -addr localhost:6379 -out command_info_snapshot.go
 //
-// The output is checked in: a regeneration is a reviewable diff, gated by the
-// root eligibility tests. The snapshot carries every application-facing
-// command record so consumers beyond CSC eligibility (e.g. routing) can share
-// it. When regenerating against a new release, verify newly cacheable
-// commands with a tracking probe first (see cscMetadataCorrections in
-// csc_commands.go for known gaps).
+// Review the generated diff and tracking-probe newly cacheable commands.
 package main
 
 import (
@@ -43,7 +36,15 @@ func main() {
 	}
 
 	names := make([]string, 0, len(infos))
-	for name := range infos {
+	normalizedNames := make(map[string]string, len(infos))
+	for name, info := range infos {
+		if info == nil {
+			fatalf("COMMAND returned malformed metadata for %q", name)
+		}
+		if info.CommandPolicy == nil {
+			// Redis 8.10+ snapshots require complete 10-field records.
+			fatalf("COMMAND returned legacy or incomplete metadata for %q", name)
+		}
 		lower := strings.ToLower(name)
 		// Internal module aliases; their application-facing forms are the
 		// ft./ts. records.
@@ -52,6 +53,10 @@ func main() {
 			strings.HasPrefix(lower, "timeseries.") {
 			continue
 		}
+		if previous, ok := normalizedNames[lower]; ok {
+			fatalf("COMMAND returned case-colliding names %q and %q (normalized as %q)", previous, name, lower)
+		}
+		normalizedNames[lower] = name
 		names = append(names, name)
 	}
 	sort.Slice(names, func(i, j int) bool {

@@ -281,10 +281,8 @@ func TestIsCacheable_PolicyTokensMustBeWireFaithful(t *testing.T) {
 }
 
 func TestCSCMetadataCorrections(t *testing.T) {
-	// Built-in corrections are additive tips: the corrected command must
-	// resolve non-cacheable while keeping its base record's other metadata,
-	// and must survive into the default view.
-	for name, tips := range cscMetadataCorrections {
+	// Corrections must survive in the shared default view.
+	for name, correction := range commandMetadataCorrections {
 		base, ok := commandInfoSnapshot[name]
 		if !ok {
 			t.Errorf("correction %q has no snapshot record; re-audit or remove it", name)
@@ -299,26 +297,42 @@ func TestCSCMetadataCorrections(t *testing.T) {
 			t.Errorf("correction %q must never resolve cacheable, got %+v", name, meta)
 		}
 		rec := defaultCommandMetadataView.records[name]
-		for _, tip := range tips {
+		for _, tip := range correction.tips {
 			if !commandRecordHas(rec, tip, true) {
 				t.Errorf("correction %q lost tip %q in the resolved record", name, tip)
 			}
 		}
-		if len(rec.Flags) != len(base.Flags) || len(rec.KeySpecs) != len(base.KeySpecs) {
+		if len(correction.removeFlags) == 0 && correction.keySpecs == nil &&
+			(len(rec.Flags) != len(base.Flags) || len(rec.KeySpecs) != len(base.KeySpecs)) {
 			t.Errorf("correction %q must keep the base record's flags and key specs", name)
 		}
+	}
+	if commandRecordHas(defaultCommandMetadataView.records["cf.compact"], "readonly", false) {
+		t.Fatal("CF.COMPACT correction left the mutating command readonly")
+	}
+	jsonMGet := defaultCommandMetadataView.records["json.mget"]
+	if len(jsonMGet.KeySpecs) != 1 || jsonMGet.KeySpecs[0].LastKey != -2 {
+		t.Fatalf("JSON.MGET correction did not expose all keys: %+v", jsonMGet.KeySpecs)
 	}
 }
 
 func TestCSCDeriveMeta(t *testing.T) {
-	completeRange := KeySpec{BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}
-	unknownSpec := KeySpec{BeginSearch: "unknown", FindKeys: "unknown"}
+	completeRange := KeySpec{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}
+	unknownSpec := KeySpec{Flags: []string{"RO", "access"}, BeginSearch: "unknown", FindKeys: "unknown"}
 	readonly := func(specs ...KeySpec) *CommandInfo {
 		return &CommandInfo{Name: "cmd", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1, KeySpecs: specs}
 	}
 
 	if m := cscDeriveMeta(readonly(completeRange)); m.extract != cscKeyExtractRange || !cscIsClientSideCacheable(m) {
 		t.Errorf("single complete range spec should derive cacheable range extraction, got %+v", m)
+	}
+	// Modern key specs must override a narrower legacy triple.
+	disagreeingRange := completeRange
+	disagreeingRange.LastKey = 1
+	disagreeing := readonly(disagreeingRange)
+	disagreeingMeta := cscDeriveMeta(disagreeing)
+	if keys := cscExtractRedisKeys(disagreeingMeta, makeCmd("cmd", "k1", "k2")); len(keys) != 2 || keys[0] != "k1" || keys[1] != "k2" {
+		t.Errorf("modern key spec must win over a narrower legacy triple, got %v (%+v)", keys, disagreeingMeta)
 	}
 	// Two complete specs: the legacy triple covers only the first, so no
 	// extraction — a partial key list would drop invalidations.
@@ -329,29 +343,59 @@ func TestCSCDeriveMeta(t *testing.T) {
 		t.Errorf("unknown extra spec must derive no extraction, got %+v", m)
 	}
 	// incomplete/not_key specs never prove keyedness.
-	incomplete := readonly(KeySpec{Flags: []string{"RO", "incomplete"}, BeginSearch: "keyword", Keyword: "STREAMS", FindKeys: "range", KeyStep: 1})
+	incomplete := readonly(KeySpec{Flags: []string{"RO", "access", "incomplete"}, BeginSearch: "keyword", Keyword: "STREAMS", FindKeys: "range", KeyStep: 1})
 	incomplete.FirstKeyPos, incomplete.StepCount = 0, 0
 	if m := cscDeriveMeta(incomplete); cscHasKeyArgument(m) {
 		t.Errorf("incomplete spec must not prove keyedness, got %+v", m)
 	}
-	notKey := readonly(KeySpec{Flags: []string{"RW", "not_key"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1})
+	notKey := readonly(KeySpec{Flags: []string{"not_key"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1})
 	notKey.FirstKeyPos, notKey.StepCount = 0, 0
 	if m := cscDeriveMeta(notKey); cscHasKeyArgument(m) {
 		t.Errorf("not_key spec must not prove keyedness, got %+v", m)
 	}
+	for name, flags := range map[string][]string{
+		"prefix":           {"RO", "access", "prefix"},
+		"future flag":      {"RO", "access", "future_key_flag"},
+		"missing mode":     {"access"},
+		"conflicting mode": {"RO", "RW", "access"},
+	} {
+		t.Run(name+" key flags fail closed", func(t *testing.T) {
+			record := readonly(KeySpec{
+				Flags: flags, BeginSearch: "index", Index: 1,
+				FindKeys: "range", KeyStep: 1,
+			})
+			meta := cscDeriveMeta(record)
+			if cscIsClientSideCacheable(meta) || meta.extract != cscKeyExtractNone {
+				t.Fatalf("unsafe key flags produced CSC metadata: %+v", meta)
+			}
+		})
+	}
 	// Keynum: positions are absolute (begin_search index + relative offsets).
 	keynum := &CommandInfo{
 		Name: "zdiffish", Flags: []string{"readonly"},
-		KeySpecs: []KeySpec{{BeginSearch: "index", Index: 1, FindKeys: "keynum", KeyNumIdx: 0, FirstKey: 1, KeyStep: 1}},
+		KeySpecs: []KeySpec{{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "keynum", KeyNumIdx: 0, FirstKey: 1, KeyStep: 1}},
 	}
 	if m := cscDeriveMeta(keynum); m.extract != cscKeyExtractKeynum || m.numkeysAt != 1 || m.firstKey != 2 || m.step != 1 {
 		t.Errorf("keynum derivation wrong: %+v", m)
 	}
-	// sort_ro's acknowledged extra BY/GET spec keeps range extraction.
+	// sort_ro accepts its primary range with an invocation guard.
 	sortRO := readonly(completeRange, unknownSpec)
 	sortRO.Name = "sort_ro"
-	if m := cscDeriveMeta(sortRO); m.extract != cscKeyExtractRange {
-		t.Errorf("acked sort_ro layout should keep range extraction, got %+v", m)
+	if m := cscDeriveMeta(sortRO); m.extract != cscKeyExtractRange || m.guard != cscInvocationGuardSortRONoByGet {
+		t.Errorf("sort_ro adaptation should keep guarded range extraction, got %+v", m)
+	}
+	for name, specs := range map[string][]KeySpec{
+		"extra third spec":      {completeRange, unknownSpec, unknownSpec},
+		"different algorithm":   {completeRange, {Flags: []string{"RO", "access"}, BeginSearch: "future", FindKeys: "unknown"}},
+		"write-capable unknown": {completeRange, {Flags: []string{"RW", "access"}, BeginSearch: "unknown", FindKeys: "unknown"}},
+	} {
+		t.Run("sort_ro rejects "+name, func(t *testing.T) {
+			record := readonly(specs...)
+			record.Name = "sort_ro"
+			if got := cscDeriveMeta(record); got.extract != cscKeyExtractNone {
+				t.Fatalf("unexpected extraction for unacknowledged shape: %+v", got)
+			}
+		})
 	}
 }
 
@@ -368,7 +412,7 @@ func TestCommandMetadataViewWithApplicationOverrides(t *testing.T) {
 	view = buildCommandMetadataView(nil, map[string]*CommandInfo{
 		"myext.get": {
 			Name: "myext.get", Flags: []string{"readonly"}, FirstKeyPos: 1, LastKeyPos: 1, StepCount: 1,
-			KeySpecs: []KeySpec{{BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
+			KeySpecs: []KeySpec{{Flags: []string{"RO", "access"}, BeginSearch: "index", Index: 1, FindKeys: "range", KeyStep: 1}},
 		},
 	})
 	if !isCacheableInView(view, makeCmd("myext.get", "k")) {
@@ -591,6 +635,13 @@ func TestBuildCacheKey_EmptyArgs(t *testing.T) {
 	}
 }
 
+func TestBuildCacheKey_RejectsBinaryMarshaler(t *testing.T) {
+	cmd := makeCmd("GET", cscWireSmuggler{wire: "key", str: "key"})
+	if key, ok := buildCacheKey(cmd); ok || key != "" {
+		t.Fatalf("BinaryMarshaler produced cache key %q (ok=%v), want fail closed", key, ok)
+	}
+}
+
 // --- extractRedisKeys ------------------------------------------------------
 
 func TestExtractRedisKeys_SingleKey(t *testing.T) {
@@ -805,13 +856,15 @@ func TestExtractRedisKeys_SortROByGetUncached(t *testing.T) {
 	if cmd := makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA"); !isCacheable(cmd) {
 		t.Error("SORT_RO should be eligible at the command level")
 	}
-	if keys := extractRedisKeys(makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "ALPHA")); len(keys) != 1 || keys[0] != "mylist" {
+	if keys := extractRedisKeys(makeCmd("sort_ro", "mylist", "LIMIT", int64(0), int64(10), "ALPHA")); len(keys) != 1 || keys[0] != "mylist" {
 		t.Errorf("plain SORT_RO: expected [mylist], got %v", keys)
 	}
 	for _, cmd := range []Cmder{
 		makeCmd("sort_ro", "mylist", "BY", "weight_*"),
 		makeCmd("sort_ro", "mylist", "get", "obj_*"),
 		makeCmd("sort_ro", "mylist", "LIMIT", "0", "10", "By", "weight_*", "ALPHA"),
+		makeCmd("sort_ro", "mylist", []byte("bY"), "weight_*"),
+		makeCmd("sort_ro", "mylist", []byte("GET"), "obj_*"),
 	} {
 		if keys := extractRedisKeys(cmd); keys != nil {
 			t.Errorf("%v: expected nil keys, got %v", cmd.Args(), keys)
@@ -820,6 +873,31 @@ func TestExtractRedisKeys_SortROByGetUncached(t *testing.T) {
 	by := "BY"
 	if keys := extractRedisKeys(makeCmd("sort_ro", "mylist", &by, "weight_*")); keys != nil {
 		t.Errorf("pointer-encoded BY: expected nil keys, got %v", keys)
+	}
+}
+
+func TestExtractRedisKeys_UsesMetadataInvocationGuard(t *testing.T) {
+	guarded := cscCommandMeta{
+		extract:  cscKeyExtractRange,
+		guard:    cscInvocationGuardSortRONoByGet,
+		firstKey: 1,
+		lastKey:  1,
+		step:     1,
+	}
+	if keys := cscExtractRedisKeys(guarded, makeCmd("renamed", "mylist", "BY", "weight_*")); keys != nil {
+		t.Errorf("metadata guard must reject BY independently of command name, got %v", keys)
+	}
+
+	unguarded := guarded
+	unguarded.guard = cscInvocationGuardNone
+	if keys := cscExtractRedisKeys(unguarded, makeCmd("sort_ro", "mylist", "BY", "weight_*")); len(keys) != 1 || keys[0] != "mylist" {
+		t.Errorf("command name must not apply an implicit guard, got %v", keys)
+	}
+
+	unknown := guarded
+	unknown.guard = cscInvocationGuard(255)
+	if keys := cscExtractRedisKeys(unknown, makeCmd("renamed", "mylist")); keys != nil {
+		t.Errorf("unknown invocation guard must fail closed, got %v", keys)
 	}
 }
 
@@ -1231,7 +1309,7 @@ func TestCSCActive_CloneKeepsOwnerAlive(t *testing.T) {
 	if !active.Load() {
 		t.Fatal("a reachable clone must keep its CSC drainer owner alive")
 	}
-	if clone.cscLifecycleOwner == nil {
+	if clone.lifecycleOwner == nil {
 		t.Fatal("CSC clone must retain its canonical lifecycle owner")
 	}
 	if err := clone.Close(); err != nil {
@@ -1417,6 +1495,12 @@ func TestClientTrackingRejectedWithCSC(t *testing.T) {
 	if err := c.Do(ctx, "client", &tracking, "off").Err(); !errors.Is(err, errClientTrackingWithCSC) {
 		t.Fatalf("pointer-encoded CLIENT TRACKING must be rejected with CSC enabled, got %v", err)
 	}
+	if err := c.Do(ctx, "client", cscWireSmuggler{wire: "tracking", str: "info"}, "off").Err(); !errors.Is(err, errUnverifiableCommandWithCSC) {
+		t.Fatalf("marshaled CLIENT TRACKING subcommand must fail closed, got %v", err)
+	}
+	if err := c.Do(ctx, cscWireSmuggler{wire: "select", str: "get"}, 1).Err(); !errors.Is(err, errUnverifiableCommandWithCSC) {
+		t.Fatalf("marshaled SELECT command token must fail closed, got %v", err)
+	}
 }
 
 // TestClientTrackingRejectedWithCSC_Pipeline: pipelines bypass process(), so
@@ -1445,6 +1529,14 @@ func TestClientTrackingRejectedWithCSC_Pipeline(t *testing.T) {
 	})
 	if !errors.Is(err, errClientTrackingWithCSC) {
 		t.Fatalf("TxPipelined ClientTrackingOn must be rejected with CSC enabled, got %v", err)
+	}
+
+	_, err = c.Pipelined(ctx, func(pipe Pipeliner) error {
+		pipe.Do(ctx, cscWireSmuggler{wire: "client", str: "get"}, "tracking", "off")
+		return nil
+	})
+	if !errors.Is(err, errUnverifiableCommandWithCSC) {
+		t.Fatalf("pipelined marshaled CLIENT TRACKING must fail closed, got %v", err)
 	}
 }
 
