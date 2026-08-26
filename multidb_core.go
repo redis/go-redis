@@ -1402,17 +1402,23 @@ func (defaultPingHealthCheck) CheckHealth(ctx context.Context, client *Client) (
 }
 
 func (defaultPingHealthCheck) CheckClusterHealth(ctx context.Context, client *ClusterClient) (bool, error) {
-	var shards atomic.Int32
-	err := client.ForEachShard(ctx, func(ctx context.Context, shard *Client) error {
-		shards.Add(1)
-		return shard.Ping(ctx).Err()
+	var masters atomic.Int32
+	// Ping every master. Fail on the first error.
+	//
+	// We do this by hand so the check does not depend on cluster policy
+	// routing. It still matches PING's Redis policy (all_shards +
+	// all_succeeded: hit one node per shard, all must pass), but a plain
+	// client.Ping() would rely on that policy.
+	err := client.ForEachMaster(ctx, func(ctx context.Context, master *Client) error {
+		masters.Add(1)
+		return master.Ping(ctx).Err()
 	})
 	if err != nil {
 		return false, err
 	}
-	if shards.Load() == 0 {
+	if masters.Load() == 0 {
 		// An empty topology pinged nothing: that is not proof of health.
-		return false, errors.New("redis: multidb: cluster reported no shards to health-check")
+		return false, errors.New("redis: multidb: cluster reported no masters to health-check")
 	}
 	return true, nil
 }
