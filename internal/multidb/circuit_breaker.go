@@ -77,7 +77,7 @@ func NewCircuitBreaker(config CircuitBreakerConfig) *CircuitBreaker {
 
 // OnStateChange registers a callback to be called when the state changes.
 func (cb *CircuitBreaker) OnStateChange(callback CircuitBreakerCallback) {
-	cb.CircuitBreaker.OnStateChange(func(oldState, newState circuitbreaker.State) {
+	cb.CircuitBreaker.OnStateChange(func(oldState, newState circuitbreaker.State, _ circuitbreaker.Stats) {
 		callback(oldState, newState)
 	})
 }
