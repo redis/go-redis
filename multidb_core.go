@@ -190,12 +190,12 @@ type multidbCore struct {
 	wg     sync.WaitGroup
 	closed atomic.Bool
 
-	// announceQ runs the OnFailover / OnActiveDatabaseChanged callbacks on its
-	// own goroutine (FIFO). They fire from switchActive's announce closure,
-	// which runs on the background loop; running them inline there would
-	// deadlock if a callback called Close() (close() waits on that goroutine
-	// via wg.Wait). Like the per-db cbq, close() does not wait on this queue.
-	announceQ cbq.CallbackQueue
+	// cbq runs the OnFailover / OnActiveDatabaseChanged callbacks on its own
+	// goroutine (FIFO). They fire from switchActive's announce closure, which
+	// runs on the background loop; running them inline there would deadlock
+	// if a callback called Close() (close() waits on that goroutine via
+	// wg.Wait). Like the per-db cbq, close() does not wait on this queue.
+	cbq cbq.CallbackQueue
 }
 
 func newMultidbCore(opts *MultiDBOptions) *multidbCore {
@@ -804,7 +804,7 @@ func (c *multidbCore) recordFailedFailoverLocked() error {
 // callbacks, metrics and PubSub fire once per real change. It returns a
 // non-nil announce closure when the switch happened; callers MUST invoke it
 // AFTER releasing failoverMu. Metrics and the PubSub nudge run synchronously;
-// the user callbacks go through announceQ.
+// the user callbacks go through cbq.
 func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason string, took time.Duration) (announce func()) {
 	if !c.active.CompareAndSwap(int32(from), int32(to)) {
 		return nil
@@ -821,7 +821,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	internal.Logger.Printf(ctx, "multidb: active database changed %d (%s) -> %d (%s), reason=%s",
 		from, fromFQDN, to, toFQDN, reason)
 
-	// Callbacks run later on announceQ, so detach from the caller ctx (a manual
+	// Callbacks run later on cbq, so detach from the caller ctx (a manual
 	// SetActiveIndex ctx dies on return). Keep trace/values, drop cancel.
 	cbCtx := context.WithoutCancel(ctx)
 	return func() {
@@ -829,10 +829,10 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
 			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
 			if c.opts.OnFailover != nil {
-				// Async via announceQ: running a callback inline here would
+				// Async via cbq: running a callback inline here would
 				// deadlock if it called Close(). drain() wraps each in
 				// RunSafely; skip if already closed.
-				c.announceQ.Dispatch(func() {
+				c.cbq.Dispatch(func() {
 					if c.closed.Load() {
 						return
 					}
@@ -841,7 +841,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 			}
 		}
 		if c.opts.OnActiveDatabaseChanged != nil {
-			c.announceQ.Dispatch(func() {
+			c.cbq.Dispatch(func() {
 				if c.closed.Load() {
 					return
 				}
