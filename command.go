@@ -2615,6 +2615,9 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			if err != nil {
 				return err
 			}
+			if itemLen < 1 {
+				return fmt.Errorf("redis: got %d elements in map-string-slice-interface entry, expected at least 1", itemLen)
+			}
 
 			key, err := rd.ReadString()
 			if err != nil {
