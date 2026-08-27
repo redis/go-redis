@@ -518,6 +518,13 @@ func (c *MultiDBClient) PSubscribe(ctx context.Context, patterns ...string) *Pub
 // instrumented. Against a non-cluster member the command takes the regular
 // hook-wrapped path. The same holds for ScriptLoad, ScriptFlush and
 // ScriptExists.
+//
+// A fan-out failure here is deliberately NOT recorded on the circuit breaker
+// or failure detector and does NOT trigger failover: these are cluster
+// control commands, not health-representative traffic, and a fan-out error is
+// often a partial/single-shard condition for which moving the whole member
+// off is the wrong response (e.g. re-loading a script on a different member).
+// Member health is driven by the data path, which does feed the accounting.
 func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 	if c.core.closed.Load() {
 		cmd := NewIntCmd(ctx, "dbsize")
