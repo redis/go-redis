@@ -94,24 +94,44 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 	return db.probeWith(parent, timeout, db.checks)
 }
 
+// nonFailbackChecks returns the checks whose verdict may evict the member —
+// everything except fail-back-only checks (e.g. the lag-aware REST check),
+// which gate routing TO a member but never the one already serving traffic.
+func (db *multidbDatabase) nonFailbackChecks() []MultiDBHealthCheck {
+	filtered := make([]MultiDBHealthCheck, 0, len(db.checks))
+	for _, check := range db.checks {
+		if fb, ok := check.(failbackOnlyHealthCheck); ok && fb.FailbackOnly() {
+			continue
+		}
+		filtered = append(filtered, check)
+	}
+	return filtered
+}
+
 // probeAsActive probes the CURRENTLY ACTIVE member: fail-back-only checks
 // are excluded, so a lag breach cannot open the active's breaker and evict
 // the member traffic is flowing through. With no applicable checks left the
 // probe records nothing — a vacuously healthy pass would pump external
 // successes into a breaker that real traffic failures opened.
 func (db *multidbDatabase) probeAsActive(parent context.Context, timeout time.Duration) {
-	checks := db.checks
-	filtered := make([]MultiDBHealthCheck, 0, len(checks))
-	for _, check := range checks {
-		if fb, ok := check.(failbackOnlyHealthCheck); ok && fb.FailbackOnly() {
-			continue
-		}
-		filtered = append(filtered, check)
-	}
+	filtered := db.nonFailbackChecks()
 	if len(filtered) == 0 {
 		return
 	}
 	db.probeWith(parent, timeout, filtered)
+}
+
+// probeExcludingFailbackOnly runs the member's non-fail-back-only checks and
+// reports whether it is healthy, used to gate a re-selection of the current
+// active: a lag breach must not fail selecting the member already serving
+// traffic. With only fail-back-only checks configured, nothing gates the
+// active, so it is reported healthy without recording an outcome.
+func (db *multidbDatabase) probeExcludingFailbackOnly(parent context.Context, timeout time.Duration) bool {
+	filtered := db.nonFailbackChecks()
+	if len(filtered) == 0 {
+		return true
+	}
+	return db.probeWith(parent, timeout, filtered)
 }
 
 func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Duration, checks []MultiDBHealthCheck) bool {
@@ -824,29 +844,41 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	// Callbacks run later on cbq, so detach from the caller ctx (a manual
 	// SetActiveIndex ctx dies on return). Keep trace/values, drop cancel.
 	cbCtx := context.WithoutCancel(ctx)
-	return func() {
-		otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
-		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
-			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
-			if c.opts.OnFailover != nil {
-				// Async via cbq: running a callback inline here would
-				// deadlock if it called Close(). drain() wraps each in
-				// RunSafely; skip if already closed.
-				c.cbq.Dispatch(func() {
-					if c.closed.Load() {
-						return
-					}
-					c.opts.OnFailover(cbCtx, from, to)
-				})
-			}
-		}
-		if c.opts.OnActiveDatabaseChanged != nil {
+
+	// Enqueue the user callbacks HERE, under failoverMu (every caller holds it
+	// across this CAS), so their queue order matches the switch order. Doing it
+	// in the announce closure instead — which runs after the caller unlocks —
+	// lets two back-to-back switches (A->B then B->C) enqueue B->C before A->B.
+	// Dispatch only appends and never runs user code, so holding the lock here
+	// is safe; the callbacks still execute off-lock on the cbq goroutine, which
+	// RunSafely-wraps each and lets a callback re-enter control APIs. closed is
+	// re-read at delivery so a callback never fires on an already-closed client.
+	if reason == failoverReasonAutomatic || reason == failoverReasonManual {
+		if c.opts.OnFailover != nil {
 			c.cbq.Dispatch(func() {
 				if c.closed.Load() {
 					return
 				}
-				c.opts.OnActiveDatabaseChanged(from, to)
+				c.opts.OnFailover(cbCtx, from, to)
 			})
+		}
+	}
+	if c.opts.OnActiveDatabaseChanged != nil {
+		c.cbq.Dispatch(func() {
+			if c.closed.Load() {
+				return
+			}
+			c.opts.OnActiveDatabaseChanged(from, to)
+		})
+	}
+
+	// The announce closure runs AFTER the caller releases failoverMu: it only
+	// does off-lock work (metrics, PubSub re-dial), no ordering-sensitive
+	// callback dispatch.
+	return func() {
+		otel.RecordMultiDBActiveDatabaseChange(ctx, fromFQDN, toFQDN)
+		if reason == failoverReasonAutomatic || reason == failoverReasonManual {
+			otel.RecordMultiDBFailover(ctx, fromFQDN, toFQDN, reason, took)
 		}
 		c.notifyPubSubs(ctx)
 	}
@@ -896,7 +928,18 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	}
 	start := time.Now()
 	if probe {
-		if !db.probe(ctx, c.opts.HealthCheckTimeout) {
+		// Re-selecting the CURRENT active must not be gated by fail-back-only
+		// checks (e.g. lag): those decide routing TO a member, never the one
+		// already serving traffic, so a lag breach must not fail the operation
+		// or record a breaker failure against the active. Switching to a
+		// DIFFERENT member runs the full check set (fail-back-to gating).
+		healthy := false
+		if index == int(c.active.Load()) {
+			healthy = db.probeExcludingFailbackOnly(ctx, c.opts.HealthCheckTimeout)
+		} else {
+			healthy = db.probe(ctx, c.opts.HealthCheckTimeout)
+		}
+		if !healthy {
 			if err := ctx.Err(); err != nil {
 				// The context ended mid-probe: report the caller's error,
 				// not a verdict about the target's health.
@@ -1132,14 +1175,19 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 	copy(dbs, c.dbs)
 	c.dbMu.RUnlock()
 
-	activeDB, _ := c.activeSnapshot()
 	for _, db := range dbs {
 		select {
 		case <-c.stopCh:
 			return
 		default:
 		}
-		if db == activeDB {
+		// Re-read the active each iteration, not once before the loop: a
+		// concurrent failover during the (up to HealthCheckTimeout per member)
+		// pass would otherwise leave the freshly-selected active probed with
+		// fail-back-only checks (e.g. lag) that could open its breaker and
+		// evict it right after selection.
+		active, _ := c.activeSnapshot()
+		if db == active {
 			// The active is probed without fail-back-only checks (e.g. the
 			// lag-aware REST check): their verdicts gate routing traffic TO
 			// a member, never evicting the one traffic flows through.

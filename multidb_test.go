@@ -1621,6 +1621,98 @@ func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
 	}
 }
 
+// Re-selecting the current active must not be gated by a fail-back-only check:
+// SetActiveIndex(activeIndex) with a failing lag check must succeed and must
+// not record a failure on the active's breaker.
+func TestMultiDBSetActiveIndexReselectIgnoresFailbackOnly(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active (higher weight)
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	fbA := newFailbackOnlyCheck(true)
+	dbA.cfg.HealthChecks = append(dbA.cfg.HealthChecks, fbA)
+
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("setup: active=%d, want 0", got)
+	}
+
+	fbA.healthy.Store(false) // lag breach on the active
+	if err := mdb.SetActiveIndex(context.Background(), 0); err != nil {
+		t.Fatalf("SetActiveIndex(current active) with a failing fail-back-only check = %v, want nil", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("active index = %d, want 0", got)
+	}
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Error("re-selecting the active recorded a fail-back-only failure on its breaker")
+	}
+}
+
+// Under concurrency, OnActiveDatabaseChanged deliveries must form a contiguous
+// chain (each `to` == the next `from`). Switches are serialized by failoverMu
+// and each does current->index, so the chain only holds if the callbacks are
+// enqueued in switch order — the bug being that enqueuing in the announce
+// closure (after failoverMu is released) lets two switches reorder.
+func TestMultiDBActiveChangeCallbackOrderUnderConcurrency(t *testing.T) {
+	db0 := newTestDB("d0", "127.0.0.1:10", 3, true)
+	db1 := newTestDB("d1", "127.0.0.1:11", 2, true)
+	db2 := newTestDB("d2", "127.0.0.1:12", 1, true)
+
+	opts := baseOptions()
+	var mu sync.Mutex
+	var pairs [][2]int
+	opts.OnActiveDatabaseChanged = func(from, to int) {
+		mu.Lock()
+		pairs = append(pairs, [2]int{from, to})
+		mu.Unlock()
+	}
+	mdb := newTestMultiDB(t, opts, db0, db1, db2)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for g := 0; g < 6; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				_ = mdb.ForceActiveIndex(ctx, (g+i)%3)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Wait for the async callback queue to drain (count stops growing).
+	deadline := time.Now().Add(3 * time.Second)
+	last := -1
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(pairs)
+		mu.Unlock()
+		if n == last {
+			break
+		}
+		last = n
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pairs) == 0 {
+		t.Fatal("no active-change callbacks recorded")
+	}
+	for i := 1; i < len(pairs); i++ {
+		if pairs[i][0] != pairs[i-1][1] {
+			t.Fatalf("out-of-order active-change delivery at %d: ...->%d then %d->%d (chain broken)",
+				i, pairs[i-1][1], pairs[i][0], pairs[i][1])
+		}
+	}
+}
+
 // midflightHook runs an armable callback inside command execution and then
 // serves the command locally (nil error) without dialing.
 type midflightHook struct{ fn atomic.Pointer[func()] }
