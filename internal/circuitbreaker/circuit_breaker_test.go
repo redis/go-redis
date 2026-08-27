@@ -289,6 +289,41 @@ func TestCircuitBreaker_OnStateChange(t *testing.T) {
 	}
 }
 
+// TestCircuitBreaker_PanickingCallbackDoesNotStarveOthers pins that one
+// OnStateChange callback panicking must not stop callbacks registered after
+// it from being notified — neither for that transition nor for later ones,
+// since the panicking callback is never removed and panics again on every
+// subsequent delivery.
+func TestCircuitBreaker_PanickingCallbackDoesNotStarveOthers(t *testing.T) {
+	config := Config{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		OpenTimeout:      time.Hour,
+	}
+	cb := New(config)
+
+	var rec transitionRecorder
+	// Registered first and panics on every delivery.
+	cb.OnStateChange(func(oldState, newState State, stats Stats) {
+		panic("boom")
+	})
+	// Registered second: must still see every transition despite the earlier
+	// callback's panic.
+	cb.OnStateChange(rec.record)
+
+	cb.RecordFailure() // Closed -> Open
+	rec.waitFor(t, 1)
+	if got := rec.at(0); got.oldState != StateClosed || got.newState != StateOpen {
+		t.Errorf("expected Closed->Open, got %v->%v", got.oldState, got.newState)
+	}
+
+	cb.Reset() // Open -> Closed
+	rec.waitFor(t, 2)
+	if got := rec.at(1); got.oldState != StateOpen || got.newState != StateClosed {
+		t.Errorf("expected Open->Closed, got %v->%v", got.oldState, got.newState)
+	}
+}
+
 func TestCircuitBreaker_CallbackObservesSuccessCountOnClose(t *testing.T) {
 	config := Config{
 		FailureThreshold: 2,

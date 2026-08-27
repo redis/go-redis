@@ -831,7 +831,7 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 			if c.opts.OnFailover != nil {
 				// Async via announceQ: running a callback inline here would
 				// deadlock if it called Close(). drain() wraps each in
-				// runCallbackSafely; skip if already closed.
+				// RunSafely; skip if already closed.
 				c.announceQ.Dispatch(func() {
 					if c.closed.Load() {
 						return

@@ -384,7 +384,11 @@ func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State, stats Stats)
 	cb.mu.RUnlock()
 
 	for _, callback := range callbacks {
-		callback(oldState, newState, stats)
+		// Recover per callback: the queue only recovers around this whole
+		// batch, so a panic here would otherwise unwind past the remaining
+		// callbacks and skip them for this transition (and every future one,
+		// since a deterministic panic recurs on the same callback each time).
+		cbq.RunSafely(func() { callback(oldState, newState, stats) })
 	}
 }
 

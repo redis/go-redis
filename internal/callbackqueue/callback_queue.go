@@ -39,14 +39,17 @@ func (q *CallbackQueue) drain() {
 		fn := q.queue[0]
 		q.queue = q.queue[1:]
 		q.mu.Unlock()
-		runCallbackSafely(fn)
+		RunSafely(fn)
 	}
 }
 
-// runCallbackSafely keeps a panicking callback from crashing the process
-// (callbacks run on a library-owned goroutine) and from wedging the queue in
-// the draining state.
-func runCallbackSafely(fn func()) {
+// RunSafely keeps a panicking callback from crashing the process (callbacks
+// run on a library-owned goroutine) and, when called from drain, from
+// wedging the queue in the draining state. Exported so callers that fan a
+// single dispatched item out to multiple independent callbacks (e.g. a
+// StateChangeCallback loop) can isolate each one without duplicating this
+// recovery logic.
+func RunSafely(fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "callback queue error: the callback panicked: %v", r)
