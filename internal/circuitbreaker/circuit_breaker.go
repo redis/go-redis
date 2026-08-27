@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	cbq "github.com/redis/go-redis/v9/internal/callbackqueue"
 )
 
 // State represents the state of a circuit breaker.
@@ -84,7 +86,7 @@ func (c *Config) applyDefaults() {
 // StateChangeCallback is called when the circuit breaker state changes. stats
 // is a snapshot taken at the transition, so it reflects the counters that
 // triggered the change even though the callback runs asynchronously (see
-// notifyQueue): read it instead of calling Stats(), which by delivery time may
+// cbq): read it instead of calling Stats(), which by delivery time may
 // show a later state.
 type StateChangeCallback func(oldState, newState State, stats Stats)
 
@@ -107,57 +109,12 @@ type CircuitBreaker struct {
 	mu        sync.RWMutex
 	callbacks []StateChangeCallback
 
-	// notify delivers state-change callbacks on a single goroutine in FIFO
+	// cbq delivers state-change callbacks on a single goroutine in FIFO
 	// order. Enqueue happens under transitionMu, so the queue order matches the
 	// CAS order; the callbacks run OUTSIDE transitionMu, so two concurrent
 	// transitions cannot report out of order and a callback may safely re-enter
 	// the breaker (RecordFailure/CheckState/Reset) without deadlocking.
-	notify notifyQueue
-}
-
-// stateChange is one queued transition awaiting callback delivery, carrying
-// the Stats snapshot taken at the transition.
-type stateChange struct {
-	oldState, newState State
-	stats              Stats
-}
-
-// notifyQueue delivers state-change notifications on a single goroutine, in
-// FIFO order. It mirrors the enqueue/drain pattern used elsewhere: the drain
-// goroutine is spawned on demand and exits when the queue empties, so an idle
-// breaker holds no goroutine.
-type notifyQueue struct {
-	mu       sync.Mutex
-	queue    []stateChange
-	draining bool
-	fire     func(oldState, newState State, stats Stats)
-}
-
-func (q *notifyQueue) enqueue(oldState, newState State, stats Stats) {
-	q.mu.Lock()
-	q.queue = append(q.queue, stateChange{oldState, newState, stats})
-	if q.draining {
-		q.mu.Unlock()
-		return
-	}
-	q.draining = true
-	q.mu.Unlock()
-	go q.drain()
-}
-
-func (q *notifyQueue) drain() {
-	for {
-		q.mu.Lock()
-		if len(q.queue) == 0 {
-			q.draining = false
-			q.mu.Unlock()
-			return
-		}
-		sc := q.queue[0]
-		q.queue = q.queue[1:]
-		q.mu.Unlock()
-		q.fire(sc.oldState, sc.newState, sc.stats)
-	}
+	cbq cbq.CallbackQueue
 }
 
 // New creates a new circuit breaker with the given configuration.
@@ -167,7 +124,6 @@ func New(config Config) *CircuitBreaker {
 		config: config,
 	}
 	cb.state.Store(int32(StateClosed))
-	cb.notify.fire = cb.notifyCallbacks
 	return cb
 }
 
@@ -209,8 +165,9 @@ func (cb *CircuitBreaker) CheckState() State {
 				// undo the reset.
 				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
 					// Enqueue under the lock so callback order matches CAS order;
-					// the callback itself runs on the notify goroutine.
-					cb.notify.enqueue(StateOpen, StateHalfOpen, cb.Stats())
+					// the callback itself runs on the cbq goroutine.
+					stats := cb.Stats()
+					cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateOpen, StateHalfOpen, stats) })
 					cb.transitionMu.Unlock()
 					return StateHalfOpen
 				}
@@ -318,7 +275,8 @@ func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 				// Snapshot BEFORE clearing the half-open counters so the
 				// callback observes the success count that triggered the close;
 				// enqueue under the lock so delivery order matches CAS order.
-				cb.notify.enqueue(StateHalfOpen, StateClosed, cb.Stats())
+				stats := cb.Stats()
+				cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateHalfOpen, StateClosed, stats) })
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 			}
@@ -366,7 +324,8 @@ func (cb *CircuitBreaker) RecordFailure() {
 					// Snapshot so observers see the failure count that triggered
 					// the transition; enqueue under the lock for CAS-ordered
 					// delivery, matching the half-open -> closed/open paths.
-					cb.notify.enqueue(StateClosed, StateOpen, cb.Stats())
+					stats := cb.Stats()
+					cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateClosed, StateOpen, stats) })
 					// successes and requests should already be 0 in Closed (they
 					// are only incremented while half-open, and every half-open
 					// exit zeroes them). Reset defensively so the invariant
@@ -388,7 +347,8 @@ func (cb *CircuitBreaker) RecordFailure() {
 				// Snapshot before resetting counters so observers see the counts
 				// that triggered the transition; enqueue under the lock for
 				// CAS-ordered delivery, matching the half-open -> closed path.
-				cb.notify.enqueue(StateHalfOpen, StateOpen, cb.Stats())
+				stats := cb.Stats()
+				cb.cbq.Dispatch(func() { cb.notifyCallbacks(StateHalfOpen, StateOpen, stats) })
 				cb.successes.Store(0)
 				cb.requests.Store(0)
 				cb.transitionMu.Unlock()
@@ -415,7 +375,7 @@ func (cb *CircuitBreaker) OnStateChange(callback StateChangeCallback) {
 }
 
 // notifyCallbacks notifies all registered callbacks of a state change. It runs
-// on the notify goroutine (never under transitionMu), so a callback may
+// on the cbq goroutine (never under transitionMu), so a callback may
 // re-enter the breaker without deadlocking.
 func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State, stats Stats) {
 	cb.mu.RLock()
@@ -424,7 +384,11 @@ func (cb *CircuitBreaker) notifyCallbacks(oldState, newState State, stats Stats)
 	cb.mu.RUnlock()
 
 	for _, callback := range callbacks {
-		callback(oldState, newState, stats)
+		// Recover per callback: the queue only recovers around this whole
+		// batch, so a panic here would otherwise unwind past the remaining
+		// callbacks and skip them for this transition (and every future one,
+		// since a deterministic panic recurs on the same callback each time).
+		cbq.RunSafely(func() { callback(oldState, newState, stats) })
 	}
 }
 
@@ -445,7 +409,8 @@ func (cb *CircuitBreaker) Reset() {
 	cb.lastFailure.Store(0)
 	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
-		cb.notify.enqueue(oldState, StateClosed, cb.Stats())
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(oldState, StateClosed, stats) })
 	}
 	cb.transitionMu.Unlock()
 }
