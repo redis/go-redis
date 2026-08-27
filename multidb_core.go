@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,6 +96,24 @@ type failbackOnlyHealthCheck interface {
 	FailbackOnly() bool
 }
 
+// isFailbackOnly reports a check's FailbackOnly marker, recovering a panicking
+// custom implementation: this runs on the background loop, and treating a
+// panic as "not fail-back-only" keeps the check in the eviction set (the safe
+// default — a broken marker cannot silently exempt a member from health gating).
+func isFailbackOnly(check MultiDBHealthCheck) (fb bool) {
+	marker, ok := check.(failbackOnlyHealthCheck)
+	if !ok {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "multidb: FailbackOnly marker panicked: %v", r)
+			fb = false
+		}
+	}()
+	return marker.FailbackOnly()
+}
+
 // probe runs the database's health checks under the configured policy,
 // bounded by HealthCheckTimeout, and feeds the result into the circuit
 // breaker and the OTel recorder.
@@ -108,7 +127,7 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 func (db *multidbDatabase) nonFailbackChecks() []MultiDBHealthCheck {
 	filtered := make([]MultiDBHealthCheck, 0, len(db.checks))
 	for _, check := range db.checks {
-		if fb, ok := check.(failbackOnlyHealthCheck); ok && fb.FailbackOnly() {
+		if isFailbackOnly(check) {
 			continue
 		}
 		filtered = append(filtered, check)
@@ -147,12 +166,22 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 	defer cancel()
 
 	start := time.Now()
-	var healthy bool
-	if db.cc != nil {
-		healthy = db.policy.ExecuteCluster(ctx, checks, db.cc)
-	} else {
-		healthy = db.policy.Execute(ctx, checks, db.c)
-	}
+	// Recover a panicking custom policy: probes run on the background loop and
+	// during construction, where an escaped panic would crash the process. A
+	// panicked policy verdict is treated as unhealthy. (The default policy
+	// already recovers each individual check via runCheckSafely.)
+	healthy := func() (h bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				internal.Logger.Printf(ctx, "multidb: health-check policy panicked: %v", r)
+				h = false
+			}
+		}()
+		if db.cc != nil {
+			return db.policy.ExecuteCluster(ctx, checks, db.cc)
+		}
+		return db.policy.Execute(ctx, checks, db.c)
+	}()
 
 	if parent.Err() != nil {
 		// The caller's own context was canceled or expired mid-probe: every
@@ -160,6 +189,13 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 		// either — a late healthy result could otherwise close an open
 		// circuit for an operation that returns context.Canceled.
 		return false
+	}
+	if ctx.Err() != nil {
+		// The probe's own deadline (HealthCheckTimeout) expired while a check
+		// ignored it and returned late: a late verdict must not be trusted as a
+		// success — exceeding the probe timeout is itself an availability
+		// signal, so record it as a failure (below), not a pass.
+		healthy = false
 	}
 	if db.removed.Load() {
 		// The database left the membership while this probe was in flight
@@ -262,21 +298,39 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		db.weight = defaultMultiDBWeight
 	}
 
-	switch {
-	case cfg.Options != nil:
-		opt := *cfg.Options
-		disableMaintNotificationsIfUnset(&opt)
-		db.c = NewClient(&opt)
-	case cfg.ClusterOptions != nil:
-		opt := *cfg.ClusterOptions
-		// The cluster client keeps the options pointer and reads Addrs on
-		// topology reloads: a private slice keeps a caller mutating its
-		// seed list from changing a running member.
-		opt.Addrs = append([]string(nil), cfg.ClusterOptions.Addrs...)
-		if opt.MaintNotificationsConfig == nil {
-			opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+	// Recover a panicking member constructor (e.g. NewClient panics on an
+	// invalid pool size) and surface it as a construction error instead of
+	// crashing the caller / a runtime AddDatabase.
+	var buildErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				buildErr = fmt.Errorf("redis: multidb: building member client panicked: %v", r)
+			}
+		}()
+		switch {
+		case cfg.Options != nil:
+			opt := *cfg.Options
+			disableMaintNotificationsIfUnset(&opt)
+			db.c = NewClient(&opt)
+			// Derive the FQDN from the normalized address: NewClient defaults an
+			// empty Addr to localhost:6379, so capturing it before construction
+			// (cfg.fqdn) would record an empty host in logs/metrics.
+			db.fqdn = hostOnly(db.c.Options().Addr)
+		case cfg.ClusterOptions != nil:
+			opt := *cfg.ClusterOptions
+			// The cluster client keeps the options pointer and reads Addrs on
+			// topology reloads: a private slice keeps a caller mutating its
+			// seed list from changing a running member.
+			opt.Addrs = append([]string(nil), cfg.ClusterOptions.Addrs...)
+			if opt.MaintNotificationsConfig == nil {
+				opt.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
+			}
+			db.cc = NewClusterClient(&opt)
 		}
-		db.cc = NewClusterClient(&opt)
+	}()
+	if buildErr != nil {
+		return nil, buildErr
 	}
 
 	db.cb = imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
@@ -337,6 +391,12 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	for {
 		healthy := 0
 		for i, db := range c.dbs {
+			// Stop probing as soon as the constructor's context ends, rather
+			// than finishing the whole pass: a check that ignores ctx would
+			// otherwise keep the constructor running past cancellation.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			probeHealthy[i] = db.probe(ctx, c.opts.HealthCheckTimeout)
 			if probeHealthy[i] {
 				healthy++
@@ -455,7 +515,32 @@ func (c *multidbCore) selectCandidate(cands []MultiDBDatabaseState) (best int) {
 			best = -1
 		}
 	}()
-	return c.strategy.Select(cands)
+	idx := c.strategy.Select(cands)
+	if idx < 0 {
+		return -1
+	}
+	// A custom strategy may return any int; accept it only if it names one of
+	// the candidates offered. An out-of-range or non-candidate index would
+	// otherwise be stored as the active and later index a wrong/absent member.
+	for _, cand := range cands {
+		if cand.Index == idx {
+			return idx
+		}
+	}
+	internal.Logger.Printf(context.Background(), "multidb: failover strategy returned invalid index %d; ignoring", idx)
+	return -1
+}
+
+// resetDetectorSafely resets the failure detector, recovering a panicking
+// custom implementation: Reset runs on the background loop (auto-failover and
+// fallback), where an escaped panic would crash the process.
+func (c *multidbCore) resetDetectorSafely() {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "multidb: failure detector Reset panicked: %v", r)
+		}
+	}()
+	c.detector.Reset()
 }
 
 func (c *multidbCore) activeIndex() int { return int(c.active.Load()) }
@@ -508,6 +593,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		return errMultiDBHImport
 	}
 	attempts := c.opts.CommandRetries + 1
+	if c.opts.CommandRetries == math.MaxInt {
+		// Guard the +1 against wrapping to a negative attempt count (which
+		// would skip the command entirely).
+		attempts = math.MaxInt
+	}
 	// Blocking commands (BLPOP, XREAD BLOCK, WAIT, ...) carry their own read
 	// timeout; a local read deadline on those must not be retried because
 	// replaying can duplicate blocking side effects — same rule as *Client.
@@ -520,7 +610,6 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	// members the gate then rejects — without a bound this ping-pongs the
 	// active index in a busy loop instead of surfacing unavailability.
 	gateRejections := 0
-	maxGateRejections := c.memberCount() + 1
 
 	for attempt < attempts {
 		if c.closed.Load() {
@@ -545,7 +634,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		}
 		if !admitted {
 			gateRejections++
-			if gateRejections > maxGateRejections {
+			// Bound against the CURRENT membership, re-read each rejection: a
+			// concurrent AddDatabase raises the member count mid-command, and a
+			// cap fixed at entry would trip ErrTemporarilyNotAvailable before
+			// the freshly-added member could be tried.
+			if gateRejections > c.memberCount()+1 {
 				cmd.SetErr(ErrTemporarilyNotAvailable)
 				return ErrTemporarilyNotAvailable
 			}
@@ -593,8 +686,15 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			} else {
 				db.cb.RecordExternalSuccess()
 			}
-			c.detector.RecordSuccess()
-			c.successSinceFailover.Store(true)
+			// Feed the GLOBAL detector only while this command's member is
+			// still the active: an in-flight outcome from a member the active
+			// already switched away from (or that was removed) would otherwise
+			// pollute the current active's failover window. The member's own
+			// breaker (above) is always updated — that is member-scoped.
+			if cur, _ := c.activeSnapshot(); cur == db {
+				c.detector.RecordSuccess()
+				c.successSinceFailover.Store(true)
+			}
 			return err
 		case outcomeNeutral:
 			// Not a database-health signal: return to the caller without
@@ -607,7 +707,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			return err
 		case outcomeFailure:
 			db.cb.RecordFailure()
-			c.detector.RecordFailure(err)
+			// Global detector only while this member is still the active (see
+			// the success branch): a late failure from an already-vacated or
+			// removed member must not trip failover for the new active.
+			if cur, _ := c.activeSnapshot(); cur == db {
+				c.detector.RecordFailure(err)
+			}
 			lastErr = err
 			if cmd.NoRetry() {
 				// Commands that stream into caller-owned writers/buffers
@@ -753,7 +858,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			// the database traffic actually lands on.
 			if db, _ := c.activeSnapshot(); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
 				c.resetFailoverEscalationLocked()
-				c.detector.Reset()
+				c.resetDetectorSafely()
 				return nil
 			}
 			return c.recordFailedFailoverLocked()
@@ -794,7 +899,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			return nil
 		}
 		c.resetFailoverEscalationLocked()
-		c.detector.Reset()
+		c.resetDetectorSafely()
 		return nil
 	}
 }
@@ -1004,7 +1109,7 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 	// A fresh detector window as well: after an explicit operator selection
 	// a previously tripped detector must not immediately fail away — also
 	// when the selected database is already the active one.
-	c.detector.Reset()
+	c.resetDetectorSafely()
 	// The operator explicitly selected a healthy member: the chain of failed
 	// failover attempts is over — also when no index change happens, or a
 	// later unrelated outage would escalate from the stale count.
@@ -1140,6 +1245,12 @@ func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
 }
 
 func (c *multidbCore) setWeight(index int, weight float64) error {
+	if c.closed.Load() {
+		// After Close drains the membership the index would surface as a
+		// misleading out-of-range error; report the terminal state instead,
+		// consistent with the other control APIs.
+		return ErrClosed
+	}
 	c.dbMu.Lock()
 	defer c.dbMu.Unlock()
 	if index < 0 || index >= len(c.dbs) {
@@ -1286,7 +1397,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		// a successful fallback IS a recovery, and a later unrelated outage
 		// must escalate from a clean slate.
 		c.resetFailoverEscalationLocked()
-		c.detector.Reset()
+		c.resetDetectorSafely()
 	}
 }
 

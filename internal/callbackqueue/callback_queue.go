@@ -39,7 +39,13 @@ func (q *CallbackQueue) drain() {
 			return
 		}
 		fn := q.queue[0]
+		q.queue[0] = nil // release the callback for GC; don't pin it via the slice
 		q.queue = q.queue[1:]
+		if len(q.queue) == 0 {
+			// Drop the (now-empty) backing array so a burst does not pin memory
+			// for the queue's lifetime.
+			q.queue = nil
+		}
 		q.mu.Unlock()
 		RunSafely(fn)
 	}

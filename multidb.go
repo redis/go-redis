@@ -321,13 +321,14 @@ func (cfg *MultiDBClientConfig) validate() error {
 
 // fqdn derives the host-only identifier used for callbacks and metrics:
 // the option's host for standalone and cluster databases.
-func (cfg *MultiDBClientConfig) fqdn() string {
-	hostOnly := func(addr string) string {
-		if host, _, err := net.SplitHostPort(addr); err == nil {
-			return host
-		}
-		return addr
+func hostOnly(addr string) string {
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
 	}
+	return addr
+}
+
+func (cfg *MultiDBClientConfig) fqdn() string {
 	switch {
 	case cfg.Options != nil:
 		return hostOnly(cfg.Options.Addr)

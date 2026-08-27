@@ -1024,12 +1024,14 @@ func TestMultiDBConcurrentProcess(t *testing.T) {
 // fakeDetector is a controllable failure detector: ShouldFailover reports the
 // trip flag, Reset counts and clears it.
 type fakeDetector struct {
-	tripped atomic.Bool
-	resets  atomic.Int64
+	tripped   atomic.Bool
+	resets    atomic.Int64
+	successes atomic.Int64
+	failures  atomic.Int64
 }
 
-func (d *fakeDetector) RecordSuccess()       {}
-func (d *fakeDetector) RecordFailure(error)  {}
+func (d *fakeDetector) RecordSuccess()       { d.successes.Add(1) }
+func (d *fakeDetector) RecordFailure(error)  { d.failures.Add(1) }
 func (d *fakeDetector) ShouldFailover() bool { return d.tripped.Load() }
 func (d *fakeDetector) Reset() {
 	d.resets.Add(1)
@@ -1469,6 +1471,134 @@ func TestMultiDBSurfacedRedirectTriggersFailover(t *testing.T) {
 	}
 	if got := mdb.ActiveIndex(); got != 1 {
 		t.Errorf("active index = %d, want 1 (surfaced MOVED must trigger failover)", got)
+	}
+}
+
+// badStrategy always returns a fixed index, used to test that an out-of-range
+// selection is rejected rather than stored as the active.
+type badStrategy struct{ idx int }
+
+func (s badStrategy) Select([]redis.MultiDBDatabaseState) int { return s.idx }
+
+func TestMultiDBInvalidStrategyIndexRejected(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2, true)
+	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	opts := baseOptions()
+	opts.FailoverStrategy = badStrategy{idx: 99} // out of range
+	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	// Both members are healthy, so the only reason selection can fail is the
+	// strategy returning an out-of-range index. It must be rejected (not stored
+	// as the active or used to index a nil member) and surface as a clean error
+	// rather than a panic.
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if mdb != nil {
+		_ = mdb.Close()
+	}
+	if !errors.Is(err, redis.ErrInsufficientHealthyDatabases) {
+		t.Fatalf("bad strategy index: err = %v, want ErrInsufficientHealthyDatabases", err)
+	}
+}
+
+// panicPolicy panics in Execute/ExecuteCluster, to test that a custom policy
+// panic on the probe path is recovered rather than crashing the process.
+type panicPolicy struct{}
+
+func (panicPolicy) Execute(context.Context, []redis.MultiDBHealthCheck, *redis.Client) bool {
+	panic("policy boom")
+}
+func (panicPolicy) ExecuteCluster(context.Context, []redis.MultiDBHealthCheck, *redis.ClusterClient) bool {
+	panic("policy boom")
+}
+
+func TestMultiDBPanickingHealthPolicyDoesNotCrash(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.HealthCheckPolicy = panicPolicy{}
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+	opts.Clients = append(opts.Clients, db1.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	// The panicking policy makes every probe unhealthy (recovered), so
+	// construction fails the availability gate — but must NOT crash.
+	mdb, err := redis.NewMultiDBClient(ctx, opts)
+	if mdb != nil {
+		_ = mdb.Close()
+	}
+	// The point: the policy panic was recovered, so construction returns an
+	// error gracefully instead of crashing the process.
+	if err == nil {
+		t.Fatal("panicking policy: expected construction to fail gracefully, got nil")
+	}
+}
+
+func TestMultiDBSetWeightAfterCloseReturnsErrClosed(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), db1)
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := mdb.SetWeight(0, 5.0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("SetWeight after Close = %v, want ErrClosed", err)
+	}
+}
+
+// switchThenFailHook switches the active database on its first command and
+// then fails that command, so its outcome is recorded against a member that is
+// no longer the active.
+type switchThenFailHook struct {
+	mdb  *redis.MultiDBClient
+	to   int
+	once sync.Once
+}
+
+func (*switchThenFailHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *switchThenFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		h.once.Do(func() { _ = h.mdb.ForceActiveIndex(context.Background(), h.to) })
+		cmd.SetErr(io.EOF)
+		return io.EOF
+	}
+}
+func (*switchThenFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error { return nil }
+}
+
+func TestMultiDBStaleOutcomeNotRecordedOnDetector(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2, true) // active
+	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 100, // never opens on this test's single failure
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
+	ctxInit, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctxInit, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	if err := mdb.AddDatabaseHook(0, &switchThenFailHook{mdb: mdb, to: 1}); err != nil {
+		t.Fatalf("AddDatabaseHook(0): %v", err)
+	}
+	if err := mdb.AddDatabaseHook(1, db2.hook); err != nil {
+		t.Fatalf("AddDatabaseHook(1): %v", err)
+	}
+
+	_ = mdb.Get(context.Background(), "k").Err()
+
+	// db1's failure was recorded AFTER the hook switched the active to db2, so
+	// the global detector must not have counted it against db2's window.
+	if got := det.failures.Load(); got != 0 {
+		t.Errorf("stale outcome from the old active polluted the detector: failures=%d, want 0", got)
 	}
 }
 
