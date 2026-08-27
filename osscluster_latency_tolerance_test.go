@@ -16,6 +16,10 @@ func toleranceTestNode(t *testing.T, latency time.Duration, failing bool) *clust
 	// cached path instead of dialling a dead address for 100ms per candidate.
 	n.loaded.Store(1)
 	n.latency.Store(uint32(latency / time.Microsecond))
+	// updateLatency stores the value and the timestamp together, so a node carrying a
+	// latency but no measurement never occurs in practice - and slotNodeWithinLatency
+	// treats a missing timestamp as "not probed yet".
+	n.SetLastLatencyMeasurement(time.Now())
 	if failing {
 		n.MarkAsFailing()
 	}
@@ -301,5 +305,65 @@ func TestSlotNodeWithinLatencyKeepsUnconfirmedNode(t *testing.T) {
 
 	if !seen[unconfirmed] {
 		t.Fatal("node with loaded=0 was excluded from the rotation; a connection error is not a LOADING reply")
+	}
+}
+
+// Before the background probes finish, every node still carries the math.MaxUint32 sentinel
+// from newClusterNodeWithNodeAddress. All differences are then zero, so a positive tolerance
+// would admit the entire slot and round-robin startup reads across distant zones. Until one
+// measurement lands, the tolerance path must behave exactly like the strict one.
+func TestSlotNodeWithinLatencyKeepsStrictOrderBeforeFirstProbe(t *testing.T) {
+	unprobed := func() *clusterNode {
+		n := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
+		t.Cleanup(func() { _ = n.Client.Close() })
+		n.loaded.Store(1)
+		n.latency.Store(math.MaxUint32) // exactly what newClusterNodeWithNodeAddress stores
+		return n
+	}
+
+	first, second, third := unprobed(), unprobed(), unprobed()
+	state := toleranceTestState(first, second, third)
+
+	for i := 0; i < 50; i++ {
+		got, err := state.slotNodeWithinLatency(0, time.Second)
+		if err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
+		}
+		if got != first {
+			t.Fatalf("iteration %d: rotated across unmeasured nodes; want the strict pick", i)
+		}
+	}
+
+	strict, err := state.slotClosestNode(0)
+	if err != nil {
+		t.Fatalf("slotClosestNode: %v", err)
+	}
+	if strict != first {
+		t.Fatalf("slotClosestNode disagrees with the tolerance path before the first probe")
+	}
+}
+
+// Once any healthy node has a real measurement the band is meaningful again, and an
+// unmeasured node must stay out of it - its sentinel latency is ~4295s, far beyond any
+// sane tolerance.
+func TestSlotNodeWithinLatencyExcludesUnmeasuredOnceProbed(t *testing.T) {
+	measured := toleranceTestNode(t, 100*time.Microsecond, false)
+	alsoMeasured := toleranceTestNode(t, 130*time.Microsecond, false)
+
+	unprobed := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
+	t.Cleanup(func() { _ = unprobed.Client.Close() })
+	unprobed.loaded.Store(1)
+	unprobed.latency.Store(math.MaxUint32)
+
+	state := toleranceTestState(measured, alsoMeasured, unprobed)
+
+	for i := 0; i < 60; i++ {
+		got, err := state.slotNodeWithinLatency(0, 50*time.Microsecond)
+		if err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
+		}
+		if got == unprobed {
+			t.Fatalf("iteration %d: unmeasured node entered the tolerance band", i)
+		}
 	}
 }

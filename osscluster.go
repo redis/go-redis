@@ -1071,6 +1071,7 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 		closestHealthyNode *clusterNode
 		minLatency         = time.Duration(math.MaxInt64)
 		minHealthyLatency  = time.Duration(math.MaxInt64)
+		anyHealthyMeasured bool
 	)
 
 	for _, n := range nodes {
@@ -1084,6 +1085,9 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 		}
 
 		healthy = append(healthy, sample{node: n, latency: latency})
+		if n.LastLatencyMeasurement() != 0 {
+			anyHealthyMeasured = true
+		}
 
 		// Tracked separately: a healthy node that is not the outright fastest must still be
 		// preferred over a failing one.
@@ -1093,6 +1097,16 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 	}
 
 	if closestHealthyNode != nil {
+		// Until the first probe lands, every node still holds the sentinel latency stored by
+		// newClusterNodeWithNodeAddress, so every difference is zero and any positive tolerance
+		// would admit the whole slot - scattering startup reads across distant zones instead of
+		// preserving locality. Keep strict selection until at least one measurement exists; a
+		// mix needs no special case, since an unmeasured node's sentinel latency puts it far
+		// outside the band of any measured one.
+		if !anyHealthyMeasured {
+			return closestHealthyNode, nil
+		}
+
 		candidates := make([]*clusterNode, 0, len(healthy))
 		for _, s := range healthy {
 			// Subtraction rather than minHealthyLatency+tolerance, which would overflow for
