@@ -106,3 +106,26 @@ func TestCmdFirstKeyPosWithInfo_PolicyTableKeyless(t *testing.T) {
 		t.Errorf("unregistered module cmd: got %d, want 1", got)
 	}
 }
+
+// TestCmdFirstKeyPosWithInfo_MsetEx checks that msetex's first key is
+// resolved to position 2 (after the command name and the numkeys arg),
+// unlike mset/msetnx where the first key sits at position 1 immediately
+// after the command name.
+func TestCmdFirstKeyPosWithInfo_MsetEx(t *testing.T) {
+	ctx := context.Background()
+
+	msetex := NewCmd(ctx, "msetex", 2, "key1", "val1", "key2", "val2", "ex", 10)
+	if got := cmdFirstKeyPosWithInfo(msetex, nil); got != 2 {
+		t.Errorf("msetex cold cache: got %d, want 2", got)
+	}
+
+	mset := NewCmd(ctx, "mset", "key1", "val1", "key2", "val2")
+	if got := cmdFirstKeyPosWithInfo(mset, nil); got != 1 {
+		t.Errorf("mset cold cache: got %d, want 1", got)
+	}
+
+	msetnx := NewCmd(ctx, "msetnx", "key1", "val1", "key2", "val2")
+	if got := cmdFirstKeyPosWithInfo(msetnx, nil); got != 1 {
+		t.Errorf("msetnx cold cache: got %d, want 1", got)
+	}
+}

@@ -202,6 +202,17 @@ func TestPipelineRetriesOnNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Warm the DEDICATED PIPELINE POOL connection first: pipelines run there,
+	// not on the main-pool conn the Ping dialed. Without this the pipeline's
+	// first Exec dials a fresh pipeline conn and the dial count reads one high
+	// for a reason unrelated to the retry.
+	if _, err := client.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.Ping(ctx)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	dialsBefore := dials.Load()
 	failNextWrite.Store(true)
 

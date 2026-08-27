@@ -41,7 +41,7 @@ func TestConn_CloseRunsBothCloseHooks(t *testing.T) {
 	if onCscCloseCalls != 1 {
 		t.Fatalf("onCscClose calls: got %d want 1", onCscCloseCalls)
 	}
-	if cn.onCscClose != nil {
+	if cn.onCscClose.Load() != nil {
 		t.Fatal("Close must clear the CSC close hook")
 	}
 }
@@ -71,7 +71,7 @@ func TestConn_ConcurrentCloseRunsCscHookOnce(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("onCscClose calls: got %d want 1", got)
 	}
-	if cn.onCscClose != nil {
+	if cn.onCscClose.Load() != nil {
 		t.Fatal("Close must clear the CSC close hook")
 	}
 }
