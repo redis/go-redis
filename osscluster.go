@@ -530,7 +530,7 @@ func newClusterNodeWithNodeAddress(clOpt *ClusterOptions, addr, nodeAddress stri
 		Client: clOpt.NewClient(opt),
 	}
 
-	node.latency.Store(math.MaxUint32)
+	node.latency.Store(unmeasuredNodeLatencyMicros)
 	if clOpt.RouteByLatency {
 		go node.updateLatency()
 	}
@@ -547,6 +547,14 @@ func (n *clusterNode) Close() error {
 }
 
 const maximumNodeLatency = 1 * time.Minute
+
+// Latency held by a node from creation until its first probe completes. Deliberately distinct
+// from maximumNodeLatency, which marks a node whose pings all failed - the two must stay
+// separable, so this is compared for equality rather than as a ">= huge" threshold.
+const (
+	unmeasuredNodeLatencyMicros uint32 = math.MaxUint32
+	unmeasuredNodeLatency              = time.Duration(unmeasuredNodeLatencyMicros) * time.Microsecond
+)
 
 func (n *clusterNode) updateLatency() {
 	const numProbe = 10
@@ -1085,7 +1093,13 @@ func (c *clusterState) slotNodeWithinLatency(slot int, tolerance time.Duration) 
 		}
 
 		healthy = append(healthy, sample{node: n, latency: latency})
-		if n.LastLatencyMeasurement() != 0 {
+
+		// Derived from the latency just captured, not from a second read of the node.
+		// updateLatency publishes the latency and its timestamp as two separate stores, so
+		// reading the timestamp here could observe a probe that landed after the latency
+		// above was sampled - marking the set measured while every sampled latency is still
+		// a sentinel, which is exactly the case this guards.
+		if latency != unmeasuredNodeLatency {
 			anyHealthyMeasured = true
 		}
 

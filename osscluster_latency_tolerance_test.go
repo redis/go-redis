@@ -16,10 +16,6 @@ func toleranceTestNode(t *testing.T, latency time.Duration, failing bool) *clust
 	// cached path instead of dialling a dead address for 100ms per candidate.
 	n.loaded.Store(1)
 	n.latency.Store(uint32(latency / time.Microsecond))
-	// updateLatency stores the value and the timestamp together, so a node carrying a
-	// latency but no measurement never occurs in practice - and slotNodeWithinLatency
-	// treats a missing timestamp as "not probed yet".
-	n.SetLastLatencyMeasurement(time.Now())
 	if failing {
 		n.MarkAsFailing()
 	}
@@ -317,7 +313,7 @@ func TestSlotNodeWithinLatencyKeepsStrictOrderBeforeFirstProbe(t *testing.T) {
 		n := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
 		t.Cleanup(func() { _ = n.Client.Close() })
 		n.loaded.Store(1)
-		n.latency.Store(math.MaxUint32) // exactly what newClusterNodeWithNodeAddress stores
+		n.latency.Store(unmeasuredNodeLatencyMicros) // as newClusterNodeWithNodeAddress does
 		return n
 	}
 
@@ -353,7 +349,7 @@ func TestSlotNodeWithinLatencyExcludesUnmeasuredOnceProbed(t *testing.T) {
 	unprobed := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
 	t.Cleanup(func() { _ = unprobed.Client.Close() })
 	unprobed.loaded.Store(1)
-	unprobed.latency.Store(math.MaxUint32)
+	unprobed.latency.Store(unmeasuredNodeLatencyMicros)
 
 	state := toleranceTestState(measured, alsoMeasured, unprobed)
 
@@ -365,5 +361,54 @@ func TestSlotNodeWithinLatencyExcludesUnmeasuredOnceProbed(t *testing.T) {
 		if got == unprobed {
 			t.Fatalf("iteration %d: unmeasured node entered the tolerance band", i)
 		}
+	}
+}
+
+// updateLatency publishes the latency and its timestamp as two separate stores, so a probe can
+// land between selection sampling a node's latency and reading its measurement timestamp. That
+// interleaving is observable as "sentinel latency, timestamp set" - and must still count as
+// unmeasured, or the band widens to the whole slot while every sampled latency is a sentinel.
+func TestSlotNodeWithinLatencyIgnoresTimestampWithoutLatency(t *testing.T) {
+	interleaved := func() *clusterNode {
+		n := &clusterNode{Client: NewClient(&Options{Addr: "127.0.0.1:0"})}
+		t.Cleanup(func() { _ = n.Client.Close() })
+		n.loaded.Store(1)
+		n.latency.Store(unmeasuredNodeLatencyMicros)
+		// The half-published state: timestamp visible, latency not yet stored.
+		n.SetLastLatencyMeasurement(time.Now())
+		return n
+	}
+
+	first, second, third := interleaved(), interleaved(), interleaved()
+	state := toleranceTestState(first, second, third)
+
+	for i := 0; i < 50; i++ {
+		got, err := state.slotNodeWithinLatency(0, time.Second)
+		if err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
+		}
+		if got != first {
+			t.Fatalf("iteration %d: a set timestamp widened the band while latencies were sentinels", i)
+		}
+	}
+}
+
+// maximumNodeLatency (all pings failed) must not be mistaken for the unmeasured sentinel: such a
+// node has a real measurement, so the band applies normally rather than collapsing to strict.
+func TestSlotNodeWithinLatencyTreatsFailedPingsAsMeasured(t *testing.T) {
+	a := toleranceTestNode(t, maximumNodeLatency, false)
+	b := toleranceTestNode(t, maximumNodeLatency, false)
+	state := toleranceTestState(a, b)
+
+	counts := map[*clusterNode]int{}
+	for i := 0; i < 80; i++ {
+		got, err := state.slotNodeWithinLatency(0, time.Millisecond)
+		if err != nil {
+			t.Fatalf("slotNodeWithinLatency: %v", err)
+		}
+		counts[got]++
+	}
+	if counts[a] == 0 || counts[b] == 0 {
+		t.Fatalf("expected rotation across both measured nodes, got a=%d b=%d", counts[a], counts[b])
 	}
 }
