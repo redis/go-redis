@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/multidb"
 )
 
@@ -1413,6 +1414,61 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 	mdb.TestTryFallback()
 	if got := mdb.ActiveIndex(); got != 1 {
 		t.Errorf("auto-fallback bounced to A (active=%d); it must not undo the detector failover", got)
+	}
+}
+
+// errHook returns a fixed error for every command (no dial).
+type errHook struct{ err error }
+
+func (errHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h errHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		cmd.SetErr(h.err)
+		return h.err
+	}
+}
+func (errHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error { return nil }
+}
+
+// A MOVED/ASK that surfaces to the multidb layer (the cluster client exhausted
+// its redirect budget) is an availability failure and must drive failover, not
+// be treated as a healthy reply.
+func TestMultiDBSurfacedRedirectTriggersFailover(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+
+	opts := baseOptions()
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.Clients = append(opts.Clients, dbA.cfg, dbB.cfg)
+	ctxInit, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctxInit, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	// A surfaces a MOVED reply; B is healthy. (Install A's hook as the only one
+	// so it isn't short-circuited by the default hook.)
+	moved := proto.ParseErrorReply([]byte("-MOVED 3999 127.0.0.1:6381"))
+	if err := mdb.AddDatabaseHook(0, errHook{err: moved}); err != nil {
+		t.Fatalf("AddDatabaseHook(0): %v", err)
+	}
+	if err := mdb.AddDatabaseHook(1, dbB.hook); err != nil {
+		t.Fatalf("AddDatabaseHook(1): %v", err)
+	}
+
+	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
+		t.Fatalf("Get should have failed over to B and succeeded: %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Errorf("active index = %d, want 1 (surfaced MOVED must trigger failover)", got)
 	}
 }
 

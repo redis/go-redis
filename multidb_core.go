@@ -630,6 +630,14 @@ func isRedisReplyError(err error) bool {
 	return errors.As(err, &redisErr)
 }
 
+// isRedirectReply reports whether err is a MOVED or ASK redirect. When one
+// reaches the multidb layer the active cluster client has already spent its
+// redirect budget, so it is an availability signal, not a routine reply.
+func isRedirectReply(err error) bool {
+	moved, ask, _ := isMovedError(err)
+	return moved || ask
+}
+
 // outcomeKind classifies a command outcome for breaker/detector recording.
 type outcomeKind int
 
@@ -676,6 +684,13 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
 		return outcomeNeutral
+	case isRedirectReply(err):
+		// A MOVED/ASK that surfaced to this layer means the active cluster
+		// client exhausted MaxRedirects and still could not route the command:
+		// the member cannot serve traffic, an availability failure — not a
+		// healthy reply. (shouldRetry does not cover redirects: the cluster
+		// router consumes them internally until the redirect budget is spent.)
+		return outcomeFailure
 	case isRedisReplyError(err):
 		return outcomeSuccess
 	default:
