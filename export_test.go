@@ -160,6 +160,11 @@ func (c *MultiDBClient) TestRunHealthChecksOnce() {
 	c.core.runHealthChecksOnce(context.Background())
 }
 
+// TestTryFallback runs one synchronous auto-fallback pass.
+func (c *MultiDBClient) TestTryFallback() {
+	c.core.tryFallbackToPrimary(context.Background())
+}
+
 // TestStaleRecordAfterRemoval simulates a probe that passed its removed-check
 // just before the member was removed: the breaker outcome lands after the
 // removal completed.

@@ -44,6 +44,14 @@ type multidbDatabase struct {
 	// firing callbacks for it.
 	removed atomic.Bool
 
+	// noFallbackBefore (unix nano) suppresses auto-fallback TO this member
+	// until the deadline. It is (re-)armed whenever an automatic failover
+	// vacates the member, so auto-fallback cannot immediately undo a
+	// detector- or breaker-driven failover — a flaky higher-weight primary
+	// whose rate trips the detector (without its breaker ever opening) would
+	// otherwise ping-pong. Re-checked lock-free in tryFallbackToPrimary.
+	noFallbackBefore atomic.Int64
+
 	// cbq delivers user circuit-state callbacks asynchronously (FIFO). Breaker
 	// state changes fire deep inside locked sections (failoverMu is held
 	// during manual selection, pre-failover probes and AddDatabase probes);
@@ -841,6 +849,18 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	internal.Logger.Printf(ctx, "multidb: active database changed %d (%s) -> %d (%s), reason=%s",
 		from, fromFQDN, to, toFQDN, reason)
 
+	// An automatic failover just vacated `from`: suppress auto-fallback back to
+	// it for one fallback interval, re-armed on every such vacate. Otherwise
+	// the next fallback check would return to a member the detector evicted on
+	// a rate signal (its breaker may never have opened), undoing the failover
+	// and ping-ponging a flaky higher-weight primary. Manual selection and
+	// fallback itself (which does not gate on this) are unaffected.
+	if reason == failoverReasonAutomatic {
+		if fromDB := c.dbAt(from); fromDB != nil {
+			fromDB.noFallbackBefore.Store(time.Now().Add(c.fallbackInterval).UnixNano())
+		}
+	}
+
 	// Callbacks run later on cbq, so detach from the caller ctx (a manual
 	// SetActiveIndex ctx dies on return). Keep trace/values, drop cancel.
 	cbCtx := context.WithoutCancel(ctx)
@@ -1143,7 +1163,10 @@ func (c *multidbCore) startBackgroundLoop() {
 		ticker := time.NewTicker(c.opts.HealthCheckInterval)
 		defer ticker.Stop()
 
-		var lastFallbackCheck time.Time
+		// Start the fallback clock now, not at the zero time: otherwise the
+		// first tick's time.Since is effectively infinite and always runs
+		// fallback immediately (before any member has had a chance to settle).
+		lastFallbackCheck := time.Now()
 		for {
 			select {
 			case <-c.stopCh:
@@ -1217,11 +1240,18 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		return
 	}
 
+	now := time.Now().UnixNano()
 	c.dbMu.RLock()
 	activeWeight := active.weight
 	best, bestWeight := -1, activeWeight
 	for i, db := range c.dbs {
 		if i == idx {
+			continue
+		}
+		// Skip a member still in its post-failover fallback-suppression window:
+		// an automatic failover recently vacated it, so returning now would
+		// likely just be undone again.
+		if now < db.noFallbackBefore.Load() {
 			continue
 		}
 		if db.weight > bestWeight && db.cb.CheckState() == imultidb.CircuitClosed {

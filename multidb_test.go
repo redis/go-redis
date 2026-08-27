@@ -1373,6 +1373,49 @@ func TestMultiDBSubscribeOnClusterOnlyClientTerminates(t *testing.T) {
 	}
 }
 
+// Auto-fallback must not immediately undo a detector-driven failover: a flaky
+// higher-weight primary whose failure rate trips the detector (without its
+// breaker ever opening) must stay failed over, not ping-pong.
+func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // higher weight, active
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 1
+	opts.AutoFallbackInterval = time.Hour // drive fallback explicitly via TestTryFallback
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 100, // high: the flaky-rate signal never opens A's breaker
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("setup: active=%d, want 0", got)
+	}
+
+	// Detector trips (flaky A): a command fails over A->B without opening A's
+	// breaker (threshold 100).
+	det.tripped.Store(true)
+	_ = mdb.Set(context.Background(), "k", "v", 0).Err()
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Fatalf("detector failover: active=%d, want 1", got)
+	}
+	if !mdb.TestBreakerReserveHalfOpen(0) {
+		t.Fatal("A's breaker opened; the test needs a detector-only (breaker-closed) failover")
+	}
+
+	// A's breaker is still Closed and A has the higher weight, so the old
+	// (breaker-only) gate would bounce back to A. The suppression window must
+	// keep the client on B.
+	det.tripped.Store(false)
+	mdb.TestTryFallback()
+	if got := mdb.ActiveIndex(); got != 1 {
+		t.Errorf("auto-fallback bounced to A (active=%d); it must not undo the detector failover", got)
+	}
+}
+
 func TestMultiDBFallbackResetsDetector(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
