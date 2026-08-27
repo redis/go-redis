@@ -10,6 +10,8 @@ import (
 // CallbackQueue runs queued callbacks on a single goroutine, in FIFO order.
 // The drain goroutine is spawned on demand and exits when the queue empties,
 // so an idle queue holds no goroutine.
+//
+// Convention: name fields of this type `cbq` in every struct that holds one.
 type CallbackQueue struct {
 	mu       sync.Mutex
 	queue    []func()
