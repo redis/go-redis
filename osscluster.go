@@ -995,14 +995,27 @@ func (c *clusterState) slotClosestNode(slot int) (*clusterNode, error) {
 	// setting the max possible duration as zerovalue for minlatency
 	minLatency = time.Duration(math.MaxInt64)
 
+	minNonFailingLatency := time.Duration(math.MaxInt64)
+
 	for _, n := range nodes {
-		if closestNode == nil || n.Latency() < minLatency {
+		// Sampled once: Latency() reads an atomic the background probe writes, so two
+		// reads in one iteration can disagree.
+		latency := n.Latency()
+
+		if closestNode == nil || latency < minLatency {
 			closestNode = n
-			minLatency = n.Latency()
-			if !n.Failing() {
-				closestNonFailingNode = n
-				allNodesFailing = false
-			}
+			minLatency = latency
+		}
+
+		// Tracked independently of the minimum above. Nesting this inside that branch
+		// meant a healthy node was only ever considered when it was also the outright
+		// fastest - so a failing node with lower latency (a refused connection fails
+		// fast, and often has the lowest measured latency of the slot) hid every
+		// healthy node behind it, and the slot fell through to the all-failing path.
+		if !n.Failing() && (closestNonFailingNode == nil || latency < minNonFailingLatency) {
+			closestNonFailingNode = n
+			minNonFailingLatency = latency
+			allNodesFailing = false
 		}
 	}
 
