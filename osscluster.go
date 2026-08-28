@@ -2731,9 +2731,11 @@ func (c *ClusterClient) readTxPipelineReplies(
 	// Queue replies: +QUEUED, or a redirect / command error that dirties the tx.
 	var firstRedirect *txRedirect
 	var firstFatal error
-	for _, cmd := range cmds {
+	queuedCmdIndexes := make([]int, 0, len(cmds))
+	for i, cmd := range cmds {
 		err := readStatus()
 		if err == nil {
+			queuedCmdIndexes = append(queuedCmdIndexes, i)
 			continue // +QUEUED
 		}
 		if !isRedisError(err) {
@@ -2779,7 +2781,7 @@ func (c *ClusterClient) readTxPipelineReplies(
 	// EXEC reply. ReadLine parses error lines into typed errors, so a non-nil
 	// err means EXEC returned an error rather than the result array.
 	if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
-		return c.txReadFatal(&txPushReadError{err: err})
+		return c.classifyExecError(&txPushReadError{err: err}, firstRedirect, firstFatal)
 	}
 	line, err := rd.ReadLine()
 	if err != nil {
@@ -2815,19 +2817,18 @@ func (c *ClusterClient) readTxPipelineReplies(
 			setCmdsErr(cmds, wrapped)
 			return &txOutcome{kind: txFatal, err: wrapped, unreadReplies: true}
 		}
-		execCmdIndexes := txQueuedCmdIndexes(cmds)
-		executedCmds := make(map[int]struct{}, min(n, len(execCmdIndexes)))
+		executedCmds := make(map[int]struct{}, min(n, len(queuedCmdIndexes)))
 		hasHImport := txHasHImport(cmds)
 		himportedIndexes := make(map[int]struct{})
 		for i := 0; i < n; i++ {
 			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
 			}
-			if i < len(execCmdIndexes) {
-				executedCmds[execCmdIndexes[i]] = struct{}{}
+			if i < len(queuedCmdIndexes) {
+				executedCmds[queuedCmdIndexes[i]] = struct{}{}
 			}
-			if hasHImport && i < len(execCmdIndexes) {
-				cmdIndex := execCmdIndexes[i]
+			if hasHImport && i < len(queuedCmdIndexes) {
+				cmdIndex := queuedCmdIndexes[i]
 				if _, ok := cmds[cmdIndex].(himportCmder); ok {
 					err := cmds[cmdIndex].readReply(rd)
 					cmds[cmdIndex].SetErr(err)
@@ -2867,19 +2868,18 @@ func (c *ClusterClient) readTxPipelineReplies(
 		if n == 0 {
 			return txRedirectOutcome(firstRedirect)
 		}
-		execCmdIndexes := txQueuedCmdIndexes(cmds)
-		executedCmds := make(map[int]struct{}, min(n, len(execCmdIndexes)))
+		executedCmds := make(map[int]struct{}, min(n, len(queuedCmdIndexes)))
 		hasHImport := txHasHImport(cmds)
 		himportedIndexes := make(map[int]struct{})
 		for i := 0; i < n; i++ {
 			if err := c.txProcessPushErr(ctx, node, cn, rd); err != nil {
 				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}, unreadReplies: true, himportedIndexes: himportedIndexes}
 			}
-			if i < len(execCmdIndexes) {
-				executedCmds[execCmdIndexes[i]] = struct{}{}
+			if i < len(queuedCmdIndexes) {
+				executedCmds[queuedCmdIndexes[i]] = struct{}{}
 			}
-			if hasHImport && i < len(execCmdIndexes) {
-				cmdIndex := execCmdIndexes[i]
+			if hasHImport && i < len(queuedCmdIndexes) {
+				cmdIndex := queuedCmdIndexes[i]
 				if _, ok := cmds[cmdIndex].(himportCmder); ok {
 					err := cmds[cmdIndex].readReply(rd)
 					cmds[cmdIndex].SetErr(err)

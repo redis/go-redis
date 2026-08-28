@@ -1112,6 +1112,84 @@ func TestClusterTxPipelineRedirectMidDrainFailurePreservesHImportIndexes(t *test
 	}
 }
 
+func TestClusterTxPipelineRedirectMapsExecRepliesToQueuedIndexes(t *testing.T) {
+	srv := startTxQueueErrorServer(t)
+	srv.himportPrepareReply = "+OK\r\n"
+	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
+	srv.execReply = "*2\r\n+OK\r\n:1\r\n"
+	defer func() { _ = srv.Close() }()
+
+	ctx := context.Background()
+	nodeClient := NewClient(&Options{
+		Addr:         srv.Addr(),
+		DialTimeout:  time.Second,
+		ReadTimeout:  time.Second,
+		WriteTimeout: time.Second,
+	})
+	defer func() { _ = nodeClient.Close() }()
+
+	nodeClient.himport.register("fs", []string{"f1"})
+
+	clusterClient := &ClusterClient{}
+	node := &clusterNode{Client: nodeClient}
+	node.generation.Store(1)
+	cn, err := nodeClient.getConn(ctx)
+	if err != nil {
+		t.Fatalf("getConn() error = %v", err)
+	}
+	defer nodeClient.releaseConn(ctx, cn, errTxDirtyConn)
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+		NewHImportDiscardCmd(ctx, "fs"),
+	}
+	injected := nodeClient.himportInjectedCmds(ctx, cn, cmds)
+	if err := cn.WithWriter(ctx, time.Second, func(wr *proto.Writer) error {
+		for _, ic := range injected {
+			if err := writeCmd(wr, ic); err != nil {
+				return err
+			}
+		}
+		return writeCmds(wr, wrapMultiExec(ctx, cmds))
+	}); err != nil {
+		t.Fatalf("writeCmds() error = %v", err)
+	}
+
+	var outcome *txOutcome
+	if err := cn.WithReader(ctx, time.Second, func(rd *proto.Reader) error {
+		if err := nodeClient.himportReadInjectedReplies(ctx, cn, rd, injected); err != nil {
+			return err
+		}
+		outcome = clusterClient.readTxPipelineReplies(ctx, node, cn, rd, cmds, false)
+		if outcome != nil && len(outcome.himportedIndexes) > 0 {
+			nodeClient.himportAfterBatch(cn, injected, filteredHImportCmds(cmds, outcome.himportedIndexes))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithReader() error = %v", err)
+	}
+	if outcome == nil {
+		t.Fatal("readTxPipelineReplies() outcome = nil")
+	}
+	if outcome.kind != txFatal {
+		t.Fatalf("outcome.kind = %v, want txFatal", outcome.kind)
+	}
+	if outcome.err == nil || !strings.Contains(outcome.err.Error(), "MOVED 123 127.0.0.1:7001") {
+		t.Fatalf("outcome.err = %v, want MOVED root cause", outcome.err)
+	}
+	if _, ok := outcome.execCmdIndexes[2]; !ok {
+		t.Fatalf("outcome.execCmdIndexes = %v, want executed HIMPORT index 2", outcome.execCmdIndexes)
+	}
+	himportDiscard := cmds[2].(*HImportDiscardCmd)
+	if himportDiscard.Err() != nil {
+		t.Fatalf("HImportDiscard err = %v, want nil (successful drained reply)", himportDiscard.Err())
+	}
+	if _, ok := nodeClient.himport.lookup("fs"); ok {
+		t.Fatal("fieldset fs unexpectedly kept in registry after successful HIMPORT DISCARD")
+	}
+}
+
 func TestClusterTxPipelineReturnsFatalAfterRedirectExecArray(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.queueErr = "-MOVED 123 127.0.0.1:7001\r\n"
