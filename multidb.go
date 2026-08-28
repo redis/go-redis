@@ -412,6 +412,12 @@ type MultiDBClient struct {
 	autopipeliner       *AutoPipeliner
 	asyncAutopipeliner  *AutoPipeliner
 	autopipelinerClosed bool
+
+	// closeOnce serializes concurrent Close calls so a second caller cannot
+	// race ahead to core.close() while the first is still draining the
+	// autopipeliner; closeErr carries that single close result to every caller.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewMultiDBClient creates a MultiDBClient for the configured member
@@ -490,23 +496,33 @@ func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
 // Close stops the autopipeliners, the background loop, and every underlying
 // client.
 func (c *MultiDBClient) Close() error {
-	c.autopipelinerMu.Lock()
-	ap, async := c.autopipeliner, c.asyncAutopipeliner
-	c.autopipeliner, c.asyncAutopipeliner = nil, nil
-	c.autopipelinerClosed = true
-	c.autopipelinerMu.Unlock()
-	var firstErr error
-	for _, p := range []*AutoPipeliner{ap, async} {
-		if p != nil {
-			if err := p.Close(); err != nil && firstErr == nil {
-				firstErr = err
+	// Serialize concurrent Close calls. Without this a second caller can
+	// observe the autopipeliner pointers already cleared, skip the drain loop,
+	// and call core.close() while the first caller's AutoPipeliner.Close is
+	// still flushing queued batches — tearing down the member clients under the
+	// drain and failing those writes with ErrClosed. Once blocks the second
+	// caller until the single ordered drain-then-close completes; both return
+	// the same error.
+	c.closeOnce.Do(func() {
+		c.autopipelinerMu.Lock()
+		ap, async := c.autopipeliner, c.asyncAutopipeliner
+		c.autopipeliner, c.asyncAutopipeliner = nil, nil
+		c.autopipelinerClosed = true
+		c.autopipelinerMu.Unlock()
+		var firstErr error
+		for _, p := range []*AutoPipeliner{ap, async} {
+			if p != nil {
+				if err := p.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
 		}
-	}
-	if err := c.core.close(); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
+		if err := c.core.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.closeErr = firstErr
+	})
+	return c.closeErr
 }
 
 // ActiveDatabaseID implements MultiDBCtrl.

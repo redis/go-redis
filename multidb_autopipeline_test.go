@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1150,7 +1151,7 @@ func (h *cancelingFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) 
 	}
 }
 
-func TestMultiDBPipelineContextErrorOverwritesStaleErrors(t *testing.T) {
+func TestMultiDBPipelineCallerCancelPreservesCommandResults(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1177,9 +1178,13 @@ func TestMultiDBPipelineContextErrorOverwritesStaleErrors(t *testing.T) {
 		t.Fatalf("AddDatabaseHook: %v", err)
 	}
 
-	// Attempt one fails at transport level and cancels the caller's context;
-	// the retry loop then returns the context error. The commands must carry
-	// that context error too — not the stale EOF of the failed attempt.
+	// The hook fails at transport level (io.EOF) and cancels the caller's
+	// context. The batch surfaces the cancellation as its aggregate error, but
+	// each command must keep the outcome it actually received — not be
+	// rewritten to context.Canceled. Overwriting would hide which operations
+	// completed (an applied INCR reported as canceled would prompt a replay),
+	// so the pipeline preserves command state on caller cancellation, mirroring
+	// the single-command and tx paths.
 	cmds, err := mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
 		p.Set(ctx, "k", "v", 0)
 		return nil
@@ -1188,8 +1193,8 @@ func TestMultiDBPipelineContextErrorOverwritesStaleErrors(t *testing.T) {
 		t.Fatalf("Pipelined err = %v, want context.Canceled", err)
 	}
 	for i, cmd := range cmds {
-		if !errors.Is(cmd.Err(), context.Canceled) {
-			t.Errorf("cmd %d error = %v, want context.Canceled (stale transport error kept)", i, cmd.Err())
+		if !errors.Is(cmd.Err(), io.EOF) {
+			t.Errorf("cmd %d error = %v, want io.EOF (command result preserved, not overwritten)", i, cmd.Err())
 		}
 	}
 }
@@ -1272,5 +1277,118 @@ func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
 	}
 	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("canceled operations switched the active database: active = %d", got)
+	}
+}
+
+// switchThenFailPipelineHook is the pipeline analogue of switchThenFailHook: on
+// its first batch it switches the active database and then fails that batch, so
+// the batch outcome is recorded against a member that is no longer the active.
+type switchThenFailPipelineHook struct {
+	mdb  *redis.MultiDBClient
+	to   int
+	once sync.Once
+}
+
+func (*switchThenFailPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (*switchThenFailPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+func (h *switchThenFailPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.once.Do(func() { _ = h.mdb.ForceActiveDatabase(context.Background(), h.to) })
+		for _, cmd := range cmds {
+			cmd.SetErr(io.EOF)
+		}
+		return io.EOF
+	}
+}
+
+// TestMultiDBPipelineStaleOutcomeNotRecordedOnDetector is the batch-path
+// counterpart of TestMultiDBStaleOutcomeNotRecordedOnDetector: a batch whose
+// member is no longer the active by the time its outcome is recorded must not
+// feed the global failover detector. Otherwise a large batch failing on the
+// vacated member could immediately trip failover away from the healthy
+// replacement. The per-member breaker is still updated — that is member-scoped.
+func TestMultiDBPipelineStaleOutcomeNotRecordedOnDetector(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 2, true) // active
+	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 100, // never opens on this test's single failure
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
+	ctxInit, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(ctxInit, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	t.Cleanup(func() { _ = mdb.Close() })
+
+	if err := mdb.AddDatabaseHook(0, &switchThenFailPipelineHook{mdb: mdb, to: 1}); err != nil {
+		t.Fatalf("AddDatabaseHook(0): %v", err)
+	}
+	if err := mdb.AddDatabaseHook(1, db2.hook); err != nil {
+		t.Fatalf("AddDatabaseHook(1): %v", err)
+	}
+
+	_, _ = mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Get(context.Background(), "k")
+		return nil
+	})
+
+	// db1's batch failure was recorded AFTER the hook switched the active to
+	// db2, so the global detector must not have counted it against db2's window.
+	if got := det.failures.Load(); got != 0 {
+		t.Errorf("stale batch outcome from the old active polluted the detector: failures=%d, want 0", got)
+	}
+}
+
+// TestMultiDBConcurrentCloseSerializes checks that concurrent Close calls are
+// serialized through a single drain-then-teardown: a second caller must not
+// race ahead to close the member clients while the first is still draining the
+// autopipeliner. Run under -race, this guards the ordering (and the shared
+// close result) the sync.Once in Close provides.
+func TestMultiDBConcurrentCloseSerializes(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	// Prime the cached autopipeliner so Close has a drain to run.
+	if _, err := mdb.AutoPipeline(); err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+
+	const n = 8
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = mdb.Close()
+		}(i)
+	}
+	wg.Wait()
+
+	// Every caller returns the one close's result; none observed a torn teardown.
+	for i, e := range errs {
+		if e != errs[0] {
+			t.Errorf("Close #%d = %v, want same result as #0 (%v)", i, e, errs[0])
+		}
 	}
 }

@@ -67,6 +67,16 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	classify := func(cmd Cmder) outcomeKind {
 		return classifyOutcome(cmd.rawErr(), cmd.readTimeout() == nil)
 	}
+	// Feed the GLOBAL detector only while this batch's member is still the
+	// active: if the active switched (or this member was removed) while the
+	// batch was in flight, recording its outcomes would pollute the new
+	// active's failover window and successSinceFailover. The per-member breaker
+	// below is always updated — it is member-scoped. Mirrors the single-command
+	// path (see process). One snapshot suffices: recordBatchOutcomes runs
+	// synchronously at the end of a single attempt, the batch analogue of the
+	// single-command post-exec check.
+	cur, _ := c.activeSnapshot()
+	stillActive := cur == db
 	transportFailures := 0
 	recorded := 0
 	recordOne := func(cmd Cmder) {
@@ -85,10 +95,12 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 				// but must not release a half-open slot the batch never held.
 				db.cb.RecordExternalSuccess()
 			}
-			c.detector.RecordSuccess()
-			// Recovery traffic breaks the consecutive-failed-failover chain
-			// for batch-only workloads too (see recordFailedFailoverLocked).
-			c.successSinceFailover.Store(true)
+			if stillActive {
+				c.detector.RecordSuccess()
+				// Recovery traffic breaks the consecutive-failed-failover chain
+				// for batch-only workloads too (see recordFailedFailoverLocked).
+				c.successSinceFailover.Store(true)
+			}
 			recorded++
 		case outcomeFailure:
 			// Failures record regardless of the execution marker — unlike
@@ -99,7 +111,9 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// batch-only workloads. Successes are the asymmetric case: a
 			// genuine reply cannot exist without execution.
 			db.cb.RecordFailure()
-			c.detector.RecordFailure(cmd.rawErr())
+			if stillActive {
+				c.detector.RecordFailure(cmd.rawErr())
+			}
 			transportFailures++
 			recorded++
 		case outcomeNeutral:
@@ -283,16 +297,21 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// ran — typically a dial cut short, surfacing as a net timeout the
 			// classifier would otherwise score as a member failure. That is a
 			// client-side signal, not a health verdict: release any half-open
-			// reservation and return WITHOUT recording. Surface the context
-			// error, overwriting the stale transport error, exactly as the
-			// pre-execution gate check does.
+			// reservation and return WITHOUT recording.
 			if reserved {
 				db.cb.ReleaseHalfOpen()
 			}
-			ctxErr := ctx.Err()
-			resetCmds(cmds)
-			setCmdsErr(cmds, ctxErr)
-			return exitErr(ctxErr)
+			// Do NOT reset or overwrite the commands. The deadline may have
+			// interrupted reading a LATER reply while earlier commands already
+			// received definitive results, and those are the caller's only
+			// evidence of what applied — an already-executed INCR must not
+			// resurface as canceled and prompt a replay. The member pipeline
+			// stamped the interrupted/unread commands itself. Unlike the
+			// pre-execution gate checks above (which reset because nothing ran,
+			// so no result can exist), execution here may have produced
+			// results; this mirrors the tx and single-command paths, which also
+			// return without touching command state on caller cancellation.
+			return exitErr(ctx.Err())
 		}
 		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), reserved)
 
