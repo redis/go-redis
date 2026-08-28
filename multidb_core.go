@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,11 +32,11 @@ type multidbDatabase struct {
 	cb     *imultidb.CircuitBreaker
 	weight float64 // guarded by core.dbMu
 	fqdn   string
-	// idx is the database's current position in core.dbs, maintained under
-	// core.dbMu on every membership change. Callbacks read it lock-free to
-	// avoid recursive dbMu read-locking (which can deadlock with a queued
-	// writer).
-	idx atomic.Int32
+	// id is the database's stable identifier and its key in core.dbs. Assigned
+	// once at membership time (before the initial probe), immutable, and never
+	// reused, so callbacks and the public API can name a member with an int
+	// that a RemoveDatabase never invalidates or renumbers. Read lock-free.
+	id int
 
 	checks []MultiDBHealthCheck
 	policy MultiDBHealthCheckPolicy
@@ -240,9 +241,19 @@ type multidbCore struct {
 	opts *MultiDBOptions
 
 	dbMu sync.RWMutex
-	dbs  []*multidbDatabase
+	// dbs is keyed by stable member id (multidbDatabase.id), not by position:
+	// membership changes never renumber survivors, so a caller's handle and a
+	// queued callback stay valid across a RemoveDatabase.
+	dbs map[int]*multidbDatabase
 
-	active atomic.Int32
+	// active is the id of the active member, or -1 when none is selected. An id,
+	// not a position, so removing another member never shifts it.
+	active atomic.Int64
+
+	// nextID hands out member ids: monotonic, never decremented, never reset
+	// (not even in closeAll). Reuse would let a stale handle or a queued
+	// callback resurrect as a different member, so ids are permanent.
+	nextID atomic.Int64
 
 	detector MultiDBFailureDetector
 	strategy MultiDBFailoverStrategy
@@ -285,6 +296,7 @@ func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 		opts:     opts,
 		detector: opts.FailureDetector,
 		strategy: opts.FailoverStrategy,
+		dbs:      make(map[int]*multidbDatabase),
 		pubsubs:  make(map[*PubSub]struct{}),
 		stopCh:   make(chan struct{}),
 	}
@@ -309,6 +321,10 @@ func newMultidbCore(opts *MultiDBOptions) *multidbCore {
 // resolved health checks for one member database.
 func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase, error) {
 	db := &multidbDatabase{
+		// Stable id assigned here, before the circuit-breaker callback below
+		// captures the member: a probe-fired state change then reports the real
+		// id. Monotonic and never reused; a failed build just leaves a gap.
+		id:     int(c.nextID.Add(1) - 1),
 		weight: cfg.Weight,
 		fqdn:   cfg.fqdn(),
 	}
@@ -377,19 +393,17 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 		if stateCallback != nil && !dbRef.removed.Load() {
 			// Deliver asynchronously (FIFO per database): state changes fire
 			// under internal locks, and a callback that calls a control API
-			// would otherwise self-deadlock. The removed flag and the index
-			// are (re-)read at DELIVERY time: a removal that lands while the
-			// callback is queued would otherwise surface a stale index that
-			// now points at a different member. A removal racing the final
-			// reads keeps an unavoidable instant-wide window — carrying the
-			// member identity (fqdn) in the callback is the follow-up API
-			// that closes it entirely.
+			// would otherwise self-deadlock. The member id is stable and
+			// immutable, so it is captured here and stays correct however
+			// membership changes; the removed flag is re-read at DELIVERY time
+			// so a member removed while the callback was queued fires nothing.
 			from, to := oldState.String(), newState.String()
+			id := dbRef.id
 			dbRef.cbq.Dispatch(func() {
 				if dbRef.removed.Load() {
 					return
 				}
-				stateCallback(int(dbRef.idx.Load()), from, to)
+				stateCallback(id, from, to)
 			})
 		}
 	})
@@ -405,18 +419,18 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	required := c.requiredAvailableCount()
 	_, hasDeadline := ctx.Deadline()
 
-	probeHealthy := make([]bool, len(c.dbs))
+	probeHealthy := make(map[int]bool, len(c.dbs))
 	for {
 		healthy := 0
-		for i, db := range c.dbs {
+		for id, db := range c.dbs {
 			// Stop probing as soon as the constructor's context ends, rather
 			// than finishing the whole pass: a check that ignores ctx would
 			// otherwise keep the constructor running past cancellation.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			probeHealthy[i] = db.probe(ctx, c.opts.HealthCheckTimeout)
-			if probeHealthy[i] {
+			probeHealthy[id] = db.probe(ctx, c.opts.HealthCheckTimeout)
+			if probeHealthy[id] {
 				healthy++
 			}
 		}
@@ -450,8 +464,8 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	// The context check above guarantees the loop only breaks with a live
 	// context, so every probe verdict here is real (a canceled pass returns
 	// before this reconciliation).
-	for i, db := range c.dbs {
-		if probeHealthy[i] {
+	for id, db := range c.dbs {
+		if probeHealthy[id] {
 			if db.cb.CheckState() != imultidb.CircuitClosed {
 				db.cb.Reset()
 			}
@@ -467,19 +481,27 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 	// FailureThreshold a database that failed its only startup probe would
 	// otherwise still look selectable.
 	cands := make([]MultiDBDatabaseState, 0, len(c.dbs))
-	for i, db := range c.dbs {
+	for id, db := range c.dbs {
 		cands = append(cands, MultiDBDatabaseState{
-			Index:   i,
+			ID:      id,
 			Weight:  db.weight,
-			Allowed: probeHealthy[i],
+			Allowed: probeHealthy[id],
 		})
 	}
+	sortCandidatesByID(cands)
 	best := c.selectCandidate(cands)
 	if best < 0 {
 		return fmt.Errorf("%w: no selectable database", ErrInsufficientHealthyDatabases)
 	}
-	c.active.Store(int32(best))
+	c.active.Store(int64(best))
 	return nil
+}
+
+// sortCandidatesByID orders candidates by ascending stable id so map iteration
+// order never leaks into failover: the strategy sees a deterministic list, and
+// equal-weight ties resolve by id instead of arbitrary map order.
+func sortCandidatesByID(cands []MultiDBDatabaseState) {
+	sort.Slice(cands, func(i, j int) bool { return cands[i].ID < cands[j].ID })
 }
 
 func (c *multidbCore) requiredAvailableCount() int {
@@ -494,22 +516,24 @@ func (c *multidbCore) requiredAvailableCount() int {
 	}
 }
 
-// candidates snapshots every database except `exclude` for the failover
-// strategy.
-func (c *multidbCore) candidates(exclude int) []MultiDBDatabaseState {
+// candidates snapshots every database except the one with id excludeID (the
+// active) for the failover strategy, ordered by id so selection is
+// deterministic despite map iteration order.
+func (c *multidbCore) candidates(excludeID int) []MultiDBDatabaseState {
 	c.dbMu.RLock()
 	defer c.dbMu.RUnlock()
 	out := make([]MultiDBDatabaseState, 0, len(c.dbs))
-	for i, db := range c.dbs {
-		if i == exclude {
+	for id, db := range c.dbs {
+		if id == excludeID {
 			continue
 		}
 		out = append(out, MultiDBDatabaseState{
-			Index:   i,
+			ID:      id,
 			Weight:  db.weight,
 			Allowed: db.selectable(),
 		})
 	}
+	sortCandidatesByID(out)
 	return out
 }
 
@@ -541,7 +565,7 @@ func (c *multidbCore) selectCandidate(cands []MultiDBDatabaseState) (best int) {
 	// the candidates offered. An out-of-range or non-candidate index would
 	// otherwise be stored as the active and later index a wrong/absent member.
 	for _, cand := range cands {
-		if cand.Index == idx {
+		if cand.ID == idx {
 			return idx
 		}
 	}
@@ -561,7 +585,15 @@ func (c *multidbCore) resetDetectorSafely() {
 	c.detector.Reset()
 }
 
-func (c *multidbCore) activeIndex() int { return int(c.active.Load()) }
+// activeDatabaseID returns the stable id of the active database, or -1 when none is
+// selected.
+func (c *multidbCore) activeDatabaseID() int {
+	db, id := c.activeSnapshot()
+	if db == nil {
+		return -1
+	}
+	return id
+}
 
 // memberCount returns the current number of member databases.
 func (c *multidbCore) memberCount() int {
@@ -570,27 +602,27 @@ func (c *multidbCore) memberCount() int {
 	return len(c.dbs)
 }
 
-// activeSnapshot returns the active database, or nil when none is selected or
-// the index is stale after a removal. The index is loaded under dbMu so it is
-// coherent with the slice: RemoveDatabase shifts both under the write lock,
-// and reading the index first could otherwise resolve to a shifted neighbor.
+// activeSnapshot returns the active database and its id, or (nil, id) when none
+// is selected or the active id is absent. The id and the map read happen under
+// dbMu so they are coherent with a concurrent RemoveDatabase.
 func (c *multidbCore) activeSnapshot() (*multidbDatabase, int) {
 	c.dbMu.RLock()
 	defer c.dbMu.RUnlock()
-	idx := int(c.active.Load())
-	if idx < 0 || idx >= len(c.dbs) {
-		return nil, idx
+	id := int(c.active.Load())
+	if id < 0 {
+		// -1 sentinel: no active selected. A non-negative active is always a
+		// live key — removeDatabase refuses to remove the active — so the map
+		// lookup below cannot resolve a stale id to a reused member.
+		return nil, id
 	}
-	return c.dbs[idx], idx
+	return c.dbs[id], id
 }
 
-func (c *multidbCore) dbAt(index int) *multidbDatabase {
+// dbByID returns the member with the given stable id, or nil if none.
+func (c *multidbCore) dbByID(id int) *multidbDatabase {
 	c.dbMu.RLock()
 	defer c.dbMu.RUnlock()
-	if index < 0 || index >= len(c.dbs) {
-		return nil
-	}
-	return c.dbs[index]
+	return c.dbs[id]
 }
 
 // process is the command hot path: an attempt loop bounded by CommandRetries
@@ -887,7 +919,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			return c.recordFailedFailoverLocked()
 		}
 		if c.opts.ProbeTargetBeforeFailover {
-			if db := c.dbAt(best); db != nil && !db.probe(ctx, c.opts.HealthCheckTimeout) {
+			if db := c.dbByID(best); db != nil && !db.probe(ctx, c.opts.HealthCheckTimeout) {
 				if err := ctx.Err(); err != nil {
 					// The caller's context ended mid-probe: the candidate was
 					// never proven unhealthy. Surface the context error
@@ -908,7 +940,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			}
 		}
 		if c.closed.Load() {
-			// Same close-during-probe race as setActiveIndex: close() takes no
+			// Same close-during-probe race as setActiveDatabase: close() takes no
 			// lock, so a ProbeTargetBeforeFailover probe can outlast it. Do not
 			// switch the active state on an already-closed client.
 			return ErrClosed
@@ -930,7 +962,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 func removeCandidate(cands []MultiDBDatabaseState, index int) []MultiDBDatabaseState {
 	out := cands[:0]
 	for _, cand := range cands {
-		if cand.Index != index {
+		if cand.ID != index {
 			out = append(out, cand)
 		}
 	}
@@ -976,16 +1008,20 @@ func (c *multidbCore) recordFailedFailoverLocked() error {
 // non-nil announce closure when the switch happened; callers MUST invoke it
 // AFTER releasing failoverMu. Metrics and the PubSub nudge run synchronously;
 // the user callbacks go through cbq.
+// from and to are stable member ids. Because ids are immutable, the ids
+// captured here stay correct in the async callbacks however membership changes,
+// and the CAS now fails only on a genuine concurrent switch (a RemoveDatabase of
+// another member no longer moves `active`).
 func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason string, took time.Duration) (announce func()) {
-	if !c.active.CompareAndSwap(int32(from), int32(to)) {
+	if !c.active.CompareAndSwap(int64(from), int64(to)) {
 		return nil
 	}
 
 	fromFQDN, toFQDN := "", ""
-	if db := c.dbAt(from); db != nil {
+	if db := c.dbByID(from); db != nil {
 		fromFQDN = db.fqdn
 	}
-	if db := c.dbAt(to); db != nil {
+	if db := c.dbByID(to); db != nil {
 		toFQDN = db.fqdn
 	}
 
@@ -999,13 +1035,13 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	// and ping-ponging a flaky higher-weight primary. Manual selection and
 	// fallback itself (which does not gate on this) are unaffected.
 	if reason == failoverReasonAutomatic {
-		if fromDB := c.dbAt(from); fromDB != nil {
+		if fromDB := c.dbByID(from); fromDB != nil {
 			fromDB.noFallbackBefore.Store(time.Now().Add(c.fallbackInterval).UnixNano())
 		}
 	}
 
 	// Callbacks run later on cbq, so detach from the caller ctx (a manual
-	// SetActiveIndex ctx dies on return). Keep trace/values, drop cancel.
+	// SetActiveDatabase ctx dies on return). Keep trace/values, drop cancel.
 	cbCtx := context.WithoutCancel(ctx)
 
 	// Enqueue the user callbacks HERE, under failoverMu (every caller holds it
@@ -1047,10 +1083,10 @@ func (c *multidbCore) switchActive(ctx context.Context, from, to int, reason str
 	}
 }
 
-// setActiveIndex implements manual failover. With probe=true it is the safe
-// probe-then-switch path (SetActiveIndex); with probe=false it is the
-// unconditional operator override (ForceActiveIndex).
-func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool) error {
+// setActiveDatabase implements manual failover. With probe=true it is the safe
+// probe-then-switch path (SetActiveDatabase); with probe=false it is the
+// unconditional operator override (ForceActiveDatabase).
+func (c *multidbCore) setActiveDatabase(ctx context.Context, index int, probe bool) error {
 	if c.closed.Load() {
 		// Consistent with the command paths: the drained membership would
 		// otherwise surface as a misleading out-of-range error.
@@ -1085,9 +1121,9 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 		return err
 	}
 
-	db := c.dbAt(index)
+	db := c.dbByID(index)
 	if db == nil {
-		return fmt.Errorf("redis: multidb: database index %d out of range", index)
+		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, index)
 	}
 	start := time.Now()
 	if probe {
@@ -1135,7 +1171,7 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 		return ErrClosed
 	}
 	// The operator explicitly selected this database — either a fresh probe
-	// just passed, or ForceActiveIndex is an unconditional override. Reset
+	// just passed, or ForceActiveDatabase is an unconditional override. Reset
 	// its breaker in both cases so a still-open circuit does not immediately
 	// fail the switch away; a genuinely dead forced target re-opens it
 	// organically on the next failures.
@@ -1187,11 +1223,6 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 		return -1, err
 	}
 
-	c.dbMu.RLock()
-	idx := len(c.dbs)
-	c.dbMu.RUnlock()
-	db.idx.Store(int32(idx))
-
 	// The initial probe result never blocks membership; it only seeds the
 	// circuit breaker (and is skipped entirely with SkipInitialHealthCheck).
 	// A failed probe opens the breaker outright — one recorded failure would
@@ -1203,7 +1234,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 			// The caller's context ended while the probe ran (whatever the
 			// verdict): a canceled control operation must not mutate the
 			// membership. Mark it removed first: the probe may already have
-			// queued circuit callbacks for an index that was never added.
+			// queued circuit callbacks for a member that was never added.
 			db.removed.Store(true)
 			_ = db.closeClient()
 			return -1, err
@@ -1218,29 +1249,29 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	c.dbMu.Lock()
 	if c.closed.Load() {
 		// Close ran while the member was being prepared: closeAll has
-		// already drained c.dbs, so appending here would leak the client
+		// already drained c.dbs, so inserting here would leak the client
 		// (nothing would ever close it).
 		c.dbMu.Unlock()
 		db.removed.Store(true)
 		_ = db.closeClient()
 		return -1, ErrClosed
 	}
-	c.dbs = append(c.dbs, db)
+	c.dbs[db.id] = db
 	c.dbMu.Unlock()
-	return idx, nil
+	return db.id, nil
 }
 
-func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
+func (c *multidbCore) removeDatabase(ctx context.Context, id int) error {
 	if c.closed.Load() {
 		// Consistent with the other control paths: the drained membership
-		// would otherwise surface as a misleading out-of-range error.
+		// would otherwise surface as a misleading not-found error.
 		return ErrClosed
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Hold failoverMu so the active-index adjustment below cannot race a
-	// concurrent switchActive (all active transitions happen under it).
+	// Hold failoverMu so the active-id check below cannot race a concurrent
+	// switchActive (all active transitions happen under it).
 	c.failoverMu.Lock()
 	defer c.failoverMu.Unlock()
 	// Re-check after the lock wait: a client closed or an operator request
@@ -1252,45 +1283,40 @@ func (c *multidbCore) removeDatabase(ctx context.Context, index int) error {
 		return err
 	}
 	c.dbMu.Lock()
-	if index < 0 || index >= len(c.dbs) {
+	db, ok := c.dbs[id]
+	if !ok {
 		c.dbMu.Unlock()
-		return fmt.Errorf("redis: multidb: database index %d out of range", index)
+		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 	}
-	if int(c.active.Load()) == index {
+	if int(c.active.Load()) == id {
 		c.dbMu.Unlock()
 		return errors.New("redis: multidb: cannot remove the active database")
 	}
-	db := c.dbs[index]
 	// Mark before the client is closed: a background probe holding a stale
 	// snapshot must stop recording outcomes for this member.
 	db.removed.Store(true)
-	c.dbs = append(c.dbs[:index], c.dbs[index+1:]...)
-	for i := index; i < len(c.dbs); i++ {
-		c.dbs[i].idx.Store(int32(i))
-	}
-	// Keep the active index pointing at the same database after the slice
-	// shifted.
-	if active := int(c.active.Load()); active > index {
-		c.active.Store(int32(active - 1))
-	}
+	// Ids are stable and `active` is an id, so removing a non-active member
+	// renumbers nothing and never shifts the active — just drop the key.
+	delete(c.dbs, id)
 	c.dbMu.Unlock()
 
 	return db.closeClient()
 }
 
-func (c *multidbCore) setWeight(index int, weight float64) error {
+func (c *multidbCore) setWeight(id int, weight float64) error {
 	if c.closed.Load() {
-		// After Close drains the membership the index would surface as a
-		// misleading out-of-range error; report the terminal state instead,
+		// After Close drains the membership the id would surface as a
+		// misleading not-found error; report the terminal state instead,
 		// consistent with the other control APIs.
 		return ErrClosed
 	}
 	c.dbMu.Lock()
 	defer c.dbMu.Unlock()
-	if index < 0 || index >= len(c.dbs) {
-		return fmt.Errorf("redis: multidb: database index %d out of range", index)
+	db, ok := c.dbs[id]
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 	}
-	c.dbs[index].weight = weight
+	db.weight = weight
 	return nil
 }
 
@@ -1298,10 +1324,10 @@ func (c *multidbCore) setAutoFallback(enabled bool) {
 	c.autoFallbackDisabled.Store(!enabled)
 }
 
-func (c *multidbCore) addDatabaseHook(index int, hook Hook) error {
-	db := c.dbAt(index)
+func (c *multidbCore) addDatabaseHook(id int, hook Hook) error {
+	db := c.dbByID(id)
 	if db == nil {
-		return fmt.Errorf("redis: multidb: database index %d out of range", index)
+		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 	}
 	if db.cc != nil {
 		db.cc.AddHook(hook)
@@ -1367,8 +1393,10 @@ func (c *multidbCore) startBackgroundLoop() {
 
 func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 	c.dbMu.RLock()
-	dbs := make([]*multidbDatabase, len(c.dbs))
-	copy(dbs, c.dbs)
+	dbs := make([]*multidbDatabase, 0, len(c.dbs))
+	for _, db := range c.dbs {
+		dbs = append(dbs, db)
+	}
 	c.dbMu.RUnlock()
 
 	for _, db := range dbs {
@@ -1418,15 +1446,15 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	// post-failover suppression window. Weights are captured under the lock
 	// (SetWeight mutates them under dbMu); the probes below run off-lock.
 	type fbCand struct {
-		pos    int
+		id     int
 		weight float64
 		db     *multidbDatabase
 	}
 	c.dbMu.RLock()
 	activeWeight := active.weight
 	var cands []fbCand
-	for i, db := range c.dbs {
-		if i == idx {
+	for id, db := range c.dbs {
+		if id == idx {
 			continue
 		}
 		// Skip a member still in its post-failover fallback-suppression window:
@@ -1436,7 +1464,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 			continue
 		}
 		if db.weight > activeWeight && db.cb.CheckState() == imultidb.CircuitClosed {
-			cands = append(cands, fbCand{i, db.weight, db})
+			cands = append(cands, fbCand{id, db.weight, db})
 		}
 	}
 	c.dbMu.RUnlock()
@@ -1452,14 +1480,17 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	for len(cands) > 0 {
 		top := 0
 		for j := 1; j < len(cands); j++ {
-			if cands[j].weight > cands[top].weight {
+			// Highest weight wins; ties break by lowest id so map iteration
+			// order never decides which member fallback picks.
+			if cands[j].weight > cands[top].weight ||
+				(cands[j].weight == cands[top].weight && cands[j].id < cands[top].id) {
 				top = j
 			}
 		}
 		cand := cands[top]
 		cands = append(cands[:top], cands[top+1:]...)
 		if cand.db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, cand.db.checks) {
-			best = cand.pos
+			best = cand.id
 			break
 		}
 	}
