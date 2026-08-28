@@ -223,6 +223,8 @@ type Cmdable interface {
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogLen(ctx context.Context) *IntCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
+	Monitor(ctx context.Context, ch chan string) *MonitorCmd
+	MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
@@ -913,6 +915,14 @@ See further: Redis MONITOR command: https://redis.io/commands/monitor
 */
 func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
 	cmd := newMonitorCmd(ctx, ch)
+	_ = c(ctx, cmd)
+	return cmd
+}
+
+// MonitorWithArgs works like Monitor, but appends vendor-specific arguments to
+// the MONITOR command for Redis-compatible services that require them.
+func (c cmdable) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	cmd := newMonitorCmd(ctx, ch, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
