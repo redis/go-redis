@@ -85,7 +85,7 @@ func TestMultiDBPipelineFailoverRetry(t *testing.T) {
 			t.Errorf("command %v error after retry: %v", cmd.Name(), cmd.Err())
 		}
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active index = %d after pipeline failover, want 1", got)
 	}
 	if db2.hook.batches.Load() == 0 {
@@ -301,7 +301,7 @@ func TestMultiDBAutoPipelineRoutesAndFailsOver(t *testing.T) {
 	if err := ap.Set(ctx, "k2", "v2", 0).Err(); err != nil {
 		t.Fatalf("autopipelined Set after active failure: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active index = %d after autopipeline failover, want 1", got)
 	}
 }
@@ -1270,7 +1270,7 @@ func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
 	if got := det.resets.Load(); got != 0 {
 		t.Errorf("canceled operations advanced failover state: detector resets = %d", got)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("canceled operations switched the active database: active = %d", got)
 	}
 }
