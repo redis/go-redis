@@ -1194,6 +1194,54 @@ func TestMultiDBPipelineContextErrorOverwritesStaleErrors(t *testing.T) {
 	}
 }
 
+// TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker is the regression test
+// for the canceled-batch finding: when the caller's own context ends during
+// batch execution, the failure is a client-side signal, not a database health
+// verdict, so the pipeline must record nothing on the breaker or the detector
+// (mirroring the single-command path's post-exec ctx.Err guard). FailureThreshold
+// is 1, so any recorded failure would open the breaker.
+func TestMultiDBPipelineCallerCancelDoesNotPoisonBreaker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	det := &fakeDetector{}
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 2
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, &cancelingFailHook{cancel: cancel}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	_, err = mdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "k", "v", 0)
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Pipelined err = %v, want context.Canceled", err)
+	}
+	if got := det.failures.Load(); got != 0 {
+		t.Errorf("caller cancellation recorded %d detector failures, want 0 "+
+			"(a client-side cancel must not poison the breaker/detector)", got)
+	}
+}
+
 func TestMultiDBTxAndWatchReturnContextErrorBeforeFailover(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)

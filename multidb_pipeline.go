@@ -278,6 +278,22 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// pre-execution hook abort from a post-execution hook error.
 		executed := new(atomic.Bool)
 		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
+		if err != nil && ctx.Err() != nil {
+			// The caller's own context ended (deadline/cancel) while the batch
+			// ran — typically a dial cut short, surfacing as a net timeout the
+			// classifier would otherwise score as a member failure. That is a
+			// client-side signal, not a health verdict: release any half-open
+			// reservation and return WITHOUT recording. Surface the context
+			// error, overwriting the stale transport error, exactly as the
+			// pre-execution gate check does.
+			if reserved {
+				db.cb.ReleaseHalfOpen()
+			}
+			ctxErr := ctx.Err()
+			resetCmds(cmds)
+			setCmdsErr(cmds, ctxErr)
+			return exitErr(ctxErr)
+		}
 		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), reserved)
 
 		if transportFailures == 0 {
@@ -359,6 +375,17 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 
 	executed := new(atomic.Bool)
 	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
+	if err != nil && ctx.Err() != nil {
+		// Caller's context ended mid-transaction (see processPipeline): a
+		// client-side signal, not a health verdict. Release any half-open
+		// reservation and return without recording. Do NOT reset the commands
+		// here — EXEC may have committed, and their state is the caller's only
+		// evidence of that.
+		if reserved {
+			db.cb.ReleaseHalfOpen()
+		}
+		return err
+	}
 	// Record outcomes only for the user's commands: cmds arrives wrapped by
 	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
 	// would advance the breaker by three per single-command transaction.
