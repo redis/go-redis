@@ -1414,10 +1414,17 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	}
 
 	now := time.Now().UnixNano()
+	// Collect every higher-weight, breaker-closed candidate not in its
+	// post-failover suppression window. Weights are captured under the lock
+	// (SetWeight mutates them under dbMu); the probes below run off-lock.
+	type fbCand struct {
+		pos    int
+		weight float64
+		db     *multidbDatabase
+	}
 	c.dbMu.RLock()
 	activeWeight := active.weight
-	best, bestWeight := -1, activeWeight
-	var bestDB *multidbDatabase
+	var cands []fbCand
 	for i, db := range c.dbs {
 		if i == idx {
 			continue
@@ -1428,21 +1435,35 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		if now < db.noFallbackBefore.Load() {
 			continue
 		}
-		if db.weight > bestWeight && db.cb.CheckState() == imultidb.CircuitClosed {
-			best, bestWeight, bestDB = i, db.weight, db
+		if db.weight > activeWeight && db.cb.CheckState() == imultidb.CircuitClosed {
+			cands = append(cands, fbCand{i, db.weight, db})
 		}
 	}
 	c.dbMu.RUnlock()
 
-	if best < 0 {
-		return
+	// Probe candidates highest-weight first with the full check set (incl
+	// fail-back-only lag), WITHOUT recording: the breaker's consecutive-failure
+	// model leaves an intermittently-laggy member "closed", so CheckState alone
+	// would fall back onto it. A candidate that fails the probe is dropped and
+	// the next-highest is tried, so a laggy top-weight member cannot shadow a
+	// healthy lower-weight one; recording nothing means the probe never evicts a
+	// member from failover.
+	best := -1
+	for len(cands) > 0 {
+		top := 0
+		for j := 1; j < len(cands); j++ {
+			if cands[j].weight > cands[top].weight {
+				top = j
+			}
+		}
+		cand := cands[top]
+		cands = append(cands[:top], cands[top+1:]...)
+		if cand.db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, cand.db.checks) {
+			best = cand.pos
+			break
+		}
 	}
-	// Gate fallback on the target's full check set (incl fail-back-only lag) at
-	// this instant, WITHOUT recording: the breaker's consecutive-failure model
-	// leaves an intermittently-laggy member "closed", so CheckState alone would
-	// fall back onto a laggy primary. A non-recording probe declines the switch
-	// this tick without letting the lag check evict the member from failover.
-	if bestDB != nil && !bestDB.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, bestDB.checks) {
+	if best < 0 {
 		return
 	}
 	if announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0); announce != nil {

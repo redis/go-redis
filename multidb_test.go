@@ -325,6 +325,34 @@ func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
 	}
 }
 
+// TestMultiDBFallbackSkipsLaggyToNextCandidate: when the highest-weight
+// fallback candidate fails its fail-back-only probe, fallback must drop it and
+// try the next-highest healthy candidate instead of giving up (a laggy top
+// member must not shadow a healthy lower-weight one forever).
+func TestMultiDBFallbackSkipsLaggyToNextCandidate(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lowest; forced active
+	dbB := newTestDB("b", "127.0.0.1:2", 3, true) // highest; will be laggy
+	dbC := newTestDB("c", "127.0.0.1:3", 2, true) // middle; healthy
+	fbB := newFailbackOnlyCheck(true)
+	fbC := newFailbackOnlyCheck(true)
+	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
+	dbC.cfg.HealthChecks = append(dbC.cfg.HealthChecks, fbC)
+	mdb := newTestMultiDB(t, baseOptions(), dbA, dbB, dbC)
+	ctx := context.Background()
+
+	// Init active = dbB (highest weight, idx 1); force down to dbA.
+	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveIndex(0): %v", err)
+	}
+
+	fbB.healthy.Store(false) // top-weight candidate is laggy now
+	mdb.TestTryFallback()
+
+	if got := mdb.ActiveIndex(); got != 2 {
+		t.Errorf("fallback active = %d, want 2 (healthy middle dbC, skipping laggy dbB)", got)
+	}
+}
+
 func TestMultiDBEscalation(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
