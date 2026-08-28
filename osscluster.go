@@ -2738,6 +2738,16 @@ func (c *ClusterClient) readTxPipelineReplies(
 			queuedCmdIndexes = append(queuedCmdIndexes, i)
 			continue // +QUEUED
 		}
+		var pushErr *txPushReadError
+		if errors.As(err, &pushErr) {
+			if firstFatal != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstFatal, readErr: pushErr, forceBad: true}, unreadReplies: true}
+			}
+			if firstRedirect != nil {
+				return &txOutcome{kind: txFatal, err: &txQueuedReadError{queuedErr: firstRedirect.err, readErr: pushErr, forceBad: true}, unreadReplies: true}
+			}
+			return c.txReadFatal(pushErr)
+		}
 		if !isRedisError(err) {
 			// Transport error reading a +QUEUED reply. If a queue-phase
 			// root cause was already observed, preserve it in the wrapper
