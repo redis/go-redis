@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"sync/atomic"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
@@ -36,16 +35,18 @@ func resetCmds(cmds []Cmder) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed bool, res imultidb.Reservation) int {
-	// `executed` comes from the execution marker, not from inspecting
-	// command state: an executed all-success batch whose error was injected
-	// by a post-exec hook looks identical on the commands, and stamping it
-	// would turn already-applied writes into phantom transport failures and
-	// replay them. `res` is the gate admission's half-open reservation: the
-	// whole batch is ONE admission, so RecordSuccessFor / ReleaseFor settle the
-	// breaker's half-open slot exactly once however many commands succeed, and a
-	// closed-state admission (res.held == false) holds no slot to settle.
-	if !executed {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed *executedCmds, res imultidb.Reservation) int {
+	// `executed` is the per-command execution marker, not inferred from command
+	// state: an executed all-success batch whose error was injected by a
+	// post-exec hook looks identical on the commands, and stamping it would turn
+	// already-applied writes into phantom transport failures and replay them.
+	// It is per-command because a cluster batch fans out into independent node
+	// sub-batches — one node executing must not make another node's untouched
+	// commands look served. `res` is the gate admission's half-open reservation:
+	// the whole batch is ONE admission, so RecordSuccessFor / ReleaseFor settle
+	// the breaker's half-open slot exactly once however many commands succeed,
+	// and a closed-state admission (res.held == false) holds no slot to settle.
+	if !executed.any() {
 		if batchErr == nil {
 			// A member hook served the batch locally (returned nil without
 			// calling next): the results are valid for the caller, but
@@ -81,10 +82,11 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	recordOne := func(cmd Cmder) {
 		switch classify(cmd) {
 		case outcomeSuccess:
-			if !executed {
-				// A nil (or reply-class) error fabricated by an aborting
-				// hook is no proof the database answered: surface it to the
-				// caller, record nothing.
+			if !executed.has(cmd) {
+				// This command never reached the server — a hook served it
+				// locally, or (cluster fan-out) its node short-circuited while
+				// another node executed. Its nil error is no proof the database
+				// answered: surface it to the caller, record nothing.
 				return
 			}
 			// Settle the batch's single reservation: RecordSuccessFor releases
@@ -294,7 +296,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// The marker tells recordBatchOutcomes whether execution started
 		// (fresh per attempt): command state alone cannot distinguish a
 		// pre-execution hook abort from a post-execution hook error.
-		executed := new(atomic.Bool)
+		executed := newExecutedCmds(len(cmds))
 		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 		if err != nil && ctx.Err() != nil {
 			// The caller's own context ended (deadline/cancel) while the batch
@@ -315,7 +317,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// return without touching command state on caller cancellation.
 			return exitErr(ctx.Err())
 		}
-		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), res)
+		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res)
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
@@ -394,16 +396,18 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		break
 	}
 
-	executed := new(atomic.Bool)
+	executed := newExecutedCmds(len(cmds))
 	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 	if err != nil && ctx.Err() != nil {
 		// Caller's context ended mid-transaction (see processPipeline): a
 		// client-side signal, not a health verdict. Release any half-open
 		// reservation and return without recording. Do NOT reset the commands
 		// here — EXEC may have committed, and their state is the caller's only
-		// evidence of that.
+		// evidence of that. Return the cancellation as the aggregate error (like
+		// processPipeline) rather than the stale transport error, so a caller
+		// does not mistake a deliberate cancel for a retryable disconnect.
 		db.cb.ReleaseFor(res)
-		return err
+		return ctx.Err()
 	}
 	// Record outcomes only for the user's commands: cmds arrives wrapped by
 	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
@@ -412,7 +416,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) >= 3 {
 		user = cmds[1 : len(cmds)-1]
 	}
-	c.recordBatchOutcomes(db, user, err, executed.Load(), res)
+	c.recordBatchOutcomes(db, user, err, executed, res)
 	return err
 }
 

@@ -1699,24 +1699,63 @@ func (c *baseClient) generalProcessPipeline(
 	return lastErr
 }
 
-// pipelineExecutedKey carries an *atomic.Bool that execution paths flip the
-// moment a batch may have reached the server. MultiDBClient uses it to
-// distinguish "a hook aborted before execution" from "the batch executed and
-// a hook then replaced the error": command state alone cannot tell those
+// pipelineExecutedKey carries an *executedCmds that execution paths populate
+// the moment a batch's commands may have reached the server. MultiDBClient uses
+// it to distinguish "a hook aborted before execution" from "the batch executed
+// and a hook then replaced the error": command state alone cannot tell those
 // apart, and confusing them either fabricates phantom outcomes or replays
 // writes that already applied.
 type pipelineExecutedKey struct{}
 
-func markPipelineExecuted(ctx context.Context) {
-	if flag, ok := ctx.Value(pipelineExecutedKey{}).(*atomic.Bool); ok {
-		flag.Store(true)
+// executedCmds records which commands of a batch actually reached (or
+// attempted) the server. It is per-command, not a single flag, because a
+// cluster pipeline fans one batch out into independent node sub-batches: one
+// node executing must not make another node's short-circuited (untouched,
+// nil-error) commands look like served database successes.
+type executedCmds struct {
+	mu   sync.Mutex
+	done map[Cmder]struct{}
+}
+
+func newExecutedCmds(size int) *executedCmds {
+	return &executedCmds{done: make(map[Cmder]struct{}, size)}
+}
+
+func (e *executedCmds) mark(cmds []Cmder) {
+	e.mu.Lock()
+	for _, cmd := range cmds {
+		e.done[cmd] = struct{}{}
+	}
+	e.mu.Unlock()
+}
+
+func (e *executedCmds) has(cmd Cmder) bool {
+	e.mu.Lock()
+	_, ok := e.done[cmd]
+	e.mu.Unlock()
+	return ok
+}
+
+func (e *executedCmds) any() bool {
+	e.mu.Lock()
+	n := len(e.done)
+	e.mu.Unlock()
+	return n > 0
+}
+
+// markPipelineExecuted records that cmds reached (or attempted) the server for
+// the batch tracked in ctx, if any. Safe to call from multiple cluster-node
+// goroutines concurrently.
+func markPipelineExecuted(ctx context.Context, cmds []Cmder) {
+	if ec, ok := ctx.Value(pipelineExecutedKey{}).(*executedCmds); ok {
+		ec.mark(cmds)
 	}
 }
 
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	markPipelineExecuted(ctx)
+	markPipelineExecuted(ctx, cmds)
 	// Process any pending push notifications before executing the pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
@@ -1809,7 +1848,7 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	markPipelineExecuted(ctx)
+	markPipelineExecuted(ctx, cmds)
 	// Process any pending push notifications before executing the transaction pipeline
 	if err := c.processPushNotifications(ctx, cn); err != nil {
 		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
@@ -2622,7 +2661,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})

@@ -1459,3 +1459,45 @@ func TestMultiDBConcurrentCloseSerializes(t *testing.T) {
 		}
 	}
 }
+
+// TestMultiDBTxPipelineCallerCancelReturnsCancellation pins that a TxPipeline
+// interrupted by the caller's own context surfaces the cancellation as its
+// aggregate error (like the non-tx pipeline path), not the underlying transport
+// error — so a caller does not mistake a deliberate cancel for a retryable
+// disconnect.
+func TestMultiDBTxPipelineCallerCancelReturnsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 10,
+		SuccessThreshold: 1,
+	}
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer initCancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	if err := mdb.AddDatabaseHook(0, &cancelingFailHook{cancel: cancel}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	// The hook fails at transport level (io.EOF) and cancels the caller's
+	// context mid-transaction.
+	_, err = mdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.Set(ctx, "k", "v", 0)
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TxPipelined caller-cancel err = %v, want context.Canceled (aggregate, not the transport error)", err)
+	}
+}

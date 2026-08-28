@@ -582,8 +582,20 @@ func (c *MultiDBClient) SetAutoFallback(enabled bool) {
 	c.core.setAutoFallback(enabled)
 }
 
+// AddHook adds a hook to the MultiDB-level chain that wraps Process, Pipeline
+// and TxPipeline — the paths this client runs directly.
+//
+// A DialHook added here never fires: a MultiDBClient does not dial, it
+// delegates every connection to its member databases. To instrument member
+// dialing (or any other per-connection behaviour), install the hook on the
+// member with AddDatabaseHook instead.
+func (c *MultiDBClient) AddHook(hook Hook) {
+	c.hooksMixin.AddHook(hook)
+}
+
 // AddDatabaseHook installs a hook on the underlying client of the database with
-// the given id. It is mainly useful for testing and instrumentation.
+// the given id. Unlike AddHook it wraps the member connection directly, so it
+// is the way to instrument member dialing and per-connection behaviour.
 func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 	return c.core.addDatabaseHook(id, hook)
 }
