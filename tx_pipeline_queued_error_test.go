@@ -1664,7 +1664,7 @@ func TestTxPipelineExecQueuedErrorMixedBatchDiscardsNonHImportReplies(t *testing
 func TestTxPipelineExecQueuedErrorMapsExecRepliesToOriginalIndexes(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.himportPrepareReply = "+OK\r\n"
-	srv.execReply = "*2\r\n+OK\r\n+OK\r\n"
+	srv.execReply = "*2\r\n+OK\r\n:1\r\n"
 	defer func() { _ = srv.Close() }()
 
 	client := NewClient(&Options{
@@ -1934,7 +1934,7 @@ func TestClusterTxPipelineQueuedErrorMixedBatchDiscardsNonHImportReplies(t *test
 func TestClusterTxPipelineQueuedErrorMapsExecRepliesToOriginalIndexes(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.himportPrepareReply = "+OK\r\n"
-	srv.execReply = "*2\r\n+OK\r\n+OK\r\n"
+	srv.execReply = "*2\r\n+OK\r\n:1\r\n"
 	defer func() { _ = srv.Close() }()
 
 	ctx := context.Background()
