@@ -8461,11 +8461,17 @@ type MonitorCmd struct {
 	mu     sync.Mutex
 }
 
-func newMonitorCmd(ctx context.Context, ch chan string) *MonitorCmd {
+func newMonitorCmd(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	cmdArgs := make([]interface{}, 1, 1+len(args))
+	cmdArgs[0] = "monitor"
+	for _, arg := range args {
+		cmdArgs = append(cmdArgs, arg)
+	}
+
 	return &MonitorCmd{
 		baseCmd: baseCmd{
 			ctx:     ctx,
-			args:    []interface{}{"monitor"},
+			args:    cmdArgs,
 			cmdType: CmdTypeMonitor,
 		},
 		ch:     ch,
@@ -8951,7 +8957,11 @@ func (cmd *VectorScoreAttribSliceCmd) Clone() Cmder {
 func (cmd *MonitorCmd) Clone() Cmder {
 	// MonitorCmd cannot be safely cloned due to channels and goroutines
 	// Return a new MonitorCmd with the same channel
-	return newMonitorCmd(cmd.ctx, cmd.ch)
+	args := make([]string, 0, len(cmd.args)-1)
+	for i := 1; i < len(cmd.args); i++ {
+		args = append(args, cmd.stringArg(i))
+	}
+	return newMonitorCmd(cmd.ctx, cmd.ch, args...)
 }
 
 // ExtractCommandValue extracts the value from a command result using the fast enum-based approach
