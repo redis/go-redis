@@ -30,7 +30,7 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	mdb := newE2EClient(t, opts)
 	ctx := context.Background()
 
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("initial active = %d, want 0 (highest weight)", got)
 	}
 	if err := mdb.Set(ctx, "e2e:failover", "before", 0).Err(); err != nil {
@@ -44,12 +44,12 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	// every proxy ≈ a converged CRDB).
 	eventually(t, 15*time.Second, "pre-failover data visible via the new active", func() bool {
 		val, err := mdb.Get(ctx, "e2e:failover").Result()
-		return err == nil && val == "before" && mdb.ActiveIndex() == 1
+		return err == nil && val == "before" && mdb.ActiveDatabaseID() == 1
 	})
 
 	// Keep issuing commands; they must succeed again once failover lands.
 	eventually(t, 15*time.Second, "commands succeeding on the new active", func() bool {
-		return mdb.Set(ctx, "e2e:failover", "after", 0).Err() == nil && mdb.ActiveIndex() == 1
+		return mdb.Set(ctx, "e2e:failover", "after", 0).Err() == nil && mdb.ActiveDatabaseID() == 1
 	})
 
 	// Same backend behind every proxy: data written before the outage is
@@ -58,7 +58,7 @@ func TestFailoverOnMemberOutage(t *testing.T) {
 	if err != nil || val != "after" {
 		t.Fatalf("Get after failover: %q, %v", val, err)
 	}
-	// The callback runs after the active index is published (announce fires
+	// The callback runs after the active id is published (announce fires
 	// outside the failover lock), so poll rather than assert immediately.
 	eventually(t, 5*time.Second, "OnFailover(0 -> 1) callback", func() bool {
 		return failoverFrom.Load() == 0 && failoverTo.Load() == 1
@@ -75,7 +75,7 @@ func TestBackgroundDrivenFailover(t *testing.T) {
 	farm.Pause(0)
 
 	eventually(t, 15*time.Second, "background failover with zero traffic", func() bool {
-		return mdb.ActiveIndex() == 1
+		return mdb.ActiveDatabaseID() == 1
 	})
 }
 
@@ -89,14 +89,14 @@ func TestAutoFallbackToHigherWeight(t *testing.T) {
 
 	farm.Stop(0)
 	eventually(t, 15*time.Second, "failover away from member 0", func() bool {
-		return mdb.Set(ctx, "e2e:fallback", "x", 0).Err() == nil && mdb.ActiveIndex() != 0
+		return mdb.Set(ctx, "e2e:fallback", "x", 0).Err() == nil && mdb.ActiveDatabaseID() != 0
 	})
 
 	farm.Start(0)
 	// Recovery: grace period (2s) + health checks close the circuit +
 	// fallback interval (3s).
 	eventually(t, 30*time.Second, "fallback to the recovered member 0", func() bool {
-		return mdb.ActiveIndex() == 0
+		return mdb.ActiveDatabaseID() == 0
 	})
 	if err := mdb.Get(ctx, "e2e:fallback").Err(); err != nil {
 		t.Fatalf("Get after fallback: %v", err)
@@ -167,8 +167,8 @@ func TestEscalationWhenAllMembersDown(t *testing.T) {
 	})
 }
 
-// TestManualFailover: SetActiveIndex refuses a stopped member with
-// ErrTargetUnhealthy; ForceActiveIndex switches unconditionally.
+// TestManualFailover: SetActiveDatabase refuses a stopped member with
+// ErrTargetUnhealthy; ForceActiveDatabase switches unconditionally.
 // Spec: test_manual_failover_trigger / test_manual_failover_unhealthy_target.
 func TestManualFailover(t *testing.T) {
 	farm := newProxyFarm(t)
@@ -177,32 +177,32 @@ func TestManualFailover(t *testing.T) {
 
 	farm.Stop(2)
 
-	if err := mdb.SetActiveIndex(ctx, 2); !errors.Is(err, redis.ErrTargetUnhealthy) {
-		t.Fatalf("SetActiveIndex to stopped member: err = %v, want ErrTargetUnhealthy", err)
+	if err := mdb.SetActiveDatabase(ctx, 2); !errors.Is(err, redis.ErrTargetUnhealthy) {
+		t.Fatalf("SetActiveDatabase to stopped member: err = %v, want ErrTargetUnhealthy", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("active moved to %d after refused manual switch", got)
 	}
 
 	// Healthy target: probe-then-switch succeeds.
-	if err := mdb.SetActiveIndex(ctx, 1); err != nil {
-		t.Fatalf("SetActiveIndex to healthy member: %v", err)
+	if err := mdb.SetActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("SetActiveDatabase to healthy member: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active = %d, want 1", got)
 	}
 
 	// Force onto the dead member: the switch must happen unconditionally
 	// (asserted before any traffic can fail it back over), and the next
 	// commands then drive an automatic failover away again.
-	if err := mdb.ForceActiveIndex(ctx, 2); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	if err := mdb.ForceActiveDatabase(ctx, 2); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 2 {
-		t.Fatalf("active = %d immediately after ForceActiveIndex(2)", got)
+	if got := mdb.ActiveDatabaseID(); got != 2 {
+		t.Fatalf("active = %d immediately after ForceActiveDatabase(2)", got)
 	}
 	eventually(t, 15*time.Second, "automatic failover away from the forced dead member", func() bool {
-		return mdb.Set(ctx, "e2e:manual", "x", 0).Err() == nil && mdb.ActiveIndex() != 2
+		return mdb.Set(ctx, "e2e:manual", "x", 0).Err() == nil && mdb.ActiveDatabaseID() != 2
 	})
 }
 
@@ -254,7 +254,7 @@ func TestPubSubFollowsActive(t *testing.T) {
 
 	farm.Stop(0)
 	eventually(t, 15*time.Second, "failover away from member 0", func() bool {
-		return mdb.ActiveIndex() != 0
+		return mdb.ActiveDatabaseID() != 0
 	})
 
 	publishUntilReceived("after-failover")
@@ -302,15 +302,15 @@ func TestPSubscribeFollowsActive(t *testing.T) {
 
 	farm.Stop(0)
 	eventually(t, 15*time.Second, "failover away from member 0", func() bool {
-		return mdb.ActiveIndex() != 0
+		return mdb.ActiveDatabaseID() != 0
 	})
 
 	publishUntilReceived("pat-after-failover")
 }
 
 // TestRuntimeMembershipUnderFaults: a member added at runtime must be a real
-// failover target, and removing a (stopped, passive) member must keep the
-// shifted indexes coherent.
+// failover target, and removing a (stopped, passive) member must leave the
+// surviving members' ids unchanged (stable ids, no renumbering).
 // Spec: test_add_remove_database at runtime.
 func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	farm := newProxyFarm(t)
@@ -319,15 +319,15 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	mdb := newE2EClient(t, opts)
 	ctx := context.Background()
 
-	idx, err := mdb.AddDatabase(ctx, redis.MultiDBClientConfig{
+	id, err := mdb.AddDatabase(ctx, redis.MultiDBClientConfig{
 		Options: memberOptions(farm, 2),
 		Weight:  1,
 	})
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
 	}
-	if idx != 2 {
-		t.Fatalf("AddDatabase index = %d, want 2", idx)
+	if id != 2 {
+		t.Fatalf("AddDatabase id = %d, want 2", id)
 	}
 
 	// With both original members down, traffic must land on the member that
@@ -335,16 +335,16 @@ func TestRuntimeMembershipUnderFaults(t *testing.T) {
 	farm.Stop(0)
 	farm.Stop(1)
 	eventually(t, 20*time.Second, "commands succeeding on the runtime-added member", func() bool {
-		return mdb.Set(ctx, "e2e:member", "x", 0).Err() == nil && mdb.ActiveIndex() == 2
+		return mdb.Set(ctx, "e2e:member", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == 2
 	})
 
-	// Removing the stopped, passive member 0 shifts the slice; the active
-	// member keeps serving under its new index.
+	// Removing the stopped, passive member 0 does not renumber survivors: ids
+	// are stable, so the active member keeps its id and keeps serving.
 	if err := mdb.RemoveDatabase(ctx, 0); err != nil {
 		t.Fatalf("RemoveDatabase: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Fatalf("active index after removal = %d, want 1 (shifted)", got)
+	if got := mdb.ActiveDatabaseID(); got != 2 {
+		t.Fatalf("active id after removal = %d, want 2 (unchanged; ids are stable)", got)
 	}
 	if err := mdb.Set(ctx, "e2e:member", "y", 0).Err(); err != nil {
 		t.Fatalf("Set after removal: %v", err)
@@ -363,7 +363,7 @@ func TestSetWeightSteersFallback(t *testing.T) {
 	// The failover must land on member 1 (next weight): only then does the
 	// later switch to member 2 prove the runtime weight change steered it.
 	eventually(t, 15*time.Second, "failover to member 1", func() bool {
-		return mdb.Set(ctx, "e2e:weight", "x", 0).Err() == nil && mdb.ActiveIndex() == 1
+		return mdb.Set(ctx, "e2e:weight", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == 1
 	})
 
 	// Member 2 becomes the heaviest healthy member: the next fallback pass
@@ -372,7 +372,7 @@ func TestSetWeightSteersFallback(t *testing.T) {
 		t.Fatalf("SetWeight: %v", err)
 	}
 	eventually(t, 30*time.Second, "fallback to the re-weighted member 2", func() bool {
-		return mdb.ActiveIndex() == 2
+		return mdb.ActiveDatabaseID() == 2
 	})
 	if err := mdb.Get(ctx, "e2e:weight").Err(); err != nil {
 		t.Fatalf("Get on the re-weighted member: %v", err)
@@ -404,7 +404,7 @@ func TestConcurrentTrafficAcrossFailover(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("e2e:conc:%d", g)
 			for !stop.Load() {
-				if err := mdb.Set(ctx, key, "v", 0).Err(); err == nil && mdb.ActiveIndex() == 1 {
+				if err := mdb.Set(ctx, key, "v", 0).Err(); err == nil && mdb.ActiveDatabaseID() == 1 {
 					postFailover[g].Add(1)
 				}
 				time.Sleep(20 * time.Millisecond)
@@ -467,7 +467,7 @@ func TestFailoverCallbacksObserved(t *testing.T) {
 
 	farm.Stop(0)
 	eventually(t, 15*time.Second, "failover away from member 0", func() bool {
-		return mdb.Set(ctx, "e2e:cb", "x", 0).Err() == nil && mdb.ActiveIndex() == 1
+		return mdb.Set(ctx, "e2e:cb", "x", 0).Err() == nil && mdb.ActiveDatabaseID() == 1
 	})
 	// Both callbacks are delivered asynchronously — poll.
 	eventually(t, 5*time.Second, "failover callbacks", func() bool {
