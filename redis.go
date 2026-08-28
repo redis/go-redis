@@ -2002,13 +2002,21 @@ func (c *baseClient) txPipelineProcessCmds(
 			}
 			if errors.As(err, &execArrayErr) {
 				setCmdsErr(cmds[:1], err)
-				for i := 0; i < execArrayErr.readCount; i++ {
+				for i := range trimmedCmds {
+					if _, ok := execArrayErr.execCmdIndexes[i]; !ok {
+						continue
+					}
 					if _, ok := execArrayErr.himportedIndexes[i]; ok {
 						continue
 					}
 					setCmdsErr(trimmedCmds[i:i+1], err)
 				}
-				setCmdsErr(trimmedCmds[execArrayErr.readCount:], err)
+				for i := range trimmedCmds {
+					if _, ok := execArrayErr.execCmdIndexes[i]; ok {
+						continue
+					}
+					setCmdsErr(trimmedCmds[i:i+1], err)
+				}
 				setCmdsErr(cmds[len(cmds)-1:], err)
 				return err
 			}
@@ -2050,8 +2058,8 @@ type txQueuedExecAbortError struct {
 
 type txQueuedExecArrayError struct {
 	queuedErr        error
+	execCmdIndexes   map[int]struct{}
 	himportedIndexes map[int]struct{}
-	readCount        int
 }
 
 type txQueuedReadError struct {
@@ -2112,6 +2120,25 @@ func himportFilteredCmds(cmds []Cmder, himportedIndexes map[int]struct{}) []Cmde
 		}
 	}
 	return filtered
+}
+
+func txQueuedCmdIndexes(cmds []Cmder) []int {
+	indexes := make([]int, 0, len(cmds))
+	for i, cmd := range cmds {
+		if cmd.Err() == nil {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
+func txHasHImport(cmds []Cmder) bool {
+	for _, cmd := range cmds {
+		if _, ok := cmd.(himportCmder); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func discardExecResult(rd *proto.Reader) error {
@@ -2198,28 +2225,28 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if n < 0 {
 			return &txQueuedReadError{queuedErr: queuedErr, readErr: fmt.Errorf("redis: invalid EXEC array length %d", n), forceBad: true}
 		}
-		hasHImport := false
+		execCmdIndexes := txQueuedCmdIndexes(cmds)
+		executedCmds := make(map[int]struct{}, min(n, len(execCmdIndexes)))
+		hasHImport := txHasHImport(cmds)
 		himportedIndexes := make(map[int]struct{})
-		for _, cmd := range cmds {
-			if _, ok := cmd.(himportCmder); ok {
-				hasHImport = true
-				break
-			}
-		}
 		for i := 0; i < n; i++ {
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
 			}
-			if hasHImport && i < len(cmds) {
-				if _, ok := cmds[i].(himportCmder); ok {
-					err := cmds[i].readReply(rd)
-					cmds[i].SetErr(err)
+			if i < len(execCmdIndexes) {
+				executedCmds[execCmdIndexes[i]] = struct{}{}
+			}
+			if hasHImport && i < len(execCmdIndexes) {
+				cmdIndex := execCmdIndexes[i]
+				if _, ok := cmds[cmdIndex].(himportCmder); ok {
+					err := cmds[cmdIndex].readReply(rd)
+					cmds[cmdIndex].SetErr(err)
 					if err != nil && !isRedisError(err) {
 						wrapped := &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
-						cmds[i].SetErr(wrapped)
+						cmds[cmdIndex].SetErr(wrapped)
 						return wrapped
 					}
-					himportedIndexes[i] = struct{}{}
+					himportedIndexes[cmdIndex] = struct{}{}
 					continue
 				}
 			}
@@ -2227,11 +2254,7 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
 			}
 		}
-		readCount := n
-		if readCount > len(cmds) {
-			readCount = len(cmds)
-		}
-		return &txQueuedExecArrayError{queuedErr: queuedErr, himportedIndexes: himportedIndexes, readCount: readCount}
+		return &txQueuedExecArrayError{queuedErr: queuedErr, execCmdIndexes: executedCmds, himportedIndexes: himportedIndexes}
 	}
 
 	return nil
