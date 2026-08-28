@@ -2122,16 +2122,6 @@ func himportFilteredCmds(cmds []Cmder, himportedIndexes map[int]struct{}) []Cmde
 	return filtered
 }
 
-func txQueuedCmdIndexes(cmds []Cmder) []int {
-	indexes := make([]int, 0, len(cmds))
-	for i, cmd := range cmds {
-		if cmd.Err() == nil {
-			indexes = append(indexes, i)
-		}
-	}
-	return indexes
-}
-
 func txHasHImport(cmds []Cmder) bool {
 	for _, cmd := range cmds {
 		if _, ok := cmd.(himportCmder); ok {
@@ -2163,7 +2153,8 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 
 	// Parse +QUEUED.
 	var queuedErr error
-	for _, cmd := range cmds {
+	queuedCmdIndexes := make([]int, 0, len(cmds))
+	for i, cmd := range cmds {
 		// To be sure there are no buffered push notifications, we process them before reading the reply
 		if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 			if queuedErr != nil {
@@ -2184,7 +2175,9 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 			if queuedErr == nil {
 				queuedErr = err
 			}
+			continue
 		}
+		queuedCmdIndexes = append(queuedCmdIndexes, i)
 	}
 
 	// To be sure there are no buffered push notifications, we process them before reading the reply
@@ -2225,19 +2218,18 @@ func (c *baseClient) txPipelineReadQueued(ctx context.Context, cn *pool.Conn, rd
 		if n < 0 {
 			return &txQueuedReadError{queuedErr: queuedErr, readErr: fmt.Errorf("redis: invalid EXEC array length %d", n), forceBad: true}
 		}
-		execCmdIndexes := txQueuedCmdIndexes(cmds)
-		executedCmds := make(map[int]struct{}, min(n, len(execCmdIndexes)))
+		executedCmds := make(map[int]struct{}, min(n, len(queuedCmdIndexes)))
 		hasHImport := txHasHImport(cmds)
 		himportedIndexes := make(map[int]struct{})
 		for i := 0; i < n; i++ {
 			if err := c.processPendingPushNotificationWithReader(ctx, cn, rd); err != nil {
 				return &txQueuedReadError{queuedErr: queuedErr, readErr: err, forceBad: true, himportedIndexes: himportedIndexes}
 			}
-			if i < len(execCmdIndexes) {
-				executedCmds[execCmdIndexes[i]] = struct{}{}
+			if i < len(queuedCmdIndexes) {
+				executedCmds[queuedCmdIndexes[i]] = struct{}{}
 			}
-			if hasHImport && i < len(execCmdIndexes) {
-				cmdIndex := execCmdIndexes[i]
+			if hasHImport && i < len(queuedCmdIndexes) {
+				cmdIndex := queuedCmdIndexes[i]
 				if _, ok := cmds[cmdIndex].(himportCmder); ok {
 					err := cmds[cmdIndex].readReply(rd)
 					cmds[cmdIndex].SetErr(err)

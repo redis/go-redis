@@ -1780,6 +1780,55 @@ func TestTxPipelineExecQueuedErrorMapsExecRepliesToOriginalIndexes(t *testing.T)
 	}
 }
 
+func TestTxPipelineQueuedReadMapsExecRepliesDespiteStaleRetryErrors(t *testing.T) {
+	ctx := context.Background()
+	client := NewClient(&Options{})
+	client.himport.register("fs", []string{"f1"})
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "set", "a", "1"),
+		NewStatusCmd(ctx, "set", "b", "1"),
+		NewHImportDiscardCmd(ctx, "fs"),
+	}
+	for _, cmd := range cmds {
+		cmd.SetErr(io.EOF)
+	}
+
+	replies := strings.NewReader(strings.Join([]string{
+		"+OK\r\n",
+		"+QUEUED\r\n",
+		"-ERR in transaction context, keys must in same slot\r\n",
+		"+QUEUED\r\n",
+		"*2\r\n",
+		"+OK\r\n",
+		":1\r\n",
+	}, ""))
+
+	rd := proto.NewReader(bufio.NewReader(replies))
+	statusCmd := NewStatusCmd(ctx)
+
+	err := client.txPipelineReadQueued(ctx, nil, rd, statusCmd, cmds)
+	if err == nil {
+		t.Fatal("txPipelineReadQueued() error = nil, want queued Redis error")
+	}
+
+	var execArrayErr *txQueuedExecArrayError
+	if !errors.As(err, &execArrayErr) {
+		t.Fatalf("txPipelineReadQueued() error = %T, want *txQueuedExecArrayError", err)
+	}
+	if _, ok := execArrayErr.execCmdIndexes[2]; !ok {
+		t.Fatalf("execCmdIndexes = %v, want executed HIMPORT index 2", execArrayErr.execCmdIndexes)
+	}
+	if _, ok := execArrayErr.himportedIndexes[2]; !ok {
+		t.Fatalf("himportedIndexes = %v, want drained HIMPORT index 2", execArrayErr.himportedIndexes)
+	}
+
+	himportDiscard := cmds[2].(*HImportDiscardCmd)
+	if himportDiscard.Err() != nil {
+		t.Fatalf("HImportDiscard err = %v, want nil (successful drained reply)", himportDiscard.Err())
+	}
+}
+
 func TestClusterTxPipelineQueuedErrorShortArraySkipsUnreadHImportSideEffects(t *testing.T) {
 	srv := startTxQueueErrorServer(t)
 	srv.execReply = "*1\r\n+OK\r\n"
