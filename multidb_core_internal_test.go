@@ -1,9 +1,12 @@
 package redis
 
 import (
+	"context"
 	"fmt"
 	"testing"
+	"time"
 
+	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
@@ -48,5 +51,38 @@ func TestClassifyOutcomeClusterNoNodes(t *testing.T) {
 	}
 	if got := classifyOutcome(fmt.Errorf("wrapped: %w", errClusterNoNodes), true); got != outcomeFailure {
 		t.Errorf("classifyOutcome(wrapped errClusterNoNodes) = %v, want outcomeFailure", got)
+	}
+}
+
+// TestTryFallbackYieldsWhenFailoverLocked pins that the background fallback
+// yields to a real failover instead of blocking it: with failoverMu already
+// held (as the command-path tryFailover would hold it), tryFallbackToPrimary
+// must return promptly via TryLock rather than block on the lock, and must not
+// change the active member. Under the old Lock() this goroutine would block
+// forever and the test would time out.
+func TestTryFallbackYieldsWhenFailoverLocked(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	active := &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	cand := &multidbDatabase{id: 1, weight: 2, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[0] = active
+	core.dbs[1] = cand
+	core.active.Store(0)
+
+	// Simulate a concurrent failover holding the lock across a slow probe.
+	core.failoverMu.Lock()
+	defer core.failoverMu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		core.tryFallbackToPrimary(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tryFallbackToPrimary blocked on a held failoverMu instead of yielding")
+	}
+	if got := int(core.active.Load()); got != 0 {
+		t.Errorf("active changed to %d while a failover held the lock", got)
 	}
 }

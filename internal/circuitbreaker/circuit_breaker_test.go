@@ -950,3 +950,114 @@ func TestRecordFailureResetRaceKeepsTimestamp(t *testing.T) {
 		}
 	}
 }
+
+// TestCircuitBreaker_ReservationIgnoredAfterEpochChange pins the generation
+// guard on AllowReserve reservations: a reservation taken in one half-open
+// episode must not settle against a later one after the circuit has cycled
+// through Open and back to half-open. Without it, a stale success would count
+// toward closing the new episode and would free a slot it never held there.
+func TestCircuitBreaker_ReservationIgnoredAfterEpochChange(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    5, // high so one success cannot close half-open
+		MaxHalfOpenRequests: 5,
+		OpenTimeout:         50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	// Episode A: open -> half-open, take a reservation.
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	allowed, rA := cb.AllowReserve()
+	if !allowed || !rA.held {
+		t.Fatalf("AllowReserve in half-open: allowed=%v held=%v", allowed, rA.held)
+	}
+	genA := cb.generation.Load()
+
+	// Cycle to episode B: a failure re-opens, then a probe re-enters half-open.
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState()
+	if State(cb.state.Load()) != StateHalfOpen {
+		t.Fatalf("expected half-open episode B, got %v", cb.State())
+	}
+	if cb.generation.Load() == genA {
+		t.Fatalf("generation did not advance across episodes (still %d)", genA)
+	}
+
+	beforeSucc := cb.successes.Load()
+	beforeReq := cb.requests.Load()
+	// The stale episode-A reservation must be ignored.
+	cb.RecordSuccessFor(rA)
+	if got := cb.successes.Load(); got != beforeSucc {
+		t.Errorf("stale reservation bumped successes: before=%d after=%d", beforeSucc, got)
+	}
+	if got := cb.requests.Load(); got != beforeReq {
+		t.Errorf("stale reservation changed requests: before=%d after=%d", beforeReq, got)
+	}
+}
+
+// TestCircuitBreaker_ReservationSettlesOnce pins the once-only guard: a single
+// reservation shared by many successful outcomes (a pipeline batch) settles the
+// half-open slot exactly once — one success counted, one slot released — instead
+// of once per outcome.
+func TestCircuitBreaker_ReservationSettlesOnce(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    5, // high so repeated settles would accumulate visibly
+		MaxHalfOpenRequests: 3,
+		OpenTimeout:         50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	allowed, r := cb.AllowReserve()
+	if !allowed || !r.held {
+		t.Fatalf("AllowReserve in half-open: allowed=%v held=%v", allowed, r.held)
+	}
+	if got := cb.requests.Load(); got != 1 {
+		t.Fatalf("requests after one reservation = %d, want 1", got)
+	}
+
+	for i := 0; i < 5; i++ {
+		cb.RecordSuccessFor(r) // as N successful commands sharing one admission would
+	}
+	if got := cb.successes.Load(); got != 1 {
+		t.Errorf("successes = %d, want 1 (reservation settled once)", got)
+	}
+	if got := cb.requests.Load(); got != 0 {
+		t.Errorf("requests = %d, want 0 (one reservation, released once)", got)
+	}
+}
+
+// TestCircuitBreaker_ForceOpen pins that ForceOpen transitions straight to Open
+// regardless of the failure count, blocks requests, notifies once, and is a
+// no-op when already open.
+func TestCircuitBreaker_ForceOpen(t *testing.T) {
+	config := Config{
+		FailureThreshold: 100, // large: ForceOpen must not depend on synthesizing failures
+		SuccessThreshold: 2,
+		OpenTimeout:      time.Hour,
+	}
+	cb := New(config)
+	var rec transitionRecorder
+	cb.OnStateChange(rec.record)
+
+	cb.ForceOpen()
+	if cb.State() != StateOpen {
+		t.Fatalf("state after ForceOpen = %v, want open", cb.State())
+	}
+	if cb.IsAllowed() {
+		t.Error("IsAllowed should be false right after ForceOpen (open, before timeout)")
+	}
+	cb.ForceOpen() // redundant: already open, must not fire another transition
+
+	rec.waitFor(t, 1)
+	if got := rec.at(0); got.oldState != StateClosed || got.newState != StateOpen {
+		t.Errorf("expected Closed->Open, got %v->%v", got.oldState, got.newState)
+	}
+	if n := rec.len(); n != 1 {
+		t.Errorf("transition count = %d, want 1 (ForceOpen idempotent when already open)", n)
+	}
+}

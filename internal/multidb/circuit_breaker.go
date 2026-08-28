@@ -11,6 +11,10 @@ import (
 // This is an alias to the internal circuitbreaker package.
 type CircuitState = circuitbreaker.State
 
+// Reservation is a circuit-breaker admission handle returned by AllowReserve.
+// This is an alias to the internal circuitbreaker package.
+type Reservation = circuitbreaker.Reservation
+
 const (
 	// CircuitClosed indicates the circuit is closed and requests are allowed.
 	CircuitClosed = circuitbreaker.StateClosed

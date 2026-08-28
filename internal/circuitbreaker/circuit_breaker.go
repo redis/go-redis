@@ -99,6 +99,11 @@ type CircuitBreaker struct {
 	successes   atomic.Int32
 	requests    atomic.Int32 // Request count in half-open state
 	lastFailure atomic.Int64 // Unix nano timestamp
+	// generation is bumped on every Open->HalfOpen transition, so a reservation
+	// (see AllowReserve) taken in one half-open episode can be recognized as
+	// stale if it tries to settle after the circuit has cycled through Open and
+	// back to a new half-open episode.
+	generation atomic.Uint64
 
 	// transitionMu serializes ALL state transitions and the enqueue of their
 	// notifications, so callbacks are delivered in transition (CAS) order. It
@@ -164,6 +169,10 @@ func (cb *CircuitBreaker) CheckState() State {
 				// Closed, and overwriting it with HalfOpen would silently
 				// undo the reset.
 				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
+					// New half-open episode: bump the generation so a reservation
+					// still in flight from a previous episode cannot settle
+					// against this one (see AllowReserve / RecordSuccessFor).
+					cb.generation.Add(1)
 					// Enqueue under the lock so callback order matches CAS order;
 					// the callback itself runs on the cbq goroutine.
 					stats := cb.Stats()
@@ -221,6 +230,88 @@ func (cb *CircuitBreaker) Allow() (allowed, reserved bool) {
 	default:
 		return false, false
 	}
+}
+
+// Reservation identifies a single admission returned by AllowReserve. It carries
+// the half-open episode (generation) the admission belongs to and a once-only
+// settle guard, so that:
+//   - a reservation taken in one half-open episode cannot settle against a later
+//     one (the admitted request outlived an open -> half-open cycle), and
+//   - a reservation shared by several outcomes (e.g. a pipeline batch) settles
+//     the half-open slot exactly once, however many outcomes report success.
+//
+// The zero Reservation (held == false) is what a closed-state admission returns:
+// it holds no slot, and RecordSuccessFor treats it as an external success.
+type Reservation struct {
+	gen     uint64
+	held    bool
+	settled *atomic.Bool
+}
+
+// AllowReserve is Allow with an identity-bearing reservation. Prefer it over
+// Allow when the admitted operation may outlive a later open -> half-open
+// transition, or when several outcomes share one admission: the returned
+// Reservation lets RecordSuccessFor / ReleaseFor settle the half-open slot
+// exactly once and only within the episode the slot was reserved in.
+func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
+	switch cb.CheckState() {
+	case StateClosed:
+		return true, Reservation{}
+	case StateOpen:
+		return false, Reservation{}
+	case StateHalfOpen:
+		requests := cb.requests.Add(1)
+		if int(requests) > cb.config.MaxHalfOpenRequests {
+			cb.requests.Add(-1)
+			return false, Reservation{}
+		}
+		// Re-check after reserving (mirrors Allow): a probe failure may have
+		// re-opened the circuit in between, and admitting here would both hit a
+		// just-failed endpoint and leave a phantom reservation.
+		if State(cb.state.Load()) != StateHalfOpen {
+			if cb.requests.Add(-1) < 0 {
+				cb.requests.Store(0)
+			}
+			return false, Reservation{}
+		}
+		return true, Reservation{gen: cb.generation.Load(), held: true, settled: new(atomic.Bool)}
+	default:
+		return false, Reservation{}
+	}
+}
+
+// RecordSuccessFor settles a successful outcome for a reservation from
+// AllowReserve. A half-open reservation releases (or, at SuccessThreshold,
+// closes on) its slot at most once, and only while it is still the current
+// half-open episode; a stale reservation — the circuit cycled open -> half-open
+// since it was taken — records nothing. A closed-state reservation (held ==
+// false) records an external success, exactly like RecordExternalSuccess.
+func (cb *CircuitBreaker) RecordSuccessFor(r Reservation) {
+	if !r.held {
+		cb.recordSuccess(false)
+		return
+	}
+	if r.settled.Swap(true) {
+		return // already settled by an earlier outcome sharing this reservation
+	}
+	if r.gen != cb.generation.Load() {
+		return // reservation belongs to a previous half-open episode
+	}
+	cb.recordSuccess(true)
+}
+
+// ReleaseFor returns a half-open reservation's slot when the outcome was neither
+// a recordable success nor failure. Like RecordSuccessFor it settles at most
+// once and only within the reservation's own half-open episode; a closed-state
+// or already-settled reservation is a no-op.
+func (cb *CircuitBreaker) ReleaseFor(r Reservation) {
+	if !r.held || r.settled.Swap(true) {
+		return
+	}
+	if r.gen != cb.generation.Load() {
+		return
+	}
+	cb.ReleaseHalfOpen()
 }
 
 // ReleaseHalfOpen returns a half-open request slot previously reserved by a
@@ -365,6 +456,27 @@ func (cb *CircuitBreaker) RecordFailure() {
 			return
 		}
 	}
+}
+
+// ForceOpen transitions the breaker straight to Open, regardless of the current
+// failure count. For callers that have already determined a member is down (for
+// example a failed startup or health probe) and want to open the circuit
+// without synthesizing FailureThreshold individual RecordFailure calls.
+func (cb *CircuitBreaker) ForceOpen() {
+	cb.lastFailure.Store(time.Now().UnixNano())
+	cb.transitionMu.Lock()
+	// Swap, capturing the old state for the callback; skip the notify (and the
+	// counter clear) if it was already Open, so a redundant ForceOpen is a no-op.
+	old := State(cb.state.Swap(int32(StateOpen)))
+	if old != StateOpen {
+		// successes/requests are meaningless in Open; clear them so the next
+		// Open -> HalfOpen episode starts clean, matching the other transitions.
+		cb.successes.Store(0)
+		cb.requests.Store(0)
+		stats := cb.Stats()
+		cb.cbq.Dispatch(func() { cb.notifyCallbacks(old, StateOpen, stats) })
+	}
+	cb.transitionMu.Unlock()
 }
 
 // OnStateChange registers a callback to be called when the state changes.

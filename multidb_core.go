@@ -471,9 +471,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			}
 			continue
 		}
-		for f := 0; f < db.cb.Config().FailureThreshold; f++ {
-			db.cb.RecordFailure()
-		}
+		db.cb.ForceOpen()
 	}
 
 	// Select the highest-weight database among those that passed the final
@@ -678,9 +676,10 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		// failover without executing anything — the reservation would leak
 		// and eventually starve the recovering active's probe budget.
 		db, idx := c.activeSnapshot()
-		admitted, reserved := false, false
+		admitted := false
+		var res imultidb.Reservation
 		if db != nil && !c.detector.ShouldFailover() {
-			admitted, reserved = db.cb.Allow()
+			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
 			gateRejections++
@@ -697,7 +696,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 				return err
 			}
 			// Re-enter the gate on the newly selected database: its breaker
-			// may be half-open and the Allow above is what reserves the
+			// may be half-open and the AllowReserve above is what reserves the
 			// probe slot. Re-gating does not consume a retry attempt.
 			continue
 		}
@@ -720,22 +719,16 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// reserved half-open slot (as the neutral branch does) and return
 			// without recording an outcome. A genuine unreachable-endpoint
 			// dial, where ctx is still alive, still reaches classifyOutcome.
-			if reserved {
-				db.cb.ReleaseHalfOpen()
-			}
+			db.cb.ReleaseFor(res)
 			return err
 		}
 		switch classifyOutcome(err, retryTimeout) {
 		case outcomeSuccess:
-			// Settle by reservation: a closed-state admission holds no
+			// Settle the reservation: a closed-state admission holds no
 			// half-open slot, and a command that outlives a later open ->
-			// half-open transition must not free the slot a real recovery
-			// probe is holding — its success still counts toward closing.
-			if reserved {
-				db.cb.RecordSuccess()
-			} else {
-				db.cb.RecordExternalSuccess()
-			}
+			// half-open transition (a stale reservation) must not free the slot
+			// a real recovery probe is holding — RecordSuccessFor enforces both.
+			db.cb.RecordSuccessFor(res)
 			// Feed the GLOBAL detector only while this command's member is
 			// still the active: an in-flight outcome from a member the active
 			// already switched away from (or that was removed) would otherwise
@@ -750,10 +743,8 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// Not a database-health signal: return to the caller without
 			// recording a failure or failing over. Give back the half-open
 			// probe slot the admission reserved — recording nothing would
-			// otherwise leak it.
-			if reserved {
-				db.cb.ReleaseHalfOpen()
-			}
+			// otherwise leak it (ReleaseFor is a no-op for a closed admission).
+			db.cb.ReleaseFor(res)
 			return err
 		case outcomeFailure:
 			db.cb.RecordFailure()
@@ -1151,9 +1142,7 @@ func (c *multidbCore) setActiveDatabase(ctx context.Context, index int, probe bo
 			// automatic failover. Re-selecting the active is never opened here —
 			// a fail-back-only breach must not evict the member serving traffic.
 			if !reselectingActive {
-				for f := 0; f < db.cb.Config().FailureThreshold; f++ {
-					db.cb.RecordFailure()
-				}
+				db.cb.ForceOpen()
 			}
 			return ErrTargetUnhealthy
 		}
@@ -1240,9 +1229,7 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 			return -1, err
 		}
 		if !healthy {
-			for f := 0; f < db.cb.Config().FailureThreshold; f++ {
-				db.cb.RecordFailure()
-			}
+			db.cb.ForceOpen()
 		}
 	}
 
@@ -1427,7 +1414,15 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 // failoverMu so a concurrent RemoveDatabase (which also holds it) cannot
 // remove the selected member or shift the slice in between.
 func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
-	c.failoverMu.Lock()
+	// Yield to a real failover instead of blocking it. This background fallback
+	// holds failoverMu across serial candidate probes (up to HealthCheckTimeout
+	// each), and the command path's tryFailover needs the same lock; without
+	// this a fallback cycle could delay an emergency switch by N_candidates x
+	// HealthCheckTimeout. Fallback is a cadence nicety — skipping a cycle while a
+	// failover (or another fallback) is in progress costs nothing.
+	if !c.failoverMu.TryLock() {
+		return
+	}
 	var announce func()
 	defer func() {
 		c.failoverMu.Unlock()
