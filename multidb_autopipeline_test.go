@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -461,9 +462,42 @@ func TestMultiDBBatchRegatesAfterFailover(t *testing.T) {
 	}
 }
 
-func TestMultiDBTxPipelineMarksAllCmdsNoRetry(t *testing.T) {
-	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
-	mdb := newTestMultiDB(t, baseOptions(), dbA)
+// noRetryPeekHook captures each command's NoRetry flag WHILE the member
+// executes the batch (it serves the batch locally by returning nil without
+// calling next), so a test can assert the at-most-once marker is set during
+// execution rather than after it.
+type noRetryPeekHook struct{ seen []bool }
+
+func (*noRetryPeekHook) DialHook(next redis.DialHook) redis.DialHook          { return next }
+func (*noRetryPeekHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+func (h *noRetryPeekHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		for _, cmd := range cmds {
+			h.seen = append(h.seen, cmd.NoRetry())
+		}
+		return nil
+	}
+}
+
+func TestMultiDBTxPipelineMarksCmdsNoRetryDuringExecOnly(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	peek := &noRetryPeekHook{}
+	if err := mdb.AddDatabaseHook(0, peek); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
 
 	cmds, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
 		p.Set(context.Background(), "k", "v", 0)
@@ -473,13 +507,24 @@ func TestMultiDBTxPipelineMarksAllCmdsNoRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TxPipelined: %v", err)
 	}
-	// The cluster tx path trims the MULTI/EXEC envelope before running its
-	// retry check on the remaining user commands, so the at-most-once
-	// marker must ride on every command — a marker only on the synthetic
-	// MULTI lets a cluster member replay the transaction.
+
+	// During execution every command (including the synthetic MULTI/EXEC
+	// envelope) must carry the at-most-once marker: the cluster tx path trims
+	// the envelope before its retry check, so a marker only on the synthetic
+	// MULTI would let a cluster member replay the transaction.
+	if len(peek.seen) == 0 {
+		t.Fatal("member hook never saw the tx batch")
+	}
+	for i, nr := range peek.seen {
+		if !nr {
+			t.Errorf("cmd %d not marked NoRetry during execution — a cluster member could replay", i)
+		}
+	}
+	// After the call the caller's commands are restored to retryable, so a
+	// reused *Cmd is not left permanently non-retryable.
 	for i, cmd := range cmds {
-		if !cmd.NoRetry() {
-			t.Errorf("cmd %d (%s) not marked NoRetry — a cluster member could replay the transaction", i, cmd.Name())
+		if cmd.NoRetry() {
+			t.Errorf("cmd %d (%s) left NoRetry after TxPipeline — caller state must be restored", i, cmd.Name())
 		}
 	}
 }
@@ -1293,6 +1338,7 @@ func (*switchThenFailPipelineHook) DialHook(next redis.DialHook) redis.DialHook 
 func (*switchThenFailPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return next
 }
+
 func (h *switchThenFailPipelineHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		h.once.Do(func() { _ = h.mdb.ForceActiveDatabase(context.Background(), h.to) })
@@ -1354,6 +1400,27 @@ func TestMultiDBPipelineStaleOutcomeNotRecordedOnDetector(t *testing.T) {
 // race ahead to close the member clients while the first is still draining the
 // autopipeliner. Run under -race, this guards the ordering (and the shared
 // close result) the sync.Once in Close provides.
+// TestMultiDBPipelineMaxIntRetriesDoesNotDropBatch pins the overflow guard:
+// CommandRetries == math.MaxInt must not make attempts = MaxInt+1 wrap to a
+// negative count, which would skip the loop and silently drop the batch
+// (Pipelined returning a nil error with nothing executed).
+func TestMultiDBPipelineMaxIntRetriesDoesNotDropBatch(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.CommandRetries = math.MaxInt
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	if _, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k", "v", 0)
+		return nil
+	}); err != nil {
+		t.Fatalf("Pipelined: %v", err)
+	}
+	if got := dbA.hook.batches.Load(); got == 0 {
+		t.Fatal("batch was silently dropped — attempts overflowed to a negative count")
+	}
+}
+
 func TestMultiDBConcurrentCloseSerializes(t *testing.T) {
 	check := newFakeHealthCheck(true)
 	opts := baseOptions()

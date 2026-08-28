@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"errors"
+	"math"
 	"sync/atomic"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
@@ -35,24 +36,22 @@ func resetCmds(cmds []Cmder) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed, reserved bool) int {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed bool, res imultidb.Reservation) int {
 	// `executed` comes from the execution marker, not from inspecting
 	// command state: an executed all-success batch whose error was injected
 	// by a post-exec hook looks identical on the commands, and stamping it
 	// would turn already-applied writes into phantom transport failures and
-	// replay them. `reserved` is the gate admission's half-open reservation:
-	// a closed-state admission holds no probe slot, and a batch outliving a
-	// later open -> half-open transition must not free the slot a real
-	// recovery probe is holding.
+	// replay them. `res` is the gate admission's half-open reservation: the
+	// whole batch is ONE admission, so RecordSuccessFor / ReleaseFor settle the
+	// breaker's half-open slot exactly once however many commands succeed, and a
+	// closed-state admission (res.held == false) holds no slot to settle.
 	if !executed {
 		if batchErr == nil {
 			// A member hook served the batch locally (returned nil without
 			// calling next): the results are valid for the caller, but
 			// nothing reached Redis — record no health signal and give the
-			// gate's probe slot back if it reserved one.
-			if reserved {
-				db.cb.ReleaseHalfOpen()
-			}
+			// gate's probe slot back (ReleaseFor no-ops for a closed admission).
+			db.cb.ReleaseFor(res)
 			return 0
 		}
 		// Execution never started: the batch error stands in for every
@@ -88,13 +87,11 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 				// caller, record nothing.
 				return
 			}
-			if reserved {
-				db.cb.RecordSuccess()
-			} else {
-				// Unreserved admission: the success counts toward closing,
-				// but must not release a half-open slot the batch never held.
-				db.cb.RecordExternalSuccess()
-			}
+			// Settle the batch's single reservation: RecordSuccessFor releases
+			// (or, at SuccessThreshold, closes on) the half-open slot at most
+			// once however many commands succeed, and records an external
+			// success for a closed admission (res.held == false).
+			db.cb.RecordSuccessFor(res)
 			if stillActive {
 				c.detector.RecordSuccess()
 				// Recovery traffic breaks the consecutive-failed-failover chain
@@ -143,11 +140,11 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			recordOne(cmd)
 		}
 	}
-	if recorded == 0 && reserved {
+	if recorded == 0 {
 		// The whole batch was neutral (e.g. a local ErrCrossSlot rejection):
 		// nothing was recorded on the breaker, so give back the half-open
-		// probe slot the gate admission reserved.
-		db.cb.ReleaseHalfOpen()
+		// probe slot the admission reserved (ReleaseFor no-ops otherwise).
+		db.cb.ReleaseFor(res)
 	}
 	return transportFailures
 }
@@ -204,6 +201,12 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		himportRejected = true
 	}
 	attempts := c.opts.CommandRetries + 1
+	if c.opts.CommandRetries == math.MaxInt {
+		// Guard the +1 against wrapping to a negative attempt count — which
+		// would skip the loop and silently drop the batch (returning nil).
+		// Mirrors the single-command path in process().
+		attempts = math.MaxInt
+	}
 	// A batch containing a non-retryable command (e.g. a streaming
 	// RawWriteToCmd) must be executed at most once: retrying it after a
 	// transport failure could duplicate execution or corrupt a partial write.
@@ -255,9 +258,10 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// reserves a bounded probe slot, and a tripped detector routes to
 		// failover without executing the batch — the reservation would leak.
 		db, idx := c.activeSnapshot()
-		admitted, reserved := false, false
+		admitted := false
+		var res imultidb.Reservation
 		if db != nil && !c.detector.ShouldFailover() {
-			admitted, reserved = db.cb.Allow()
+			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
 			gateRejections++
@@ -277,7 +281,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			}
 			// Re-enter the gate on the newly selected database — mirroring
 			// the single-command path: its breaker may be half-open and the
-			// Allow call above is what reserves the bounded probe slot.
+			// AllowReserve call above is what reserves the bounded probe slot.
 			// Re-gating does not consume a retry attempt.
 			continue
 		}
@@ -298,9 +302,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// classifier would otherwise score as a member failure. That is a
 			// client-side signal, not a health verdict: release any half-open
 			// reservation and return WITHOUT recording.
-			if reserved {
-				db.cb.ReleaseHalfOpen()
-			}
+			db.cb.ReleaseFor(res)
 			// Do NOT reset or overwrite the commands. The deadline may have
 			// interrupted reading a LATER reply while earlier commands already
 			// received definitive results, and those are the caller's only
@@ -313,7 +315,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// return without touching command state on caller cancellation.
 			return exitErr(ctx.Err())
 		}
-		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), reserved)
+		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed.Load(), res)
 
 		if transportFailures == 0 {
 			// Only server replies (or clean success) — done, whatever the
@@ -356,7 +358,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	gateRejections := 0
 	maxGateRejections := c.memberCount() + 1
 	var db *multidbDatabase
-	var reserved bool
+	var res imultidb.Reservation
 	for {
 		if c.closed.Load() {
 			resetCmds(cmds)
@@ -372,7 +374,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		db, idx = c.activeSnapshot()
 		admitted := false
 		if db != nil && !c.detector.ShouldFailover() {
-			admitted, reserved = db.cb.Allow()
+			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
 			gateRejections++
@@ -400,9 +402,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		// reservation and return without recording. Do NOT reset the commands
 		// here — EXEC may have committed, and their state is the caller's only
 		// evidence of that.
-		if reserved {
-			db.cb.ReleaseHalfOpen()
-		}
+		db.cb.ReleaseFor(res)
 		return err
 	}
 	// Record outcomes only for the user's commands: cmds arrives wrapped by
@@ -412,7 +412,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	if len(cmds) >= 3 {
 		user = cmds[1 : len(cmds)-1]
 	}
-	c.recordBatchOutcomes(db, user, err, executed.Load(), reserved)
+	c.recordBatchOutcomes(db, user, err, executed.Load(), res)
 	return err
 }
 
@@ -486,13 +486,27 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 			// whole stack, not only the MultiDB retry layer. Every command
 			// is marked — cluster members trim the MULTI/EXEC envelope
 			// before their retry check, so a marker only on the synthetic
-			// MULTI would be lost there.
-			for _, cmd := range cmds {
-				if bc, ok := cmd.(interface{ setNoRetry(bool) }); ok {
+			// MULTI would be lost there. The prior NoRetry is restored after
+			// execution: cmds are caller-owned and may be reused, and a plain
+			// client's TxPipeline does not leave them permanently non-retryable.
+			type noRetrier interface {
+				setNoRetry(bool)
+				NoRetry() bool
+			}
+			prev := make([]bool, len(cmds))
+			for i, cmd := range cmds {
+				if bc, ok := cmd.(noRetrier); ok {
+					prev[i] = bc.NoRetry()
 					bc.setNoRetry(true)
 				}
 			}
-			return c.processTxPipelineHook(ctx, cmds)
+			err := c.processTxPipelineHook(ctx, cmds)
+			for i, cmd := range cmds {
+				if bc, ok := cmd.(noRetrier); ok {
+					bc.setNoRetry(prev[i])
+				}
+			}
+			return err
 		},
 	}
 	pipe.init()
@@ -536,7 +550,7 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	gateRejections := 0
 	maxGateRejections := c.core.memberCount() + 1
 	var db *multidbDatabase
-	var reserved bool
+	var res imultidb.Reservation
 	for {
 		if c.core.closed.Load() {
 			return ErrClosed
@@ -548,7 +562,7 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		db, idx = c.core.activeSnapshot()
 		admitted := false
 		if db != nil && !c.core.detector.ShouldFailover() {
-			admitted, reserved = db.cb.Allow()
+			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
 			gateRejections++
@@ -562,13 +576,12 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 		break
 	}
-	if reserved {
-		// Only a half-open admission holds a probe slot. A closed-state
-		// admission must not release later: the transaction can outlive an
-		// open -> half-open transition, and the release would free a slot a
-		// real recovery probe is holding.
-		defer db.cb.ReleaseHalfOpen()
-	}
+	// Release the reservation after the call: the WATCH outcome deliberately
+	// never records on the breaker. ReleaseFor settles once and only within the
+	// reservation's own half-open episode — so a closed-state admission (no
+	// slot) is a no-op, and a transaction that outlives an open -> half-open
+	// cycle cannot free a slot a real recovery probe is holding in the new one.
+	defer db.cb.ReleaseFor(res)
 	if db.cc != nil {
 		return db.cc.Watch(ctx, fn, keys...)
 	}
