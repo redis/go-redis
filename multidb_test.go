@@ -193,8 +193,8 @@ func TestMultiDBActiveIsHighestWeight(t *testing.T) {
 	db3 := newTestDB("db3", "127.0.0.1:3", 1.0, true)
 	mdb := newTestMultiDB(t, baseOptions(), db1, db2, db3)
 
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Fatalf("active index = %d, want 1 (highest weight)", got)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active id = %d, want 1 (highest weight)", got)
 	}
 }
 
@@ -243,8 +243,8 @@ func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
 	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
 		t.Fatalf("Set after active failure: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Fatalf("active index after failover = %d, want 1", got)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active id after failover = %d, want 1", got)
 	}
 	if db2.hook.commands.Load() == 0 {
 		t.Error("db2 did not receive the retried command")
@@ -259,12 +259,12 @@ func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
 	}
 }
 
-// TestMultiDBSetActiveIndexUnhealthyTargetOpensBreaker covers fix C: a failed
+// TestMultiDBSetActiveDatabaseUnhealthyTargetOpensBreaker covers fix C: a failed
 // manual selection of a DIFFERENT member must open its breaker (like init and
 // AddDatabase), so a known-down target is not left selectable for the next
 // automatic failover. FailureThreshold=3, so the probe's single failure is not
 // enough on its own.
-func TestMultiDBSetActiveIndexUnhealthyTargetOpensBreaker(t *testing.T) {
+func TestMultiDBSetActiveDatabaseUnhealthyTargetOpensBreaker(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true) // healthy at init, sick later
 	opts := baseOptions()
@@ -278,15 +278,15 @@ func TestMultiDBSetActiveIndexUnhealthyTargetOpensBreaker(t *testing.T) {
 
 	dbB.check.healthy.Store(false) // dbB now fails its probe
 
-	if err := mdb.SetActiveIndex(ctx, 1); !errors.Is(err, redis.ErrTargetUnhealthy) {
-		t.Fatalf("SetActiveIndex(1) = %v, want ErrTargetUnhealthy", err)
+	if err := mdb.SetActiveDatabase(ctx, 1); !errors.Is(err, redis.ErrTargetUnhealthy) {
+		t.Fatalf("SetActiveDatabase(1) = %v, want ErrTargetUnhealthy", err)
 	}
 	// The failed target's breaker must be open (not merely +1 failure).
 	if mdb.TestBreakerReserveHalfOpen(1) {
-		t.Error("dbB's breaker still admits after a failed SetActiveIndex; want opened")
+		t.Error("dbB's breaker still admits after a failed SetActiveDatabase; want opened")
 	}
 	// The active is unchanged.
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("active = %d, want 0 (unchanged by the failed selection)", got)
 	}
 }
@@ -304,11 +304,11 @@ func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
 	ctx := context.Background()
 
 	// Move the active to the lower-weight dbA so dbB is a fallback target.
-	// ForceActiveIndex is manual, so it does not arm dbB's fallback-suppression.
-	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
-		t.Fatalf("ForceActiveIndex(0): %v", err)
+	// ForceActiveDatabase is manual, so it does not arm dbB's fallback-suppression.
+	if err := mdb.ForceActiveDatabase(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveDatabase(0): %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("active = %d, want 0 after force", got)
 	}
 
@@ -316,7 +316,7 @@ func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
 	fbB.healthy.Store(false)
 	mdb.TestTryFallback()
 
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("fallback returned to the laggy higher-weight dbB (active=%d), want 0", got)
 	}
 	// The non-recording gate must not have evicted dbB.
@@ -340,16 +340,186 @@ func TestMultiDBFallbackSkipsLaggyToNextCandidate(t *testing.T) {
 	mdb := newTestMultiDB(t, baseOptions(), dbA, dbB, dbC)
 	ctx := context.Background()
 
-	// Init active = dbB (highest weight, idx 1); force down to dbA.
-	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
-		t.Fatalf("ForceActiveIndex(0): %v", err)
+	// Init active = dbB (highest weight, id 1); force down to dbA.
+	if err := mdb.ForceActiveDatabase(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveDatabase(0): %v", err)
 	}
 
 	fbB.healthy.Store(false) // top-weight candidate is laggy now
 	mdb.TestTryFallback()
 
-	if got := mdb.ActiveIndex(); got != 2 {
+	if got := mdb.ActiveDatabaseID(); got != 2 {
 		t.Errorf("fallback active = %d, want 2 (healthy middle dbC, skipping laggy dbB)", got)
+	}
+}
+
+// TestMultiDBFailoverCallbackCarriesStableID: a failover callback identifies the
+// target by a stable id, so a concurrent RemoveDatabase of another member does
+// not make the delivered id name a different database.
+func TestMultiDBFailoverCallbackCarriesStableID(t *testing.T) {
+	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, initial active
+	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1, removed below target
+	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2, failover target
+
+	opts := baseOptions()
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Hour,
+	}
+	var failoverTo atomic.Int32
+	failoverTo.Store(-99)
+	var gotCallback atomic.Bool
+	opts.OnFailover = func(ctx context.Context, from, to int) {
+		failoverTo.Store(int32(to))
+		gotCallback.Store(true)
+	}
+	mdb := newTestMultiDB(t, opts, db0, db1, db2)
+	ctx := context.Background()
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("initial active = %d, want 0", got)
+	}
+	db0.hook.fail.Store(true)
+	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set after active failure: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !gotCallback.Load() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !gotCallback.Load() {
+		t.Fatal("OnFailover not delivered")
+	}
+	to := int(failoverTo.Load())
+	if err := mdb.RemoveDatabase(ctx, 1); err != nil { // remove a non-active member
+		t.Fatalf("RemoveDatabase(1): %v", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != to {
+		t.Errorf("OnFailover delivered to=%d but ActiveDatabaseID()=%d after removal; handle went stale", to, got)
+	}
+}
+
+// TestMultiDBStableIDSurvivesRemoval: an id keeps naming the same database
+// across a RemoveDatabase, a removed id stays invalid, and new members draw
+// fresh ids without reusing freed ones.
+func TestMultiDBStableIDSurvivesRemoval(t *testing.T) {
+	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, active
+	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1
+	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2
+	mdb := newTestMultiDB(t, baseOptions(), db0, db1, db2)
+	ctx := context.Background()
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("initial active id = %d, want 0", got)
+	}
+	if err := mdb.RemoveDatabase(ctx, 1); err != nil {
+		t.Fatalf("RemoveDatabase(1): %v", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Errorf("active id after removal = %d, want 0 (stable)", got)
+	}
+	if err := mdb.SetWeight(2, 5.0); err != nil {
+		t.Errorf("SetWeight(2) after removal = %v, want nil (id 2 still valid)", err)
+	}
+	if err := mdb.RemoveDatabase(ctx, 1); !errors.Is(err, redis.ErrDatabaseNotFound) {
+		t.Errorf("RemoveDatabase(1) again = %v, want ErrDatabaseNotFound", err)
+	}
+	if err := mdb.SetWeight(1, 1.0); !errors.Is(err, redis.ErrDatabaseNotFound) {
+		t.Errorf("SetWeight(1) after removal = %v, want ErrDatabaseNotFound", err)
+	}
+	db3 := newTestDB("db3", "127.0.0.1:4", 1.0, true)
+	newID, err := mdb.AddDatabase(ctx, db3.cfg)
+	if err != nil {
+		t.Fatalf("AddDatabase: %v", err)
+	}
+	if newID != 3 {
+		t.Errorf("new member id = %d, want 3 (monotonic, no reuse of freed id 1)", newID)
+	}
+}
+
+type recordingStrategy struct {
+	mu   sync.Mutex
+	seen [][]int
+}
+
+func (s *recordingStrategy) Select(cands []redis.MultiDBDatabaseState) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]int, 0, len(cands))
+	best, bestWeight := -1, 0.0
+	for _, c := range cands {
+		ids = append(ids, c.ID)
+		if c.Allowed && (best == -1 || c.Weight > bestWeight) {
+			best, bestWeight = c.ID, c.Weight
+		}
+	}
+	s.seen = append(s.seen, ids)
+	return best
+}
+
+func (s *recordingStrategy) lastSeen() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.seen) == 0 {
+		return nil
+	}
+	return s.seen[len(s.seen)-1]
+}
+
+// TestMultiDBStrategySeesStableID: the failover strategy is offered stable ids
+// in MultiDBDatabaseState.ID, not renumbered positions.
+func TestMultiDBStrategySeesStableID(t *testing.T) {
+	db0 := newTestDB("db0", "127.0.0.1:1", 3.0, true) // id 0, active
+	db1 := newTestDB("db1", "127.0.0.1:2", 1.0, true) // id 1, removed
+	db2 := newTestDB("db2", "127.0.0.1:3", 2.0, true) // id 2, failover target
+	strat := &recordingStrategy{}
+	opts := baseOptions()
+	opts.FailoverStrategy = strat
+	opts.CommandRetries = 3
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, db0, db1, db2)
+	ctx := context.Background()
+	if err := mdb.RemoveDatabase(ctx, 1); err != nil {
+		t.Fatalf("RemoveDatabase(1): %v", err)
+	}
+	strat.mu.Lock()
+	strat.seen = nil
+	strat.mu.Unlock()
+	db0.hook.fail.Store(true)
+	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
+		t.Fatalf("Set after active failure: %v", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 2 {
+		t.Fatalf("active id after failover = %d, want 2 (db2)", got)
+	}
+	// After removing id 1 and excluding the active (id 0), the only candidate is
+	// db2 — and it must be offered by its stable id 2, not a renumbered position.
+	offered := strat.lastSeen()
+	if len(offered) != 1 || offered[0] != 2 {
+		t.Errorf("strategy offered candidate ids %v, want exactly [2] (db2 by stable id)", offered)
+	}
+}
+
+// TestMultiDBOutOfRangeIDNotTruncated pins the int-width contract: an id outside
+// the int32 range must resolve to no member, never alias one. With a map[int]
+// store this is inherent; the test guards against a regression to narrow keys.
+func TestMultiDBOutOfRangeIDNotTruncated(t *testing.T) {
+	if ^uint(0)>>32 == 0 {
+		t.Skip("int is 32-bit: high-bit truncation cannot occur")
+	}
+	db0 := newTestDB("db0", "127.0.0.1:1", 1, true)
+	db1 := newTestDB("db1", "127.0.0.1:2", 2, true) // active
+	mdb := newTestMultiDB(t, baseOptions(), db0, db1)
+	ctx := context.Background()
+	aliasID := int(int64(1) << 32) // int32(aliasID) == 0 would alias member 0
+	if err := mdb.SetActiveDatabase(ctx, aliasID); !errors.Is(err, redis.ErrDatabaseNotFound) {
+		t.Errorf("SetActiveDatabase(1<<32) = %v, want ErrDatabaseNotFound", err)
+	}
+	if err := mdb.RemoveDatabase(ctx, aliasID); !errors.Is(err, redis.ErrDatabaseNotFound) {
+		t.Errorf("RemoveDatabase(1<<32) = %v, want ErrDatabaseNotFound", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Errorf("active id = %d, want 1 (unchanged by out-of-range ops)", got)
 	}
 }
 
@@ -400,7 +570,7 @@ func TestMultiDBEscalation(t *testing.T) {
 	}
 }
 
-// After an operator reset (ForceActiveIndex), a fresh outage must escalate
+// After an operator reset (ForceActiveDatabase), a fresh outage must escalate
 // from zero. If the reset clears failoverAttempts but not lastFailoverAttempt,
 // the FailoverAttemptDelay gate treats the new chain's first failure as part of
 // the old burst and never escalates — permanently stuck on temporary here,
@@ -440,8 +610,8 @@ func TestMultiDBEscalationResetsTimestampOnOperatorSelection(t *testing.T) {
 	escalateToPermanent("first outage")
 
 	// Operator forces back to db1: resets the escalation chain.
-	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	if err := mdb.ForceActiveDatabase(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
 
 	// A distinct outage within FailoverAttemptDelay must escalate from zero
@@ -458,37 +628,37 @@ func TestMultiDBManualFailover(t *testing.T) {
 	mdb := newTestMultiDB(t, opts, db1, db2)
 	ctx := context.Background()
 
-	// SetActiveIndex probes the target and must refuse the unhealthy one.
-	if err := mdb.SetActiveIndex(ctx, 1); !errors.Is(err, redis.ErrTargetUnhealthy) {
-		t.Fatalf("SetActiveIndex to unhealthy target: err = %v, want ErrTargetUnhealthy", err)
+	// SetActiveDatabase probes the target and must refuse the unhealthy one.
+	if err := mdb.SetActiveDatabase(ctx, 1); !errors.Is(err, redis.ErrTargetUnhealthy) {
+		t.Fatalf("SetActiveDatabase to unhealthy target: err = %v, want ErrTargetUnhealthy", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("active changed to %d after refused switch", got)
 	}
 
-	// ForceActiveIndex switches unconditionally.
-	if err := mdb.ForceActiveIndex(ctx, 1); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	// ForceActiveDatabase switches unconditionally.
+	if err := mdb.ForceActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Fatalf("active index = %d after force, want 1", got)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active id = %d after force, want 1", got)
 	}
 
-	// Once the target is healthy, SetActiveIndex succeeds.
+	// Once the target is healthy, SetActiveDatabase succeeds.
 	db1.check.healthy.Store(true)
-	if err := mdb.SetActiveIndex(ctx, 0); err != nil {
-		t.Fatalf("SetActiveIndex to healthy target: %v", err)
+	if err := mdb.SetActiveDatabase(ctx, 0); err != nil {
+		t.Fatalf("SetActiveDatabase to healthy target: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Fatalf("active index = %d, want 0", got)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("active id = %d, want 0", got)
 	}
 
-	// Out-of-range index errors on both methods.
-	if err := mdb.SetActiveIndex(ctx, 9); err == nil {
-		t.Error("SetActiveIndex(9) should fail")
+	// An unknown id errors on both methods.
+	if err := mdb.SetActiveDatabase(ctx, 9); err == nil {
+		t.Error("SetActiveDatabase(9) should fail")
 	}
-	if err := mdb.ForceActiveIndex(ctx, -1); err == nil {
-		t.Error("ForceActiveIndex(-1) should fail")
+	if err := mdb.ForceActiveDatabase(ctx, -1); err == nil {
+		t.Error("ForceActiveDatabase(-1) should fail")
 	}
 }
 
@@ -500,15 +670,15 @@ func TestMultiDBRuntimeMembership(t *testing.T) {
 
 	db3 := newTestDB("db3", "127.0.0.1:3", 3.0, true)
 	db3.cfg.SkipInitialHealthCheck = true
-	idx, err := mdb.AddDatabase(ctx, db3.cfg)
+	id, err := mdb.AddDatabase(ctx, db3.cfg)
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
 	}
-	if idx != 2 {
-		t.Fatalf("AddDatabase index = %d, want 2", idx)
+	if id != 2 {
+		t.Fatalf("AddDatabase id = %d, want 2", id)
 	}
 
-	if err := mdb.SetWeight(idx, 5.0); err != nil {
+	if err := mdb.SetWeight(id, 5.0); err != nil {
 		t.Fatalf("SetWeight: %v", err)
 	}
 	if err := mdb.SetWeight(42, 1.0); err == nil {
@@ -516,7 +686,7 @@ func TestMultiDBRuntimeMembership(t *testing.T) {
 	}
 
 	// Cannot remove the active database.
-	if err := mdb.RemoveDatabase(ctx, mdb.ActiveIndex()); err == nil {
+	if err := mdb.RemoveDatabase(ctx, mdb.ActiveDatabaseID()); err == nil {
 		t.Error("RemoveDatabase(active) should fail")
 	}
 	if err := mdb.RemoveDatabase(ctx, 1); err != nil {
@@ -571,17 +741,17 @@ func TestMultiDBBackgroundFailover(t *testing.T) {
 	mdb := newTestMultiDB(t, opts, db1, db2)
 
 	// No command traffic at all: the background loop alone must move the
-	// active index when the active database's health checks start failing.
+	// active id when the active database's health checks start failing.
 	db1.check.healthy.Store(false)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if mdb.ActiveIndex() == 1 {
+		if mdb.ActiveDatabaseID() == 1 {
 			return // success
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("background loop never failed over; active = %d", mdb.ActiveIndex())
+	t.Fatalf("background loop never failed over; active = %d", mdb.ActiveDatabaseID())
 }
 
 func TestMultiDBAutoFallback(t *testing.T) {
@@ -605,21 +775,21 @@ func TestMultiDBAutoFallback(t *testing.T) {
 	// Fail db1 → background failover to db2.
 	db1.check.healthy.Store(false)
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && mdb.ActiveIndex() != 1 {
+	for time.Now().Before(deadline) && mdb.ActiveDatabaseID() != 1 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if mdb.ActiveIndex() != 1 {
+	if mdb.ActiveDatabaseID() != 1 {
 		t.Fatal("setup: background failover to db2 never happened")
 	}
 
 	// Recover db1 (higher weight) → auto-fallback should switch back.
 	db1.check.healthy.Store(true)
 	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && mdb.ActiveIndex() != 0 {
+	for time.Now().Before(deadline) && mdb.ActiveDatabaseID() != 0 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if mdb.ActiveIndex() != 0 {
-		t.Fatalf("auto-fallback never returned to db1; active = %d", mdb.ActiveIndex())
+	if mdb.ActiveDatabaseID() != 0 {
+		t.Fatalf("auto-fallback never returned to db1; active = %d", mdb.ActiveDatabaseID())
 	}
 	// OnActiveDatabaseChanged is delivered asynchronously; give the queue a
 	// beat to drain the second change before asserting the count.
@@ -643,7 +813,7 @@ func TestMultiDBInitSelectsProbeHealthyDatabase(t *testing.T) {
 	opts.InitialDBState = redis.InitialDBStateOneAvailable
 	mdb := newTestMultiDB(t, opts, db1, db2)
 
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("initial active = %d, want 1 (the probe-healthy member)", got)
 	}
 }
@@ -741,8 +911,8 @@ func TestMultiDBCallerCanceledDialStaysNeutral(t *testing.T) {
 	if !mdb.TestBreakerReserveHalfOpen(0) {
 		t.Error("caller-canceled dial opened db1 breaker; the outcome must be neutral")
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Errorf("active index = %d, want 0 (no failover on caller cancel)", got)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Errorf("active id = %d, want 0 (no failover on caller cancel)", got)
 	}
 }
 
@@ -803,10 +973,10 @@ func (h *gatedHealthCheck) CheckClusterHealth(context.Context, *redis.ClusterCli
 	return true, nil
 }
 
-// setActiveIndex must not mutate state or report success when the client is
+// setActiveDatabaseID must not mutate state or report success when the client is
 // closed DURING its probe: close() takes no lock, so it can drain the
 // membership while the probe (bounded by HealthCheckTimeout) is still running.
-func TestMultiDBSetActiveIndexLosesToConcurrentClose(t *testing.T) {
+func TestMultiDBSetActiveDatabaseLosesToConcurrentClose(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true) // active (higher weight)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
 
@@ -828,19 +998,21 @@ func TestMultiDBSetActiveIndexLosesToConcurrentClose(t *testing.T) {
 	gate.armed.Store(true) // construction done; the next probe blocks
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- mdb.SetActiveIndex(context.Background(), 1) }()
+	go func() { errCh <- mdb.SetActiveDatabase(context.Background(), 1) }()
 
-	<-gate.started // SetActiveIndex is now inside db2's probe, holding failoverMu
+	<-gate.started // SetActiveDatabase is now inside db2's probe, holding failoverMu
 	if err := mdb.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	close(gate.release) // let the probe finish; setActiveIndex resumes post-probe
+	close(gate.release) // let the probe finish; setActiveDatabaseID resumes post-probe
 
 	if err := <-errCh; !errors.Is(err, redis.ErrClosed) {
-		t.Fatalf("SetActiveIndex racing Close = %v, want ErrClosed", err)
+		t.Fatalf("SetActiveDatabase racing Close = %v, want ErrClosed", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Errorf("active index = %d, want 0 (no switch on a closed client)", got)
+	// The ErrClosed return proves the switch was skipped; Close then drains the
+	// membership, so the active id reports -1 rather than a stale value.
+	if got := mdb.ActiveDatabaseID(); got != -1 {
+		t.Errorf("active id = %d, want -1 (membership drained on a closed client)", got)
 	}
 }
 
@@ -864,7 +1036,7 @@ func TestMultiDBClientSideErrorsDoNotFailOver(t *testing.T) {
 	if err := mdb.Set(cctx, "k", "v", 0).Err(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Set with canceled ctx: err = %v, want context.Canceled", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("client-side error caused failover; active = %d", got)
 	}
 	// The database is still healthy and serving.
@@ -893,7 +1065,7 @@ func TestMultiDBLocalRedisErrorIsNeutral(t *testing.T) {
 	if err := mdb.Get(ctx, "k").Err(); !errors.Is(err, redis.ErrCrossSlot) {
 		t.Fatalf("Get: err = %v, want ErrCrossSlot", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("local error caused failover; active = %d", got)
 	}
 	if got := db1.hook.commands.Load(); got != 1 {
@@ -947,24 +1119,24 @@ func TestMultiDBManualFailoverResetsBreaker(t *testing.T) {
 
 	// Open db2's breaker: force it active while failing, let a command fail.
 	db2.hook.fail.Store(true)
-	if err := mdb.ForceActiveIndex(ctx, 1); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	if err := mdb.ForceActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
 	_ = mdb.Set(ctx, "k", "v", 0).Err() // opens db2's breaker, fails over back to db1
 
 	// db2 recovers before the grace period; the manual probe passes and must
 	// reset the still-open breaker, or the switch would immediately fail away.
 	db2.hook.fail.Store(false)
-	if err := mdb.SetActiveIndex(ctx, 1); err != nil {
-		t.Fatalf("SetActiveIndex after recovery: %v", err)
+	if err := mdb.SetActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("SetActiveDatabase after recovery: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active = %d, want 1", got)
 	}
 	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
 		t.Fatalf("Set on manually selected member: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("switch did not stick; active = %d", got)
 	}
 }
@@ -1022,7 +1194,7 @@ func TestMultiDBFailoverSkipsStartupUnhealthyMember(t *testing.T) {
 	}
 }
 
-func TestMultiDBForceActiveIndexThroughOpenBreaker(t *testing.T) {
+func TestMultiDBForceActiveDatabaseThroughOpenBreaker(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
 
@@ -1038,19 +1210,19 @@ func TestMultiDBForceActiveIndexThroughOpenBreaker(t *testing.T) {
 
 	// Open db2's breaker organically.
 	db2.hook.fail.Store(true)
-	_ = mdb.ForceActiveIndex(ctx, 1)
+	_ = mdb.ForceActiveDatabase(ctx, 1)
 	_ = mdb.Set(ctx, "k", "v", 0).Err() // fails on db2, opens breaker, fails over back
 
 	// db2 recovers; the forced override must reset the open breaker so the
 	// switch sticks instead of failing away on the next command.
 	db2.hook.fail.Store(false)
-	if err := mdb.ForceActiveIndex(ctx, 1); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	if err := mdb.ForceActiveDatabase(ctx, 1); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
 	if err := mdb.Set(ctx, "k", "v", 0).Err(); err != nil {
 		t.Fatalf("Set on forced member: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("forced switch did not stick; active = %d", got)
 	}
 }
@@ -1110,8 +1282,8 @@ func TestMultiDBConcurrentProcess(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Fatalf("active index = %d after concurrent failover, want 1", got)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Fatalf("active id = %d after concurrent failover, want 1", got)
 	}
 }
 
@@ -1213,40 +1385,40 @@ func TestMultiDBRecoveredActiveClearsTrippedDetector(t *testing.T) {
 	}
 }
 
-func TestMultiDBAddDatabaseCallbackSeesNewIndex(t *testing.T) {
+func TestMultiDBAddDatabaseCallbackSeesNewID(t *testing.T) {
 	dbA := newTestDB("a", "db-a:6379", 2, true)
 
 	var mu sync.Mutex
-	var indexes []int
+	var ids []int
 	opts := baseOptions()
-	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
 		mu.Lock()
-		indexes = append(indexes, dbIndex)
+		ids = append(ids, dbID)
 		mu.Unlock()
 	}
 	mdb := newTestMultiDB(t, opts, dbA)
 
 	// Adding an unhealthy member opens its breaker during the initial probe;
-	// the state-change callback must report the member's real index, not the
-	// zero default.
+	// the state-change callback must report the member's real id, not the zero
+	// default.
 	dbB := newTestDB("b", "db-b:6379", 1, false)
-	idx, err := mdb.AddDatabase(context.Background(), dbB.cfg)
+	id, err := mdb.AddDatabase(context.Background(), dbB.cfg)
 	if err != nil {
 		t.Fatalf("AddDatabase: %v", err)
 	}
-	if idx != 1 {
-		t.Fatalf("AddDatabase index = %d, want 1", idx)
+	if id != 1 {
+		t.Fatalf("AddDatabase id = %d, want 1", id)
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		mu.Lock()
-		got := append([]int(nil), indexes...)
+		got := append([]int(nil), ids...)
 		mu.Unlock()
 		if len(got) > 0 {
 			for _, i := range got {
 				if i != 1 {
-					t.Fatalf("circuit state callback reported index %d, want 1 (all: %v)", i, got)
+					t.Fatalf("circuit state callback reported id %d, want 1 (all: %v)", i, got)
 				}
 			}
 			return
@@ -1268,7 +1440,7 @@ func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 	}
-	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
 		if mdb := mdbRef.Load(); mdb != nil {
 			// Any control API that serializes on the failover lock.
 			_ = mdb.RemoveDatabase(context.Background(), 99)
@@ -1286,14 +1458,14 @@ func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
 	// reset, firing the state callback. A callback that re-enters a control
 	// API must not deadlock the switch.
 	done := make(chan error, 1)
-	go func() { done <- mdb.SetActiveIndex(context.Background(), 0) }()
+	go func() { done <- mdb.SetActiveDatabase(context.Background(), 0) }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("SetActiveIndex: %v", err)
+			t.Fatalf("SetActiveDatabase: %v", err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("SetActiveIndex deadlocked with a re-entrant circuit state callback")
+		t.Fatal("SetActiveDatabase deadlocked with a re-entrant circuit state callback")
 	}
 }
 
@@ -1488,7 +1660,7 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 		GracePeriod:      time.Hour,
 	}
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("setup: active=%d, want 0", got)
 	}
 
@@ -1496,7 +1668,7 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 	// breaker (threshold 100).
 	det.tripped.Store(true)
 	_ = mdb.Set(context.Background(), "k", "v", 0).Err()
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("detector failover: active=%d, want 1", got)
 	}
 	if !mdb.TestBreakerReserveHalfOpen(0) {
@@ -1508,7 +1680,7 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 	// keep the client on B.
 	det.tripped.Store(false)
 	mdb.TestTryFallback()
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Errorf("auto-fallback bounced to A (active=%d); it must not undo the detector failover", got)
 	}
 }
@@ -1563,35 +1735,35 @@ func TestMultiDBSurfacedRedirectTriggersFailover(t *testing.T) {
 	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
 		t.Fatalf("Get should have failed over to B and succeeded: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
-		t.Errorf("active index = %d, want 1 (surfaced MOVED must trigger failover)", got)
+	if got := mdb.ActiveDatabaseID(); got != 1 {
+		t.Errorf("active id = %d, want 1 (surfaced MOVED must trigger failover)", got)
 	}
 }
 
-// badStrategy always returns a fixed index, used to test that an out-of-range
+// badStrategy always returns a fixed id, used to test that an unknown-id
 // selection is rejected rather than stored as the active.
-type badStrategy struct{ idx int }
+type badStrategy struct{ id int }
 
-func (s badStrategy) Select([]redis.MultiDBDatabaseState) int { return s.idx }
+func (s badStrategy) Select([]redis.MultiDBDatabaseState) int { return s.id }
 
-func TestMultiDBInvalidStrategyIndexRejected(t *testing.T) {
+func TestMultiDBInvalidStrategyIDRejected(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1, true)
 	opts := baseOptions()
-	opts.FailoverStrategy = badStrategy{idx: 99} // out of range
+	opts.FailoverStrategy = badStrategy{id: 99} // no such member
 	opts.Clients = append(opts.Clients, db1.cfg, db2.cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	// Both members are healthy, so the only reason selection can fail is the
-	// strategy returning an out-of-range index. It must be rejected (not stored
-	// as the active or used to index a nil member) and surface as a clean error
-	// rather than a panic.
+	// strategy returning an id that names no candidate. It must be rejected
+	// (not stored as the active or used to resolve a nil member) and surface as
+	// a clean error rather than a panic.
 	mdb, err := redis.NewMultiDBClient(ctx, opts)
 	if mdb != nil {
 		_ = mdb.Close()
 	}
 	if !errors.Is(err, redis.ErrInsufficientHealthyDatabases) {
-		t.Fatalf("bad strategy index: err = %v, want ErrInsufficientHealthyDatabases", err)
+		t.Fatalf("bad strategy id: err = %v, want ErrInsufficientHealthyDatabases", err)
 	}
 }
 
@@ -1650,7 +1822,7 @@ type switchThenFailHook struct {
 func (*switchThenFailHook) DialHook(next redis.DialHook) redis.DialHook { return next }
 func (h *switchThenFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
-		h.once.Do(func() { _ = h.mdb.ForceActiveIndex(context.Background(), h.to) })
+		h.once.Do(func() { _ = h.mdb.ForceActiveDatabase(context.Background(), h.to) })
 		cmd.SetErr(io.EOF)
 		return io.EOF
 	}
@@ -1716,7 +1888,7 @@ func TestMultiDBFallbackResetsDetector(t *testing.T) {
 	// Fail A over to B.
 	dbA.hook.fail.Store(true)
 	_ = mdb.Get(ctx, "k").Err()
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active = %d, want 1 after failover", got)
 	}
 
@@ -1727,7 +1899,7 @@ func TestMultiDBFallbackResetsDetector(t *testing.T) {
 	dbA.hook.fail.Store(false)
 	det.tripped.Store(true)
 	deadline := time.Now().Add(3 * time.Second)
-	for mdb.ActiveIndex() != 0 {
+	for mdb.ActiveDatabaseID() != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("auto-fallback to member 0 never happened")
 		}
@@ -1737,7 +1909,7 @@ func TestMultiDBFallbackResetsDetector(t *testing.T) {
 	if err := mdb.Get(ctx, "k").Err(); err != nil {
 		t.Fatalf("Get after fallback: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("tripped detector failed away from the just-recovered primary: active = %d", got)
 	}
 }
@@ -1753,17 +1925,17 @@ func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 	}
-	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
 		mu.Lock()
-		events = append(events, dbIndex)
+		events = append(events, dbID)
 		mu.Unlock()
 	}
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
 
 	// Reproduce the background-loop race deterministically: snapshot B like
 	// runHealthChecksOnce does, remove it, then run the stale probe. The
-	// removed member's breaker transition must not fire a user callback —
-	// its recorded index is stale after the slice shift.
+	// removed member's breaker transition must not fire a user callback — its
+	// `removed` flag, set on removal, suppresses delivery.
 	dbB.check.healthy.Store(false)
 	mdb.TestProbeRacingRemoval(1)
 
@@ -1772,7 +1944,7 @@ func TestMultiDBNoCallbacksForRemovedMember(t *testing.T) {
 	got := append([]int(nil), events...)
 	mu.Unlock()
 	if len(got) != 0 {
-		t.Errorf("stale probe of a removed member fired callbacks: indexes %v", got)
+		t.Errorf("stale probe of a removed member fired callbacks: ids %v", got)
 	}
 }
 
@@ -1929,8 +2101,8 @@ func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
 
 	// The ACTIVE member must not be evicted by the lag verdict: its breaker
 	// stays closed and traffic keeps flowing.
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Fatalf("active index = %d, want 0 (lag must not evict the active)", got)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("active id = %d, want 0 (lag must not evict the active)", got)
 	}
 	if err := mdb.Ping(context.Background()).Err(); err != nil {
 		t.Errorf("Ping after health pass: %v (active breaker must stay closed)", err)
@@ -1945,9 +2117,9 @@ func TestMultiDBFailbackOnlyCheckDoesNotEvictActive(t *testing.T) {
 }
 
 // Re-selecting the current active must not be gated by a fail-back-only check:
-// SetActiveIndex(activeIndex) with a failing lag check must succeed and must
-// not record a failure on the active's breaker.
-func TestMultiDBSetActiveIndexReselectIgnoresFailbackOnly(t *testing.T) {
+// SetActiveDatabase on the current active with a failing lag check must succeed
+// and must not record a failure on the active's breaker.
+func TestMultiDBSetActiveDatabaseReselectIgnoresFailbackOnly(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active (higher weight)
 	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
 	fbA := newFailbackOnlyCheck(true)
@@ -1960,16 +2132,16 @@ func TestMultiDBSetActiveIndexReselectIgnoresFailbackOnly(t *testing.T) {
 		GracePeriod:      time.Hour,
 	}
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("setup: active=%d, want 0", got)
 	}
 
 	fbA.healthy.Store(false) // lag breach on the active
-	if err := mdb.SetActiveIndex(context.Background(), 0); err != nil {
-		t.Fatalf("SetActiveIndex(current active) with a failing fail-back-only check = %v, want nil", err)
+	if err := mdb.SetActiveDatabase(context.Background(), 0); err != nil {
+		t.Fatalf("SetActiveDatabase(current active) with a failing fail-back-only check = %v, want nil", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Errorf("active index = %d, want 0", got)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Errorf("active id = %d, want 0", got)
 	}
 	if !mdb.TestBreakerReserveHalfOpen(0) {
 		t.Error("re-selecting the active recorded a fail-back-only failure on its breaker")
@@ -1978,7 +2150,7 @@ func TestMultiDBSetActiveIndexReselectIgnoresFailbackOnly(t *testing.T) {
 
 // Under concurrency, OnActiveDatabaseChanged deliveries must form a contiguous
 // chain (each `to` == the next `from`). Switches are serialized by failoverMu
-// and each does current->index, so the chain only holds if the callbacks are
+// and each does current->id, so the chain only holds if the callbacks are
 // enqueued in switch order — the bug being that enqueuing in the announce
 // closure (after failoverMu is released) lets two switches reorder.
 func TestMultiDBActiveChangeCallbackOrderUnderConcurrency(t *testing.T) {
@@ -2003,7 +2175,7 @@ func TestMultiDBActiveChangeCallbackOrderUnderConcurrency(t *testing.T) {
 		go func(g int) {
 			defer wg.Done()
 			for i := 0; i < 300; i++ {
-				_ = mdb.ForceActiveIndex(ctx, (g+i)%3)
+				_ = mdb.ForceActiveDatabase(ctx, (g+i)%3)
 			}
 		}(g)
 	}
@@ -2198,7 +2370,7 @@ func TestMultiDBPanickyCircuitCallbackDoesNotStallQueue(t *testing.T) {
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 	}
-	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
 		if panicked.CompareAndSwap(false, true) {
 			panic("panicky circuit callback")
 		}
@@ -2211,8 +2383,8 @@ func TestMultiDBPanickyCircuitCallbackDoesNotStallQueue(t *testing.T) {
 	// which must neither crash the process nor wedge the queue — the next
 	// transition's callback must still be delivered.
 	mdb.TestBreakerRecordFailure(0) // closed -> open: first callback panics
-	if err := mdb.ForceActiveIndex(context.Background(), 0); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err) // resets the breaker: open -> closed
+	if err := mdb.ForceActiveDatabase(context.Background(), 0); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err) // resets the breaker: open -> closed
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -2266,11 +2438,11 @@ func TestMultiDBCanceledHealthyProbeDoesNotSwitch(t *testing.T) {
 
 	// The probe reports healthy, but the caller's context died while it ran:
 	// a canceled control operation must not mutate the active state.
-	if err := mdb.SetActiveIndex(parent, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("SetActiveIndex = %v, want context.Canceled", err)
+	if err := mdb.SetActiveDatabase(parent, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SetActiveDatabase = %v, want context.Canceled", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
-		t.Errorf("canceled SetActiveIndex switched the active database to %d", got)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Errorf("canceled SetActiveDatabase switched the active database to %d", got)
 	}
 }
 
@@ -2307,7 +2479,7 @@ func TestMultiDBCanceledHealthyPreFailoverProbeDoesNotSwitch(t *testing.T) {
 	if err := mdb.Get(parent, "k").Err(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Get = %v, want context.Canceled", err)
 	}
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Errorf("canceled attempt switched the active database to %d", got)
 	}
 }
@@ -2349,7 +2521,7 @@ func TestMultiDBAllHalfOpenFullReturnsUnavailable(t *testing.T) {
 	// Every member half-open with its probe budget exhausted: the gate
 	// rejects each candidate, and failover keeps finding "selectable"
 	// half-open members. This must surface ErrTemporarilyNotAvailable, not
-	// ping-pong the active index in a busy loop until the context dies.
+	// ping-pong the active id in a busy loop until the context dies.
 	mdb.TestBreakerRecordFailure(0)
 	mdb.TestBreakerRecordFailure(1)
 	time.Sleep(50 * time.Millisecond)
@@ -2377,16 +2549,16 @@ func TestMultiDBStaleBreakerRecordAfterRemovalFiresNoCallback(t *testing.T) {
 		FailureThreshold: 1,
 		SuccessThreshold: 1,
 	}
-	opts.OnCircuitStateChanged = func(dbIndex int, from, to string) {
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
 		mu.Lock()
-		events = append(events, dbIndex)
+		events = append(events, dbID)
 		mu.Unlock()
 	}
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
 
 	// A breaker outcome that lands AFTER the member was removed (the probe
 	// passed its removed-check just before the removal) must not surface a
-	// user callback: the recorded index is stale after the slice shift.
+	// user callback: the member is gone and its `removed` flag suppresses it.
 	mdb.TestStaleRecordAfterRemoval(1)
 
 	time.Sleep(300 * time.Millisecond) // callbacks are delivered asynchronously
@@ -2394,7 +2566,7 @@ func TestMultiDBStaleBreakerRecordAfterRemovalFiresNoCallback(t *testing.T) {
 	got := append([]int(nil), events...)
 	mu.Unlock()
 	if len(got) != 0 {
-		t.Errorf("stale breaker record on a removed member fired callbacks: indexes %v", got)
+		t.Errorf("stale breaker record on a removed member fired callbacks: ids %v", got)
 	}
 }
 
@@ -2436,12 +2608,12 @@ func TestMultiDBMembershipOpsCanceledWhileWaitingForLock(t *testing.T) {
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
 	check.armed.Store(true)
 
-	// Hold failoverMu: SetActiveIndex probes B, and B's blocking check stalls
+	// Hold failoverMu: SetActiveDatabase probes B, and B's blocking check stalls
 	// with the lock held.
 	holderDone := make(chan struct{})
 	go func() {
 		defer close(holderDone)
-		_ = mdb.SetActiveIndex(context.Background(), 1)
+		_ = mdb.SetActiveDatabase(context.Background(), 1)
 	}()
 	time.Sleep(100 * time.Millisecond) // let the holder acquire the lock
 
@@ -2490,12 +2662,12 @@ func TestMultiDBManualSelectionAfterClose(t *testing.T) {
 	}
 
 	// Consistent with the command paths: after Close, control APIs report
-	// ErrClosed rather than an out-of-range error from the drained slice.
-	if err := mdb.SetActiveIndex(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
-		t.Errorf("SetActiveIndex after Close: err = %v, want ErrClosed", err)
+	// ErrClosed rather than a not-found error from the drained membership.
+	if err := mdb.SetActiveDatabase(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("SetActiveDatabase after Close: err = %v, want ErrClosed", err)
 	}
-	if err := mdb.ForceActiveIndex(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
-		t.Errorf("ForceActiveIndex after Close: err = %v, want ErrClosed", err)
+	if err := mdb.ForceActiveDatabase(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("ForceActiveDatabase after Close: err = %v, want ErrClosed", err)
 	}
 	if err := mdb.RemoveDatabase(context.Background(), 0); !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("RemoveDatabase after Close: err = %v, want ErrClosed", err)
@@ -2549,7 +2721,7 @@ func TestMultiDBPanickyFailoverCallbacksDoNotCrash(t *testing.T) {
 	if err := mdb.Get(context.Background(), "k").Err(); err != nil {
 		t.Fatalf("Get across failover: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Fatalf("active = %d, want 1", got)
 	}
 	// Let the announce queue drain so the panicking callbacks actually run
@@ -2613,7 +2785,7 @@ func TestMultiDBClusterOverridesAfterClose(t *testing.T) {
 	}
 }
 
-func TestMultiDBSameIndexManualSelectionResetsEscalation(t *testing.T) {
+func TestMultiDBSameActiveManualSelectionResetsEscalation(t *testing.T) {
 	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
 	opts := baseOptions()
 	opts.CommandRetries = 1
@@ -2635,10 +2807,10 @@ func TestMultiDBSameIndexManualSelectionResetsEscalation(t *testing.T) {
 
 	// Operator forces the already-active member (its breaker resets): an
 	// explicit healthy selection ends the failed-failover chain even when
-	// no index change happens.
+	// the active id does not change.
 	dbA.hook.fail.Store(false)
-	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
-		t.Fatalf("ForceActiveIndex: %v", err)
+	if err := mdb.ForceActiveDatabase(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
 	}
 
 	// A fresh outage must escalate from a clean slate.
@@ -2669,16 +2841,16 @@ func TestMultiDBControlOpsClosedWhileWaitingForLock(t *testing.T) {
 	holderDone := make(chan struct{})
 	go func() {
 		defer close(holderDone)
-		_ = mdb.SetActiveIndex(context.Background(), 1)
+		_ = mdb.SetActiveDatabase(context.Background(), 1)
 	}()
 	time.Sleep(100 * time.Millisecond)
 
 	// Queue control operations with LIVE contexts, then Close: once they
 	// finally acquire the lock the client is closed — they must report
-	// ErrClosed, not mutate the drained membership or report bogus indexes.
+	// ErrClosed, not mutate the drained membership or report bogus ids.
 	setDone := make(chan error, 1)
 	removeDone := make(chan error, 1)
-	go func() { setDone <- mdb.ForceActiveIndex(context.Background(), 1) }()
+	go func() { setDone <- mdb.ForceActiveDatabase(context.Background(), 1) }()
 	go func() { removeDone <- mdb.RemoveDatabase(context.Background(), 1) }()
 	time.Sleep(100 * time.Millisecond)
 
@@ -2689,7 +2861,7 @@ func TestMultiDBControlOpsClosedWhileWaitingForLock(t *testing.T) {
 	close(check.gate) // release the lock holder
 
 	if err := <-setDone; !errors.Is(err, redis.ErrClosed) {
-		t.Errorf("ForceActiveIndex after Close during lock wait: err = %v, want ErrClosed", err)
+		t.Errorf("ForceActiveDatabase after Close during lock wait: err = %v, want ErrClosed", err)
 	}
 	if err := <-removeDone; !errors.Is(err, redis.ErrClosed) {
 		t.Errorf("RemoveDatabase after Close during lock wait: err = %v, want ErrClosed", err)
@@ -2788,8 +2960,8 @@ func TestMultiDBCanceledHealthyProbeDoesNotTouchBreaker(t *testing.T) {
 	mdb.TestBreakerRecordFailure(1)
 	time.Sleep(50 * time.Millisecond)
 	check.armed.Store(true)
-	if err := mdb.SetActiveIndex(parent, 1); !errors.Is(err, context.Canceled) {
-		t.Fatalf("SetActiveIndex = %v, want context.Canceled", err)
+	if err := mdb.SetActiveDatabase(parent, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SetActiveDatabase = %v, want context.Canceled", err)
 	}
 
 	if !mdb.TestBreakerReserveHalfOpen(1) {
@@ -2862,7 +3034,7 @@ func TestMultiDBDefaultPolicySurvivesPanickyCheck(t *testing.T) {
 	// A panicking custom check under the default policy must mark the member
 	// unhealthy, not crash initialization or the background loop.
 	mdb := newTestMultiDB(t, opts, dbA, dbB)
-	if got := mdb.ActiveIndex(); got != 0 {
+	if got := mdb.ActiveDatabaseID(); got != 0 {
 		t.Fatalf("active = %d, want 0 (the member with the panicking check is unhealthy)", got)
 	}
 }
@@ -2889,8 +3061,8 @@ func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for i := 0; i < 3; i++ {
-		if err := mdb.SetActiveIndex(canceled, 1); !errors.Is(err, context.Canceled) {
-			t.Fatalf("SetActiveIndex with canceled ctx: err = %v, want context.Canceled", err)
+		if err := mdb.SetActiveDatabase(canceled, 1); !errors.Is(err, context.Canceled) {
+			t.Fatalf("SetActiveDatabase with canceled ctx: err = %v, want context.Canceled", err)
 		}
 	}
 
@@ -2899,7 +3071,7 @@ func TestMultiDBCanceledProbeDoesNotDamageBreaker(t *testing.T) {
 	if err := mdb.Set(context.Background(), "k", "v", 0).Err(); err != nil {
 		t.Fatalf("command after failover: %v", err)
 	}
-	if got := mdb.ActiveIndex(); got != 1 {
+	if got := mdb.ActiveDatabaseID(); got != 1 {
 		t.Errorf("active = %d, want 1", got)
 	}
 }

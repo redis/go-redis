@@ -39,10 +39,14 @@ var (
 	// ErrInsufficientHealthyDatabases is returned by NewMultiDBClient when the
 	// InitialDBState policy is not satisfied.
 	ErrInsufficientHealthyDatabases = errors.New("redis: multidb: insufficient healthy databases on initialization")
-	// ErrTargetUnhealthy is returned by SetActiveIndex when the requested
-	// target database fails its health probe. Use ForceActiveIndex to switch
+	// ErrTargetUnhealthy is returned by SetActiveDatabase when the requested
+	// target database fails its health probe. Use ForceActiveDatabase to switch
 	// unconditionally.
 	ErrTargetUnhealthy = errors.New("redis: multidb: target database is unhealthy")
+	// ErrDatabaseNotFound is returned by the control API when no member has the
+	// given id (never added, or already removed). Member ids are stable and
+	// never reused, so a removed member's id stays invalid forever.
+	ErrDatabaseNotFound = errors.New("redis: multidb: no database with the given id")
 )
 
 // MultiDBFailureDetector aggregates command outcomes and decides when the
@@ -69,13 +73,16 @@ type MultiDBHealthCheckPolicy interface {
 // MultiDBDatabaseState is a snapshot of one database handed to a failover
 // strategy.
 type MultiDBDatabaseState struct {
-	Index   int
+	// ID is the database's stable member id (the value AddDatabase returned and
+	// ActiveDatabaseID reports), not a position. It is what Select must return.
+	ID      int
 	Weight  float64
 	Allowed bool // circuit breaker allows traffic
 }
 
 // MultiDBFailoverStrategy selects the failover target from candidate
-// databases. Return the chosen index, or -1 when no candidate is acceptable.
+// databases. Return the chosen database's id (MultiDBDatabaseState.ID), or -1
+// when no candidate is acceptable.
 type MultiDBFailoverStrategy interface {
 	Select(candidates []MultiDBDatabaseState) int
 }
@@ -92,7 +99,7 @@ func (WeightBasedFailoverStrategy) Select(candidates []MultiDBDatabaseState) int
 			continue
 		}
 		if best == -1 || c.Weight > bestWeight {
-			best = c.Index
+			best = c.ID
 			bestWeight = c.Weight
 		}
 	}
@@ -210,19 +217,22 @@ type MultiDBOptions struct {
 	ProbeTargetBeforeFailover bool
 
 	// OnFailover is called after an automatic or manual failover switched the
-	// active database from `from` to `to`. Delivered asynchronously (FIFO); do
-	// not rely on it running synchronously with the failover. The ctx keeps
-	// the triggering operation's trace/values but not its cancellation.
+	// active database from `from` to `to`, both stable member ids (see
+	// AddDatabase). Delivered asynchronously (FIFO); do not rely on it running
+	// synchronously with the failover. The ids stay valid even if a concurrent
+	// RemoveDatabase drops another member. The ctx keeps the triggering
+	// operation's trace/values but not its cancellation.
 	OnFailover func(ctx context.Context, from, to int)
 	// OnActiveDatabaseChanged is called on every active-database change,
-	// including auto-fallback. Delivered asynchronously (FIFO); do not rely on
-	// it running synchronously with the change.
+	// including auto-fallback. `from` and `to` are stable member ids. Delivered
+	// asynchronously (FIFO); do not rely on it running synchronously with the
+	// change.
 	OnActiveDatabaseChanged func(from, to int)
 	// OnCircuitStateChanged is called when any database's circuit breaker
-	// changes state ("closed", "open", "half-open"). Delivered asynchronously
-	// (FIFO per database); do not rely on it running synchronously with the
-	// transition.
-	OnCircuitStateChanged func(dbIndex int, from, to string)
+	// changes state ("closed", "open", "half-open"). dbID is the database's
+	// stable member id. Delivered asynchronously (FIFO per database); do not
+	// rely on it running synchronously with the transition.
+	OnCircuitStateChanged func(dbID int, from, to string)
 }
 
 // CommandRetriesNone disables command retries.
@@ -341,23 +351,32 @@ func (cfg *MultiDBClientConfig) fqdn() string {
 // MultiDBCtrl is the operational control surface of MultiDBClient: active
 // database selection, runtime membership changes and health management. It is
 // implemented by *MultiDBClient.
+//
+// Databases are addressed by a stable id: AddDatabase returns one, and it keeps
+// naming the same database until that database is removed. Ids are never
+// reused, so a handle held by the caller (or delivered to a callback) never
+// silently points at a different member. An id that names no current member
+// yields ErrDatabaseNotFound.
 type MultiDBCtrl interface {
-	// ActiveIndex returns the index of the currently active database.
-	ActiveIndex() int
-	// SetActiveIndex switches to the database at index after a fresh health
-	// probe of the target; it refuses with ErrTargetUnhealthy when the probe
-	// fails.
-	SetActiveIndex(ctx context.Context, index int) error
-	// ForceActiveIndex switches to the database at index unconditionally
-	// (operator override; only the index range is validated).
-	ForceActiveIndex(ctx context.Context, index int) error
-	// AddDatabase adds a member database at runtime and returns its index.
+	// ActiveDatabaseID returns the stable id of the currently active database,
+	// or -1 when none is selected.
+	ActiveDatabaseID() int
+	// SetActiveDatabase switches to the database with the given id after a fresh
+	// health probe of the target; it refuses with ErrTargetUnhealthy when the
+	// probe fails, or ErrDatabaseNotFound for an unknown id.
+	SetActiveDatabase(ctx context.Context, id int) error
+	// ForceActiveDatabase switches to the database with the given id
+	// unconditionally (operator override); it returns ErrDatabaseNotFound for an
+	// unknown id.
+	ForceActiveDatabase(ctx context.Context, id int) error
+	// AddDatabase adds a member database at runtime and returns its stable id.
 	AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error)
-	// RemoveDatabase removes the database at index. The active database
-	// cannot be removed.
-	RemoveDatabase(ctx context.Context, index int) error
-	// SetWeight changes the weight of the database at index.
-	SetWeight(index int, weight float64) error
+	// RemoveDatabase removes the database with the given id. The active database
+	// cannot be removed. Returns ErrDatabaseNotFound for an unknown id.
+	RemoveDatabase(ctx context.Context, id int) error
+	// SetWeight changes the weight of the database with the given id. Returns
+	// ErrDatabaseNotFound for an unknown id.
+	SetWeight(id int, weight float64) error
 	// SetAutoFallback enables or disables automatic fallback at runtime.
 	SetAutoFallback(enabled bool)
 }
@@ -422,8 +441,7 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 			_ = core.closeAll()
 			return nil, err
 		}
-		db.idx.Store(int32(len(core.dbs)))
-		core.dbs = append(core.dbs, db)
+		core.dbs[db.id] = db
 	}
 
 	if err := core.initialize(ctx); err != nil {
@@ -449,17 +467,17 @@ func (c *MultiDBClient) Close() error {
 	return c.core.close()
 }
 
-// ActiveIndex implements MultiDBCtrl.
-func (c *MultiDBClient) ActiveIndex() int { return c.core.activeIndex() }
+// ActiveDatabaseID implements MultiDBCtrl.
+func (c *MultiDBClient) ActiveDatabaseID() int { return c.core.activeDatabaseID() }
 
-// SetActiveIndex implements MultiDBCtrl.
-func (c *MultiDBClient) SetActiveIndex(ctx context.Context, index int) error {
-	return c.core.setActiveIndex(ctx, index, true)
+// SetActiveDatabase implements MultiDBCtrl.
+func (c *MultiDBClient) SetActiveDatabase(ctx context.Context, id int) error {
+	return c.core.setActiveDatabase(ctx, id, true)
 }
 
-// ForceActiveIndex implements MultiDBCtrl.
-func (c *MultiDBClient) ForceActiveIndex(ctx context.Context, index int) error {
-	return c.core.setActiveIndex(ctx, index, false)
+// ForceActiveDatabase implements MultiDBCtrl.
+func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
+	return c.core.setActiveDatabase(ctx, id, false)
 }
 
 // AddDatabase implements MultiDBCtrl.
@@ -468,13 +486,13 @@ func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig
 }
 
 // RemoveDatabase implements MultiDBCtrl.
-func (c *MultiDBClient) RemoveDatabase(ctx context.Context, index int) error {
-	return c.core.removeDatabase(ctx, index)
+func (c *MultiDBClient) RemoveDatabase(ctx context.Context, id int) error {
+	return c.core.removeDatabase(ctx, id)
 }
 
 // SetWeight implements MultiDBCtrl.
-func (c *MultiDBClient) SetWeight(index int, weight float64) error {
-	return c.core.setWeight(index, weight)
+func (c *MultiDBClient) SetWeight(id int, weight float64) error {
+	return c.core.setWeight(id, weight)
 }
 
 // SetAutoFallback implements MultiDBCtrl.
@@ -482,10 +500,10 @@ func (c *MultiDBClient) SetAutoFallback(enabled bool) {
 	c.core.setAutoFallback(enabled)
 }
 
-// AddDatabaseHook installs a hook on the underlying client of the database at
-// index. It is mainly useful for testing and instrumentation.
-func (c *MultiDBClient) AddDatabaseHook(index int, hook Hook) error {
-	return c.core.addDatabaseHook(index, hook)
+// AddDatabaseHook installs a hook on the underlying client of the database with
+// the given id. It is mainly useful for testing and instrumentation.
+func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
+	return c.core.addDatabaseHook(id, hook)
 }
 
 // Subscribe creates a PubSub subscription that follows the active database:

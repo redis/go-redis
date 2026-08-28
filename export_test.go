@@ -131,25 +131,25 @@ func (c *sentinelFailover) ReplicaAddrs(ctx context.Context) ([]string, error) {
 	return c.replicaAddrs(ctx, false)
 }
 
-// TestBreakerRecordFailure records one failure on the indexed member's
-// circuit breaker. Exported for testing breaker-gate interactions.
-func (c *MultiDBClient) TestBreakerRecordFailure(index int) {
-	c.core.dbAt(index).cb.RecordFailure()
+// TestBreakerRecordFailure records one failure on the given member's circuit
+// breaker. Exported for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerRecordFailure(id int) {
+	c.core.dbByID(id).cb.RecordFailure()
 }
 
-// TestBreakerReserveHalfOpen runs the indexed member's breaker admission
-// check, reserving one half-open probe slot when the breaker is half-open.
-// Exported for testing breaker-gate interactions.
-func (c *MultiDBClient) TestBreakerReserveHalfOpen(index int) bool {
-	return c.core.dbAt(index).cb.IsAllowed()
+// TestBreakerReserveHalfOpen runs the given member's breaker admission check,
+// reserving one half-open probe slot when the breaker is half-open. Exported
+// for testing breaker-gate interactions.
+func (c *MultiDBClient) TestBreakerReserveHalfOpen(id int) bool {
+	return c.core.dbByID(id).cb.IsAllowed()
 }
 
 // TestProbeRacingRemoval reproduces the background health-check loop racing a
 // concurrent RemoveDatabase: the member is snapshotted (as the loop does),
 // removed, and then probed through the stale snapshot.
-func (c *MultiDBClient) TestProbeRacingRemoval(index int) {
-	db := c.core.dbAt(index)
-	if err := c.core.removeDatabase(context.Background(), index); err != nil {
+func (c *MultiDBClient) TestProbeRacingRemoval(id int) {
+	db := c.core.dbByID(id)
+	if err := c.core.removeDatabase(context.Background(), id); err != nil {
 		panic(err)
 	}
 	db.probe(context.Background(), c.core.opts.HealthCheckTimeout)
@@ -168,9 +168,9 @@ func (c *MultiDBClient) TestTryFallback() {
 // TestStaleRecordAfterRemoval simulates a probe that passed its removed-check
 // just before the member was removed: the breaker outcome lands after the
 // removal completed.
-func (c *MultiDBClient) TestStaleRecordAfterRemoval(index int) {
-	db := c.core.dbAt(index)
-	if err := c.core.removeDatabase(context.Background(), index); err != nil {
+func (c *MultiDBClient) TestStaleRecordAfterRemoval(id int) {
+	db := c.core.dbByID(id)
+	if err := c.core.removeDatabase(context.Background(), id); err != nil {
 		panic(err)
 	}
 	db.cb.RecordFailure()
