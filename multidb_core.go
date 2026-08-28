@@ -161,27 +161,45 @@ func (db *multidbDatabase) probeExcludingFailbackOnly(parent context.Context, ti
 	return db.probeWith(parent, timeout, filtered)
 }
 
+// runPolicy executes the health-check policy over checks under ctx, recovering
+// a panicking custom policy (treated as unhealthy): probes run on the background
+// loop and during construction, where an escaped panic would crash the process.
+// (The default policy already recovers each individual check via runCheckSafely.)
+func (db *multidbDatabase) runPolicy(ctx context.Context, checks []MultiDBHealthCheck) (h bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(ctx, "multidb: health-check policy panicked: %v", r)
+			h = false
+		}
+	}()
+	if db.cc != nil {
+		return db.policy.ExecuteCluster(ctx, checks, db.cc)
+	}
+	return db.policy.Execute(ctx, checks, db.c)
+}
+
+// checkHealthyNoRecord runs checks under a fresh timeout and returns the verdict
+// WITHOUT recording it on the breaker or the OTel recorder. Use it when a
+// verdict must gate a decision (auto-fallback) but must not feed the breaker:
+// recording a fail-back-only check (lag) would let it evict a member from
+// failover, the invariant failbackOnlyHealthCheck exists to prevent. A canceled
+// parent or an exceeded probe deadline both report unhealthy (don't act).
+func (db *multidbDatabase) checkHealthyNoRecord(parent context.Context, timeout time.Duration, checks []MultiDBHealthCheck) bool {
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+	healthy := db.runPolicy(ctx, checks)
+	if parent.Err() != nil || ctx.Err() != nil {
+		return false
+	}
+	return healthy
+}
+
 func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Duration, checks []MultiDBHealthCheck) bool {
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	start := time.Now()
-	// Recover a panicking custom policy: probes run on the background loop and
-	// during construction, where an escaped panic would crash the process. A
-	// panicked policy verdict is treated as unhealthy. (The default policy
-	// already recovers each individual check via runCheckSafely.)
-	healthy := func() (h bool) {
-		defer func() {
-			if r := recover(); r != nil {
-				internal.Logger.Printf(ctx, "multidb: health-check policy panicked: %v", r)
-				h = false
-			}
-		}()
-		if db.cc != nil {
-			return db.policy.ExecuteCluster(ctx, checks, db.cc)
-		}
-		return db.policy.Execute(ctx, checks, db.c)
-	}()
+	healthy := db.runPolicy(ctx, checks)
 
 	if parent.Err() != nil {
 		// The caller's own context was canceled or expired mid-probe: every
@@ -789,6 +807,11 @@ func classifyOutcome(err error, retryTimeout bool) outcomeKind {
 		return outcomeFailure
 	case errors.Is(err, ErrCrossSlot):
 		return outcomeNeutral
+	case errors.Is(err, errClusterNoNodes):
+		// The active member is a cluster client with no known nodes (topology
+		// empty or never loaded): it cannot route any command — an availability
+		// failure that must drive failover, not a neutral client-side error.
+		return outcomeFailure
 	case isRedirectReply(err):
 		// A MOVED/ASK that surfaced to this layer means the active cluster
 		// client exhausted MaxRedirects and still could not route the command:
@@ -1073,8 +1096,9 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 		// already serving traffic, so a lag breach must not fail the operation
 		// or record a breaker failure against the active. Switching to a
 		// DIFFERENT member runs the full check set (fail-back-to gating).
+		reselectingActive := index == int(c.active.Load())
 		healthy := false
-		if index == int(c.active.Load()) {
+		if reselectingActive {
 			healthy = db.probeExcludingFailbackOnly(ctx, c.opts.HealthCheckTimeout)
 		} else {
 			healthy = db.probe(ctx, c.opts.HealthCheckTimeout)
@@ -1084,6 +1108,16 @@ func (c *multidbCore) setActiveIndex(ctx context.Context, index int, probe bool)
 				// The context ended mid-probe: report the caller's error,
 				// not a verdict about the target's health.
 				return err
+			}
+			// A genuinely unhealthy DIFFERENT target: open its breaker outright
+			// (like initialize and AddDatabase) so a failed manual selection
+			// does not leave a known-down member selectable for the next
+			// automatic failover. Re-selecting the active is never opened here —
+			// a fail-back-only breach must not evict the member serving traffic.
+			if !reselectingActive {
+				for f := 0; f < db.cb.Config().FailureThreshold; f++ {
+					db.cb.RecordFailure()
+				}
 			}
 			return ErrTargetUnhealthy
 		}
@@ -1293,6 +1327,20 @@ func (c *multidbCore) startBackgroundLoop() {
 		// first tick's time.Since is effectively infinite and always runs
 		// fallback immediately (before any member has had a chance to settle).
 		lastFallbackCheck := time.Now()
+
+		// Bind the probe context to shutdown: close() closes stopCh, so
+		// canceling here interrupts an in-flight probe for members whose clients
+		// honor context (ContextTimeoutEnabled, or bounded by a finite
+		// ReadTimeout), keeping close() from waiting a full probe pass. A member
+		// with no socket timeout and no ContextTimeoutEnabled can still block a
+		// raw read past the cancel — that remains a documented misconfiguration.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			<-c.stopCh
+			cancel()
+		}()
+
 		for {
 			select {
 			case <-c.stopCh:
@@ -1300,7 +1348,6 @@ func (c *multidbCore) startBackgroundLoop() {
 			case <-ticker.C:
 			}
 
-			ctx := context.Background()
 			c.runHealthChecksOnce(ctx)
 
 			// Background-driven failover: the active index must move even
@@ -1370,6 +1417,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	c.dbMu.RLock()
 	activeWeight := active.weight
 	best, bestWeight := -1, activeWeight
+	var bestDB *multidbDatabase
 	for i, db := range c.dbs {
 		if i == idx {
 			continue
@@ -1381,12 +1429,20 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 			continue
 		}
 		if db.weight > bestWeight && db.cb.CheckState() == imultidb.CircuitClosed {
-			best, bestWeight = i, db.weight
+			best, bestWeight, bestDB = i, db.weight, db
 		}
 	}
 	c.dbMu.RUnlock()
 
 	if best < 0 {
+		return
+	}
+	// Gate fallback on the target's full check set (incl fail-back-only lag) at
+	// this instant, WITHOUT recording: the breaker's consecutive-failure model
+	// leaves an intermittently-laggy member "closed", so CheckState alone would
+	// fall back onto a laggy primary. A non-recording probe declines the switch
+	// this tick without letting the lag check evict the member from failover.
+	if bestDB != nil && !bestDB.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, bestDB.checks) {
 		return
 	}
 	if announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0); announce != nil {
@@ -1499,6 +1555,14 @@ func (c *multidbCore) newPubSub() *PubSub {
 	pubsub.init()
 
 	c.pubsubMu.Lock()
+	if c.closed.Load() {
+		// Racing Close: it already snapshotted+cleared the registry, so a
+		// PubSub registered now would never be closed by close(). Close it here
+		// instead of leaking its connection; the caller's Subscribe then errors.
+		c.pubsubMu.Unlock()
+		_ = pubsub.Close()
+		return pubsub
+	}
 	c.pubsubs[pubsub] = struct{}{}
 	c.pubsubMu.Unlock()
 	return pubsub
@@ -1585,6 +1649,11 @@ func (c *multidbCore) closeAll() error {
 	defer c.dbMu.Unlock()
 	var firstErr error
 	for _, db := range c.dbs {
+		// Mark removed before closing: a circuit-state change fired during
+		// teardown (or already queued) checks this flag at delivery, and
+		// close() does not wait on the callback queue — without it an
+		// OnCircuitStateChanged could fire after Close returns.
+		db.removed.Store(true)
 		if err := db.closeClient(); err != nil && firstErr == nil {
 			firstErr = err
 		}

@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/redis/go-redis/v9/internal/proto"
@@ -36,5 +37,16 @@ func TestClassifyOutcomeTypedReplies(t *testing.T) {
 	}
 	if got := classifyOutcome(proto.RedisError("WRONGTYPE Operation against a key"), true); got != outcomeSuccess {
 		t.Errorf("classifyOutcome(WRONGTYPE) = %v, want outcomeSuccess", got)
+	}
+}
+
+// A cluster member whose client has no known nodes cannot route any command:
+// an availability failure that must drive failover, not a neutral no-op.
+func TestClassifyOutcomeClusterNoNodes(t *testing.T) {
+	if got := classifyOutcome(errClusterNoNodes, true); got != outcomeFailure {
+		t.Errorf("classifyOutcome(errClusterNoNodes) = %v, want outcomeFailure", got)
+	}
+	if got := classifyOutcome(fmt.Errorf("wrapped: %w", errClusterNoNodes), true); got != outcomeFailure {
+		t.Errorf("classifyOutcome(wrapped errClusterNoNodes) = %v, want outcomeFailure", got)
 	}
 }

@@ -246,6 +246,12 @@ func isAvailabilityReply(s string) bool {
 	for _, prefix := range []string{
 		"LOADING ", "READONLY ", "CLUSTERDOWN ", "TRYAGAIN ",
 		"MASTERDOWN ", "NOREPLICAS ", "ERR max number of clients",
+		// A MOVED/ASK that reaches this layer means the cluster client
+		// exhausted its redirect budget and still could not route: the member
+		// cannot serve, an availability failure — mirroring the root
+		// classifier's isRedirectReply case. Without these, RecordFailure on a
+		// surfaced redirect would fall through to the success branch below.
+		"MOVED ", "ASK ",
 	} {
 		if strings.HasPrefix(s, prefix) {
 			return true

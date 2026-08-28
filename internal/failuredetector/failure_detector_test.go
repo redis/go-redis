@@ -265,13 +265,13 @@ func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
 	// The proto reader parses recognized reply prefixes into typed structs
 	// (*proto.AuthError, *proto.MovedError, ...) rather than the concrete
 	// proto.RedisError string — they are still well-formed server replies and
-	// must classify exactly like their string forms: application-level
-	// replies as successes, availability replies as failures.
+	// must classify exactly like their string forms: application-level replies
+	// as successes; availability replies AND surfaced redirects (MOVED/ASK, a
+	// cluster client out of redirect budget) as failures.
 	for _, e := range []error{
 		proto.NewAuthError("NOAUTH Authentication required"),
 		proto.NewPermissionError("NOPERM this user has no permissions"),
 		proto.NewExecAbortError("EXECABORT Transaction discarded because of previous errors"),
-		proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"),
 	} {
 		fd.RecordFailure(e)
 	}
@@ -279,14 +279,16 @@ func TestCommandFailureDetector_TreatsTypedReplyErrorsAsSuccess(t *testing.T) {
 	if failures != 0 {
 		t.Errorf("expected 0 failures for typed application replies, got %d", failures)
 	}
-	if successes != 4 {
+	if successes != 3 {
 		t.Errorf("expected typed application replies to count as successes, got %d", successes)
 	}
 
 	fd.RecordFailure(proto.NewLoadingError("LOADING Redis is loading the dataset in memory"))
 	fd.RecordFailure(proto.NewClusterDownError("CLUSTERDOWN The cluster is down"))
-	if _, failures := fd.Stats(); failures != 2 {
-		t.Errorf("expected 2 failures for typed availability replies, got %d", failures)
+	fd.RecordFailure(proto.NewMovedError("MOVED 3999 127.0.0.1:6381", "127.0.0.1:6381"))
+	fd.RecordFailure(proto.NewAskError("ASK 3999 127.0.0.1:6381", "127.0.0.1:6381"))
+	if _, failures := fd.Stats(); failures != 4 {
+		t.Errorf("expected 4 failures for typed availability/redirect replies, got %d", failures)
 	}
 }
 

@@ -342,12 +342,21 @@ func (h *LagAwareHealthCheck) CheckClusterHealth(ctx context.Context, client *re
 	// a replica node's local endpoint availability must not mark a candidate
 	// healthy while the master it would actually route to is unavailable or
 	// lagging.
-	_ = client.ForEachMaster(shardCtx, func(_ context.Context, master *redis.Client) error {
+	ferr := client.ForEachMaster(shardCtx, func(_ context.Context, master *redis.Client) error {
 		add(master.Options().Addr)
 		return nil
 	})
-	for _, addr := range opts.Addrs {
-		add(addr)
+	// Seeds are the bootstrap fallback only: when the topology could not be
+	// enumerated (ForEachMaster errored → no loaded state) OR no masters were
+	// found. When masters ARE known, use only them — opts.Addrs may include
+	// replica seeds, and a replica passing the lag check must not mark the
+	// member healthy while the masters it would route to are down or lagging
+	// (matching the masters-only intent above). ForEachMaster is synchronous,
+	// so len(addrs) here is the count of unique masters it found.
+	if ferr != nil || len(addrs) == 0 {
+		for _, addr := range opts.Addrs {
+			add(addr)
+		}
 	}
 	if len(addrs) == 0 {
 		return false, fmt.Errorf("multidb: cluster client has no addresses")

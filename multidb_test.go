@@ -259,6 +259,72 @@ func TestMultiDBFailoverOnCommandFailures(t *testing.T) {
 	}
 }
 
+// TestMultiDBSetActiveIndexUnhealthyTargetOpensBreaker covers fix C: a failed
+// manual selection of a DIFFERENT member must open its breaker (like init and
+// AddDatabase), so a known-down target is not left selectable for the next
+// automatic failover. FailureThreshold=3, so the probe's single failure is not
+// enough on its own.
+func TestMultiDBSetActiveIndexUnhealthyTargetOpensBreaker(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true) // healthy at init, sick later
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 3,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour, // stay open once opened
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	ctx := context.Background()
+
+	dbB.check.healthy.Store(false) // dbB now fails its probe
+
+	if err := mdb.SetActiveIndex(ctx, 1); !errors.Is(err, redis.ErrTargetUnhealthy) {
+		t.Fatalf("SetActiveIndex(1) = %v, want ErrTargetUnhealthy", err)
+	}
+	// The failed target's breaker must be open (not merely +1 failure).
+	if mdb.TestBreakerReserveHalfOpen(1) {
+		t.Error("dbB's breaker still admits after a failed SetActiveIndex; want opened")
+	}
+	// The active is unchanged.
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("active = %d, want 0 (unchanged by the failed selection)", got)
+	}
+}
+
+// TestMultiDBFallbackDeclinesLaggyTarget covers fix G: auto-fallback must not
+// return to a higher-weight member that is currently failing its fail-back-only
+// (lag) check, even though its breaker is closed — and the gate must NOT evict
+// it (non-recording).
+func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lower weight
+	dbB := newTestDB("b", "127.0.0.1:2", 2, true) // higher weight = initial active + fallback target
+	fbB := newFailbackOnlyCheck(true)             // lag check, healthy at init
+	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
+	mdb := newTestMultiDB(t, baseOptions(), dbA, dbB)
+	ctx := context.Background()
+
+	// Move the active to the lower-weight dbA so dbB is a fallback target.
+	// ForceActiveIndex is manual, so it does not arm dbB's fallback-suppression.
+	if err := mdb.ForceActiveIndex(ctx, 0); err != nil {
+		t.Fatalf("ForceActiveIndex(0): %v", err)
+	}
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Fatalf("active = %d, want 0 after force", got)
+	}
+
+	// dbB is now laggy (fail-back-only breach); its breaker is still closed.
+	fbB.healthy.Store(false)
+	mdb.TestTryFallback()
+
+	if got := mdb.ActiveIndex(); got != 0 {
+		t.Errorf("fallback returned to the laggy higher-weight dbB (active=%d), want 0", got)
+	}
+	// The non-recording gate must not have evicted dbB.
+	if !mdb.TestBreakerReserveHalfOpen(1) {
+		t.Error("fallback lag gate opened dbB's breaker; a fail-back-only check must not evict")
+	}
+}
+
 func TestMultiDBEscalation(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 2.0, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 1.0, true)
