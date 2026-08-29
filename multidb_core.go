@@ -747,7 +747,11 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			db.cb.ReleaseFor(res)
 			return err
 		case outcomeFailure:
-			db.cb.RecordFailure()
+			// Settle the reservation: a failure from a stale half-open episode
+			// (this command outlived an open -> half-open cycle) must not re-open
+			// the new episode and abort its recovery — RecordFailureFor gates on
+			// the reservation's generation, symmetric to the success path.
+			db.cb.RecordFailureFor(res)
 			// Global detector only while this member is still the active (see
 			// the success branch): a late failure from an already-vacated or
 			// removed member must not trip failover for the new active.
@@ -1410,36 +1414,31 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 }
 
 // tryFallbackToPrimary switches back to a strictly-higher-weight database
-// whose circuit is closed again. Selection and switch happen under
-// failoverMu so a concurrent RemoveDatabase (which also holds it) cannot
-// remove the selected member or shift the slice in between.
+// whose circuit is closed again. Candidate collection and the final switch
+// happen under failoverMu (so a concurrent RemoveDatabase, which also holds it,
+// cannot remove the selected member or shift membership in between), but the
+// candidate PROBES run off-lock — see below.
 func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
-	// Yield to a real failover instead of blocking it. This background fallback
-	// holds failoverMu across serial candidate probes (up to HealthCheckTimeout
-	// each), and the command path's tryFailover needs the same lock; without
-	// this a fallback cycle could delay an emergency switch by N_candidates x
-	// HealthCheckTimeout. Fallback is a cadence nicety — skipping a cycle while a
-	// failover (or another fallback) is in progress costs nothing.
+	// Yield to a real failover instead of blocking it: fallback is a background
+	// cadence nicety, so skipping a cycle while a failover (or another fallback)
+	// holds failoverMu costs nothing.
 	if !c.failoverMu.TryLock() {
 		return
 	}
-	var announce func()
-	defer func() {
-		c.failoverMu.Unlock()
-		if announce != nil {
-			announce()
-		}
-	}()
-
 	active, idx := c.activeSnapshot()
 	if active == nil {
+		c.failoverMu.Unlock()
 		return
 	}
 
 	now := time.Now().UnixNano()
 	// Collect every higher-weight, breaker-closed candidate not in its
-	// post-failover suppression window. Weights are captured under the lock
-	// (SetWeight mutates them under dbMu); the probes below run off-lock.
+	// post-failover suppression window, then RELEASE failoverMu BEFORE probing.
+	// The probes are serial and each waits up to HealthCheckTimeout; holding
+	// failoverMu across them would block a command-path emergency tryFailover
+	// (which needs the same lock) for up to N_candidates x HealthCheckTimeout
+	// and let command contexts expire. Weights are captured here under dbMu
+	// (SetWeight mutates them under dbMu).
 	type fbCand struct {
 		id     int
 		weight float64
@@ -1463,15 +1462,17 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		}
 	}
 	c.dbMu.RUnlock()
+	c.failoverMu.Unlock()
 
 	// Probe candidates highest-weight first with the full check set (incl
-	// fail-back-only lag), WITHOUT recording: the breaker's consecutive-failure
-	// model leaves an intermittently-laggy member "closed", so CheckState alone
-	// would fall back onto it. A candidate that fails the probe is dropped and
-	// the next-highest is tried, so a laggy top-weight member cannot shadow a
-	// healthy lower-weight one; recording nothing means the probe never evicts a
-	// member from failover.
+	// fail-back-only lag), WITHOUT recording and WITHOUT failoverMu held: the
+	// breaker's consecutive-failure model leaves an intermittently-laggy member
+	// "closed", so CheckState alone would fall back onto it. A candidate that
+	// fails the probe is dropped and the next-highest is tried, so a laggy
+	// top-weight member cannot shadow a healthy lower-weight one; recording
+	// nothing means the probe never evicts a member from failover.
 	best := -1
+	var bestDB *multidbDatabase
 	for len(cands) > 0 {
 		top := 0
 		for j := 1; j < len(cands); j++ {
@@ -1485,11 +1486,41 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 		cand := cands[top]
 		cands = append(cands[:top], cands[top+1:]...)
 		if cand.db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, cand.db.checks) {
-			best = cand.id
+			best, bestDB = cand.id, cand.db
 			break
 		}
 	}
 	if best < 0 {
+		return
+	}
+
+	// Reacquire failoverMu and REVALIDATE before switching: the probes ran
+	// off-lock, so the active may have moved (another failover/fallback) or the
+	// winner's weight, breaker state or membership may have changed. TryLock
+	// again to keep yielding to a real failover, and abandon the fallback if
+	// anything shifted.
+	if !c.failoverMu.TryLock() {
+		return
+	}
+	var announce func()
+	defer func() {
+		c.failoverMu.Unlock()
+		if announce != nil {
+			announce()
+		}
+	}()
+	cur, curIdx := c.activeSnapshot()
+	if cur == nil || curIdx != idx {
+		return
+	}
+	c.dbMu.RLock()
+	db, ok := c.dbs[best]
+	stillGood := ok && db == bestDB &&
+		db.weight > cur.weight &&
+		time.Now().UnixNano() >= db.noFallbackBefore.Load() &&
+		db.cb.CheckState() == imultidb.CircuitClosed
+	c.dbMu.RUnlock()
+	if !stillGood {
 		return
 	}
 	if announce = c.switchActive(ctx, idx, best, failoverReasonFallback, 0); announce != nil {

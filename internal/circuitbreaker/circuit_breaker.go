@@ -165,14 +165,22 @@ func (cb *CircuitBreaker) CheckState() State {
 				lastFailure != 0 && time.Now().UnixNano()-lastFailure >= int64(cb.config.OpenTimeout) {
 				cb.successes.Store(0)
 				cb.requests.Store(0)
+				// Advance the generation BEFORE the CAS publishes half-open, for
+				// the same reason the counters are cleared first: a request that
+				// observes the new half-open state must read the NEW generation.
+				// If it were bumped after the CAS, a goroutine descheduled
+				// between them could let AllowReserve observe half-open and
+				// capture the old generation — the reservation would then be
+				// treated as stale the instant the bump runs, so its success
+				// could never close the breaker or release its slot (with
+				// MaxHalfOpenRequests==1 the breaker would wedge). A spurious
+				// bump when the CAS below loses to a concurrent Reset is harmless:
+				// generations are compared for equality, not sequence.
+				cb.generation.Add(1)
 				// CAS, not Store: a concurrent Reset may have just published
 				// Closed, and overwriting it with HalfOpen would silently
 				// undo the reset.
 				if cb.state.CompareAndSwap(int32(StateOpen), int32(StateHalfOpen)) {
-					// New half-open episode: bump the generation so a reservation
-					// still in flight from a previous episode cannot settle
-					// against this one (see AllowReserve / RecordSuccessFor).
-					cb.generation.Add(1)
 					// Enqueue under the lock so callback order matches CAS order;
 					// the callback itself runs on the cbq goroutine.
 					stats := cb.Stats()
@@ -312,6 +320,22 @@ func (cb *CircuitBreaker) ReleaseFor(r Reservation) {
 		return
 	}
 	cb.ReleaseHalfOpen()
+}
+
+// RecordFailureFor records a failure for a reservation from AllowReserve. A
+// half-open reservation records only while it is still the CURRENT half-open
+// episode: a failure from an admission that outlived an open -> half-open cycle
+// must not re-open (and abort the recovery of) the NEW episode — the symmetric
+// guard to RecordSuccessFor. A closed-state reservation (held == false) always
+// records: a closed breaker just counts failures toward opening, with no
+// episode to be stale against. Unlike success/release this does not consume the
+// once-only settle flag — a failure opens the circuit rather than freeing a
+// slot, and the batch path records one failure per command.
+func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
+	if r.held && r.gen != cb.generation.Load() {
+		return // stale half-open episode
+	}
+	cb.RecordFailure()
 }
 
 // ReleaseHalfOpen returns a half-open request slot previously reserved by a

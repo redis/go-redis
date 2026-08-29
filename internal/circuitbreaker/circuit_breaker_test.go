@@ -1061,3 +1061,40 @@ func TestCircuitBreaker_ForceOpen(t *testing.T) {
 		t.Errorf("transition count = %d, want 1 (ForceOpen idempotent when already open)", n)
 	}
 }
+
+// TestCircuitBreaker_StaleReservationFailureIgnored pins the failure-side
+// generation guard: a failure recorded through a reservation taken in a
+// previous half-open episode must NOT re-open the current episode (which would
+// abort its recovery). Symmetric to TestCircuitBreaker_ReservationIgnoredAfterEpochChange.
+func TestCircuitBreaker_StaleReservationFailureIgnored(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    5, // high so the fresh episode stays half-open
+		MaxHalfOpenRequests: 5,
+		OpenTimeout:         50 * time.Millisecond,
+	}
+	cb := New(config)
+
+	// Episode A: open -> half-open, take a reservation.
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	allowed, rA := cb.AllowReserve()
+	if !allowed || !rA.held {
+		t.Fatalf("AllowReserve in half-open: allowed=%v held=%v", allowed, rA.held)
+	}
+
+	// Cycle to episode B: a failure re-opens, then a probe re-enters half-open.
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+	cb.CheckState()
+	if State(cb.state.Load()) != StateHalfOpen {
+		t.Fatalf("expected half-open episode B, got %v", cb.State())
+	}
+
+	// The stale episode-A reservation's failure must be ignored, leaving B open
+	// for recovery.
+	cb.RecordFailureFor(rA)
+	if got := State(cb.state.Load()); got != StateHalfOpen {
+		t.Errorf("stale reservation failure re-opened the circuit: state=%v, want half-open", got)
+	}
+}
