@@ -90,7 +90,16 @@ func TestClusterClientReloadsStateOnConnectionRefused(t *testing.T) {
 
 	currentAddr.Store(liveAddr)
 
-	if err := client.Ping(ctx).Err(); err != nil {
-		t.Fatalf("ping after topology change: %v", err)
+	// LazyReload is async and has a 200ms cooldown, so the next Get may
+	// still see the previous slot map. Wait until the refresh lands.
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		lastErr = client.Ping(ctx).Err()
+		if lastErr == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Fatalf("ping after topology change: %v", lastErr)
 }

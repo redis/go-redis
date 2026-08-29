@@ -1382,12 +1382,10 @@ func (c *ClusterClient) process(ctx context.Context, cmd Cmder) error {
 
 		if shouldRetry(lastErr, cmd.readTimeout() == nil) && !cmd.NoRetry() {
 			if isDialError(lastErr) {
-				// The routed node is gone (connection refused after failover).
-				// Reload topology before the next pick; LazyReload is async and
-				// Get() would still return the stale slot map.
-				if _, err := c.state.Reload(ctx); err != nil {
-					c.state.LazyReload()
-				}
+				// Same as MOVED: the routed node is gone after failover.
+				// LazyReload coalesces concurrent CLUSTER SLOTS refreshes
+				// instead of blocking this goroutine on a sync Reload.
+				c.state.LazyReload()
 				node.MarkAsFailing()
 				node = nil
 				continue
