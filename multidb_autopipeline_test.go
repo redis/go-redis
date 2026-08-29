@@ -1501,3 +1501,41 @@ func TestMultiDBTxPipelineCallerCancelReturnsCancellation(t *testing.T) {
 		t.Fatalf("TxPipelined caller-cancel err = %v, want context.Canceled (aggregate, not the transport error)", err)
 	}
 }
+
+// TestMultiDBPipelineRetryExitPreservesPriorAttemptResults pins that a terminal
+// exit of the retry loop after a prior attempt has run does NOT reset+restamp
+// the commands with the aggregate error: attempt 0 fails at transport level and
+// opens the member's breaker, so attempt 1 is gate-rejected into an
+// availability error, but the per-command results attempt 0 produced must
+// survive (the same preserve-on-cancel reasoning applied to every retry-loop
+// exit). A server-free fake cannot produce an executed success, so this asserts
+// attempt 0's transport error survives instead of being overwritten.
+func TestMultiDBPipelineRetryExitPreservesPriorAttemptResults(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	dbA.hook.fail.Store(true) // every batch fails at transport level (wrapped io.EOF)
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1, // attempt 0's failure opens the breaker
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour, // stays open, so attempt 1's gate is rejected
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+
+	cmds, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+		p.Set(context.Background(), "k0", "v", 0)
+		p.Get(context.Background(), "k1")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected an availability error after the member's breaker opened")
+	}
+	// attempt 1 exits via the gate (breaker open) with attempt > 0. The commands
+	// must still carry attempt 0's transport error, not be reset and overwritten
+	// with the aggregate availability error.
+	for i, cmd := range cmds {
+		if !errors.Is(cmd.Err(), io.EOF) {
+			t.Errorf("cmds[%d] err = %v, want the preserved transport error (io.EOF)", i, cmd.Err())
+		}
+	}
+}

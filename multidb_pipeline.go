@@ -67,16 +67,12 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	classify := func(cmd Cmder) outcomeKind {
 		return classifyOutcome(cmd.rawErr(), cmd.readTimeout() == nil)
 	}
-	// Feed the GLOBAL detector only while this batch's member is still the
-	// active: if the active switched (or this member was removed) while the
-	// batch was in flight, recording its outcomes would pollute the new
-	// active's failover window and successSinceFailover. The per-member breaker
-	// below is always updated — it is member-scoped. Mirrors the single-command
-	// path (see process). One snapshot suffices: recordBatchOutcomes runs
-	// synchronously at the end of a single attempt, the batch analogue of the
-	// single-command post-exec check.
-	cur, _ := c.activeSnapshot()
-	stillActive := cur == db
+	// The GLOBAL detector (and successSinceFailover) is fed only while this
+	// member is STILL the active — re-checked per recorded outcome, not once up
+	// front: a concurrent switchActive can vacate this member partway through
+	// recording a large batch, and outcomes recorded after that must not pollute
+	// the new active's failover window. The per-member breaker below is always
+	// updated — it is member-scoped. Mirrors the single-command path (process).
 	transportFailures := 0
 	recorded := 0
 	recordOne := func(cmd Cmder) {
@@ -94,7 +90,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// once however many commands succeed, and records an external
 			// success for a closed admission (res.held == false).
 			db.cb.RecordSuccessFor(res)
-			if stillActive {
+			if cur, _ := c.activeSnapshot(); cur == db {
 				c.detector.RecordSuccess()
 				// Recovery traffic breaks the consecutive-failed-failover chain
 				// for batch-only workloads too (see recordFailedFailoverLocked).
@@ -110,7 +106,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// batch-only workloads. Successes are the asymmetric case: a
 			// genuine reply cannot exist without execution.
 			db.cb.RecordFailure()
-			if stillActive {
+			if cur, _ := c.activeSnapshot(); cur == db {
 				c.detector.RecordFailure(cmd.rawErr())
 			}
 			transportFailures++
@@ -241,18 +237,26 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	for attempt < attempts {
 		if c.closed.Load() {
 			// Close landed mid-retry: report the terminal state instead of
-			// escalating through the drained membership.
-			resetCmds(cmds)
-			setCmdsErr(cmds, ErrClosed)
+			// escalating through the drained membership. Only stamp the commands
+			// when no attempt has executed yet; once a prior attempt applied a
+			// prefix, its per-command results are the caller's evidence and must
+			// not be overwritten (see the post-exec cancel branch below).
+			if attempt == 0 {
+				resetCmds(cmds)
+				setCmdsErr(cmds, ErrClosed)
+			}
 			return exitErr(ErrClosed)
 		}
 		if err := ctx.Err(); err != nil {
-			// Overwrite any prior attempt's transport errors: callers that
-			// inspect per-command results must see the context error, not a
-			// stale EOF from the failed attempt (setCmdsErr fills only
-			// empty slots).
-			resetCmds(cmds)
-			setCmdsErr(cmds, err)
+			// Only stamp the cancellation when no attempt has executed yet. Once
+			// a prior attempt applied a prefix (delivery is at-least-once with
+			// retries), overwriting it would report an executed command as
+			// canceled and invite a replay — the same reasoning as the post-exec
+			// cancel branch below.
+			if attempt == 0 {
+				resetCmds(cmds)
+				setCmdsErr(cmds, err)
+			}
 			return exitErr(err)
 		}
 
@@ -269,16 +273,19 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			gateRejections++
 			if gateRejections > maxGateRejections {
 				err := ErrTemporarilyNotAvailable
-				resetCmds(cmds)
-				setCmdsErr(cmds, err)
+				if attempt == 0 {
+					resetCmds(cmds)
+					setCmdsErr(cmds, err)
+				}
 				return exitErr(err)
 			}
 			if err := c.tryFailover(ctx, idx); err != nil {
-				// Overwrite any prior attempt's transport errors so callers
-				// see the availability error, not a stale EOF (setCmdsErr
-				// only fills empty error slots).
-				resetCmds(cmds)
-				setCmdsErr(cmds, err)
+				// Stamp only when nothing has executed yet; a prior attempt's
+				// applied prefix must survive (see the ctx branch above).
+				if attempt == 0 {
+					resetCmds(cmds)
+					setCmdsErr(cmds, err)
+				}
 				return exitErr(err)
 			}
 			// Re-enter the gate on the newly selected database — mirroring
