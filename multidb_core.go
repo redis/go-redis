@@ -411,6 +411,19 @@ func (c *multidbCore) buildDatabase(cfg *MultiDBClientConfig) (*multidbDatabase,
 	return db, nil
 }
 
+// initHealthErr classifies a failed-initialization exit consistently: a
+// deadline means the InitialDBState policy was not satisfied within the
+// constructor's deadline, so it returns ErrInsufficientHealthyDatabases
+// (wrapping the deadline via a second %w so callers can still observe it) —
+// matching the documented contract and the between-passes exit. A caller
+// cancellation is not a health verdict and is surfaced as-is.
+func initHealthErr(err error, healthy, required int) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %d healthy, %d required (%w)", ErrInsufficientHealthyDatabases, healthy, required, err)
+	}
+	return err
+}
+
 // initialize runs the initial health checks, enforces the InitialDBState
 // policy and selects the initial active database. When ctx carries a deadline
 // it blocks and retries every initialHealthCheckRetryDelay; otherwise a
@@ -427,7 +440,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			// than finishing the whole pass: a check that ignores ctx would
 			// otherwise keep the constructor running past cancellation.
 			if err := ctx.Err(); err != nil {
-				return err
+				return initHealthErr(err, healthy, required)
 			}
 			probeHealthy[id] = db.probe(ctx, c.opts.HealthCheckTimeout)
 			if probeHealthy[id] {
@@ -438,7 +451,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 			// A probe may report healthy even after the constructor's
 			// context expired (checks that notice cancellation late): a
 			// canceled construction must not return a live client.
-			return err
+			return initHealthErr(err, healthy, required)
 		}
 		if healthy >= required {
 			break
@@ -448,7 +461,7 @@ func (c *multidbCore) initialize(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("%w: %d healthy, %d required", ErrInsufficientHealthyDatabases, healthy, required)
+			return initHealthErr(ctx.Err(), healthy, required)
 		case <-time.After(initialHealthCheckRetryDelay):
 		}
 	}

@@ -187,6 +187,29 @@ func TestMultiDBInitialDBStatePolicies(t *testing.T) {
 	}
 }
 
+// TestMultiDBInitDeadlineReturnsInsufficientSentinel pins that when the
+// constructor's deadline expires with the InitialDBState policy unsatisfied,
+// the error is ErrInsufficientHealthyDatabases (as documented) and still wraps
+// the deadline — regardless of which internal probe/retry step the deadline
+// lands on. Previously the mid-pass and after-pass exits returned the bare
+// context error, so which sentinel a caller saw was timing-dependent.
+func TestMultiDBInitDeadlineReturnsInsufficientSentinel(t *testing.T) {
+	unhealthy := newTestDB("a", "127.0.0.1:1", 1, false)
+	opts := baseOptions()
+	opts.InitialDBState = redis.InitialDBStateOneAvailable
+	opts.Clients = append(opts.Clients, unhealthy.cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := redis.NewMultiDBClient(ctx, opts)
+	if !errors.Is(err, redis.ErrInsufficientHealthyDatabases) {
+		t.Errorf("err = %v, want ErrInsufficientHealthyDatabases", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, want it to also wrap context.DeadlineExceeded", err)
+	}
+}
+
 func TestMultiDBActiveIsHighestWeight(t *testing.T) {
 	db1 := newTestDB("db1", "127.0.0.1:1", 0.5, true)
 	db2 := newTestDB("db2", "127.0.0.1:2", 2.0, true)
@@ -859,6 +882,7 @@ func (h ctxWaitHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		return h.err
 	}
 }
+
 func (ctxWaitHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return next
 }
@@ -1695,6 +1719,7 @@ func (h errHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 		return h.err
 	}
 }
+
 func (errHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error { return nil }
 }
@@ -1774,6 +1799,7 @@ type panicPolicy struct{}
 func (panicPolicy) Execute(context.Context, []redis.MultiDBHealthCheck, *redis.Client) bool {
 	panic("policy boom")
 }
+
 func (panicPolicy) ExecuteCluster(context.Context, []redis.MultiDBHealthCheck, *redis.ClusterClient) bool {
 	panic("policy boom")
 }
@@ -1827,6 +1853,7 @@ func (h *switchThenFailHook) ProcessHook(next redis.ProcessHook) redis.ProcessHo
 		return io.EOF
 	}
 }
+
 func (*switchThenFailHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error { return nil }
 }

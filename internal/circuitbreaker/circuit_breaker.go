@@ -268,21 +268,29 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	case StateOpen:
 		return false, Reservation{}
 	case StateHalfOpen:
+		// Capture the generation BEFORE admission. If the circuit cycles
+		// (a probe failure re-opens it, then a later timeout starts the NEXT
+		// half-open episode) between the increment and the reservation, this
+		// request's slot count was erased by the reopen and it belongs to no
+		// live episode.
+		genBefore := cb.generation.Load()
 		requests := cb.requests.Add(1)
 		if int(requests) > cb.config.MaxHalfOpenRequests {
 			cb.requests.Add(-1)
 			return false, Reservation{}
 		}
-		// Re-check after reserving (mirrors Allow): a probe failure may have
-		// re-opened the circuit in between, and admitting here would both hit a
-		// just-failed endpoint and leave a phantom reservation.
-		if State(cb.state.Load()) != StateHalfOpen {
+		// Re-check BOTH state and generation after reserving (mirrors Allow's
+		// state re-check, plus the generation): admitting after a cycle would
+		// leave a phantom reservation that bypasses MaxHalfOpenRequests (its
+		// count was zeroed by the reopen) and whose success could settle an
+		// episode it never actually joined.
+		if State(cb.state.Load()) != StateHalfOpen || cb.generation.Load() != genBefore {
 			if cb.requests.Add(-1) < 0 {
 				cb.requests.Store(0)
 			}
 			return false, Reservation{}
 		}
-		return true, Reservation{gen: cb.generation.Load(), held: true, settled: new(atomic.Bool)}
+		return true, Reservation{gen: genBefore, held: true, settled: new(atomic.Bool)}
 	default:
 		return false, Reservation{}
 	}
