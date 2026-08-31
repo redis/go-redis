@@ -28,6 +28,9 @@ func TestSearchCommandsRESP2AndRESP3Equivalence(t *testing.T) {
 	defer client3.Close()
 
 	// Check connection
+	if err := probeRedis("localhost:6379"); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
 	if err := client2.Ping(ctx).Err(); err != nil {
 		t.Skipf("Redis not available: %v", err)
 	}
