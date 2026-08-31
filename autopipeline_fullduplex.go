@@ -56,6 +56,14 @@ var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited"
 // error values and permanently fail innocent in-flight commands).
 var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
 
+// errFDPushDrainFailed marks a session failure caused by a push-notification
+// drain error on the reply path (a custom PushNotificationProcessor can consume
+// part of a frame and desync the reader). Wrapped with %w like errFDPanicRecovered
+// so the retry decision recognizes it: the connection is desynced, so reading the
+// next reply would misalign the FIFO — fail the session and REPLAY the unacked
+// tail on a fresh connection rather than reading shifted bytes.
+var errFDPushDrainFailed = errors.New("redis: autopipeline: full-duplex push drain failed")
+
 // errFDConnMoving signals that carry replay stopped early because the held
 // connection was marked for handoff (MOVING/FAILING_OVER) while a recovered carry
 // was still being written. The connection is still alive, so writeCarryChunked
@@ -847,7 +855,8 @@ func (fd *fdEngine) run() {
 			// permanently fail innocent in-flight commands. The NoRetry guard
 			// below still protects non-idempotent writes.
 			replayable := shouldRetry(aerr, true) ||
-				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered)
+				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered) ||
+				errors.Is(aerr, errFDPushDrainFailed)
 			if len(unacked) > 0 && replayable &&
 				retryAttempts < fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: replay the retryable PREFIX and fail
@@ -1035,12 +1044,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				req := buf[i]
 				e := cn.WithReader(bg, readTimeout, func(rd *proto.Reader) error {
 					// Drain RESP3 push frames buffered ahead of this reply so a push is
-					// never misread as the command's reply (FIFO misalign). A drain error
-					// is logged, NOT propagated (as in flushBatch): a custom push
-					// processor's error must not fail this unrelated in-flight command or
-					// kill the connection. A real transport error resurfaces in readReply.
+					// never misread as the command's reply (FIFO misalign). PROPAGATE a
+					// drain error, do NOT log-and-continue: a custom PushNotificationProcessor
+					// can return after consuming only part of a frame, leaving the reader
+					// desynced, so reading this reply would shift every later reply. Fail the
+					// session instead (the shared pre-command drainer treats a custom-processor
+					// error as connection-fatal for the same reason); the unacked tail is
+					// replayable (errFDPushDrainFailed is in the replay predicate) and re-runs
+					// on a fresh connection rather than reading shifted bytes.
 					if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
 						internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
+						return fmt.Errorf("%w: %v", errFDPushDrainFailed, perr)
 					}
 					return req.cmd.readReply(rd)
 				})
