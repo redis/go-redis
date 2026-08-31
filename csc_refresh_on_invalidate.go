@@ -576,7 +576,17 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 			return err
 		}
 
-		return cn.WithReader(ctx, c.opt.ReadTimeout, func(rd *proto.Reader) error {
+		// Bound the read the same way as the write above: with per-op timeouts
+		// disabled WithReader skips SetReadDeadline (options.go maps -2 to -1, which
+		// WithReader treats as no deadline), so a stalled reply or push drain would
+		// park refreshInvalidatedBatch forever — and stopCSCRefresher waits on this
+		// goroutine, so Client.Close would never return. A positive deadline (still
+		// capped by the 5s ctx) turns that into a timeout that fails the refresh.
+		readTimeout := c.opt.ReadTimeout
+		if readTimeout <= 0 {
+			readTimeout = cscRefreshBatchTimeout
+		}
+		return cn.WithReader(ctx, readTimeout, func(rd *proto.Reader) error {
 			for i := range kept {
 				// Invalidation pushes share this connection with replies, so drain
 				// them first or a push frame would be read as a value and cached.
