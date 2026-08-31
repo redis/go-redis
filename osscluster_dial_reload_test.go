@@ -140,8 +140,8 @@ func TestIsNodeGoneError(t *testing.T) {
 		{name: "wrapped deadline", err: fmt.Errorf("op: %w", context.DeadlineExceeded), want: true},
 		{name: "dial refused", err: dialRefused, want: true},
 		{name: "dial deadline", err: dialDeadline, want: true},
-		{name: "i/o timeout", err: ioTimeout, want: true},
-		{name: "wrapped i/o timeout", err: fmt.Errorf("read: %w", ioTimeout), want: true},
+		{name: "i/o timeout", err: ioTimeout, want: false},
+		{name: "wrapped i/o timeout", err: fmt.Errorf("read: %w", ioTimeout), want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,26 +181,38 @@ func TestClusterClientReloadsStateOnConnectionRefused(t *testing.T) {
 	waitForClusterPing(t, client, ctx)
 }
 
-func TestClusterClientReloadsStateOnIOTimeout(t *testing.T) {
-	live := startMockPONGServer(t)
-	defer live.Close()
+func TestClusterClientDoesNotReloadOnReadTimeout(t *testing.T) {
 	hung := startHungServer(t)
 
-	var currentAddr atomic.Value
-	currentAddr.Store(hung.Addr().String())
-
-	ctx := context.Background()
-	client := newSlotSwapClusterClient(t, &currentAddr, func(opt *ClusterOptions) {
-		opt.ReadTimeout = 50 * time.Millisecond
-		opt.WriteTimeout = 50 * time.Millisecond
+	var loads atomic.Int32
+	client := NewClusterClient(&ClusterOptions{
+		ClusterSlots: func(context.Context) ([]ClusterSlot, error) {
+			loads.Add(1)
+			return []ClusterSlot{{
+				Start: 0,
+				End:   16383,
+				Nodes: []ClusterNode{{Addr: hung.Addr().String()}},
+			}}, nil
+		},
+		ClusterStateReloadInterval: time.Hour,
+		ReadTimeout:                50 * time.Millisecond,
+		WriteTimeout:               50 * time.Millisecond,
+		MinRetryBackoff:            -1,
+		MaxRetryBackoff:            -1,
+		MaxRedirects:               0,
 	})
+	defer client.Close()
 
-	if err := client.Ping(ctx).Err(); err == nil {
+	if err := client.Ping(context.Background()).Err(); err == nil {
 		t.Fatal("expected ping against the hung listener to fail")
 	}
+	before := loads.Load()
 
-	currentAddr.Store(live.Addr().String())
-	waitForClusterPing(t, client, ctx)
+	// LazyReload's goroutine would call ClusterSlots after the 200ms cooldown.
+	time.Sleep(350 * time.Millisecond)
+	if got := loads.Load(); got != before {
+		t.Fatalf("read timeout triggered topology reload: loads %d -> %d", before, got)
+	}
 }
 
 func TestClusterClientReloadsStateOnDeadlineExceeded(t *testing.T) {
