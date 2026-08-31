@@ -178,6 +178,25 @@ func isDialError(err error) bool {
 	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
+// isNodeGoneError reports errors that mean the routed cluster node is
+// unreachable: a dial failure, I/O timeout, or context deadline. Caller
+// cancellation is excluded so canceled requests do not trigger topology reloads.
+func isNodeGoneError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if isDialError(err) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if isTimeout, timedOut := isTimeoutError(err); isTimeout && timedOut {
+		return true
+	}
+	return false
+}
+
 func isRedisError(err error) bool {
 	// Check if error implements the Error interface (works with wrapped errors)
 	var redisErr Error
