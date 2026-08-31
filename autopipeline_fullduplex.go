@@ -392,9 +392,10 @@ type fdEngine struct {
 	idle     time.Duration // return the conn after this idle gap (0 = never)
 	maxHold  time.Duration // force a clean return at least this often (0 = never)
 
-	recycles    atomic.Int64               // clean returns (idle + max-hold); observability/tests
-	curInflight atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
-	curConn     atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
+	recycles       atomic.Int64               // clean returns (idle + max-hold); observability/tests
+	curInflight    atomic.Pointer[fdInflight] // current session's in-flight deque; test observability
+	curConn        atomic.Pointer[pool.Conn]  // current session's held conn; test observability (handoff)
+	fastSubmitTake atomic.Int64               // fast-path submits taken; test observability
 
 	submitMu sync.RWMutex // guards closed; RLock across the submit send, WLock to close the gate
 	closed   bool         // set once run() is tearing down; submit then rejects new work
@@ -402,7 +403,22 @@ type fdEngine struct {
 	retryWg  sync.WaitGroup // tracks off-pipe retries diverted to the normal client path; run() waits it so Close does too
 	retrySem chan struct{}  // caps concurrent off-pipe retries at the window (see retryOnNormalConn)
 	hostWg   sync.WaitGroup // tracks per-command hook-host goroutines (see hostHook); run() waits it so Close does not return while a post-next ProcessHook is still running
+
+	// fastSubmit tries a non-blocking channel send before the blocking three-arm
+	// select in submit (from AutoPipelineOptions.FullDuplexFastSubmit). Gated on
+	// submit-queue depth (fdFastSubmitGatePct) so it only runs while the queue is
+	// shallow; a deep/bursting queue falls to the fair blocking select.
+	fastSubmit bool
 }
+
+// fdFastSubmitGatePct bounds fastSubmit to when the submit channel is below this
+// percent full. The non-blocking send cuts the submit-path selectgo cost, but
+// past saturation it would let producers that find room jump ahead of producers
+// blocked on a full channel, starving them and inflating p99. Gating on len(ch)
+// closes the fast path exactly as that backup starts, so contended traffic uses
+// the fair blocking select and the tail is preserved. 10% is the measured
+// tail-safe point (looser gates leave the tail elevated; see FD perf notes).
+const fdFastSubmitGatePct = 10
 
 func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	mb := ap.config.MaxBatchSize
@@ -436,15 +452,16 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		chCap = 4096
 	}
 	return &fdEngine{
-		ap:       ap,
-		client:   client,
-		pool:     client.getPipelinePool(),
-		ch:       make(chan fdReq, chCap),
-		maxBatch: mb,
-		window:   w,
-		idle:     idle,
-		maxHold:  maxHold,
-		retrySem: make(chan struct{}, w),
+		ap:         ap,
+		client:     client,
+		pool:       client.getPipelinePool(),
+		ch:         make(chan fdReq, chCap),
+		maxBatch:   mb,
+		window:     w,
+		idle:       idle,
+		maxHold:    maxHold,
+		retrySem:   make(chan struct{}, w),
+		fastSubmit: ap.config.FullDuplexFastSubmit,
 	}
 }
 
@@ -494,6 +511,26 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// was started) so processAsync surfaces the error from raw Process(ctx,cmd),
 		// matching every other submit-time-rejection path.
 		return completedBatch
+	}
+	// Fast path (opt-in via FullDuplexFastSubmit): while the submit queue is
+	// shallow, a non-blocking send skips the blocking three-arm selectgo that
+	// dominates submit CPU at high producer counts. Admission is IDENTICAL to the
+	// blocking case below (same gate held, same host start, same return); only the
+	// wait is skipped. The queue-depth gate keeps this off once the channel bursts
+	// deep, so contended traffic takes the fair blocking select and the p99 tail is
+	// preserved. On a miss (or a full channel) it falls through to that select.
+	if fd.fastSubmit && len(fd.ch)*100 < cap(fd.ch)*fdFastSubmitGatePct {
+		select {
+		case fd.ch <- req:
+			fd.fastSubmitTake.Add(1) // test observability; single atomic on the (already RLock'd) fast path
+			if hookDone != nil {
+				fd.hostWg.Add(1)
+				go fd.hostHook(ctx, cmd, b, hookDone)
+			}
+			fd.submitMu.RUnlock()
+			return b
+		default:
+		}
 	}
 	select {
 	case fd.ch <- req:
