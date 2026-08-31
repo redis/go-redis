@@ -88,6 +88,14 @@ type UniversalOptions struct {
 	// default: 32KiB (32768 bytes)
 	WriteBufferSize int
 
+	// PipelineReadBufferSize / PipelineWriteBufferSize size the dedicated pipeline
+	// pool's per-connection buffers. PipelinePoolSize sizes that pool; a negative
+	// value opts out of the dedicated pipeline pool. See the same fields on
+	// Options for details.
+	PipelineReadBufferSize  int
+	PipelineWriteBufferSize int
+	PipelinePoolSize        int
+
 	// PoolFIFO uses FIFO mode for each node connection pool GET/PUT (default LIFO).
 	PoolFIFO bool
 
@@ -112,7 +120,10 @@ type UniversalOptions struct {
 	MaxRedirects   int
 	ReadOnly       bool
 	RouteByLatency bool
-	RouteRandomly  bool
+	// RouteByLatencyTolerance is passed through to ClusterOptions and FailoverOptions;
+	// see ClusterOptions.RouteByLatencyTolerance.
+	RouteByLatencyTolerance time.Duration
+	RouteRandomly           bool
 
 	// MasterName is the sentinel master name.
 	// Only for failover clients.
@@ -195,10 +206,11 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
-		MaxRedirects:   o.MaxRedirects,
-		ReadOnly:       o.ReadOnly,
-		RouteByLatency: o.RouteByLatency,
-		RouteRandomly:  o.RouteRandomly,
+		MaxRedirects:            o.MaxRedirects,
+		ReadOnly:                o.ReadOnly,
+		RouteByLatency:          o.RouteByLatency,
+		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
+		RouteRandomly:           o.RouteRandomly,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
@@ -214,6 +226,10 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
+
+		PipelineReadBufferSize:  o.PipelineReadBufferSize,
+		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
+		PipelinePoolSize:        o.PipelinePoolSize,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -264,8 +280,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		SentinelUsername: o.SentinelUsername,
 		SentinelPassword: o.SentinelPassword,
 
-		RouteByLatency: o.RouteByLatency,
-		RouteRandomly:  o.RouteRandomly,
+		RouteByLatency:          o.RouteByLatency,
+		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
+		RouteRandomly:           o.RouteRandomly,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
@@ -281,6 +298,10 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
+
+		PipelineReadBufferSize:  o.PipelineReadBufferSize,
+		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
+		PipelinePoolSize:        o.PipelinePoolSize,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,
@@ -342,6 +363,10 @@ func (o *UniversalOptions) Simple() *Options {
 
 		ReadBufferSize:  o.ReadBufferSize,
 		WriteBufferSize: o.WriteBufferSize,
+
+		PipelineReadBufferSize:  o.PipelineReadBufferSize,
+		PipelineWriteBufferSize: o.PipelineWriteBufferSize,
+		PipelinePoolSize:        o.PipelinePoolSize,
 
 		PoolFIFO:              o.PoolFIFO,
 		PoolSize:              o.PoolSize,

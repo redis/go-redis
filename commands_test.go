@@ -441,7 +441,12 @@ var _ = Describe("Commands", func() {
 
 			info, err := conn.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+			// Redis Enterprise's proxy does not surface the client-tracking flag in
+			// CLIENT INFO, so assert it only against a direct server. Tracking still
+			// works on RE (the command returns OK and CSC operates).
+			if !RECluster {
+				Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+			}
 
 			status, err = conn.ClientTrackingOff(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
@@ -468,8 +473,13 @@ var _ = Describe("Commands", func() {
 
 			info, err := conn.ClientInfo(ctx).Result()
 			Expect(err).NotTo(HaveOccurred())
-			Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
-			Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
+			// Redis Enterprise's proxy does not surface tracking flags in CLIENT
+			// INFO, so assert them only against a direct server (tracking still
+			// works on RE).
+			if !RECluster {
+				Expect(info.Flags & redis.ClientTracking).NotTo(BeZero())
+				Expect(info.Flags & redis.ClientTrackingBCAST).NotTo(BeZero())
+			}
 			// Redis does not expose the NOLOOP flag in CLIENT INFO; it is only
 			// observable via CLIENT TRACKINGINFO.
 
@@ -9435,7 +9445,16 @@ var _ = Describe("Commands", func() {
 				WithDist:  true,
 				WithCoord: true,
 			}
-			val, err := client.GeoSearchLocation(ctx, "Sicily", q).Result()
+			cmd := client.GeoSearchLocation(ctx, "Sicily", q)
+			Expect(cmd.Args()).To(Equal([]interface{}{
+				"geosearch", "Sicily",
+				"fromlonlat", float64(15), float64(37),
+				"byradius", float64(200), "km",
+				"asc",
+				"withcoord", "withdist", "withhash",
+			}))
+
+			val, err := cmd.Result()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(val).To(Equal([]redis.GeoLocation{
 				{
@@ -10036,6 +10055,14 @@ var _ = Describe("Commands", func() {
 		})
 
 		It("returns the number of slow queries", Label("NonRedisEnterprise"), func() {
+			// Warm the autopipeline face's dedicated pipeline pool before lowering
+			// the slowlog threshold. That pool dials lazily on the first flush, so
+			// its HELLO + CLIENT SETINFO handshake would otherwise be recorded as
+			// slow queries once slowlog-log-slower-than is 0 and inflate the count.
+			// Read the result so the dial has completed before we reset. Harmless
+			// on the default (non-autopipeline) subject.
+			Expect(client.Set(ctx, "test", "true", 0).Err()).NotTo(HaveOccurred())
+
 			// Reset slowlog
 			err := rawClient.SlowLogReset(ctx).Err()
 			Expect(err).NotTo(HaveOccurred())

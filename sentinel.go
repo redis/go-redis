@@ -47,6 +47,8 @@ type FailoverOptions struct {
 	// Allows routing read-only commands to the closest master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteByLatency bool
+	// RouteByLatencyTolerance is passed through to ClusterOptions; see its documentation.
+	RouteByLatencyTolerance time.Duration
 	// Allows routing read-only commands to the random master or replica node.
 	// This option only works with NewFailoverClusterClient.
 	RouteRandomly bool
@@ -126,10 +128,10 @@ type FailoverOptions struct {
 	WriteBufferSize int
 
 	// PipelineReadBufferSize, PipelineWriteBufferSize and PipelinePoolSize
-	// configure an optional separate connection pool used for pipelining, with
-	// its own (typically larger) buffers. See the same-named fields on Options
-	// for details. Setting any of the three creates the pool; it also defaults
-	// in when AutoPipelineOptions is set.
+	// configure the separate connection pool used for pipelining, with its own
+	// (typically larger) buffers. See the same-named fields on Options for
+	// details. NewFailoverClient creates this pool by default; set
+	// PipelinePoolSize < 0 to opt out (pipelines then run on the main pool).
 	PipelineReadBufferSize  int
 	PipelineWriteBufferSize int
 	PipelinePoolSize        int
@@ -328,9 +330,10 @@ func (opt *FailoverOptions) clusterOptions() *ClusterOptions {
 
 		MaxRedirects: opt.MaxRetries,
 
-		ReadOnly:       opt.ReplicaOnly,
-		RouteByLatency: opt.RouteByLatency,
-		RouteRandomly:  opt.RouteRandomly,
+		ReadOnly:                opt.ReplicaOnly,
+		RouteByLatency:          opt.RouteByLatency,
+		RouteByLatencyTolerance: opt.RouteByLatencyTolerance,
+		RouteRandomly:           opt.RouteRandomly,
 
 		MinRetryBackoff: opt.MinRetryBackoff,
 		MaxRetryBackoff: opt.MaxRetryBackoff,
@@ -462,6 +465,7 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MasterName = q.string("master_name")
 	o.ClientName = q.string("client_name")
 	o.RouteByLatency = q.bool("route_by_latency")
+	o.RouteByLatencyTolerance = q.duration("route_by_latency_tolerance")
 	o.RouteRandomly = q.bool("route_randomly")
 	o.ReplicaOnly = q.bool("replica_only")
 	o.UseDisconnectedReplicas = q.bool("use_disconnected_replicas")
@@ -483,6 +487,11 @@ func setupFailoverConnParams(u *url.URL, o *FailoverOptions) (*FailoverOptions, 
 	o.MinIdleConns = q.int("min_idle_conns")
 	o.MaxIdleConns = q.int("max_idle_conns")
 	o.MaxActiveConns = q.int("max_active_conns")
+	// Pipeline pool (created by default): allow URL opt-out
+	// (pipeline_pool_size=-1) / tuning, else rejected as unexpected options.
+	o.PipelinePoolSize = q.int("pipeline_pool_size")
+	o.PipelineReadBufferSize = q.int("pipeline_read_buffer_size")
+	o.PipelineWriteBufferSize = q.int("pipeline_write_buffer_size")
 	o.ConnMaxLifetime = q.duration("conn_max_lifetime")
 	if q.has("conn_max_lifetime_jitter") {
 		o.ConnMaxLifetimeJitter = min(q.duration("conn_max_lifetime_jitter"), o.ConnMaxLifetime)
@@ -615,8 +624,8 @@ func NewFailoverClient(failoverOpt *FailoverOptions) *Client {
 		}
 		// Drop stale pipeline-pool connections dialed to the demoted master too;
 		// otherwise pipelined traffic keeps using the old address after failover.
-		// Loaded through the atomic ref: the pool may have been created lazily
-		// by ensurePipelinePool after this callback was registered.
+		// The pipeline pool is created at construction (before this callback can
+		// fire), so the ref is simply read here.
 		if ref := rdb.loadPipelinePool(); ref != nil {
 			_ = ref.pool.Filter(func(cn *pool.Conn) bool {
 				return cn.RemoteAddr().String() != addr

@@ -42,6 +42,12 @@ func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -94,6 +100,12 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -186,6 +198,12 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flushdb: %v", err)
 	}
@@ -233,6 +251,10 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 func TestSubmitRejectedOnBlockingFace(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+
+	if err := client.Ping(context.Background()).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 
 	ap, err := client.AutoPipeline()
 	if err != nil {
@@ -309,6 +331,12 @@ func TestDoBypassesPipeline(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.FlushAll(ctx).Err(); err != nil {
 		t.Fatalf("flushall: %v", err)
 	}
@@ -548,6 +576,9 @@ func TestDispatchChunkedAbortsAfterFailedPrefix(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -748,6 +779,9 @@ func TestCloseWaitsForDivertedCommand(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -778,6 +812,9 @@ func TestCloseWaitsForDivertedCommand(t *testing.T) {
 // opposite in its doc).
 func TestSharedClosedRejectsEveryEntryPoint(t *testing.T) {
 	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	parent := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer parent.Close()
 	if err := parent.Ping(ctx).Err(); err != nil {
@@ -847,6 +884,9 @@ func TestDivertRegistrationRacesClose(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -917,6 +957,9 @@ func TestOtelMetricsDoNotAwaitOnAsyncFace(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1020,6 +1063,9 @@ func TestEvalDoesNotAwaitOnAsyncFace(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1175,6 +1221,9 @@ func TestNoRetryOrderObservedEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1211,6 +1260,9 @@ func TestNoRetrySplitExecutesEveryCommand(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1292,6 +1344,9 @@ func TestSuccessfulHookShortCircuitIsHonored(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1354,6 +1409,9 @@ func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1402,6 +1460,9 @@ func TestRetryRunsStopAfterFailedPrefix(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1443,6 +1504,9 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1466,5 +1530,61 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 	// Rejected at submit: the error must be RETURNED, not only stored.
 	if err := ap.Process(ctx, NewStatusCmd(ctx, "set", "procrej:closed", "v")); err != ErrClosed {
 		t.Fatalf("Process after Close = %v, want ErrClosed", err)
+	}
+}
+
+// TestAutopipelineSoloRoutingGate pins #3962: a cacheable solo straggler is
+// routed through the cache-honoring Process path (main pool) ONLY when the
+// client has client-side caching active. A non-CSC client (the default) must
+// keep cacheable solos on the pipeline pool the straggler gate probed, so
+// the live gate (cscActiveFn) must report false there and true for a CSC
+// client — and false again after CSC disables itself mid-life.
+func TestAutopipelineSoloRoutingGate(t *testing.T) {
+	ctx := context.Background()
+
+	// Non-CSC client: dial-free and deterministic.
+	plain := NewClient(&Options{Addr: "localhost:1", Protocol: 3})
+	defer plain.Close()
+	ap, err := plain.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.cscActiveFn != nil && ap.cscActiveFn() {
+		t.Fatal("non-CSC client: gate reports active, want inactive — a cacheable solo would wrongly use the main pool instead of the pipeline pool")
+	}
+
+	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis for the CSC half: %v", err)
+	}
+	if err := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3}).Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis for the CSC half: %v", err)
+	}
+	cscC := NewClient(&Options{
+		Addr:                  internalTestRedisAddr(),
+		Protocol:              3,
+		ClientSideCacheConfig: &ClientSideCacheConfig{MaxEntries: 128},
+	})
+	defer cscC.Close()
+	if err := cscC.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if !cscC.autopipelineCSCActive() {
+		t.Skip("client-side caching did not attach (server lacks CLIENT TRACKING?)")
+	}
+	apc, err := cscC.AsyncAutoPipeline()
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline (csc): %v", err)
+	}
+	defer apc.Close()
+	if apc.cscActiveFn == nil || !apc.cscActiveFn() {
+		t.Fatal("CSC client: gate reports inactive, want active — cacheable solos must honor the cache")
+	}
+	// Mid-life disable (RESP3 fallback, processor damping): the LIVE gate must
+	// flip so cacheable solos return to the pipeline pool.
+	cscC.disableCSCServing(ctx, "test: mid-life disable")
+	if apc.cscActiveFn() {
+		t.Fatal("gate still reports active after CSC disabled itself mid-life")
 	}
 }
