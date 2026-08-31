@@ -857,8 +857,17 @@ func (fd *fdEngine) run() {
 			replayable := shouldRetry(aerr, true) ||
 				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered) ||
 				errors.Is(aerr, errFDPushDrainFailed)
+			// Bound the tail by PER-COMMAND attempts, not the session-level
+			// retryAttempts: that counter resets on any session progress (see
+			// advancedTotal above), so under a flaky peer that acks some replies then
+			// drops, the unacked head would get a fresh budget after every partial
+			// success and could re-execute far beyond MaxRetries+1. unacked[0] is the
+			// oldest unacked command (carried longest, highest attempts), and replays
+			// bump every carried command's attempts together, so bounding on its count
+			// caps the whole tail at MaxRetries+1 total attempts. retryAttempts still
+			// drives the backoff escalation only.
 			if len(unacked) > 0 && replayable &&
-				retryAttempts < fd.client.opt.MaxRetries {
+				unacked[0].attempts <= fd.client.opt.MaxRetries {
 				// Split at the first NoRetry command: replay the retryable PREFIX and fail
 				// that command plus everything ordered after it (a NoRetry command must
 				// never be re-sent). With NoRetry first (n==0) nothing is retryable ahead
@@ -1054,7 +1063,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					// on a fresh connection rather than reading shifted bytes.
 					if perr := fd.client.processPendingPushNotificationWithReader(bg, cn, rd); perr != nil {
 						internal.Logger.Printf(bg, "autopipeline: full-duplex push drain: %v", perr)
-						return fmt.Errorf("%w: %v", errFDPushDrainFailed, perr)
+						return fmt.Errorf("%w: %w", errFDPushDrainFailed, perr)
 					}
 					return req.cmd.readReply(rd)
 				})
