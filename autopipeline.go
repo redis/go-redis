@@ -165,19 +165,33 @@ type AutoPipelineOptions struct {
 	// value is rejected by Validate.
 	FullDuplexMaxHold time.Duration
 
-	// FullDuplexFastSubmit skips the blocking three-arm select in the submit hot
-	// path with a non-blocking send while the submit queue is shallow, cutting the
-	// selectgo cost (~40% of submit CPU) that dominates at high producer counts on
-	// low-RTT links. The fast path is queue-depth gated: it engages only while the
-	// submit channel is under ~10% full, so once the queue bursts deep the fair
-	// blocking select takes over and the p99 tail is preserved. Measured (FD
-	// blocking, 1-5 ms RTT, >=1k concurrent callers, DEFAULT window): +15-33%
-	// throughput at 1 ms and +6-18% at 5 ms with the tail equal-or-better; a no-op
-	// on high-RTT links (RTT-bound) and harmless at low concurrency. The gate
-	// scales with FullDuplexWindow (the submit channel is min(window,4096) deep),
-	// so a small FullDuplexWindow leaves a shallow channel and effectively disables
-	// the fast path — the measured gains are at the default window. Only used when
-	// FullDuplex is set. Off by default.
+	// FullDuplexFastSubmit trades submit fairness for throughput on hot,
+	// low-RTT links. Off by default; only used when FullDuplex is set.
+	//
+	// What: normal submit waits on a blocking three-arm select. The fast path
+	// tries a non-blocking channel send first and only falls back to that select
+	// on a miss, cutting the selectgo cost (~40% of submit CPU) that dominates at
+	// high producer counts.
+	//
+	// Benefit: measured +15-33% throughput at 1 ms RTT and +6-18% at 5 ms with
+	// >=1k concurrent callers on the default window, tail equal-or-better.
+	//
+	// Drawback: it can affect fairness. A producer that finds room jumps ahead of
+	// producers already blocked on a full channel, so under a deep/bursting queue
+	// it would starve them and inflate p99. To bound that, the fast path is
+	// queue-depth gated (fdFastSubmitGatePct, ~10% full): once the channel backs
+	// up, the fair blocking select takes over. No-op on high-RTT links (RTT-bound)
+	// and with a small FullDuplexWindow (the channel is min(window,4096) deep, so
+	// it stays shallow) — the gains are at the default window.
+	//
+	// Ordering is unaffected. The enqueue is synchronous even on the async
+	// (Submit) face — only the reply is deferred, not the send. A caller's command
+	// N is on the ordered channel before its submit returns, and submit(N+1)
+	// cannot start until submit(N) returns, so a goroutine's own commands keep
+	// program order regardless of which path each took. Fast-submit changes only
+	// how long a synchronous enqueue waits and how it interleaves with OTHER
+	// producers (fairness); it can never let a caller's later command overtake its
+	// own earlier one.
 	FullDuplexFastSubmit bool
 
 	// contentSharded is set internally by cluster wiring when commands are
@@ -1012,7 +1026,8 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
-			config.NumShards)
+			config.NumShards,
+		)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1630,7 +1645,8 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrSubmitBlockingFace = errors.New(
-	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do")
+	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do",
+)
 
 // errZeroAutoFuture is returned by Wait/WaitContext on a zero AutoFuture.
 var errZeroAutoFuture = errors.New("redis: Wait on a zero AutoFuture")
@@ -1647,7 +1663,8 @@ var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argu
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrAutoPipelineTimeout = errors.New(
-	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)")
+	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)",
+)
 
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
@@ -1993,7 +2010,8 @@ func (ap *AutoPipeliner) drainAll(timeout time.Duration) error {
 				"redis: autopipeline: Close timed out after %s with %s still in flight; "+
 					"they hold pooled connections until the server or the OS ends them "+
 					"(most often a blocking command with no timeout, or ReadTimeout disabled)",
-				timeout, strings.Join(outstanding, " and "))
+				timeout, strings.Join(outstanding, " and "),
+			)
 		}
 	}
 	return nil
