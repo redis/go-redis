@@ -76,6 +76,13 @@ const (
 	// cscRefreshBatchMax caps how many keys ride one round trip.
 	cscRefreshBatchMax = 128
 
+	// cscRefreshBatchTimeout bounds one refresh round trip. It caps the batch ctx
+	// AND, when the user disabled per-op write timeouts, the batch write deadline —
+	// so a stalled deadline-less flush cannot wedge the refresher (the ctx does not
+	// interrupt a deadline-less socket write). The two uses must agree, so they
+	// share this constant.
+	cscRefreshBatchTimeout = 5 * time.Second
+
 	// cscRefreshRecencyTick is how often the "recently read" horizon advances.
 	cscRefreshRecencyTick = 200 * time.Millisecond
 
@@ -245,20 +252,23 @@ type CSCRefreshStats struct {
 //
 // Experimental: this API may change in a minor release.
 func (c *Client) CSCRefreshStats() CSCRefreshStats {
-	q := c.baseClient.cscRefreshQueue
-	if q == nil {
-		return CSCRefreshStats{}
-	}
-	st := CSCRefreshStats{
-		Enqueued:      q.enqueued.Load(),
-		Dropped:       q.dropped.Load(),
-		Refreshed:     q.refreshed.Load(),
-		RefreshFailed: q.refreshFailed.Load(),
-		DemandFlushes: q.demandFlushes.Load(),
-	}
+	var st CSCRefreshStats
+	// Cache-level counters (Invalidations, Deletions, DeletionsNoop) are recorded
+	// by the invalidation handler whenever CSC is on, even with
+	// ClientSideCacheRefreshOnInvalidate off (the default) and only batching
+	// enabled. Read them independently of the refresh queue, or a batch-only setup
+	// would always report zero for activity it clearly performs.
 	if lc, ok := c.baseClient.csc.(*LocalCache); ok {
 		st.Invalidations = lc.InvalidationStats()
 		st.Deletions, st.DeletionsNoop = lc.DeletionStats()
+	}
+	// The remaining counters exist only when the refresh queue is running.
+	if q := c.baseClient.cscRefreshQueue; q != nil {
+		st.Enqueued = q.enqueued.Load()
+		st.Dropped = q.dropped.Load()
+		st.Refreshed = q.refreshed.Load()
+		st.RefreshFailed = q.refreshFailed.Load()
+		st.DemandFlushes = q.demandFlushes.Load()
 	}
 	return st
 }
@@ -373,7 +383,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		// permanently degrade refresh-on-invalidate to plain eviction for the client's
 		// lifetime. Mirrors the invalidation batcher's flush guard.
 		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), cscRefreshBatchTimeout)
 			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
@@ -542,7 +552,18 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 		// (-1/-2) a stalled Redis would then hang this reader forever, and Close
 		// (stopCSCRefresher waits on the refresher goroutine) would wedge. The
 		// miss-coalescer passes its session ctx directly for the same reason.
-		if err := cn.WithWriter(ctx, c.opt.WriteTimeout, func(wr *proto.Writer) error {
+		// Bound the write even when per-op timeouts are disabled. The refresh writes
+		// the whole chunk before it reads, so a deadline-less flush the server cannot
+		// drain (transport backpressure) would wedge the refresher: the 5s ctx does
+		// not interrupt a deadline-less socket write. A positive timeout makes
+		// WithWriter set a write deadline (still capped by the 5s ctx), so a stalled
+		// flush fails the refresh and the entries degrade to plain eviction
+		// (self-healing) instead of hanging the goroutine.
+		writeTimeout := c.opt.WriteTimeout
+		if writeTimeout <= 0 {
+			writeTimeout = cscRefreshBatchTimeout
+		}
+		if err := cn.WithWriter(ctx, writeTimeout, func(wr *proto.Writer) error {
 			for i := range kept {
 				// The cache key is the namespaced RESP encoding of the command that
 				// produced the entry; strip the namespace and it is already wire form.
