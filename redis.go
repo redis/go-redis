@@ -1288,14 +1288,19 @@ func (c *baseClient) withPipelineConn(
 	//     pipelinePoolOptions resets MaxActiveConns to 0), and
 	//   - a pipeline-conn init failure (e.g. a fresh dial refused with maxclients)
 	//     — the main pool may have an idle conn and avoid it.
-	// Do NOT spill on a non-saturation Get error (ctx cancelled, pool closed):
-	// the main pool would fail the same way. Spilled pipelines run with the
-	// regular buffer sizes (a throughput detail).
+	// Do NOT spill on a non-saturation error (ctx cancelled, pool closed): the main
+	// pool would fail the same way. Spilled pipelines run with the regular buffer
+	// sizes (a throughput detail).
+	//
+	// TryGet, not Get: on a saturated pipeline pool TryGet returns ErrPoolTryFull
+	// AT ONCE (no PoolTimeout wait, and it is not counted as a pool timeout), so the
+	// pipeline spills to the main pool immediately instead of stalling up to
+	// DefaultPipelinePoolTimeout and recording a spurious Stats.Timeouts.
 	spill := false
-	cn, retErr = pipelinePool.Get(ctx)
+	cn, retErr = pipelinePool.TryGet(ctx)
 	if retErr != nil {
 		cn = nil
-		if !errors.Is(retErr, pool.ErrPoolTimeout) && !errors.Is(retErr, pool.ErrPoolExhausted) {
+		if !errors.Is(retErr, pool.ErrPoolTryFull) && !errors.Is(retErr, pool.ErrPoolExhausted) {
 			return retErr
 		}
 		spill = true
@@ -1544,6 +1549,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 
 	var usedConn *pool.Conn
 	var retryTimeout atomic.Uint32
+	// forceRetry marks the returned error as retryable regardless of its type. Set
+	// only when we have already CLOSED the connection (a pre-command push-drain
+	// desync), so re-running on a fresh conn is safe even for an error shouldRetry
+	// would otherwise reject (e.g. a custom push-processor sentinel).
+	var forceRetry atomic.Bool
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
 		// Process any pending push notifications before executing the command. A
@@ -1559,7 +1569,11 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		if err := c.processPushNotifications(ctx, cn); err != nil {
 			internal.Logger.Printf(ctx, "push: pre-command drain failed, retiring conn: %v", err)
 			_ = cn.Close()
-			retryTimeout.Store(1)
+			// Force a retry: the conn is closed so re-running on a fresh conn is safe,
+			// and the drain error may be a custom-processor sentinel that shouldRetry
+			// would reject (retryTimeout only affects timeout errors). The command was
+			// not written yet, so replay is clean.
+			forceRetry.Store(true)
 			return err
 		}
 
@@ -1666,7 +1680,7 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		}
 		return readErr
 	}); err != nil {
-		retry := shouldRetry(err, retryTimeout.Load() == 1)
+		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
 		return retry, usedConn, err
 	}
 
@@ -2843,7 +2857,8 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
-				context.Background(), handlerCtx, rd)
+				context.Background(), handlerCtx, rd,
+			)
 		}
 		return c.pushProcessor.ProcessPendingNotifications(context.Background(), handlerCtx, rd)
 	})
