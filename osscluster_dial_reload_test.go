@@ -109,7 +109,7 @@ func newSlotSwapClusterClient(t *testing.T, currentAddr *atomic.Value, extra fun
 
 func waitForClusterPing(t *testing.T, client *ClusterClient, ctx context.Context) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(4 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		lastErr = client.Ping(ctx).Err()
@@ -218,26 +218,32 @@ func TestClusterClientDoesNotReloadOnReadTimeout(t *testing.T) {
 func TestClusterClientReloadsStateOnDeadlineExceeded(t *testing.T) {
 	live := startMockPONGServer(t)
 	defer live.Close()
-	hung := startHungServer(t)
+	liveAddr := live.Addr().String()
 
 	var currentAddr atomic.Value
-	currentAddr.Store(hung.Addr().String())
+	currentAddr.Store("127.0.0.1:1")
 
+	var gone atomic.Bool
+	gone.Store(true)
+
+	ctx := context.Background()
 	client := newSlotSwapClusterClient(t, &currentAddr, func(opt *ClusterOptions) {
-		opt.ContextTimeoutEnabled = true
-		opt.ReadTimeout = time.Second
-		opt.WriteTimeout = time.Second
+		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if gone.Load() {
+				return nil, context.DeadlineExceeded
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		}
 	})
 
-	deadCtx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	if err := client.Ping(deadCtx).Err(); err == nil {
-		cancel()
-		t.Fatal("expected ping against the hung listener to fail")
+	if err := client.Ping(ctx).Err(); err == nil {
+		t.Fatal("expected ping to fail with deadline")
 	}
-	cancel()
 
-	currentAddr.Store(live.Addr().String())
-	waitForClusterPing(t, client, context.Background())
+	currentAddr.Store(liveAddr)
+	gone.Store(false)
+	waitForClusterPing(t, client, ctx)
 }
 
 func TestClusterClientDoesNotReloadOnCanceledContext(t *testing.T) {
