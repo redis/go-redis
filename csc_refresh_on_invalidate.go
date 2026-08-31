@@ -377,14 +377,13 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		// self-healed during the window (a reader missed and repopulated them) are
 		// now Valid, so Reserve inside refreshInvalidatedBatch declines them for
 		// free — no MGET slot is spent rewriting fresh data.
-		// defer cancel (not a bare cancel at the end) and recover inside a closure so
-		// a panic in refreshInvalidatedBatch (cache/RESP/network path) neither leaks
-		// the 5s timer nor kills the refresher goroutine — which would silently and
-		// permanently degrade refresh-on-invalidate to plain eviction for the client's
-		// lifetime. Mirrors the invalidation batcher's flush guard.
+		// Recover inside a closure so a panic in refreshInvalidatedBatch (cache/RESP/
+		// network path) does not kill the refresher goroutine — which would silently
+		// and permanently degrade refresh-on-invalidate to plain eviction for the
+		// client's lifetime. Mirrors the invalidation batcher's flush guard. The
+		// per-round-trip deadline is created PER CHUNK below, not once for the whole
+		// window, so a slow early chunk cannot expire later chunks' own budget.
 		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), cscRefreshBatchTimeout)
-			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
 					q.refreshFailed.Add(1)
@@ -410,7 +409,11 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 					nbytes += w
 					end++
 				}
-				n, err := c.refreshInvalidatedBatch(ctx, targets[start:end])
+				// Per-chunk deadline: each round trip gets its own cscRefreshBatchTimeout,
+				// so aggregate latency across chunks cannot expire the later chunks (#3989).
+				rctx, rcancel := context.WithTimeout(context.Background(), cscRefreshBatchTimeout)
+				n, err := c.refreshInvalidatedBatch(rctx, targets[start:end])
+				rcancel()
 				q.refreshed.Add(uint64(n))
 				if err != nil {
 					// One count per errored round trip: those keys were not refreshed and
