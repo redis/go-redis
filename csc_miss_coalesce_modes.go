@@ -317,13 +317,55 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			mc.countBatch(buf)
 
 			// Attribute every request in this batch to the session connection up
-			// front. A write-side failure (WithWriter error, or ctx cancel during the
-			// inflight handoff below) settles via settleAllErr before the reply path
+			// front. A write-side failure settles the batch before the reply path
 			// runs, so without this the error metric and processCached would report a
 			// nil connection and zero attempts for commands that did reach cn. buf is
 			// []*cscMissReq, so this persists to the reply path (which re-sets it).
 			for _, r := range buf {
 				r.servedBy = cn
+			}
+
+			// Hand the batch to the reader BEFORE writing it, so the reader drains
+			// reply k while the writer is still writing and flushing k+1. If the
+			// reader started only after the whole batch was written (the old order),
+			// a batch larger than the transport send capacity could deadlock: the
+			// server blocks writing early replies that nobody reads while the writer
+			// blocks flushing later requests. With the reader draining concurrently,
+			// those early replies are consumed and the server keeps accepting the
+			// rest of the write.
+			//
+			// This send cannot deadlock the writer. It blocks only when inflight is
+			// full (cscFullDuplexDepth), and a batch is at most cscMissBatchMax
+			// (128 << 4096). The writer is one goroutine and runs sequentially, so
+			// every PRIOR batch was already flushed by its own WithWriter before this
+			// iteration. A full channel therefore holds at least
+			// cscFullDuplexDepth-cscMissBatchMax already-flushed requests, and the
+			// reader consumes FIFO, so its front is always a flushed request whose
+			// reply is on the wire: the reader advances, frees a slot, and the send
+			// proceeds. (Mirrors the autopipeline full-duplex engine, which likewise
+			// enqueues each batch before it writes.)
+			//
+			// A stalled or exited reader cannot strand the writer here either: every
+			// reader-exit path either cancels sctx (readOne/tick failure via fail, or
+			// the reader's own sctx.Done case) — so the select below escapes — or
+			// happens only after the writer already exited and closed inflight. Keep
+			// that true: a reader return added after doRecycle without cancelling sctx
+			// would break this escape.
+			sent := 0
+			for _, r := range buf {
+				select {
+				case inflight <- r:
+					sent++
+				case <-sctx.Done():
+					// Session cancelled mid-handoff. The reader and the teardown settle
+					// whatever reached inflight; the writer settles the rest and the
+					// carry (never in inflight).
+					mc.settleAllErr(buf, sent, reasonErr())
+					if pending != nil {
+						mc.settleErr(pending, reasonErr())
+					}
+					return
+				}
 			}
 
 			// sctx directly, NOT c.context(sctx): c.context() strips the engine's
@@ -345,26 +387,13 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			})
 			if werr != nil {
 				fail(werr)
-				mc.settleAllErr(buf, 0, werr)
-				// pending (the carry) is never an element of buf: grabInto returns it
-				// instead of appending it. So this settles it once, not twice.
+				// The batch is already in inflight, so the reader (and the teardown
+				// drain) settle it. The writer only owns the carry, which never
+				// entered inflight.
 				if pending != nil {
 					mc.settleErr(pending, werr)
 				}
 				return
-			}
-			for i, r := range buf {
-				select {
-				case inflight <- r:
-				case <-sctx.Done():
-					mc.settleAllErr(buf, i, reasonErr())
-					// pending (the carry) is never an element of buf (see above), so
-					// this settles it once, not twice.
-					if pending != nil {
-						mc.settleErr(pending, reasonErr())
-					}
-					return
-				}
 			}
 		}
 	}()
