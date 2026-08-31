@@ -278,6 +278,27 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 		for {
 			var req *cscMissReq
 			if pending != nil {
+				// A carry from the previous batch. Still honor recycle/stop/cancel
+				// between batches even under a sustained carry stream, or a
+				// persistently over-budget producer would starve a maintenance handoff
+				// or lifetime recycle (the OnPut hooks would never run). Settle the
+				// carry on bail: it is the writer's own state, so the teardown drain
+				// (which covers only inflight) would otherwise leak it and hang its
+				// caller.
+				select {
+				case <-recycle:
+					mc.settleErr(pending, errCSCRetryUncached)
+					return
+				case <-mc.stop:
+					stopFlag.Store(true)
+					doRecycle()
+					mc.settleErr(pending, errCSCRetryUncached)
+					return
+				case <-sctx.Done():
+					mc.settleErr(pending, reasonErr())
+					return
+				default:
+				}
 				// grabInto below overwrites pending with the next carry, so do not
 				// clear it here (that store would be dead).
 				req = pending
