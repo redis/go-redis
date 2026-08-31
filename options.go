@@ -246,15 +246,29 @@ type Options struct {
 	PipelineWriteBufferSize int
 
 	// PipelinePoolSize is the pool size for the separate pipeline connection pool.
-	// Only used if PipelineReadBufferSize or PipelineWriteBufferSize is set.
+	// Setting this alone is enough to create the dedicated pipeline pool; the
+	// pipeline buffer sizes then default to the LARGER of the regular buffer size
+	// (ReadBufferSize/WriteBufferSize) and DefaultPipelineBufferSize (64 KiB), so
+	// each pipeline connection allocates at least 64 KiB per direction.
 	//
 	// Pipelining typically needs fewer connections than regular operations because
 	// batching reduces connection contention. A smaller pool saves memory while
 	// maintaining high throughput.
 	//
-	// If not set (0), defaults to 10 connections.
+	// The dedicated pipeline pool is created unconditionally at NewClient —
+	// like the pubsub pool — so pipelines never compete with regular commands
+	// for main-pool connections. It never pre-dials (MinIdleConns is forced
+	// to 0 on it), so the size is a cap on burst capacity, not a standing
+	// footprint: an unused pipeline pool holds zero connections. A burst of
+	// concurrent pipelines wider than the cap spills back to the main pool
+	// instead of queueing. Its connections use DefaultPipelineBufferSize
+	// buffers unless the pipeline buffer sizes are set explicitly.
 	//
-	// default: 10
+	// Set to a negative value to opt out of the dedicated pool entirely:
+	// pipelines then run on the main pool, as they did before the pool
+	// existed.
+	//
+	// default: DefaultPipelinePoolSize (10) connections
 	PipelinePoolSize int
 
 	// AutoPipelineOptions is the default config for BOTH autopipeliner faces:
@@ -289,6 +303,21 @@ type Options struct {
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
 	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
 	MaxConcurrentDials int
+
+	// maxConcurrentDialsSet records whether MaxConcurrentDials was set explicitly
+	// by the caller (>0) BEFORE init() normalized it. init() rewrites a 0 to
+	// PoolSize, which makes an explicit MaxConcurrentDials==PoolSize afterward
+	// indistinguishable from the default; pipelinePoolOptions consults this to
+	// preserve an explicit dial cap for the pipeline pool instead of expanding it.
+	maxConcurrentDialsSet bool
+
+	// maxConcurrentDialsInit latches maxConcurrentDialsSet on the first init().
+	// A caller may reuse one *Options across more than one NewClient call. The
+	// first init() normalizes an unset MaxConcurrentDials (0) to PoolSize, so a
+	// second init() would recompute maxConcurrentDialsSet from the normalized value
+	// and wrongly mark it explicit, which stops the pipeline pool from widening its
+	// dial cap. The latch preserves the first decision. Clones copy both flags.
+	maxConcurrentDialsInit bool
 
 	// PoolTimeout is the amount of time client waits for connection if all connections
 	// are busy before returning an error.
@@ -452,6 +481,23 @@ const (
 	CSCStrategySharedTracking CSCStrategy = iota
 )
 
+// DefaultPipelinePoolSize is the pipeline pool size used when
+// PipelinePoolSize is not set. Pipelining batches many commands per round
+// trip, so it needs far fewer connections than regular traffic. The pool is
+// pure burst capacity: it never pre-dials idle connections (MinIdleConns is
+// forced to 0 on it), so an unused pipeline pool holds no connections at all
+// and the size is only a cap — bursts wider than it spill to the main pool.
+const DefaultPipelinePoolSize = 10
+
+// DefaultPipelineBufferSize is the per-connection read/write buffer size for
+// the dedicated pipeline pool when no explicit pipeline buffer size is set
+// (the larger of this and the regular buffer size is used). Pipeline
+// connections move whole batches per round trip, so they earn bigger buffers
+// than regular per-command traffic: measured on the autopipeline engine,
+// throughput plateaus around 64 KiB and gains nothing past ~128 KiB, while
+// very large buffers (>=512 KiB) can regress it.
+const DefaultPipelineBufferSize = 64 * 1024
+
 func (opt *Options) init() {
 	if opt.Addr == "" {
 		opt.Addr = "localhost:6379"
@@ -496,6 +542,16 @@ func (opt *Options) init() {
 	}
 	if opt.PoolSize == 0 {
 		opt.PoolSize = 10 * runtime.GOMAXPROCS(0)
+	}
+
+	// Record explicit-vs-default BEFORE normalizing (a 0 becomes PoolSize below),
+	// so pipelinePoolOptions can tell an explicit MaxConcurrentDials==PoolSize from
+	// the default. Latch on the FIRST init only: a caller may reuse one *Options
+	// across NewClient calls, and a second init() would see the already-normalized
+	// value and wrongly mark it explicit. Clones copy the latched flags.
+	if !opt.maxConcurrentDialsInit {
+		opt.maxConcurrentDialsSet = opt.MaxConcurrentDials > 0
+		opt.maxConcurrentDialsInit = true
 	}
 	if opt.MaxConcurrentDials <= 0 {
 		opt.MaxConcurrentDials = opt.PoolSize
@@ -574,13 +630,15 @@ func (opt *Options) init() {
 
 	opt.MaintNotificationsConfig = opt.MaintNotificationsConfig.ApplyDefaultsWithPoolConfig(opt.PoolSize, opt.MaxActiveConns)
 
-	// auto-detect endpoint type if not specified
-	endpointType := opt.MaintNotificationsConfig.EndpointType
-	if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
-		// Auto-detect endpoint type if not specified
-		endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+	// skip endpoint detection when maint notifications are disabled.
+	if opt.MaintNotificationsConfig.Mode != maintnotifications.ModeDisabled {
+		endpointType := opt.MaintNotificationsConfig.EndpointType
+		// auto-detect endpoint type if not specified
+		if endpointType == "" || endpointType == maintnotifications.EndpointTypeAuto {
+			endpointType = maintnotifications.DetectEndpointType(opt.Addr, opt.TLSConfig != nil)
+		}
+		opt.MaintNotificationsConfig.EndpointType = endpointType
 	}
-	opt.MaintNotificationsConfig.EndpointType = endpointType
 }
 
 func (opt *Options) clone() *Options {
