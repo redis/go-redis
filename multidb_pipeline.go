@@ -218,7 +218,6 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	// failover keeps handing back members the gate rejects — surface
 	// unavailability instead of busy-looping the active index.
 	gateRejections := 0
-	maxGateRejections := c.memberCount() + 1
 
 	// exitErr picks the batch error for every exit: with a rejected HIMPORT
 	// in the batch the positionally first error over the ORIGINAL slice wins,
@@ -271,7 +270,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		}
 		if !admitted {
 			gateRejections++
-			if gateRejections > maxGateRejections {
+			if gateRejections > c.memberCount()+1 {
 				err := ErrTemporarilyNotAvailable
 				if attempt == 0 {
 					resetCmds(cmds)
@@ -365,7 +364,6 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	// cap) — only the EXECUTION below stays single-shot, so at-most-once
 	// holds: no MULTI/EXEC has been sent while the gate is still choosing.
 	gateRejections := 0
-	maxGateRejections := c.memberCount() + 1
 	var db *multidbDatabase
 	var res imultidb.Reservation
 	for {
@@ -387,7 +385,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		}
 		if !admitted {
 			gateRejections++
-			if gateRejections > maxGateRejections {
+			if gateRejections > c.memberCount()+1 {
 				err := ErrTemporarilyNotAvailable
 				resetCmds(cmds)
 				setCmdsErr(cmds, err)
@@ -559,7 +557,6 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	// concurrent WATCH transactions too; the slot is released after the call
 	// because the WATCH outcome deliberately never records on the breaker.
 	gateRejections := 0
-	maxGateRejections := c.core.memberCount() + 1
 	var db *multidbDatabase
 	var res imultidb.Reservation
 	for {
@@ -577,7 +574,7 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		}
 		if !admitted {
 			gateRejections++
-			if gateRejections > maxGateRejections {
+			if gateRejections > c.core.memberCount()+1 {
 				return ErrTemporarilyNotAvailable
 			}
 			if err := c.core.tryFailover(ctx, idx); err != nil {
