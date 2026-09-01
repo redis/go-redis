@@ -529,6 +529,50 @@ func TestMultiDBTxPipelineMarksCmdsNoRetryDuringExecOnly(t *testing.T) {
 	}
 }
 
+func TestMultiDBTxPipelinePanicRestoresNoRetry(t *testing.T) {
+	check := newFakeHealthCheck(true)
+	opts := baseOptions()
+	opts.Clients = []redis.MultiDBClientConfig{{
+		Options:      &redis.Options{Addr: "127.0.0.1:1"},
+		Weight:       1,
+		HealthChecks: []redis.MultiDBHealthCheck{check},
+	}}
+	initCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	mdb, err := redis.NewMultiDBClient(initCtx, opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+	armed := &atomic.Bool{}
+	armed.Store(true)
+	if err := mdb.AddDatabaseHook(0, panicPipelineHook{armed: armed}); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	pipe := mdb.TxPipeline()
+	setCmd := pipe.Set(context.Background(), "k", "v", 0)
+	getCmd := pipe.Get(context.Background(), "k")
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected panic from member pipeline hook")
+			}
+		}()
+		_, _ = pipe.Exec(context.Background())
+	}()
+
+	// The member path unwound through a panic. The caller still holds setCmd/
+	// getCmd; the temporary at-most-once marker must have been cleared, or a
+	// reused *Cmd would be left permanently non-retryable.
+	for _, cmd := range []redis.Cmder{setCmd, getCmd} {
+		if cmd.NoRetry() {
+			t.Errorf("cmd %s left NoRetry after a panicking TxPipeline exec — restore must be panic-safe", cmd.Name())
+		}
+	}
+}
+
 func TestMultiDBBatchDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
 	newClient := func(t *testing.T, det *fakeDetector) (*redis.MultiDBClient, *testDB, *testDB) {
 		dbA := newTestDB("a", "127.0.0.1:1", 2, true)

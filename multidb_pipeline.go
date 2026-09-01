@@ -509,13 +509,16 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 					bc.setNoRetry(true)
 				}
 			}
-			err := c.processTxPipelineHook(ctx, cmds)
-			for i, cmd := range cmds {
-				if bc, ok := cmd.(noRetrier); ok {
-					bc.setNoRetry(prev[i])
+			// Restore via defer so a panic in the hook or member path still
+			// clears the temporary noRetry on the caller-owned commands.
+			defer func() {
+				for i, cmd := range cmds {
+					if bc, ok := cmd.(noRetrier); ok {
+						bc.setNoRetry(prev[i])
+					}
 				}
-			}
-			return err
+			}()
+			return c.processTxPipelineHook(ctx, cmds)
 		},
 	}
 	pipe.init()
