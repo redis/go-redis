@@ -1735,7 +1735,9 @@ func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 		fd.failReqs(fresh, err)
 		return
 	}
-	fd.flushReqs(bg, fresh, fd.client.opt.MaxRetries)
+	// Last flush: a transport failure is already handled inside flushReqs (it fails
+	// the remainder), and there is nothing after it, so the returned error is moot.
+	_ = fd.flushReqs(bg, fresh, fd.client.opt.MaxRetries)
 }
 
 // fdCarryRemainingRetries returns the retry bound for a carried command flushed on
