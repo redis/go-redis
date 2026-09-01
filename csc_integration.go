@@ -1106,15 +1106,22 @@ func (c *baseClient) stopBackgroundDrainer() {
 		return
 	}
 	h.teardownOnce.Do(func() {
-		// Deactivate serving FIRST: with the flag still true a clone's miss
-		// could route to the just-stopped coalescer and fail with ErrClosed
-		// while the pool is still open. Once false, racing reads take the
-		// plain uncached path (fetch's stop returns errCSCRetryUncached as the
-		// backstop for requests already in flight).
+		// Stop the refresher FIRST, while serving is still on: stopCSCRefresher joins
+		// the refresher, whose stop-path flush re-fetches the in-window invalidated
+		// keys. refreshInvalidatedBatch skips that work once cscActive is false, so
+		// deactivating before this join would drop the last collection window — on a
+		// SHARED (unowned) cache those hot keys would stay evicted for siblings until a
+		// later reader misses. The pool is still open here (closeResources tears it
+		// down after this), so the final refetch can run.
+		c.stopCSCRefresher()
+		// Deactivate serving BEFORE stopping the coalescer: with the flag still true a
+		// clone's miss could route to the just-stopped coalescer and fail with
+		// ErrClosed while the pool is still open. Once false, racing reads take the
+		// plain uncached path (fetch's stop returns errCSCRetryUncached as the backstop
+		// for requests already in flight).
 		if c.cscActive != nil {
 			c.cscActive.Store(false)
 		}
-		c.stopCSCRefresher()
 		c.stopCSCMissCoalescer()
 		h.signalStop()
 		<-h.done
@@ -1263,17 +1270,24 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 		// errors.
 		var sessErr cscSessionError
 		if err == errCSCRetryUncached || errors.As(err, &sessErr) {
-			return c.processWithRetry(ctx, cmd, nil, state)
+			// The coalescer bailed and cancelled its reservation. Re-reserve and FALL
+			// THROUGH to the capture path below so a successful retry repopulates the
+			// cache (a nil-capture processWithRetry returned the value but stored
+			// nothing, so connection blips and wire-budget sheds left the key uncached
+			// and later readers missed). Reserve may hand fetching to another reader
+			// (shouldFetch=false), which the capture path handles.
+			token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
+		} else {
+			// Native-recorder attribution: the coalesced fetch contacted Redis on
+			// the session's held connection — report it as one attempt on that conn
+			// so operation-duration metrics carry a real server.address instead of
+			// zero attempts and a nil connection.
+			if state != nil && served != nil {
+				state.attempts++
+				state.lastConn = served
+			}
+			return err
 		}
-		// Native-recorder attribution: the coalesced fetch contacted Redis on
-		// the session's held connection — report it as one attempt on that conn
-		// so operation-duration metrics carry a real server.address instead of
-		// zero attempts and a nil connection.
-		if state != nil && served != nil {
-			state.attempts++
-			state.lastConn = served
-		}
-		return err
 	}
 
 	var fc cscFetchCapture
