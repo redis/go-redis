@@ -64,6 +64,44 @@ var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic rec
 // tail on a fresh connection rather than reading shifted bytes.
 var errFDPushDrainFailed = errors.New("redis: autopipeline: full-duplex push drain failed")
 
+// fdReplyIsFatal reports whether a per-reply read error must ABORT the FD session
+// (stop the reader, leave the unread tail for replay) rather than be treated as
+// this command's reply. A push-drain desync is always fatal, even when it wraps a
+// Redis-typed cause: errFDPushDrainFailed carries the processor error via %w so a
+// caller can still errors.Is/As it, but that wrapped cause must NOT let
+// isRedisError reclassify the desync as a normal reply — doing so would settle or
+// divert it and leave the unread frame in the stream, shifting every later reply
+// (the exact FIFO desync the drain propagation prevents). Any other error is fatal
+// only when it is not a Redis error (a genuine transport/protocol failure); a
+// plain Redis error is a real reply and is handled inline.
+func fdReplyIsFatal(e error) bool {
+	return errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)
+}
+
+// errFDRetryBudgetExhausted fails a carried command that has already spent its
+// full retry budget (attempts > MaxRetries) when Close routes the unacked tail to
+// shutdownFlush, so the shutdown pipeline cannot grant it another MaxRetries+1
+// executions and push a mutating command past its configured budget.
+var errFDRetryBudgetExhausted = errors.New("redis: autopipeline: retry budget exhausted before shutdown flush")
+
+// fdPartitionByBudget splits a carried tail into commands that still have retry
+// budget (kept) and commands that have already spent it (exhausted, attempts >
+// maxRetries — one FD attempt plus maxRetries replays). It always allocates a
+// fresh kept slice: carry is caller-owned (the unacked tail, or a handoff suffix
+// that may alias the in-flight ring), and shutdownFlush then appends the queue to
+// kept, so writing into carry's backing array would corrupt the caller's slice.
+func fdPartitionByBudget(carry []fdReq, maxRetries int) (kept, exhausted []fdReq) {
+	kept = make([]fdReq, 0, len(carry))
+	for _, r := range carry {
+		if r.attempts > maxRetries {
+			exhausted = append(exhausted, r)
+			continue
+		}
+		kept = append(kept, r)
+	}
+	return kept, exhausted
+}
+
 // errFDConnMoving signals that carry replay stopped early because the held
 // connection was marked for handoff (MOVING/FAILING_OVER) while a recovered carry
 // was still being written. The connection is still alive, so writeCarryChunked
@@ -730,6 +768,12 @@ func (fd *fdEngine) run() {
 	// while one runs. Every hostWg.Add is gated behind submitMu+closed, and every
 	// run() return follows the shutdown drain, so this never races a live Add.
 	defer fd.hostWg.Wait()
+	// Release the last session's in-flight ring when the engine exits (Close /
+	// ctx-cancel): curInflight is a grow-only deque that can hold up to fd.window
+	// commands (~MiB at the default), and it would otherwise stay resident for as
+	// long as the caller holds the Client. Safe against the progress read below —
+	// this defer only fires once run() has returned, after that read is done.
+	defer fd.curInflight.Store(nil)
 	bg := context.Background()
 	var carry []fdReq // unacked tail to re-issue at the start of the next attempt
 	// Two SEPARATE budgets, each counting only CONSECUTIVE failures of its own
@@ -752,6 +796,12 @@ func (fd *fdEngine) run() {
 		// dialing a down server forever. Work already queued makes this non-blocking,
 		// so fdRecycle re-leases immediately; an empty recycle parks here.
 		if len(carry) == 0 {
+			// About to park with no session running: release the previous session's
+			// in-flight ring so a drained deque does not stay resident through the idle
+			// gap until the next session stores a fresh one. The fdConnErr progress read
+			// (fd.curInflight.Load, below) already ran for the prior iteration, and the
+			// next session re-stores before that read runs again, so this never races it.
+			fd.curInflight.Store(nil)
 			select {
 			case r := <-fd.ch:
 				carry = []fdReq{r}
@@ -1067,8 +1117,11 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					}
 					return req.cmd.readReply(rd)
 				})
-				if e != nil && !isRedisError(e) {
-					rerr = e // connection/protocol error: stop; unread tail stays
+				if e != nil && fdReplyIsFatal(e) {
+					// Connection/protocol error, OR a push-drain desync (fatal even when it
+					// wraps a Redis-typed cause — see fdReplyIsFatal): stop; the unread tail
+					// stays in the deque and becomes the unacked recovery set for replay.
+					rerr = e
 					break
 				}
 				// A retryable Redis error or a redirect (MOVED/ASK) is NOT the caller's
@@ -1647,6 +1700,26 @@ func (fd *fdEngine) takeQueue() []fdReq {
 // processPipeline bounds it with the client's own timeouts/retries and setCmdsErr
 // puts any failure on every command, so callers always settle.
 func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
+	// Honor per-command retry budgets across the Close boundary. A carried command
+	// can arrive here with its budget already spent: run() bumps attempts on each
+	// replay and permits replay up to unacked[0].attempts <= MaxRetries, so the head
+	// can reach MaxRetries+1 before a ctx-cancel (or lease/denied Close race) routes
+	// the tail here. processPipeline restarts its own retry loop from attempt zero,
+	// which would grant every carried command another MaxRetries+1 executions — a
+	// mutating command could then far exceed its configured budget during shutdown.
+	// Fail the exhausted carried commands directly instead of re-sending them; they
+	// have already been attempted to the limit. Freshly queued work (takeQueue,
+	// attempts==1) is never filtered — the accepted-⇒-completes contract still runs
+	// it through the normal pipeline. NoRetry commands need no special handling:
+	// generalProcessPipeline refuses to retry any chunk that contains one
+	// (cmdsContainNoRetry), so a re-sent NoRetry command runs at most once here.
+	if mr := fd.client.opt.MaxRetries; mr > 0 && len(carry) > 0 {
+		kept, exhausted := fdPartitionByBudget(carry, mr)
+		if len(exhausted) > 0 {
+			fd.failReqs(exhausted, errFDRetryBudgetExhausted)
+		}
+		carry = kept
+	}
 	backlog := append(carry, fd.takeQueue()...)
 	if len(backlog) == 0 {
 		return

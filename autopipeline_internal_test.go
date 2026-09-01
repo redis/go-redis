@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -564,6 +565,80 @@ func TestClusterPipelineReadDrainsPushMidBatch(t *testing.T) {
 	}
 }
 
+// TestFDReplyIsFatalPushDrain guards the full-duplex push-drain classification:
+// a drain error (errFDPushDrainFailed) must ABORT the session — stop the reader
+// and replay the unacked tail — even when it wraps a Redis-typed or retryable
+// cause. The drain error carries the processor cause via %w so a caller can still
+// errors.Is/As it, but that wrapped cause must NOT let isRedisError reclassify the
+// desync as a normal command reply: doing so would settle or divert it and leave
+// the unread frame in the stream, shifting every later reply (FIFO desync). This
+// pins the %v->%w wrap against re-opening that hole.
+func TestFDReplyIsFatalPushDrain(t *testing.T) {
+	redisErr := proto.RedisError("WRONGTYPE Operation against a key holding the wrong kind of value")
+	loading := proto.RedisError("LOADING Redis is loading the dataset in memory")
+
+	cases := []struct {
+		name  string
+		err   error
+		fatal bool
+	}{
+		{"transport error stops the session", io.EOF, true},
+		{"plain redis reply is not fatal", redisErr, false},
+		{"drain wrapping a redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr), true},
+		{"drain wrapping a retryable redis error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, loading), true},
+		{"drain wrapping a transport error is fatal", fmt.Errorf("%w: %w", errFDPushDrainFailed, io.EOF), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fdReplyIsFatal(tc.err); got != tc.fatal {
+				t.Fatalf("fdReplyIsFatal(%v) = %v, want %v", tc.err, got, tc.fatal)
+			}
+		})
+	}
+
+	// The %w chain stays intact: after the session fails, a caller can still
+	// recognize both the drain marker and the underlying processor cause.
+	wrapped := fmt.Errorf("%w: %w", errFDPushDrainFailed, redisErr)
+	if !errors.Is(wrapped, errFDPushDrainFailed) {
+		t.Fatalf("errors.Is(wrapped, errFDPushDrainFailed) = false, want true")
+	}
+	var re proto.RedisError
+	if !errors.As(wrapped, &re) {
+		t.Fatalf("errors.As(wrapped, &proto.RedisError) = false, want true (processor cause dropped from chain)")
+	}
+}
+
+// TestFDPartitionByBudget pins the shutdown-flush retry-budget split: a carried
+// command whose budget is spent (attempts > MaxRetries) is separated out so
+// shutdownFlush fails it rather than handing it to processPipeline for a fresh
+// MaxRetries+1 loop. Also guards that kept never aliases carry's backing array —
+// shutdownFlush appends the queue to kept, so aliasing would corrupt the caller's
+// unacked tail.
+func TestFDPartitionByBudget(t *testing.T) {
+	const maxRetries = 3 // budget = 1 FD attempt + 3 replays = 4 attempts
+	carry := []fdReq{{attempts: 1}, {attempts: 4}, {attempts: 3}, {attempts: 5}}
+	kept, exhausted := fdPartitionByBudget(carry, maxRetries)
+
+	if len(kept) != 2 || kept[0].attempts != 1 || kept[1].attempts != 3 {
+		t.Fatalf("kept = %+v, want attempts [1 3] (<= MaxRetries)", kept)
+	}
+	if len(exhausted) != 2 || exhausted[0].attempts != 4 || exhausted[1].attempts != 5 {
+		t.Fatalf("exhausted = %+v, want attempts [4 5] (> MaxRetries)", exhausted)
+	}
+	// Boundary: attempts == MaxRetries is kept (one attempt left); MaxRetries+1 is
+	// exhausted (full budget spent).
+	if _, e := fdPartitionByBudget([]fdReq{{attempts: maxRetries}}, maxRetries); len(e) != 0 {
+		t.Fatalf("attempts == MaxRetries must be kept, got exhausted %+v", e)
+	}
+	if k, _ := fdPartitionByBudget([]fdReq{{attempts: maxRetries + 1}}, maxRetries); len(k) != 0 {
+		t.Fatalf("attempts == MaxRetries+1 must be exhausted, got kept %+v", k)
+	}
+	// Aliasing guard: kept must not share carry's backing array.
+	if len(kept) > 0 && &kept[0] == &carry[0] {
+		t.Fatalf("kept aliases carry's backing array; shutdownFlush would corrupt the caller's tail")
+	}
+}
+
 // TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
 // ordered-stream contract at the unit level: when an earlier chunk dies on a
 // transport-class failure (here a hook abort), later chunks are NOT
@@ -1013,6 +1088,7 @@ func (h dispatchGateHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if h.armed.Load() {
@@ -1320,6 +1396,7 @@ func (h cacheHook) ProcessHook(next ProcessHook) ProcessHook {
 		return nil
 	}
 }
+
 func (h cacheHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if !h.armed.Load() {
