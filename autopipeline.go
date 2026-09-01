@@ -999,8 +999,14 @@ func getOrCreateAutoPipeliner(
 		ap.closeHooks = onClose
 		ap.closeHookID = id
 		onClose.register(id, func() error {
-			ap.cancel()
-			return nil
+			// cancelAndDrain, not bare cancel: a pool-sharing wrapper's Close must WAIT
+			// for this engine's shutdown flush to finish before closeResources tears the
+			// shared pools down — cancel-and-return would let the pools close mid-flush
+			// and fail accepted work. It is bounded (the drainAll backstop) so a wedged
+			// flush cannot hang the closing wrapper. It deliberately does NOT set
+			// ap.closed (the engine is rejected via the shared-closed flag) nor detach
+			// this hook, so a later owner Close still runs the full teardown.
+			return ap.cancelAndDrain()
 		})
 	}
 	// Re-check after registering: a concurrent sharer Close sets sharedClosed and
@@ -1951,26 +1957,40 @@ func (ap *AutoPipeliner) Close() error {
 		return nil // Already closed
 	}
 
-	// Cancel context to stop flushers
-	ap.cancel()
-
 	// Detach this engine's shared-pool close hook: it is closing now, so its
 	// per-engine callback must not linger in the shared onClose registry (bounded
-	// registrations; no stale cancel on a later sharer close).
+	// registrations; no stale cancel on a later sharer close). Only the full Close
+	// detaches — the hook's own cancelAndDrain path deliberately leaves ap.closed
+	// false, so a later owner Close still reaches here.
 	if ap.closeHooks != nil {
 		ap.closeHooks.unregister(ap.closeHookID)
 	}
+	return ap.cancelAndDrain()
+}
+
+// cancelAndDrain cancels the engine and waits (bounded by the drainAll backstop)
+// for its flushers, shutdown flush, and final shard sweep — WITHOUT flipping
+// ap.closed or detaching the close hook. The shared-pool close hook uses this: when
+// a pool-sharing clone closes the shared pools, this engine's shutdown flush must
+// finish BEFORE closeResources tears the pools down, yet ap.closed must stay false
+// (the engine is then rejected via the shared-closed flag, and a later owner Close
+// still runs the full teardown). Close layers the closed-CAS + hook detach on top.
+func (ap *AutoPipeliner) cancelAndDrain() error {
+	// Cancel context to stop flushers
+	ap.cancel()
 
 	// Wake every shard's flusher so each observes the cancelled context promptly.
 	for _, s := range ap.shards {
 		s.wake()
 	}
 
-	// Pass through the divert gate once: after the CompareAndSwap above, any
-	// registration either completed before this (so the counter already sees
-	// it) or will observe closed==true and reject. Without this handshake the
-	// wait below could read a zero counter while a diverted command was
-	// between its closed check and its Add.
+	// Pass through the divert gate once: by the time this runs the engine is
+	// already rejecting new work (Close set ap.closed before calling here; the
+	// shared-pool hook path has sharedClosed set before onClose runs), so any
+	// diverted registration either completed before this (the counter already sees
+	// it) or observes closed/shared-closed and rejects. Without this handshake the
+	// wait below could read a zero counter while a diverted command was between its
+	// closed check and its Add.
 	ap.divertMu.Lock()
 	ap.divertMu.Unlock() //nolint:staticcheck // handshake, not a critical section
 
