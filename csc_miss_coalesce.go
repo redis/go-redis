@@ -133,6 +133,14 @@ type cscMissReq struct {
 	// mutation can neither reach the wire nor publish under the original
 	// cache key. Only the reply side touches cmd, gated by the apply interlock.
 	wire []byte
+	// reserved is the wire-budget byte reservation for this request (see
+	// reserveWireBytes). It is charged in fetch before serialization and released
+	// exactly once — by the settle helper when the request is consumed (its wire
+	// leaves mc.ch/inflight), or by fetch itself if the request never reaches the
+	// queue. Tracking the WIRE's lifetime (not the caller's) keeps a cancelled but
+	// still-queued snapshot counted so the budget cannot be reused while thousands
+	// of copies remain retained.
+	reserved int64
 	// apply interlocks ownership of cmd between the fetching caller and the
 	// reader. The caller abandons (CAS pending->abandoned) if its context is
 	// cancelled — or Close races its enqueue — before a reply is applied; the
@@ -235,7 +243,7 @@ func (c *baseClient) stopCSCMissCoalescer() {
 		select {
 		case req := <-mc.ch:
 			mc.c.csc.Cancel(req.cacheKey, req.token)
-			req.done <- errCSCRetryUncached
+			mc.settle(req, errCSCRetryUncached)
 		default:
 			return
 		}
@@ -273,24 +281,49 @@ func (mc *cscMissCoalescer) reserveWireBytes(n int64) bool {
 
 func (mc *cscMissCoalescer) releaseWireBytes(n int64) { mc.wireBytes.Add(-n) }
 
+// settle releases req's wire-budget reservation and wakes its caller, exactly
+// once. Every path that finishes a QUEUED request (applyAndSettle, settleErr, and
+// the shutdown drain) funnels through here, so the budget a request holds while its
+// wire sits in mc.ch/inflight is returned precisely when that wire is done. Requests
+// that never reach the queue release their reservation in fetch instead.
+func (mc *cscMissCoalescer) settle(req *cscMissReq, err error) {
+	mc.releaseWireBytes(req.reserved)
+	req.done <- err
+}
+
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
 	// Bound total in-flight serialized bytes before allocating this command's wire
 	// snapshot: reserve its approximate encoded size and, if that would exceed
 	// cscMissWireBudgetBytes, shed to the ordinary pooled path (errCSCRetryUncached)
 	// rather than serialize-and-block — so a burst of large misses cannot exhaust
-	// memory with wire copies held by callers stuck on the send. Reserving BEFORE
-	// serialization means over-budget callers never allocate the wire. A single
-	// command larger than the whole budget sheds too (the pooled path runs it, so
-	// there is no progress hazard). The reservation is released in a defer covering
-	// every fetch exit; on the rare abandon path the writer may briefly still hold
-	// the bytes, an acceptable slack on a non-hot path.
+	// memory with wire copies. Reserving BEFORE serialization means over-budget
+	// callers never allocate the wire. A single command larger than the whole budget
+	// sheds too (the pooled path runs it, so there is no progress hazard).
 	approxBytes := cmdApproxBytes(cmd)
 	if !mc.reserveWireBytes(approxBytes) {
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
 	}
-	defer mc.releaseWireBytes(approxBytes)
+	req.reserved = approxBytes
+	// Release the reservation HERE only if the request never gets queued (serialize
+	// error, or Close/ctx before enqueue). Once enqueued, ownership transfers to the
+	// request and settle() releases it when its wire actually leaves mc.ch/inflight —
+	// so a caller cancelling after enqueue does not free the budget while its wire
+	// snapshot is still retained (the OOM vector a caller-lifetime release allowed).
+	enqueued := false
+	defer func() {
+		if !enqueued {
+			mc.releaseWireBytes(req.reserved)
+		}
+	}()
+	// Honor ContextTimeoutEnabled for the waits below: when it is false the ordinary
+	// command path drives socket I/O on context.Background() (bounded by ReadTimeout,
+	// not the caller deadline), so a coalesced miss must not surface
+	// context.DeadlineExceeded on the caller's deadline. c.context returns the caller
+	// ctx when the policy is on and Background when off; mc.stop stays the
+	// unconditional shutdown signal.
+	wctx := mc.c.context(ctx)
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
 	// abandoning caller can immediately reuse mutable args (e.g. a []byte key)
@@ -321,10 +354,11 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	}
 	select {
 	case mc.ch <- req:
+		enqueued = true
 	case <-mc.stop:
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
-	case <-ctx.Done():
+	case <-wctx.Done():
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, ctx.Err()
 	}
@@ -354,8 +388,10 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// read that has its value.
 		e := <-req.done
 		return req.servedBy, e
-	case <-ctx.Done():
-		// Caller stopped waiting. If we win the interlock the reader skips the cmd
+	case <-wctx.Done():
+		// Caller stopped waiting (only when ContextTimeoutEnabled; otherwise wctx is
+		// Background and this never fires — matching the ordinary path's I/O timeout
+		// policy). If we win the interlock the reader skips the cmd
 		// write but still settles the token and publishes to the cache; if it already
 		// claimed cmd, wait rather than race by reusing cmd. Either way return the
 		// context error, matching the non-coalesced path (processWithRetry), so a
@@ -426,7 +462,7 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 			errorCallback(context.Background(), errorType, req.servedBy, statusCode, isInternal, 0)
 		}
 	}
-	req.done <- applyErr
+	mc.settle(req, applyErr)
 }
 
 // batchBudget bounds one coalesced batch's write + reads (connection acquisition
@@ -491,7 +527,7 @@ func (mc *cscMissCoalescer) settleErr(req *cscMissReq, err error) {
 	if err != errCSCRetryUncached {
 		err = cscSessionError{err}
 	}
-	req.done <- err
+	mc.settle(req, err)
 	mc.failed.Add(1)
 }
 
