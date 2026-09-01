@@ -73,6 +73,15 @@ const (
 	// refetched by whichever reader wants it next, which is today's behaviour.
 	cscRefreshQueueDepth = 4096
 
+	// cscRefreshTargetMaxBytes caps the key bytes (cacheKey + Redis keys) a single
+	// queued refresh target may retain. The depth cap alone bounds the queue by ITEM
+	// count, not memory: with large key encodings, up to cscRefreshQueueDepth targets
+	// could pin far more than the cache's own limit. A target over this cap is dropped
+	// rather than queued — like a full-queue drop, it just means a later reader does a
+	// normal miss fetch. Bounds the queue's retained key memory to roughly
+	// cscRefreshQueueDepth * this.
+	cscRefreshTargetMaxBytes = 4 << 10 // 4 KiB
+
 	// cscRefreshBatchMax caps how many keys ride one round trip.
 	cscRefreshBatchMax = 128
 
@@ -203,14 +212,31 @@ func (q *cscRefreshQueue) signalDemand(cacheKey string) {
 	}
 }
 
-// offer enqueues without blocking, counting what it had to drop.
+// offer enqueues without blocking, counting what it had to drop. A target whose
+// key bytes exceed cscRefreshTargetMaxBytes is dropped too, so the item-bounded
+// queue cannot pin unbounded key memory (a dropped target is refetched by the next
+// reader that wants it).
 func (q *cscRefreshQueue) offer(t cscRefreshTarget) {
+	if cscRefreshTargetBytes(t) > cscRefreshTargetMaxBytes {
+		q.dropped.Add(1)
+		return
+	}
 	select {
 	case q.ch <- t:
 		q.enqueued.Add(1)
 	default:
 		q.dropped.Add(1)
 	}
+}
+
+// cscRefreshTargetBytes approximates the key memory a queued target retains: its
+// cache key plus every Redis key string.
+func cscRefreshTargetBytes(t cscRefreshTarget) int {
+	n := len(t.cacheKey)
+	for _, k := range t.redisKeys {
+		n += len(k)
+	}
+	return n
 }
 
 // CSCRefreshStats reports refresh-on-invalidate activity: keys queued, keys
