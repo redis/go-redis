@@ -694,6 +694,73 @@ func TestFDRefundUnsentAttempt(t *testing.T) {
 	}
 }
 
+// TestFDFirstNoRetrySentGate pins the sent-aware NoRetry split: only a NoRetry
+// command whose bytes may have reached the wire (sent) blocks the tail. A
+// never-sent NoRetry recovered from a dead connection's backlog stays in the
+// replay prefix — issuing it is its FIRST send, and failing it would hand the
+// caller an error for a command the server never saw.
+func TestFDFirstNoRetrySentGate(t *testing.T) {
+	ctx := context.Background()
+	retryable := func() fdReq { return fdReq{cmd: NewStatusCmd(ctx, "set", "k", "v")} }
+	noRetry := func(sent bool) fdReq {
+		return fdReq{cmd: NewZeroCopyStringCmd(ctx, make([]byte, 8), "get", "k"), sent: sent}
+	}
+	if !noRetry(false).cmd.NoRetry() {
+		t.Fatal("precondition: zero-copy read should forbid retries")
+	}
+
+	for _, tc := range []struct {
+		name string
+		reqs []fdReq
+		want int
+	}{
+		{"empty", nil, 0},
+		{"no noRetry at all", []fdReq{retryable(), retryable()}, 2},
+		{"never-sent noRetry does not split", []fdReq{retryable(), noRetry(false), retryable()}, 3},
+		{"sent noRetry splits", []fdReq{retryable(), noRetry(true), retryable()}, 1},
+		{"sent noRetry at head", []fdReq{noRetry(true), retryable()}, 0},
+		{"unsent then sent noRetry", []fdReq{noRetry(false), noRetry(true)}, 1},
+	} {
+		if got := fdFirstNoRetry(tc.reqs); got != tc.want {
+			t.Errorf("%s: fdFirstNoRetry = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFDRecoverTailRefundsSuffixOnly pins the fdConnErr recovery-set builder:
+// the drained (sent) tail keeps its attempt charge, the never-sent suffix is
+// refunded (run()'s recovery re-bumps on the real re-issue), and the result is
+// a fresh slice — takeRemaining's array is deque-owned, so appending onto it in
+// place could corrupt the deque.
+func TestFDRecoverTailRefundsSuffixOnly(t *testing.T) {
+	rem := []fdReq{{attempts: 2, sent: true}, {attempts: 2, sent: true}}
+	suffix := []fdReq{{attempts: 2}, {attempts: 1}}
+	out := fdRecoverTail(rem, suffix)
+
+	if len(out) != 4 {
+		t.Fatalf("len(out) = %d, want 4", len(out))
+	}
+	wantAttempts := []int{2, 2, 1, 0} // rem unchanged; suffix -1 each
+	for i, w := range wantAttempts {
+		if out[i].attempts != w {
+			t.Errorf("out[%d].attempts = %d, want %d", i, out[i].attempts, w)
+		}
+	}
+	// Order preserved: sent tail first, suffix after.
+	if !out[0].sent || !out[1].sent || out[2].sent || out[3].sent {
+		t.Error("recovery set out of order: want [sent, sent, unsent, unsent]")
+	}
+	// Fresh backing array: the refund must not have reached the input slices, and
+	// mutating out must not write through into rem.
+	if suffix[0].attempts != 2 || suffix[1].attempts != 1 {
+		t.Error("fdRecoverTail mutated the input suffix slice")
+	}
+	out[0].attempts = 99
+	if rem[0].attempts != 2 {
+		t.Error("fdRecoverTail aliases takeRemaining's backing array")
+	}
+}
+
 // TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
 // ordered-stream contract at the unit level: when an earlier chunk dies on a
 // transport-class failure (here a hook abort), later chunks are NOT

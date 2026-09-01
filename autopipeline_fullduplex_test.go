@@ -2222,12 +2222,15 @@ func TestFullDuplexPreNextHookPanicSettlesWithoutRace(t *testing.T) {
 }
 
 // TestFDFirstNoRetry verifies the tail-split index that lets the FD retry path
-// replay the retryable PREFIX of an unacked tail while never re-sending a NoRetry
-// command (or anything ordered after it).
+// replay the retryable PREFIX of an unacked tail while never re-sending a SENT
+// NoRetry command (or anything ordered after it). The gate is sent-aware: a
+// NoRetry command that never reached the wire does not split the tail —
+// re-issuing it is its first send (see also TestFDFirstNoRetrySentGate).
 func TestFDFirstNoRetry(t *testing.T) {
 	ctx := context.Background()
-	retry := fdReq{cmd: NewStringCmd(ctx, "get", "k")}  // NoRetry() == false
-	nore := fdReq{cmd: NewRawWriteToCmd(ctx, nil, "x")} // NoRetry() == true
+	retry := fdReq{cmd: NewStringCmd(ctx, "get", "k"), sent: true}  // NoRetry() == false
+	nore := fdReq{cmd: NewRawWriteToCmd(ctx, nil, "x"), sent: true} // NoRetry() == true, sent
+	noreUnsent := fdReq{cmd: NewRawWriteToCmd(ctx, nil, "x")}       // NoRetry() == true, never sent
 	cases := []struct {
 		name string
 		in   []fdReq
@@ -2238,6 +2241,7 @@ func TestFDFirstNoRetry(t *testing.T) {
 		{"leading-noretry", []fdReq{nore, retry}, 0},
 		{"noretry-in-middle", []fdReq{retry, retry, nore, retry}, 2},
 		{"trailing-noretry", []fdReq{retry, nore}, 1},
+		{"unsent-noretry-replayable", []fdReq{retry, noreUnsent, retry}, 3},
 	}
 	for _, tc := range cases {
 		if got := fdFirstNoRetry(tc.in); got != tc.want {

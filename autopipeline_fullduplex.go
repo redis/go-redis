@@ -170,6 +170,15 @@ type fdReq struct {
 	// connection reports its real attempt count (retry_attempts), matching the
 	// normal command path instead of always reporting a single attempt.
 	attempts int
+	// sent is set once the command MAY have reached the wire (writeBatch stamps it
+	// before attempting the flush, so a partial write or encoder panic still counts).
+	// Sticky across replays. The NoRetry gate keys on it: a NoRetry command that was
+	// never sent is replayable — issuing it is its FIRST send, not a re-send — while
+	// a sent NoRetry must be failed rather than risk a second execution. Without the
+	// marker the gate failed never-sent NoRetry commands recovered from a dead
+	// connection's backlog, handing the caller an error for a command the server
+	// never saw.
+	sent bool
 }
 
 // complete finalizes a command whose result is already set on it: it wakes the
@@ -497,6 +506,21 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	if chCap > 4096 {
 		chCap = 4096
 	}
+	// The off-pipe retry bound is a GOROUTINE budget, not a memory window: divert
+	// retries ultimately serialize on the main pool's PoolSize connections, so
+	// slots beyond ~2x the pool only hold 8 KiB stacks and pool-wait turns. Sizing
+	// it to w (default 65536) let a retryable-reply storm — e.g. LOADING for the
+	// seconds of a server restart, which diverts EVERY reply — park tens of
+	// thousands of goroutines. 2x the pool keeps backoff sleepers overlapping with
+	// pool waiters; the reader blocking on a full sem is the designed end-to-end
+	// backpressure (see retryOnNormalConn) and now just engages earlier.
+	retryCap := 2 * client.opt.PoolSize
+	if retryCap > w {
+		retryCap = w
+	}
+	if retryCap < 1 {
+		retryCap = 1
+	}
 	return &fdEngine{
 		ap:         ap,
 		client:     client,
@@ -506,7 +530,7 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 		window:     w,
 		idle:       idle,
 		maxHold:    maxHold,
-		retrySem:   make(chan struct{}, w),
+		retrySem:   make(chan struct{}, retryCap),
 		fastSubmit: ap.config.FullDuplexFastSubmit,
 	}
 }
@@ -690,9 +714,10 @@ func retryStartAttempt(moved, ask bool) int {
 }
 
 func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
-	// Bound concurrent off-pipe retries to the FD window: a sustained retryable
-	// stream would otherwise spawn one goroutine per reply, all parked in
-	// backoff/pool acquisition. Blocking here blocks the READER, which stops
+	// Bound concurrent off-pipe retries to ~2x the main pool (see newFDEngine's
+	// retryCap): a sustained retryable stream would otherwise spawn one goroutine
+	// per reply, all parked in backoff/pool acquisition. Blocking here blocks the
+	// READER, which stops
 	// advancing the deque, which fills the window and blocks the writer and then
 	// submitters — end-to-end backpressure. No cycle: retries drain on the main
 	// pool, independent of the reader waiting here.
@@ -842,8 +867,9 @@ func (fd *fdEngine) run() {
 			// saturated). Retry for a transient outage; once retries are exhausted,
 			// fail-fast the carry tail AND the fd.ch backlog rather than leaving accepted
 			// commands buffered indefinitely, and stay alive to serve again once the
-			// server/pool recovers. Replaying the carry wholesale is safe: it is already
-			// NoRetry-split (or nil) and was never written on a new conn.
+			// server/pool recovers. Replaying the carry wholesale is safe: any SENT
+			// NoRetry was already failed by the split (a never-sent NoRetry in the carry
+			// gets its first send), and nothing here was written on a new conn.
 			// Close racing the lease surfaces here as a lease failure (the acquisition ctx
 			// is cancelled), so flush the accepted work through the normal pipeline path
 			// instead of failing it with a canceled error.
@@ -929,11 +955,13 @@ func (fd *fdEngine) run() {
 				if len(exhausted) > 0 {
 					fd.failReqs(exhausted, aerr) // spent MaxRetries+1 attempts; fail with the real cause
 				}
-				// Split the eligible suffix at the first NoRetry command: replay the
-				// retryable PREFIX and fail that command plus everything ordered after it
-				// (a NoRetry command must never be re-sent). With NoRetry at the eligible
-				// head (n==0) nothing ahead of it is retryable, so fall through and fail
-				// whatever eligible remains (exhausted was already failed above).
+				// Split the eligible suffix at the first SENT NoRetry command: replay the
+				// prefix and fail that command plus everything ordered after it (a NoRetry
+				// command whose bytes may have reached the wire must never be re-sent). A
+				// never-sent NoRetry stays in the replay prefix — issuing it is its first
+				// send (see fdReq.sent). With a sent NoRetry at the eligible head (n==0)
+				// nothing ahead of it is retryable, so fall through and fail whatever
+				// eligible remains (exhausted was already failed above).
 				if n := fdFirstNoRetry(eligible); n > 0 {
 					if n < len(eligible) {
 						fd.failReqs(eligible[n:], aerr)
@@ -1420,14 +1448,17 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		inflight.closeGraceful()
 		<-readerDone
 		if sharedErr != nil {
-			// Reader failed during the final drain: fail the stranded tail (its callers
-			// would hang) plus the never-sent handoff suffix, and report the error so
-			// attempt() removes the desynced conn. run() exits next, so this does not retry.
-			fd.failReqs(inflight.takeRemaining(), sharedErr)
-			if len(unwritten) > 0 {
-				fd.failReqs(unwritten, sharedErr)
-			}
-			return nil, fdConnErr, sharedErr
+			// Reader failed during the final drain: RECOVER the stranded tail (plus the
+			// never-sent handoff suffix, in order) instead of failing it wholesale, and
+			// report the error so attempt() removes the desynced conn. As fdConnErr the
+			// set flows through run()'s standard tail recovery — per-command budget
+			// partition and the sent-NoRetry split — and, because ap.ctx is cancelled
+			// (this is Close), the eligible prefix is then executed by shutdownFlush on a
+			// fresh connection, honoring "accepted ⇒ completes" exactly like the
+			// backlog-flush failure branch above. Failing here handed every acked-write
+			// (replayable reads included) the read error just because Close raced a slow
+			// reply.
+			return fdRecoverTail(inflight.takeRemaining(), unwritten), fdConnErr, sharedErr
 		}
 		// Handoff mid-flush: the prefix drained cleanly and the conn will be Put
 		// (OnPut handoff). RETURN the never-sent suffix so run() completes it on
@@ -1449,14 +1480,15 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		if sharedErr != nil {
 			// Reader failed while draining for the clean return: recover the unacked tail
 			// for replay and report the error so the conn is removed instead of reused
-			// poisoned. Append carrySuffix (never-sent) after the drained tail, in order.
-			// Fresh slice — takeRemaining returns a deque-owned backing array, so
-			// appending onto it could corrupt the deque.
-			rem := inflight.takeRemaining()
-			out := make([]fdReq, 0, len(rem)+len(carrySuffix))
-			out = append(out, rem...)
-			out = append(out, carrySuffix...)
-			return out, fdConnErr, sharedErr
+			// poisoned. carrySuffix (never-sent, e.g. the unwritten tail of a handoff
+			// recycle) rides behind the drained tail, in order, and is REFUNDED by
+			// fdRecoverTail: writeCarryChunked deliberately did not refund it (the clean
+			// fdRecycle return below does not re-bump), but this path re-enters run()'s
+			// fdConnErr recovery, which does — without the refund the suffix would be
+			// charged for a send that never happened and could be declared
+			// budget-exhausted one replay early (e.g. MaxRetries=1: one real send on a
+			// dropped session, then MOVING mid-replay plus a reader failure here).
+			return fdRecoverTail(inflight.takeRemaining(), carrySuffix), fdConnErr, sharedErr
 		}
 		// carrySuffix is the never-sent suffix to replay on the next lease (nil for a
 		// plain idle/recycle; the unwritten tail on a handoff recycle).
@@ -1510,11 +1542,14 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		}
 	}()
 	// Stamp the wire-write time so the reader can record write→reply as the
-	// command's OTel operation duration. Done before pushBatch so the copies the
-	// reader reads from the deque carry it.
+	// command's OTel operation duration, and mark every command SENT — before the
+	// flush is attempted, so a partial write or encoder panic still counts as
+	// possibly-on-the-wire (the NoRetry gate must never re-send those). Done before
+	// pushBatch so the copies the reader reads from the deque carry both.
 	now := time.Now()
 	for i := range reqs {
 		reqs[i].writtenAt = now
+		reqs[i].sent = true
 	}
 	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
@@ -1608,17 +1643,34 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// remaining room, leave lim at MaxBatchSize, and write past FullDuplexWindow.
 		// On graceful Close this writes the backlog on top of replies still in
 		// flight, so without the gate a small FullDuplexWindow is exceeded by up to
-		// ~2x (window + buffered backlog). The serve loop keys its wait on ap.ctx,
-		// but here ap.ctx is already cancelled (that is why we are flushing), so the
-		// wait is BOUNDED instead: if the reader does not drain within the bound,
-		// stop gating (set stuck) so Close cannot block forever — correctness of a
-		// terminating Close outranks a transient teardown overshoot.
+		// ~2x (window + buffered backlog). Two wait modes, split on ap.ctx:
+		//   - LIVE engine (ordinary carry replay at session start): honor the window
+		//     like the serve loop — wait for room with no bail-out. The wait is
+		//     bounded by the reader itself (a dead peer trips its ReadTimeout, the
+		//     reader exits, readerDone fires), and ap.ctx.Done switches a concurrent
+		//     Close to the bounded mode without waiting on a drain.
+		//   - CLOSE-time flush (ap.ctx cancelled): the wait is BOUNDED instead — if
+		//     the reader does not drain within fdCloseFlushWait, stop gating (set
+		//     stuck) so Close cannot block forever; correctness of a terminating
+		//     Close outranks a transient teardown overshoot.
 		for !stuck && readerDone != nil && inflight.len() >= fd.window {
 			// Poll handoff on every wake too, like the serve loop's window gate, so a
 			// MOVING mark under backpressure recycles within one drained reply. Suffix
 			// out-of-band (no push), same as the between-chunk check above.
 			if cn.ShouldHandoff() {
 				return carry[i:], errFDConnMoving
+			}
+			if fd.ap.ctx.Err() == nil {
+				select {
+				case <-inflight.room:
+				case <-readerDone:
+					fdRefundUnsentAttempt(carry[i:]) // never written: do not charge this send
+					inflight.pushBatch(carry[i:])
+					return nil, errFDReaderGone
+				case <-fd.ap.ctx.Done():
+					// Close raced in: re-enter the loop in bounded mode.
+				}
+				continue
 			}
 			timer := time.NewTimer(fdCloseFlushWait)
 			select {
@@ -1680,18 +1732,36 @@ func fdRefundUnsentAttempt(reqs []fdReq) {
 	}
 }
 
-// fdFirstNoRetry returns the index of the first NoRetry command in reqs, or
-// len(reqs) when there is none. The unacked tail is retried up to this index and
-// failed from it on: retryable commands ahead of a NoRetry still get their
-// network retries, while the NoRetry command and anything ordered after it is
-// never re-sent.
+// fdFirstNoRetry returns the index of the first command that must not be
+// (re-)issued: a NoRetry command that was already SENT (its bytes may have
+// reached the wire — see fdReq.sent), or len(reqs) when there is none. The
+// unacked tail is retried up to this index and failed from it on: retryable
+// commands ahead of it still get their network retries, while the sent NoRetry
+// command and anything ordered after it is never re-sent. A NEVER-SENT NoRetry
+// command does not split the tail — replaying it is its first send, so failing
+// it would error a command the server never saw.
 func fdFirstNoRetry(reqs []fdReq) int {
 	for i := range reqs {
-		if reqs[i].cmd.NoRetry() {
+		if reqs[i].cmd.NoRetry() && reqs[i].sent {
 			return i
 		}
 	}
 	return len(reqs)
+}
+
+// fdRecoverTail builds an fdConnErr recovery set from a drained unacked tail and
+// a never-sent suffix, in order. Fresh slice: rem is takeRemaining's deque-owned
+// backing array, so appending onto it could corrupt the deque. The suffix is
+// refunded (fdRefundUnsentAttempt): it was never written this session, and run()'s
+// fdConnErr recovery bumps the whole replay set for the NEXT issue — without the
+// refund a never-sent command would be charged for a send that never happened and
+// could be declared budget-exhausted one replay early.
+func fdRecoverTail(rem, suffix []fdReq) []fdReq {
+	out := make([]fdReq, 0, len(rem)+len(suffix))
+	out = append(out, rem...)
+	out = append(out, suffix...)
+	fdRefundUnsentAttempt(out[len(rem):])
+	return out
 }
 
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).
