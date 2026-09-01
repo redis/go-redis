@@ -66,6 +66,15 @@ const (
 	// stall. So the cap bounds only the extra already-queued misses that share the
 	// write.
 	cscMissBatchBytes = 1 << 20 // 1 MiB
+	// cscMissWireBudgetBytes bounds the TOTAL serialized bytes of in-flight coalesced
+	// misses. The queue's item cap (cscMissQueueDepth) does not bound memory: every
+	// caller serializes and holds a full command copy (req.wire) while blocked on the
+	// send, and cacheable commands (e.g. a large MGET) have no small encoded size, so
+	// a burst of large misses could exhaust the process. Over this budget a miss sheds
+	// to the ordinary pooled path (errCSCRetryUncached) — which is itself bounded by
+	// pool turns — instead of coalescing. 8x one batch lets several full batches be in
+	// flight before shedding.
+	cscMissWireBudgetBytes = 8 * cscMissBatchBytes // 8 MiB
 )
 
 // cscMissWriteBatchBytes returns the effective per-batch size cap. It is the
@@ -163,6 +172,11 @@ type cscMissCoalescer struct {
 	// write and the read. Set once at construction.
 	maxBatchBytes int
 
+	// wireBytes is the total serialized size of in-flight coalesced misses, bounded
+	// by cscMissWireBudgetBytes. A fetch adds its approximate encoded size before
+	// serializing and subtracts it when done; over budget it sheds to the pooled path.
+	wireBytes atomic.Int64
+
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
 	failed     atomic.Uint64 // reqs settled as errors (conn failure)
@@ -245,8 +259,38 @@ func (mc *cscMissCoalescer) stopWorkers() {
 // served is the session connection that produced the settle (nil when the
 // request never reached one); processCached stamps it into processState so the
 // native OTel recorder attributes the miss like any other command.
+// reserveWireBytes reserves n bytes of the in-flight wire budget. It returns false
+// (reserving nothing) when the reservation would exceed cscMissWireBudgetBytes, so
+// the caller sheds to the pooled path instead of holding a wire copy while blocked
+// on the send. releaseWireBytes returns a prior reservation.
+func (mc *cscMissCoalescer) reserveWireBytes(n int64) bool {
+	if mc.wireBytes.Add(n) > cscMissWireBudgetBytes {
+		mc.wireBytes.Add(-n)
+		return false
+	}
+	return true
+}
+
+func (mc *cscMissCoalescer) releaseWireBytes(n int64) { mc.wireBytes.Add(-n) }
+
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
+	// Bound total in-flight serialized bytes before allocating this command's wire
+	// snapshot: reserve its approximate encoded size and, if that would exceed
+	// cscMissWireBudgetBytes, shed to the ordinary pooled path (errCSCRetryUncached)
+	// rather than serialize-and-block — so a burst of large misses cannot exhaust
+	// memory with wire copies held by callers stuck on the send. Reserving BEFORE
+	// serialization means over-budget callers never allocate the wire. A single
+	// command larger than the whole budget sheds too (the pooled path runs it, so
+	// there is no progress hazard). The reservation is released in a defer covering
+	// every fetch exit; on the rare abandon path the writer may briefly still hold
+	// the bytes, an acceptable slack on a non-hot path.
+	approxBytes := cmdApproxBytes(cmd)
+	if !mc.reserveWireBytes(approxBytes) {
+		mc.c.csc.Cancel(cacheKey, token)
+		return nil, errCSCRetryUncached
+	}
+	defer mc.releaseWireBytes(approxBytes)
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
 	// abandoning caller can immediately reuse mutable args (e.g. a []byte key)
