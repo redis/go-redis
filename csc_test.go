@@ -3518,3 +3518,35 @@ func TestBatcherRepointedToSurvivorOnRefreshClose(t *testing.T) {
 		t.Fatalf("after owner close: batcher refresh = %p, want survivor qA %p (stop-drain would feed the dead owner)", got, qA)
 	}
 }
+
+// TestPushDrainBudgetHonorsRelaxation pins the drain budget used by every push
+// drain (pushDrainWithin): the hard cap normally, RAISED to the connection's
+// relaxed timeout while maintenance relaxation is active. Without the raise a
+// push frame fragmented past the cap — likeliest mid-failover, exactly when
+// relaxation is on — times out mid-frame, and the pre-command path then retires
+// the healthy connection (and fails the command outright with MaxRetries=0).
+func TestPushDrainBudgetHonorsRelaxation(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	cn := pool.NewConn(client)
+	defer cn.Close()
+
+	const hardCap = 50 * time.Millisecond
+	if got := pushDrainBudget(cn, hardCap); got != hardCap {
+		t.Fatalf("no relaxation: budget = %v, want the hard cap %v", got, hardCap)
+	}
+	cn.SetRelaxedTimeout(10*time.Second, 10*time.Second)
+	if got := pushDrainBudget(cn, hardCap); got != 10*time.Second {
+		t.Fatalf("relaxed: budget = %v, want the relaxed 10s", got)
+	}
+	cn.ClearRelaxedTimeout()
+	if got := pushDrainBudget(cn, hardCap); got != hardCap {
+		t.Fatalf("cleared: budget = %v, want the hard cap %v", got, hardCap)
+	}
+	// A relaxed window SMALLER than the cap must not lower the budget: the raise
+	// is one-directional.
+	cn.SetRelaxedTimeout(time.Millisecond, time.Millisecond)
+	if got := pushDrainBudget(cn, hardCap); got != hardCap {
+		t.Fatalf("small relaxed window: budget = %v, want the hard cap %v", got, hardCap)
+	}
+}

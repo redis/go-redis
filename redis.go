@@ -2796,18 +2796,36 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 	return c.pushDrainWithin(ctx, cn, time.Millisecond)
 }
 
-// pushDrainWithin runs one push drain on cn under a HARD read deadline of d.
-// HARD (not WithReader): a maintenance-relaxed timeout would otherwise REPLACE
-// the cap, blocking the caller (e.g. the FD session tick) for the relaxed
-// duration while holding the conn and starving a small pool.
-// WithReaderHardDeadline bypasses relaxation and clears the deadline on exit, so
-// no residue poisons a later deadline-less read.
+// pushDrainWithin runs one push drain on cn under a HARD read deadline of
+// pushDrainBudget(cn, d). HARD (not WithReader) so an ordinary drain cannot
+// silently inherit an unrelated deadline, and WithReaderHardDeadline clears the
+// deadline on exit, so no residue poisons a later deadline-less read. The budget
+// itself is relaxation-aware — see pushDrainBudget.
 func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
-	return cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
+	return cn.WithReaderHardDeadline(pushDrainBudget(cn, d), func(rd *proto.Reader) error {
 		// A speculative probe on a possibly-idle conn: stop when the reader buffer
 		// empties (Buffered variant) rather than block waiting for a reply.
 		return c.drainPushFrames(ctx, cn, rd, false)
 	})
+}
+
+// pushDrainBudget returns the read budget for one push drain: the caller's hard
+// cap d, raised to the connection's relaxed timeout while maintenance relaxation
+// is active. The raise matters exactly when a push frame is mid-flight on a slow
+// server: during a failover/migration — the very window relaxation covers — a
+// frame can fragment past a small cap, and a mid-frame timeout is a desync
+// (partial frame consumed), so the caller retires the connection and, on the
+// pre-command path, fails the command outright when MaxRetries=0. Holding the
+// conn up to the relaxed budget is the lesser cost, and it is paid only when
+// bytes are actually mid-frame: an empty or completed drain returns without
+// blocking regardless of the budget. Without active relaxation
+// EffectiveReadTimeout returns d unchanged, keeping the small hard cap that
+// protects a small pool from a parked speculative drain.
+func pushDrainBudget(cn *pool.Conn, d time.Duration) time.Duration {
+	if rel := cn.EffectiveReadTimeout(d); rel > d {
+		return rel
+	}
+	return d
 }
 
 // drainPushFrames processes pending push notifications on rd. The caller already
