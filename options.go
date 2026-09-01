@@ -577,15 +577,22 @@ func (opt *Options) init() {
 	// reader see a value past the point a received invalidation should have evicted
 	// it — beyond the staleness contract. Warn (not clamp): the field is
 	// experimental and a caller may accept it knowingly, but a window larger than
-	// MaxStaleness is almost always a misconfiguration. Only checkable for the
-	// built-in cache; a custom Cache has no MaxStaleness to compare against.
-	if opt.ClientSideCacheInvalidationBatchWindow > 0 && opt.ClientSideCacheConfig != nil &&
-		opt.ClientSideCacheConfig.MaxStaleness > 0 &&
-		opt.ClientSideCacheInvalidationBatchWindow > opt.ClientSideCacheConfig.MaxStaleness {
-		internal.Logger.Printf(context.Background(),
-			"redis: ClientSideCacheInvalidationBatchWindow (%s) exceeds the cache MaxStaleness (%s); "+
-				"invalidations can be deferred past the staleness bound, serving stale values",
-			opt.ClientSideCacheInvalidationBatchWindow, opt.ClientSideCacheConfig.MaxStaleness)
+	// MaxStaleness is almost always a misconfiguration. Checkable for the built-in
+	// cache via its config AND for an injected *LocalCache via its effective bound;
+	// a custom Cache implementation has no MaxStaleness to compare against.
+	if opt.ClientSideCacheInvalidationBatchWindow > 0 {
+		staleness := time.Duration(0)
+		if opt.ClientSideCacheConfig != nil {
+			staleness = opt.ClientSideCacheConfig.MaxStaleness
+		} else if lc, ok := opt.ClientSideCache.(*LocalCache); ok && lc != nil {
+			staleness = lc.effectiveMaxStaleness()
+		}
+		if staleness > 0 && opt.ClientSideCacheInvalidationBatchWindow > staleness {
+			internal.Logger.Printf(context.Background(),
+				"redis: ClientSideCacheInvalidationBatchWindow (%s) exceeds the cache MaxStaleness (%s); "+
+					"invalidations can be deferred past the staleness bound, serving stale values",
+				opt.ClientSideCacheInvalidationBatchWindow, staleness)
+		}
 	}
 	if opt.Network == "" {
 		if strings.HasPrefix(opt.Addr, "/") {

@@ -211,6 +211,17 @@ func NewLocalCache(cfg CacheConfig) *LocalCache {
 	return c
 }
 
+// effectiveMaxStaleness reports the cache's staleness bound (0 = none). Every
+// shard carries the same value, so shard 0 is authoritative. Used by
+// Options.init to run the batch-window-vs-staleness sanity warning for an
+// INJECTED *LocalCache too, where no ClientSideCacheConfig exists to read.
+func (c *LocalCache) effectiveMaxStaleness() time.Duration {
+	if len(c.shards) == 0 {
+		return 0
+	}
+	return c.shards[0].maxStaleness
+}
+
 // LocalCache is the built-in sharded approximate-LRU cache.
 //
 // Experimental: this API may change in a minor release.
