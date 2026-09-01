@@ -399,6 +399,17 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			q.pendingSet.Delete(k)
 			delete(pending, k)
 		}
+		// Consume a demand nudge buffered for THIS window: signalDemand only fires
+		// for keys in pendingSet, which was just cleared, so a buffered signal can
+		// only refer to a key this flush is about to refetch. Left buffered, the
+		// stale nudge would immediately flush the NEXT window on its first key —
+		// defeating the coalescing window and inflating DemandFlushes. (collect
+		// runs only on this goroutine, so no demand for a future window can exist
+		// yet.)
+		select {
+		case <-q.demandCh:
+		default:
+		}
 		// A window can hold more than one round trip's worth; chunk it. Keys that
 		// self-healed during the window (a reader missed and repopulated them) are
 		// now Valid, so Reserve inside refreshInvalidatedBatch declines them for
