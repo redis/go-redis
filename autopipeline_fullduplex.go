@@ -1582,6 +1582,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		if readerDone != nil {
 			select {
 			case <-readerDone:
+				fdRefundUnsentAttempt(carry[i:]) // never written: do not charge this send
 				inflight.pushBatch(carry[i:])
 				return nil, errFDReaderGone
 			default:
@@ -1624,6 +1625,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 			case <-inflight.room:
 			case <-readerDone:
 				timer.Stop()
+				fdRefundUnsentAttempt(carry[i:]) // never written: do not charge this send
 				inflight.pushBatch(carry[i:])
 				return nil, errFDReaderGone
 			case <-timer.C:
@@ -1643,13 +1645,16 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		}
 		end := fdBatchEnd(carry, i, lim, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
-			// writeBatch pushed carry[i:end] into inflight before the failed write, but
+			// writeBatch pushed carry[i:end] into inflight before the failed write (it
+			// was attempted — at-least-once — so its bumped attempt count stands), but
 			// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
 			// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
 			// it, on Close the caller fails it. It is only ever settled via failReqs or
 			// replayed — never completed inline by the reader — so its zero writtenAt
-			// never reaches the write→reply metric.
+			// never reaches the write→reply metric. carry[end:] was NEVER written, so
+			// refund its optimistic attempt bump (unlike carry[i:end], which was sent).
 			if end < len(carry) {
+				fdRefundUnsentAttempt(carry[end:])
 				inflight.pushBatch(carry[end:])
 			}
 			return nil, e
@@ -1657,6 +1662,22 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		i = end
 	}
 	return nil, nil
+}
+
+// fdRefundUnsentAttempt undoes the optimistic attempt bump for a carried suffix
+// that was NEVER written this session (the reader died or the connection broke
+// before this chunk was sent). run() bumps the whole carry's attempts before
+// re-issuing it, charging each command for a send; a command that was not actually
+// sent must not keep that charge, or with a tight MaxRetries it can be declared
+// budget-exhausted one replay early. The next replay re-bumps it when it is really
+// sent. Floored at 0. Callers apply this to the never-sent suffix BEFORE pushing it
+// into the in-flight deque, so the recovered copies carry the corrected count.
+func fdRefundUnsentAttempt(reqs []fdReq) {
+	for i := range reqs {
+		if reqs[i].attempts > 0 {
+			reqs[i].attempts--
+		}
+	}
 }
 
 // fdFirstNoRetry returns the index of the first NoRetry command in reqs, or

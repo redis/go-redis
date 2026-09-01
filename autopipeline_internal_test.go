@@ -652,6 +652,48 @@ func TestFDPartitionByBudget(t *testing.T) {
 	}
 }
 
+// TestFDCarryRemainingRetries pins the Close-flush budget formula. carry is
+// POST-BUMP (a command carried at attempts=A has done A-1 executions), so of its
+// MaxRetries+1 budget it may run MaxRetries+1-A more times; a negative result means
+// the budget is spent (drop). attempts is clamped to >=1 (attempts==0 is test-only).
+func TestFDCarryRemainingRetries(t *testing.T) {
+	cases := []struct {
+		attempts, maxRetries, want int
+	}{
+		// MaxRetries=3 (budget 4 executions).
+		{1, 3, 3},  // never run (0 done): full budget -> 4 executions
+		{2, 3, 2},  // 1 done: 3 more -> 4 total
+		{4, 3, 0},  // 3 done: 1 final execution -> 4 total
+		{5, 3, -1}, // 4 done: budget spent -> drop
+		{0, 3, 3},  // clamp: treat as attempts==1 (full budget), not MaxRetries+2
+		// MaxRetries=0 (budget 1 execution) — the case the old `attempts > mr` drop
+		// mishandled.
+		{1, 0, 0},  // never run: exactly one execution
+		{2, 0, -1}, // 1 done == budget: drop, do not re-run
+	}
+	for _, tc := range cases {
+		if got := fdCarryRemainingRetries(tc.attempts, tc.maxRetries); got != tc.want {
+			t.Errorf("fdCarryRemainingRetries(attempts=%d, maxRetries=%d) = %d, want %d",
+				tc.attempts, tc.maxRetries, got, tc.want)
+		}
+	}
+}
+
+// TestFDRefundUnsentAttempt pins the never-sent-suffix accounting fix: a carried
+// command whose chunk was never written (reader died / conn broke mid-replay) must
+// have the optimistic attempt bump refunded, floored at 0, so it is not declared
+// budget-exhausted a replay early.
+func TestFDRefundUnsentAttempt(t *testing.T) {
+	reqs := []fdReq{{attempts: 2}, {attempts: 3}, {attempts: 1}, {attempts: 0}}
+	fdRefundUnsentAttempt(reqs)
+	want := []int{1, 2, 0, 0} // each -1, floored at 0
+	for i, w := range want {
+		if reqs[i].attempts != w {
+			t.Errorf("reqs[%d].attempts = %d, want %d", i, reqs[i].attempts, w)
+		}
+	}
+}
+
 // TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
 // ordered-stream contract at the unit level: when an earlier chunk dies on a
 // transport-class failure (here a hook abort), later chunks are NOT
