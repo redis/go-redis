@@ -2863,14 +2863,30 @@ func (c *baseClient) drainPushFrames(ctx context.Context, cn *pool.Conn, rd *pro
 		}
 		return processor.ProcessPendingNotificationsBuffered(ctx, handlerCtx, rd)
 	}
-	t, err := rd.PeekReplyType()
-	if err != nil {
-		return err
+	// Custom processor: peek-then-process in a LOOP for blocking mode. A single
+	// peek+process drained only the first push (and whatever that one invocation
+	// consumed); a SECOND invalidation still on the socket ahead of the reply would
+	// then be read by the caller's ReadRawReply as the command value — published to
+	// the cache under the wrong key and shifting every later reply. PeekReplyType
+	// blocks on the socket for the next frame, so looping skips every push (buffered
+	// OR socket-pending) until a non-push (the reply) is next, matching the built-in
+	// blocking discipline. Non-blocking probes keep the single-pass behavior (one
+	// drain, never block waiting for a reply that will not come on an idle conn).
+	for {
+		t, err := rd.PeekReplyType()
+		if err != nil {
+			return err
+		}
+		if t != proto.RespPush {
+			return nil
+		}
+		if err := c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd); err != nil {
+			return err
+		}
+		if !blocking {
+			return nil
+		}
 	}
-	if t != proto.RespPush {
-		return nil
-	}
-	return c.pushProcessor.ProcessPendingNotifications(ctx, handlerCtx, rd)
 }
 
 // cscFallbackProbeInterval bounds how often an idle connection without a
