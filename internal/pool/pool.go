@@ -1005,6 +1005,13 @@ retryIdle:
 	// check. Normal MaxActiveConns exhaustion still proceeds to newConn and
 	// returns ErrPoolExhausted immediately, preserving the existing contract.
 	if done, retry := p.drainerWaitState(drainGeneration); done != nil {
+		if !wait {
+			// TryGet must not wait out the drainer's bounded claim (up to PoolTimeout)
+			// either — spill immediately, like the pool-turn and dial-permit
+			// non-blocking paths, so a pipeline falls back to the main pool at once.
+			p.freeTurn()
+			return nil, ErrPoolTryFull
+		}
 		if err = p.waitForDrainer(ctx, done, poolDeadline); err != nil {
 			p.freeTurn()
 			return nil, err
@@ -1017,7 +1024,7 @@ retryIdle:
 	atomic.AddUint32(&p.stats.Misses, 1)
 
 	var newcn *Conn
-	newcn, err = p.queuedNewConn(ctx)
+	newcn, err = p.queuedNewConn(ctx, wait)
 	if err != nil {
 		return nil, err
 	}
@@ -1066,13 +1073,27 @@ retryIdle:
 	return newcn, nil
 }
 
-func (p *ConnPool) queuedNewConn(ctx context.Context) (*Conn, error) {
-	select {
-	case p.dialsInProgress <- struct{}{}:
-		// Got permission, proceed to create connection
-	case <-ctx.Done():
-		p.freeTurn()
-		return nil, ctx.Err()
+func (p *ConnPool) queuedNewConn(ctx context.Context, wait bool) (*Conn, error) {
+	if wait {
+		select {
+		case p.dialsInProgress <- struct{}{}:
+			// Got permission, proceed to create connection
+		case <-ctx.Done():
+			p.freeTurn()
+			return nil, ctx.Err()
+		}
+	} else {
+		// TryGet: MaxConcurrentDials can be below PoolSize, so a pool turn may be
+		// free while every dial permit is held by an in-flight dial. A blocking send
+		// here would make TryGet wait out another caller's whole dial retry sequence,
+		// violating its non-blocking contract. Give up immediately (spill) instead.
+		select {
+		case p.dialsInProgress <- struct{}{}:
+			// Got permission, proceed to create connection
+		default:
+			p.freeTurn()
+			return nil, ErrPoolTryFull
+		}
 	}
 
 	// Don't apply DialTimeout via context here; dialConn applies DialTimeout per attempt.
