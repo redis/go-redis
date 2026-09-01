@@ -268,6 +268,17 @@ const (
 	// onCloseHookIDSentinelFailover identifies the close callback installed
 	// by NewFailoverClient to tear down sentinel failover background work.
 	onCloseHookIDSentinelFailover = "sentinel-failover"
+
+	// onCloseHookIDAutoPipeline / onCloseHookIDAsyncAutoPipeline identify the
+	// close callbacks that cancel a cached autopipeliner's engine context when
+	// the SHARED pools close through any sharer (e.g. a WithTimeout clone falling
+	// through to baseClient.Close). The wrapper's own Close cancels its aps
+	// directly, but a clone shares only the pools + onCloseHooks, so without this
+	// the original wrapper's flusher/full-duplex goroutines would park on ap.ctx
+	// forever. Two ids because one Client caches at most a blocking and an async
+	// instance.
+	onCloseHookIDAutoPipeline      = "autopipeline"
+	onCloseHookIDAsyncAutoPipeline = "autopipeline-async"
 )
 
 // onCloseHooks is a small registry of named close callbacks attached to a
@@ -2500,7 +2511,7 @@ func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	ap, err := getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2508,6 +2519,29 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 			return DefaultBlockingAutoPipelineOptions()
 		},
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
+	if err == nil {
+		c.registerAutoPipelineCloseHook(onCloseHookIDAutoPipeline, ap)
+	}
+	return ap, err
+}
+
+// registerAutoPipelineCloseHook makes the SHARED close path cancel ap's engine
+// context. The wrapper's own Close cancels its cached aps directly, but a
+// WithTimeout clone shares only the pools and the onCloseHooks registry — closing
+// it runs these hooks without ever touching the original wrapper's aps, so its
+// flusher/full-duplex goroutines would otherwise park on ap.ctx forever. Cancel
+// (not Close) so the clone's Close does not block on the original's drain;
+// idempotent with ap.Close, and re-registering the same id for a rebuilt slot
+// overwrites harmlessly. Cancelling before the pools close (onClose.run precedes
+// pool teardown) also lets run()'s shutdown flush complete accepted work.
+func (c *baseClient) registerAutoPipelineCloseHook(id string, ap *AutoPipeliner) {
+	if c.onClose == nil || ap == nil {
+		return
+	}
+	c.onClose.register(id, func() error {
+		ap.cancel()
+		return nil
+	})
 }
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
@@ -2536,7 +2570,7 @@ func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	ap, err := getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2544,6 +2578,10 @@ func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*Aut
 			return DefaultAutoPipelineOptions()
 		},
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
+	if err == nil {
+		c.registerAutoPipelineCloseHook(onCloseHookIDAsyncAutoPipeline, ap)
+	}
+	return ap, err
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {

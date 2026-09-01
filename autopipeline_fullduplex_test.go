@@ -1501,6 +1501,60 @@ func TestFullDuplexNoGoroutineLeakOnClose(t *testing.T) {
 	}
 }
 
+// TestFullDuplexEngineReapedOnClonePoolClose pins that closing a WithTimeout clone
+// (which shares the pools but not the original wrapper's cached autopipeliner) still
+// stops the ORIGINAL engine's goroutines. The clone's Close only sets the shared
+// apClosed flag and runs the shared onClose hooks; without the hook that cancels the
+// cached ap's context, run() would park on fd.ch forever (new submits are rejected,
+// so nothing wakes it). The existing rejection test does not catch this because a
+// parked engine still refuses submits.
+func TestFullDuplexEngineReapedOnClonePoolClose(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	// Warm one cycle so one-time client goroutines exist before the baseline.
+	if ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true}); err == nil {
+		_ = ap.Set(ctx, "clonereap:warm", "1", 0).Err()
+		ap.Close()
+	}
+	time.Sleep(100 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	// Create the engine on the ORIGINAL client and leave it running (do NOT Close it).
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	for i := 0; i < 50; i++ {
+		_ = ap.Set(ctx, "clonereap:"+itoa(i), itoa(i), 0)
+	}
+
+	// Close a WithTimeout clone: shares the pools + onClose registry, never touches
+	// the original's cached ap. It must still reap the original engine.
+	clone := c.WithTimeout(5 * time.Second)
+	if err := clone.Close(); err != nil {
+		t.Fatalf("clone close: %v", err)
+	}
+
+	var now int
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		now = runtime.NumGoroutine()
+		if now <= base+2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if now > base+4 {
+		t.Fatalf("FD engine leaked after WithTimeout-clone Close: base=%d now=%d (shared close did not cancel the original ap)", base, now)
+	}
+}
+
 // TestFDFailReqsNoDeadlock covers the failReqs self-deadlock: failReqs runs on
 // the engine goroutine and must finalize each command WITHOUT awaiting its batch
 // (cmd.Err() blocks on the very done channel failReqs is about to close). Pure,
@@ -1765,6 +1819,7 @@ type fdOtelRecorder struct{ opDurations atomic.Int64 }
 func (r *fdOtelRecorder) RecordOperationDuration(context.Context, time.Duration, otel.Cmder, int, error, *pool.Conn, int) {
 	r.opDurations.Add(1)
 }
+
 func (r *fdOtelRecorder) RecordPipelineOperationDuration(context.Context, time.Duration, string, int, int, error, *pool.Conn, int) {
 }
 func (r *fdOtelRecorder) RecordConnectionCreateTime(context.Context, time.Duration, *pool.Conn) {}
@@ -1777,6 +1832,7 @@ func (r *fdOtelRecorder) RecordConnectionWaitTime(context.Context, time.Duration
 func (r *fdOtelRecorder) RecordConnectionClosed(context.Context, *pool.Conn, string, error)   {}
 func (r *fdOtelRecorder) RecordPubSubMessage(context.Context, *pool.Conn, string, string, bool) {
 }
+
 func (r *fdOtelRecorder) RecordStreamLag(context.Context, time.Duration, *pool.Conn, string, string, string) {
 }
 func (r *fdOtelRecorder) RecordConnectionCount(context.Context, int, *pool.Conn, string, bool) {}
@@ -2038,6 +2094,7 @@ func (h *fdPrePanicHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h *fdPrePanicHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return next
 }
