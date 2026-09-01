@@ -1555,6 +1555,63 @@ func TestFullDuplexEngineReapedOnClonePoolClose(t *testing.T) {
 	}
 }
 
+// TestFullDuplexEngineReapedForClientAndClone pins the per-engine close-hook id: a
+// client AND a WithTimeout clone can each cache the same face, sharing the onClose
+// registry. With a per-slot CONSTANT hook id the clone's registration overwrote the
+// client's, so closing one sharer cancelled only one engine and leaked the other.
+// A unique-per-engine id keeps both callbacks, so closing the shared pools reaps
+// both engines.
+func TestFullDuplexEngineReapedForClientAndClone(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	if ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true}); err == nil {
+		_ = ap.Set(ctx, "cloneboth:warm", "1", 0).Err()
+		ap.Close()
+	}
+	time.Sleep(100 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	// The client caches its own engine...
+	apC, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil || apC.fd == nil {
+		t.Fatalf("client AsyncAutoPipeline: ap=%v err=%v", apC, err)
+	}
+	for i := 0; i < 25; i++ {
+		_ = apC.Set(ctx, "cloneboth:c:"+itoa(i), itoa(i), 0)
+	}
+	// ...and a WithTimeout clone caches its OWN engine of the same face, on the
+	// shared onClose registry.
+	clone := c.WithTimeout(5 * time.Second)
+	apK, err := clone.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil || apK.fd == nil {
+		t.Fatalf("clone AsyncAutoPipeline: ap=%v err=%v", apK, err)
+	}
+	for i := 0; i < 25; i++ {
+		_ = apK.Set(ctx, "cloneboth:k:"+itoa(i), itoa(i), 0)
+	}
+
+	// Closing the clone closes the shared pools; BOTH engines must be reaped.
+	if err := clone.Close(); err != nil {
+		t.Fatalf("clone close: %v", err)
+	}
+
+	var now int
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		now = runtime.NumGoroutine()
+		if now <= base+2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if now > base+4 {
+		t.Fatalf("engine leaked after clone Close with two cached engines: base=%d now=%d (a per-slot constant hook id overwrote one registration)", base, now)
+	}
+}
+
 // TestFDFailReqsNoDeadlock covers the failReqs self-deadlock: failReqs runs on
 // the engine goroutine and must finalize each command WITHOUT awaiting its batch
 // (cmd.Err() blocks on the very done channel failReqs is about to close). Pure,

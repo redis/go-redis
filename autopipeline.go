@@ -857,10 +857,19 @@ type AutoPipeliner struct {
 	execEWMA atomic.Int64
 
 	// Lifecycle
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup // Tracks flusher goroutines
-	batchWg sync.WaitGroup // Tracks batch execution goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
+	// closeHooks / closeHookID: the shared baseClient onClose registry this engine
+	// registered a cancel callback on, and the UNIQUE id it used. Any pool-sharing
+	// wrapper's Close runs the registry and cancels this engine (so a clone closing
+	// the shared pools reaps it); ap.Close unregisters so hooks stay bounded and a
+	// closed engine's stale callback does not linger. The id is unique per engine —
+	// a client and its clone can both cache the same face and must not collide on a
+	// per-slot constant id (that would overwrite one hook and leak its engine).
+	closeHooks  *onCloseHooks
+	closeHookID string
+	wg          sync.WaitGroup // Tracks flusher goroutines
+	batchWg     sync.WaitGroup // Tracks batch execution goroutines
 	// divertWg tracks the goroutines that execute DIVERTED commands (blocking
 	// and connection-hostile ones, which never enter a batch). Close waits on
 	// it exactly like batchWg so a diverted command's pooled connection is not
@@ -949,6 +958,8 @@ func getOrCreateAutoPipeliner(
 	slot **AutoPipeliner,
 	closed *bool,
 	sharedClosed *atomic.Bool,
+	onClose *onCloseHooks,
+	closeHookBaseID string,
 	override *AutoPipelineOptions,
 	fallback func() *AutoPipelineOptions,
 	build func(*AutoPipelineOptions) (*AutoPipeliner, error),
@@ -977,6 +988,21 @@ func getOrCreateAutoPipeliner(
 	// ALREADY-cached instance also refuses enqueues once any sharer closes
 	// the pools (the check above only protects fresh builds).
 	ap.sharedClosed = sharedClosed
+	// Register the shared-pool close hook ONCE, here under mu on the FRESH build —
+	// not per call outside the lock, which would race concurrent first-callers and
+	// register a hook per caller. A UNIQUE id per engine: a client and its
+	// WithTimeout clone share onClose, so a per-slot constant id would overwrite one
+	// registration and leak its engine. ap.Close unregisters by this id. onClose is
+	// nil for cluster/ring (they pass a nil shared flag and have no clone-close leak).
+	if onClose != nil {
+		id := fmt.Sprintf("%s#%d", closeHookBaseID, apCloseHookSeq.Add(1))
+		ap.closeHooks = onClose
+		ap.closeHookID = id
+		onClose.register(id, func() error {
+			ap.cancel()
+			return nil
+		})
+	}
 	*slot = ap
 	return ap, nil
 }
@@ -1904,6 +1930,13 @@ func (ap *AutoPipeliner) Close() error {
 
 	// Cancel context to stop flushers
 	ap.cancel()
+
+	// Detach this engine's shared-pool close hook: it is closing now, so its
+	// per-engine callback must not linger in the shared onClose registry (bounded
+	// registrations; no stale cancel on a later sharer close).
+	if ap.closeHooks != nil {
+		ap.closeHooks.unregister(ap.closeHookID)
+	}
 
 	// Wake every shard's flusher so each observes the cancelled context promptly.
 	for _, s := range ap.shards {

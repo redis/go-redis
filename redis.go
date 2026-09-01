@@ -315,12 +315,9 @@ func (h *onCloseHooks) register(id string, fn func() error) {
 	h.hooks[id] = fn
 }
 
-// unregister removes the callback associated with id, if any. It is kept
-// for API symmetry with register so future callers (e.g. dynamic hook
-// owners that need to detach before client Close) do not have to
-// reinvent it.
-//
-//nolint:unused // kept for API symmetry with register; see comment above.
+// unregister removes the callback associated with id, if any. Used by
+// AutoPipeliner.Close to detach its per-engine close hook (see
+// registerAutoPipelineCloseHook).
 func (h *onCloseHooks) unregister(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2567,7 +2564,7 @@ func (c *Client) AutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	ap, err := getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, c.baseClient.onClose, onCloseHookIDAutoPipeline, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2575,30 +2572,13 @@ func (c *Client) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipe
 			return DefaultBlockingAutoPipelineOptions()
 		},
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, true) })
-	if err == nil {
-		c.registerAutoPipelineCloseHook(onCloseHookIDAutoPipeline, ap)
-	}
-	return ap, err
 }
 
-// registerAutoPipelineCloseHook makes the SHARED close path cancel ap's engine
-// context. The wrapper's own Close cancels its cached aps directly, but a
-// WithTimeout clone shares only the pools and the onCloseHooks registry — closing
-// it runs these hooks without ever touching the original wrapper's aps, so its
-// flusher/full-duplex goroutines would otherwise park on ap.ctx forever. Cancel
-// (not Close) so the clone's Close does not block on the original's drain;
-// idempotent with ap.Close, and re-registering the same id for a rebuilt slot
-// overwrites harmlessly. Cancelling before the pools close (onClose.run precedes
-// pool teardown) also lets run()'s shutdown flush complete accepted work.
-func (c *baseClient) registerAutoPipelineCloseHook(id string, ap *AutoPipeliner) {
-	if c.onClose == nil || ap == nil {
-		return
-	}
-	c.onClose.register(id, func() error {
-		ap.cancel()
-		return nil
-	})
-}
+// apCloseHookSeq makes each autopipeliner engine's onClose hook id unique so a
+// client and its WithTimeout clone (which share the onClose registry) do not
+// collide on a per-slot constant id. The hook is registered once, under the
+// getOrCreateAutoPipeliner mutex, on the fresh build; ap.Close unregisters it.
+var apCloseHookSeq atomic.Uint64
 
 // AsyncAutoPipeline returns the deferred (async) autopipeliner: command calls
 // return immediately and the result accessors (Val/Result/Err) block until the
@@ -2626,7 +2606,7 @@ func (c *Client) AsyncAutoPipeline() (*AutoPipeliner, error) {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
-	ap, err := getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, config,
+	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, c.baseClient.apClosed, c.baseClient.onClose, onCloseHookIDAsyncAutoPipeline, config,
 		func() *AutoPipelineOptions {
 			if c.opt.AutoPipelineOptions != nil {
 				return c.opt.AutoPipelineOptions
@@ -2634,10 +2614,6 @@ func (c *Client) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions) (*Aut
 			return DefaultAutoPipelineOptions()
 		},
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) { return newAutoPipeliner(c, cfg, false) })
-	if err == nil {
-		c.registerAutoPipelineCloseHook(onCloseHookIDAsyncAutoPipeline, ap)
-	}
-	return ap, err
 }
 
 func (c *Client) TxPipelined(ctx context.Context, fn func(Pipeliner) error) ([]Cmder, error) {
