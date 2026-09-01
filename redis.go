@@ -1829,14 +1829,25 @@ func (c *baseClient) getAddr() string {
 }
 
 func (c *baseClient) processPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE"); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", c.opt.MaxRetries); err != nil {
+		return err
+	}
+	return cmdsFirstErr(cmds)
+}
+
+// processPipelineRetries runs a pipeline with an explicit retry bound instead of
+// the client's configured MaxRetries. The autopipeliner's shutdown flush passes
+// maxRetries==0 to give an already-attempted carried command exactly one final
+// execution, so replaying it on Close cannot exceed its per-command retry budget.
+func (c *baseClient) processPipelineRetries(ctx context.Context, cmds []Cmder, maxRetries int) error {
+	if err := c.generalProcessPipeline(ctx, cmds, c.pipelineProcessCmds, "PIPELINE", maxRetries); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
 }
 
 func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error {
-	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI"); err != nil {
+	if err := c.generalProcessPipeline(ctx, cmds, c.txPipelineProcessCmds, "MULTI", c.opt.MaxRetries); err != nil {
 		return err
 	}
 	return cmdsFirstErr(cmds)
@@ -1845,7 +1856,7 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
 func (c *baseClient) generalProcessPipeline(
-	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string,
+	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
 	// Pipeline commands never pass through process, so apply the same CSC state
 	// guard here. initConn's internal client is exempt.
@@ -1865,7 +1876,7 @@ func (c *baseClient) generalProcessPipeline(
 	totalAttempts := 0
 
 	var lastErr error
-	for attempt := 0; attempt <= c.opt.MaxRetries; attempt++ {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
 		totalAttempts++
 		if attempt > 0 {
 			if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
