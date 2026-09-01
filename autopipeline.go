@@ -1003,6 +1003,20 @@ func getOrCreateAutoPipeliner(
 			return nil
 		})
 	}
+	// Re-check after registering: a concurrent sharer Close sets sharedClosed and
+	// runs onClose (snapshotting its callbacks) without this slot's mutex, so it can
+	// pass the entry check above, snapshot the hooks, and miss the registration just
+	// made — leaving this freshly built engine's goroutines parked on already-closed
+	// pools forever. baseClient.Close sets sharedClosed BEFORE running onClose, so a
+	// close that already ran its hooks is visible here: cancel this engine, detach
+	// its (possibly-missed) hook, and refuse rather than cache a doomed instance.
+	if sharedClosed != nil && sharedClosed.Load() {
+		ap.cancel()
+		if onClose != nil {
+			onClose.unregister(ap.closeHookID)
+		}
+		return nil, ErrClosed
+	}
 	*slot = ap
 	return ap, nil
 }
@@ -1146,7 +1160,16 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 			sem:     internal.NewFIFOSemaphore(int32(permits)),
 		}
 		for j := range s.stripes {
-			s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
+			// In full-duplex mode submissions go straight to the FD engine (fd.ch);
+			// the shard queues are never enqueued to and no flusher drains them, so do
+			// NOT preallocate them to MaxBatchSize. Otherwise a large MaxBatchSize with
+			// a small FullDuplexWindow would allocate MaxBatchSize slots per stripe
+			// (times apEnqueueStripes on the blocking face) up front — tens of MB or an
+			// OOM before any command is sent. A nil queue is safe: nothing appends to
+			// it while fdOn, and Len reads the atomic counter, not the slice.
+			if !fdOn {
+				s.stripes[j].queue = getQueueSlice(config.MaxBatchSize)
+			}
 			s.stripes[j].curBatch = newAPBatch()
 		}
 		ap.shards[i] = s

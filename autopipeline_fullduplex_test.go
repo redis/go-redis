@@ -1612,6 +1612,38 @@ func TestFullDuplexEngineReapedForClientAndClone(t *testing.T) {
 	}
 }
 
+// TestFullDuplexSkipsShardQueuePrealloc pins that full-duplex mode does not
+// preallocate the (unused) per-stripe shard queues to MaxBatchSize: submissions go
+// to the FD engine, no shard flusher runs, so a large MaxBatchSize with a small
+// window must not allocate MaxBatchSize slots per stripe up front (OOM risk).
+func TestFullDuplexSkipsShardQueuePrealloc(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		MaxBatchSize:     1_000_000,
+		FullDuplexWindow: 8,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	for i, s := range ap.shards {
+		for j := range s.stripes {
+			if got := cap(s.stripes[j].queue); got != 0 {
+				t.Fatalf("shard %d stripe %d queue cap = %d, want 0 (FD must not preallocate unused shard buffers)", i, j, got)
+			}
+		}
+	}
+}
+
 // TestFDFailReqsNoDeadlock covers the failReqs self-deadlock: failReqs runs on
 // the engine goroutine and must finalize each command WITHOUT awaiting its batch
 // (cmd.Err() blocks on the very done channel failReqs is about to close). Pure,
