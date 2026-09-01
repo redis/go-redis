@@ -136,6 +136,7 @@ type Options struct {
 	DialTimeout time.Duration
 
 	// DialerRetries is the maximum number of retry attempts when dialing fails.
+	// A value <= 0 uses the default.
 	//
 	// default: 5
 	DialerRetries int
@@ -605,7 +606,11 @@ func (opt *Options) init() {
 	if opt.DialTimeout == 0 {
 		opt.DialTimeout = 5 * time.Second
 	}
-	if opt.DialerRetries == 0 {
+	// <= 0, not == 0: the pool already treats a nonpositive value as the default
+	// (internal/pool ConnPool.dialConn), so normalize here too — code that
+	// derives a budget from opt.DialerRetries (the miss-coalescer's acquire
+	// deadline) must see the same count the pool will actually use.
+	if opt.DialerRetries <= 0 {
 		opt.DialerRetries = 5
 	}
 	if opt.DialerRetryTimeout == 0 {
