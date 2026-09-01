@@ -457,11 +457,40 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 		}()
 	}
 
+	// drainQueue moves targets already waiting in q.ch into the window without
+	// blocking, up to the window cap. Returns true when q.ch was empty (nothing
+	// more to take), false when it stopped at the cap with the channel possibly
+	// still holding more.
+	drainQueue := func() (empty bool) {
+		for len(pending) < cscRefreshWindowMaxKeys {
+			select {
+			case more := <-q.ch:
+				collect(more)
+			default:
+				return true
+			}
+		}
+		return false
+	}
+
 	for {
 		select {
 		case <-h.stop:
-			flush(false)
-			return
+			// Final flush must include targets still buffered in q.ch (offered but
+			// not yet collected), not just the collected window: stopCSCRefresher
+			// rebinds the handler away from this queue BEFORE signalling stop, so
+			// nothing new arrives here and those buffered targets would otherwise be
+			// abandoned — up to cscRefreshQueueDepth hot entries that, on a SHARED
+			// cache, stay evicted for the surviving sibling until a later reader
+			// misses. The channel is quiescent, so this loop is finite; the pool is
+			// still open (closeResources runs after this join).
+			for {
+				empty := drainQueue()
+				flush(false)
+				if empty {
+					return
+				}
+			}
 
 		case <-recency.C:
 			// Advance the horizon: entries not read since the previous tick stop
@@ -472,15 +501,7 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			collect(t)
 			// Opportunistically take whatever else is already waiting so one wake
 			// drains the backlog into the window.
-		drain:
-			for len(pending) < cscRefreshWindowMaxKeys {
-				select {
-				case more := <-q.ch:
-					collect(more)
-				default:
-					break drain
-				}
-			}
+			drainQueue()
 			if len(pending) >= cscRefreshWindowMaxKeys {
 				flush(false)
 			}
