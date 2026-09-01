@@ -126,7 +126,10 @@ type ClusterOptions struct {
 	ContextTimeoutEnabled bool
 
 	// MaxConcurrentDials is the maximum number of concurrent connection creation goroutines.
-	// If <= 0, defaults to PoolSize. If > PoolSize, it will be capped at PoolSize.
+	// If <= 0, each node's pool defaults it to that node's PoolSize. If > PoolSize, it
+	// is capped at PoolSize. Note: ClusterOptions itself leaves the field un-normalized
+	// (introspecting it after init still reports the zero value); resolution happens in
+	// each node's Options so the pipeline pool can widen its own dial cap.
 	MaxConcurrentDials int
 
 	PoolFIFO              bool
