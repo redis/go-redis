@@ -907,43 +907,52 @@ func (fd *fdEngine) run() {
 			replayable := shouldRetry(aerr, true) ||
 				errors.Is(aerr, errFDReaderGone) || errors.Is(aerr, errFDPanicRecovered) ||
 				errors.Is(aerr, errFDPushDrainFailed)
-			// Bound the tail by PER-COMMAND attempts, not the session-level
-			// retryAttempts: that counter resets on any session progress (see
-			// advancedTotal above), so under a flaky peer that acks some replies then
-			// drops, the unacked head would get a fresh budget after every partial
-			// success and could re-execute far beyond MaxRetries+1. unacked[0] is the
-			// oldest unacked command (carried longest, highest attempts), and replays
-			// bump every carried command's attempts together, so bounding on its count
-			// caps the whole tail at MaxRetries+1 total attempts. retryAttempts still
-			// drives the backoff escalation only.
-			if len(unacked) > 0 && replayable &&
-				unacked[0].attempts <= fd.client.opt.MaxRetries {
-				// Split at the first NoRetry command: replay the retryable PREFIX and fail
-				// that command plus everything ordered after it (a NoRetry command must
-				// never be re-sent). With NoRetry first (n==0) nothing is retryable ahead
-				// of it, so fall through and fail the whole tail.
-				if n := fdFirstNoRetry(unacked); n > 0 {
-					if n < len(unacked) {
-						fd.failReqs(unacked[n:], aerr)
+			// Bound each command by its OWN attempt count, not the session-level
+			// retryAttempts (which resets on any session progress — see advancedTotal
+			// above — so a flaky peer that acks some replies then drops could hand the
+			// tail a fresh budget on every partial success). Partition the tail: a
+			// command that has spent its budget (attempts > MaxRetries) is failed; the
+			// rest stay eligible to replay. Gating the whole tail on the OLDEST command's
+			// count instead would deny a newer command — written behind an exhausted one,
+			// so carrying fewer attempts — the retries it is still owed. Carried commands
+			// are the oldest (written first, attempts bumped together), so the exhausted
+			// set is the leading run and the eligible suffix keeps FIFO order.
+			// retryAttempts still drives the backoff escalation only.
+			eligible := unacked
+			if replayable && len(unacked) > 0 {
+				var exhausted []fdReq
+				eligible, exhausted = fdPartitionByBudget(unacked, fd.client.opt.MaxRetries)
+				if len(exhausted) > 0 {
+					fd.failReqs(exhausted, aerr) // spent MaxRetries+1 attempts; fail with the real cause
+				}
+				// Split the eligible suffix at the first NoRetry command: replay the
+				// retryable PREFIX and fail that command plus everything ordered after it
+				// (a NoRetry command must never be re-sent). With NoRetry at the eligible
+				// head (n==0) nothing ahead of it is retryable, so fall through and fail
+				// whatever eligible remains (exhausted was already failed above).
+				if n := fdFirstNoRetry(eligible); n > 0 {
+					if n < len(eligible) {
+						fd.failReqs(eligible[n:], aerr)
 					}
 					retryAttempts++
 					fd.sleepBackoff(retryAttempts)
-					carry = unacked[:n]
-					// These commands were already issued on the failed connection and are
-					// about to be re-issued; bump their attempt count so a subsequent
-					// success/failure reports the real retry_attempts (not always 1). The
-					// clean-recycle suffix path (fdRecycle) leaves attempts at 1 — that
-					// tail was never sent, so its replay is a first attempt.
+					carry = eligible[:n]
+					// Already issued on the failed connection and about to be re-issued;
+					// bump attempts so a later success/failure reports the real
+					// retry_attempts (not always 1). The clean-recycle suffix path
+					// (fdRecycle) leaves attempts at 1 — that tail was never sent, so its
+					// replay is a first attempt.
 					for i := range carry {
 						carry[i].attempts++
 					}
 					continue
 				}
 			}
-			// Not retrying the tail (none, non-retryable, or exhausted): fail it,
-			// then ALWAYS back off before re-leasing so a dead server cannot spin
-			// this loop. Keep the engine alive to serve new work when it recovers.
-			fd.failReqs(unacked, aerr)
+			// Not retrying (not replayable, none eligible, or NoRetry-headed): fail the
+			// remaining unfailed commands, then ALWAYS back off before re-leasing so a
+			// dead server cannot spin this loop. Keep the engine alive to serve new work
+			// when it recovers.
+			fd.failReqs(eligible, aerr)
 			carry = nil
 			retryAttempts++
 			fd.sleepBackoff(retryAttempts)
@@ -1702,9 +1711,9 @@ func (fd *fdEngine) takeQueue() []fdReq {
 func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
 	// Honor per-command retry budgets across the Close boundary. A carried command
 	// can arrive here with its budget already spent: run() bumps attempts on each
-	// replay and permits replay up to unacked[0].attempts <= MaxRetries, so the head
-	// can reach MaxRetries+1 before a ctx-cancel (or lease/denied Close race) routes
-	// the tail here. processPipeline restarts its own retry loop from attempt zero,
+	// replay and replays a command up to attempts == MaxRetries+1, so a carried
+	// command can reach that ceiling before a ctx-cancel (or lease/denied Close race)
+	// routes the tail here. processPipeline restarts its own retry loop from attempt zero,
 	// which would grant every carried command another MaxRetries+1 executions — a
 	// mutating command could then far exceed its configured budget during shutdown.
 	// Fail the exhausted carried commands directly instead of re-sending them; they

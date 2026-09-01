@@ -637,6 +637,19 @@ func TestFDPartitionByBudget(t *testing.T) {
 	if len(kept) > 0 && &kept[0] == &carry[0] {
 		t.Fatalf("kept aliases carry's backing array; shutdownFlush would corrupt the caller's tail")
 	}
+
+	// Finding-A scenario: an exhausted command at the head must NOT deny a newer
+	// command written behind it (lower attempts) its remaining retries. run() carries
+	// oldest-first with attempts bumped together, so exhausted is the leading run and
+	// the eligible suffix keeps FIFO order.
+	tail := []fdReq{{attempts: maxRetries + 1}, {attempts: maxRetries}, {attempts: 1}}
+	elig, ex := fdPartitionByBudget(tail, maxRetries)
+	if len(ex) != 1 || ex[0].attempts != maxRetries+1 {
+		t.Fatalf("exhausted = %+v, want the single head at MaxRetries+1", ex)
+	}
+	if len(elig) != 2 || elig[0].attempts != maxRetries || elig[1].attempts != 1 {
+		t.Fatalf("eligible = %+v, want [MaxRetries 1] in order (newer commands keep their retries)", elig)
+	}
 }
 
 // TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
