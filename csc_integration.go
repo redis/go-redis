@@ -177,8 +177,15 @@ func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.invalBatchWindowSet = true
 	h.invalBatchWindow = w
 	if h.batcher != nil {
-		h.batcher.stop()
+		// stop+join: the next invalidation rebuilds under the NEW (stricter)
+		// window, and the join keeps the old worker's stop-drain from applying
+		// after that rebuild — a late apply under the looser contract could evict
+		// an entry the stricter-window batcher just repopulated. join is safe
+		// under h.mu (run() takes no handler locks).
+		b := h.batcher
 		h.batcher = nil
+		b.stop()
+		b.join()
 	}
 }
 
@@ -219,6 +226,7 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 			ch:     make(chan cscInvalItem, 8192),
 			wake:   make(chan struct{}, 1),
 			stopCh: make(chan struct{}),
+			done:   make(chan struct{}),
 		}
 		// refresh is atomic so set/clearRefreshQueue can repoint it before stop;
 		// seed it with the current binding before the worker starts.
@@ -261,9 +269,13 @@ func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
 		// refresher, not the closing owner's — whose drainer is already gone, so its
 		// offers would just be dropped. An in-flight apply already holding the old
 		// pointer feeds its current batch to the old queue: a bounded, benign residual.
-		h.batcher.refresh.Store(h.refresh)
-		h.batcher.stop()
+		// stop+join so the closing owner's teardown is synchronous (no straggler
+		// goroutine applying after Close returned).
+		b := h.batcher
 		h.batcher = nil
+		b.refresh.Store(h.refresh)
+		b.stop()
+		b.join()
 	}
 }
 
@@ -289,11 +301,15 @@ func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 	// A running batcher was created with the previous binding; drop it so the next
 	// invalidation rebuilds with the new one (stop() flushes, so no queued delete
 	// is lost). Repoint it at the new binding first, so the stop-drain feeds hot
-	// keys to q rather than the superseded refresher.
+	// keys to q rather than the superseded refresher, and JOIN so the attach is
+	// synchronous — the drain has fully applied before the attaching client
+	// proceeds.
 	if h.batcher != nil {
-		h.batcher.refresh.Store(h.refresh)
-		h.batcher.stop()
+		b := h.batcher
 		h.batcher = nil
+		b.refresh.Store(h.refresh)
+		b.stop()
+		b.join()
 	}
 }
 
@@ -418,13 +434,18 @@ func (h *invalidateHandler) releaseLocked() {
 	if h.users == 0 {
 		h.cache = nil
 		h.keyPrefix = ""
-		// Stop the windowed batcher so its goroutine does not outlive the binding
-		// (re-arming its timer forever). stop() only closes a channel — it never
-		// touches h.mu and does not wait — so it is safe under the lock. A later
-		// re-acquire starts a fresh batcher via ensureBatcher.
+		// Stop AND join the windowed batcher so its goroutine does not outlive the
+		// binding: the last user is closing, and without the join the stop-drain
+		// applied asynchronously after Close returned — a straggler goroutine, and
+		// on a shared injected cache a late apply could evict an entry a successor
+		// client just repopulated. join is safe under h.mu (run() takes no handler
+		// locks; its drain is memory-bounded). A later re-acquire starts a fresh
+		// batcher via ensureBatcher.
 		if h.batcher != nil {
-			h.batcher.stop()
+			b := h.batcher
 			h.batcher = nil
+			b.stop()
+			b.join()
 		}
 		// A fresh binding folds in its own window; do not inherit this one's.
 		h.invalBatchWindow = 0
@@ -1274,9 +1295,30 @@ func (c *baseClient) processCached(ctx context.Context, cmd Cmder, state *proces
 			// THROUGH to the capture path below so a successful retry repopulates the
 			// cache (a nil-capture processWithRetry returned the value but stored
 			// nothing, so connection blips and wire-budget sheds left the key uncached
-			// and later readers missed). Reserve may hand fetching to another reader
-			// (shouldFetch=false), which the capture path handles.
+			// and later readers missed).
 			token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
+			if !shouldFetch {
+				// Another waiter won the re-Reserve race and is fetching. WAIT on it
+				// (Get parks on the in-progress entry) instead of falling through to an
+				// independent pooled request: a session failure wakes every same-key
+				// waiter at once, and each running its own processWithRetry would turn
+				// one hot key into a pool stampede mid-recovery — defeating the
+				// coalescing this path exists for. Same shape (and 2x-RTT churn
+				// tradeoff) as the first-Reserve loser path above.
+				if data, ok := c.csc.Get(ctx, key); ok {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					if err := applyCachedReply(cmd, data); isCacheableReplyResult(err) {
+						return err
+					}
+					c.csc.DeleteByCacheKey(key)
+				}
+				// The new owner cancelled or its value was invalidated; try to take
+				// over. A second loss falls through to the plain pooled path — after
+				// two waits, forward progress outranks another round of parking.
+				token, shouldFetch = c.csc.Reserve(key, nsRedisKeys)
+			}
 		} else {
 			// Native-recorder attribution: the coalesced fetch contacted Redis on
 			// the session's held connection — report it as one attempt on that conn

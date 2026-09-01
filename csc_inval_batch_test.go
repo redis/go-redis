@@ -38,6 +38,27 @@ func newTestBatcher(cache Cache, chCap int, window time.Duration) *cscInvalBatch
 		ch:     make(chan cscInvalItem, chCap),
 		wake:   make(chan struct{}, 1),
 		stopCh: make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+}
+
+// TestInvalBatcherStopJoinIsSynchronous pins the stop+join teardown contract:
+// once join returns, the stop-drain has fully applied — every enqueued delete is
+// visible, with no Eventually. Without the join the drain ran asynchronously
+// after Close returned (straggler goroutine; a late apply could evict what a
+// successor client on a shared cache just repopulated).
+func TestInvalBatcherStopJoinIsSynchronous(t *testing.T) {
+	cache := &countingCache{}
+	b := newTestBatcher(cache, 8, time.Hour) // window never fires; only the stop-drain applies
+	go b.run()
+
+	b.enqueue("k1")
+	b.enqueue("k2")
+	b.stop()
+	b.join()
+
+	if got := cache.deletes.Load(); got != 2 {
+		t.Fatalf("deletes after stop+join = %d, want 2 (drain must be synchronous)", got)
 	}
 }
 

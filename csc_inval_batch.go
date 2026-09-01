@@ -120,6 +120,10 @@ type cscInvalBatcher struct {
 	// nothing drains.
 	stopMu  sync.RWMutex
 	stopped bool
+	// done is closed when run() exits (after its stop-drain and final flush);
+	// join() waits on it so stop+join is a synchronous teardown. Nil only in
+	// test-constructed literals whose worker never starts.
+	done chan struct{}
 }
 
 // stop signals run() to flush and exit; idempotent, never touches h.mu, does
@@ -132,6 +136,21 @@ func (b *cscInvalBatcher) stop() {
 		b.stopMu.Unlock()
 		close(b.stopCh)
 	})
+}
+
+// join blocks until run() has exited — i.e. the stop-drain and final flush have
+// fully applied. Callers pair it with stop() so a teardown or rebuild is
+// SYNCHRONOUS: without the join, the old worker's drain ran after Close (or
+// after a rebuild installed a new batcher with a new window contract), leaving
+// a straggler goroutine past Close and letting a late apply evict entries a
+// successor just repopulated. Safe under h.mu: run() never takes handler locks
+// (its drain touches only the cache shards, applyMu, and non-blocking refresh
+// offers). No-op for a batcher whose worker was never started (test literals).
+func (b *cscInvalBatcher) join() {
+	if b.done == nil {
+		return
+	}
+	<-b.done
 }
 
 // drop marks everything enqueued so far as superseded by a full cache Flush:
@@ -267,6 +286,9 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 }
 
 func (b *cscInvalBatcher) run() {
+	// Closed LAST (deferred first): join() unblocks only after the stop-drain and
+	// final flush below have fully applied, making a stop+join teardown synchronous.
+	defer close(b.done)
 	t := time.NewTimer(b.window)
 	defer t.Stop()
 	pending := make([]cscInvalItem, 0, 256)
