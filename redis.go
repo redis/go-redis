@@ -1176,6 +1176,12 @@ func (c *baseClient) initConn(ctx context.Context, cn *pool.Conn) error {
 	return nil
 }
 
+// errConnUnusable marks a connection whose reply stream is desynchronized (a
+// partial push-frame drain, or a panic mid-serialization) but whose error is not a
+// transport bad-conn error. releaseConnToPool removes such a conn instead of
+// returning it to the pool. Wrap the real cause with %w so callers still see it.
+var errConnUnusable = errors.New("redis: connection unusable (reply stream desynchronized)")
+
 func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) {
 	if c.opt.Limiter != nil {
 		c.opt.Limiter.ReportResult(err)
@@ -1190,7 +1196,12 @@ func (c *baseClient) releaseConn(ctx context.Context, cn *pool.Conn, err error) 
 // tracking is on. Limiter accounting stays with the callers, whose shapes
 // differ. Shared by releaseConn and withPipelineConn so the two cannot drift.
 func (c *baseClient) releaseConnToPool(ctx context.Context, p pool.Pooler, cn *pool.Conn, err error) {
-	if isBadConn(err, false, c.opt.Addr) {
+	// errConnUnusable is wrapped around errors that leave the connection's reply
+	// stream desynchronized even though they are not transport (bad-conn) errors:
+	// a push-notification drain that consumed part of a RESP3 frame, or a panic
+	// while serializing a command's args mid-write. Such a conn MUST be removed —
+	// reusing it would decode leftover bytes as the next caller's replies.
+	if isBadConn(err, false, c.opt.Addr) || errors.Is(err, errConnUnusable) {
 		p.Remove(ctx, cn, err)
 		return
 	}
@@ -1224,6 +1235,15 @@ func (c *baseClient) withConn(
 
 	var fnErr error
 	defer func() {
+		// A panic inside fn (e.g. a user BinaryMarshaler panicking while writeCmd
+		// serializes args) can leave a partial write on the wire, desyncing the conn.
+		// Mark it unusable so releaseConn REMOVES it instead of returning a poisoned
+		// conn to the pool, then re-panic to preserve the caller's panic propagation.
+		if r := recover(); r != nil {
+			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
+			c.releaseConn(ctx, cn, fnErr)
+			panic(r)
+		}
 		c.releaseConn(ctx, cn, fnErr)
 	}()
 
@@ -1280,11 +1300,27 @@ func (c *baseClient) withPipelineConn(
 	var connPool pool.Pooler = pipelinePool
 	var fnErr error
 	defer func() {
+		// A panic inside fn (a user encoder panicking mid-write) can desync the conn;
+		// mark it unusable so it is REMOVED, report the failure to the Limiter, and
+		// re-panic after releasing so the caller's panic propagation is preserved.
+		// Recover once, then re-panic at the very end (report-before-release order is
+		// part of the contract — see below — so the release must run first).
+		var pv any
+		panicked := false
+		if r := recover(); r != nil {
+			panicked = true
+			pv = r
+			fnErr = fmt.Errorf("%w: panic: %v", errConnUnusable, r)
+			retErr = fnErr
+		}
 		if c.opt.Limiter != nil {
 			c.opt.Limiter.ReportResult(retErr)
 		}
 		if cn != nil {
 			c.releaseConnToPool(ctx, connPool, cn, fnErr)
+		}
+		if panicked {
+			panic(pv)
 		}
 	}()
 
@@ -1906,9 +1942,17 @@ func (c *baseClient) generalProcessPipeline(
 		// withPipelineConn falls back to the regular pool when it is not.
 		lastErr = c.withPipelineConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 			lastConn = cn
-			// Process any pending push notifications before executing the pipeline
+			// Drain pending push notifications before executing the pipeline. A drain
+			// error can mean a custom processor consumed part of a RESP3 push frame,
+			// leaving the reply stream desynchronized — writing the batch now would
+			// misread every reply (silent cross-command result shift). Fail the batch
+			// with the error instead of logging on: errConnUnusable makes
+			// releaseConnToPool remove the desynced conn, and shouldRetry does not
+			// treat it as retryable, so the caller sees an error rather than shifted
+			// results. (Failing loud is deliberately preferred over teaching the shared
+			// retry classifier a new sentinel.)
 			if err := c.processPushNotifications(ctx, cn); err != nil {
-				internal.Logger.Printf(ctx, "push: error processing pending notifications before processing pipeline: %v", err)
+				return fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
 			}
 			var err error
 			canRetry, err = p(ctx, cn, cmds)
@@ -1964,9 +2008,16 @@ func (c *baseClient) generalProcessPipeline(
 func (c *baseClient) pipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	// Process any pending push notifications before executing the pipeline
+	// Drain pending push notifications before writing the pipeline. A drain error
+	// may mean the reply stream is desynchronized (a processor consumed part of a
+	// RESP3 frame), so writing now would misread replies. Fail the batch and remove
+	// the conn (errConnUnusable) rather than logging on. (generalProcessPipeline
+	// drains once more before calling this, so this is the belt-and-suspenders gate
+	// for a direct/again-buffered push.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before writing pipeline: %v", err)
+		err = fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, err)
+		setCmdsErr(cmds, err)
+		return false, err
 	}
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
@@ -2056,9 +2107,14 @@ func (c *baseClient) pipelineReadCmds(ctx context.Context, cn *pool.Conn, rd *pr
 func (c *baseClient) txPipelineProcessCmds(
 	ctx context.Context, cn *pool.Conn, cmds []Cmder,
 ) (bool, error) {
-	// Process any pending push notifications before executing the transaction pipeline
+	// Drain pending push notifications before writing the transaction. A drain error
+	// may leave the reply stream desynchronized, so fail the batch and remove the
+	// conn (errConnUnusable) rather than logging on. (generalProcessPipeline drains
+	// once more before calling this — belt-and-suspenders gate.)
 	if err := c.processPushNotifications(ctx, cn); err != nil {
-		internal.Logger.Printf(ctx, "push: error processing pending notifications before transaction: %v", err)
+		err = fmt.Errorf("%w: txpipeline push drain: %w", errConnUnusable, err)
+		setCmdsErr(cmds, err)
+		return false, err
 	}
 
 	// HIMPORT bookkeeping: pending discards for this session and PREPAREs
