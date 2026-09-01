@@ -920,6 +920,10 @@ func (fd *fdEngine) run() {
 			// retryAttempts still drives the backoff escalation only.
 			eligible := unacked
 			if replayable && len(unacked) > 0 {
+				// unacked is PRE-BUMP here (a command sent A times carries attempts==A),
+				// so attempts > MaxRetries is exactly the spent-budget set. The Close-path
+				// flush (flushCarryBudgeted) instead sees POST-BUMP carry, where the same
+				// command carries attempts==A+1 — do not unify the two thresholds.
 				var exhausted []fdReq
 				eligible, exhausted = fdPartitionByBudget(unacked, fd.client.opt.MaxRetries)
 				if len(exhausted) > 0 {
@@ -1386,13 +1390,22 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// commands have no reply coming and the unwritten suffix is already in
 			// inflight (writeCarryChunked pushed it), so closeGraceful would park the
 			// reader on replies that never arrive. Close the conn to wake the reader,
-			// then fail the whole unacked tail (accepted suffix included).
+			// then RETURN the unacked tail as the recovery set instead of failing it
+			// here. As fdConnErr it flows through run()'s standard tail recovery — the
+			// per-command budget partition and the NoRetry split — and, because ap.ctx
+			// is cancelled (this is Close), the eligible prefix is then executed by
+			// shutdownFlush on a fresh connection. That honors "accepted ⇒ completes"
+			// for the never-sent fd.ch backlog (attempts==1, never touched the dead
+			// socket) instead of failing it errFDReaderGone, while the NoRetry split
+			// still keeps a written-but-unacked NoRetry command from a second execution
+			// (it is failed by the split, never reaching shutdownFlush). takeRemaining
+			// holds only UNACKED commands — the reader advanced completed ones out — so
+			// nothing already settled is re-run.
 			failOnce(e)
 			inflight.hardClose()
 			_ = cn.Close()
 			<-readerDone
-			fd.failReqs(inflight.takeRemaining(), e)
-			return nil, fdConnErr, e
+			return inflight.takeRemaining(), fdConnErr, e
 		}
 		// e == nil (fully flushed) OR errFDConnMoving (handoff mid-flush on a LIVE
 		// conn). Either way the connection is healthy: drain the already-written prefix
@@ -1709,81 +1722,129 @@ func (fd *fdEngine) takeQueue() []fdReq {
 // processPipeline bounds it with the client's own timeouts/retries and setCmdsErr
 // puts any failure on every command, so callers always settle.
 func (fd *fdEngine) shutdownFlush(bg context.Context, carry []fdReq) {
-	// Honor per-command retry budgets across the Close boundary. A carried command
-	// can arrive here with its budget already spent: run() bumps attempts on each
-	// replay and replays a command up to attempts == MaxRetries+1, so a carried
-	// command can reach that ceiling before a ctx-cancel (or lease/denied Close race)
-	// routes the tail here. processPipeline restarts its own retry loop from attempt zero,
-	// which would grant every carried command another MaxRetries+1 executions — a
-	// mutating command could then far exceed its configured budget during shutdown.
-	// Fail the exhausted carried commands directly instead of re-sending them; they
-	// have already been attempted to the limit. Freshly queued work (takeQueue,
-	// attempts==1) is never filtered — the accepted-⇒-completes contract still runs
-	// it through the normal pipeline. NoRetry commands need no special handling:
-	// generalProcessPipeline refuses to retry any chunk that contains one
-	// (cmdsContainNoRetry), so a re-sent NoRetry command runs at most once here.
-	if mr := fd.client.opt.MaxRetries; mr > 0 && len(carry) > 0 {
-		kept, exhausted := fdPartitionByBudget(carry, mr)
-		if len(exhausted) > 0 {
-			fd.failReqs(exhausted, errFDRetryBudgetExhausted)
-		}
-		carry = kept
-	}
-	backlog := append(carry, fd.takeQueue()...)
-	if len(backlog) == 0 {
+	// Drain and close the queue now (before flushing carry) so no new submit lands
+	// mid-flush. fresh commands (attempts == 1) have not run yet.
+	fresh := fd.takeQueue()
+	// Flush the carried tail honoring EACH command's remaining retry budget across
+	// the Close boundary (flushCarryBudgeted), then the fresh queue at the full
+	// budget. Flushing carry first keeps FIFO order across the two sets.
+	if err := fd.flushCarryBudgeted(bg, carry); err != nil {
+		// Carry hit an unreachable endpoint; do not run the fresh queue through a full
+		// retry cycle against the same dead endpoint (Close would otherwise stall for
+		// chunks × retries × backoff) — fail it with the same transport error.
+		fd.failReqs(fresh, err)
 		return
 	}
-	// A panic here (user arg encoder inside processPipeline) runs on the engine
-	// goroutine with no other recovery; fail and complete the remainder so no
-	// caller hangs.
+	fd.flushReqs(bg, fresh, fd.client.opt.MaxRetries)
+}
+
+// fdCarryRemainingRetries returns the retry bound for a carried command flushed on
+// Close. carry commands are POST-BUMP: run() bumps attempts before re-issuing, so a
+// command carried at attempts=A has completed A-1 executions (contrast the pre-bump
+// unacked tail in run(), where A executions are done). Of its MaxRetries+1 total
+// budget it may still run MaxRetries+2-A times, i.e. a retry bound of
+// MaxRetries+1-A. A negative result means the budget is spent (drop the command).
+// attempts is clamped to >=1: attempts==0 is only reachable from test-constructed
+// fdReq literals, and the clamp keeps such a command at full budget rather than
+// granting MaxRetries+2.
+func fdCarryRemainingRetries(attempts, maxRetries int) int {
+	if attempts < 1 {
+		attempts = 1
+	}
+	return maxRetries + 1 - attempts
+}
+
+// flushCarryBudgeted flushes the carried tail on Close so no command exceeds — or
+// falls short of — its configured MaxRetries+1 total executions. Commands are
+// flushed in contiguous groups of equal attempt count, each with its own remaining
+// budget (fdCarryRemainingRetries); a group whose budget is spent is failed, not
+// re-run. Grouping equal-attempt RUNS is correct regardless of ordering (carry is
+// normally attempts-descending, so groups are few, but a non-sorted slice just
+// yields more groups). Returns a transport error that aborted the remainder.
+func (fd *fdEngine) flushCarryBudgeted(bg context.Context, carry []fdReq) error {
+	mr := fd.client.opt.MaxRetries
+	for i := 0; i < len(carry); {
+		a := carry[i].attempts
+		j := i + 1
+		for j < len(carry) && carry[j].attempts == a {
+			j++
+		}
+		group := carry[i:j]
+		i = j
+		rem := fdCarryRemainingRetries(a, mr)
+		if rem < 0 {
+			fd.failReqs(group, errFDRetryBudgetExhausted) // budget spent; do not re-run
+			continue
+		}
+		if err := fd.flushReqs(bg, group, rem); err != nil {
+			if i < len(carry) {
+				fd.failReqs(carry[i:], err) // transport failure: fail the rest of the carry too
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// flushReqs runs reqs through the client pipeline in the same
+// MaxBatchSize/MaxBatchBytes chunks as normal FD writes and completes each
+// request. maxRetries bounds each chunk's retry loop (0 = a single execution,
+// used for already-attempted carried commands so their per-command budget is not
+// exceeded). Returns a non-nil error if a transport failure aborted the remainder
+// (already failed here); per-command Redis errors are normal results and do not
+// abort.
+func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) error {
+	if len(reqs) == 0 {
+		return nil
+	}
+	// A panic here (user arg encoder inside the pipeline) runs on the engine
+	// goroutine with no other recovery; fail and complete the remainder so no caller
+	// hangs.
 	i := 0
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("redis: autopipeline: panic in shutdown flush: %v", r)
 			internal.Logger.Printf(bg, "autopipeline: recovered shutdown-flush panic: %v\n%s", r, debug.Stack())
-			fd.failReqs(backlog[i:], err)
+			fd.failReqs(reqs[i:], err)
 		}
 	}()
-	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: the backlog can
-	// hold the carry plus the whole channel, and one unchunked pipeline would
-	// ignore MaxBatchBytes and burst the connection.
+	// Same MaxBatchSize/MaxBatchBytes chunking as normal FD writes: reqs can hold a
+	// large window, and one unchunked pipeline would ignore MaxBatchBytes and burst
+	// the connection.
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
-	for i < len(backlog) {
-		end := fdBatchEnd(backlog, i, fd.maxBatch, byteLimit)
+	for i < len(reqs) {
+		end := fdBatchEnd(reqs, i, fd.maxBatch, byteLimit)
 		cmds := make([]Cmder, end-i)
 		for j := i; j < end; j++ {
-			cmds[j-i] = backlog[j].cmd
+			cmds[j-i] = reqs[j].cmd
 		}
-		// Initialize the flush with a backlog request's own context (cancellation
-		// removed), not the engine's background context: if this flush has to
-		// initialize a fresh pooled connection — e.g. the preceding lease failed —
-		// a CredentialsProviderContext resolves credentials from the request's
-		// context values, so the flush authenticates as the right tenant instead of
-		// a fallback. WithoutCancel because these requests' contexts may already be
-		// cancelled (that is often what triggered Close), yet the accepted-⇒-completes
-		// contract still requires the write to go through. A chunk can mix callers;
-		// the first request in the chunk is the representative — a documented
-		// approximation, matching how the diverted-retry and session-init paths pick
-		// one context for a batch.
+		// Initialize the flush with a request's own context (cancellation removed), not
+		// the engine's background context: if this flush initializes a fresh pooled
+		// connection, a CredentialsProviderContext resolves credentials from the
+		// request's context values, so it authenticates as the right tenant.
+		// WithoutCancel because these contexts may already be cancelled (often what
+		// triggered Close), yet accepted-⇒-completes still requires the write. A chunk
+		// can mix callers; the first request is the representative — a documented
+		// approximation, matching the diverted-retry and session-init paths.
 		fctx := bg
-		if c := backlog[i].ctx; c != nil {
+		if c := reqs[i].ctx; c != nil {
 			fctx = context.WithoutCancel(c)
 		}
-		err := fd.client.processPipeline(fctx, cmds) // per-command results/errors are set inside
+		err := fd.client.processPipelineRetries(fctx, cmds, maxRetries) // per-command results/errors set inside
 		for j := i; j < end; j++ {
-			backlog[j].complete()
+			reqs[j].complete()
 		}
 		i = end
-		// A transport failure that survived processPipeline's own retries means
-		// the server is unreachable: stop, and fail the remaining chunks with the
-		// same error instead of re-running the full retry cycle per chunk against
-		// a dead endpoint (Close would otherwise stall chunks × retries × backoff).
-		// Per-command Redis errors are normal results and do not stop the flush.
+		// A transport failure that survived the retry loop means the server is
+		// unreachable: stop and fail the remaining chunks with the same error instead
+		// of re-running the cycle per chunk against a dead endpoint. Per-command Redis
+		// errors are normal results and do not stop the flush.
 		if err != nil && !isRedisError(err) {
-			fd.failReqs(backlog[i:], err)
-			return
+			fd.failReqs(reqs[i:], err)
+			return err
 		}
 	}
+	return nil
 }
 
 // failQueue fails every command currently buffered in fd.ch with err WITHOUT
