@@ -47,10 +47,22 @@ type cscInvalItem struct {
 	// >= the recency tick (200ms) would otherwise let the horizon advance during
 	// the wait, so a key that was hot when the invalidation arrived fails the
 	// check by apply time and silently degrades to plain eviction. Free size-wise:
-	// it fits the 8-byte alignment padding the struct already carries. 0 when
-	// refresh is off (the hot path is skipped anyway).
+	// it fits the 8-byte alignment padding the struct already carries.
+	//
+	// cscInvalNoHorizon (-1) when refresh was OFF at enqueue. apply re-reads the
+	// refresh binding at APPLY time, and a refresh-enabled client attaching in
+	// between (setRefreshQueue repoints the batcher, then stop-drains it) would
+	// otherwise see horizon 0 and treat EVERY valid entry as hot — the cold-key
+	// refresh loop the horizon exists to prevent. With the sentinel, apply falls
+	// back to the live horizon (seeded at that client's start), which can only
+	// under-refresh, never chase cold keys. LRUClock is a monotonic sequence >= 0,
+	// so -1 cannot collide with a real horizon.
 	sinceToken int64
 }
+
+// cscInvalNoHorizon marks an invalidation enqueued while no refresh binding
+// existed (see cscInvalItem.sinceToken).
+const cscInvalNoHorizon = -1
 
 type cscInvalBatcher struct {
 	window time.Duration
@@ -144,10 +156,11 @@ func (b *cscInvalBatcher) drop() {
 // is stopped (no worker left to drain, see stopMu) does it apply inline so an
 // invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
-	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load()}
+	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load(), sinceToken: cscInvalNoHorizon}
 	// Snapshot the refresh recency horizon NOW (enqueue time), so a batch-window
 	// delay can't advance it out from under apply's hot-entry check (see the field
-	// doc). Cheap: one atomic load, no lock. Left 0 when refresh is off.
+	// doc). Cheap: one atomic load, no lock. Stays cscInvalNoHorizon when refresh
+	// is off, so a binding that appears before apply cannot read it as horizon 0.
 	if r := b.refresh.Load(); r != nil {
 		it.sinceToken = r.sinceToken.Load()
 	}
@@ -238,8 +251,15 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 		}
 		// Use the horizon snapshotted at ENQUEUE, not a live load: a batch-window
 		// delay advances the live horizon and would chill keys that were hot when
-		// the invalidation arrived (see cscInvalItem.sinceToken).
-		hot = lc.deleteByRedisKeyCollectingHot(k, it.sinceToken, hot[:0])
+		// the invalidation arrived (see cscInvalItem.sinceToken). An item enqueued
+		// with no refresh binding carries cscInvalNoHorizon; the binding that
+		// exists NOW (a client attached in between) supplies the live horizon, which
+		// is a real recency test — never horizon 0, which would mark every entry hot.
+		since := it.sinceToken
+		if since == cscInvalNoHorizon {
+			since = refresh.sinceToken.Load()
+		}
+		hot = lc.deleteByRedisKeyCollectingHot(k, since, hot[:0])
 		for i := range hot {
 			refresh.offer(hot[i])
 		}

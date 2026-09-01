@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -60,6 +61,80 @@ func TestInvalBatcherEnqueueSnapshotsSinceToken(t *testing.T) {
 		}
 	default:
 		t.Fatal("enqueue did not land on ch")
+	}
+}
+
+// TestInvalBatcherRefreshAttachUsesLiveHorizon pins the recency gate across a
+// refresh ATTACH: an item enqueued while the batcher had no refresh binding must
+// not be applied as "horizon 0" once a binding appears before apply (setRefreshQueue
+// repoints the batcher, then stop-drains it). Horizon 0 would mark every valid
+// entry hot and refetch cold keys — the loop the horizon exists to prevent. The
+// item carries cscInvalNoHorizon and apply falls back to the live horizon, so a
+// COLD entry is deleted but NOT offered, while a hot one still is.
+func TestInvalBatcherRefreshAttachUsesLiveHorizon(t *testing.T) {
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
+	mkValid := func(cacheKey, redisKey string) {
+		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = token %d, shouldFetch %v", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// Cold entry: populated BEFORE the attaching client's horizon exists.
+	mkValid("ck:cold", "rk:cold")
+
+	// Batcher built with refresh OFF; worker not started so items stay on ch.
+	b := newTestBatcher(lc, 4, time.Hour)
+	b.enqueue("rk:cold")
+	var cold cscInvalItem
+	select {
+	case cold = <-b.ch:
+	default:
+		t.Fatal("enqueue did not land on ch")
+	}
+	if cold.sinceToken != cscInvalNoHorizon {
+		t.Fatalf("item enqueued with refresh off: sinceToken = %d, want cscInvalNoHorizon (%d)",
+			cold.sinceToken, cscInvalNoHorizon)
+	}
+
+	// A refresh-enabled client attaches: its horizon is seeded NOW, after the cold
+	// entry, and the batcher is repointed at its queue (as setRefreshQueue does
+	// before the stop-drain).
+	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 8)}
+	q.sinceToken.Store(lc.LRUClock())
+	b.refresh.Store(q)
+
+	// Hot control: read after the horizon, enqueued with a real snapshot.
+	mkValid("ck:hot", "rk:hot")
+	b.enqueue("rk:hot")
+	var hot cscInvalItem
+	select {
+	case hot = <-b.ch:
+	default:
+		t.Fatal("enqueue did not land on ch")
+	}
+
+	// The stop-drain applies both under the NEW binding.
+	b.apply([]cscInvalItem{cold, hot})
+
+	// Both deleted ...
+	ctx := context.Background()
+	if _, ok := lc.Get(ctx, "ck:cold"); ok {
+		t.Fatal("cold entry not deleted")
+	}
+	if _, ok := lc.Get(ctx, "ck:hot"); ok {
+		t.Fatal("hot entry not deleted")
+	}
+	// ... but only the hot one is offered for refetch. Without the sentinel the
+	// cold item would apply with horizon 0 and be offered too (len == 2).
+	if n := len(q.ch); n != 1 {
+		t.Fatalf("refresh targets offered = %d, want 1 (hot only); cold key must not be refetched", n)
+	}
+	if got := <-q.ch; got.cacheKey != "ck:hot" {
+		t.Fatalf("offered target = %q, want ck:hot", got.cacheKey)
 	}
 }
 
