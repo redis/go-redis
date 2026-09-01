@@ -1249,7 +1249,11 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	// and hit a write-timeout/burst on the new connection.
 	carrySuffix, writeErr := fd.writeCarryChunked(bg, cn, inflight, carry, readerDone)
 	if writeErr == nil {
-		scratch := make([]fdReq, 0, fd.maxBatch)
+		// Cap the drain scratch at the window, not MaxBatchSize: the writer can never
+		// have more than fd.window commands in flight, so a large MaxBatchSize with a
+		// small window would over-allocate (up to OOM) for no gain. Matches the
+		// in-flight ring's min(maxBatch, window) cap.
+		scratch := make([]fdReq, 0, min(fd.maxBatch, fd.window))
 		byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	serve:
 		for {
@@ -1485,15 +1489,24 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	if len(reqs) == 0 {
 		return nil
 	}
-	// A command encoder can panic (e.g. a user BinaryMarshaler failing while
-	// writeCmd serializes the args) on the writer goroutine, where it would crash
-	// the process. Convert it to a connection error: the batch is already in the
-	// deque and the write may be partial, so the conn is desynced and every caller
-	// settles through the normal conn-error recovery.
+	// Publish the batch to the in-flight deque only AFTER a clean serialize+flush
+	// (see below), so the reader arms its per-reply ReadTimeout once the write has
+	// reached the socket — not while a slow user encoder (a BinaryMarshaler) is still
+	// running, which could time out a healthy connection and trigger a spurious
+	// replay that duplicates a mutating command. On a partial write or an encoder
+	// panic the conn is desynced, so the batch must still land in the deque for the
+	// normal conn-error recovery to settle every caller; this defer does that if the
+	// happy-path push below did not run. A command encoder panic (writeCmd on a bad
+	// BinaryMarshaler) runs on the writer goroutine, where it would otherwise crash
+	// the process — convert it to a connection error.
+	pushed := false
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: encoding batch: %v", errFDPanicRecovered, r)
 			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex write panic: %v\n%s", r, debug.Stack())
+		}
+		if !pushed {
+			inflight.pushBatch(reqs)
 		}
 	}()
 	// Stamp the wire-write time so the reader can record write→reply as the
@@ -1503,8 +1516,7 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	for i := range reqs {
 		reqs[i].writtenAt = now
 	}
-	inflight.pushBatch(reqs)
-	return cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
+	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
 			if e := writeCmd(wr, reqs[i].cmd); e != nil {
 				return e
@@ -1512,6 +1524,13 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		}
 		return nil
 	})
+	if err == nil {
+		// Clean flush: publish now, so the reader only starts its reply deadline once
+		// the bytes are on the wire. On error/panic the deferred push handles recovery.
+		inflight.pushBatch(reqs)
+		pushed = true
+	}
+	return err
 }
 
 // fdBatchEnd returns the exclusive end index of the next write chunk starting at
@@ -1816,6 +1835,20 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 	byteLimit := int64(fd.ap.config.MaxBatchBytes) // 0 = disabled
 	for i < len(reqs) {
 		end := fdBatchEnd(reqs, i, fd.maxBatch, byteLimit)
+		// Do not mix retry policies in one chunk: generalProcessPipeline disables
+		// retries for the WHOLE chunk if any command is NoRetry (cmdsContainNoRetry),
+		// which would strip retryable commands in the same accepted backlog of their
+		// budget. Break the chunk at the first NoRetry-policy change so a NoRetry
+		// command (e.g. RawWriteToCmd) is isolated from its retryable neighbors, like
+		// the half-duplex dispatcher's contiguous retry-policy runs. The clamp starts
+		// at i+1, so end stays > i and the chunk is never empty (no infinite loop).
+		policy := reqs[i].cmd.NoRetry()
+		for k := i + 1; k < end; k++ {
+			if reqs[k].cmd.NoRetry() != policy {
+				end = k
+				break
+			}
+		}
 		cmds := make([]Cmder, end-i)
 		for j := i; j < end; j++ {
 			cmds[j-i] = reqs[j].cmd
