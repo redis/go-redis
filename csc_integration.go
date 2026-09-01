@@ -318,21 +318,24 @@ func (h *invalidateHandler) HandlePushNotification(
 		// another tracked connection AFTER this point carries the new epoch and
 		// still applies — its post-flush delete must not be lost.
 		//
-		// Hold h.mu across the drop()+Flush() and read the batcher/cache fresh
-		// under it (not the snapshot above): every batcher rebuild
-		// (setInvalBatchWindow / set/clearRefreshQueue) runs under h.mu.Lock, so a
-		// snapshot-then-drop could bump a STALE batcher's epoch while the NEW
-		// batcher's already-queued deletes (new epoch) survive the flush and evict
-		// post-flush repopulations. RLock (not Lock) is enough — it blocks the
-		// write-locked rebuilds — and drop()/Flush() take their own locks, not h.mu,
-		// so there is no lock-order cycle.
+		// Hold h.mu across the drop()+Flush() and read the BATCHER fresh under it
+		// (not the snapshot above): every batcher rebuild (setInvalBatchWindow /
+		// set/clearRefreshQueue) runs under h.mu.Lock, so a snapshot-then-drop could
+		// bump a STALE batcher's epoch while the NEW batcher's already-queued deletes
+		// (new epoch) survive the flush and evict post-flush repopulations. RLock (not
+		// Lock) is enough — it blocks the write-locked rebuilds — and drop()/Flush()
+		// take their own locks, not h.mu, so there is no lock-order cycle.
+		//
+		// Flush the CACHE SNAPSHOT taken at entry, not the live h.cache: a last-user
+		// releaseLocked can nil h.cache between the entry RUnlock above and this RLock,
+		// which would silently skip the wipe (the guarded `if h.cache != nil` simply
+		// did nothing). The per-key delete branches already flush the snapshot, so the
+		// full flush must match; the entry guard already returned on a nil snapshot.
 		h.mu.RLock()
 		if h.batcher != nil {
 			h.batcher.drop()
 		}
-		if h.cache != nil {
-			h.cache.Flush()
-		}
+		cache.Flush()
 		h.mu.RUnlock()
 	case []interface{}:
 		// Count incoming invalidations at the choke point: one per key named in the
