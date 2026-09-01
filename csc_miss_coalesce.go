@@ -291,6 +291,32 @@ func (mc *cscMissCoalescer) settle(req *cscMissReq, err error) {
 	req.done <- err
 }
 
+// emitReplyErr records the native error metric for a settled REPLY error (e.g.
+// redis.Nil, WRONGTYPE) at the point the caller consumes it — the single
+// emission site for coalesced reply errors, giving parity with processWithRetry
+// on the uncoalesced path while staying exactly-once per operation. Excluded:
+// session errors and shed retries (processCached re-runs those through
+// processWithRetry, which emits its own outcome) and the cancellation branch (a
+// caller returning ctx.Err() already emitted its cancellation; emitting the late
+// reply too recorded two conflicting error types for one operation). Reading
+// req.servedBy is safe here: the caller's req.done receive is the
+// happens-before edge for that field.
+func (mc *cscMissCoalescer) emitReplyErr(ctx context.Context, req *cscMissReq, err error) {
+	if err == nil || err == errCSCRetryUncached {
+		return
+	}
+	var sessErr cscSessionError
+	if errors.As(err, &sessErr) {
+		return
+	}
+	errorCallback := pool.GetMetricErrorCallback()
+	if errorCallback == nil {
+		return
+	}
+	errorType, statusCode, isInternal := classifyCommandError(err)
+	errorCallback(ctx, errorType, req.servedBy, statusCode, isInternal, 0)
+}
+
 func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey string, token uint64) (served *pool.Conn, err error) {
 	req := &cscMissReq{cmd: cmd, cacheKey: cacheKey, token: token, done: make(chan error, 1)}
 	// Bound total in-flight serialized bytes before allocating this command's wire
@@ -364,6 +390,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	}
 	select {
 	case err := <-req.done:
+		mc.emitReplyErr(ctx, req, err)
 		return req.servedBy, err
 	case <-mc.stop:
 		// Close raced our enqueue: the req may have landed in mc.ch after the
@@ -387,6 +414,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// successfully, and discarding it for a blanket ErrClosed would fail a
 		// read that has its value.
 		e := <-req.done
+		mc.emitReplyErr(ctx, req, e)
 		return req.servedBy, e
 	case <-wctx.Done():
 		// Caller stopped waiting (only when ContextTimeoutEnabled; otherwise wctx is
@@ -454,14 +482,12 @@ func (mc *cscMissCoalescer) applyAndSettle(req *cscMissReq, raw []byte, connID, 
 		// WRONGTYPE / NOPERM / ...: returned to the caller, not cached.
 		c.csc.Cancel(req.cacheKey, req.token)
 	}
-	// Native error-metric parity with processWithRetry, which emits for every
-	// non-nil command error (redis.Nil included) on the uncoalesced path.
-	if applyErr != nil {
-		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-			errorType, statusCode, isInternal := classifyCommandError(applyErr)
-			errorCallback(context.Background(), errorType, req.servedBy, statusCode, isInternal, 0)
-		}
-	}
+	// No error-metric emission here: the CALLER emits at its req.done receive
+	// (emitReplyErr), which makes emission exactly-once per operation. Emitting on
+	// this side too double-counted an op whose caller cancelled late — the caller
+	// recorded its context cancellation while this reply error was recorded here,
+	// two conflicting error types for one operation. An abandoned caller's op is
+	// accounted by its cancellation alone.
 	mc.settle(req, applyErr)
 }
 
