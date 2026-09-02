@@ -142,7 +142,6 @@ const (
 	fdConnErr                  // connection failure: unacked tail returned for replay
 	fdIdle                     // idle: conn returned cleanly; re-lease on next command
 	fdRecycle                  // max-hold: conn returned cleanly; re-lease immediately (work pending)
-	fdDenied                   // acquisition denied (Limiter.Allow reject): fail carry + backlog, engine stays alive
 	fdLeaseErr                 // could not lease/init a conn for a new session: retry, then fail carry + backlog after MaxRetries
 )
 
@@ -806,20 +805,20 @@ func (fd *fdEngine) run() {
 	// budget, so the first genuine mid-session drop would fail the whole unacked
 	// tail with zero replay attempts. leaseAttempts resets whenever a session
 	// actually ran; retryAttempts resets on a clean session end (idle/recycle).
-	leaseAttempts := 0 // consecutive fdLeaseErr/fdDenied acquisition failures
+	leaseAttempts := 0 // consecutive fdLeaseErr acquisition failures
 	retryAttempts := 0 // consecutive fdConnErr tail-replay failures
 	for {
 		if fd.ap.ctx.Err() != nil {
 			fd.shutdownFlush(bg, carry)
 			return
 		}
-		// Never lease a connection (or hit the Limiter / dial) without work in hand:
-		// block for the first command whenever the carry is empty. That covers the
-		// initial entry, the fdIdle return, and the fail-fast exits below (fdDenied /
-		// exhausted fdLeaseErr / failed fdConnErr tail), which would otherwise loop
-		// straight back into attempt against an empty queue — hammering the Limiter or
-		// dialing a down server forever. Work already queued makes this non-blocking,
-		// so fdRecycle re-leases immediately; an empty recycle parks here.
+		// Never lease a connection (or dial) without work in hand: block for the
+		// first command whenever the carry is empty. That covers the initial entry,
+		// the fdIdle return, and the fail-fast exits below (exhausted fdLeaseErr /
+		// failed fdConnErr tail), which would otherwise loop straight back into
+		// attempt against an empty queue — dialing a down server forever. Work
+		// already queued makes this non-blocking, so fdRecycle re-leases
+		// immediately; an empty recycle parks here.
 		if len(carry) == 0 {
 			// About to park with no session running: release the previous session's
 			// in-flight ring so a drained deque does not stay resident through the idle
@@ -840,12 +839,11 @@ func (fd *fdEngine) run() {
 		case fdGraceful:
 			// Close: attempt() drained the written work and released the session conn
 			// via its defer — Put, so the OnPut hook can hand a marked conn off, or
-			// Remove if that release drain failed — and reported the per-session
-			// Limiter. Here unacked is the never-WRITTEN handoff suffix (nil on a plain
-			// Close), NOT written commands to re-execute; complete it on a fresh
-			// connection and permit now that attempt() freed both. Doing it here rather
-			// than inside session avoids failing the suffix against a capped Limiter or a
-			// saturated pool while the session conn is still held.
+			// Remove if that release drain failed. Here unacked is the never-WRITTEN
+			// handoff suffix (nil on a plain Close), NOT written commands to
+			// re-execute; complete it on a fresh connection now that attempt() freed
+			// this one. Doing it here rather than inside session avoids failing the
+			// suffix against a saturated pool while the session conn is still held.
 			if len(unacked) > 0 {
 				fd.shutdownFlush(bg, unacked)
 			}
@@ -882,26 +880,6 @@ func (fd *fdEngine) run() {
 				fd.sleepBackoff(leaseAttempts)
 				continue // carry unchanged; re-lease
 			}
-			fd.failReqs(carry, aerr)
-			fd.failQueue(aerr)
-			carry = nil
-			leaseAttempts++
-			fd.sleepBackoff(leaseAttempts)
-			if leaseAttempts >= fd.client.opt.MaxRetries {
-				leaseAttempts = 0
-			}
-		case fdDenied:
-			// Same Close-race guard as fdLeaseErr: on shutdown, flush instead of failing
-			// accepted work with a denial that only exists because Close interrupted the
-			// acquisition.
-			if fd.ap.ctx.Err() != nil {
-				fd.shutdownFlush(bg, carry)
-				return
-			}
-			// The Limiter denied acquisition: fail-fast the carry tail AND the whole fd.ch
-			// backlog with the limiter error (as the plain-client getConn path does)
-			// instead of leaving them buffered until the breaker closes. The engine stays
-			// alive and backs off, so it serves again once the limiter admits.
 			fd.failReqs(carry, aerr)
 			fd.failQueue(aerr)
 			carry = nil
@@ -999,36 +977,11 @@ func (fd *fdEngine) run() {
 // first), and releases the connection. Returns the unacked tail + error on
 // connection failure, or graceful=true on Close.
 func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq, result fdResult, aerr error) {
-	// Per-session Limiter: FD acquires ONE conn per session, so Allow() once here —
-	// if it rejects, do not acquire and do not report (mirrors getConn). Otherwise
-	// ReportResult exactly once at release and BEFORE the conn becomes available
-	// again, so a breaker sees the failure before admitting the next session; that
-	// is why the report and the release share ONE deferred func, in that order.
-	limited := fd.client.opt.Limiter != nil
-	if limited {
-		if err := fd.client.opt.Limiter.Allow(); err != nil {
-			// Denied (e.g. an open circuit breaker): report nothing (no conn was
-			// acquired) and signal fdDenied so run() fail-fasts the carry and the fd.ch
-			// backlog instead of leaving them buffered until the breaker closes.
-			return carry, fdDenied, err
-		}
-	}
-
+	// Options.Limiter is deliberately NOT consulted here: the lease is not the
+	// Limiter's unit. Admission is per written chunk, in writeBatch — see the
+	// comment there for the rationale.
 	var cn *pool.Conn
 	defer func() {
-		if limited {
-			// Map a Close-driven cancel to a nil result. When our own Close cancels
-			// fd.ap.ctx mid-session the attempt fails with context.Canceled, which
-			// is a deliberate shutdown, not an upstream failure; reporting it would
-			// make a circuit breaker back off (or open) on every graceful Close.
-			// Any other error, including a caller-context cancel while the engine is
-			// still running, is reported as-is.
-			rr := aerr
-			if rr != nil && errors.Is(rr, context.Canceled) && fd.ap.ctx.Err() != nil {
-				rr = nil
-			}
-			fd.client.opt.Limiter.ReportResult(rr)
-		}
 		if cn == nil {
 			return // nothing acquired, or already Removed inline below
 		}
@@ -1385,7 +1338,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				// Max-hold reached. With the pipe drained (nothing in-flight, nothing
 				// queued) return fdIdle so run() blocks for the next command: otherwise a
 				// quiet engine with FullDuplexMaxHold < FullDuplexIdleTimeout would
-				// Get/Put-churn (and re-charge the Limiter/session hooks) every interval.
+				// Get/Put-churn (and re-run the session hooks) every interval.
 				// With work pending, recycle to keep serving.
 				if inflight.empty() && len(fd.ch) == 0 {
 					result = fdIdle
@@ -1462,11 +1415,10 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		}
 		// Handoff mid-flush: the prefix drained cleanly and the conn will be Put
 		// (OnPut handoff). RETURN the never-sent suffix so run() completes it on
-		// ANOTHER connection AFTER attempt() has Put this conn and reported the
-		// per-session Limiter — accepted ⇒ completes. Flushing it HERE would run while
-		// attempt() still holds this conn and its Limiter permit, so a concurrency-
-		// capping Limiter at its cap (or both pools saturated) would deterministically
-		// fail the suffix. Empty on a plain Close with no handoff. Mirrors the recycle
+		// ANOTHER connection AFTER attempt() has Put this conn — accepted ⇒
+		// completes. Flushing it HERE would run while attempt() still holds this
+		// conn, so with both pools saturated the suffix would deterministically
+		// fail. Empty on a plain Close with no handoff. Mirrors the recycle
 		// path, which likewise returns its suffix for run() to replay.
 		return unwritten, fdGraceful, nil
 	case fdIdle, fdRecycle:
@@ -1520,6 +1472,39 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdInflight, reqs []fdReq) (err error) {
 	if len(reqs) == 0 {
 		return nil
+	}
+	// Per-chunk Limiter admission. The Limiter's unit everywhere else in the
+	// client is one connection-acquiring wire operation — a single-command
+	// attempt, a pipeline exec, a half-duplex autopipeline flush — and the FD
+	// equivalent of that unit is one written chunk, so Allow/ReportResult pair
+	// here, per chunk. The session LEASE deliberately does not pay: a lease-long
+	// permit pinned a breaker's half-open probe budget for the whole session
+	// lifetime (probe starvation) and gave near-zero failure-signal density (one
+	// report per session, however long it ran). Reply errors deliberately do not
+	// feed ReportResult — a server that answers is healthy; transport failures
+	// surface through the next chunk's write attempt on the replacement conn and
+	// through diverted retries, which keep their own Allow/Report pairing via
+	// getConn (parity with single-command retries paying per attempt).
+	//
+	// A deny fails ONLY this chunk, with the Limiter's error verbatim (failReqs
+	// sets it on each command, emits the error metric, and completes the
+	// callers): the connection is healthy and untouched — nothing stamped sent,
+	// nothing pushed in-flight — so the session continues and the NEXT chunk
+	// pays Allow again (fast-fail while a breaker is open, automatic resume when
+	// it closes). This early return sits BEFORE the recovery defer below is
+	// armed, so a denied chunk can never be pushed into the in-flight deque.
+	if lim := fd.client.opt.Limiter; lim != nil {
+		if aerr := lim.Allow(); aerr != nil {
+			fd.failReqs(reqs, aerr)
+			return nil
+		}
+		// Admitted: report the WRITE outcome exactly once — strict pairing (a
+		// denied Allow reports nothing, per the Limiter contract; every allowed
+		// one reports). Deferred, and registered BEFORE the recovery defer below
+		// so it runs AFTER it (LIFO) and sees the final err — an encoder panic
+		// converted to errFDPanicRecovered is a failed write, not a skipped
+		// report.
+		defer func() { lim.ReportResult(err) }()
 	}
 	// Publish the batch to the in-flight deque only AFTER a clean serialize+flush
 	// (see below), so the reader arms its per-reply ReadTimeout once the write has
@@ -1975,11 +1960,12 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 
 // failQueue fails every command currently buffered in fd.ch with err WITHOUT
 // closing the engine (unlike takeQueue, the shutdown drain, which sets closed).
-// Used on fdLeaseErr/fdDenied, where the carry goes through failReqs and this
-// drains the accepted backlog — both halves emit the native error metric. The
-// engine stays alive, so a command submitted after this returns is failed on the
-// next denied attempt or served once the limiter admits. The channel receive is
-// safe against a concurrent submit send, so no lock is taken here.
+// Used on fdLeaseErr, where the carry goes through failReqs and this drains the
+// accepted backlog — both halves emit the native error metric. The engine stays
+// alive, so a command submitted after this returns is served once the
+// server/pool recovers, or failed when the next lease exhausts its retries. The
+// channel receive is safe against a concurrent submit send, so no lock is taken
+// here.
 func (fd *fdEngine) failQueue(err error) {
 	errorCallback := pool.GetMetricErrorCallback()
 	var errorType, statusCode string

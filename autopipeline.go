@@ -134,12 +134,18 @@ type AutoPipelineOptions struct {
 	// path). Until then the short-circuit-does-not-block semantics above are
 	// intentional, not a bug.
 	//
-	// Limiter: a full-duplex session holds ONE connection and serves MANY commands
-	// on it, so Options.Limiter is admitted (Allow/ReportResult) once PER SESSION —
-	// per held connection — not per command, unlike the plain per-command path. This
-	// is inherent to the held-connection model (a per-command Allow would defeat the
-	// pipelining and re-admit a connection already held). A caller that needs strict
-	// per-command admission or circuit-breaking should not enable FullDuplex.
+	// Limiter: Options.Limiter is admitted (Allow/ReportResult) once PER WRITTEN
+	// BATCH — the chunk flushed to the connection in one write, the full-duplex
+	// analogue of a pipeline exec or a half-duplex flush — not per command and
+	// not per session. A deny fails every command of that chunk with the
+	// Limiter's own error, verbatim (examinable via errors.Is); the session and
+	// its connection stay alive, and the next chunk pays Allow again, so an open
+	// breaker fail-fasts and service resumes as soon as it closes. Because
+	// admission happens at write time, a deny surfaces as queue latency on the
+	// awaited result, not as a submit-time error — and one deny covers a whole
+	// chunk, exactly as one Allow covers a whole pipeline exec elsewhere.
+	// ReportResult carries the write outcome only; reply errors do not feed it
+	// (a server that answers is healthy).
 	FullDuplex bool
 
 	// FullDuplexWindow is the maximum in-flight (written-but-unacknowledged)

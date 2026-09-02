@@ -1777,17 +1777,17 @@ func TestFDInflightOwnershipPartition(t *testing.T) {
 }
 
 // fdCountLimiter counts Allow/ReportResult to verify the full-duplex engine
-// accounts the Limiter once per session (Allow on acquire, ReportResult before
-// release), balanced 1:1.
+// accounts the Limiter once per written batch (Allow before the flush,
+// ReportResult with the write outcome), balanced 1:1.
 type fdCountLimiter struct{ allow, report atomic.Int64 }
 
 func (l *fdCountLimiter) Allow() error         { l.allow.Add(1); return nil }
 func (l *fdCountLimiter) ReportResult(_ error) { l.report.Add(1) }
 
-// TestFullDuplexLimiterPerSession verifies FullDuplex honors opt.Limiter with
-// per-session accounting: every session's conn acquisition is bracketed by
-// exactly one Allow and one ReportResult, the report before the release.
-func TestFullDuplexLimiterPerSession(t *testing.T) {
+// TestFullDuplexLimiterPairing verifies FullDuplex honors opt.Limiter with
+// per-batch accounting: every written chunk is bracketed by exactly one Allow
+// and one ReportResult (strict pairing), and the Limiter is never bypassed.
+func TestFullDuplexLimiterPairing(t *testing.T) {
 	ctx := context.Background()
 	lim := &fdCountLimiter{}
 	c := NewClient(&Options{
@@ -1814,9 +1814,9 @@ func TestFullDuplexLimiterPerSession(t *testing.T) {
 	if err := ap.Set(ctx, "fd:lim:k", "v", 0).Err(); err != nil {
 		t.Fatalf("set: %v", err)
 	}
-	// A tiny idle window so any late session settles before we read the counters.
+	// A tiny idle window so any late write settles before we read the counters.
 	time.Sleep(20 * time.Millisecond)
-	// Close waits for the engine (ap.wg), so every session's deferred
+	// Close waits for the engine (ap.wg), so every batch's deferred
 	// ReportResult has run by the time Close returns.
 	if err := ap.Close(); err != nil {
 		t.Fatalf("close: %v", err)
@@ -1827,7 +1827,7 @@ func TestFullDuplexLimiterPerSession(t *testing.T) {
 		t.Fatalf("FullDuplex never called Limiter.Allow (allow=%d) — Limiter bypassed", a)
 	}
 	if a != r {
-		t.Fatalf("FullDuplex Limiter unbalanced: Allow=%d ReportResult=%d (must be 1:1 per session)", a, r)
+		t.Fatalf("FullDuplex Limiter unbalanced: Allow=%d ReportResult=%d (must be 1:1 per written batch)", a, r)
 	}
 }
 
@@ -2401,8 +2401,9 @@ func (l *fdRejectLimiter) Allow() error         { l.allow.Add(1); return errFDLi
 func (l *fdRejectLimiter) ReportResult(_ error) {}
 
 // TestFullDuplexLimiterRejectFailsQueuedWork verifies that when the Limiter
-// denies FD session acquisition (fdDenied), accepted commands fail-fast with the
-// limiter error instead of hanging in fd.ch until the breaker closes.
+// denies chunk admission at write time (writeBatch), accepted commands
+// fail-fast with the limiter error instead of hanging in fd.ch until the
+// breaker closes.
 func TestFullDuplexLimiterRejectFailsQueuedWork(t *testing.T) {
 	ctx := context.Background()
 	probe := NewClient(&Options{Addr: ":6379"})

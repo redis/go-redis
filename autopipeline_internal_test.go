@@ -761,6 +761,120 @@ func TestFDRecoverTailRefundsSuffixOnly(t *testing.T) {
 	}
 }
 
+// errBreakerOpen is the sentinel a fakeBreaker denies with; the engine must
+// surface it VERBATIM (errors.Is) on every command of a denied chunk.
+var errBreakerOpen = errors.New("fake breaker: open")
+
+// fakeBreaker is a Limiter stand-in for a circuit breaker: denies while open,
+// and counts allows/denies/reports so the strict pairing contract (exactly one
+// ReportResult per successful Allow, none for a deny) is assertable.
+type fakeBreaker struct {
+	open    atomic.Bool
+	allows  atomic.Int64
+	denies  atomic.Int64
+	reports atomic.Int64
+}
+
+func (b *fakeBreaker) Allow() error {
+	if b.open.Load() {
+		b.denies.Add(1)
+		return errBreakerOpen
+	}
+	b.allows.Add(1)
+	return nil
+}
+func (b *fakeBreaker) ReportResult(_ error) { b.reports.Add(1) }
+
+// TestFDLimiterPerBatch pins the per-batch Limiter contract of the full-duplex
+// engine: Allow() is paid per written chunk (not per session or per lease), a
+// deny fails exactly that chunk's commands with the Limiter's error verbatim
+// while the session and engine survive, and every successful Allow is paired
+// with exactly one ReportResult.
+func TestFDLimiterPerBatch(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:                    internalTestRedisAddr(),
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 br,
+	})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// Phase 1 — breaker closed: commands are admitted per chunk and succeed.
+	for i := 0; i < 5; i++ {
+		if err := ap.Set(ctx, "fd:limbatch:"+strconv.Itoa(i), "v", 0).Err(); err != nil {
+			t.Fatalf("phase 1 set %d: %v", i, err)
+		}
+	}
+	if br.allows.Load() < 1 {
+		t.Fatal("phase 1: Limiter.Allow never called — per-batch admission bypassed")
+	}
+
+	// Phase 2 — breaker open: the next chunk's Allow is denied, so the command
+	// fails fast with the Limiter's error VERBATIM (errors.Is must see the
+	// sentinel — the engine must not wrap or replace it). The deny settles the
+	// chunk at write time; nothing hangs waiting for the breaker to close.
+	br.open.Store(true)
+	done := make(chan error, 1)
+	go func() { done <- ap.Set(ctx, "fd:limbatch:denied", "v", 0).Err() }()
+	select {
+	case e := <-done:
+		if !errors.Is(e, errBreakerOpen) {
+			t.Fatalf("phase 2: err = %v, want the breaker sentinel verbatim (errors.Is)", e)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("phase 2: command hung on an open breaker instead of failing the chunk fast")
+	}
+	if br.denies.Load() < 1 {
+		t.Fatal("phase 2: Limiter denied nothing — the failure did not come from admission")
+	}
+
+	// Phase 3 — breaker closed again: the SAME client/engine serves new work
+	// (the deny failed only the chunk; the session/engine stayed alive, and the
+	// next chunk pays Allow again).
+	br.open.Store(false)
+	if err := ap.Set(ctx, "fd:limbatch:resumed", "v", 0).Err(); err != nil {
+		t.Fatalf("phase 3 set after breaker closed: %v (engine did not resume)", err)
+	}
+
+	// Teardown — strict pairing: after Close (which waits out the engine and any
+	// final flush) every successful Allow must have exactly one ReportResult; a
+	// denied Allow must have none. A brief settle covers the plain-path release
+	// report that can land just after a call returns.
+	if err := ap.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	a, r, d := br.allows.Load(), br.reports.Load(), br.denies.Load()
+	if a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal; denies=%d report nothing)", a, r, d)
+	}
+	if d < 1 {
+		t.Fatalf("denies = %d, want >= 1 (phase 2 must have been denied by the Limiter)", d)
+	}
+}
+
 // TestDispatchChunkedAbortsAfterFailedPrefix pins chunked dispatch's
 // ordered-stream contract at the unit level: when an earlier chunk dies on a
 // transport-class failure (here a hook abort), later chunks are NOT
