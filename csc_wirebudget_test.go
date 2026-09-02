@@ -131,3 +131,50 @@ func TestCSCMissCoalescerCancelIfStopping(t *testing.T) {
 			"reservation (the IN_PROGRESS token was not cancelled)", tok2, sf)
 	}
 }
+
+// TestCSCMissCoalescerShedsWhenActualOverBudget pins finding #1's second half:
+// reconcileWireBytes must SHED (return false) when the true serialized size would
+// push the in-flight total past the budget, not just correct the counter and keep
+// an over-budget wire — else N concurrent undercounted misses each pass the
+// pre-serialize gate and then blow the budget while every wire stays queued.
+func TestCSCMissCoalescerShedsWhenActualOverBudget(t *testing.T) {
+	ctx := context.Background()
+	cmd := NewCmd(ctx, "set", "k", bigBinArg{4096})
+	estimate := cmdApproxBytes(cmd)
+	var buf bytes.Buffer
+	if err := writeCmd(proto.NewWriter(&buf), cmd); err != nil {
+		t.Fatalf("writeCmd: %v", err)
+	}
+	wire := buf.Bytes()
+	actual := int64(len(wire))
+	if estimate >= actual {
+		t.Fatalf("estimate %d >= actual %d; test is vacuous", estimate, actual)
+	}
+
+	mc := &cscMissCoalescer{}
+	// Preload the budget so the estimate still fits but reconciling to the ACTUAL
+	// size crosses the cap.
+	preload := cscMissWireBudgetBytes - estimate - actual/2
+	mc.wireBytes.Store(preload)
+	if !mc.reserveWireBytes(estimate) {
+		t.Fatal("reserve estimate should fit (only the reconciled actual exceeds the cap)")
+	}
+	req := &cscMissReq{reserved: estimate, wire: wire}
+
+	if mc.reconcileWireBytes(req) {
+		t.Fatal("reconcileWireBytes kept an over-budget wire; want shed (false)")
+	}
+	// Rolled back to the estimate reservation (reserved unchanged), so fetch's
+	// !enqueued defer releases exactly the estimate and the counter returns to preload.
+	if req.reserved != estimate {
+		t.Fatalf("req.reserved = %d, want the estimate %d (roll back on shed)", req.reserved, estimate)
+	}
+	if got := mc.wireBytes.Load(); got != preload+estimate {
+		t.Fatalf("wireBytes = %d, want preload+estimate %d (delta must be rolled back)",
+			got, preload+estimate)
+	}
+	mc.releaseWireBytes(req.reserved)
+	if got := mc.wireBytes.Load(); got != preload {
+		t.Fatalf("after release wireBytes = %d, want preload %d", got, preload)
+	}
+}

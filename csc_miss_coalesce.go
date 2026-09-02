@@ -282,21 +282,38 @@ func (mc *cscMissCoalescer) reserveWireBytes(n int64) bool {
 func (mc *cscMissCoalescer) releaseWireBytes(n int64) { mc.wireBytes.Add(-n) }
 
 // reconcileWireBytes corrects req's reservation to the ACTUAL serialized size once
-// req.wire is built. The reservation is charged from cmdApproxBytes BEFORE
-// serialization (so an over-budget miss never allocates the wire), but that
-// estimate charges only ~8 bytes for a variable-size non-string/[]byte arg (a
-// BinaryMarshaler, net.IP, *string, ...), which serializes its full bytes — so a
-// burst of such misses could drift the in-flight budget well past
-// cscMissWireBudgetBytes. Charge the delta to wireBytes and store it back on
-// req.reserved so settle() still releases exactly once. The wire is already built,
-// so this one is kept even if it now pushes over budget; making the COUNTER reflect
-// reality just means the NEXT reserve sheds.
-func (mc *cscMissCoalescer) reconcileWireBytes(req *cscMissReq) {
+// req.wire is built, and reports whether the request still fits the budget. The
+// reservation is charged from cmdApproxBytes BEFORE serialization (so an
+// over-budget miss never allocates the wire), but that estimate charges only ~8
+// bytes for a variable-size non-string/[]byte arg (a BinaryMarshaler, net.IP,
+// *string, ...), which serializes its full bytes. Without a recheck, N concurrent
+// such misses each reserve a few bytes, all pass the pre-serialize gate, and then
+// charging their true size drifts the in-flight total far past
+// cscMissWireBudgetBytes while every snapshot stays queued.
+//
+// Returns true (keep) when the actual size fits: the delta is charged and
+// req.reserved advanced to actual, so settle() releases exactly once. Returns
+// false (shed) when charging the actual size would exceed the budget: the delta is
+// rolled back, req.reserved is LEFT at the estimate (fetch's !enqueued defer
+// releases that), and the caller sheds to the pooled path — so the over-budget
+// wire is dropped, not retained in mc.ch/inflight. A shrinking delta (actual <
+// estimate) always keeps.
+func (mc *cscMissCoalescer) reconcileWireBytes(req *cscMissReq) bool {
 	actual := int64(len(req.wire))
-	if delta := actual - req.reserved; delta != 0 {
-		mc.wireBytes.Add(delta)
-		req.reserved = actual
+	delta := actual - req.reserved
+	if delta <= 0 {
+		if delta != 0 {
+			mc.wireBytes.Add(delta)
+			req.reserved = actual
+		}
+		return true
 	}
+	if mc.wireBytes.Add(delta) > cscMissWireBudgetBytes {
+		mc.wireBytes.Add(-delta) // roll back; reserved stays the estimate for the defer release
+		return false
+	}
+	req.reserved = actual
+	return true
 }
 
 // settle releases req's wire-budget reservation and wakes its caller, exactly
@@ -382,9 +399,15 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	}
 	req.wire = wireBuf.Bytes()
 	// Reconcile the reservation to the real serialized size now that the wire exists:
-	// cmdApproxBytes can undercount a large variable-size arg (see reconcileWireBytes),
-	// so without this the budget could drift far above cscMissWireBudgetBytes.
-	mc.reconcileWireBytes(req)
+	// cmdApproxBytes can undercount a large variable-size arg (see reconcileWireBytes).
+	// If the true size would push the in-flight total over budget, shed to the pooled
+	// path instead of enqueueing an over-budget snapshot (the !enqueued defer releases
+	// the estimate). Without this, concurrent undercounted misses all pass the
+	// pre-serialize gate and then blow the budget while every wire stays queued.
+	if !mc.reconcileWireBytes(req) {
+		mc.c.csc.Cancel(cacheKey, token)
+		return nil, errCSCRetryUncached
+	}
 	// Reject early if the coalescer is already stopping, so a send does not win the
 	// select race against a closed mc.stop and land in mc.ch after the shutdown
 	// drain, where nothing would pick it up. This narrows but cannot close that
