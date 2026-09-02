@@ -1458,6 +1458,40 @@ func TestMultiDBAddDatabaseCallbackSeesNewID(t *testing.T) {
 	}
 }
 
+// TestMultiDBAddedMemberResolvableFromCircuitCallback pins that a member added
+// while unhealthy is published into c.dbs BEFORE its breaker-open callback
+// fires, so a callback that resolves the member by id through a control API
+// finds it rather than getting ErrDatabaseNotFound.
+func TestMultiDBAddedMemberResolvableFromCircuitCallback(t *testing.T) {
+	dbA := newTestDB("a", "db-a:6379", 2, true)
+	var mdbRef atomic.Pointer[redis.MultiDBClient]
+	lookup := make(chan error, 4)
+	opts := baseOptions()
+	opts.OnCircuitStateChanged = func(dbID int, from, to string) {
+		if to != "open" {
+			return
+		}
+		if mdb := mdbRef.Load(); mdb != nil {
+			lookup <- mdb.SetWeight(dbID, 1.0)
+		}
+	}
+	mdb := newTestMultiDB(t, opts, dbA)
+	mdbRef.Store(mdb)
+
+	dbB := newTestDB("b", "db-b:6379", 1, false) // unhealthy -> ForceOpen on add
+	if _, err := mdb.AddDatabase(context.Background(), dbB.cfg); err != nil {
+		t.Fatalf("AddDatabase: %v", err)
+	}
+	select {
+	case err := <-lookup:
+		if errors.Is(err, redis.ErrDatabaseNotFound) {
+			t.Fatal("circuit callback saw the added member as ErrDatabaseNotFound — published after ForceOpen")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no open-transition callback for the added unhealthy member")
+	}
+}
+
 func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
 	dbA := newTestDB("a", "db-a:6379", 2, true)
 	dbB := newTestDB("b", "db-b:6379", 1, true)

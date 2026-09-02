@@ -1266,8 +1266,9 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// A failed probe opens the breaker outright — one recorded failure would
 	// leave the member selectable under the default threshold, letting
 	// failover pick a database already known to be down.
+	healthy := true
 	if !cfg.SkipInitialHealthCheck {
-		healthy := db.probe(ctx, c.opts.HealthCheckTimeout)
+		healthy = db.probe(ctx, c.opts.HealthCheckTimeout)
 		if err := ctx.Err(); err != nil {
 			// The caller's context ended while the probe ran (whatever the
 			// verdict): a canceled control operation must not mutate the
@@ -1276,9 +1277,6 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 			db.removed.Store(true)
 			_ = db.closeClient()
 			return -1, err
-		}
-		if !healthy {
-			db.cb.ForceOpen()
 		}
 	}
 
@@ -1294,6 +1292,17 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	}
 	c.dbs[db.id] = db
 	c.dbMu.Unlock()
+
+	// Open the breaker AFTER publishing the member. ForceOpen dispatches
+	// OnCircuitStateChanged asynchronously, and a callback that uses this
+	// member's id through a non-failoverMu control path (SetWeight,
+	// AddDatabaseHook) must find it in c.dbs. The member is briefly selectable
+	// with a still-closed breaker until this runs, but that self-heals on the
+	// first command or the next probe and is strictly smaller than handing the
+	// callback an id that is not yet a member.
+	if !healthy {
+		db.cb.ForceOpen()
+	}
 	return db.id, nil
 }
 
