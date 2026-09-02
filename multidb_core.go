@@ -1348,6 +1348,14 @@ func (c *multidbCore) setWeight(id int, weight float64) error {
 	}
 	c.dbMu.Lock()
 	defer c.dbMu.Unlock()
+	// Re-check under the lock: Close sets closed before draining the membership
+	// under dbMu, so a call that passed the entry check and was then descheduled
+	// past a concurrent Close would otherwise report ErrDatabaseNotFound for an
+	// id that was valid when it began. Report the terminal state instead,
+	// consistent with the entry check and the other control APIs.
+	if c.closed.Load() {
+		return ErrClosed
+	}
 	db, ok := c.dbs[id]
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
@@ -1361,7 +1369,17 @@ func (c *multidbCore) setAutoFallback(enabled bool) {
 }
 
 func (c *multidbCore) addDatabaseHook(id int, hook Hook) error {
-	db := c.dbByID(id)
+	// Resolve the member under dbMu and re-check closed there (not via dbByID),
+	// so a Close racing this call reports the terminal ErrClosed rather than a
+	// misleading ErrDatabaseNotFound — consistent with setWeight and the entry
+	// checks elsewhere. AddHook itself runs outside the lock.
+	c.dbMu.RLock()
+	if c.closed.Load() {
+		c.dbMu.RUnlock()
+		return ErrClosed
+	}
+	db := c.dbs[id]
+	c.dbMu.RUnlock()
 	if db == nil {
 		return fmt.Errorf("%w: %d", ErrDatabaseNotFound, id)
 	}

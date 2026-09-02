@@ -1819,6 +1819,28 @@ func TestMultiDBAutoFallbackDisabledDoesNotSwitch(t *testing.T) {
 	}
 }
 
+// TestMultiDBControlAPIsReturnErrClosedAfterClose pins that the control surface
+// reports the terminal ErrClosed after Close, not a misleading
+// ErrDatabaseNotFound for an id that was valid before the client shut down.
+func TestMultiDBControlAPIsReturnErrClosedAfterClose(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	mdb := newTestMultiDB(t, baseOptions(), dbA)
+	id := mdb.ActiveDatabaseID()
+	if id < 0 {
+		t.Fatalf("setup: active id = %d", id)
+	}
+	if err := mdb.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := mdb.SetWeight(id, 2.0); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("SetWeight after Close = %v, want ErrClosed", err)
+	}
+	if err := mdb.AddDatabaseHook(id, errHook{}); !errors.Is(err, redis.ErrClosed) {
+		t.Errorf("AddDatabaseHook after Close = %v, want ErrClosed", err)
+	}
+}
+
 // errHook returns a fixed error for every command (no dial).
 type errHook struct{ err error }
 
