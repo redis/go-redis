@@ -1013,6 +1013,7 @@ func (h dispatchGateHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if h.armed.Load() {
@@ -1320,6 +1321,7 @@ func (h cacheHook) ProcessHook(next ProcessHook) ProcessHook {
 		return nil
 	}
 }
+
 func (h cacheHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if !h.armed.Load() {
@@ -1586,5 +1588,51 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	cscC.disableCSCServing(ctx, "test: mid-life disable")
 	if apc.cscActiveFn() {
 		t.Fatal("gate still reports active after CSC disabled itself mid-life")
+	}
+}
+
+// TestCloseLoserReturnsImmediatelyWaitClosedBlocks pins the Close/WaitClosed
+// split: a Close that loses the shutdown CAS returns immediately (so a
+// re-entrant Close from an in-flight dispatch cannot self-wait on the drain it
+// is part of), while WaitClosed blocks until the winner's drain completes and
+// returns that drain's result.
+func TestCloseLoserReturnsImmediatelyWaitClosedBlocks(t *testing.T) {
+	// Minimal engine: the loser path and WaitClosed touch only closed +
+	// closeDone + closeErr, never the shards or the drain.
+	ap := &AutoPipeliner{closeDone: make(chan struct{})}
+	ap.closed.Store(true) // a winner has claimed the shutdown but not finished draining
+
+	// A losing Close must return nil immediately, not block on the drain.
+	loserDone := make(chan error, 1)
+	go func() { loserDone <- ap.Close() }()
+	select {
+	case err := <-loserDone:
+		if err != nil {
+			t.Errorf("losing Close returned %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("losing Close blocked instead of returning immediately")
+	}
+
+	// WaitClosed must block until the winner signals closeDone.
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- ap.WaitClosed() }()
+	select {
+	case <-waitDone:
+		t.Fatal("WaitClosed returned before the drain signaled closeDone")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Winner finishes: publish the drain result, then release WaitClosed.
+	wantErr := errors.New("drain result")
+	ap.closeErr = wantErr
+	close(ap.closeDone)
+	select {
+	case err := <-waitDone:
+		if err != wantErr {
+			t.Errorf("WaitClosed = %v, want the winner's drain result %v", err, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitClosed did not return after closeDone closed")
 	}
 }
