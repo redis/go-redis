@@ -18,6 +18,116 @@ func execAll(cmds []Cmder) *executedCmds {
 	return ec
 }
 
+// batchTimeoutErr is a pointer-typed local read timeout: shouldRetry treats it
+// as retryable only when retryTimeout is set, so it is neutral for a blocking
+// command and a transport failure for an ordinary one — the asymmetry the
+// propagation rule below has to reconcile. Pointer identity mirrors the real
+// *net.OpError the reader stamps onto unread followers; the padding byte keeps
+// distinct allocations at distinct addresses (zero-size values may alias).
+type batchTimeoutErr struct{ _ byte }
+
+func (*batchTimeoutErr) Error() string { return "i/o timeout" }
+func (*batchTimeoutErr) Timeout() bool { return true }
+
+// TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral pins the reader
+// stamping rule: pipelineReadCmds stops at the first transport error and stamps
+// that same error onto every unread follower. When the originator is a blocking
+// command whose local deadline is neutral, the followers are propagations of
+// that one event — not N transport failures that would charge the breaker and
+// replay the batch (blocking command included).
+func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
+	newDB := func() *multidbDatabase {
+		return &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+	}
+	blocking := func() *StatusCmd {
+		b := NewStatusCmd(context.Background(), "blpop", "k", "5")
+		b.setReadTimeout(5 * time.Second)
+		return b
+	}
+	ordinary := func(name string) *StatusCmd {
+		return NewStatusCmd(context.Background(), name, "k", "v")
+	}
+	stamp := func(err error, cmds ...Cmder) {
+		for _, c := range cmds {
+			c.SetErr(err)
+		}
+	}
+
+	t.Run("blocking origin: followers are neutral, batch not replayed", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{blocking(), ordinary("set"), ordinary("get")}
+		stamp(e, cmds...) // reader: origin + identical instance on followers
+
+		got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{})
+		if got != 0 {
+			t.Errorf("transportFailures = %d, want 0: the followers carry the blocker's neutral deadline", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitClosed {
+			t.Errorf("breaker %v, want closed: one neutral event must not be charged N times", st)
+		}
+		for i, c := range cmds {
+			if c.rawErr() != e {
+				t.Errorf("cmd %d error %v, want the propagated timeout surfaced to the caller", i, c.rawErr())
+			}
+		}
+	})
+
+	t.Run("ordinary origin: propagation stays a transport failure", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{ordinary("set"), ordinary("get"), ordinary("incr")}
+		stamp(e, cmds...)
+
+		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}); got != 3 {
+			t.Errorf("transportFailures = %d, want 3: an ordinary command's timeout is a real transport failure", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+
+	t.Run("blocking origin but followers carry a different error", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		origin, other := &batchTimeoutErr{}, &batchTimeoutErr{}
+		cmds := []Cmder{blocking(), ordinary("set"), ordinary("get")}
+		stamp(origin, cmds[0])
+		stamp(other, cmds[1], cmds[2]) // distinct instance: not a propagation
+
+		if got := core.recordBatchOutcomes(db, cmds, origin, execAll(cmds), imultidb.Reservation{}); got != 2 {
+			t.Errorf("transportFailures = %d, want 2: only an identical stamped error is a propagation", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+
+	t.Run("ordinary origin stamps a later blocking command", func(t *testing.T) {
+		// The first carrier in slice order is the originator. A blocking
+		// command that merely RECEIVED an ordinary command's timeout must not
+		// retroactively neutralize it.
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newDB()
+		e := &batchTimeoutErr{}
+		cmds := []Cmder{ordinary("set"), blocking(), ordinary("get")}
+		stamp(e, cmds...)
+
+		// set: failure (origin); blpop: neutral (its own rule); get: failure.
+		if got := core.recordBatchOutcomes(db, cmds, e, execAll(cmds), imultidb.Reservation{}); got != 2 {
+			t.Errorf("transportFailures = %d, want 2: the ordinary originator's timeout is real", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+}
+
 func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{

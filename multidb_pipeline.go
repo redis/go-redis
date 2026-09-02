@@ -64,8 +64,47 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 	// Blocking commands carry their own read timeout; their local deadlines
 	// are not retryable transport failures — the same per-command rule the
 	// single-command path applies (cmd.readTimeout() == nil).
+	//
+	// The pipeline reader stops at the first transport error and stamps that
+	// SAME error onto every unread follower (pipelineReadCmds; the cluster
+	// path does the same per node). When the originating command is a
+	// blocking command whose local deadline is neutral, the followers carry
+	// a propagation of that one neutral event, not N transport failures of
+	// their own: counting them would charge the breaker and detector N times
+	// and replay the whole batch — blocking command included — off a
+	// deadline the blocker itself does not retry. The first carrier of an
+	// error in slice order is its originator: stamping only ever reaches
+	// later commands, and a node sub-batch keeps the original order.
+	var neutralPropagated []error
+	var seen []error
+	for _, cmd := range cmds {
+		err := cmd.rawErr()
+		if err == nil || isRedisError(err) {
+			continue
+		}
+		known := false
+		for _, s := range seen {
+			if errors.Is(err, s) {
+				known = true
+				break
+			}
+		}
+		if known {
+			continue
+		}
+		seen = append(seen, err)
+		if cmd.readTimeout() != nil && classifyOutcome(err, false) == outcomeNeutral {
+			neutralPropagated = append(neutralPropagated, err)
+		}
+	}
 	classify := func(cmd Cmder) outcomeKind {
-		return classifyOutcome(cmd.rawErr(), cmd.readTimeout() == nil)
+		err := cmd.rawErr()
+		for _, origin := range neutralPropagated {
+			if errors.Is(err, origin) {
+				return outcomeNeutral
+			}
+		}
+		return classifyOutcome(err, cmd.readTimeout() == nil)
 	}
 	// The GLOBAL detector (and successSinceFailover) is fed only while this
 	// member is STILL the active — re-checked per recorded outcome, not once up
