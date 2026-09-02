@@ -1557,6 +1557,7 @@ func (c *multidbCore) tryFallbackToPrimary(ctx context.Context) {
 	c.dbMu.RLock()
 	db, ok := c.dbs[best]
 	stillGood := ok && db == bestDB &&
+		!c.autoFallbackDisabled.Load() && // SetAutoFallback(false) may have raced the off-lock probe
 		db.weight > cur.weight &&
 		time.Now().UnixNano() >= db.noFallbackBefore.Load() &&
 		db.cb.CheckState() == imultidb.CircuitClosed

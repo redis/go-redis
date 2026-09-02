@@ -1782,6 +1782,39 @@ func TestMultiDBAutoFallbackDoesNotUndoDetectorFailover(t *testing.T) {
 	}
 }
 
+// TestMultiDBAutoFallbackDisabledDoesNotSwitch pins that a fallback pass whose
+// off-lock candidate probe races SetAutoFallback(false) does not switch: the
+// commit-time revalidation must observe the disabled flag and abandon the
+// fallback, or disabling fallback could return and still be followed by an
+// automatic active-member change.
+func TestMultiDBAutoFallbackDisabledDoesNotSwitch(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true) // lower weight
+	dbB := newTestDB("b", "127.0.0.1:2", 2, true) // higher weight fallback target
+	opts := baseOptions()
+	opts.AutoFallbackInterval = time.Hour // enabled, but drive it explicitly
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	// Force the lower-weight A active so B is a higher-weight fallback candidate.
+	if err := mdb.ForceActiveDatabase(context.Background(), 0); err != nil {
+		t.Fatalf("ForceActiveDatabase: %v", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("setup: active=%d, want 0", got)
+	}
+
+	// Disable fallback (as a concurrent SetAutoFallback(false) would leave it
+	// while a probe was in flight), then run a fallback pass.
+	mdb.SetAutoFallback(false)
+	mdb.TestTryFallback()
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("fallback switched to B with fallback disabled: active=%d, want 0", got)
+	}
+}
+
 // errHook returns a fixed error for every command (no dial).
 type errHook struct{ err error }
 
