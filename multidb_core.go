@@ -898,10 +898,22 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 		return err
 	}
 
-	// Re-check under the lock: a concurrent failover may already have fixed
-	// the active database.
-	if db, idx := c.activeSnapshot(); db != nil && idx != from && db.selectable() {
-		return nil
+	// Re-check under the lock: the active database may already be fine.
+	if db, idx := c.activeSnapshot(); db != nil && db.selectable() {
+		if idx != from {
+			// A concurrent failover already moved to a different selectable
+			// member — nothing to do.
+			return nil
+		}
+		// Still on `from`, but it may have been repaired IN PLACE since this
+		// failover was queued: SetActiveDatabase re-selecting the current
+		// member resets its breaker and detector without changing the active
+		// index, and health checks may have closed the breaker. Stay if it is
+		// fully available and the detector is clear — switching away would undo
+		// a deliberate re-selection on evidence that predates the repair.
+		if db.cb.CheckState() == imultidb.CircuitClosed && !c.detector.ShouldFailover() {
+			return nil
+		}
 	}
 
 	start := time.Now()

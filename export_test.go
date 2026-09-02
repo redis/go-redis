@@ -165,6 +165,12 @@ func (c *MultiDBClient) TestTryFallback() {
 	c.core.tryFallbackToPrimary(context.Background())
 }
 
+// TestTryFailover runs one synchronous automatic-failover pass from the given
+// database id, as the command hot path and background loop do.
+func (c *MultiDBClient) TestTryFailover(from int) error {
+	return c.core.tryFailover(context.Background(), from)
+}
+
 // TestStaleRecordAfterRemoval simulates a probe that passed its removed-check
 // just before the member was removed: the breaker outcome lands after the
 // removal completed.

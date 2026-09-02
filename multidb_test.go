@@ -1709,6 +1709,36 @@ func TestMultiDBLatchedDetectorDoesNotWedgeHalfOpenSingleMember(t *testing.T) {
 	}
 }
 
+// TestMultiDBFailoverStaysOnRepairedCurrentMember pins that an automatic
+// failover queued against the current member does not switch away once that
+// member is healthy again. SetActiveDatabase re-selecting the active resets its
+// breaker and detector without changing the active index, so a failover queued
+// while it was unhealthy would otherwise switch to another candidate on stale
+// evidence and undo the operator's in-place re-selection.
+func TestMultiDBFailoverStaysOnRepairedCurrentMember(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // higher weight, active
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true)
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("setup: active=%d, want 0", got)
+	}
+
+	// A is fully available (breaker closed, detector clear). A failover pass
+	// from the current member must be a no-op, not a switch to B.
+	if err := mdb.TestTryFailover(0); err != nil {
+		t.Fatalf("TestTryFailover: %v", err)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 0 {
+		t.Fatalf("failover switched away from a healthy current member: active=%d, want 0", got)
+	}
+}
+
 // Auto-fallback must not immediately undo a detector-driven failover: a flaky
 // higher-weight primary whose failure rate trips the detector (without its
 // breaker ever opening) must stay failed over, not ping-pong.
