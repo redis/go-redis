@@ -767,31 +767,61 @@ func retryStartAttempt(moved, ask bool) int {
 	return 1
 }
 
-// reportReplyMetrics runs the inline-completed command's user-settable metric
-// callbacks (OTel operation-duration; native error callback for a non-retryable
-// Redis error, reporting attempts-1 retries like processWithRetry) for parity with
-// the process() path the FD reader bypasses. It recovers a panic from either
-// callback: these run on the reader goroutine BEFORE the reply is advanced out of
-// the in-flight deque, and the reader's broad panic recovery treats an unadvanced
-// req as an unacked tail and replays it — so an unguarded callback panic would run
-// an already-consumed mutating command twice. Reporting is fire-and-forget; the
-// reply outcome is already decided, so swallowing (and logging) the panic is safe.
-func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn) {
+// emitMetricsGuarded runs a fire-and-forget user metric callback under panic
+// recovery. Every FD metric emit funnels through here — reportReplyMetrics on the
+// reader's inline completion, and the engine-goroutine failure paths failReqs /
+// failQueue — so a panicking user callback is logged and swallowed instead of
+// aborting completion/settlement. An escaped panic would leave accepted commands
+// unsettled (callers wedged forever) and crash fd.run, or, with process hooks,
+// deadlock Close's hostWg.Wait while callers block on hookDone. On the reader
+// path it would also reach the session-failure recovery BEFORE the reply is
+// advanced out of the in-flight deque, which treats an unadvanced req as an
+// unacked tail and replays it — running an already-consumed mutating command
+// twice. The reply outcome is already decided; reporting is advisory.
+func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(octx,
 				"autopipeline: recovered full-duplex metric-callback panic: %v\n%s", r, debug.Stack())
 		}
 	}()
-	if cb := otel.GetOperationDurationCallback(); cb != nil {
-		cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
-	}
-	if e != nil {
-		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-			errorType, statusCode, isInternal := classifyCommandError(e)
-			errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
+	emit()
+}
+
+// reportReplyMetrics runs the inline-completed command's user-settable metric
+// callbacks (OTel operation-duration; native error callback for a non-retryable
+// Redis error, reporting attempts-1 retries like processWithRetry) for parity
+// with the process() path the FD reader bypasses. Guarded by emitMetricsGuarded
+// (panic containment; see there).
+func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn) {
+	fd.emitMetricsGuarded(octx, func() {
+		if cb := otel.GetOperationDurationCallback(); cb != nil {
+			// The reader has set req.cmd's final result but has NOT completed the
+			// batch yet — req.complete() runs only after this returns. A custom
+			// duration callback that reads its own command (cmd.Err()/cmd.String())
+			// would await batch.done and wedge the reader, since the batch completes
+			// only after this returns and the reader is not otherwise the batch's
+			// executor. Register the reader as the batch's executor for the call so
+			// the accessor guard hands back the just-set view without blocking — the
+			// same escape a dispatch hook reading its own command uses. hostHook gets
+			// this SAME batch from submit, so one registration covers the hook and
+			// hook-free async faces alike. NOT moved after complete(): complete()
+			// hands off to the hook host, which may rewrite/free the command, racing
+			// the callback's read. The curGoroutineID() cost is paid only when a
+			// duration callback is registered.
+			if req.batch != nil {
+				unregister := req.batch.enterNodeDispatch()
+				defer unregister()
+			}
+			cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
 		}
-	}
+		if e != nil {
+			if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+				errorType, statusCode, isInternal := classifyCommandError(e)
+				errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
+			}
+		}
+	})
 }
 
 func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
@@ -1958,8 +1988,12 @@ func (fd *fdEngine) failReqs(reqs []fdReq, err error) {
 			}
 			// Report attempts-1 retries (like processWithRetry), so a carried tail
 			// failed after replays is not undercounted as zero. max() guards a req that
-			// somehow carries attempts==0.
-			errorCallback(octx, errorType, nil, statusCode, isInternal, max(0, reqs[i].attempts-1))
+			// somehow carries attempts==0. Guarded per-req (not around the loop) so a
+			// panicking callback still lets THIS req and every later one settle below.
+			retries := max(0, reqs[i].attempts-1)
+			fd.emitMetricsGuarded(octx, func() {
+				errorCallback(octx, errorType, nil, statusCode, isInternal, retries)
+			})
 		}
 		reqs[i].complete()
 	}
@@ -2166,7 +2200,10 @@ func (fd *fdEngine) failQueue(err error) {
 				if octx == nil {
 					octx = context.Background()
 				}
-				errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+				// Guarded per-req so a panicking callback still lets r.complete() run.
+				fd.emitMetricsGuarded(octx, func() {
+					errorCallback(octx, errorType, nil, statusCode, isInternal, 0)
+				})
 			}
 			r.complete()
 		default:
