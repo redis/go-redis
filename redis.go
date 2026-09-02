@@ -534,22 +534,32 @@ func (c *baseClient) String() string {
 }
 
 func (c *baseClient) getConn(ctx context.Context) (*pool.Conn, error) {
+	cn, _, err := c.getConnLimited(ctx)
+	return cn, err
+}
+
+// getConnLimited is getConn with the Limiter admission split from the dial: the
+// `limited` return reports that Limiter.Allow REJECTED the operation (before any
+// dial), so a caller can tell an explicit admission denial apart from a
+// dial/transport failure. getConn wraps it for the common case, leaving every
+// other caller unchanged. Allow is reported (ReportResult) only for dial results,
+// never for admission denials — matching the original getConn.
+func (c *baseClient) getConnLimited(ctx context.Context) (cn *pool.Conn, limited bool, err error) {
 	if c.opt.Limiter != nil {
-		err := c.opt.Limiter.Allow()
-		if err != nil {
-			return nil, err
+		if err := c.opt.Limiter.Allow(); err != nil {
+			return nil, true, err
 		}
 	}
 
-	cn, err := c._getConn(ctx)
+	cn, err = c._getConn(ctx)
 	if err != nil {
 		if c.opt.Limiter != nil {
 			c.opt.Limiter.ReportResult(err)
 		}
-		return nil, err
+		return nil, false, err
 	}
 
-	return cn, nil
+	return cn, false, nil
 }
 
 func (c *baseClient) _getConn(ctx context.Context) (*pool.Conn, error) {

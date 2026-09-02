@@ -3596,3 +3596,40 @@ func TestCSCMissCoalescerEnqueueHonorsCallerCancel(t *testing.T) {
 			"select must watch the caller ctx, not the ContextTimeoutEnabled-gated wctx")
 	}
 }
+
+type rejectingLimiter struct {
+	allow  atomic.Int64
+	report atomic.Int64
+	err    error
+}
+
+func (l *rejectingLimiter) Allow() error         { l.allow.Add(1); return l.err }
+func (l *rejectingLimiter) ReportResult(_ error) { l.report.Add(1) }
+
+// TestGetConnLimitedSurfacesRejection pins F-A: getConnLimited reports a
+// Limiter.Allow rejection distinctly (limited=true) with the error RAW — not
+// reported (ReportResult is for dial results only) and not tagged for the
+// coalescer's re-run. A rejection tagged errCSCRetryUncached/cscSessionError would
+// send processCached back through processWithRetry -> getConn -> Allow a SECOND
+// time, letting a stateful limiter admit the very miss it just denied.
+func TestGetConnLimitedSurfacesRejection(t *testing.T) {
+	sentinel := errors.New("breaker open")
+	lim := &rejectingLimiter{err: sentinel}
+	c := &baseClient{opt: &Options{Limiter: lim}} // Allow rejects before any dial; connPool untouched
+
+	cn, limited, err := c.getConnLimited(context.Background())
+	if cn != nil || !limited || err != sentinel {
+		t.Fatalf("getConnLimited = (%v, limited=%v, %v); want (nil, true, sentinel)", cn, limited, err)
+	}
+	if got := lim.allow.Load(); got != 1 {
+		t.Fatalf("Allow called %d times, want 1", got)
+	}
+	if got := lim.report.Load(); got != 0 {
+		t.Fatalf("ReportResult called %d times for an admission denial, want 0", got)
+	}
+	// Must not be a re-run-triggering error (that path would re-Allow).
+	var se cscSessionError
+	if err == errCSCRetryUncached || errors.As(err, &se) {
+		t.Fatal("a limiter rejection is tagged for the coalescer re-run; it would call Allow twice")
+	}
+}

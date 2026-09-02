@@ -172,7 +172,7 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 	}
 
 	getCtx, getCancel := mc.acquireCtx()
-	cn, err := c.getConn(getCtx)
+	cn, limited, err := c.getConnLimited(getCtx)
 	getCancel()
 	if err != nil {
 		// Distinguish a teardown cancellation from a genuine acquire failure by
@@ -192,6 +192,18 @@ func (mc *cscMissCoalescer) runFullDuplexSession() (stopped, backoff bool) {
 			mc.drainQueueErr(errCSCRetryUncached)
 			return true, false // stop requested: exit the loop
 		default:
+		}
+		if limited {
+			// Limiter.Allow REJECTED admission for the session connection (before any
+			// dial). Surface the rejection to the caller UNCHANGED — settle without the
+			// cscSessionError tag so processCached returns it as-is instead of re-running
+			// on the pooled path, whose getConn would call Limiter.Allow a SECOND time
+			// and could admit (defeat) the denial the limiter just issued. Fail queued
+			// callers the same way. Still an error end (backoff also damps Allow
+			// frequency under sustained rejection).
+			mc.settlePlain(first, err)
+			mc.drainQueuePlain(err)
+			return false, true
 		}
 		// Genuine acquire failure (dial error, pool exhaustion, an unrelated
 		// context.Canceled from a custom dialer/creds/init hook). Fail the first miss

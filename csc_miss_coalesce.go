@@ -656,6 +656,33 @@ func (mc *cscMissCoalescer) drainQueueErr(err error) {
 	}
 }
 
+// settlePlain cancels the reservation and fails one waiting caller with err
+// UNTAGGED — no cscSessionError, no retry-uncached sentinel — so processCached
+// returns it as-is instead of re-running on the pooled path. Used for a
+// Limiter.Allow rejection at session acquire: a re-run would call Limiter.Allow a
+// SECOND time and a stateful/token limiter could admit the very operation it just
+// denied. The caller's req.done receive still emits the error metric once
+// (emitReplyErr), matching the ordinary path's single emission for a rejection.
+func (mc *cscMissCoalescer) settlePlain(req *cscMissReq, err error) {
+	mc.c.csc.Cancel(req.cacheKey, req.token)
+	mc.settle(req, err)
+	mc.failed.Add(1)
+}
+
+// drainQueuePlain fails every currently-queued request (non-blocking) with err
+// untagged — see settlePlain. Used alongside it so queued callers behind a denied
+// session admission are not re-run and re-admitted either.
+func (mc *cscMissCoalescer) drainQueuePlain(err error) {
+	for {
+		select {
+		case req := <-mc.ch:
+			mc.settlePlain(req, err)
+		default:
+			return
+		}
+	}
+}
+
 // grabInto appends first, plus any misses already queued, into dst. It does not
 // block. It stops at cscMissBatchMax commands or at mc.maxBatchBytes of serialized
 // payload. It reuses dst's backing array. first always goes, whatever its size,
