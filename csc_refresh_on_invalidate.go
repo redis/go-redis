@@ -323,6 +323,16 @@ type CSCRefreshStats struct {
 
 // CSCRefreshStats returns the client's refresh-on-invalidate counters.
 //
+// SCOPE on a SHARED cache: Invalidations/Deletions/DeletionsNoop are cache-global
+// (read from the shared LocalCache, so every client attached to it reports the
+// same totals), while Enqueued/Dropped/Refreshed/RefreshFailed/DemandFlushes come
+// from THIS client's refresh queue. With a shared cache+processor the active
+// refresh binding is the last-attached client's queue, so an earlier client can
+// report every invalidation but ~zero refresh work — not a defect, that client
+// genuinely is not the one refreshing. Treat a refresh/invalidation RATIO as
+// meaningful only for a single-client cache or for the client holding the active
+// binding; across a shared cache the two groups are different scopes.
+//
 // Experimental: this API may change in a minor release.
 func (c *Client) CSCRefreshStats() CSCRefreshStats {
 	var st CSCRefreshStats
