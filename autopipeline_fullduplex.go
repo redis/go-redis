@@ -767,6 +767,33 @@ func retryStartAttempt(moved, ask bool) int {
 	return 1
 }
 
+// reportReplyMetrics runs the inline-completed command's user-settable metric
+// callbacks (OTel operation-duration; native error callback for a non-retryable
+// Redis error, reporting attempts-1 retries like processWithRetry) for parity with
+// the process() path the FD reader bypasses. It recovers a panic from either
+// callback: these run on the reader goroutine BEFORE the reply is advanced out of
+// the in-flight deque, and the reader's broad panic recovery treats an unadvanced
+// req as an unacked tail and replays it — so an unguarded callback panic would run
+// an already-consumed mutating command twice. Reporting is fire-and-forget; the
+// reply outcome is already decided, so swallowing (and logging) the panic is safe.
+func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error, cn *pool.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(octx,
+				"autopipeline: recovered full-duplex metric-callback panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	if cb := otel.GetOperationDurationCallback(); cb != nil {
+		cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
+	}
+	if e != nil {
+		if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
+			errorType, statusCode, isInternal := classifyCommandError(e)
+			errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
+		}
+	}
+}
+
 func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 	// Bound concurrent off-pipe retries to ~2x the main pool (see newFDEngine's
 	// retryCap): a sustained retryable stream would otherwise spawn one goroutine
@@ -1245,20 +1272,12 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 				if octx == nil {
 					octx = bg
 				}
-				if cb := otel.GetOperationDurationCallback(); cb != nil {
-					cb(octx, time.Since(req.writtenAt), req.cmd, req.attempts, e, cn, fd.client.opt.DB)
-				}
-				// Same parity for errors: an inline-completed non-retryable Redis error
-				// (WRONGTYPE, NOPERM, …) must reach the native error callback, which
-				// process() would otherwise emit via classifyCommandError. Report
-				// attempts-1 retries, like processWithRetry, so an error on a replayed
-				// command is not undercounted as zero retries.
-				if e != nil {
-					if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
-						errorType, statusCode, isInternal := classifyCommandError(e)
-						errorCallback(octx, errorType, cn, statusCode, isInternal, req.attempts-1)
-					}
-				}
+				// Emit the per-command metric callbacks under a recover boundary (see
+				// reportReplyMetrics): they are user-settable, and an unrecovered panic
+				// here would reach the reader's session-failure recovery BEFORE this req
+				// is advanced, so recovery would re-own the already-consumed reply and
+				// replay it — a mutating command twice.
+				fd.reportReplyMetrics(octx, req, e, cn)
 				req.complete() // wake the caller, or hand off to the hook host
 				done++
 			}

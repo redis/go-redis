@@ -548,3 +548,37 @@ func TestFDLimiterReportPanicOnWriteFailureNoCrash(t *testing.T) {
 		t.Fatalf("ReportResult fired %d times, want 1", r)
 	}
 }
+
+// TestFDReportReplyMetricsRecoversCallbackPanic pins that a panicking user metric
+// callback (OTel duration or the native error callback) cannot escape the reader:
+// reportReplyMetrics runs BEFORE the reply is advanced out of the in-flight deque,
+// and the reader's broad recovery would re-own an unadvanced req and replay an
+// already-consumed reply (a mutating command twice). It must recover the panic so
+// the caller completes normally.
+func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
+			calls.Add(1)
+			panic("boom from a user metric callback")
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), attempts: 1}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("reportReplyMetrics propagated a callback panic: %v", r)
+			}
+		}()
+		// A non-nil error routes to the panicking error callback.
+		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil)
+	}()
+
+	if calls.Load() != 1 {
+		t.Fatalf("error callback invoked %d times, want 1 (it must be reached, then its panic recovered)", calls.Load())
+	}
+}

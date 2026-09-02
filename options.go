@@ -260,9 +260,11 @@ type Options struct {
 	// for main-pool connections. It never pre-dials (MinIdleConns is forced
 	// to 0 on it), so the size is a cap on burst capacity, not a standing
 	// footprint: an unused pipeline pool holds zero connections. A burst of
-	// concurrent pipelines wider than the cap spills to the main pool after a
-	// short wait (DefaultPipelinePoolTimeout) rather than queueing for the full
-	// PoolTimeout. Its connections use DefaultPipelineBufferSize buffers unless
+	// concurrent pipelines wider than the cap spills to the main pool IMMEDIATELY
+	// (a non-blocking TryGet on the pipeline pool) rather than waiting a grace
+	// period — so a saturated pipeline pool never adds latency before falling back,
+	// and DefaultPipelinePoolTimeout does not gate that spill. Its connections use
+	// DefaultPipelineBufferSize buffers unless
 	// the pipeline buffer sizes are set explicitly. It does not inherit
 	// MaxActiveConns: rather than the ~2x total ceiling that inheriting it
 	// verbatim would allow, the pipeline pool adds at most PipelinePoolSize

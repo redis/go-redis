@@ -92,10 +92,14 @@ type AutoPipelineOptions struct {
 	// replay and the FD reader does not track, so it runs through the normal Process
 	// path — which injects the registered PREPARE and keeps the registry current —
 	// instead of failing with "no such fieldset". A reply that is a retryable Redis
-	// error (LOADING/READONLY/…) or a redirect (MOVED/ASK) is likewise re-run
-	// through Process, off the FD reader, so the reader keeps completing later
-	// replies. Per-caller ordering therefore does NOT hold across a diverted
-	// command: it may settle AFTER a command submitted later on the same goroutine.
+	// error (LOADING/READONLY/…) is likewise re-run through Process, off the FD
+	// reader, so the reader keeps completing later replies. A MOVED/ASK redirect is
+	// NOT replayed on the standalone full-duplex path — a standalone Client cannot
+	// route it — so the redirect surfaces to the caller as the command's error,
+	// exactly as it does for a plain standalone command (a cluster-aware FD path
+	// could route it instead; that is a follow-up). Per-caller ordering therefore
+	// does NOT hold across a diverted command: it may settle AFTER a command
+	// submitted later on the same goroutine.
 	// That reorders only a caller holding TWO causally-dependent commands in flight
 	// WITHOUT awaiting the first (e.g. Set(k) then Get(k) both fired on the async
 	// face before reading Set's result); awaiting a result before issuing a
