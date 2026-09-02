@@ -3555,3 +3555,44 @@ func TestPushDrainBudgetHonorsRelaxation(t *testing.T) {
 		t.Fatalf("small relaxed window: budget = %v, want the hard cap %v", got, hardCap)
 	}
 }
+
+// TestCSCMissCoalescerEnqueueHonorsCallerCancel pins that while a coalesced miss is
+// merely WAITING TO ENQUEUE (queue full / worker stalled, pre-I/O), a caller that
+// cancels its ctx aborts even when ContextTimeoutEnabled is false — the enqueue
+// select watches the ORIGINAL ctx, not the Background wctx that (correctly) gates the
+// reply wait. Without the fix the enqueue select watches Background, so a cancelled
+// caller blocks on a full queue indefinitely.
+func TestCSCMissCoalescerEnqueueHonorsCallerCancel(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	mc := &cscMissCoalescer{
+		c:    &baseClient{opt: &Options{}, csc: cache}, // ContextTimeoutEnabled defaults false
+		ch:   make(chan *cscMissReq, 1),
+		stop: make(chan struct{}),
+	}
+	mc.ch <- &cscMissReq{} // fill ch to capacity so the enqueue send blocks
+
+	token, fetch := cache.Reserve("ck", []string{"rk"})
+	if token == 0 || !fetch {
+		t.Fatalf("Reserve = (%d, %v); want a fresh reservation", token, fetch)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // caller already cancelled
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mc.fetch(ctx, makeCmd("get", "rk"), "ck", token)
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("fetch returned %v, want context.Canceled (enqueue must honor caller "+
+				"cancel even with ContextTimeoutEnabled=false)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch blocked on a full queue despite a cancelled caller ctx; the enqueue " +
+			"select must watch the caller ctx, not the ContextTimeoutEnabled-gated wctx")
+	}
+}

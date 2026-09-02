@@ -378,12 +378,14 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 			mc.releaseWireBytes(req.reserved)
 		}
 	}()
-	// Honor ContextTimeoutEnabled for the waits below: when it is false the ordinary
-	// command path drives socket I/O on context.Background() (bounded by ReadTimeout,
-	// not the caller deadline), so a coalesced miss must not surface
-	// context.DeadlineExceeded on the caller's deadline. c.context returns the caller
-	// ctx when the policy is on and Background when off; mc.stop stays the
-	// unconditional shutdown signal.
+	// Honor ContextTimeoutEnabled for the REPLY wait below (an enqueued request's
+	// socket I/O): when it is false the ordinary command path drives socket I/O on
+	// context.Background() (bounded by ReadTimeout, not the caller deadline), so a
+	// coalesced miss must not surface context.DeadlineExceeded on the caller's
+	// deadline. c.context returns the caller ctx when the policy is on and Background
+	// when off. The ENQUEUE-admission wait instead honors the original ctx directly
+	// (pre-I/O backpressure aborts on caller cancellation regardless of the policy —
+	// see that select). mc.stop stays the unconditional shutdown signal.
 	wctx := mc.c.context(ctx)
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
@@ -429,7 +431,13 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	case <-mc.stop:
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
-	case <-wctx.Done():
+	case <-ctx.Done():
+		// Enqueue-admission backpressure is PRE-I/O (nothing written yet), so honor
+		// the caller's cancellation directly on ctx — NOT wctx. wctx follows
+		// ContextTimeoutEnabled because it gates SOCKET I/O (the reply-wait select
+		// below); a caller cancelling while merely waiting for a queue slot must abort
+		// regardless of that policy, matching the ordinary path passing ctx to
+		// ConnPool.Get.
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, ctx.Err()
 	}
