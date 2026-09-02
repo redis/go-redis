@@ -206,11 +206,24 @@ type fdLimiterReport struct {
 
 // settle fires ReportResult(err) at most once for this obligation. A nil
 // receiver (a chunk with no Limiter) and every call after the first are no-ops.
+//
+// ReportResult is user code on FD background goroutines (the reader's success
+// path, plus the write-failure and settleTail paths). A panic must not reach the
+// reader's session-failure recovery — which would replay an already-consumed
+// reply, executing the command twice — or escape fd.run, so recover and swallow
+// it: the outcome is already decided, reporting is fire-and-forget, and the CAS
+// already fired so the strict Allow/ReportResult pairing still holds.
 func (o *fdLimiterReport) settle(err error) {
 	if o == nil {
 		return
 	}
 	if o.done.CompareAndSwap(false, true) {
+		defer func() {
+			if r := recover(); r != nil {
+				internal.Logger.Printf(context.Background(),
+					"autopipeline: recovered full-duplex limiter ReportResult panic: %v\n%s", r, debug.Stack())
+			}
+		}()
 		o.lim.ReportResult(err)
 	}
 }

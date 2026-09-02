@@ -1,9 +1,11 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -342,5 +344,207 @@ func TestAutoPipelineConcurrentSharedDrainRunsOnce(t *testing.T) {
 	}
 	if errs[0] != nil {
 		t.Fatalf("healthy concurrent close returned %v, want nil", errs[0])
+	}
+}
+
+// fdPanicReportLimiter is a user Limiter whose ReportResult panics — the reply-side
+// obligation report (fdLimiterReport.settle) runs on FD background goroutines: the
+// reader's success path and the write-failure/settleTail paths. reports counts calls
+// (incremented BEFORE the panic) so pairing stays assertable; panicOnce restricts the
+// panic to the FIRST report for the manual red-check, so a removed recover exhibits
+// the replay of an already-consumed reply rather than a cascade of crashes.
+type fdPanicReportLimiter struct {
+	reports   atomic.Int64
+	panicOnce bool
+}
+
+func (l *fdPanicReportLimiter) Allow() error { return nil }
+
+func (l *fdPanicReportLimiter) ReportResult(_ error) {
+	n := l.reports.Add(1)
+	if !l.panicOnce || n == 1 {
+		panic("boom: limiter ReportResult panic")
+	}
+}
+
+// fdCannedReplyConn is a net.Conn whose Write succeeds (a peer that accepts the
+// batch) and whose Read serves preloaded RESP replies, so the FD reader decodes a
+// real reply for every command. After the canned bytes drain it blocks until Close,
+// so a stray read past the last reply never returns a spurious EOF mid-parse.
+type fdCannedReplyConn struct {
+	mockNetConn
+	mu     sync.Mutex
+	buf    *bytes.Reader
+	closed chan struct{}
+}
+
+func newFDCannedReplyConn(reply []byte) *fdCannedReplyConn {
+	return &fdCannedReplyConn{buf: bytes.NewReader(reply), closed: make(chan struct{})}
+}
+
+func (c *fdCannedReplyConn) Read(b []byte) (int, error) {
+	c.mu.Lock()
+	if c.buf.Len() > 0 {
+		n, err := c.buf.Read(b)
+		c.mu.Unlock()
+		return n, err
+	}
+	c.mu.Unlock()
+	<-c.closed
+	return 0, io.EOF
+}
+
+func (c *fdCannedReplyConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+// TestFDLimiterReportPanicOnReplyDoesNotReplay pins the reply-side half of the
+// "limiter report panic kills engine" finding: ReportResult runs on the reader's
+// success path (fdLimiterReport.settle) BEFORE the reader advances past the command.
+// An unguarded panic there hits the reader's session-failure recovery, which recovers
+// the still-unadvanced req as an unacked tail and replays it — a command whose reply
+// was ALREADY consumed executes twice (the INCR-twice bug). settle must recover the
+// panic so the command completes with its real reply, is never replayed, and the
+// engine keeps serving.
+//
+// Deterministic and dial-free: the conn accepts every write and serves one +OK per
+// command, so the reader decodes a real reply for each; the session ends via ctx
+// cancel (fdGraceful) once every command has completed.
+//
+// Red-check: remove the recover in fdLimiterReport.settle AND set panicOnce=true
+// below — the first settle(nil) then panics into the reader recovery, session returns
+// fdConnErr with a non-empty tail, and no command completes (the replay), so the
+// hookDone wait below times out and the test fails.
+func TestFDLimiterReportPanicOnReplyDoesNotReplay(t *testing.T) {
+	const n = 4
+	lim := &fdPanicReportLimiter{} // panicOnce=false: EVERY report panics -> the guard must hold repeatedly
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 1,   // one chunk per command -> every req carries a limReport, so every reply settles
+		window:   100, // >= n, so the writer never window-gates the carry
+	}
+
+	var reply bytes.Buffer
+	cmds := make([]*StatusCmd, n)
+	dones := make([]chan struct{}, n)
+	carry := make([]fdReq, n)
+	for i := range carry {
+		reply.WriteString("+OK\r\n")
+		cmds[i] = NewStatusCmd(ctx, "set", fmt.Sprintf("k%d", i), "v")
+		dones[i] = make(chan struct{})
+		carry[i] = fdReq{cmd: cmds[i], hookDone: dones[i], attempts: 1}
+	}
+	cn := pool.NewConn(newFDCannedReplyConn(reply.Bytes()))
+
+	type sess struct {
+		reqs   []fdReq
+		result fdResult
+		err    error
+	}
+	done := make(chan sess, 1)
+	go func() {
+		r, res, e := fd.session(context.Background(), cn, carry)
+		done <- sess{r, res, e}
+	}()
+
+	// Every command must complete (its reply consumed and delivered) despite each
+	// report panicking. A hung wait here is the replay/loss bug: the reader died on
+	// the first panic and the req was recovered for replay instead of completed.
+	for i := range dones {
+		select {
+		case <-dones[i]:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("command %d never completed — a ReportResult panic killed the reader (replay/loss)", i)
+		}
+	}
+	// Completed with the REAL reply, not merely woken with an error: proves the
+	// consumed reply survived the panic (no double execution).
+	for i := range cmds {
+		if err := cmds[i].Err(); err != nil {
+			t.Errorf("command %d: Err() = %v, want nil (completed with its reply)", i, err)
+		}
+		if v := cmds[i].Val(); v != "OK" {
+			t.Errorf("command %d: Val() = %q, want OK", i, v)
+		}
+	}
+
+	// The engine survived: end the session cleanly and confirm no tail was recovered
+	// for replay.
+	cancel()
+	var got sess
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session() hung after ctx cancel — the engine did not converge")
+	}
+	if got.result != fdGraceful {
+		t.Fatalf("session result = %v, want fdGraceful (a report panic must not look like a transport failure)", got.result)
+	}
+	if len(got.reqs) != 0 {
+		t.Fatalf("session returned %d reqs for replay, want 0 (nothing may be re-executed)", len(got.reqs))
+	}
+	if got.err != nil {
+		t.Fatalf("session err = %v, want nil", got.err)
+	}
+	// Strict pairing survives: every Allow's obligation still reported exactly once
+	// (the panic was swallowed but the Once fired).
+	if r := lim.reports.Load(); r != n {
+		t.Fatalf("ReportResult fired %d times, want %d", r, n)
+	}
+}
+
+// TestFDLimiterReportPanicOnWriteFailureNoCrash pins the write-side half of the
+// finding: writeBatch's report defer settles the chunk's obligation with the write
+// error via fdLimiterReport.settle. A panicking ReportResult there must be contained
+// so it neither escapes writeBatch (on the real writer goroutine it would crash the
+// process) nor replaces the real write error; the chunk still lands in the in-flight
+// deque for normal conn-error recovery.
+//
+// Red-check: remove the recover in fdLimiterReport.settle — the report panic then
+// escapes writeBatch and the recover wrapper below fires t.Fatalf.
+func TestFDLimiterReportPanicOnWriteFailureNoCrash(t *testing.T) {
+	ctx := context.Background()
+	lim := &fdPanicReportLimiter{}
+	cn := pool.NewConn(&failWriteNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "set", "k1", "v"), attempts: 1},
+	}
+
+	err := func() (e error) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("writeBatch propagated a ReportResult panic instead of recovering it: %v", r)
+			}
+		}()
+		return fd.writeBatch(ctx, cn, inflight, reqs)
+	}()
+	if err == nil {
+		t.Fatal("writeBatch err = nil, want the write error (a report panic must not swallow the failure)")
+	}
+	if inflight.len() != len(reqs) {
+		t.Fatalf("inflight.len() = %d, want %d (a write-failed chunk still lands for conn-error recovery)", inflight.len(), len(reqs))
+	}
+	// The chunk's single write-failure obligation reported exactly once (panic
+	// swallowed, Once fired).
+	if r := lim.reports.Load(); r != 1 {
+		t.Fatalf("ReportResult fired %d times, want 1", r)
 	}
 }
