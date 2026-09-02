@@ -129,3 +129,46 @@ func TestCSCRefreshChunkEnd(t *testing.T) {
 		t.Fatalf("count cap: end = %d, want %d", got, cscRefreshBatchMax)
 	}
 }
+
+// TestCSCRefreshDemandGenerationIgnoresStaleSignal pins the demand generation gate:
+// a demand nudge is stamped with the window generation it belongs to, and the
+// refresher ignores a nudge whose generation was retired — so a nudge for an
+// already-flushed window cannot flush the NEXT one early (which would defeat the
+// coalescing window and inflate DemandFlushes). Pins signalDemand's stamping and the
+// demandIsCurrent truth table (the goroutine race lives inside runCSCRefresher).
+func TestCSCRefreshDemandGenerationIgnoresStaleSignal(t *testing.T) {
+	if !cscDemandRefresh {
+		t.Skip("demand refresh disabled")
+	}
+	q := &cscRefreshQueue{demandCh: make(chan uint64, 1)}
+
+	q.pendingSet.Store("ck", struct{}{})
+	q.signalDemand("ck")
+	var stale uint64
+	select {
+	case stale = <-q.demandCh:
+	default:
+		t.Fatal("signalDemand did not stamp a nudge for a pending key")
+	}
+	if !q.demandIsCurrent(stale) {
+		t.Fatal("a nudge for the CURRENT window must be honored")
+	}
+
+	q.pendingSet.Delete("ck")
+	q.demandGen.Add(1) // refresher clears window N and retires its generation
+
+	if q.demandIsCurrent(stale) {
+		t.Fatal("a nudge from a retired generation must be ignored")
+	}
+
+	q.pendingSet.Store("ck2", struct{}{})
+	q.signalDemand("ck2")
+	select {
+	case g := <-q.demandCh:
+		if !q.demandIsCurrent(g) {
+			t.Fatal("a nudge for the new current window must be honored")
+		}
+	default:
+		t.Fatal("signalDemand did not stamp a nudge for the new window's key")
+	}
+}

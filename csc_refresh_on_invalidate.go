@@ -199,10 +199,18 @@ type cscRefreshQueue struct {
 	// the refresher goroutine; read concurrently by every reader — hence sync.Map.
 	pendingSet sync.Map
 	// demandCh carries a single "flush now" nudge from a reader that touched a
-	// pending key. Buffered depth 1 and sent non-blocking: one pending nudge is
-	// all the refresher needs, and the window timer is the backstop if it is
-	// dropped.
-	demandCh chan struct{}
+	// pending key, STAMPED with the window generation it belongs to (see demandGen).
+	// Buffered depth 1 and sent non-blocking: one pending nudge is all the refresher
+	// needs, and the window timer is the backstop if it is dropped.
+	demandCh chan uint64
+	// demandGen tags the current collection window. The refresher bumps it every
+	// time it clears a window (in flush); signalDemand stamps the value it reads
+	// BEFORE the pendingSet membership check onto its nudge. A reader that passed the
+	// check just before a clear then sends AFTER it: its nudge carries the retired
+	// generation, so the refresher compares it unequal to the current one and ignores
+	// it — a stale nudge can no longer flush the NEXT window early, which would defeat
+	// the coalescing window and inflate DemandFlushes.
+	demandGen atomic.Uint64
 
 	// sinceToken is the "recently read" horizon: only entries whose last read is
 	// newer than this are worth refetching. Without it the refresher would chase
@@ -229,13 +237,26 @@ func (q *cscRefreshQueue) signalDemand(cacheKey string) {
 	if q == nil || !cscDemandRefresh {
 		return
 	}
+	// Read the generation BEFORE the membership check, so a window cleared between
+	// here and the send retires this stamp: the refresher then sees a stale
+	// generation and ignores the nudge (see demandGen). Reading it AFTER the check
+	// would stamp the NEW window and flush it early — the bug this guards.
+	gen := q.demandGen.Load()
 	if _, ok := q.pendingSet.Load(cacheKey); !ok {
 		return
 	}
 	select {
-	case q.demandCh <- struct{}{}:
+	case q.demandCh <- gen:
 	default:
 	}
+}
+
+// demandIsCurrent reports whether a demand nudge stamped with gen still refers to
+// the window the refresher is collecting now. A nudge from a retired generation
+// (its window was already flushed) is ignored, so it cannot flush the next window
+// early. Extracted so the generation check is unit-tested (like cscRefreshChunkEnd).
+func (q *cscRefreshQueue) demandIsCurrent(gen uint64) bool {
+	return gen == q.demandGen.Load()
 }
 
 // offer enqueues without blocking, counting what it had to drop. A target whose
@@ -380,7 +401,7 @@ func (c *baseClient) startCSCRefresher() {
 	lc := c.csc.(*LocalCache)
 	q := &cscRefreshQueue{
 		ch:       make(chan cscRefreshTarget, cscRefreshQueueDepth),
-		demandCh: make(chan struct{}, 1),
+		demandCh: make(chan uint64, 1),
 	}
 	q.sinceToken.Store(lc.LRUClock())
 	c.cscRefreshQueue = q
@@ -461,13 +482,17 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 			q.pendingSet.Delete(k)
 			delete(pending, k)
 		}
-		// Consume a demand nudge buffered for THIS window: signalDemand only fires
-		// for keys in pendingSet, which was just cleared, so a buffered signal can
-		// only refer to a key this flush is about to refetch. Left buffered, the
-		// stale nudge would immediately flush the NEXT window on its first key —
-		// defeating the coalescing window and inflating DemandFlushes. (collect
-		// runs only on this goroutine, so no demand for a future window can exist
-		// yet.)
+		// Retire this window's generation: a demand nudge stamped with it (a reader
+		// that passed signalDemand's pendingSet check just before the clear above,
+		// then sends AFTER it) now compares unequal to the current generation and is
+		// ignored by the demandCh case — a stale nudge can no longer flush the NEXT
+		// window early, defeating the coalescing window and inflating DemandFlushes.
+		q.demandGen.Add(1)
+		// Then drop any nudge already buffered for THIS just-retired window: collect
+		// runs only on this goroutine, so nothing can have stamped the new generation
+		// yet, making a buffered value provably stale. Draining keeps the depth-1
+		// buffer clear for the next window's first legit nudge (the generation check
+		// above is the correctness guard; this stays buffer hygiene).
 		select {
 		case <-q.demandCh:
 		default:
@@ -573,10 +598,14 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 				flush(false)
 			}
 
-		case <-q.demandCh:
-			// A reader missed a key still in the window: the batch is being used,
-			// so refetch it now instead of waiting out the window.
-			flush(true)
+		case g := <-q.demandCh:
+			// A reader missed a key still in the window: the batch is being used, so
+			// refetch it now instead of waiting out the window. Ignore a nudge stamped
+			// with a retired generation — its window was already flushed, and acting on
+			// it would flush the current (unrelated) window early (see signalDemand).
+			if q.demandIsCurrent(g) {
+				flush(true)
+			}
 
 		case <-window.C:
 			flush(false)
