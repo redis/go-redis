@@ -85,6 +85,22 @@ const (
 	// cscRefreshBatchMax caps how many keys ride one round trip.
 	cscRefreshBatchMax = 128
 
+	// cscRefreshReplyBudgetBytes caps one refresh round trip's EXPECTED REPLY
+	// volume (sum of the evicted values' sizes, cscRefreshTarget.valBytes). The
+	// key-byte budget bounds only what we write; replies for a chunk's early keys
+	// stream back while its later keys are still being written, and against a
+	// flow-controlling middlebox (a proxy or tunnel that stops reading when its
+	// buffer to us fills — vanilla Redis instead buffers replies in RAM) enough
+	// in-flight reply bytes stall the connection both ways: the classic pipeline
+	// write-read deadlock, which here surfaces as the per-chunk deadline failing
+	// the whole chunk. 32 KiB stays comfortably inside typical kernel socket
+	// buffering (~64K+64K), so expected replies alone cannot jam the path; a
+	// value that grew far past its evicted size since invalidation can still
+	// overshoot — the estimate narrows the window, the deadline stays the
+	// backstop. The first target of a chunk always goes regardless, so an
+	// oversized single value cannot stall the loop.
+	cscRefreshReplyBudgetBytes = 32 << 10
+
 	// cscRefreshBatchTimeout bounds one refresh round trip. It caps the batch ctx
 	// AND, when the user disabled per-op write timeouts, the batch write deadline —
 	// so a stalled deadline-less flush cannot wedge the refresher (the ctx does not
@@ -160,6 +176,16 @@ type cscRefreshTarget struct {
 	cacheKey  string
 	redisKeys []string
 	token     uint64
+	// valBytes approximates the refetch reply size: the length of the value the
+	// invalidation just evicted (captured under the shard lock in
+	// collectHotAndDelete). The refresher budgets each round trip's EXPECTED
+	// REPLY bytes with it — the request side is tiny (keys), but replies for the
+	// chunk's early keys stream back while later keys are still being written,
+	// and unbounded reply volume is what jams a flow-controlling middlebox
+	// (proxy/tunnel) into the classic pipeline write-read deadlock. An estimate,
+	// not a guarantee: the value may have grown since eviction (often why it was
+	// invalidated), so this narrows the jam window rather than closing it.
+	valBytes int
 }
 
 // cscRefreshQueue carries invalidated-but-hot keys from the drainer to the
@@ -237,6 +263,27 @@ func cscRefreshTargetBytes(t cscRefreshTarget) int {
 		n += len(k)
 	}
 	return n
+}
+
+// cscRefreshChunkEnd returns the exclusive end index of the next refresh round
+// trip starting at `start`: at most cscRefreshBatchMax targets, request bytes
+// (cache key sans prefix = wire form) within writeBudget, and expected reply
+// bytes (valBytes of the evicted values) within cscRefreshReplyBudgetBytes. The
+// first target always goes, so a single oversized key or value cannot stall the
+// loop. Pure; unit-tested like fdBatchEnd.
+func cscRefreshChunkEnd(targets []cscRefreshTarget, start, prefixLen, writeBudget int) int {
+	end, reqBytes, replyBytes := start, 0, 0
+	for end < len(targets) && end-start < cscRefreshBatchMax {
+		w := len(targets[end].cacheKey) - prefixLen
+		r := targets[end].valBytes
+		if end > start && (reqBytes+w > writeBudget || replyBytes+r > cscRefreshReplyBudgetBytes) {
+			break
+		}
+		reqBytes += w
+		replyBytes += r
+		end++
+	}
+	return end
 }
 
 // CSCRefreshStats reports refresh-on-invalidate activity: keys queued, keys
@@ -428,24 +475,18 @@ func (c *baseClient) runCSCRefresher(h *cscRevalidateHandle, lc *LocalCache, q *
 						"csc: refresh-on-invalidate batch panic (recovered): %v", r)
 				}
 			}()
-			// Chunk by count (cscRefreshBatchMax) and by serialized bytes (the write
-			// buffer). Like the miss-coalescer, the refresh writes the whole chunk
-			// before it reads the replies. A chunk larger than the write buffer would
-			// flush mid-write and risk a write and read deadlock on large keys. The
-			// first target in a chunk always goes, even if it alone exceeds the budget,
-			// so the loop always makes progress.
+			// Chunk by count (cscRefreshBatchMax), by serialized REQUEST bytes (the
+			// write buffer), and by expected REPLY bytes (cscRefreshReplyBudgetBytes —
+			// see its doc: the reply side, not the request side, is what jams a
+			// flow-controlled path). Like the miss-coalescer, the refresh writes the
+			// whole chunk before it reads the replies. The first target in a chunk
+			// always goes, even if it alone exceeds a budget, so the loop always makes
+			// progress. Boundary logic extracted pure (cscRefreshChunkEnd) and
+			// unit-tested.
 			writeBudget := cscMissWriteBatchBytes(c.opt)
 			prefixLen := len(c.cscKeyPrefix)
 			for start := 0; start < len(targets); {
-				end, nbytes := start, 0
-				for end < len(targets) && end-start < cscRefreshBatchMax {
-					w := len(targets[end].cacheKey) - prefixLen // cache key sans prefix is wire form
-					if end > start && nbytes+w > writeBudget {
-						break
-					}
-					nbytes += w
-					end++
-				}
+				end := cscRefreshChunkEnd(targets, start, prefixLen, writeBudget)
 				// Per-chunk deadline: each round trip gets its own cscRefreshBatchTimeout,
 				// so aggregate latency across chunks cannot expire the later chunks (#3989).
 				rctx, rcancel := context.WithTimeout(context.Background(), cscRefreshBatchTimeout)

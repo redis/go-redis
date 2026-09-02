@@ -74,7 +74,14 @@ func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, dst 
 			entry.state == cacheEntryValid && entry.lastAccessNs.Load() > sinceToken {
 			keys := make([]string, len(entry.redisKeys))
 			copy(keys, entry.redisKeys)
-			dst = append(dst, cscRefreshTarget{cacheKey: cacheKey, redisKeys: keys})
+			dst = append(dst, cscRefreshTarget{
+				cacheKey:  cacheKey,
+				redisKeys: keys,
+				// The dying entry's payload size approximates the refetch REPLY size —
+				// the refresher chunks round trips by expected reply bytes with it (see
+				// cscRefreshChunkEnd). Known for free here, under the same shard lock.
+				valBytes: len(entry.value),
+			})
 		}
 		if s.removeEntryLocked(cacheKey) {
 			removed++
