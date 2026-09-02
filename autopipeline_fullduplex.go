@@ -546,8 +546,15 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		return completedBatch
 	}
 	var hookDone chan struct{}
-	if fd.ap.pipeliner.hookCount() > 0 {
+	var hookState *hooksState
+	// Snapshot the hook chain at SUBMIT time (a single atomic load) and carry it to
+	// the host below, so a hook added between now and when the host runs the chain
+	// does not retroactively wrap this already-accepted command - hooks are observed
+	// only by commands submitted after AddHook (see the FullDuplex GoDoc). len drives
+	// the same hooks-present gate hookCount() did, at the same cost.
+	if snap := fd.ap.pipeliner.hookSnapshot(); len(snap.slice) > 0 {
 		hookDone = make(chan struct{})
+		hookState = snap
 	}
 	// Hook-free blocking face: the batch is a single-waiter completion signal
 	// discarded after Wait, so draw it from the pool (buffered done, recycled in
@@ -594,7 +601,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 			fd.fastSubmitTake.Add(1) // test observability; single atomic on the (already RLock'd) fast path
 			if hookDone != nil {
 				fd.hostWg.Add(1)
-				go fd.hostHook(ctx, cmd, b, hookDone)
+				go fd.hostHook(ctx, cmd, b, hookDone, hookState)
 			}
 			fd.submitMu.RUnlock()
 			return b
@@ -609,7 +616,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// hostWg.Wait never races an Add on a zero counter.
 		if hookDone != nil {
 			fd.hostWg.Add(1)
-			go fd.hostHook(ctx, cmd, b, hookDone)
+			go fd.hostHook(ctx, cmd, b, hookDone, hookState)
 		}
 		fd.submitMu.RUnlock()
 		return b
@@ -636,7 +643,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // hookDone, so an observing hook spans the command's real write→reply latency and
 // a hook that rewrites the result is honored before the waiter wakes. Each
 // command is reported individually (withProcessHook), not as a pipeline batch.
-func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
+func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}, hookState *hooksState) {
 	// Declared first so it runs last: Close waits hostWg (via run()), and the host
 	// is done only after the recover defer below has also run.
 	defer fd.hostWg.Done()
@@ -673,7 +680,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			b.close()
 		}
 	}()
-	err := fd.ap.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
+	err := fd.ap.pipeliner.withProcessHookSnapshot(hookState, ctx, cmd, func(context.Context, Cmder) error {
 		<-hookDone // reply landed (or the command was failed)
 		awaited = true
 		return cmd.rawErr() // direct read: cmd.Err() would await batch.done, which
@@ -791,6 +798,16 @@ func (fd *fdEngine) run() {
 	// closes the command's batch on its host goroutine, so Close must not return
 	// while one runs. Every hostWg.Add is gated behind submitMu+closed, and every
 	// run() return follows the shutdown drain, so this never races a live Add.
+	//
+	// Reentrancy caveat: this wait CANNOT exclude its own caller, so a ProcessHook
+	// that synchronously calls Close (Client.Close or AutoPipeliner.Close) from its
+	// host goroutine deadlocks here until the close backstop (autoPipelineCloseBackstop):
+	// Close waits ap.wg -> run() -> this hostWg.Wait, which waits for the very host
+	// blocked inside Close. A reentrancy fix was rejected as unsafe - cancelAndDrain is
+	// NOT once-only (the shared-pool close hook leaves ap.closed false and can run
+	// again), and an early hostWg.Done races submit's hostWg.Add. The contract is
+	// documented on the FullDuplex GoDoc instead: such a hook must call Close from a
+	// separate goroutine.
 	defer fd.hostWg.Wait()
 	// Release the last session's in-flight ring when the engine exits (Close /
 	// ctx-cancel): curInflight is a grow-only deque that can hold up to fd.window
@@ -1523,21 +1540,39 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 			internal.Logger.Printf(bg, "autopipeline: recovered full-duplex write panic: %v\n%s", r, debug.Stack())
 		}
 		if !pushed {
+			// Recovery push (partial write or encoder panic): refund the optimistic
+			// submit/replay attempt for every command the serializer never REACHED
+			// (sent==false). run()'s fdConnErr recovery partitions the tail by attempt
+			// count (fdPartitionByBudget) BEFORE it consults the NoRetry/sent gate, and
+			// that partition keys on attempts, not sent - so a never-serialized command
+			// left at its pre-charged attempt count is declared budget-exhausted and
+			// FAILED without ever executing (acute at MaxRetries==0, where a single
+			// charge exhausts it). Mirrors the never-written-suffix refunds in
+			// writeCarryChunked / fdRecoverTail; the serialized prefix (sent==true) keeps
+			// its charge because it was attempted at-least-once.
+			for i := range reqs {
+				if !reqs[i].sent && reqs[i].attempts > 0 {
+					reqs[i].attempts--
+				}
+			}
 			inflight.pushBatch(reqs)
 		}
 	}()
-	// Stamp the wire-write time so the reader can record write→reply as the
-	// command's OTel operation duration, and mark every command SENT — before the
-	// flush is attempted, so a partial write or encoder panic still counts as
-	// possibly-on-the-wire (the NoRetry gate must never re-send those). Done before
-	// pushBatch so the copies the reader reads from the deque carry both.
+	// Stamp the wire-write time and mark each command SENT per-command, immediately
+	// before its writeCmd runs - NOT in a bulk loop before the flush. Only commands
+	// the serializer actually REACHES are marked sent: if an earlier command's encoder
+	// panics (a bad BinaryMarshaler) or a partial write aborts the loop, the
+	// never-serialized suffix keeps sent=false, so the NoRetry gate replays it
+	// (issuing it is its FIRST send) instead of failing a command the server never
+	// saw. A command whose own writeCmd fails/panics stays sent=true - its bytes may
+	// have reached the buffer/wire, so the conservative choice avoids re-sending a
+	// NoRetry twice; a WithWriter flush error after N commands serialized leaves those
+	// N sent. Stamped before pushBatch so the deque copies the reader reads carry both.
 	now := time.Now()
-	for i := range reqs {
-		reqs[i].writtenAt = now
-		reqs[i].sent = true
-	}
 	err = cn.WithWriter(bg, fd.client.opt.WriteTimeout, func(wr *proto.Writer) error {
 		for i := range reqs {
+			reqs[i].writtenAt = now
+			reqs[i].sent = true
 			if e := writeCmd(wr, reqs[i].cmd); e != nil {
 				return e
 			}
@@ -1683,13 +1718,15 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		end := fdBatchEnd(carry, i, lim, byteLimit)
 		if e := fd.writeBatch(bg, cn, inflight, carry[i:end]); e != nil {
 			// writeBatch pushed carry[i:end] into inflight before the failed write (it
-			// was attempted — at-least-once — so its bumped attempt count stands), but
+			// was attempted — at-least-once — so the serialized prefix keeps its bumped count), but
 			// the suffix carry[end:] was never pushed. Push it too, or it sits in neither
 			// fd.ch nor inflight and its callers hang: on fdConnErr takeRemaining replays
 			// it, on Close the caller fails it. It is only ever settled via failReqs or
 			// replayed — never completed inline by the reader — so its zero writtenAt
 			// never reaches the write→reply metric. carry[end:] was NEVER written, so
-			// refund its optimistic attempt bump (unlike carry[i:end], which was sent).
+			// refund its optimistic attempt bump here; the never-serialized tail of
+			// carry[i:end] (behind an encoder panic) is refunded by writeBatch itself, so
+			// only its serialized prefix keeps the charge.
 			if end < len(carry) {
 				fdRefundUnsentAttempt(carry[end:])
 				inflight.pushBatch(carry[end:])

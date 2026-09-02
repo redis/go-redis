@@ -127,6 +127,12 @@ type AutoPipelineOptions struct {
 	// reader's completion. Mutate-before-next hooks must run on a plain client or
 	// the half-duplex autopipeline, where next() gates the write.
 	//
+	// A ProcessHook MUST NOT synchronously call Close (Client.Close or
+	// AutoPipeliner.Close) from inside the hook: the hook runs on the full-duplex
+	// hook-host goroutine and Close waits for that goroutine to finish, so a
+	// synchronous Close from the hook deadlocks until the close backstop (~30s).
+	// Trigger Close from a separate goroutine if a hook must initiate it.
+	//
 	// TODO(fullduplex): offer opt-in write-gating for blocking hooks — a per-client
 	// or per-command flag that waits for the hook to call next before enqueuing the
 	// command onto fd.ch, so a policy hook can veto the write, at the cost of the
@@ -433,6 +439,8 @@ type cmdableClient interface {
 	withProcessPipelineHook(ctx context.Context, cmds []Cmder, hook ProcessPipelineHook) error
 	hookCount() int
 	withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error
+	hookSnapshot() *hooksState
+	withProcessHookSnapshot(snap *hooksState, ctx context.Context, cmd Cmder, hook ProcessHook) error
 	processPipeline(ctx context.Context, cmds []Cmder) error
 	process(ctx context.Context, cmd Cmder) error
 }

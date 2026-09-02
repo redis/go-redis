@@ -223,6 +223,31 @@ func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook Proce
 	return hook(ctx, cmd)
 }
 
+// hookSnapshot returns the current immutable hook-state snapshot with a single
+// atomic load. A deferred executor (the full-duplex hook host) captures this at
+// SUBMIT time and runs the chain via withProcessHookSnapshot, so a hook added
+// between submit and host-exec does not retroactively wrap an in-flight command
+// (hooks are observed only by commands submitted after AddHook). The returned
+// value is immutable - never mutated after publication.
+func (hs *hooksMixin) hookSnapshot() *hooksState {
+	return hs.state.Load()
+}
+
+// withProcessHookSnapshot composes the process-hook chain from a snapshot taken
+// by hookSnapshot instead of re-loading the live state - same composition as
+// withProcessHook, fixed to the snapshot's hook slice.
+func (hs *hooksMixin) withProcessHookSnapshot(
+	snap *hooksState, ctx context.Context, cmd Cmder, hook ProcessHook,
+) error {
+	slice := snap.slice
+	for i := len(slice) - 1; i >= 0; i-- {
+		if wrapped := slice[i].ProcessHook(hook); wrapped != nil {
+			hook = wrapped
+		}
+	}
+	return hook(ctx, cmd)
+}
+
 func (hs *hooksMixin) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
@@ -1899,6 +1924,19 @@ func (c *baseClient) processTxPipeline(ctx context.Context, cmds []Cmder) error 
 
 type pipelineProcessor func(context.Context, *pool.Conn, []Cmder) (bool, error)
 
+// pipelineErrShouldStamp reports whether a pipeline-level error must be stamped
+// onto every command (setCmdsErr). A per-command Redis reply error (LOADING,
+// WRONGTYPE, ...) is left alone so each command keeps its own reply - EXCEPT when
+// the error is errConnUnusable, which marks a desynchronized reply stream and may
+// WRAP a redis.Error (a custom PushNotificationProcessor that returns a redis.Error
+// on a failed push drain). isRedisError unwraps to that inner redis.Error and would
+// otherwise treat the whole batch as a normal reply, leaving every command with
+// Err()==nil while Exec returns an error - so the errConnUnusable marker takes
+// precedence and the transport failure is stamped onto every command.
+func pipelineErrShouldStamp(err error) bool {
+	return errors.Is(err, errConnUnusable) || !isRedisError(err)
+}
+
 func (c *baseClient) generalProcessPipeline(
 	ctx context.Context, cmds []Cmder, p pipelineProcessor, operationName string, maxRetries int,
 ) error {
@@ -1960,7 +1998,7 @@ func (c *baseClient) generalProcessPipeline(
 		// undo partial writes on retry)
 		if lastErr == nil || !canRetry || !shouldRetry(lastErr, true) || cmdsContainNoRetry(cmds) {
 			// The error should be set here only when failing to obtain the conn.
-			if !isRedisError(lastErr) {
+			if pipelineErrShouldStamp(lastErr) {
 				setCmdsErr(cmds, lastErr)
 			}
 			if pipelineOpDurationCallback != nil {
@@ -1985,7 +2023,7 @@ func (c *baseClient) generalProcessPipeline(
 	// error — see the error instead of a nil error and a zero value. Guard on
 	// !isRedisError so a per-command redis error (e.g. LOADING) keeps its own
 	// reply rather than being overwritten.
-	if !isRedisError(lastErr) {
+	if pipelineErrShouldStamp(lastErr) {
 		setCmdsErr(cmds, lastErr)
 	}
 
