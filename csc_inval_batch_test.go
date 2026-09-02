@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -248,5 +249,89 @@ func TestInvalBatcherSpillCapTriggersFlush(t *testing.T) {
 	b.stop()
 	if cache.flushes.Load() == 0 {
 		t.Fatal("worker did not full-Flush the cache after the spill cap was hit")
+	}
+}
+
+// Past the spill RETAINED-BYTE bound, enqueue takes the same full-Flush fallback as
+// the item cap — a distinct-large-key flood can pin GBs while the item count stays
+// far below cscInvalSpillMax, so the byte bound must trip first.
+func TestInvalBatcherSpillByteCapTriggersFlush(t *testing.T) {
+	cache := &countingCache{}
+	b := newTestBatcher(cache, 2, time.Hour)
+
+	// 1 MiB per key: a dozen distinct keys past ch cross cscInvalSpillMaxBytes (8 MiB)
+	// while the item count stays a few, far under the 65536 item cap.
+	bigKey := strings.Repeat("x", 1<<20)
+	const n = 2 + 12 // ch cap 2, then 12 overflow to spill
+	for i := 0; i < n; i++ {
+		b.enqueue(bigKey + strconv.Itoa(i))
+	}
+
+	if !b.flushReq.Load() {
+		t.Fatal("large-key spill crossed the byte bound but flushReq was not set")
+	}
+	b.spillMu.Lock()
+	items := len(b.spill)
+	b.spillMu.Unlock()
+	if items >= cscInvalSpillMax {
+		t.Fatalf("spill held %d items (>= item cap %d); the BYTE bound should have tripped first",
+			items, cscInvalSpillMax)
+	}
+
+	// The worker must consume flushReq and full-Flush the cache.
+	go b.run()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cache.flushes.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	b.stop()
+	if cache.flushes.Load() == 0 {
+		t.Fatal("worker did not full-Flush the cache after the spill byte bound was hit")
+	}
+}
+
+// TestClearRefreshQueueDetachesBatcherWithoutJoin pins the Group-A contract: the
+// handler paths that tear a batcher down (here clearRefreshQueue; also
+// setRefreshQueue/releaseLocked/setInvalBatchWindow) must DETACH and SIGNAL the
+// batcher under h.mu but NOT join it there — join waits on the stop-drain, which
+// would stall a sibling on the hot path and must never block the GC finalizer. The
+// batcher's run() is never started, so its done channel never closes: the old code
+// (b.join() under the lock) would hang forever, the fixed code returns the detached
+// batcher for the caller to join OUTSIDE the lock.
+func TestClearRefreshQueueDetachesBatcherWithoutJoin(t *testing.T) {
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	h := &invalidateHandler{}
+	if err := h.bindTo(cache, "p:"); err != nil {
+		t.Fatalf("bindTo: %v", err)
+	}
+	q := &cscRefreshQueue{}
+	h.setRefreshQueue(q) // active binding (no batcher yet, returns nil)
+
+	// A batcher whose run() was NEVER started: done never closes, so join() blocks.
+	b := newTestBatcher(cache, 1, time.Hour)
+	h.mu.Lock()
+	h.batcher = b
+	h.mu.Unlock()
+
+	var got *cscInvalBatcher
+	done := make(chan struct{})
+	go func() {
+		got = h.clearRefreshQueue(q)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("clearRefreshQueue blocked: it joined the batcher under h.mu " +
+			"(a never-started worker); the fix must detach+signal only")
+	}
+	if got != b {
+		t.Fatalf("clearRefreshQueue returned %p, want the detached batcher %p", got, b)
+	}
+	if !b.stopped {
+		t.Fatal("clearRefreshQueue did not signal the batcher to stop")
+	}
+	if h.batcher != nil {
+		t.Fatal("clearRefreshQueue did not detach the batcher from the handler")
 	}
 }

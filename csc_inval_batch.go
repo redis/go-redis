@@ -37,6 +37,16 @@ const cscInvalBatchMax = 4096 // size-cap flush regardless of the timer
 // never serve stale) that also keeps the reader unblocked.
 const cscInvalSpillMax = 1 << 16 // 65536
 
+// cscInvalSpillMaxBytes hard-caps the RETAINED KEY BYTES in the overflow spill.
+// The item cap alone bounds the spill by COUNT, not memory: the spill holds
+// namespaced key STRINGS (no values), but a burst of distinct large keys can
+// retain GBs while the item count stays far below cscInvalSpillMax. When the
+// retained bytes would cross this bound the batcher takes the SAME full-Flush
+// fallback the item cap triggers (a single oversized key crosses it alone). 8
+// MiB of key strings is already tens of thousands of large keys — in the spirit
+// of the refresh queue's key-byte cap (cscRefreshTargetMaxBytes).
+const cscInvalSpillMaxBytes = 8 << 20 // 8 MiB
+
 // cscInvalItem is one queued invalidation, tagged with the batcher epoch it
 // was enqueued under so a full-cache flush can supersede it (see drop()).
 type cscInvalItem struct {
@@ -94,7 +104,11 @@ type cscInvalBatcher struct {
 	// slice).
 	spillMu sync.Mutex
 	spill   []cscInvalItem
-	wake    chan struct{}
+	// spillBytes tracks the retained KEY bytes currently held in spill, guarded by
+	// spillMu alongside spill itself. Bounds spill memory by bytes as well as by
+	// item count (see cscInvalSpillMaxBytes); reset with spill on drain/flush.
+	spillBytes int
+	wake       chan struct{}
 	// flushReq: spill hit cscInvalSpillMax, so the worker must drop() + full-Flush
 	// the cache instead of applying a huge backlog. Set by enqueue, consumed by the
 	// worker (CAS to false).
@@ -205,12 +219,18 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 		// wholesale anyway. Needed because the invalidatable keyset is not bounded
 		// by cache size (the server tracks keys past local LRU eviction).
 		b.spillMu.Lock()
-		if len(b.spill) >= cscInvalSpillMax {
+		// Trip on EITHER bound: item count OR retained key bytes. Bytes matter
+		// because the invalidatable keyset is not bounded by cache size and keys
+		// can be large, so a distinct-large-key flood grows spill memory long
+		// before the item cap. A single key over the byte bound trips it alone.
+		if len(b.spill) >= cscInvalSpillMax ||
+			b.spillBytes+len(it.key) > cscInvalSpillMaxBytes {
 			// The cleared backlog plus this item are superseded by the coming
 			// full-Flush and never reach deleteByRedisKeyCollectingHot. They were
 			// already counted as incoming invalidations at the handler; they simply
 			// won't become deletions — the Flush supersedes them wholesale.
 			b.spill = b.spill[:0]
+			b.spillBytes = 0
 			// Set flushReq BEFORE releasing stopMu. stop() takes stopMu.Lock, so it
 			// cannot close stopCh until this store is visible; the worker's stop-drain
 			// then sees the request via fullFlushIfRequested instead of exiting and
@@ -219,6 +239,7 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 			b.flushReq.Store(true)
 		} else {
 			b.spill = append(b.spill, it)
+			b.spillBytes += len(it.key)
 		}
 		b.spillMu.Unlock()
 		b.stopMu.RUnlock()
@@ -237,6 +258,7 @@ func (b *cscInvalBatcher) takeSpill() []cscInvalItem {
 	b.spillMu.Lock()
 	s := b.spill
 	b.spill = nil
+	b.spillBytes = 0
 	b.spillMu.Unlock()
 	return s
 }

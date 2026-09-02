@@ -281,6 +281,24 @@ func (mc *cscMissCoalescer) reserveWireBytes(n int64) bool {
 
 func (mc *cscMissCoalescer) releaseWireBytes(n int64) { mc.wireBytes.Add(-n) }
 
+// reconcileWireBytes corrects req's reservation to the ACTUAL serialized size once
+// req.wire is built. The reservation is charged from cmdApproxBytes BEFORE
+// serialization (so an over-budget miss never allocates the wire), but that
+// estimate charges only ~8 bytes for a variable-size non-string/[]byte arg (a
+// BinaryMarshaler, net.IP, *string, ...), which serializes its full bytes — so a
+// burst of such misses could drift the in-flight budget well past
+// cscMissWireBudgetBytes. Charge the delta to wireBytes and store it back on
+// req.reserved so settle() still releases exactly once. The wire is already built,
+// so this one is kept even if it now pushes over budget; making the COUNTER reflect
+// reality just means the NEXT reserve sheds.
+func (mc *cscMissCoalescer) reconcileWireBytes(req *cscMissReq) {
+	actual := int64(len(req.wire))
+	if delta := actual - req.reserved; delta != 0 {
+		mc.wireBytes.Add(delta)
+		req.reserved = actual
+	}
+}
+
 // settle releases req's wire-budget reservation and wakes its caller, exactly
 // once. Every path that finishes a QUEUED request (applyAndSettle, settleErr, and
 // the shutdown drain) funnels through here, so the budget a request holds while its
@@ -363,6 +381,10 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		return nil, err
 	}
 	req.wire = wireBuf.Bytes()
+	// Reconcile the reservation to the real serialized size now that the wire exists:
+	// cmdApproxBytes can undercount a large variable-size arg (see reconcileWireBytes),
+	// so without this the budget could drift far above cscMissWireBudgetBytes.
+	mc.reconcileWireBytes(req)
 	// Reject early if the coalescer is already stopping, so a send does not win the
 	// select race against a closed mc.stop and land in mc.ch after the shutdown
 	// drain, where nothing would pick it up. This narrows but cannot close that
@@ -420,7 +442,8 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 		// Caller stopped waiting (only when ContextTimeoutEnabled; otherwise wctx is
 		// Background and this never fires — matching the ordinary path's I/O timeout
 		// policy). If we win the interlock the reader skips the cmd
-		// write but still settles the token and publishes to the cache; if it already
+		// write but (in the live case) still settles the token and publishes to the
+		// cache — see the stopping caveat below; if it already
 		// claimed cmd, wait rather than race by reusing cmd. Either way return the
 		// context error, matching the non-coalesced path (processWithRetry), so a
 		// cancelled Get never returns a value depending on who won the CAS.
@@ -446,7 +469,31 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 			<-req.done
 			return req.servedBy, ctx.Err()
 		}
+		// Won the interlock: the reader will skip the cmd write. In the LIVE case it
+		// still dequeues this req and publishes to the cache, so leave the token to
+		// it. But if the coalescer is STOPPING, this req may have landed in mc.ch
+		// after the shutdown drain, where nothing will settle it — see cancelIfStopping.
+		mc.cancelIfStopping(cacheKey, token)
 		return nil, ctx.Err()
+	}
+}
+
+// cancelIfStopping releases an abandoned request's reservation, but ONLY when the
+// coalescer is stopping. On a caller-deadline abandon (fetch's wctx.Done branch,
+// after the caller won the cmd interlock) the live reader still dequeues the req
+// and publishes to the cache, so the token is left to it. Once mc.stop is closed
+// though, the req may be stranded in mc.ch past the shutdown drain with nothing to
+// settle it: its reservation would stay IN_PROGRESS and block a later reader of the
+// key until StaleTimeout (worse on a shared cache not flushed on close). So mirror
+// the mc.stop wait branch — cancel the token and re-drain the queue. The
+// non-blocking select keeps the live path's publish intact; Cancel is token-guarded,
+// so a later reader's fresh reservation is unaffected.
+func (mc *cscMissCoalescer) cancelIfStopping(cacheKey string, token uint64) {
+	select {
+	case <-mc.stop:
+		mc.c.csc.Cancel(cacheKey, token)
+		mc.drainQueueErr(errCSCRetryUncached)
+	default:
 	}
 }
 
