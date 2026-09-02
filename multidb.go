@@ -551,18 +551,20 @@ func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig
 		// interleave between them.
 		c.autopipelinerMu.Lock()
 		defer c.autopipelinerMu.Unlock()
+		// Close sets this under the same mutex before it starts draining the
+		// autopipeliners. Once shutdown has begun the cached pointers are
+		// already cleared, so the liveness check below would pass and admit the
+		// cluster member mid-drain; a batch failing over during that drain could
+		// then reach it through the unsupported unsharded autopipeline path.
+		// Reject the add instead: the client is going away.
+		if c.autopipelinerClosed {
+			return -1, ErrClosed
+		}
 		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
 			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
 		if hasLiveAP {
 			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
 		}
-		// Known narrow window: AutoPipeliner.Close flips its closed flag
-		// before draining already-accepted batches, so an AddDatabase racing
-		// a direct ap.Close() can pass this check while the drain is still
-		// flushing. Those batches only reach the new cluster member if a
-		// failover selects it during that same drain. For strict guarantees,
-		// let Close return before calling AddDatabase (MultiDBClient.Close
-		// already serializes both on autopipelinerMu).
 	}
 	return c.core.addDatabase(ctx, cfg)
 }
