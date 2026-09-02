@@ -128,6 +128,85 @@ func TestRecordBatchOutcomesPropagatedBlockingTimeoutIsNeutral(t *testing.T) {
 	})
 }
 
+// TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen pins the failure
+// path's reservation binding: a half-open batch that outlives its recovery
+// episode must not apply its failure to the NEW half-open episode another
+// request has since opened (that would abort a recovery it was never admitted
+// to). A current admission still re-opens, and a closed admission still counts
+// toward opening.
+func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
+	newHalfOpen := func(t *testing.T) *multidbDatabase {
+		t.Helper()
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+			GracePeriod:      20 * time.Millisecond,
+		})}
+		db.cb.RecordFailure() // open
+		time.Sleep(30 * time.Millisecond)
+		if st := db.cb.CheckState(); st != imultidb.CircuitHalfOpen {
+			t.Fatalf("state after grace = %v, want half-open", st)
+		}
+		return db
+	}
+	failedBatch := func() []Cmder {
+		cmd := NewStatusCmd(context.Background(), "set", "k", "v")
+		cmd.SetErr(io.EOF)
+		return []Cmder{cmd}
+	}
+
+	t.Run("stale half-open admission records nothing", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newHalfOpen(t)
+		ok, stale := db.cb.AllowReserve() // episode 1 probe slot
+		if !ok {
+			t.Fatal("AllowReserve on a half-open breaker with a free slot was rejected")
+		}
+		// The recovery fails elsewhere and a NEW half-open episode begins.
+		db.cb.ForceOpen()
+		time.Sleep(30 * time.Millisecond)
+		if st := db.cb.CheckState(); st != imultidb.CircuitHalfOpen {
+			t.Fatalf("state after second grace = %v, want half-open", st)
+		}
+
+		cmds := failedBatch()
+		got := core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), stale)
+		if got != 1 {
+			t.Errorf("transportFailures = %d, want 1: the caller still sees a transport failure", got)
+		}
+		if st := db.cb.State(); st != imultidb.CircuitHalfOpen {
+			t.Errorf("breaker %v, want half-open: a stale batch must not re-open the new episode", st)
+		}
+	})
+
+	t.Run("current half-open admission re-opens", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := newHalfOpen(t)
+		ok, cur := db.cb.AllowReserve()
+		if !ok {
+			t.Fatal("AllowReserve on a half-open breaker with a free slot was rejected")
+		}
+		cmds := failedBatch()
+		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), cur)
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open: a live probe's failure aborts the recovery", st)
+		}
+	})
+
+	t.Run("closed admission counts toward opening", func(t *testing.T) {
+		core := newMultidbCore(&MultiDBOptions{})
+		db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1,
+		})}
+		cmds := failedBatch()
+		core.recordBatchOutcomes(db, cmds, io.EOF, execAll(cmds), imultidb.Reservation{})
+		if st := db.cb.State(); st != imultidb.CircuitOpen {
+			t.Errorf("breaker %v, want open", st)
+		}
+	})
+}
+
 func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	db := &multidbDatabase{cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{

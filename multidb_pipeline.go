@@ -126,8 +126,10 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			}
 			// Settle the batch's single reservation: RecordSuccessFor releases
 			// (or, at SuccessThreshold, closes on) the half-open slot at most
-			// once however many commands succeed, and records an external
-			// success for a closed admission (res.held == false).
+			// once however many commands succeed. For a closed admission
+			// (res.held == false) it clears the failure count while the circuit
+			// is still closed and never counts toward closing a later half-open
+			// episode the batch was not admitted to.
 			db.cb.RecordSuccessFor(res)
 			if cur, _ := c.activeSnapshot(); cur == db {
 				c.detector.RecordSuccess()
@@ -144,7 +146,14 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// marker would leave breakers closed through real outages on
 			// batch-only workloads. Successes are the asymmetric case: a
 			// genuine reply cannot exist without execution.
-			db.cb.RecordFailure()
+			//
+			// Settled through the reservation like successes: a held admission
+			// records only while its half-open episode is still current — a
+			// batch that outlived a failed recovery must not re-open the NEW
+			// episode it was never admitted to — one failure per command, as
+			// the single-command path does; a closed admission always counts
+			// toward opening.
+			db.cb.RecordFailureFor(res)
 			if cur, _ := c.activeSnapshot(); cur == db {
 				c.detector.RecordFailure(cmd.rawErr())
 			}
