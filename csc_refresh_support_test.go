@@ -57,6 +57,34 @@ func TestCollectHotAndDeleteRecencyFilter(t *testing.T) {
 	}
 }
 
+// TestCSCRefreshReplyCacheable pins the refresh cacheability decision on the FULL
+// reply, not raw[0]. A RESP3 attribute-prefixed error leads with RespAttr ('|'),
+// so a first-byte error check would publish an attributed error as a fresh entry
+// (a false success that bumps Refreshed and forces the next reader to evict and
+// refetch). A nil reply IS cacheable; an empty reply never is.
+func TestCSCRefreshReplyCacheable(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		cacheable bool
+	}{
+		{"plain value", "$2\r\nhi\r\n", true},
+		{"resp3 nil", "_\r\n", true},
+		{"resp2 nil", "$-1\r\n", true},
+		{"top-level error", "-WRONGTYPE nope\r\n", false},
+		{"blob error", "!11\r\nERR bad arg\r\n", false},
+		// The bug: the error frame is prefixed by a RESP3 attribute, so raw[0]=='|'.
+		{"attribute-prefixed error", "|1\r\n$3\r\nttl\r\n:100\r\n-WRONGTYPE nope\r\n", false},
+		{"attribute-prefixed value", "|1\r\n$3\r\nttl\r\n:100\r\n$2\r\nhi\r\n", true},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		if got := cscRefreshReplyCacheable([]byte(tc.raw)); got != tc.cacheable {
+			t.Errorf("%s: cscRefreshReplyCacheable = %v, want %v", tc.name, got, tc.cacheable)
+		}
+	}
+}
+
 // TestCSCRefreshChunkEnd pins the refresh round-trip boundaries: count cap,
 // request-byte budget (key wire form), and the expected-REPLY-byte budget —
 // the reply side is what jams a flow-controlled path, so large evicted values

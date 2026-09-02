@@ -380,7 +380,12 @@ func (c *baseClient) startCSCRefresher() {
 
 	// The invalidate handler is what sees the pushes, so it owns the producer end.
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
-		ih.setRefreshQueue(q)
+		// Join the detached batcher OUTSIDE h.mu (setRefreshQueue only detaches +
+		// signals) so the attach is synchronous without holding the join under the
+		// handler lock — the drain has fully applied before the client proceeds.
+		if b := ih.setRefreshQueue(q); b != nil {
+			b.join()
+		}
 	}
 
 	go c.runCSCRefresher(h, lc, q)
@@ -580,10 +585,27 @@ func (c *baseClient) stopCSCRefresher() {
 	// have re-attached its own queue after ours, and an unconditional nil here
 	// would sever the survivor's refresher (see clearRefreshQueue).
 	if ih := lookupInvalidateHandler(c.opt.PushNotificationProcessor); ih != nil {
-		ih.clearRefreshQueue(c.cscRefreshQueue)
+		// Join the detached batcher OUTSIDE h.mu (clearRefreshQueue only detaches +
+		// signals): the Close path needs a synchronous, no-straggler teardown, and
+		// joining under the handler lock would stall a sibling on the hot path.
+		if b := ih.clearRefreshQueue(c.cscRefreshQueue); b != nil {
+			b.join()
+		}
 	}
 	h.signalStop()
 	<-h.done
+}
+
+// cscRefreshReplyCacheable reports whether a refetched raw reply may be published
+// as a fresh cache entry. It classifies the FULL reply (like the coalescer's
+// classifyCachedReply), not raw[0]: a RESP3 attribute-prefixed error leads with
+// RespAttr ('|'), so a first-byte error check would treat an attributed error as
+// cacheable and publish it as a false success (bumping Refreshed; the next reader
+// would then have to evict and refetch). A nil reply IS cacheable (a negative
+// lookup, or a since-deleted key caching as missing); an empty reply never is.
+// Extracted pure so the classification is unit-tested (like cscRefreshChunkEnd).
+func cscRefreshReplyCacheable(raw []byte) bool {
+	return len(raw) > 0 && isCacheableReplyResult(classifyCachedReply(raw))
 }
 
 // refreshInvalidatedBatch re-fetches one chunk of invalidated keys in a single
@@ -724,10 +746,12 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 					// release cancels every reservation still outstanding.
 					return err
 				}
-				if len(raw) == 0 || raw[0] == proto.RespError || raw[0] == proto.RespBlobError {
+				if !cscRefreshReplyCacheable(raw) {
 					// Not cacheable (WRONGTYPE after a type change, NOPERM, ...). A nil
 					// reply is NOT an error: a negative lookup is cacheable, and a key
-					// that has since been deleted should cache as missing.
+					// that has since been deleted should cache as missing. See
+					// cscRefreshReplyCacheable: it classifies the FULL frame, so a RESP3
+					// attribute-prefixed error is not mis-read as cacheable.
 					c.csc.Cancel(kept[i].cacheKey, kept[i].token)
 					kept[i].token = 0
 					continue

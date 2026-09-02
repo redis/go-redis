@@ -61,6 +61,27 @@ func cscRegisterCleanups(c *Client) {
 	// non-nil; a Conn() clone bails before startCSCRefresher and never has one.
 	q := c.baseClient.cscRefreshQueue
 	runtime.AddCleanup(c, func(h *cscDrainHandle) {
+		// Order mirrors stopBackgroundDrainer (the clean Close path) but stays
+		// fully NON-BLOCKING — a GC finalizer must never wait. Unbind this queue and
+		// signal the refresher stop while serving is STILL ON (active==true), then
+		// deactivate: refreshInvalidatedBatch bails once cscActive is false, so
+		// deactivating first would make the refresher's stop-drain flush a no-op and
+		// drop in-window hot keys for a surviving sibling on a shared cache.
+		// signalStop only closes a channel, so the final flush runs ASYNCHRONOUSLY;
+		// active.Store(false) lands nanoseconds later and the flush may still miss
+		// the window — the guaranteed final-flush is the Close path, which joins the
+		// refresher before deactivating. This reorder is the free, strictly-better
+		// best effort for the drop-without-Close case.
+		//
+		// clearRefreshQueue detaches+signals the batcher but the finalizer DISCARDS
+		// it (no join): the batcher's own run() drains and exits asynchronously. The
+		// clean Close/self-disable paths join it instead.
+		if q != nil && h.invalidateHandler != nil {
+			h.invalidateHandler.clearRefreshQueue(q)
+		}
+		if rh != nil {
+			rh.signalStop()
+		}
 		if active != nil {
 			active.Store(false)
 		}
@@ -70,12 +91,6 @@ func cscRegisterCleanups(c *Client) {
 			// alive re-runs the read on the (possibly still open) pool instead
 			// of surfacing a spurious ErrClosed.
 			mc.drainQueueErr(errCSCRetryUncached)
-		}
-		if rh != nil {
-			rh.signalStop()
-		}
-		if q != nil && h.invalidateHandler != nil {
-			h.invalidateHandler.clearRefreshQueue(q)
 		}
 		h.signalStop()
 	}, h)
@@ -165,28 +180,47 @@ type invalidateHandler struct {
 // invalidation rebuilds via ensureBatcher.
 func (h *invalidateHandler) setInvalBatchWindow(w time.Duration) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.invalBatchWindowSet {
 		cur := h.invalBatchWindow
 		// Strictness: 0 (inline) is strictest; among nonzero, smaller is stricter.
 		stricter := (w == 0 && cur != 0) || (w != 0 && cur != 0 && w < cur)
 		if !stricter {
+			h.mu.Unlock()
 			return
 		}
 	}
 	h.invalBatchWindowSet = true
 	h.invalBatchWindow = w
-	if h.batcher != nil {
-		// stop+join: the next invalidation rebuilds under the NEW (stricter)
-		// window, and the join keeps the old worker's stop-drain from applying
-		// after that rebuild — a late apply under the looser contract could evict
-		// an entry the stricter-window batcher just repopulated. join is safe
-		// under h.mu (run() takes no handler locks).
-		b := h.batcher
-		h.batcher = nil
-		b.stop()
+	// On a tighten drop the running batcher (window fixed at creation): the next
+	// invalidation rebuilds under the NEW (stricter) window. Detach+stop under the
+	// lock, then join OUTSIDE it. Joining under h.mu would stall a sibling in
+	// ensureBatcher/HandlePushNotification; the join keeps the old worker's
+	// stop-drain from applying after the rebuild — a late apply under the looser
+	// contract could evict an entry the stricter-window batcher just repopulated.
+	b := h.detachBatcherLocked()
+	h.mu.Unlock()
+	if b != nil {
 		b.join()
 	}
+}
+
+// detachBatcherLocked removes the running batcher from the handler and SIGNALS it
+// to stop, under h.mu; returns the detached batcher (nil when none). It never
+// JOINS: join() waits on the batcher's stop-drain, which must not run while h.mu is
+// held (it would stall a sibling on the hot path — ensureBatcher/HandlePushNotification)
+// and must never block the GC finalizer. Callers needing a SYNCHRONOUS teardown
+// (the Close path) join the returned batcher AFTER releasing h.mu; the GC finalizer
+// discards it (signal-only). A repointing caller (set/clearRefreshQueue) stores the
+// new refresh binding on the batcher BEFORE calling this, so the stop-drain offers
+// hot keys to the surviving refresher.
+func (h *invalidateHandler) detachBatcherLocked() *cscInvalBatcher {
+	b := h.batcher
+	if b == nil {
+		return nil
+	}
+	h.batcher = nil
+	b.stop()
+	return b
 }
 
 // ensureBatcher lazily starts the windowed invalidation batcher. The common
@@ -242,9 +276,13 @@ func (h *invalidateHandler) ensureBatcher() *cscInvalBatcher {
 // the binding of a live sibling that re-attached after it — invalidations
 // would keep deleting entries but silently stop feeding the survivor's
 // refresher.
-func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
+//
+// It returns the detached batcher (nil when none) so the caller can join() it
+// OUTSIDE h.mu for a synchronous teardown; the GC finalizer discards it (must not
+// block). See detachBatcherLocked.
+func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) *cscInvalBatcher {
 	if q == nil {
-		return
+		return nil
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -255,7 +293,7 @@ func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
 		}
 	}
 	if h.refresh != q {
-		return // a newer sibling owns the active binding; nothing else changes
+		return nil // a newer sibling owns the active binding; nothing else changes
 	}
 	// Restore the next-newest live binding (nil when none): the surviving
 	// sibling's refresher keeps getting fed after the newest owner closes.
@@ -263,23 +301,21 @@ func (h *invalidateHandler) clearRefreshQueue(q *cscRefreshQueue) {
 	if n := len(h.refreshStack); n > 0 {
 		h.refresh = h.refreshStack[n-1]
 	}
+	// Repoint the batcher at the surviving binding (nil if none) BEFORE stopping it,
+	// so the stop-drain offers evicted-hot keys to the live survivor's refresher, not
+	// the closing owner's — whose drainer is already gone, so its offers would just be
+	// dropped. An in-flight apply already holding the old pointer feeds its current
+	// batch to the old queue: a bounded, benign residual.
 	if h.batcher != nil {
-		// Repoint the batcher at the surviving binding (nil if none) BEFORE stopping
-		// it, so the stop-drain offers evicted-hot keys to the live survivor's
-		// refresher, not the closing owner's — whose drainer is already gone, so its
-		// offers would just be dropped. An in-flight apply already holding the old
-		// pointer feeds its current batch to the old queue: a bounded, benign residual.
-		// stop+join so the closing owner's teardown is synchronous (no straggler
-		// goroutine applying after Close returned).
-		b := h.batcher
-		h.batcher = nil
-		b.refresh.Store(h.refresh)
-		b.stop()
-		b.join()
+		h.batcher.refresh.Store(h.refresh)
 	}
+	return h.detachBatcherLocked()
 }
 
-func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
+// setRefreshQueue binds q as the active refresh queue and returns the detached
+// batcher (nil when none) so the caller can join() it OUTSIDE h.mu — the attach
+// stays synchronous without holding the join under the handler lock.
+func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) *cscInvalBatcher {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if q != nil {
@@ -295,22 +331,17 @@ func (h *invalidateHandler) setRefreshQueue(q *cscRefreshQueue) {
 		}
 	}
 	if h.refresh == q {
-		return
+		return nil
 	}
 	h.refresh = q
 	// A running batcher was created with the previous binding; drop it so the next
 	// invalidation rebuilds with the new one (stop() flushes, so no queued delete
 	// is lost). Repoint it at the new binding first, so the stop-drain feeds hot
-	// keys to q rather than the superseded refresher, and JOIN so the attach is
-	// synchronous — the drain has fully applied before the attaching client
-	// proceeds.
+	// keys to q rather than the superseded refresher.
 	if h.batcher != nil {
-		b := h.batcher
-		h.batcher = nil
-		b.refresh.Store(h.refresh)
-		b.stop()
-		b.join()
+		h.batcher.refresh.Store(h.refresh)
 	}
+	return h.detachBatcherLocked()
 }
 
 // HandlePushNotification decodes ["invalidate", <keys>] notifications. A nil
@@ -423,40 +454,47 @@ func (h *invalidateHandler) HandlePushNotification(
 
 func (h *invalidateHandler) release() {
 	h.mu.Lock()
+	var b *cscInvalBatcher
 	if h.users > 0 {
-		h.releaseLocked()
+		b = h.releaseLocked()
 	}
 	h.mu.Unlock()
+	// Join OUTSIDE h.mu: the batcher's stop-drain must not run under the handler
+	// lock (it would stall a sibling on the hot path). release() is reached only from
+	// the drainer goroutine's exit (Close or self-disable), never the GC finalizer, so
+	// blocking here is fine and gives Close a synchronous, no-straggler teardown.
+	if b != nil {
+		b.join()
+	}
 }
 
-func (h *invalidateHandler) releaseLocked() {
+// releaseLocked drops one handler user and, on the last release, tears the binding
+// down. It DETACHES and signals the batcher but does not join it (see
+// detachBatcherLocked); it returns the detached batcher so release() can join
+// OUTSIDE h.mu. Returns nil while other users remain.
+func (h *invalidateHandler) releaseLocked() *cscInvalBatcher {
 	h.users--
-	if h.users == 0 {
-		h.cache = nil
-		h.keyPrefix = ""
-		// Stop AND join the windowed batcher so its goroutine does not outlive the
-		// binding: the last user is closing, and without the join the stop-drain
-		// applied asynchronously after Close returned — a straggler goroutine, and
-		// on a shared injected cache a late apply could evict an entry a successor
-		// client just repopulated. join is safe under h.mu (run() takes no handler
-		// locks; its drain is memory-bounded). A later re-acquire starts a fresh
-		// batcher via ensureBatcher.
-		if h.batcher != nil {
-			b := h.batcher
-			h.batcher = nil
-			b.stop()
-			b.join()
-		}
-		// A fresh binding folds in its own window; do not inherit this one's.
-		h.invalBatchWindow = 0
-		h.invalBatchWindowSet = false
-		// Clear the refresh bindings with the binding itself: a client dropped
-		// without Close never runs clearRefreshQueue, and a successor reusing
-		// this handler must not inherit (or later restore) a dead queue whose
-		// consumer is gone — hot entries offered there would vanish silently.
-		h.refresh = nil
-		h.refreshStack = nil
+	if h.users != 0 {
+		return nil
 	}
+	h.cache = nil
+	h.keyPrefix = ""
+	// Stop the windowed batcher so its goroutine does not outlive the binding.
+	// Detached+signalled here; release() joins it outside the lock, so the last user
+	// closing gets a synchronous teardown (on a shared injected cache a late apply
+	// could otherwise evict an entry a successor client just repopulated). A later
+	// re-acquire starts a fresh batcher via ensureBatcher.
+	b := h.detachBatcherLocked()
+	// A fresh binding folds in its own window; do not inherit this one's.
+	h.invalBatchWindow = 0
+	h.invalBatchWindowSet = false
+	// Clear the refresh bindings with the binding itself: a client dropped
+	// without Close never runs clearRefreshQueue, and a successor reusing
+	// this handler must not inherit (or later restore) a dead queue whose
+	// consumer is gone — hot entries offered there would vanish silently.
+	h.refresh = nil
+	h.refreshStack = nil
+	return b
 }
 
 // sameCache compares Cache interface values without panicking when an
@@ -1050,9 +1088,14 @@ func (c *baseClient) startBackgroundDrainer() {
 				// cache+processor keeps feeding invalidations to a refresher whose
 				// cscActive is false — silently breaking the survivor's refresh.
 				// clearRefreshQueue restores the previous live binding; idempotent,
-				// so the redundant clean-Close call is harmless.
+				// so the redundant clean-Close call is harmless. This runs on the
+				// drainer goroutine (never the GC finalizer), so join the detached
+				// batcher outside h.mu for a synchronous, no-straggler teardown before
+				// close(h.done) below (release() joins its own batcher likewise).
 				if c.cscRefreshQueue != nil {
-					h.invalidateHandler.clearRefreshQueue(c.cscRefreshQueue)
+					if b := h.invalidateHandler.clearRefreshQueue(c.cscRefreshQueue); b != nil {
+						b.join()
+					}
 				}
 				h.invalidateHandler.release()
 			}

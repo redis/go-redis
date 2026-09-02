@@ -3512,8 +3512,13 @@ func TestBatcherRepointedToSurvivorOnRefreshClose(t *testing.T) {
 	}
 
 	// Active owner B closes: survivor A is restored AND the batcher is repointed at
-	// A before its stop-drain.
-	h.clearRefreshQueue(qB)
+	// A before its stop-drain. clearRefreshQueue now detaches+signals only and
+	// returns the batcher; join it (its run() was started by ensureBatcher) so the
+	// stop-drain finishes before the test ends and no goroutine touches the shared
+	// LocalCache concurrently with the next test under -race.
+	if bb := h.clearRefreshQueue(qB); bb != nil {
+		bb.join()
+	}
 	if got := b.refresh.Load(); got != qA {
 		t.Fatalf("after owner close: batcher refresh = %p, want survivor qA %p (stop-drain would feed the dead owner)", got, qA)
 	}
