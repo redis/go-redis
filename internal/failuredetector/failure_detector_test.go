@@ -729,6 +729,54 @@ func TestCommandFailureDetector_ConcurrentRecordWithReaders(t *testing.T) {
 	wg.Wait()
 }
 
+// TestCommandFailureDetector_StaleWriterYieldsToNewerBucket pins that a writer
+// descheduled for at least one ring lap between reading its timestamp and
+// stamping its bucket does NOT clobber a newer bucket a concurrent writer
+// installed in the same slot — clobbering would discard that slot's recorded
+// outcomes and could keep ShouldFailover from tripping. A genuine future epoch
+// (backward clock step) is still rebased.
+func TestCommandFailureDetector_StaleWriterYieldsToNewerBucket(t *testing.T) {
+	fd := NewCommandFailureDetector(CommandFailureDetectorConfig{
+		MinNumFailures:         1,
+		FailureRateThreshold:   0.5,
+		FailureDetectionWindow: 10 * time.Millisecond,
+		NumBuckets:             10, // bucketWidth = 1ms, ring lap = 10ms
+	})
+	start := time.Unix(1_000_000, 0) // bucket-aligned (whole seconds)
+	advance := withFakeClock(fd, start)
+
+	// A writer reads the clock at T0, then stalls.
+	staleNano := fd.now().UnixNano()
+
+	// Real time advances a full ring lap; a concurrent writer stamps the same
+	// slot with the newer epoch and records a failure there.
+	advance(10 * time.Millisecond)
+	newer := fd.bucketFor(fd.now().UnixNano())
+	newer.failures.Add(1)
+
+	// The stalled writer resumes with its OLD timestamp while the clock now
+	// reads the later time. It must yield to the newer bucket.
+	got := fd.bucketFor(staleNano)
+	if got != newer {
+		t.Fatalf("stale writer clobbered the newer bucket (its epoch %d vs newer %d)", got.epochNano, newer.epochNano)
+	}
+	if got.failures.Load() != 1 {
+		t.Fatalf("newer bucket lost its recorded failure: failures=%d, want 1", got.failures.Load())
+	}
+
+	// A genuine future epoch (clock stepped backward, VM restore) is still
+	// rebased, not yielded to. Step the clock back to T0: the slot now holds a
+	// future epoch relative to now, so bucketFor must stamp a fresh one.
+	advance(-10 * time.Millisecond) // now == T0 again; slot epoch is in the future
+	rebased := fd.bucketFor(fd.now().UnixNano())
+	if rebased == newer {
+		t.Fatal("rollback future-epoch bucket was yielded to instead of rebased")
+	}
+	if rebased.epochNano != start.UnixNano() {
+		t.Fatalf("rebased epoch = %d, want %d (current slot after rollback)", rebased.epochNano, start.UnixNano())
+	}
+}
+
 // BenchmarkCommandFailureDetector_RecordSuccess measures the cost of the
 // hot path under contention so we can compare future implementations.
 func BenchmarkCommandFailureDetector_RecordSuccess(b *testing.B) {

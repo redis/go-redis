@@ -318,13 +318,25 @@ func (d *CommandFailureDetector) bucketFor(nowNano int64) *bucketState {
 		if st != nil && st.epochNano == bucketStart {
 			return st
 		}
+		// A slot holding a LATER epoch than ours is ambiguous. Either a
+		// concurrent writer advanced the ring a full lap while this caller was
+		// descheduled between reading its timestamp and here — the epoch is real
+		// (<= the current clock) and its recorded outcomes must be kept — or a
+		// backward wall-clock step left a future epoch (> the current clock)
+		// that describes no live bucket. Re-read the clock to tell them apart:
+		// yield to the concurrent writer so a stale caller cannot clobber a
+		// newer bucket's outcomes; only a rollback artifact falls through to be
+		// rebased below.
+		if st != nil && st.epochNano > bucketStart && st.epochNano <= d.now().UnixNano() {
+			return st
+		}
 		// st is nil (slot never used), holds an older epoch (a previous lap of
-		// the ring), or holds a FUTURE epoch left by a backward wall-clock step
+		// the ring), or holds a future epoch from a backward wall-clock step
 		// (VM restore, NTP step). None describe the current bucket, so stamp a
-		// fresh one. Rebasing the future-epoch case is what keeps outcomes
-		// recorded after a rollback visible to snapshot (which excludes future
-		// epochs); returning the stale slot would silently drop them until wall
-		// time caught back up.
+		// fresh one. Rebasing the rollback case is what keeps outcomes recorded
+		// after a rollback visible to snapshot (which excludes future epochs);
+		// returning the stale slot would silently drop them until wall time
+		// caught back up.
 		fresh := &bucketState{epochNano: bucketStart}
 		if b.state.CompareAndSwap(st, fresh) {
 			return fresh
