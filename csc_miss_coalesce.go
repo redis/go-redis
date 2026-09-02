@@ -75,7 +75,25 @@ const (
 	// pool turns — instead of coalescing. 8x one batch lets several full batches be in
 	// flight before shedding.
 	cscMissWireBudgetBytes = 8 * cscMissBatchBytes // 8 MiB
+	// cscMissMaxConcurrentSerialize caps how many fetch calls may hold a wire
+	// snapshot mid-serialization at once. reserveWireBytes gates on cmdApproxBytes,
+	// which UNDERCOUNTS a variable-size arg, so a concurrent burst of large misses
+	// can all pass the byte reservation and each allocate its full wireBuf BEFORE
+	// reconcileWireBytes sheds — a transient set of multi-MiB snapshots the budget
+	// never sees, which can exhaust memory even though none stay queued. Bounding the
+	// concurrent set to budget/batch keeps that peak at O(budget): at most this many
+	// batch-sized snapshots coexist before any is reconciled. A caller that cannot
+	// get a slot promptly sheds to the pooled path rather than block. Serialization
+	// is CPU-only and brief, so normal small-command bursts pass without shedding.
+	cscMissMaxConcurrentSerialize = cscMissWireBudgetBytes / cscMissBatchBytes // 8
 )
+
+// cscMissSerializeWait is how long acquireSerialize waits for a serialization slot
+// before shedding to the pooled path. Serialization never blocks on I/O (it writes
+// to an in-memory buffer), so a slot frees in microseconds; the wait only absorbs
+// brief scheduling contention. A var so a test can set it to 0 (shed immediately)
+// for a deterministic admission assertion.
+var cscMissSerializeWait = 5 * time.Millisecond
 
 // cscMissWriteBatchBytes returns the effective per-batch size cap. It is the
 // connection's write buffer, limited to at most cscMissBatchBytes. When a batch
@@ -185,6 +203,21 @@ type cscMissCoalescer struct {
 	// serializing and subtracts it when done; over budget it sheds to the pooled path.
 	wireBytes atomic.Int64
 
+	// serializeSem bounds how many fetch calls hold a wire snapshot mid-serialization
+	// at once (see cscMissMaxConcurrentSerialize). Buffered to the cap; a slot is held
+	// ONLY across writeCmd+reconcile and released before the enqueue send, so it
+	// bounds the transient allocation set without coupling to queue backpressure — no
+	// slot is ever held across a channel send or a reply wait, so it cannot deadlock
+	// the single-worker session. Nil in test-constructed literals: acquire/release
+	// treat a nil sem as unbounded and skip the serializing/maxSerializing counters
+	// too (so they stay paired), so those keep working; production always sizes it.
+	serializeSem chan struct{}
+	// serializing/maxSerializing track the current and peak concurrent serializations
+	// (updated under a held slot), so a test can assert the bound holds. Internal,
+	// like abandonedApplies.
+	serializing    atomic.Int64
+	maxSerializing atomic.Uint64
+
 	batched    atomic.Uint64 // reqs that went through a batch
 	batches    atomic.Uint64 // batches flushed
 	failed     atomic.Uint64 // reqs settled as errors (conn failure)
@@ -220,6 +253,7 @@ func (c *baseClient) startCSCMissCoalescer() {
 		ch:            make(chan *cscMissReq, cscMissQueueDepth),
 		stop:          make(chan struct{}),
 		maxBatchBytes: cscMissWriteBatchBytes(c.opt),
+		serializeSem:  make(chan struct{}, cscMissMaxConcurrentSerialize),
 	}
 	c.cscMissCoalescer.Store(mc)
 	// N independent full-duplex sessions, each holding its own connection and
@@ -288,6 +322,60 @@ func (mc *cscMissCoalescer) reserveWireBytes(n int64) bool {
 }
 
 func (mc *cscMissCoalescer) releaseWireBytes(n int64) { mc.wireBytes.Add(-n) }
+
+// acquireSerialize takes a serialization slot (see serializeSem/
+// cscMissMaxConcurrentSerialize) and reports whether it succeeded. It tries once
+// without blocking, then waits up to cscMissSerializeWait — a slot frees in
+// microseconds because serialization never blocks on I/O — and sheds (returns
+// false) on the wait or on Close rather than blocking unbounded. A nil sem (test
+// literal) is unbounded. Every true return is paired with exactly one
+// releaseSerialize.
+func (mc *cscMissCoalescer) acquireSerialize() bool {
+	if mc.serializeSem == nil {
+		return true
+	}
+	select {
+	case mc.serializeSem <- struct{}{}:
+		mc.noteSerializing()
+		return true
+	default:
+	}
+	if cscMissSerializeWait <= 0 {
+		return false
+	}
+	t := time.NewTimer(cscMissSerializeWait)
+	defer t.Stop()
+	select {
+	case mc.serializeSem <- struct{}{}:
+		mc.noteSerializing()
+		return true
+	case <-t.C:
+		return false
+	case <-mc.stop:
+		return false
+	}
+}
+
+// releaseSerialize returns a slot taken by a successful acquireSerialize.
+func (mc *cscMissCoalescer) releaseSerialize() {
+	if mc.serializeSem == nil {
+		return
+	}
+	mc.serializing.Add(-1)
+	<-mc.serializeSem
+}
+
+// noteSerializing records the peak concurrent serialization count for the
+// admission-bound test; called only under a freshly taken slot.
+func (mc *cscMissCoalescer) noteSerializing() {
+	n := uint64(mc.serializing.Add(1))
+	for {
+		m := mc.maxSerializing.Load()
+		if n <= m || mc.maxSerializing.CompareAndSwap(m, n) {
+			return
+		}
+	}
+}
 
 // reconcileWireBytes corrects req's reservation to the ACTUAL serialized size once
 // req.wire is built, and reports whether the request still fits the budget. The
@@ -395,6 +483,18 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// (pre-I/O backpressure aborts on caller cancellation regardless of the policy —
 	// see that select). mc.stop stays the unconditional shutdown signal.
 	wctx := mc.c.context(ctx)
+	// Bound the number of callers serializing a wire snapshot AT ONCE before
+	// allocating this one: reserveWireBytes above gates on cmdApproxBytes, which
+	// undercounts variable-size args, so a concurrent burst can all pass it and each
+	// allocate a full multi-MiB wireBuf before reconcileWireBytes sheds — a transient
+	// set the byte budget never sees (#3965 F3). The slot is held ONLY across
+	// writeCmd+reconcile and released before the enqueue send below, so it never
+	// couples to queue backpressure. A caller that cannot get a slot sheds to the
+	// pooled path (the !enqueued defer releases the byte reservation).
+	if !mc.acquireSerialize() {
+		mc.c.csc.Cancel(cacheKey, token)
+		return nil, errCSCRetryUncached
+	}
 	// Snapshot the wire form NOW, while the caller still owns cmd: the session
 	// writer writes these engine-owned bytes and never reads cmd again, so an
 	// abandoning caller can immediately reuse mutable args (e.g. a []byte key)
@@ -404,6 +504,7 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// interlock) before writing the result into it.
 	var wireBuf bytes.Buffer
 	if err := writeCmd(proto.NewWriter(&wireBuf), cmd); err != nil {
+		mc.releaseSerialize()
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, err
 	}
@@ -414,7 +515,11 @@ func (mc *cscMissCoalescer) fetch(ctx context.Context, cmd Cmder, cacheKey strin
 	// path instead of enqueueing an over-budget snapshot (the !enqueued defer releases
 	// the estimate). Without this, concurrent undercounted misses all pass the
 	// pre-serialize gate and then blow the budget while every wire stays queued.
-	if !mc.reconcileWireBytes(req) {
+	fits := mc.reconcileWireBytes(req)
+	// Release the serialization slot BEFORE the enqueue select: the snapshot exists
+	// and is reconciled, so the transient-allocation concern the slot bounds is over.
+	mc.releaseSerialize()
+	if !fits {
 		mc.c.csc.Cancel(cacheKey, token)
 		return nil, errCSCRetryUncached
 	}

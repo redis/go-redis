@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/redis/go-redis/v9/internal/proto"
 )
@@ -176,5 +177,97 @@ func TestCSCMissCoalescerShedsWhenActualOverBudget(t *testing.T) {
 	mc.releaseWireBytes(req.reserved)
 	if got := mc.wireBytes.Load(); got != preload {
 		t.Fatalf("after release wireBytes = %d, want preload %d", got, preload)
+	}
+}
+
+// TestCSCMissCoalescerBoundsConcurrentSerialize pins #3965 F3: the serialization
+// admission must cap how many callers hold a wire snapshot at once, so a concurrent
+// burst of undercounted misses cannot coexist an unbounded set of multi-MiB
+// snapshots before reconcileWireBytes sheds. Single-threaded and deterministic: it
+// fills the semaphore, then confirms further acquisitions shed (never exceed the
+// cap) and that a release frees exactly one slot.
+func TestCSCMissCoalescerBoundsConcurrentSerialize(t *testing.T) {
+	// Shed immediately when the sem is full, so the over-cap attempts are
+	// deterministic (no timing dependence on the wait).
+	origWait := cscMissSerializeWait
+	cscMissSerializeWait = 0
+	defer func() { cscMissSerializeWait = origWait }()
+
+	const cap = cscMissMaxConcurrentSerialize
+	mc := &cscMissCoalescer{
+		serializeSem: make(chan struct{}, cap),
+		stop:         make(chan struct{}),
+	}
+
+	// Fill every slot: the sem has exactly cap slots, so all cap acquisitions win.
+	for i := 0; i < cap; i++ {
+		if !mc.acquireSerialize() {
+			t.Fatalf("acquire %d/%d failed with the sem not yet full", i+1, cap)
+		}
+	}
+	if got := int(mc.maxSerializing.Load()); got != cap {
+		t.Fatalf("maxSerializing = %d after filling; want %d", got, cap)
+	}
+
+	// With every slot held, further acquisitions must SHED — never past the cap.
+	for i := 0; i < cap*3; i++ {
+		if mc.acquireSerialize() {
+			t.Fatal("acquireSerialize admitted a caller past the cap (#3965 F3)")
+		}
+	}
+	if got := int(mc.maxSerializing.Load()); got != cap {
+		t.Fatalf("maxSerializing = %d after over-cap attempts; want %d (the cap must bind)", got, cap)
+	}
+
+	// A release frees exactly one slot.
+	mc.releaseSerialize()
+	if !mc.acquireSerialize() {
+		t.Fatal("acquireSerialize failed after a release freed a slot")
+	}
+}
+
+// TestCSCMissCoalescerFetchShedsWhenSerializeSaturated pins that fetch actually
+// CONSULTS the serialization admission (#3965 F3): with every slot held and a zero
+// wait, a fetch must shed to the pooled path (errCSCRetryUncached) before it
+// serializes or enqueues. This is the fetch-level red-check the admission-only test
+// lacks — remove the acquireSerialize call from fetch and this hangs on the
+// un-settled reply wait (timeout failure).
+func TestCSCMissCoalescerFetchShedsWhenSerializeSaturated(t *testing.T) {
+	origWait := cscMissSerializeWait
+	cscMissSerializeWait = 0 // shed immediately when the sem is full
+	defer func() { cscMissSerializeWait = origWait }()
+
+	cache := NewLocalCache(CacheConfig{MaxEntries: 8})
+	mc := &cscMissCoalescer{
+		c:            &baseClient{opt: &Options{}, csc: cache},
+		ch:           make(chan *cscMissReq, 1),
+		stop:         make(chan struct{}),
+		serializeSem: make(chan struct{}, cscMissMaxConcurrentSerialize),
+	}
+	// Saturate every serialization slot so fetch's acquireSerialize must shed.
+	for i := 0; i < cscMissMaxConcurrentSerialize; i++ {
+		mc.serializeSem <- struct{}{}
+	}
+
+	token, fetch := cache.Reserve("ck", []string{"rk"})
+	if token == 0 || !fetch {
+		t.Fatalf("Reserve = (%d, %v); want a fresh reservation", token, fetch)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := mc.fetch(context.Background(), makeCmd("get", "rk"), "ck", token)
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != errCSCRetryUncached {
+			t.Fatalf("fetch returned %v; want errCSCRetryUncached (a saturated serialization "+
+				"admission must shed before serializing/enqueueing)", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch did not shed on a saturated serialization admission; it must consult " +
+			"acquireSerialize before writeCmd (#3965 F3)")
 	}
 }
