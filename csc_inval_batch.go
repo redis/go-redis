@@ -76,6 +76,10 @@ const cscInvalNoHorizon = -1
 
 type cscInvalBatcher struct {
 	window time.Duration
+	// batchMax is the size-cap flush threshold; 0 means cscInvalBatchMax. Per-batcher
+	// (not a mutable global) so a test can lower it without racing other batchers'
+	// worker goroutines reading it under -race; production leaves it 0.
+	batchMax int
 	// cache is snapshotted at creation (batcher lifetime is inside the binding
 	// lifetime): the release-time stop-drain must still apply queued deletes AFTER
 	// releaseLocked nils h.cache, or a successor reusing the shared cache serves
@@ -347,6 +351,10 @@ func (b *cscInvalBatcher) run() {
 	// Closed LAST (deferred first): join() unblocks only after the stop-drain and
 	// final flush below have fully applied, making a stop+join teardown synchronous.
 	defer close(b.done)
+	batchMax := b.batchMax
+	if batchMax <= 0 {
+		batchMax = cscInvalBatchMax
+	}
 	t := time.NewTimer(b.window)
 	defer t.Stop()
 	pending := make([]cscInvalItem, 0, 256)
@@ -354,7 +362,16 @@ func (b *cscInvalBatcher) run() {
 	// flush bumped the epoch must be re-appended (the old occurrence will be
 	// skipped by apply), or its post-flush delete would be lost to dedup.
 	seen := make(map[string]uint64, 256)
-	flush := func() {
+	clearSeen := func() {
+		for k := range seen {
+			delete(seen, k)
+		}
+	}
+	// applyPending applies the current batch and resets pending, but does NOT clear
+	// seen — the caller decides. A size-cap flush KEEPS seen so per-key dedup spans
+	// the whole collection window (see add); a window/stop flush pairs this with
+	// clearSeen to start a fresh window.
+	applyPending := func() {
 		if len(pending) == 0 {
 			return
 		}
@@ -371,9 +388,10 @@ func (b *cscInvalBatcher) run() {
 			b.apply(pending)
 		}()
 		pending = pending[:0]
-		for k := range seen {
-			delete(seen, k)
-		}
+	}
+	flush := func() {
+		applyPending()
+		clearSeen()
 	}
 	// add runs one item through the epoch-scoped dedup and size-flushes at the
 	// cap. Shared by the ch, spill, and stop-drain paths so spilled items get the
@@ -388,8 +406,20 @@ func (b *cscInvalBatcher) run() {
 		// once, so it becomes a single deletion. The incoming push was already
 		// counted at the handler, so the dropped duplicate needs no accounting — it
 		// just won't add a deletion, which is exactly the dedup signal.
-		if len(pending) >= cscInvalBatchMax {
-			flush()
+		if len(pending) >= batchMax {
+			// Size-cap flush: apply the batch but KEEP seen. Clearing it here (as the
+			// old code did) reset dedup mid-window WITHOUT bumping the epoch, so a key
+			// straddling the cap was applied in BOTH halves — and under
+			// refresh-on-invalidate the first apply refetches+republishes the entry
+			// and the second apply then evicts that fresh copy (#3965 F1). Bumping the
+			// epoch instead (like drop()) is unsafe: epoch is captured at ENQUEUE and
+			// the bump is only correct when paired with a full cache Flush, which this
+			// path does not do — items still in ch/spill would be silently skipped and
+			// their deletes lost. Keeping seen preserves "one delete per key per
+			// window". seen stays bounded: the timer flush clears it each window, and a
+			// true flood trips the spill caps into a full Flush (flushReq), which bumps
+			// the epoch and clears everything safely because it DOES Flush the cache.
+			applyPending()
 			t.Reset(b.window)
 		}
 	}
@@ -423,9 +453,7 @@ func (b *cscInvalBatcher) run() {
 		// individual deletions (the Flush invalidates wholesale). Incoming pushes
 		// were already counted at the handler, so just reset the batch.
 		pending = pending[:0]
-		for k := range seen {
-			delete(seen, k)
-		}
+		clearSeen()
 	}
 	for {
 		select {

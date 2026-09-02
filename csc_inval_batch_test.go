@@ -407,3 +407,74 @@ func TestInvalBatcherChByteReservationIsAtomic(t *testing.T) {
 			got, cscInvalSpillMaxBytes, producers)
 	}
 }
+
+// TestInvalBatcherSizeCapPreservesDedup pins #3965 F1: a key straddling the
+// size-cap flush must be applied ONCE per window, not once on each side of the
+// cap. The old size-cap flush cleared the worker's per-epoch dedup (seen) WITHOUT
+// bumping the epoch, so a key re-appearing after the cap was applied a SECOND time
+// — and under refresh-on-invalidate that second apply evicts the entry the first
+// apply just refetched. Here the refetch is simulated by re-fulfilling the entry
+// between the two occurrences; with the dedup preserved the second occurrence is a
+// no-op and the refreshed entry survives.
+func TestInvalBatcherSizeCapPreservesDedup(t *testing.T) {
+	const batchMax = 8 // small cap so the size-cap flush fires deterministically
+
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 1024})
+	mkValid := func(cacheKey, redisKey string) {
+		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// window never fires: only the size-cap flush and the stop-drain apply.
+	b := newTestBatcher(lc, batchMax*2, time.Hour)
+	b.batchMax = batchMax // per-batcher, set before the worker starts (no global race)
+	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 64)}
+	q.sinceToken.Store(lc.LRUClock()) // seed the horizon so the entry reads as hot
+	b.refresh.Store(q)
+
+	mkValid("ck:hot", "rk:hot") // the target entry, read after the horizon
+
+	go b.run()
+
+	// Enqueue the target FIRST, then fillers so pending reaches the cap and the
+	// size-cap flush applies the target in the first half of the window.
+	b.enqueue("rk:hot")
+	for i := 0; i < batchMax-1; i++ {
+		b.enqueue("rk:filler" + strconv.Itoa(i))
+	}
+
+	// Wait for the size-cap flush to apply the first occurrence (apply #1 deletes
+	// the target; under refresh this is where it would be refetched+republished).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok := lc.Get(ctx, "ck:hot"); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("size-cap flush did not apply the first occurrence")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Simulate the refresh republish: the refetch puts a fresh entry back.
+	mkValid("ck:hot", "rk:hot")
+
+	// The SAME key arrives again, post-flush. With dedup preserved across the
+	// size-cap flush this is a no-op; without the fix it is applied again and
+	// evicts the just-refetched entry.
+	b.enqueue("rk:hot")
+
+	b.stop()
+	b.join()
+
+	if _, ok := lc.Get(ctx, "ck:hot"); !ok {
+		t.Fatal("the re-appearing key was applied a SECOND time and evicted the " +
+			"refreshed entry; the size-cap flush must preserve per-key dedup (#3965 F1)")
+	}
+}
