@@ -532,8 +532,13 @@ func (cb *CircuitBreaker) recordFailureHalfOpenLocked() {
 // example a failed startup or health probe) and want to open the circuit
 // without synthesizing FailureThreshold individual RecordFailure calls.
 func (cb *CircuitBreaker) ForceOpen() {
-	cb.lastFailure.Store(time.Now().UnixNano())
 	cb.transitionMu.Lock()
+	// Store lastFailure UNDER the lock, before the swap: a concurrent Reset
+	// (also under the lock) must not be able to clear it between the store and
+	// the swap. Otherwise the swap could publish Open with lastFailure == 0,
+	// which CheckState refuses to advance to half-open, wedging the circuit open
+	// forever past OpenTimeout.
+	cb.lastFailure.Store(time.Now().UnixNano())
 	// Swap, capturing the old state for the callback; skip the notify (and the
 	// counter clear) if it was already Open, so a redundant ForceOpen is a no-op.
 	old := State(cb.state.Swap(int32(StateOpen)))

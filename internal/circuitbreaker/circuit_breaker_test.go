@@ -1192,6 +1192,25 @@ func TestCircuitBreaker_ResetRaceKeepsThresholdConsistent(t *testing.T) {
 	}
 }
 
+// TestCircuitBreaker_ForceOpenRaceKeepsTimestamp exercises ForceOpen racing
+// Reset under -race. Like the Reset/RecordFailure race the exact interleaving
+// can't be forced, so this is a stress/invariant check: whenever ForceOpen
+// leaves the circuit Open, lastFailure must be non-zero — otherwise CheckState
+// refuses to advance it to half-open and the breaker wedges open forever.
+func TestCircuitBreaker_ForceOpenRaceKeepsTimestamp(t *testing.T) {
+	for iter := 0; iter < 500; iter++ {
+		cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Hour})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cb.ForceOpen() }()
+		go func() { defer wg.Done(); cb.Reset() }()
+		wg.Wait()
+		if cb.State() == StateOpen && cb.Stats().LastFailureTime.IsZero() {
+			t.Fatalf("iter %d: circuit Open with a zero lastFailure — CheckState cannot advance it to half-open (wedged open)", iter)
+		}
+	}
+}
+
 func TestCircuitBreaker_ForceOpen(t *testing.T) {
 	config := Config{
 		FailureThreshold: 100, // large: ForceOpen must not depend on synthesizing failures
