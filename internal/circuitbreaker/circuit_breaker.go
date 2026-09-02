@@ -295,10 +295,16 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 // closes on) its slot at most once, and only while it is still the current
 // half-open episode; a stale reservation — the circuit cycled open -> half-open
 // since it was taken — records nothing. A closed-state reservation (held ==
-// false) records an external success, exactly like RecordExternalSuccess.
+// false) clears the failure count while the circuit is still closed and
+// records nothing once it has moved on: its successes predate the failures
+// that opened the circuit and are no evidence of recovery, and counting them
+// would let one in-flight batch close a half-open episode it never probed.
+// Out-of-band evidence goes through RecordExternalSuccess, which does count.
 func (cb *CircuitBreaker) RecordSuccessFor(r Reservation) {
 	if !r.held {
-		cb.recordSuccess(false)
+		if State(cb.state.Load()) == StateClosed {
+			cb.failures.Store(0)
+		}
 		return
 	}
 	if r.settled.Swap(true) {

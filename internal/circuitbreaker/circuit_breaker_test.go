@@ -1034,6 +1034,68 @@ func TestCircuitBreaker_ReservationSettlesOnce(t *testing.T) {
 // TestCircuitBreaker_ForceOpen pins that ForceOpen transitions straight to Open
 // regardless of the failure count, blocks requests, notifies once, and is a
 // no-op when already open.
+// TestCircuitBreaker_ClosedAdmissionDoesNotFeedHalfOpen pins the closed-state
+// reservation semantics: a slot-less admission clears the failure count while
+// the circuit is still closed, but its successes never count toward closing a
+// LATER half-open episode — they predate the failures that opened the circuit.
+// Out-of-band evidence (RecordExternalSuccess) still counts.
+func TestCircuitBreaker_ClosedAdmissionDoesNotFeedHalfOpen(t *testing.T) {
+	cb := New(Config{
+		FailureThreshold:    3,
+		SuccessThreshold:    2,
+		MaxHalfOpenRequests: 1,
+		OpenTimeout:         20 * time.Millisecond,
+	})
+
+	// Closed admission: no slot, no generation.
+	ok, closedRes := cb.AllowReserve()
+	if !ok || closedRes.held {
+		t.Fatalf("closed AllowReserve = (%v, held=%v), want admitted without a slot", ok, closedRes.held)
+	}
+
+	// While still closed, its success clears the failure count.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	cb.RecordSuccessFor(closedRes)
+	if got := cb.Stats().Failures; got != 0 {
+		t.Fatalf("failures after closed-admission success = %d, want 0", got)
+	}
+	cb.RecordFailure()
+	cb.RecordFailure()
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("state after 2 failures post-reset = %v, want closed (the reset must have applied)", st)
+	}
+
+	// Open the circuit and let it reach half-open.
+	cb.RecordFailure() // third consecutive failure -> open
+	if st := cb.State(); st != StateOpen {
+		t.Fatalf("state = %v, want open", st)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if st := cb.CheckState(); st != StateHalfOpen {
+		t.Fatalf("state after grace = %v, want half-open", st)
+	}
+
+	// The stale closed admission reports N successes (a batch recorded late):
+	// none may count toward the recovery it never probed.
+	for i := 0; i < 5; i++ {
+		cb.RecordSuccessFor(closedRes)
+	}
+	if st := cb.State(); st != StateHalfOpen {
+		t.Fatalf("state after stale closed-admission successes = %v, want half-open", st)
+	}
+	if got := cb.Stats().Successes; got != 0 {
+		t.Fatalf("half-open successes credited to a closed admission = %d, want 0", got)
+	}
+
+	// Out-of-band evidence still closes the circuit.
+	cb.RecordExternalSuccess()
+	cb.RecordExternalSuccess()
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("state after 2 external successes = %v, want closed", st)
+	}
+}
+
 func TestCircuitBreaker_ForceOpen(t *testing.T) {
 	config := Config{
 		FailureThreshold: 100, // large: ForceOpen must not depend on synthesizing failures
