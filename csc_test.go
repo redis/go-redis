@@ -3633,3 +3633,176 @@ func TestGetConnLimitedSurfacesRejection(t *testing.T) {
 		t.Fatal("a limiter rejection is tagged for the coalescer re-run; it would call Allow twice")
 	}
 }
+
+// --- CSC teardown lifecycle (F1/F2/F3) -------------------------------------
+
+// newCSCTeardownClient builds a client with BOTH refresh-on-invalidate and
+// reader-miss coalescing enabled and a fast drain tick. No live redis is needed:
+// the drainer, refresher, and coalescer goroutines all park at startup (no idle
+// conns to drain, no misses to fetch), which is exactly the teardown surface these
+// tests exercise. It asserts all three background workers are running.
+func newCSCTeardownClient(t *testing.T) (*Client, *cscMissCoalescer, *cscRevalidateHandle, *cscDrainHandle) {
+	t.Helper()
+	client := NewClient(&Options{
+		Addr:                               "127.0.0.1:0",
+		Protocol:                           3,
+		ClientSideCacheConfig:              &ClientSideCacheConfig{MaxEntries: 16, DrainInterval: time.Millisecond},
+		ClientSideCacheRefreshOnInvalidate: true,
+		ClientSideCacheCoalesceMisses:      true,
+	})
+	mc := client.cscMissCoalescer.Load()
+	rh := client.cscRefreshHandle
+	dh := client.cscDrainHandle
+	if mc == nil || rh == nil || dh == nil {
+		client.Close()
+		t.Fatalf("precondition: coalescer(%v) refresher(%v) drainer(%v) must all be running", mc, rh, dh)
+	}
+	return client, mc, rh, dh
+}
+
+// TestCSCSelfDisableStopsRefresherAndCoalescer pins F1: when CSC turns ITSELF off
+// (here via disableCSCServing; also custom-processor damping), the drainer exits
+// its loop and its defer must tear the refresher and coalescer down the same way
+// Close does — otherwise those goroutines run for the client's life (the refresher
+// parked on its window, a coalescer session able to hold a pool connection). Before
+// the fix the defer only unbound the queue and released the handler, so the
+// refresher goroutine never joined and this test times out on rh.done.
+func TestCSCSelfDisableStopsRefresherAndCoalescer(t *testing.T) {
+	client, mc, rh, dh := newCSCTeardownClient(t)
+	defer client.Close()
+
+	// Self-disable: the drainer observes cscActive=false on its next (~1ms) tick,
+	// exits, and (with the fix) stops the refresher + coalescer.
+	client.disableCSCServing(context.Background(), "test self-disable")
+
+	select {
+	case <-rh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher goroutine leaked: self-disable did not join it")
+	}
+	select {
+	case <-mc.stop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalescer leaked: self-disable did not signal its sessions to stop")
+	}
+	select {
+	case <-dh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainer did not exit after self-disable")
+	}
+}
+
+// TestCSCTeardownReleasesCoalescerBeforeRefresher pins F3's ordering: teardown must
+// stop the coalescer (releasing its held pool connection) BEFORE it signals and
+// joins the refresher, whose stop-drain flush needs a main-pool connection. It also
+// pins that this happens WHILE serving is still active (the refresher's flush would
+// otherwise be a no-op). We block the coalescer's join with an extra wg counter and
+// assert the refresher has not been signalled while that join is parked. With the
+// wrong order (refresher first) rh.stop is closed before the coalescer join, so the
+// mid-teardown assertion fires.
+func TestCSCTeardownReleasesCoalescerBeforeRefresher(t *testing.T) {
+	client, mc, rh, _ := newCSCTeardownClient(t)
+
+	// Park stopCSCMissCoalescer's wg.Wait() so we can observe the intermediate
+	// teardown state. Add precedes the concurrent Wait and the counter is already
+	// >=1 (a session is running), so this is a legal WaitGroup use. Release via a
+	// once-guarded cleanup so an early t.Fatal cannot leave the join (and the
+	// deferred Close) deadlocked.
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCoalescer := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseCoalescer)
+	mc.wg.Add(1)
+	go func() { defer mc.wg.Done(); <-release }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		client.stopCSCRefresherAndCoalescer()
+	}()
+
+	// Step 1 signalled the coalescer to stop (stopWorkers closed mc.stop) ...
+	select {
+	case <-mc.stop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("coalescer was never signalled to stop")
+	}
+	// ... but the refresher must NOT be signalled yet: its flush needs the pool
+	// connection the coalescer is still (artificially) holding.
+	select {
+	case <-rh.stop:
+		t.Fatal("refresher was signalled before the coalescer released its connection (F3 ordering regression)")
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Serving must still be active so the refresher's final flush is not a no-op.
+	if client.cscActive == nil || !client.cscActive.Load() {
+		t.Fatal("cscActive was cleared before the refresher's final flush ran")
+	}
+
+	// Let the coalescer join complete; the refresher teardown then proceeds.
+	releaseCoalescer()
+	select {
+	case <-rh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresher did not stop after the coalescer released")
+	}
+	<-done
+	if client.cscActive.Load() {
+		t.Fatal("cscActive must be false after teardown completes")
+	}
+	client.Close()
+}
+
+// TestCSCHandlerCloseKeepsServingUntilRefresherFlush pins F2: a handler-initiated
+// close (a custom push handler calling handlerCtx.Client.Close()) must NOT
+// preemptively deactivate serving. The async canonical close drives the teardown,
+// so the refresher's final flush runs with cscActive still true and re-fetches the
+// in-window keys. Before the fix cscHandlerClient.Close stored cscActive=false
+// synchronously, so this assertion fails immediately after the handler Close.
+func TestCSCHandlerCloseKeepsServingUntilRefresherFlush(t *testing.T) {
+	client, mc, _, dh := newCSCTeardownClient(t)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCoalescer := func() { releaseOnce.Do(func() { close(release) }) }
+	// Order matters: Close is deferred FIRST so it runs LAST; releaseCoalescer is
+	// deferred second so it runs BEFORE Close on unwind. An early t.Fatal would
+	// otherwise deadlock — the parked coalescer join holds the drainer teardownOnce
+	// that the deferred Close would then block on.
+	defer client.Close()
+	defer releaseCoalescer()
+
+	// Park the coalescer join so the async close cannot reach the deactivate step
+	// (which follows the coalescer stop and the refresher flush in the canonical
+	// order). This makes the "still serving" observation deterministic.
+	mc.wg.Add(1)
+	go func() { defer mc.wg.Done(); <-release }()
+
+	// Handler-initiated close (runs on the drainer goroutine in production; here we
+	// invoke the same entry point directly). Returns immediately; teardown is async.
+	hc := cscHandlerClient{baseClient: client.baseClient}
+	if err := hc.Close(); err != nil {
+		t.Fatalf("handler close: %v", err)
+	}
+
+	// The async close entered teardown (coalescer signalled) ...
+	select {
+	case <-mc.stop:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler close did not start the canonical teardown")
+	}
+	// ... and serving is STILL active: the fix removed the preemptive deactivate.
+	if client.cscActive == nil || !client.cscActive.Load() {
+		t.Fatal("handler close deactivated CSC before the refresher's final flush (F2 regression)")
+	}
+
+	// Unblock; the teardown completes and deactivates.
+	releaseCoalescer()
+	select {
+	case <-dh.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("teardown did not complete after the coalescer join was released")
+	}
+	if client.cscActive.Load() {
+		t.Fatal("CSC still serving after teardown completed")
+	}
+}

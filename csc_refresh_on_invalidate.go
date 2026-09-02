@@ -398,6 +398,14 @@ func (c *baseClient) startCSCRefresher() {
 	if !c.cscRefreshOnInvalidateEnabled() || c.cscRefreshQueue != nil {
 		return
 	}
+	// If CSC serving was already disabled during construction (a HELLO 3 downgrade
+	// or CLIENT TRACKING rejection in initConn calls disableCSCServing before the
+	// drainer's first tick), do not start a refresher: the drainer's teardown may
+	// already have run past the point where it could join one, leaving a goroutine
+	// with nothing to stop it. startBackgroundDrainer set cscActive before this ran.
+	if a := c.cscActive; a != nil && !a.Load() {
+		return
+	}
 	lc := c.csc.(*LocalCache)
 	q := &cscRefreshQueue{
 		ch:       make(chan cscRefreshTarget, cscRefreshQueueDepth),

@@ -207,6 +207,14 @@ func (c *baseClient) startCSCMissCoalescer() {
 	if _, ok := c.csc.(*LocalCache); !ok {
 		return
 	}
+	// If CSC serving was already disabled during construction (a HELLO 3 downgrade
+	// or CLIENT TRACKING rejection in initConn calls disableCSCServing before the
+	// drainer's first tick), do not start sessions the drainer's teardown may have
+	// already run past — they would run for the client's life holding a pool conn.
+	// startBackgroundDrainer set cscActive before this ran.
+	if a := c.cscActive; a != nil && !a.Load() {
+		return
+	}
 	mc := &cscMissCoalescer{
 		c:             c,
 		ch:            make(chan *cscMissReq, cscMissQueueDepth),
