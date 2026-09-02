@@ -323,7 +323,9 @@ func TestMultiDBFallbackDeclinesLaggyTarget(t *testing.T) {
 	dbB := newTestDB("b", "127.0.0.1:2", 2, true) // higher weight = initial active + fallback target
 	fbB := newFailbackOnlyCheck(true)             // lag check, healthy at init
 	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
-	mdb := newTestMultiDB(t, baseOptions(), dbA, dbB)
+	opts := baseOptions()
+	opts.AutoFallbackInterval = time.Hour // fallback enabled; loop quiet, driven via TestTryFallback
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
 	ctx := context.Background()
 
 	// Move the active to the lower-weight dbA so dbB is a fallback target.
@@ -360,7 +362,9 @@ func TestMultiDBFallbackSkipsLaggyToNextCandidate(t *testing.T) {
 	fbC := newFailbackOnlyCheck(true)
 	dbB.cfg.HealthChecks = append(dbB.cfg.HealthChecks, fbB)
 	dbC.cfg.HealthChecks = append(dbC.cfg.HealthChecks, fbC)
-	mdb := newTestMultiDB(t, baseOptions(), dbA, dbB, dbC)
+	opts := baseOptions()
+	opts.AutoFallbackInterval = time.Hour // fallback enabled; loop quiet, driven via TestTryFallback
+	mdb := newTestMultiDB(t, opts, dbA, dbB, dbC)
 	ctx := context.Background()
 
 	// Init active = dbB (highest weight, id 1); force down to dbA.
