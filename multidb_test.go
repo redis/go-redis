@@ -2159,6 +2159,63 @@ func TestMultiDBCloseUnblocksPubSubReconnectDial(t *testing.T) {
 	}
 }
 
+// TestMultiDBNewerSwitchCancelsStuckPubSubReconnect pins that a newer
+// active-member change cancels an older reconnect whose dial is stuck against a
+// now-superseded member. Without it, the stuck reconnect holds the subscription
+// mutex across a long dial timeout and the newer reconnect blocks behind it,
+// stranding the subscription off the healthy member.
+func TestMultiDBNewerSwitchCancelsStuckPubSubReconnect(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 3, true) // active first (highest weight)
+	dbB := newTestDB("b", "127.0.0.1:2", 2, true)
+	dbC := newTestDB("c", "127.0.0.1:3", 1, true)
+	// B's pubsub dial blocks until its context is canceled, with a long
+	// DialTimeout so only a superseding switch (not the dial timeout) can free
+	// it in time. Signal when that cancellation actually reaches the dial.
+	dbB.cfg.Options.DialTimeout = 30 * time.Second
+	dbB.cfg.Options.DialerRetries = 1
+	bDialCanceled := make(chan struct{})
+	var once sync.Once
+	dbB.cfg.Options.Dialer = func(ctx context.Context, _, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		once.Do(func() { close(bDialCanceled) })
+		return nil, ctx.Err()
+	}
+	opts := baseOptions()
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      time.Hour,
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB, dbC)
+
+	sub := mdb.Subscribe(context.Background(), "ch")
+	defer sub.Close()
+
+	// Fail A -> failover to B -> notifyPubSubs reconnect dials B and blocks,
+	// holding the subscription lock.
+	dbA.hook.fail.Store(true)
+	_ = mdb.Get(context.Background(), "k").Err()
+	time.Sleep(50 * time.Millisecond) // let the B reconnect enter the blocking dial
+
+	// Fail B too and drive a second failover to C. The B->C switch must cancel
+	// the stuck B reconnect (freeing the subscription lock for C).
+	dbB.hook.fail.Store(true)
+	for i := 0; i < 50 && mdb.ActiveDatabaseID() != 2; i++ {
+		_ = mdb.Get(context.Background(), "k").Err()
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := mdb.ActiveDatabaseID(); got != 2 {
+		t.Fatalf("did not reach active C: active=%d", got)
+	}
+
+	select {
+	case <-bDialCanceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("B's stuck reconnect was not canceled by the B->C switch (would block until B's dial timeout)")
+	}
+}
+
 func TestMultiDBCanceledStartupProbeDoesNotOpenBreaker(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()

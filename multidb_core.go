@@ -278,6 +278,10 @@ type multidbCore struct {
 
 	pubsubMu sync.Mutex
 	pubsubs  map[*PubSub]struct{}
+	// reconnectCancel cancels the most recent notifyPubSubs reconnect batch, so
+	// a newer active-member change can abandon an older one whose dial is stuck
+	// against an already-superseded member. Guarded by pubsubMu.
+	reconnectCancel context.CancelFunc
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -1714,8 +1718,8 @@ func (c *multidbCore) notifyPubSubs(ctx context.Context) {
 	for ps := range c.pubsubs {
 		subs = append(subs, ps)
 	}
-	c.pubsubMu.Unlock()
 	if len(subs) == 0 {
+		c.pubsubMu.Unlock()
 		return
 	}
 
@@ -1728,7 +1732,22 @@ func (c *multidbCore) notifyPubSubs(ctx context.Context) {
 	// on its own goroutine so one slow dial cannot stall the others; each
 	// resolves the active member at dial time, so a late reconnect still lands
 	// on the current active.
+	//
+	// Supersede the previous switch's reconnect batch: with rapid A->B->C
+	// changes, the A->B reconnect can block dialing an unreachable B while
+	// holding each subscription's mutex, stalling the B->C reconnect behind it
+	// until B's dial timeout. A newer switch wins, so record this batch's cancel
+	// and cancel the previous one — freeing those mutexes for this batch. The
+	// prior cancel is invoked AFTER unlocking: it can wake a Reconnect that
+	// calls back into removePubSub, which takes pubsubMu.
 	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	prevCancel := c.reconnectCancel
+	c.reconnectCancel = cancel
+	c.pubsubMu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
+	}
+
 	reason := errors.New("multidb: active database changed")
 	var wg sync.WaitGroup
 	for _, ps := range subs {
