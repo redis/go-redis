@@ -429,6 +429,13 @@ type Options struct {
 	// namespace is selected. Fixed Username/Password values are supported and
 	// included in the cache namespace.
 	//
+	// Invalidation freshness: a server invalidation is applied when the client
+	// next reads from the connection that carries it — at arrival on a
+	// full-duplex autopipeline connection, at the next command on an active
+	// connection, and at the next background drainer tick on an idle pooled
+	// connection. In every case a cached entry is never served past the cache's
+	// MaxStaleness, which is the hard upper bound.
+	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheConfig *ClientSideCacheConfig
 
