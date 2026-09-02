@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -205,6 +206,23 @@ func TestRecordBatchOutcomesStaleReservationFailureDoesNotReopen(t *testing.T) {
 			t.Errorf("breaker %v, want open", st)
 		}
 	})
+}
+
+// TestProcessTxPipelineHImportPreservesFirstError pins that a rejected HIMPORT
+// transaction reports the positionally-first error (Pipeline.Exec semantics):
+// a command the caller queued with a pre-existing error, before the HIMPORT,
+// must win over errMultiDBHImport.
+func TestProcessTxPipelineHImportPreservesFirstError(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	prior := errors.New("prior error")
+	preErr := NewStatusCmd(context.Background(), "set", "k", "v")
+	preErr.SetErr(prior)
+	him := NewStatusCmd(context.Background(), "himport", "fs")
+
+	err := core.processTxPipeline(context.Background(), []Cmder{preErr, him})
+	if !errors.Is(err, prior) {
+		t.Fatalf("processTxPipeline = %v, want the positionally-first pre-existing error %v", err, prior)
+	}
 }
 
 func TestRecordBatchOutcomesPostExecHookError(t *testing.T) {

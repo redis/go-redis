@@ -413,8 +413,12 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		return ErrClosed
 	}
 	if cmdsContainHImport(cmds) {
+		// Reject the whole transaction (MULTI/EXEC is all-or-nothing). Report
+		// the positionally-first error like Pipeline.Exec: setCmdsErr fills only
+		// empty slots, so a command the caller queued with a pre-existing error
+		// keeps it and must win over errMultiDBHImport when it comes first.
 		setCmdsErr(cmds, errMultiDBHImport)
-		return errMultiDBHImport
+		return cmdsFirstErr(cmds)
 	}
 	// A context that is already done must not reach the failover gate: with
 	// ProbeTargetBeforeFailover the doomed probes would damage candidate
