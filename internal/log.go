@@ -24,10 +24,17 @@ func (l *DefaultLogger) Printf(ctx context.Context, format string, v ...interfac
 	_ = l.log.Output(l.calldepth, fmt.Sprintf(format, v...))
 }
 
+// Calldepth values for NewDefaultLogger. Reads through Logger.Printf add one
+// forwarding frame (atomicLogger.Printf), so the plain default logger uses
+// DefaultLoggerCalldepth; wrappers that add another Printf frame (e.g.
+// logging's filterLogger) use FilterLoggerCalldepth.
+const (
+	DefaultLoggerCalldepth = 3
+	FilterLoggerCalldepth  = 4
+)
+
 // NewDefaultLogger returns a stderr logger that attributes each line to the
-// frame calldepth levels up the stack. Reads through Logger.Printf add one
-// forwarding frame (atomicLogger.Printf), so the plain logger uses 3; wrappers
-// that add another Printf frame (e.g. logging's filterLogger) need 4.
+// frame calldepth levels up the stack.
 func NewDefaultLogger(calldepth int) Logging {
 	return &DefaultLogger{
 		log:       log.New(os.Stderr, "redis: ", log.LstdFlags|log.Lshortfile),
@@ -68,7 +75,7 @@ func newAtomicLogger(l Logging) *atomicLogger {
 // Logger calls Output to print to the stderr.
 // Arguments are handled in the manner of fmt.Print.
 // Swap it with redis.SetLogger; read it through Logger.Printf.
-var Logger = newAtomicLogger(NewDefaultLogger(3))
+var Logger = newAtomicLogger(NewDefaultLogger(DefaultLoggerCalldepth))
 
 // atomicLogLevel stores the active level as an int32 so redis.SetLogLevel can
 // change it while the level guards (isHealthyConn on the Get path, the
