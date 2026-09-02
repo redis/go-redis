@@ -136,12 +136,12 @@ func TestIsNodeGoneError(t *testing.T) {
 		{name: "canceled", err: context.Canceled, want: false},
 		{name: "wrapped canceled", err: fmt.Errorf("op: %w", context.Canceled), want: false},
 		{name: "dial canceled", err: dialCanceled, want: false},
-		{name: "deadline", err: context.DeadlineExceeded, want: true},
-		{name: "wrapped deadline", err: fmt.Errorf("op: %w", context.DeadlineExceeded), want: true},
+		{name: "deadline", err: context.DeadlineExceeded, want: false},
+		{name: "wrapped deadline", err: fmt.Errorf("op: %w", context.DeadlineExceeded), want: false},
 		{name: "dial refused", err: dialRefused, want: true},
-		{name: "dial deadline", err: dialDeadline, want: true},
-		{name: "i/o timeout", err: ioTimeout, want: false},
-		{name: "wrapped i/o timeout", err: fmt.Errorf("read: %w", ioTimeout), want: false},
+		{name: "dial deadline", err: dialDeadline, want: false},
+		{name: "i/o timeout", err: ioTimeout, want: true},
+		{name: "wrapped i/o timeout", err: fmt.Errorf("read: %w", ioTimeout), want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,8 +181,32 @@ func TestClusterClientReloadsStateOnConnectionRefused(t *testing.T) {
 	waitForClusterPing(t, client, ctx)
 }
 
-func TestClusterClientDoesNotReloadOnReadTimeout(t *testing.T) {
+func TestClusterClientReloadsStateOnNetworkTimeout(t *testing.T) {
 	hung := startHungServer(t)
+	live := startMockPONGServer(t)
+	defer live.Close()
+	liveAddr := live.Addr().String()
+
+	var currentAddr atomic.Value
+	currentAddr.Store(hung.Addr().String())
+
+	ctx := context.Background()
+	client := newSlotSwapClusterClient(t, &currentAddr, func(opt *ClusterOptions) {
+		opt.ReadTimeout = 50 * time.Millisecond
+		opt.WriteTimeout = 50 * time.Millisecond
+	})
+
+	if err := client.Ping(ctx).Err(); err == nil {
+		t.Fatal("expected ping against the hung listener to fail")
+	}
+
+	currentAddr.Store(liveAddr)
+	waitForClusterPing(t, client, ctx)
+}
+
+func TestClusterClientDoesNotReloadOnDeadlineExceeded(t *testing.T) {
+	live := startMockPONGServer(t)
+	defer live.Close()
 
 	var loads atomic.Int32
 	client := NewClusterClient(&ClusterOptions{
@@ -191,59 +215,28 @@ func TestClusterClientDoesNotReloadOnReadTimeout(t *testing.T) {
 			return []ClusterSlot{{
 				Start: 0,
 				End:   16383,
-				Nodes: []ClusterNode{{Addr: hung.Addr().String()}},
+				Nodes: []ClusterNode{{Addr: live.Addr().String()}},
 			}}, nil
 		},
 		ClusterStateReloadInterval: time.Hour,
-		ReadTimeout:                50 * time.Millisecond,
-		WriteTimeout:               50 * time.Millisecond,
 		MinRetryBackoff:            -1,
 		MaxRetryBackoff:            -1,
-		MaxRedirects:               0,
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, context.DeadlineExceeded
+		},
 	})
 	defer client.Close()
 
 	if err := client.Ping(context.Background()).Err(); err == nil {
-		t.Fatal("expected ping against the hung listener to fail")
+		t.Fatal("expected ping to fail with deadline")
 	}
 	before := loads.Load()
 
 	// LazyReload's goroutine would call ClusterSlots after the 200ms cooldown.
 	time.Sleep(350 * time.Millisecond)
 	if got := loads.Load(); got != before {
-		t.Fatalf("read timeout triggered topology reload: loads %d -> %d", before, got)
+		t.Fatalf("caller deadline triggered topology reload: loads %d -> %d", before, got)
 	}
-}
-
-func TestClusterClientReloadsStateOnDeadlineExceeded(t *testing.T) {
-	live := startMockPONGServer(t)
-	defer live.Close()
-	liveAddr := live.Addr().String()
-
-	var currentAddr atomic.Value
-	currentAddr.Store("127.0.0.1:1")
-
-	var gone atomic.Bool
-	gone.Store(true)
-
-	ctx := context.Background()
-	client := newSlotSwapClusterClient(t, &currentAddr, func(opt *ClusterOptions) {
-		opt.Dialer = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if gone.Load() {
-				return nil, context.DeadlineExceeded
-			}
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
-		}
-	})
-
-	if err := client.Ping(ctx).Err(); err == nil {
-		t.Fatal("expected ping to fail with deadline")
-	}
-
-	currentAddr.Store(liveAddr)
-	gone.Store(false)
-	waitForClusterPing(t, client, ctx)
 }
 
 func TestClusterClientDoesNotReloadOnCanceledContext(t *testing.T) {
