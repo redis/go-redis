@@ -339,13 +339,25 @@ func (cb *CircuitBreaker) ReleaseFor(r Reservation) {
 // half-open reservation records only while it is still the CURRENT half-open
 // episode: a failure from an admission that outlived an open -> half-open cycle
 // must not re-open (and abort the recovery of) the NEW episode — the symmetric
-// guard to RecordSuccessFor. A closed-state reservation (held == false) always
-// records: a closed breaker just counts failures toward opening, with no
-// episode to be stale against. Unlike success/release this does not consume the
-// once-only settle flag — a failure opens the circuit rather than freeing a
-// slot, and the batch path records one failure per command.
+// guard to RecordSuccessFor. A closed-state reservation (held == false) records
+// only while the circuit is still closed: it was admitted in the closed state,
+// so if the circuit has since moved to open or half-open its failure predates
+// that episode and must not re-open it (a stale probe failure aborting a
+// recovery it never joined) — symmetric to RecordSuccessFor's held==false
+// branch. Unlike success/release this does not consume the once-only settle
+// flag — a failure opens the circuit rather than freeing a slot, and the batch
+// path records one failure per command.
 func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
 	if !r.held {
+		// Reading Closed is race-free without the lock: leaving Closed needs a
+		// failure to open the circuit first, and Closed -> half-open needs a
+		// full grace period, so the state cannot flip to half-open between this
+		// read and RecordFailure. (A closed-admission failure that arrives while
+		// the circuit is already open does not restart the grace period — it is
+		// stale evidence and would only delay recovery.)
+		if State(cb.state.Load()) != StateClosed {
+			return
+		}
 		cb.RecordFailure()
 		return
 	}
@@ -454,7 +466,14 @@ func (cb *CircuitBreaker) RecordFailure() {
 		// Hot path: count lock-free, take the lock only to open at the threshold.
 		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
 			cb.transitionMu.Lock()
-			cb.openFromClosedLocked()
+			// Re-read the count under the lock: a Reset (SetActiveDatabase) may
+			// have zeroed it since the lock-free Add crossed the threshold, and
+			// opening off that stale reading would immediately undo an operator
+			// re-selection. openFromClosedLocked's CAS alone cannot tell the
+			// difference — Reset already swapped back to Closed.
+			if int(cb.failures.Load()) >= cb.config.FailureThreshold {
+				cb.openFromClosedLocked()
+			}
 			cb.transitionMu.Unlock()
 		}
 	case StateHalfOpen:
@@ -569,6 +588,12 @@ func (cb *CircuitBreaker) Reset() {
 	cb.successes.Store(0)
 	cb.requests.Store(0)
 	cb.lastFailure.Store(0)
+	// Advance the generation so any in-flight half-open reservation from the
+	// episode being reset is now stale: without this, a reservation handed out
+	// before the Reset still matches the generation and RecordFailureFor would
+	// count its failure against the freshly closed circuit, re-opening the
+	// operator-selected member immediately (FailureThreshold == 1).
+	cb.generation.Add(1)
 	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
 		stats := cb.Stats()

@@ -1096,6 +1096,102 @@ func TestCircuitBreaker_ClosedAdmissionDoesNotFeedHalfOpen(t *testing.T) {
 	}
 }
 
+// TestCircuitBreaker_ClosedAdmissionFailureDoesNotReopenHalfOpen pins the
+// failure-path symmetry of the closed-admission rule: a slot-less admission's
+// failure counts toward opening while the circuit is still closed, but once the
+// circuit has moved to half-open it must not re-open it — that failure was
+// admitted in the prior closed state and never joined the recovery episode.
+func TestCircuitBreaker_ClosedAdmissionFailureDoesNotReopenHalfOpen(t *testing.T) {
+	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, MaxHalfOpenRequests: 1, OpenTimeout: 20 * time.Millisecond}
+
+	// Phase 1: while closed, a closed-admission failure counts toward opening.
+	cb := New(cfg)
+	_, closedRes := cb.AllowReserve()
+	if closedRes.held {
+		t.Fatal("closed AllowReserve returned a held reservation")
+	}
+	cb.RecordFailureFor(closedRes)
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("state=%v after 1 closed-admission failure, want still closed", st)
+	}
+	cb.RecordFailureFor(closedRes)
+	if st := cb.State(); st != StateOpen {
+		t.Fatalf("state=%v after threshold closed-admission failures, want open", st)
+	}
+
+	// Phase 2: a closed admission that outlives an open->half-open cycle must
+	// not re-open the new episode when it finally settles as a failure.
+	cb2 := New(cfg)
+	_, stale := cb2.AllowReserve() // admitted while closed -> unheld
+	if stale.held {
+		t.Fatal("closed AllowReserve returned a held reservation")
+	}
+	cb2.RecordFailure() // open via other traffic, not the stale admission
+	cb2.RecordFailure()
+	if st := cb2.State(); st != StateOpen {
+		t.Fatalf("cb2 state=%v, want open", st)
+	}
+	time.Sleep(30 * time.Millisecond)
+	if st := cb2.CheckState(); st != StateHalfOpen {
+		t.Fatalf("cb2 state=%v after grace, want half-open", st)
+	}
+	cb2.RecordFailureFor(stale)
+	if st := cb2.State(); st != StateHalfOpen {
+		t.Fatalf("stale closed-admission failure re-opened the half-open episode: state=%v, want half-open", st)
+	}
+}
+
+// TestCircuitBreaker_ResetInvalidatesInFlightReservation pins that Reset ends
+// the current half-open episode: a reservation handed out before the Reset is
+// stale afterwards, so settling its failure must not re-open the freshly closed
+// circuit (which would immediately undo an operator SetActiveDatabase).
+func TestCircuitBreaker_ResetInvalidatesInFlightReservation(t *testing.T) {
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, MaxHalfOpenRequests: 1, OpenTimeout: 20 * time.Millisecond})
+	cb.RecordFailure() // open (threshold 1)
+	time.Sleep(30 * time.Millisecond)
+	if st := cb.CheckState(); st != StateHalfOpen {
+		t.Fatalf("state=%v after grace, want half-open", st)
+	}
+	ok, res := cb.AllowReserve()
+	if !ok || !res.held {
+		t.Fatalf("half-open AllowReserve = (%v, held=%v), want a held slot", ok, res.held)
+	}
+
+	cb.Reset() // operator re-selection ends the episode
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("state after Reset=%v, want closed", st)
+	}
+
+	cb.RecordFailureFor(res) // stale reservation from the ended episode
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("stale reservation failure re-opened after Reset: state=%v, want closed", st)
+	}
+	cb.RecordFailure() // a fresh failure still opens normally
+	if st := cb.State(); st != StateOpen {
+		t.Fatalf("state=%v after fresh failure post-reset, want open", st)
+	}
+}
+
+// TestCircuitBreaker_ResetRaceKeepsThresholdConsistent exercises RecordFailure
+// racing Reset under -race. The Add-then-lock window that the count re-check
+// closes cannot be forced deterministically, so this is a stress/invariant
+// check rather than strict discrimination: the circuit must never end up Open
+// with a sub-threshold failure count (which is what opening off a count a
+// concurrent Reset already zeroed would produce).
+func TestCircuitBreaker_ResetRaceKeepsThresholdConsistent(t *testing.T) {
+	for iter := 0; iter < 500; iter++ {
+		cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Hour})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); cb.RecordFailure() }()
+		go func() { defer wg.Done(); cb.Reset() }()
+		wg.Wait()
+		if cb.State() == StateOpen && cb.Stats().Failures < 1 {
+			t.Fatalf("iter %d: circuit Open with failures=%d (<threshold) — opened off a Reset-zeroed count", iter, cb.Stats().Failures)
+		}
+	}
+}
+
 func TestCircuitBreaker_ForceOpen(t *testing.T) {
 	config := Config{
 		FailureThreshold: 100, // large: ForceOpen must not depend on synthesizing failures
