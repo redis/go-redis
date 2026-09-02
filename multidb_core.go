@@ -223,14 +223,19 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 		return healthy
 	}
 
-	// CheckState first so an Open circuit past its grace period transitions
-	// to HalfOpen and can be closed by the success below.
-	db.cb.CheckState()
 	if healthy {
-		// External: probes are not admitted through IsAllowed, so a success
-		// must not release a half-open slot a real command probe is holding.
+		// CheckState first so an Open circuit past its grace period transitions
+		// to HalfOpen and the external success below can count toward closing it.
+		// External: probes are not admitted through IsAllowed, so a success must
+		// not release a half-open slot a real command probe is holding.
+		db.cb.CheckState()
 		db.cb.RecordExternalSuccess()
 	} else {
+		// Do NOT CheckState on a failed probe: transitioning a grace-elapsed
+		// Open breaker to HalfOpen here would briefly admit application traffic
+		// to a member the probe just found unhealthy (a spurious
+		// Open -> HalfOpen -> Open, and a window where failover could select
+		// it). RecordFailure refreshes the open state directly.
 		db.cb.RecordFailure()
 	}
 	otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))

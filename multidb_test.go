@@ -1492,6 +1492,53 @@ func TestMultiDBAddedMemberResolvableFromCircuitCallback(t *testing.T) {
 	}
 }
 
+// TestMultiDBFailedProbeDoesNotHalfOpen pins that a failed health probe on a
+// grace-elapsed Open breaker does not transition it to HalfOpen: doing so (via
+// an unconditional CheckState before RecordFailure) would briefly admit
+// application traffic to a member the probe just found unhealthy. A failed
+// probe must fire no ->half-open transition.
+func TestMultiDBFailedProbeDoesNotHalfOpen(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 2, true) // active
+	dbB := newTestDB("b", "127.0.0.1:2", 1, true) // non-active probe target
+
+	var mu sync.Mutex
+	var transitions []string
+	opts := baseOptions()
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      20 * time.Millisecond,
+	}
+	opts.OnCircuitStateChanged = func(id int, from, to string) {
+		if id != 1 {
+			return
+		}
+		mu.Lock()
+		transitions = append(transitions, from+"->"+to)
+		mu.Unlock()
+	}
+	mdb := newTestMultiDB(t, opts, dbA, dbB)
+
+	// Open B's breaker, then let its grace elapse so CheckState WOULD half-open.
+	mdb.TestBreakerRecordFailure(1)
+	time.Sleep(40 * time.Millisecond)
+
+	// B is unhealthy now; the failed probe must leave it Open, not flicker
+	// through HalfOpen.
+	dbB.check.healthy.Store(false)
+	mdb.TestRunHealthChecksOnce()
+	time.Sleep(50 * time.Millisecond) // let async state-change callbacks drain
+
+	mu.Lock()
+	got := append([]string(nil), transitions...)
+	mu.Unlock()
+	for _, tr := range got {
+		if strings.Contains(tr, "half-open") {
+			t.Fatalf("failed probe transitioned B through half-open (transitions: %v)", got)
+		}
+	}
+}
+
 func TestMultiDBCircuitCallbackMayCallControlAPIs(t *testing.T) {
 	dbA := newTestDB("a", "db-a:6379", 2, true)
 	dbB := newTestDB("b", "db-b:6379", 1, true)
