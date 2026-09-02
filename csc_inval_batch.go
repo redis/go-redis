@@ -108,7 +108,16 @@ type cscInvalBatcher struct {
 	// spillMu alongside spill itself. Bounds spill memory by bytes as well as by
 	// item count (see cscInvalSpillMaxBytes); reset with spill on drain/flush.
 	spillBytes int
-	wake       chan struct{}
+	// chBytes tracks the retained KEY bytes currently sitting in ch. ch is bounded
+	// by item COUNT (its slot count) but not memory, so a burst of large keys — or
+	// one key larger than the whole byte cap — would retain unbounded bytes before
+	// the spill path (and its byte cap) ever engages. enqueue adds on a successful
+	// ch send and the worker subtracts on consume; enqueue's pre-admission gate
+	// diverts to the full-Flush fallback when this (plus the incoming key) would
+	// cross cscInvalSpillMaxBytes. Atomic: written by the worker (consume) and read
+	// by producers (the gate).
+	chBytes atomic.Int64
+	wake    chan struct{}
 	// flushReq: spill hit cscInvalSpillMax, so the worker must drop() + full-Flush
 	// the cache instead of applying a huge backlog. Set by enqueue, consumed by the
 	// worker (CAS to false).
@@ -197,33 +206,49 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 	if r := b.refresh.Load(); r != nil {
 		it.sinceToken = r.sinceToken.Load()
 	}
+	keyLen := int64(len(it.key))
 	b.stopMu.RLock()
 	if b.stopped {
 		b.stopMu.RUnlock()
 		b.apply([]cscInvalItem{it})
 		return
 	}
-	select {
-	case b.ch <- it:
-		b.stopMu.RUnlock()
-	default:
-		// ch full: park on spill (off the producer's read path) for the worker
-		// to drain, instead of applying inline here. Correctness is unchanged —
-		// the item carries its enqueue-time epoch and the worker applies it under
-		// applyMu with the same epoch check as the ch path.
+	// Pre-admission byte gate: ch is bounded by item COUNT, not memory. When this
+	// key alone exceeds the byte cap, or the bytes already retained in ch plus this
+	// key would cross it, skip ch entirely and take the full-Flush fallback (below)
+	// — otherwise a distinct-large-key flood retains unbounded bytes in ch before
+	// the spill path ever engages.
+	overBytes := keyLen > cscInvalSpillMaxBytes || b.chBytes.Load()+keyLen > cscInvalSpillMaxBytes
+	if !overBytes {
+		select {
+		case b.ch <- it:
+			b.chBytes.Add(keyLen)
+			b.stopMu.RUnlock()
+			return
+		default:
+			// ch full: fall through to the spill path below.
+		}
+	}
+	{
+		// Not admitted to ch (full, or the byte gate diverted here): park on spill
+		// (off the producer's read path) for the worker to drain, instead of applying
+		// inline. Correctness is unchanged — the item carries its enqueue-time epoch
+		// and the worker applies it under applyMu with the same epoch check as the ch
+		// path.
 		//
-		// At the hard cap, stop growing spill: drop this item, clear the backlog,
+		// At either hard cap, stop growing spill: drop this item, clear the backlog,
 		// and ask the worker to full-Flush the cache. Safe because a Flush drops
-		// everything (nothing stale can survive), and correct because the capped
-		// case is a pathological invalidation flood where the cache is churning
-		// wholesale anyway. Needed because the invalidatable keyset is not bounded
-		// by cache size (the server tracks keys past local LRU eviction).
+		// everything (nothing stale can survive), and correct because the capped case
+		// is a pathological invalidation flood where the cache is churning wholesale
+		// anyway. Needed because the invalidatable keyset is not bounded by cache size
+		// (the server tracks keys past local LRU eviction).
 		b.spillMu.Lock()
-		// Trip on EITHER bound: item count OR retained key bytes. Bytes matter
-		// because the invalidatable keyset is not bounded by cache size and keys
-		// can be large, so a distinct-large-key flood grows spill memory long
-		// before the item cap. A single key over the byte bound trips it alone.
-		if len(b.spill) >= cscInvalSpillMax ||
+		// Trip on ANY bound: the byte gate above (overBytes), the spill item count, or
+		// the spill retained-key bytes. Bytes matter because the invalidatable keyset
+		// is not bounded by cache size and keys can be large, so a distinct-large-key
+		// flood grows memory long before the item cap. A single oversized key trips it
+		// alone (overBytes).
+		if overBytes || len(b.spill) >= cscInvalSpillMax ||
 			b.spillBytes+len(it.key) > cscInvalSpillMaxBytes {
 			// The cleared backlog plus this item are superseded by the coming
 			// full-Flush and never reach deleteByRedisKeyCollectingHot. They were
@@ -403,6 +428,7 @@ func (b *cscInvalBatcher) run() {
 			for draining := true; draining; {
 				select {
 				case it := <-b.ch:
+					b.chBytes.Add(-int64(len(it.key)))
 					add(it)
 				default:
 					draining = false
@@ -412,6 +438,7 @@ func (b *cscInvalBatcher) run() {
 			flush()
 			return
 		case it := <-b.ch:
+			b.chBytes.Add(-int64(len(it.key)))
 			add(it)
 		case <-b.wake:
 			// An overflow parked keys on spill (or hit the cap and asked for a full

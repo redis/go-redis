@@ -335,3 +335,42 @@ func TestClearRefreshQueueDetachesBatcherWithoutJoin(t *testing.T) {
 		t.Fatal("clearRefreshQueue did not detach the batcher from the handler")
 	}
 }
+
+// TestInvalBatcherChByteGateTripsFlush pins finding #2: the fast-path channel is
+// bounded by item COUNT, not memory, so a burst of large keys must trip the
+// full-Flush fallback via the retained ch-byte gate — not silently retain up to
+// one channel's worth of large keys. Worker NOT started, ch cap large, so items
+// stay in ch and only the byte gate can fire.
+func TestInvalBatcherChByteGateTripsFlush(t *testing.T) {
+	b := newTestBatcher(&countingCache{}, 1024, time.Hour)
+
+	keySize := cscInvalSpillMaxBytes / 4 // four fill the 8 MiB cap exactly
+	bigKey := strings.Repeat("k", keySize)
+	// Four admit to ch (4 * cap/4 == cap, still within bound); the fifth would cross
+	// the byte cap, so it must divert to the full-Flush fallback instead of ch.
+	for i := 0; i < 5; i++ {
+		b.enqueue(bigKey + strconv.Itoa(i)) // distinct keys: no dedup collapse
+	}
+
+	if !b.flushReq.Load() {
+		t.Fatal("ch retained > byte cap but the full-Flush fallback was not requested " +
+			"(ch admits by item count only; the byte gate must trip)")
+	}
+	if got := b.chBytes.Load(); got > int64(cscInvalSpillMaxBytes) {
+		t.Fatalf("chBytes = %d exceeds the cap %d; the gate admitted an over-budget key",
+			got, cscInvalSpillMaxBytes)
+	}
+}
+
+// TestInvalBatcherOversizedKeyTripsFlush: a single key larger than the whole byte
+// cap trips the full-Flush fallback on its own, never admitted to ch.
+func TestInvalBatcherOversizedKeyTripsFlush(t *testing.T) {
+	b := newTestBatcher(&countingCache{}, 1024, time.Hour)
+	b.enqueue(strings.Repeat("x", cscInvalSpillMaxBytes+1))
+	if !b.flushReq.Load() {
+		t.Fatal("an oversized single key was admitted instead of tripping the full-Flush fallback")
+	}
+	if got := b.chBytes.Load(); got != 0 {
+		t.Fatalf("chBytes = %d; the oversized key must not be admitted to ch", got)
+	}
+}
