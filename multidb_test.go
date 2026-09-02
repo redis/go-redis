@@ -1666,6 +1666,49 @@ func TestMultiDBSubscribeOnClusterOnlyClientTerminates(t *testing.T) {
 	}
 }
 
+// TestMultiDBLatchedDetectorDoesNotWedgeHalfOpenSingleMember pins that a single
+// member whose breaker is half-open cannot be wedged unavailable by a latching
+// custom detector. The detector stays tripped across the outage, so the gate
+// can never admit the half-open probe; with no alternate candidate the failover
+// path must clear the stale detector so the next command probes the recovering
+// member instead of escalating forever.
+func TestMultiDBLatchedDetectorDoesNotWedgeHalfOpenSingleMember(t *testing.T) {
+	dbA := newTestDB("a", "127.0.0.1:1", 1, true)
+	det := &fakeDetector{}
+	opts := baseOptions()
+	opts.FailureDetector = det
+	opts.CommandRetries = 1
+	opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+		GracePeriod:      30 * time.Millisecond,
+	}
+	mdb := newTestMultiDB(t, opts, dbA) // single member: no alternate candidate
+
+	// Open A's breaker and let the grace period elapse so it is half-open.
+	mdb.TestBreakerRecordFailure(0)
+	time.Sleep(50 * time.Millisecond)
+	// Latch the custom detector: fakeDetector stays tripped until Reset.
+	det.tripped.Store(true)
+
+	ctx := context.Background()
+	var lastErr error
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		lastErr = mdb.Get(ctx, "k").Err()
+		if lastErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lastErr != nil {
+		t.Fatalf("half-open single member with a latched detector never recovered: err=%v", lastErr)
+	}
+	if det.resets.Load() == 0 {
+		t.Error("detector was never reset — the half-open no-candidate recovery path was not taken")
+	}
+}
+
 // Auto-fallback must not immediately undo a detector-driven failover: a flaky
 // higher-weight primary whose failure rate trips the detector (without its
 // breaker ever opening) must stay failed over, not ping-pong.

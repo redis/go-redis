@@ -909,20 +909,36 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 	for {
 		best := c.selectCandidate(cands)
 		if best < 0 {
-			// No alternate candidate. If the CURRENT active database is fully
-			// available again (health checks closed its breaker after the
-			// failure burst that tripped the detector), stay on it and clear
-			// the tripped state: escalating here would strand the client in
-			// *NotAvailable forever, because no command can succeed to reset
-			// the detector. Closed only — a half-open breaker must keep being
-			// escalated or the gate would spin on exhausted probe slots. The
-			// live index is used, not the caller's snapshot: `from` can be
-			// stale after a concurrent switch, and the verdict must be about
-			// the database traffic actually lands on.
-			if db, _ := c.activeSnapshot(); db != nil && db.cb.CheckState() == imultidb.CircuitClosed {
-				c.resetFailoverEscalationLocked()
-				c.resetDetectorSafely()
-				return nil
+			// No alternate candidate: decide what to do with the CURRENT active
+			// (live index, not the caller's snapshot — `from` can be stale after
+			// a concurrent switch, and the verdict must be about the database
+			// traffic actually lands on).
+			db, _ := c.activeSnapshot()
+			if db != nil {
+				switch db.cb.CheckState() {
+				case imultidb.CircuitClosed:
+					// Fully available again (health checks closed its breaker
+					// after the failure burst that tripped the detector): stay
+					// on it and clear the tripped state — escalating would strand
+					// the client in *NotAvailable forever, because no command can
+					// succeed to reset the detector.
+					c.resetFailoverEscalationLocked()
+					c.resetDetectorSafely()
+					return nil
+				case imultidb.CircuitHalfOpen:
+					// Recovering. A latched custom detector (ShouldFailover stays
+					// true across the outage) blocks the gate from ever admitting
+					// the bounded half-open probe, and with no alternate the
+					// client would wedge half-open forever even after the endpoint
+					// recovered. Clear the detector so the caller's next gate
+					// admits a probe; a failed probe re-opens the breaker and
+					// escalation resumes through the Open path below. The caller's
+					// gateRejections cap bounds any spin on an exhausted probe
+					// budget. Escalation state is left untouched (unlike Closed) —
+					// the member is not proven healthy yet.
+					c.resetDetectorSafely()
+					return nil
+				}
 			}
 			return c.recordFailedFailoverLocked()
 		}
