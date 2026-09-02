@@ -258,7 +258,10 @@ type Reservation struct {
 func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	state := State(cb.state.Load())
 	if state == StateClosed {
-		return true, Reservation{}
+		// Stamp the generation even on a closed (slot-less) admission: the
+		// !held settle paths use it to drop an outcome that outlived a
+		// reselect/recovery cycle (see RecordSuccessFor/RecordFailureFor).
+		return true, Reservation{gen: cb.generation.Load()}
 	}
 	// A plain Open whose grace period has not elapsed is the common rejected
 	// case — keep it lock-free. Only the half-open lifecycle takes the lock.
@@ -277,8 +280,12 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 	cb.maybeHalfOpenLocked()
 	if State(cb.state.Load()) != StateHalfOpen {
 		st := State(cb.state.Load())
+		gen := cb.generation.Load()
 		cb.transitionMu.Unlock()
-		return st == StateClosed, Reservation{}
+		// Closed admission (slot-less) carries the generation like the lock-free
+		// path above; a non-Closed st means rejected, and its reservation is
+		// never settled.
+		return st == StateClosed, Reservation{gen: gen}
 	}
 	if requests := cb.requests.Add(1); int(requests) > cb.config.MaxHalfOpenRequests {
 		cb.requests.Add(-1)
@@ -302,7 +309,14 @@ func (cb *CircuitBreaker) AllowReserve() (allowed bool, r Reservation) {
 // Out-of-band evidence goes through RecordExternalSuccess, which does count.
 func (cb *CircuitBreaker) RecordSuccessFor(r Reservation) {
 	if !r.held {
-		if State(cb.state.Load()) == StateClosed {
+		// Clear the failure count only while this is still the SAME closed
+		// episode the admission was taken in: the generation must be unchanged
+		// AND the circuit still closed. Every Closed -> ... -> Closed round trip
+		// bumps the generation (Reset, and HalfOpen->Closed via the bump in
+		// maybeHalfOpenLocked), so a stale generation means a reselect or a
+		// recovery cycle happened since admission and this success predates it.
+		// Lock-free: the only action is an idempotent failures.Store(0).
+		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
 			cb.failures.Store(0)
 		}
 		return
@@ -340,25 +354,33 @@ func (cb *CircuitBreaker) ReleaseFor(r Reservation) {
 // episode: a failure from an admission that outlived an open -> half-open cycle
 // must not re-open (and abort the recovery of) the NEW episode — the symmetric
 // guard to RecordSuccessFor. A closed-state reservation (held == false) records
-// only while the circuit is still closed: it was admitted in the closed state,
-// so if the circuit has since moved to open or half-open its failure predates
-// that episode and must not re-open it (a stale probe failure aborting a
-// recovery it never joined) — symmetric to RecordSuccessFor's held==false
-// branch. Unlike success/release this does not consume the once-only settle
-// flag — a failure opens the circuit rather than freeing a slot, and the batch
-// path records one failure per command.
+// only while it is still the SAME closed episode it was admitted in: the
+// generation must be unchanged AND the circuit still closed. If it has moved to
+// open or half-open, or a Reset (reselect) bumped the generation and returned to
+// closed, this failure predates the current episode and must not re-open it (a
+// stale probe failure aborting a recovery, or reversing an operator reselect).
+// Every Closed -> ... -> Closed round trip bumps the generation (Reset, and
+// HalfOpen->Closed via maybeHalfOpenLocked's bump), so the generation check is
+// what distinguishes "still the admission's closed episode" from "a new one".
+// Unlike success/release this does not consume the once-only settle flag — a
+// failure opens the circuit rather than freeing a slot, and the batch path
+// records one failure per command.
 func (cb *CircuitBreaker) RecordFailureFor(r Reservation) {
 	if !r.held {
-		// Reading Closed is race-free without the lock: leaving Closed needs a
-		// failure to open the circuit first, and Closed -> half-open needs a
-		// full grace period, so the state cannot flip to half-open between this
-		// read and RecordFailure. (A closed-admission failure that arrives while
-		// the circuit is already open does not restart the grace period — it is
-		// stale evidence and would only delay recovery.)
-		if State(cb.state.Load()) != StateClosed {
-			return
+		// Under transitionMu, unlike the success path: a failure MUTATES state,
+		// so the generation+state check and the record must be atomic — a Reset
+		// landing between an unlocked check and the record would let a stale
+		// failure re-open the freshly reset breaker (the exact bug). Closed-state
+		// failures are rare, so the lock is cheap here; the hot path is the
+		// lock-free success side.
+		cb.transitionMu.Lock()
+		if r.gen == cb.generation.Load() && State(cb.state.Load()) == StateClosed {
+			cb.lastFailure.Store(time.Now().UnixNano())
+			if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+				cb.openFromClosedLocked()
+			}
 		}
-		cb.RecordFailure()
+		cb.transitionMu.Unlock()
 		return
 	}
 	// Same-episode failures re-open under the lock, atomically with the

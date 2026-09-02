@@ -1101,6 +1101,36 @@ func TestCircuitBreaker_ClosedAdmissionDoesNotFeedHalfOpen(t *testing.T) {
 // failure counts toward opening while the circuit is still closed, but once the
 // circuit has moved to half-open it must not re-open it — that failure was
 // admitted in the prior closed state and never joined the recovery episode.
+// TestCircuitBreaker_ClosedReservationInvalidatedByReset pins that a closed-
+// state admission (slot-less, generation-stamped) whose member is reselected via
+// Reset before the command settles does not record its stale failure against the
+// freshly reset breaker — which, at FailureThreshold 1, would immediately undo
+// the operator's reselection.
+func TestCircuitBreaker_ClosedReservationInvalidatedByReset(t *testing.T) {
+	cb := New(Config{FailureThreshold: 1, SuccessThreshold: 1, OpenTimeout: time.Hour})
+
+	ok, res := cb.AllowReserve() // admitted while closed: slot-less, gen-stamped
+	if !ok || res.held {
+		t.Fatalf("closed AllowReserve = (%v, held=%v), want admitted without a slot", ok, res.held)
+	}
+
+	cb.Reset() // operator reselect: new closed episode, bumped generation
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("state after Reset = %v, want closed", st)
+	}
+
+	cb.RecordFailureFor(res) // the in-flight command fails; reservation predates the Reset
+	if st := cb.State(); st != StateClosed {
+		t.Fatalf("stale closed-admission failure re-opened after Reset: state=%v, want closed", st)
+	}
+
+	_, fresh := cb.AllowReserve() // a fresh closed admission still records normally
+	cb.RecordFailureFor(fresh)
+	if st := cb.State(); st != StateOpen {
+		t.Fatalf("state after fresh closed-admission failure = %v, want open", st)
+	}
+}
+
 func TestCircuitBreaker_ClosedAdmissionFailureDoesNotReopenHalfOpen(t *testing.T) {
 	cfg := Config{FailureThreshold: 2, SuccessThreshold: 1, MaxHalfOpenRequests: 1, OpenTimeout: 20 * time.Millisecond}
 
