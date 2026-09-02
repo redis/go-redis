@@ -150,8 +150,17 @@ type AutoPipelineOptions struct {
 	// admission happens at write time, a deny surfaces as queue latency on the
 	// awaited result, not as a submit-time error — and one deny covers a whole
 	// chunk, exactly as one Allow covers a whole pipeline exec elsewhere.
-	// ReportResult carries the write outcome only; reply errors do not feed it
-	// (a server that answers is healthy).
+	// ReportResult fires exactly once per admitted chunk, strictly paired with its
+	// Allow, and carries the REPLY-side outcome — not the write result. A clean write
+	// does NOT report at admission: the obligation rides the in-flight deque on the
+	// chunk's last command and reports nil once every reply of the chunk has landed
+	// (reply-LEVEL errors such as redis.Nil / WRONGTYPE / MOVED still report nil — a
+	// server that answers is healthy). A write failure or encoder panic reports that
+	// write error immediately (the replies will never come); a later transport failure
+	// that abandons the chunk's unread replies reports that error. A denied (or
+	// panicking) Allow grants no permit and reports nothing. So a custom Limiter must
+	// expect its permit to be released on the reply side and to observe only transport
+	// failures, never reply-level Redis errors.
 	FullDuplex bool
 
 	// FullDuplexWindow is the maximum in-flight (written-but-unacknowledged)
@@ -904,6 +913,17 @@ type AutoPipeliner struct {
 	// underneath it — while accepted commands are still being flushed.
 	closeDone chan struct{}
 	closeErr  error
+	// drainOnce memoizes cancelAndDrain's body: two closers can reach it for the
+	// same engine (an explicit AutoPipeliner.Close racing a pool-sharing wrapper's
+	// shared-pool close hook, which deliberately leaves ap.closed false). The body
+	// runs exactly once and writes closeErr inside the Once (so closeErr has no
+	// concurrent writer and WaitClosed reads it safely); both callers return that
+	// one result.
+	drainOnce sync.Once
+	// drainRuns counts drain-body executions. The Once holds it at 1 however many
+	// closers race, so a value > 1 means two closers double-drained the engine — the
+	// invariant this counter guards (and a duplicate-close diagnostic).
+	drainRuns atomic.Int64
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -2009,6 +2029,31 @@ func (ap *AutoPipeliner) Close() error {
 // (the engine is then rejected via the shared-closed flag, and a later owner Close
 // still runs the full teardown). Close layers the closed-CAS + hook detach on top.
 func (ap *AutoPipeliner) cancelAndDrain() error {
+	// Run the cancel+drain body exactly ONCE, even when two closers reach it for the
+	// same engine — an explicit AutoPipeliner.Close racing a pool-sharing wrapper's
+	// shared-pool close hook (the hook path deliberately leaves ap.closed false, so
+	// the closed-CAS does not serialize the two). Two concurrent drains are unsafe:
+	// drainAll orders its stages flushers -> shard sweep -> batchWg.Wait precisely so
+	// every batchWg.Add the sweep issues happens-before the Wait; interleaved, one
+	// drain's batchWg.Wait can run while the other's sweep is still dispatching and
+	// calling Add — "sync: WaitGroup misuse: Add called concurrently with Wait", a
+	// runtime panic. The Once also hands both callers the SAME close error and avoids
+	// a duplicate, spuriously-logged shutdown-permit acquisition. Once.Do blocks the
+	// loser until the winner's drain finishes and publishes closeErr (single writer,
+	// inside the Once, so WaitClosed reads it race-free), so this is safe without an
+	// extra channel. A single sweep is a
+	// sufficient barrier against late enqueues: whichever caller wins has already set
+	// the flag enqueue checks (Close sets ap.closed, the hook sets sharedClosed)
+	// before reaching here, so the sweep still closes the lost-command race.
+	ap.drainOnce.Do(func() { ap.closeErr = ap.drainBody() })
+	return ap.closeErr
+}
+
+// drainBody is cancelAndDrain's actual cancel+drain work, invoked exactly once via
+// drainOnce. Split out only so the once wrapper stays trivial.
+func (ap *AutoPipeliner) drainBody() error {
+	ap.drainRuns.Add(1)
+
 	// Cancel context to stop flushers
 	ap.cancel()
 

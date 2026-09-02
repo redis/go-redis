@@ -1528,6 +1528,24 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 	}
 }
 
+// fdAllow calls the user Limiter's Allow under a recovery boundary. Allow is user
+// code that runs on the engine's background writer goroutine, BEFORE writeBatch
+// arms its serialize-panic defer, so a panicking Allow would otherwise escape
+// fd.run and crash the process with the whole accepted chunk unsettled (half-duplex
+// wraps user code via recoverDispatchPanic). A recovered panic is converted to a
+// wrapped error and handled EXACTLY like a deny: no permit was granted, so the
+// caller reports nothing (strict Allow/ReportResult pairing) and fails only this
+// chunk, leaving the connection healthy and untouched.
+func fdAllow(ctx context.Context, lim Limiter) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: limiter Allow: %v", errFDPanicRecovered, r)
+			internal.Logger.Printf(ctx, "autopipeline: recovered full-duplex limiter Allow panic: %v\n%s", r, debug.Stack())
+		}
+	}()
+	return lim.Allow()
+}
+
 // writeBatch pushes each req onto the in-flight FIFO (so it is tracked as
 // unacked even if the flush then fails) and writes the whole batch in one
 // buffered flush. A write error leaves the reqs in the deque for recovery.
@@ -1542,8 +1560,10 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// here, per chunk. The session LEASE deliberately does not pay: a lease-long
 	// permit pinned a breaker's half-open probe budget for the whole session
 	// lifetime (probe starvation) and gave near-zero failure-signal density (one
-	// report per session, however long it ran). Reply errors deliberately do not
-	// feed ReportResult — a server that answers is healthy; transport failures
+	// report per session, however long it ran). The obligation is settled on the
+	// REPLY side (see fdLimiterReport): reply-LEVEL errors report success (nil) — a
+	// server that answers is healthy — while a transport failure that abandons the
+	// chunk's unread replies reports that error (settleTail); further failures also
 	// surface through the next chunk's write attempt on the replacement conn and
 	// through diverted retries, which keep their own Allow/Report pairing via
 	// getConn (parity with single-command retries paying per attempt).
@@ -1554,10 +1574,12 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// nothing pushed in-flight — so the session continues and the NEXT chunk
 	// pays Allow again (fast-fail while a breaker is open, automatic resume when
 	// it closes). This early return sits BEFORE the recovery defer below is
-	// armed, so a denied chunk can never be pushed into the in-flight deque.
+	// armed, so a denied chunk can never be pushed into the in-flight deque. A
+	// panicking Allow (user code on the writer goroutine) is caught by fdAllow and
+	// folded into this same deny path — no permit, so no ReportResult.
 	var report *fdLimiterReport
 	if lim := fd.client.opt.Limiter; lim != nil {
-		if aerr := lim.Allow(); aerr != nil {
+		if aerr := fdAllow(bg, lim); aerr != nil {
 			fd.failReqs(reqs, aerr)
 			return nil
 		}
@@ -1591,6 +1613,10 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// BinaryMarshaler) runs on the writer goroutine, where it would otherwise crash
 	// the process — convert it to a connection error.
 	pushed := false
+	// written is the count of commands the serialize loop REACHED this call (index+1
+	// of the last one it touched): the attempt-local twin of the lifetime `sent`
+	// stamp, reset every call. The recovery defer refunds by it, not by `sent`.
+	written := 0
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("%w: encoding batch: %v", errFDPanicRecovered, r)
@@ -1599,19 +1625,23 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		if !pushed {
 			// Recovery push (partial write or encoder panic): refund the optimistic
 			// submit/replay attempt for every command the serializer never REACHED
-			// (sent==false). run()'s fdConnErr recovery partitions the tail by attempt
-			// count (fdPartitionByBudget) BEFORE it consults the NoRetry/sent gate, and
-			// that partition keys on attempts, not sent - so a never-serialized command
-			// left at its pre-charged attempt count is declared budget-exhausted and
-			// FAILED without ever executing (acute at MaxRetries==0, where a single
-			// charge exhausts it). Mirrors the never-written-suffix refunds in
-			// writeCarryChunked / fdRecoverTail; the serialized prefix (sent==true) keeps
-			// its charge because it was attempted at-least-once.
-			for i := range reqs {
-				if !reqs[i].sent && reqs[i].attempts > 0 {
-					reqs[i].attempts--
-				}
-			}
+			// THIS call (index >= written). run()'s fdConnErr recovery partitions the
+			// tail by attempt count (fdPartitionByBudget) BEFORE it consults the
+			// NoRetry/sent gate, and that partition keys on attempts, not sent - so a
+			// command left at its pre-charged attempt count is declared budget-exhausted
+			// and FAILED without ever executing (acute at MaxRetries<=1).
+			//
+			// Refund by `written`, NOT by the lifetime `sent` flag: `sent` is sticky
+			// across replays, so on a SECOND-session replay whose earlier command's
+			// encoder panics the later commands still carry sent==true from the first
+			// session - a `!sent` refund would skip that suffix, leave it over-charged,
+			// and lose a retry it never got (MaxRetries==1: exhausted after only its
+			// original send). `written` is attempt-local, so it refunds exactly the
+			// suffix this call did not reach, regardless of a prior session's send. The
+			// prefix reached this call (< written, including a command whose own writeCmd
+			// panicked) keeps its charge - it was attempted at-least-once. Mirrors the
+			// never-written-suffix refunds in writeCarryChunked / fdRecoverTail.
+			fdRefundUnsentAttempt(reqs[written:])
 			inflight.pushBatch(reqs)
 		}
 	}()
@@ -1630,6 +1660,7 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		for i := range reqs {
 			reqs[i].writtenAt = now
 			reqs[i].sent = true
+			written = i + 1 // reached this command this call (attempt-local; see refund defer)
 			if e := writeCmd(wr, reqs[i].cmd); e != nil {
 				return e
 			}

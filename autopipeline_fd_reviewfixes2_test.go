@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -180,5 +181,166 @@ func TestFDHookSnapshotExcludesLateHook(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&h2); got != 1 {
 		t.Fatalf("control: live withProcessHook did not observe the late hook (%d); test cannot distinguish the fix", got)
+	}
+}
+
+// TestFDWriteBatchRefundsReplaySuffixByReached pins finding F1: writeBatch's
+// recovery-push must refund the optimistic attempt by how far the serialize loop
+// REACHED this call (index >= written), NOT by the lifetime `sent` flag. `sent` is
+// sticky across replays, so on a SECOND-session replay every command already carries
+// sent==true; keying the refund on !sent then skips the suffix that this call never
+// serialized (an earlier command's encoder panicked), leaving it over-charged and
+// budget-exhausted one replay early. At MaxRetries==1 that FAILS a command that was
+// never actually re-issued.
+func TestFDWriteBatchRefundsReplaySuffixByReached(t *testing.T) {
+	ctx := context.Background()
+	cn := pool.NewConn(&mockNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	// SECOND-session replay: every command was already sent in session 1 (sent==true,
+	// sticky) and re-charged for this replay (attempts==2: submit + one replay bump,
+	// like run()'s carry[i].attempts++). index 1's encoder panics, so indices 2 and 3
+	// are never reached this call.
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k1", fdEncoderPanicArg{}), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k2", "v"), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k3", "v"), attempts: 2, sent: true},
+	}
+
+	err := fd.writeBatch(ctx, cn, inflight, reqs)
+	if err == nil || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("writeBatch err = %v, want errFDPanicRecovered", err)
+	}
+
+	// The prefix REACHED this call keeps its charge: reqs[0] serialized cleanly,
+	// reqs[1] panicked mid-serialize (its bytes may have reached the wire).
+	if reqs[0].attempts != 2 || reqs[1].attempts != 2 {
+		t.Errorf("reached-prefix attempts = %d,%d, want 2,2 (kept)", reqs[0].attempts, reqs[1].attempts)
+	}
+	// The suffix NOT reached this call must be refunded DESPITE sent==true — this is
+	// the fix. A refund keyed on !sent would skip these (they carry the sticky flag).
+	if reqs[2].attempts != 1 || reqs[3].attempts != 1 {
+		t.Errorf("unreached-suffix attempts = %d,%d, want 1,1 (refunded despite sent==true)", reqs[2].attempts, reqs[3].attempts)
+	}
+	// Consequence: at MaxRetries==1 the refunded suffix stays eligible for one more
+	// replay; over-charged (attempts 2 > 1) it would be declared budget-exhausted and
+	// FAILED without ever being re-issued.
+	kept, exhausted := fdPartitionByBudget(reqs[2:], 1)
+	if len(kept) != 2 || len(exhausted) != 0 {
+		t.Errorf("fdPartitionByBudget(suffix, 1) kept=%d exhausted=%d, want 2,0 (suffix loses its retry without the reached-based refund)", len(kept), len(exhausted))
+	}
+	if inflight.len() != 4 {
+		t.Fatalf("inflight.len() = %d, want 4 (whole batch recovered for settlement)", inflight.len())
+	}
+}
+
+// fdPanicAllowLimiter is a user Limiter whose Allow panics (user code that blows up
+// on the engine's writer goroutine). ReportResult counts calls so the test can pin
+// that a panicking Allow — like a deny — grants no permit and so reports nothing.
+type fdPanicAllowLimiter struct{ reports atomic.Int64 }
+
+func (l *fdPanicAllowLimiter) Allow() error         { panic("boom: limiter Allow panic") }
+func (l *fdPanicAllowLimiter) ReportResult(_ error) { l.reports.Add(1) }
+
+// TestFDWriteBatchRecoversPanickingLimiterAllow pins finding F4: Limiter.Allow runs
+// on the FD writer goroutine BEFORE writeBatch arms its serialize-panic defer, so a
+// panicking Allow (user code) would escape fd.run and crash the process with the
+// accepted chunk unsettled. writeBatch must recover it, fail the chunk (deny
+// semantics), and — because no permit was granted — never call ReportResult.
+func TestFDWriteBatchRecoversPanickingLimiterAllow(t *testing.T) {
+	ctx := context.Background()
+	cn := pool.NewConn(&mockNetConn{})
+	lim := &fdPanicAllowLimiter{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), batch: newAPBatch(), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "set", "k1", "v"), batch: newAPBatch(), attempts: 1},
+	}
+
+	// The panic must be recovered inside writeBatch, not propagated to the caller.
+	err := func() (e error) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("writeBatch propagated a limiter Allow panic instead of recovering it: %v", r)
+			}
+		}()
+		return fd.writeBatch(ctx, cn, inflight, reqs)
+	}()
+	// Deny semantics: writeBatch returns nil (only THIS chunk failed), each command
+	// carries the wrapped panic error, and the connection is untouched.
+	if err != nil {
+		t.Fatalf("writeBatch err = %v, want nil (a deny fails the chunk, not writeBatch)", err)
+	}
+	for i := range reqs {
+		got := reqs[i].cmd.rawErr()
+		if got == nil {
+			t.Errorf("reqs[%d].Err() == nil, want the recovered panic error", i)
+		} else if !errors.Is(got, errFDPanicRecovered) {
+			t.Errorf("reqs[%d].Err() = %v, want errFDPanicRecovered", i, got)
+		}
+	}
+	if reqs[0].sent || reqs[1].sent {
+		t.Errorf("a command was marked sent after a denied (panicking) Allow — the connection must be untouched")
+	}
+	if inflight.len() != 0 {
+		t.Errorf("inflight.len() = %d, want 0 — a denied chunk must never enter the in-flight deque", inflight.len())
+	}
+	// Strict pairing: a panicking Allow grants no permit, so there is NO ReportResult.
+	if n := lim.reports.Load(); n != 0 {
+		t.Errorf("ReportResult called %d times after a panicking Allow, want 0 (no permit -> no report)", n)
+	}
+}
+
+// TestAutoPipelineConcurrentSharedDrainRunsOnce pins finding F3: the two close entry
+// points for one engine — the explicit AutoPipeliner.Close and the shared-pool close
+// hook (which calls cancelAndDrain WITHOUT setting ap.closed) — can run concurrently
+// when a pool-sharing clone closes the shared pools while the owner calls Close. The
+// drain body must run exactly ONCE (two concurrent drains would interleave drainAll's
+// flushers->sweep->batchWg.Wait ordering and panic "WaitGroup misuse: Add called
+// concurrently with Wait"), and both callers must get the SAME close error.
+//
+// No -race red-check is available: there is no shared-memory data race here (the
+// hazard is a WaitGroup-misuse runtime panic, and each caller returns its own value).
+// The red-check is the drainRuns counter: reverting cancelAndDrain to call drainBody
+// directly (no drainOnce) makes both callers run the body, so drainRuns == 2.
+func TestAutoPipelineConcurrentSharedDrainRunsOnce(t *testing.T) {
+	c := NewClient(&Options{Addr: ":6379"}) // no dial: nothing is dispatched
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{Unordered: true, NumShards: 4})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	// Path A: the explicit Close (CAS on ap.closed, unregister hook, then drain).
+	go func() { defer wg.Done(); <-start; errs[0] = ap.Close() }()
+	// Path B: the shared-pool close hook path (cancelAndDrain, ap.closed left false).
+	go func() { defer wg.Done(); <-start; errs[1] = ap.cancelAndDrain() }()
+	close(start)
+	wg.Wait()
+
+	if got := ap.drainRuns.Load(); got != 1 {
+		t.Fatalf("drain body ran %d times, want 1 — concurrent closers double-drained the engine", got)
+	}
+	if errs[0] != errs[1] {
+		t.Fatalf("concurrent close paths returned different results: Close=%v hook=%v", errs[0], errs[1])
+	}
+	if errs[0] != nil {
+		t.Fatalf("healthy concurrent close returned %v, want nil", errs[0])
 	}
 }
