@@ -596,6 +596,17 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // AddDatabaseHook installs a hook on the underlying client of the database with
 // the given id. Unlike AddHook it wraps the member connection directly, so it
 // is the way to instrument member dialing and per-connection behaviour.
+//
+// A member hook must pass the context it receives — or one derived from it —
+// to next. MultiDB carries per-batch execution tracking in context values:
+// the pipeline paths attach it before entering the member's hook chain and
+// the wire path reads it back to mark commands as executed. A hook that
+// substitutes an unrelated context (context.Background() to detach
+// cancellation, a freshly built deadline context) drops that value, so a batch
+// that executed successfully is indistinguishable from one a hook served
+// locally and records no success for the circuit breaker or failure detector.
+// The effect is under-recording only — slower recovery of a half-open member,
+// failures not reset — never a phantom success or a replay.
 func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 	return c.core.addDatabaseHook(id, hook)
 }

@@ -364,7 +364,9 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		attempt++
 		// The marker tells recordBatchOutcomes whether execution started
 		// (fresh per attempt): command state alone cannot distinguish a
-		// pre-execution hook abort from a post-execution hook error.
+		// pre-execution hook abort from a post-execution hook error. It rides
+		// on the context, so a member hook must pass the received ctx (or a
+		// child of it) to next — see AddDatabaseHook.
 		executed := newExecutedCmds(len(cmds))
 		err := db.processPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 		if err != nil && ctx.Err() != nil {
@@ -469,6 +471,8 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	// cancel branch. ReleaseFor settles at most once and no-ops for a closed
 	// admission — the same defer Watch uses.
 	defer db.cb.ReleaseFor(res)
+	// The execution marker rides on the context (see processPipeline and
+	// AddDatabaseHook): a member hook must pass the received ctx to next.
 	executed := newExecutedCmds(len(cmds))
 	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 	if err != nil && ctx.Err() != nil {
