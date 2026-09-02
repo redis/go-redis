@@ -42,6 +42,9 @@ func TestAutoPipelineLoneCallerFlushesImmediately(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -97,6 +100,9 @@ func TestAutoPipelineExplicitDelayWaitsFullWindow(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -192,6 +198,9 @@ func TestAutoPipelineWaveCoalesces(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -322,6 +331,9 @@ func TestDoBypassesPipeline(t *testing.T) {
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), PipelineReadBufferSize: 64 << 10, PipelineWriteBufferSize: 64 << 10})
 	defer client.Close()
 
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -564,6 +576,9 @@ func TestDispatchChunkedAbortsAfterFailedPrefix(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -764,6 +779,9 @@ func TestCloseWaitsForDivertedCommand(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -794,6 +812,9 @@ func TestCloseWaitsForDivertedCommand(t *testing.T) {
 // opposite in its doc).
 func TestSharedClosedRejectsEveryEntryPoint(t *testing.T) {
 	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	parent := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer parent.Close()
 	if err := parent.Ping(ctx).Err(); err != nil {
@@ -863,6 +884,9 @@ func TestDivertRegistrationRacesClose(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -933,6 +957,9 @@ func TestOtelMetricsDoNotAwaitOnAsyncFace(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -986,6 +1013,7 @@ func (h dispatchGateHook) ProcessHook(next ProcessHook) ProcessHook {
 		return next(ctx, cmd)
 	}
 }
+
 func (h dispatchGateHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if h.armed.Load() {
@@ -1036,6 +1064,9 @@ func TestEvalDoesNotAwaitOnAsyncFace(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1191,6 +1222,9 @@ func TestNoRetryOrderObservedEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1227,6 +1261,9 @@ func TestNoRetrySplitExecutesEveryCommand(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1284,6 +1321,7 @@ func (h cacheHook) ProcessHook(next ProcessHook) ProcessHook {
 		return nil
 	}
 }
+
 func (h cacheHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
 	return func(ctx context.Context, cmds []Cmder) error {
 		if !h.armed.Load() {
@@ -1308,6 +1346,9 @@ func TestSuccessfulHookShortCircuitIsHonored(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1370,6 +1411,9 @@ func TestMustDivertKeepsCommandOffTheBatchPath(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1418,6 +1462,9 @@ func TestRetryRunsStopAfterFailedPrefix(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr(), MaxRetries: -1})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1459,6 +1506,9 @@ func TestAsyncProcessReportsSubmitRejection(t *testing.T) {
 	ctx := context.Background()
 	client := NewClient(&Options{Addr: internalTestRedisAddr()})
 	defer client.Close()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := client.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -1507,6 +1557,9 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	}
 
 	// CSC client: needs a live RESP3 server for CLIENT TRACKING to attach.
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis for the CSC half: %v", err)
+	}
 	if err := NewClient(&Options{Addr: internalTestRedisAddr(), Protocol: 3}).Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis for the CSC half: %v", err)
 	}
@@ -1535,5 +1588,51 @@ func TestAutopipelineSoloRoutingGate(t *testing.T) {
 	cscC.disableCSCServing(ctx, "test: mid-life disable")
 	if apc.cscActiveFn() {
 		t.Fatal("gate still reports active after CSC disabled itself mid-life")
+	}
+}
+
+// TestCloseLoserReturnsImmediatelyWaitClosedBlocks pins the Close/WaitClosed
+// split: a Close that loses the shutdown CAS returns immediately (so a
+// re-entrant Close from an in-flight dispatch cannot self-wait on the drain it
+// is part of), while WaitClosed blocks until the winner's drain completes and
+// returns that drain's result.
+func TestCloseLoserReturnsImmediatelyWaitClosedBlocks(t *testing.T) {
+	// Minimal engine: the loser path and WaitClosed touch only closed +
+	// closeDone + closeErr, never the shards or the drain.
+	ap := &AutoPipeliner{closeDone: make(chan struct{})}
+	ap.closed.Store(true) // a winner has claimed the shutdown but not finished draining
+
+	// A losing Close must return nil immediately, not block on the drain.
+	loserDone := make(chan error, 1)
+	go func() { loserDone <- ap.Close() }()
+	select {
+	case err := <-loserDone:
+		if err != nil {
+			t.Errorf("losing Close returned %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("losing Close blocked instead of returning immediately")
+	}
+
+	// WaitClosed must block until the winner signals closeDone.
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- ap.WaitClosed() }()
+	select {
+	case <-waitDone:
+		t.Fatal("WaitClosed returned before the drain signaled closeDone")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Winner finishes: publish the drain result, then release WaitClosed.
+	wantErr := errors.New("drain result")
+	ap.closeErr = wantErr
+	close(ap.closeDone)
+	select {
+	case err := <-waitDone:
+		if err != wantErr {
+			t.Errorf("WaitClosed = %v, want the winner's drain result %v", err, wantErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitClosed did not return after closeDone closed")
 	}
 }

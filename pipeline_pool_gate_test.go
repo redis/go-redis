@@ -194,6 +194,9 @@ func TestPipelinePoolSpillsToMainPool(t *testing.T) {
 		PoolTimeout:      100 * time.Millisecond, // spill latency bound
 	})
 	defer c.Close()
+	if err := probeRedis(gateTestAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
@@ -265,6 +268,9 @@ func TestPipelineConnsSkipClientTracking(t *testing.T) {
 		ClientSideCacheConfig: &ClientSideCacheConfig{},
 	})
 	defer c.Close()
+	if err := probeRedis(gateTestAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}

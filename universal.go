@@ -120,7 +120,10 @@ type UniversalOptions struct {
 	MaxRedirects   int
 	ReadOnly       bool
 	RouteByLatency bool
-	RouteRandomly  bool
+	// RouteByLatencyTolerance is passed through to ClusterOptions and FailoverOptions;
+	// see ClusterOptions.RouteByLatencyTolerance.
+	RouteByLatencyTolerance time.Duration
+	RouteRandomly           bool
 
 	// MasterName is the sentinel master name.
 	// Only for failover clients.
@@ -221,10 +224,11 @@ func (o *UniversalOptions) Cluster() *ClusterOptions {
 		CredentialsProviderContext:   o.CredentialsProviderContext,
 		StreamingCredentialsProvider: o.StreamingCredentialsProvider,
 
-		MaxRedirects:   o.MaxRedirects,
-		ReadOnly:       o.ReadOnly,
-		RouteByLatency: o.RouteByLatency,
-		RouteRandomly:  o.RouteRandomly,
+		MaxRedirects:            o.MaxRedirects,
+		ReadOnly:                o.ReadOnly,
+		RouteByLatency:          o.RouteByLatency,
+		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
+		RouteRandomly:           o.RouteRandomly,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,
@@ -294,8 +298,9 @@ func (o *UniversalOptions) Failover() *FailoverOptions {
 		SentinelUsername: o.SentinelUsername,
 		SentinelPassword: o.SentinelPassword,
 
-		RouteByLatency: o.RouteByLatency,
-		RouteRandomly:  o.RouteRandomly,
+		RouteByLatency:          o.RouteByLatency,
+		RouteByLatencyTolerance: o.RouteByLatencyTolerance,
+		RouteRandomly:           o.RouteRandomly,
 
 		MaxRetries:      o.MaxRetries,
 		MinRetryBackoff: o.MinRetryBackoff,

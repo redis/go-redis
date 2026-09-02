@@ -29,6 +29,9 @@ func TestWithPipelineConnSpillAccountsLimiterOnce(t *testing.T) {
 	lim := &spillCountingLimiter{}
 	c := NewClient(&Options{Addr: ":6379", PipelinePoolSize: 1, Limiter: lim})
 	defer c.Close()
+	if err := probeRedis(":6379"); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
 	if err := c.Ping(ctx).Err(); err != nil {
 		t.Skipf("no redis: %v", err)
 	}
