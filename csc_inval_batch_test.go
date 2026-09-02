@@ -374,3 +374,36 @@ func TestInvalBatcherOversizedKeyTripsFlush(t *testing.T) {
 		t.Fatalf("chBytes = %d; the oversized key must not be admitted to ch", got)
 	}
 }
+
+// TestInvalBatcherChByteReservationIsAtomic pins the atomic ch-byte reservation:
+// the gate must RESERVE before the send (add-and-rollback), not Load-then-Add.
+// Concurrent producers each sending a large distinct key could otherwise each read
+// a stale below-cap Load, all send, and all Add — overshooting cscInvalSpillMaxBytes
+// while the counter briefly read ~0. Worker NOT started and ch cap far exceeds the
+// producer count, so ONLY the byte reservation (not the item-count bound or a
+// draining worker) can keep chBytes under the cap.
+func TestInvalBatcherChByteReservationIsAtomic(t *testing.T) {
+	b := newTestBatcher(&countingCache{}, 4096, time.Hour)
+
+	const producers = 64
+	bigKey := strings.Repeat("x", 1<<20) // 1 MiB; ~8 fit the 8 MiB cap, the rest divert
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			b.enqueue(bigKey + strconv.Itoa(i)) // distinct keys: no dedup collapse
+		}(i)
+	}
+	close(start) // release all producers at once to maximize the reservation race
+	wg.Wait()
+
+	if got := b.chBytes.Load(); got > int64(cscInvalSpillMaxBytes) {
+		t.Fatalf("chBytes = %d exceeds the cap %d after %d concurrent enqueues; the byte "+
+			"reservation overshot (non-atomic Load-then-Add admits over-cap bytes)",
+			got, cscInvalSpillMaxBytes, producers)
+	}
+}

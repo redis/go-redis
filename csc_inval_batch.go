@@ -111,11 +111,13 @@ type cscInvalBatcher struct {
 	// chBytes tracks the retained KEY bytes currently sitting in ch. ch is bounded
 	// by item COUNT (its slot count) but not memory, so a burst of large keys — or
 	// one key larger than the whole byte cap — would retain unbounded bytes before
-	// the spill path (and its byte cap) ever engages. enqueue adds on a successful
-	// ch send and the worker subtracts on consume; enqueue's pre-admission gate
-	// diverts to the full-Flush fallback when this (plus the incoming key) would
-	// cross cscInvalSpillMaxBytes. Atomic: written by the worker (consume) and read
-	// by producers (the gate).
+	// the spill path (and its byte cap) ever engages. enqueue RESERVES atomically
+	// before the send (mirroring reserveWireBytes): it charges keyLen up front and
+	// rolls back if the total crosses cscInvalSpillMaxBytes, so concurrent producers
+	// can no longer each read a stale below-cap Load and all overshoot. A send that
+	// then finds ch full rolls the reservation back too (those bytes are tracked on
+	// the spill path via spillBytes); the worker subtracts on consume. Written by
+	// producers (reserve/rollback) and the worker (consume); read by the gate.
 	chBytes atomic.Int64
 	wake    chan struct{}
 	// flushReq: spill hit cscInvalSpillMax, so the worker must drop() + full-Flush
@@ -217,16 +219,25 @@ func (b *cscInvalBatcher) enqueue(nsKey string) {
 	// key alone exceeds the byte cap, or the bytes already retained in ch plus this
 	// key would cross it, skip ch entirely and take the full-Flush fallback (below)
 	// — otherwise a distinct-large-key flood retains unbounded bytes in ch before
-	// the spill path ever engages.
-	overBytes := keyLen > cscInvalSpillMaxBytes || b.chBytes.Load()+keyLen > cscInvalSpillMaxBytes
+	// the spill path ever engages. RESERVE the bytes atomically before the send
+	// (mirroring reserveWireBytes): a stale Load-then-Add let concurrent producers
+	// each read a below-cap value and all overshoot the cap, so charge keyLen up
+	// front and roll back when it crosses.
+	overBytes := keyLen > cscInvalSpillMaxBytes
 	if !overBytes {
-		select {
-		case b.ch <- it:
-			b.chBytes.Add(keyLen)
-			b.stopMu.RUnlock()
-			return
-		default:
-			// ch full: fall through to the spill path below.
+		if b.chBytes.Add(keyLen) > cscInvalSpillMaxBytes {
+			b.chBytes.Add(-keyLen) // over cap: divert to the full-Flush fallback below
+			overBytes = true
+		} else {
+			select {
+			case b.ch <- it:
+				b.stopMu.RUnlock()
+				return
+			default:
+				// ch full: release the reservation (the spill path tracks these bytes
+				// via spillBytes) and fall through to the spill path below.
+				b.chBytes.Add(-keyLen)
+			}
 		}
 	}
 	{
