@@ -19,6 +19,7 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/pool"
 	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
 // internalTestRedisAddr mirrors main_test.go's redisAddr for the internal
@@ -767,12 +768,16 @@ var errBreakerOpen = errors.New("fake breaker: open")
 
 // fakeBreaker is a Limiter stand-in for a circuit breaker: denies while open,
 // and counts allows/denies/reports so the strict pairing contract (exactly one
-// ReportResult per successful Allow, none for a deny) is assertable.
+// ReportResult per successful Allow, none for a deny) is assertable. errReports
+// counts the reports that carried a non-nil error, so a test can assert the
+// breaker actually SEES failures (reply-side reporting) instead of only ever
+// being told success — the finding-ed53z contract.
 type fakeBreaker struct {
-	open    atomic.Bool
-	allows  atomic.Int64
-	denies  atomic.Int64
-	reports atomic.Int64
+	open       atomic.Bool
+	allows     atomic.Int64
+	denies     atomic.Int64
+	reports    atomic.Int64
+	errReports atomic.Int64
 }
 
 func (b *fakeBreaker) Allow() error {
@@ -783,7 +788,13 @@ func (b *fakeBreaker) Allow() error {
 	b.allows.Add(1)
 	return nil
 }
-func (b *fakeBreaker) ReportResult(_ error) { b.reports.Add(1) }
+
+func (b *fakeBreaker) ReportResult(err error) {
+	b.reports.Add(1)
+	if err != nil {
+		b.errReports.Add(1)
+	}
+}
 
 // TestFDLimiterPerBatch pins the per-batch Limiter contract of the full-duplex
 // engine: Allow() is paid per written chunk (not per session or per lease), a
@@ -872,6 +883,260 @@ func TestFDLimiterPerBatch(t *testing.T) {
 	}
 	if d < 1 {
 		t.Fatalf("denies = %d, want >= 1 (phase 2 must have been denied by the Limiter)", d)
+	}
+}
+
+// failReadNetConn is a net.Conn whose Write succeeds (a peer that ACCEPTS the
+// batch) but whose Read always fails — the reply-side transport failure of
+// finding ed53z: the write is admitted and reported healthy under the old
+// contract, yet no reply ever arrives.
+type failReadNetConn struct{ mockNetConn }
+
+func (c *failReadNetConn) Read(b []byte) (int, error) { return 0, errors.New("read boom") }
+
+// TestFDLimiterReportsReplySide pins the core of finding ed53z at the mechanism
+// level: writeBatch admits a chunk (one Allow) but a CLEAN write must NOT report
+// yet — the obligation is deferred to the reply side and rides the chunk's last
+// req. A later transport failure that abandons the unread replies settles it
+// with the error (settleTail), and the settle is exactly-once (CAS), so a reader
+// and a failure path racing the same obligation cannot double-report.
+func TestFDLimiterReportsReplySide(t *testing.T) {
+	br := &fakeBreaker{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: br}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+	cn := pool.NewConn(&mockNetConn{}) // Write succeeds -> writeBatch flushes clean
+
+	reqs := make([]fdReq, 3)
+	for i := range reqs {
+		reqs[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", "k", "v")}
+	}
+	if err := fd.writeBatch(context.Background(), cn, inflight, reqs); err != nil {
+		t.Fatalf("writeBatch: %v", err)
+	}
+	// THE discriminator between reply-side and write-outcome reporting: a clean
+	// write admits (allows==1) but reports NOTHING yet.
+	if a, r := br.allows.Load(), br.reports.Load(); a != 1 || r != 0 {
+		t.Fatalf("after a clean write: allows=%d reports=%d, want allows=1 reports=0 (reply-side, not write-time reporting)", a, r)
+	}
+
+	rem := inflight.takeRemaining()
+	if len(rem) != len(reqs) {
+		t.Fatalf("takeRemaining len=%d, want %d", len(rem), len(reqs))
+	}
+	// Only the chunk's LAST req carries the obligation.
+	for i := 0; i < len(rem)-1; i++ {
+		if rem[i].limReport != nil {
+			t.Fatalf("req %d carries a Limiter obligation; only the chunk's LAST req should", i)
+		}
+	}
+	ob := rem[len(rem)-1].limReport
+	if ob == nil {
+		t.Fatal("chunk's last req carries no Limiter obligation — the reader could never report the reply-side outcome")
+	}
+
+	// A transport failure abandoning the unread replies settles the obligation
+	// with the error: the breaker SEES a failure.
+	ob.settle(errBreakerOpen)
+	if a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load(); a != 1 || r != 1 || e != 1 {
+		t.Fatalf("after a read-side failure: allows=%d reports=%d errReports=%d, want 1/1/1", a, r, e)
+	}
+	// Exactly-once: a racing second settle (reader vs failure path) is a no-op.
+	ob.settle(nil)
+	ob.settle(errBreakerOpen)
+	if r, e := br.reports.Load(), br.errReports.Load(); r != 1 || e != 1 {
+		t.Fatalf("obligation double-reported: reports=%d errReports=%d, want 1/1 (CAS must make settle exactly-once)", r, e)
+	}
+}
+
+// TestFDLimiterReportsReadFailure drives a whole session() against a peer that
+// ACCEPTS every write but whose reader immediately fails, and asserts the
+// Limiter actually receives the transport failure — the wiring finding ed53z is
+// about. Reverting writeBatch to report the WRITE outcome makes errReports 0 and
+// this test fails (the breaker would only ever be told success and never open).
+// Deterministic and dial-free: no reply is ever produced, so the reader breaks
+// on the first read and the session takes its fdConnErr recovery path.
+func TestFDLimiterReportsReadFailure(t *testing.T) {
+	br := &fakeBreaker{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: context.Background()},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second, Limiter: br}}},
+		maxBatch: 2,   // 5 commands -> chunks [0:2] [2:4] [4:5] -> 3 admitted chunks
+		window:   100, // >= command count, so writeCarryChunked never window-gates
+	}
+	cn := pool.NewConn(&failReadNetConn{})
+
+	const n = 5
+	carry := make([]fdReq, n)
+	for i := range carry {
+		carry[i] = fdReq{cmd: NewStatusCmd(context.Background(), "set", fmt.Sprintf("k%d", i), "v"), attempts: 1}
+	}
+
+	type res struct {
+		result fdResult
+	}
+	done := make(chan res, 1)
+	go func() {
+		_, r, _ := fd.session(context.Background(), cn, carry)
+		done <- res{r}
+	}()
+	var got res
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session() hung after a read failure — the reader/serve loop did not converge")
+	}
+	if got.result != fdConnErr {
+		t.Fatalf("session result = %v, want fdConnErr (the reader failed)", got.result)
+	}
+
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 {
+		t.Fatal("Limiter.Allow never called — the writes were not admitted per chunk")
+	}
+	if a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal — every Allow gets exactly one ReportResult)", a, r)
+	}
+	if e != a {
+		t.Fatalf("read failure reported %d errors of %d reports — a peer that drops before replying must report FAILURE, not success (finding ed53z)", e, a)
+	}
+}
+
+// TestFDLimiterPairingWithReadFailure exercises the strict-pairing contract
+// through the real engine across the main paths: successful chunks (replies land
+// -> ReportResult(nil)), then the connection is killed mid-flight so in-flight
+// replies never arrive (reply-side transport failure -> ReportResult(err)), then
+// Close. Every Allow must still pair 1:1 with a ReportResult, and at least one of
+// those reports must carry the error. Needs redis; uses the delay-proxy harness.
+func TestFDLimiterPairingWithReadFailure(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	const delay = 40 * time.Millisecond
+	paddr, stop := delayReplyProxy(t, "127.0.0.1"+internalTestRedisAddr(), delay)
+	defer stop()
+
+	br := &fakeBreaker{}
+	c := NewClient(&Options{
+		Addr:                    paddr,
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		MaxRetries:              1, // bound the post-kill re-lease backoff so Close is prompt
+		Limiter:                 br,
+		// Disable the maint-notifications handshake so the ONLY report carrying an
+		// error is the conn kill's abandoned replies (not a version-dependent
+		// CLIENT MAINT_NOTIFICATIONS reply error at init).
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer c.Close()
+	const window, maxBatch = 8, 4
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		FullDuplexWindow: window,
+		MaxBatchSize:     maxBatch,
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// A run of successful chunks first (these report nil), then kill the conn so a
+	// backlog's replies never arrive (these report the transport error).
+	for i := 0; i < 10; i++ {
+		if err := ap.Set(ctx, fmt.Sprintf("fdlrp:ok:%d", i), "v", 0).Err(); err != nil {
+			t.Fatalf("warmup set %d: %v", i, err)
+		}
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = ap.Set(ctx, fmt.Sprintf("fdlrp:kill:%d", i), "v", 0)
+		}
+	}()
+	time.Sleep(delay / 2)
+	stop() // kill live conns: in-flight replies never arrive -> reader failure
+
+	closed := make(chan struct{})
+	go func() { _ = ap.Close(); _ = c.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close hung after conn kill")
+	}
+	wg.Wait()
+	time.Sleep(50 * time.Millisecond)
+
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 || a != r {
+		t.Fatalf("Limiter unpaired after successes + read failure + Close: allows=%d reports=%d (want equal, >=1)", a, r)
+	}
+	if e < 1 {
+		t.Fatalf("no report carried the transport error: errReports=%d, want >=1 (the killed conn's abandoned replies must open the breaker — finding ed53z)", e)
+	}
+}
+
+// TestFDLimiterReplyLevelErrorReportsNil pins that a reply-LEVEL error (redis.Nil
+// from a GET on a missing key) is NOT a transport failure: the server answered,
+// so the chunk's obligation must report success. errReports must stay 0 — a
+// redis.Nil must never open the breaker. Needs redis.
+func TestFDLimiterReplyLevelErrorReportsNil(t *testing.T) {
+	ctx := context.Background()
+	if err := probeRedis(internalTestRedisAddr()); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	br := &fakeBreaker{}
+	client := NewClient(&Options{
+		Addr:                    internalTestRedisAddr(),
+		Protocol:                3,
+		PipelinePoolSize:        4,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+		PoolSize:                4,
+		Limiter:                 br,
+		// Disable the maint-notifications handshake: on a server that lacks it the
+		// CLIENT MAINT_NOTIFICATIONS reply-level error is reported to the shared
+		// Limiter at conn init and would pollute errReports (version-dependent).
+		MaintNotificationsConfig: &maintnotifications.Config{Mode: maintnotifications.ModeDisabled},
+	})
+	defer client.Close()
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := client.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+	client.Del(ctx, "fd:lim:missing")
+	if err := ap.Get(ctx, "fd:lim:missing").Err(); !errors.Is(err, Nil) {
+		t.Fatalf("get missing key: err = %v, want redis.Nil (reply-level error)", err)
+	}
+	if err := ap.Close(); err != nil {
+		t.Fatalf("ap close: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	a, r, e := br.allows.Load(), br.reports.Load(), br.errReports.Load()
+	if a < 1 || a != r {
+		t.Fatalf("Limiter unpaired: allows=%d reports=%d (want equal, >=1)", a, r)
+	}
+	if e != 0 {
+		t.Fatalf("redis.Nil opened the breaker: errReports=%d, want 0 (a reply-level error is not a transport failure)", e)
 	}
 }
 

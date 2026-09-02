@@ -1778,7 +1778,7 @@ func TestFDInflightOwnershipPartition(t *testing.T) {
 
 // fdCountLimiter counts Allow/ReportResult to verify the full-duplex engine
 // accounts the Limiter once per written batch (Allow before the flush,
-// ReportResult with the write outcome), balanced 1:1.
+// ReportResult on the reply side once the chunk's replies land), balanced 1:1.
 type fdCountLimiter struct{ allow, report atomic.Int64 }
 
 func (l *fdCountLimiter) Allow() error         { l.allow.Add(1); return nil }

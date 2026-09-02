@@ -178,6 +178,41 @@ type fdReq struct {
 	// connection's backlog, handing the caller an error for a command the server
 	// never saw.
 	sent bool
+	// limReport is the Limiter obligation for the WRITTEN chunk this req closes:
+	// non-nil ONLY on the LAST req of a chunk that Allow() admitted and writeBatch
+	// then wrote cleanly. It rides the in-flight deque so the reply-side outcome
+	// settles the chunk's single ReportResult — nil once every reply of the chunk
+	// has been read (reader), or the transport error when the chunk's unread
+	// replies are abandoned (settleTail). A write-failed chunk reports at write
+	// time and carries no obligation here. See fdLimiterReport.
+	limReport *fdLimiterReport
+}
+
+// fdLimiterReport is one chunk's outstanding Limiter obligation: the pending
+// ReportResult that must fire exactly once for the Allow() that admitted the
+// chunk in writeBatch. Reporting the WRITE outcome was wrong for a circuit
+// breaker (finding ed53z) — a peer that accepts the write but then closes before
+// replying, with replay writes also succeeding, would only ever feed the breaker
+// success and never open it. So the obligation records the REPLY-side outcome:
+// the reader settles ReportResult(nil) once every reply of the chunk has landed
+// (a server that answers is healthy, reply-LEVEL errors included), while a
+// transport failure that abandons the chunk's unread replies settles the error
+// (settleTail). The CAS makes it exactly-once even though the reader and a
+// failure path can both reach the same obligation.
+type fdLimiterReport struct {
+	lim  Limiter
+	done atomic.Bool
+}
+
+// settle fires ReportResult(err) at most once for this obligation. A nil
+// receiver (a chunk with no Limiter) and every call after the first are no-ops.
+func (o *fdLimiterReport) settle(err error) {
+	if o == nil {
+		return
+	}
+	if o.done.CompareAndSwap(false, true) {
+		o.lim.ReportResult(err)
+	}
 }
 
 // complete finalizes a command whose result is already set on it: it wakes the
@@ -1135,6 +1170,16 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					rerr = e
 					break
 				}
+				// The reply landed (nil, or a reply-LEVEL Redis error / redirect — a
+				// server that answers is healthy, NOT a transport failure). If this req
+				// closes an admitted chunk, settle its Limiter obligation with success:
+				// exactly one ReportResult(nil) per Allow, on the reply side. Fires for
+				// both the inline completion below and the retryable-divert branch (the
+				// reply WAS read; the divert re-runs the command elsewhere under its own
+				// getConn Allow/Report pairing).
+				if req.limReport != nil {
+					req.limReport.settle(nil)
+				}
 				// A retryable Redis error or a redirect (MOVED/ASK) is NOT the caller's
 				// final answer: the FD conn is one fixed socket/node, so re-run the
 				// command on the client's NORMAL path, which routes redirects and applies
@@ -1407,7 +1452,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			inflight.hardClose()
 			_ = cn.Close()
 			<-readerDone
-			return inflight.takeRemaining(), fdConnErr, e
+			return fd.settleTail(inflight.takeRemaining(), e), fdConnErr, e
 		}
 		// e == nil (fully flushed) OR errFDConnMoving (handoff mid-flush on a LIVE
 		// conn). Either way the connection is healthy: drain the already-written prefix
@@ -1428,7 +1473,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// backlog-flush failure branch above. Failing here handed every acked-write
 			// (replayable reads included) the read error just because Close raced a slow
 			// reply.
-			return fdRecoverTail(inflight.takeRemaining(), unwritten), fdConnErr, sharedErr
+			return fd.settleTail(fdRecoverTail(inflight.takeRemaining(), unwritten), sharedErr), fdConnErr, sharedErr
 		}
 		// Handoff mid-flush: the prefix drained cleanly and the conn will be Put
 		// (OnPut handoff). RETURN the never-sent suffix so run() completes it on
@@ -1457,7 +1502,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// charged for a send that never happened and could be declared
 			// budget-exhausted one replay early (e.g. MaxRetries=1: one real send on a
 			// dropped session, then MOVING mid-replay plus a reader failure here).
-			return fdRecoverTail(inflight.takeRemaining(), carrySuffix), fdConnErr, sharedErr
+			return fd.settleTail(fdRecoverTail(inflight.takeRemaining(), carrySuffix), sharedErr), fdConnErr, sharedErr
 		}
 		// carrySuffix is the never-sent suffix to replay on the next lease (nil for a
 		// plain idle/recycle; the unwritten tail on a handoff recycle).
@@ -1479,7 +1524,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		if sharedErr == nil {
 			sharedErr = errFDReaderGone
 		}
-		return unacked, fdConnErr, sharedErr
+		return fd.settleTail(unacked, sharedErr), fdConnErr, sharedErr
 	}
 }
 
@@ -1510,18 +1555,30 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 	// pays Allow again (fast-fail while a breaker is open, automatic resume when
 	// it closes). This early return sits BEFORE the recovery defer below is
 	// armed, so a denied chunk can never be pushed into the in-flight deque.
+	var report *fdLimiterReport
 	if lim := fd.client.opt.Limiter; lim != nil {
 		if aerr := lim.Allow(); aerr != nil {
 			fd.failReqs(reqs, aerr)
 			return nil
 		}
-		// Admitted: report the WRITE outcome exactly once — strict pairing (a
-		// denied Allow reports nothing, per the Limiter contract; every allowed
-		// one reports). Deferred, and registered BEFORE the recovery defer below
-		// so it runs AFTER it (LIFO) and sees the final err — an encoder panic
-		// converted to errFDPanicRecovered is a failed write, not a skipped
-		// report.
-		defer func() { lim.ReportResult(err) }()
+		// Admitted: one obligation for this chunk's Allow, settled exactly once on
+		// the REPLY side, not at write time (finding ed53z: a peer that accepts the
+		// write then drops before replying must be a FAILURE the breaker sees). A
+		// clean write hands the obligation to the reader via the chunk's last req
+		// (settle nil once every reply lands); a transport failure that abandons the
+		// unread replies settles the error (settleTail). A WRITE failure/panic HERE
+		// means the replies will never come, so report the write error now — this
+		// defer is registered BEFORE the recovery defer below so it runs AFTER it
+		// (LIFO) and sees the final err (an encoder panic converted to
+		// errFDPanicRecovered is a failed write, not a skipped report). On a clean
+		// write it is a no-op; the obligation rides the deque. A denied Allow reports
+		// nothing, per the Limiter contract.
+		report = &fdLimiterReport{lim: lim}
+		defer func() {
+			if err != nil {
+				report.settle(err)
+			}
+		}()
 	}
 	// Publish the batch to the in-flight deque only AFTER a clean serialize+flush
 	// (see below), so the reader arms its per-reply ReadTimeout once the write has
@@ -1580,8 +1637,14 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		return nil
 	})
 	if err == nil {
-		// Clean flush: publish now, so the reader only starts its reply deadline once
-		// the bytes are on the wire. On error/panic the deferred push handles recovery.
+		// Clean flush: attach this chunk's Limiter obligation to its LAST req so the
+		// reader settles ReportResult(nil) once every reply lands, then publish — the
+		// reader only starts its reply deadline once the bytes are on the wire. On
+		// error/panic the report defer above fires the write error and the recovery
+		// defer pushes the reqs WITHOUT an obligation, so nothing double-reports.
+		if report != nil {
+			reqs[len(reqs)-1].limReport = report
+		}
 		inflight.pushBatch(reqs)
 		pushed = true
 	}
@@ -1784,6 +1847,25 @@ func fdRecoverTail(rem, suffix []fdReq) []fdReq {
 	out = append(out, suffix...)
 	fdRefundUnsentAttempt(out[len(rem):])
 	return out
+}
+
+// settleTail settles every Limiter obligation carried by an fdConnErr recovery
+// set with err, exactly once, and returns the SAME slice so it wraps a recovery
+// expression inline. Called at each session() point that hands a written-but-
+// unacked tail back for replay/failure: the reader never completed these chunks,
+// so their reply-side outcome is this transport error. Settling here — inside
+// session(), inseparable from producing the recovery set — keeps "no obligation
+// outlives its session" readable in one function and pairs every Allow whose
+// replies never arrived. The field is cleared so the obligation never travels
+// into the replay (the rewrite's writeBatch mints a fresh Allow + obligation).
+func (fd *fdEngine) settleTail(reqs []fdReq, err error) []fdReq {
+	for i := range reqs {
+		if reqs[i].limReport != nil {
+			reqs[i].limReport.settle(err)
+			reqs[i].limReport = nil
+		}
+	}
+	return reqs
 }
 
 // failReqs completes a set of commands with err (used on retry exhaustion / Close).
