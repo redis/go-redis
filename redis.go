@@ -417,7 +417,10 @@ type baseClient struct {
 	// identity. It is computed once during attachment and copied with the cache.
 	cscKeyPrefix string
 
-	// Refresh-on-invalidate + reader-miss coalescing (owner-only, nil unless enabled).
+	// Refresh-on-invalidate + reader-miss coalescing (nil unless enabled).
+	// cscRefreshQueue IS copied by clone() (a clone signals demand on the owner's
+	// queue, see clone()); cscRefreshHandle is owner-only (it drives the goroutine
+	// that owns/stops the queue) and stays nil in a clone, so a clone never stops it.
 	cscRefreshQueue  *cscRefreshQueue
 	cscRefreshHandle *cscRevalidateHandle
 	// cscClientWeak points (weakly) back at the canonical *Client wrapper, so
@@ -491,6 +494,17 @@ func (c *baseClient) clone() *baseClient {
 		cscPoolHook:  c.cscPoolHook,
 		cscActive:    c.cscActive,
 		cscKeyPrefix: c.cscKeyPrefix,
+		// cscRefreshQueue is SHARED (pointer copy), like cscPoolHook: processCached
+		// calls signalDemand on it so a miss for a key still in the refresher's
+		// window flushes that window early. Without the share a clone's field is
+		// nil and signalDemand no-ops, so the clone's miss waits the full window
+		// (#3965 F4). Lifecycle stays owner-only: signalDemand is a nil-safe,
+		// non-blocking buffered send that does no I/O, and teardown keys off the
+		// owner-only cscRefreshHandle/cscDrainHandle (both nil in a clone), so a
+		// clone only SIGNALS the queue and never stops it — even a clone outliving
+		// the owner's Close just sends into a buffered channel whose worker has
+		// exited, which is harmless.
+		cscRefreshQueue: c.cscRefreshQueue,
 	}
 	// The miss coalescer travels with the cache (an atomic.Pointer cannot appear
 	// in the literal above); a clone shares the OWNER's coalescer, whose
@@ -525,6 +539,11 @@ func (c *baseClient) withTimeout(timeout time.Duration) *baseClient {
 	if timeout != c.opt.ReadTimeout || timeout != c.opt.WriteTimeout {
 		clone.cscMissCoalescer.Store(nil)
 	}
+	// cscRefreshQueue is NOT dropped here even when timeouts diverge: unlike the
+	// coalescer it does no I/O on this client's behalf — signalDemand is a
+	// non-blocking buffered send — so there is no deadline to inherit, and the
+	// refresh work itself runs on the owner's connection under the owner's options
+	// regardless of who nudged it.
 
 	return clone
 }

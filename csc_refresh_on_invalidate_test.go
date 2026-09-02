@@ -2,9 +2,96 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/redis/go-redis/v9/internal/pool"
 )
+
+// erroringPooler fails every Get, so refreshInvalidatedBatch (via withConn)
+// returns an error deterministically without a live server.
+type erroringPooler struct{ pool.Pooler }
+
+func (*erroringPooler) Get(context.Context) (*pool.Conn, error) {
+	return nil, errors.New("csc test: pool get always fails")
+}
+
+// TestCSCRefresherStopDrainBailsOnFirstFailure pins #3965 F2: the Close stop-drain
+// must BAIL after the first failed refresh chunk rather than give each of many
+// chunks a fresh cscRefreshBatchTimeout against a dead/stalled server (which could
+// delay Close by minutes). With several chunks queued and every refresh failing,
+// exactly ONE chunk is attempted.
+func TestCSCRefresherStopDrainBailsOnFirstFailure(t *testing.T) {
+	// No cscRefreshWindow mutation: runCSCRefresher runs synchronously below with
+	// stop already signalled, so the drain completes in microseconds against the
+	// failing pool — the default window/recency timers never fire, and mutating the
+	// shared global would risk a -race read against another test's live refresher.
+	lc := NewLocalCache(CacheConfig{MaxEntries: 10000})
+	c := &baseClient{
+		opt:          &Options{},
+		csc:          lc,
+		cscKeyPrefix: "p:",
+		connPool:     &erroringPooler{},
+	}
+	q := &cscRefreshQueue{
+		ch:       make(chan cscRefreshTarget, 1024),
+		demandCh: make(chan uint64, 1),
+	}
+	q.sinceToken.Store(lc.LRUClock())
+	h := &cscRevalidateHandle{stop: make(chan struct{}), done: make(chan struct{})}
+
+	// More than one chunk's worth (cscRefreshBatchMax) but within one drainQueue
+	// round (< cscRefreshWindowMaxKeys) so the whole backlog is flushed once; a
+	// buggy drain would then attempt every chunk.
+	const chunks = 3
+	const targets = chunks * cscRefreshBatchMax
+	for i := 0; i < targets; i++ {
+		key := "p:" + strconv.Itoa(i)
+		q.ch <- cscRefreshTarget{cacheKey: key, redisKeys: []string{key}}
+	}
+
+	// Signal stop up front, then run the refresher synchronously: it takes the
+	// stop-drain path, flushes the backlog, and returns.
+	close(h.stop)
+	c.runCSCRefresher(h, lc, q)
+
+	if got := q.refreshFailed.Load(); got != 1 {
+		t.Fatalf("refreshFailed = %d; want 1 — the stop-drain must bail after the first "+
+			"failed chunk, not attempt all %d chunks (#3965 F2)", got, chunks)
+	}
+}
+
+// TestCloneSharesRefreshQueueForDemand pins #3965 F4: clone() (WithTimeout/
+// WithContext) must SHARE the owner's refresh queue so a derived client's
+// processCached can signal demand on it. Without the share the clone's field is
+// nil and signalDemand no-ops, so a clone's miss waits the full window instead of
+// nudging the owner's in-window batch. Lifecycle stays owner-only: the clone only
+// signals (nil-safe, non-blocking) and never stops the shared refresher.
+func TestCloneSharesRefreshQueueForDemand(t *testing.T) {
+	parent := &baseClient{
+		opt:             &Options{},
+		cscRefreshQueue: &cscRefreshQueue{demandCh: make(chan uint64, 1)},
+	}
+	// A key sitting in the refresher's window: signalDemand nudges only for these.
+	parent.cscRefreshQueue.pendingSet.Store("ck:x", struct{}{})
+
+	clone := parent.clone()
+	if clone.cscRefreshQueue != parent.cscRefreshQueue {
+		t.Fatal("clone did not share the owner's refresh queue; a clone's signalDemand " +
+			"would no-op on a nil queue (#3965 F4)")
+	}
+
+	// A demand nudge through the clone's pointer must reach the SHARED queue.
+	clone.cscRefreshQueue.signalDemand("ck:x")
+	select {
+	case <-parent.cscRefreshQueue.demandCh:
+		// The clone's signal landed on the owner's window.
+	default:
+		t.Fatal("clone signalDemand did not reach the shared queue's demand channel (#3965 F4)")
+	}
+}
 
 func TestCSCRefreshOnInvalidateTurnsAMissIntoAHit(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
@@ -103,6 +190,7 @@ func TestCSCRefreshOnInvalidateTurnsAMissIntoAHit(t *testing.T) {
 		})
 	}
 }
+
 func TestCSCRefreshDemandTriggerFlushesWindowEarly(t *testing.T) {
 	origWindow := cscRefreshWindow
 	cscRefreshWindow = 5 * time.Second // timer must not be the cause
