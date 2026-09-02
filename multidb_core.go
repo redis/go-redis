@@ -1599,6 +1599,14 @@ func (c *multidbCore) newPubSub() *PubSub {
 	var ownersMu sync.Mutex
 	owners := make(map[*pool.Conn]*Client)
 
+	// Terminality of "a cluster member is active and no standalone can serve the
+	// subscription" is decided by the config at creation, not by live
+	// membership: a passive standalone can be removed after a failover and a new
+	// one added later, so "no standalone right now" is transient. Only a config
+	// that was all-cluster when this PubSub was created — and still has no
+	// standalone — is a permanent mismatch worth the terminal ErrClosed.
+	staticAllCluster := !c.hasStandaloneMember()
+
 	pubsub := &PubSub{
 		newConn: func(ctx context.Context, _ string, channels []string) (*pool.Conn, error) {
 			if c.closed.Load() {
@@ -1612,16 +1620,17 @@ func (c *multidbCore) newPubSub() *PubSub {
 				return nil, ErrTemporarilyNotAvailable
 			}
 			if db.c == nil {
-				// A cluster member is active. Without any standalone member
-				// in the configuration the subscription can never be served:
-				// return the terminal ErrClosed so Channel loops exit. In
-				// mixed configurations the error is transient — a later
-				// failover/fallback to a standalone member lets the re-dial
-				// succeed.
-				if !c.hasStandaloneMember() {
+				// A cluster member is active and cannot serve the subscription.
+				// Terminal only for an all-cluster-at-creation config that still
+				// has no standalone member (fail fast so Channel loops exit);
+				// otherwise the mismatch is transient — a later
+				// failover/fallback to, or an AddDatabase of, a standalone member
+				// lets the re-dial succeed — so return the retryable error and
+				// keep the channel loop polling.
+				if staticAllCluster && !c.hasStandaloneMember() {
 					return nil, ErrClosed
 				}
-				return nil, errors.New("redis: multidb: PubSub requires a standalone active database")
+				return nil, errPubSubRequiresStandalone
 			}
 			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)
 			if err != nil {

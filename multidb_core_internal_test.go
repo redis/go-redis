@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -84,5 +85,49 @@ func TestTryFallbackYieldsWhenFailoverLocked(t *testing.T) {
 	}
 	if got := int(core.active.Load()); got != 0 {
 		t.Errorf("active changed to %d while a failover held the lock", got)
+	}
+}
+
+// TestNewPubSubClusterActiveRetryableAfterStandaloneLoss pins that a PubSub
+// created while a standalone member existed treats a later "cluster active, no
+// standalone" state as retryable, not terminal: membership is runtime-mutable
+// (a passive standalone can be removed after failover and another added), so
+// the channel loop must keep polling instead of closing permanently.
+func TestNewPubSubClusterActiveRetryableAfterStandaloneLoss(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	// A passive standalone (id 0) exists at creation, and a cluster member
+	// (id 1) is active — so staticAllCluster is false and newPubSub takes the
+	// cluster-active branch that does not clone a standalone client's options.
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: &Client{}, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(1)
+
+	ps := core.newPubSub() // created while a standalone member (id 0) exists
+
+	// The standalone is removed; the cluster member stays active.
+	delete(core.dbs, 0)
+
+	_, err := ps.newConn(context.Background(), "", nil)
+	if errors.Is(err, ErrClosed) {
+		t.Fatalf("newConn returned terminal ErrClosed for a config that had a standalone at creation")
+	}
+	if !errors.Is(err, errPubSubRequiresStandalone) {
+		t.Fatalf("newConn err = %v, want errPubSubRequiresStandalone (retryable)", err)
+	}
+}
+
+// TestNewPubSubAllClusterAtCreationTerminal pins the preserved fail-fast path: a
+// PubSub created on an all-cluster config that still has no standalone member
+// returns the terminal ErrClosed so the channel loop exits instead of spinning.
+func TestNewPubSubAllClusterAtCreationTerminal(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(0)
+
+	ps := core.newPubSub() // all-cluster at creation
+
+	_, err := ps.newConn(context.Background(), "", nil)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("all-cluster newConn err = %v, want terminal ErrClosed", err)
 	}
 }

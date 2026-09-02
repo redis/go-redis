@@ -612,6 +612,14 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // follow-up work in the design doc), rejecting loudly beats half-working.
 var errMultiDBHImport = errors.New("redis: multidb: HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
 
+// errPubSubRequiresStandalone is the retryable PubSub dial error returned when a
+// cluster member is active but the subscription needs a standalone one. It is
+// NOT the terminal ErrClosed, so the PubSub channel loop keeps retrying until a
+// standalone member becomes active (a later failover/fallback, or an
+// AddDatabase). Only a config that was all-cluster at PubSub creation and still
+// has no standalone member gets the terminal ErrClosed instead.
+var errPubSubRequiresStandalone = errors.New("redis: multidb: PubSub requires a standalone active database")
+
 // HImportPrepare is not supported on MultiDBClient; see errMultiDBHImport.
 func (c *MultiDBClient) HImportPrepare(ctx context.Context, fieldsetName string, fields ...string) *StatusCmd {
 	cmd := NewHImportPrepareCmd(ctx, fieldsetName, fields...)
