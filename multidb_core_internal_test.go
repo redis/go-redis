@@ -96,9 +96,11 @@ func TestTryFallbackYieldsWhenFailoverLocked(t *testing.T) {
 func TestNewPubSubClusterActiveRetryableAfterStandaloneLoss(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	// A passive standalone (id 0) exists at creation, and a cluster member
-	// (id 1) is active — so staticAllCluster is false and newPubSub takes the
-	// cluster-active branch that does not clone a standalone client's options.
-	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: &Client{}, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	// (id 1) is active — so staticAllCluster is false. (newPubSub adopts the
+	// standalone's options, so give it a real client, not a zero &Client{}.)
+	standalone := NewClient(&Options{Addr: "127.0.0.1:1"})
+	defer standalone.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: standalone, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
 	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
 	core.active.Store(1)
 
@@ -113,6 +115,31 @@ func TestNewPubSubClusterActiveRetryableAfterStandaloneLoss(t *testing.T) {
 	}
 	if !errors.Is(err, errPubSubRequiresStandalone) {
 		t.Fatalf("newConn err = %v, want errPubSubRequiresStandalone (retryable)", err)
+	}
+}
+
+// TestNewPubSubAdoptsStandaloneOptionsWhenClusterActive pins that a PubSub
+// created while a cluster member is active adopts a standalone member's options
+// (write timeout, protocol) rather than the zero Options — otherwise subscribe
+// frames would use a zero WriteTimeout and the wrong Protocol gate after the
+// subscription fails over to the standalone.
+func TestNewPubSubAdoptsStandaloneOptionsWhenClusterActive(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	standalone := NewClient(&Options{Addr: "127.0.0.1:1", WriteTimeout: 4321 * time.Millisecond, Protocol: 3})
+	defer standalone.Close()
+	core.dbs[0] = &multidbDatabase{id: 0, weight: 1, c: standalone, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})}
+	core.dbs[1] = &multidbDatabase{id: 1, weight: 1, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{})} // c == nil -> cluster
+	core.active.Store(1)                                                                                              // cluster active at creation
+
+	ps := core.newPubSub()
+	if ps.opt == nil {
+		t.Fatal("PubSub opt is nil")
+	}
+	if ps.opt.WriteTimeout != standalone.opt.WriteTimeout {
+		t.Errorf("PubSub WriteTimeout = %v, want the standalone's %v (zero-Options bug)", ps.opt.WriteTimeout, standalone.opt.WriteTimeout)
+	}
+	if ps.opt.Protocol != 3 {
+		t.Errorf("PubSub Protocol = %d, want 3 (standalone's)", ps.opt.Protocol)
 	}
 }
 

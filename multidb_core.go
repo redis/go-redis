@@ -1612,6 +1612,26 @@ func (c *multidbCore) hasStandaloneMember() bool {
 	return false
 }
 
+// standaloneForPubSub returns the standalone member client whose options a new
+// PubSub should adopt when the active member at creation is a cluster member:
+// the subscription can only ever be served by a standalone (after failover), so
+// its creation-time PubSub knobs (write timeout, Protocol gate) must come from a
+// real standalone rather than the zero Options. Lowest id for determinism;
+// mixed-Protocol members are the documented caveat in newPubSub. Returns nil
+// when no standalone member exists.
+func (c *multidbCore) standaloneForPubSub() *Client {
+	c.dbMu.RLock()
+	defer c.dbMu.RUnlock()
+	best := -1
+	var cl *Client
+	for id, db := range c.dbs {
+		if db.c != nil && (best < 0 || id < best) {
+			best, cl = id, db.c
+		}
+	}
+	return cl
+}
+
 // newPubSub creates a PubSub whose connections always target the currently
 // active database: every (re-)dial resolves the active snapshot, and
 // notifyPubSubs forces a re-dial on every active-database change.
@@ -1698,6 +1718,15 @@ func (c *multidbCore) newPubSub() *PubSub {
 		optCopy := *db.c.opt
 		pubsub.opt = &optCopy
 		pubsub.pushProcessor = db.c.pushProcessor
+	} else if sd := c.standaloneForPubSub(); sd != nil {
+		// Active is a cluster member (or none), but a standalone member exists:
+		// the subscription lands on it after failover. Adopt its options now
+		// rather than the zero Options — otherwise subscribe frames would use a
+		// zero WriteTimeout and the wrong Protocol gate until (and after) the
+		// failover, even though the connection itself handshakes correctly.
+		optCopy := *sd.opt
+		pubsub.opt = &optCopy
+		pubsub.pushProcessor = sd.pushProcessor
 	} else {
 		pubsub.opt = &Options{}
 		pubsub.pushProcessor = push.NewVoidProcessor()
