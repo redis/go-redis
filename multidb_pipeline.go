@@ -272,6 +272,20 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		return err
 	}
 
+	// The current attempt's admission, released on any exit that did not
+	// settle it: a panic in a member hook or the member path unwinds past
+	// recordBatchOutcomes and the cancel branch, and a leaked half-open slot
+	// would wedge the breaker at MaxHalfOpenRequests. ReleaseFor settles at
+	// most once and no-ops for a closed admission, so it is harmless after a
+	// normal settle too (Watch uses the same defer).
+	var pendingDB *multidbDatabase
+	var pendingRes imultidb.Reservation
+	defer func() {
+		if pendingDB != nil {
+			pendingDB.cb.ReleaseFor(pendingRes)
+		}
+	}()
+
 	for attempt < attempts {
 		if c.closed.Load() {
 			// Close landed mid-retry: report the terminal state instead of
@@ -333,6 +347,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			continue
 		}
 		gateRejections = 0
+		pendingDB, pendingRes = db, res
 
 		if attempt > 0 {
 			resetCmds(cmds)
@@ -440,6 +455,11 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		break
 	}
 
+	// Release the admission on any exit that did not settle it: a panic in a
+	// member hook or the member path skips both recordBatchOutcomes and the
+	// cancel branch. ReleaseFor settles at most once and no-ops for a closed
+	// admission — the same defer Watch uses.
+	defer db.cb.ReleaseFor(res)
 	executed := newExecutedCmds(len(cmds))
 	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
 	if err != nil && ctx.Err() != nil {

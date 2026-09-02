@@ -573,6 +573,86 @@ func TestMultiDBTxPipelinePanicRestoresNoRetry(t *testing.T) {
 	}
 }
 
+// TestMultiDBBatchPanicReleasesHalfOpenProbeSlot pins the deferred release: a
+// batch admitted on a half-open member reserves its single probe slot, and a
+// panic in the member hook unwinds past recordBatchOutcomes and the cancel
+// branch. The slot must still come back, or the breaker stays wedged at
+// MaxHalfOpenRequests for good (Watch already defers the release).
+func TestMultiDBBatchPanicReleasesHalfOpenProbeSlot(t *testing.T) {
+	newClient := func(t *testing.T) *redis.MultiDBClient {
+		// Built from raw options rather than newTestMultiDB: that helper installs
+		// a per-member hookedDB which serves batches locally and would sit ahead
+		// of the panicking hook in the chain, so the panic would never fire. A
+		// single member: alone, A stays active and its half-open admission is
+		// the one the panic has to give back.
+		check := newFakeHealthCheck(true)
+		opts := baseOptions()
+		opts.Clients = []redis.MultiDBClientConfig{{
+			Options:      &redis.Options{Addr: "127.0.0.1:1"},
+			Weight:       1,
+			HealthChecks: []redis.MultiDBHealthCheck{check},
+		}}
+		opts.CircuitBreakerConfig = &redis.MultiDBCircuitBreakerConfig{
+			FailureThreshold: 1,
+			SuccessThreshold: 1, // one bounded half-open probe slot
+			GracePeriod:      30 * time.Millisecond,
+		}
+		initCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		mdb, err := redis.NewMultiDBClient(initCtx, opts)
+		if err != nil {
+			t.Fatalf("NewMultiDBClient: %v", err)
+		}
+		t.Cleanup(func() { _ = mdb.Close() })
+		// A: half-open (recovering) with its single probe slot free.
+		mdb.TestBreakerRecordFailure(0)
+		time.Sleep(50 * time.Millisecond)
+		armed := &atomic.Bool{}
+		armed.Store(true)
+		if err := mdb.AddDatabaseHook(0, panicPipelineHook{armed: armed}); err != nil {
+			t.Fatalf("AddDatabaseHook: %v", err)
+		}
+		return mdb
+	}
+	mustPanic := func(t *testing.T, fn func() error) {
+		t.Helper()
+		var err error
+		defer func() {
+			if recover() == nil {
+				t.Fatalf("expected the member hook panic to propagate; call returned err=%v", err)
+			}
+		}()
+		err = fn()
+	}
+
+	t.Run("pipeline", func(t *testing.T) {
+		mdb := newClient(t)
+		mustPanic(t, func() error {
+			_, err := mdb.Pipelined(context.Background(), func(p redis.Pipeliner) error {
+				p.Set(context.Background(), "k", "v", 0)
+				return nil
+			})
+			return err
+		})
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("pipeline panic leaked A's half-open probe slot")
+		}
+	})
+	t.Run("tx", func(t *testing.T) {
+		mdb := newClient(t)
+		mustPanic(t, func() error {
+			_, err := mdb.TxPipelined(context.Background(), func(p redis.Pipeliner) error {
+				p.Set(context.Background(), "k", "v", 0)
+				return nil
+			})
+			return err
+		})
+		if !mdb.TestBreakerReserveHalfOpen(0) {
+			t.Error("tx panic leaked A's half-open probe slot")
+		}
+	})
+}
+
 func TestMultiDBBatchDetectorFailoverDoesNotLeakProbeSlot(t *testing.T) {
 	newClient := func(t *testing.T, det *fakeDetector) (*redis.MultiDBClient, *testDB, *testDB) {
 		dbA := newTestDB("a", "127.0.0.1:1", 2, true)
