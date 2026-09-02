@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1724,12 +1725,28 @@ func newExecutedCmds(size int) *executedCmds {
 func (e *executedCmds) mark(cmds []Cmder) {
 	e.mu.Lock()
 	for _, cmd := range cmds {
-		e.done[cmd] = struct{}{}
+		// Cmder carries no comparability contract: a value-type command that
+		// embeds a builtin cmd plus a slice/map field is not comparable and
+		// would panic ("hash of unhashable type") as a map key. Skip those —
+		// they go untracked (has == false), which is conservative: an untracked
+		// successful command records no health signal (recordBatchOutcomes'
+		// success path guards on the marker), and failures record regardless.
+		// A batch of ONLY non-comparable commands leaves any() == false, so a
+		// batch-level error would stamp them via the never-executed path — a
+		// documented corner the eventual per-command marker on baseCmd removes
+		// by dropping the map entirely. A nil dynamic type (t == nil) is the
+		// comparable nil interface and is tracked as before.
+		if t := reflect.TypeOf(cmd); t == nil || t.Comparable() {
+			e.done[cmd] = struct{}{}
+		}
 	}
 	e.mu.Unlock()
 }
 
 func (e *executedCmds) has(cmd Cmder) bool {
+	if t := reflect.TypeOf(cmd); t != nil && !t.Comparable() {
+		return false // never tracked (see mark) — treat as not executed
+	}
 	e.mu.Lock()
 	_, ok := e.done[cmd]
 	e.mu.Unlock()

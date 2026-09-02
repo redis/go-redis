@@ -403,3 +403,34 @@ func TestRecordBatchOutcomesPartialExecutionDoesNotCountUntouched(t *testing.T) 
 		t.Errorf("detector failures = %d, want 0 (an untouched command must not count at all)", det.failures)
 	}
 }
+
+// unhashableCmd is a value-type Cmder (methods promoted from the embedded
+// *StatusCmd) made non-comparable by a slice field — a legal Cmder that would
+// panic as a map key.
+type unhashableCmd struct {
+	*StatusCmd
+	extra []int
+}
+
+// TestExecutedCmdsSkipsNonComparableCommand pins that executedCmds does not
+// panic on a non-comparable command (Cmder imposes no comparability contract):
+// it goes untracked rather than being hashed as a map key.
+func TestExecutedCmdsSkipsNonComparableCommand(t *testing.T) {
+	e := newExecutedCmds(2)
+	cmd := unhashableCmd{StatusCmd: NewStatusCmd(context.Background(), "ping"), extra: []int{1}}
+
+	e.mark([]Cmder{cmd}) // must not panic ("hash of unhashable type")
+	if e.has(cmd) {
+		t.Error("non-comparable command reported executed; want untracked")
+	}
+	if e.any() {
+		t.Error("a non-comparable-only batch marked something; want none")
+	}
+
+	// A normal pointer command is still tracked.
+	normal := NewStatusCmd(context.Background(), "get", "k")
+	e.mark([]Cmder{normal})
+	if !e.has(normal) {
+		t.Error("normal command not tracked")
+	}
+}
