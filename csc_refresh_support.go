@@ -77,15 +77,16 @@ func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, fetc
 	removed := 0
 	for _, cacheKey := range toRemove {
 		entry, exists := s.entries[cacheKey]
-		// Fetch-order guard: a Valid entry whose fetch was issued after this
-		// invalidation was observed (fetchSeq > fetchSnap) already reflects the write,
-		// so keep it — evicting would be a spurious miss, and a stale queued duplicate
-		// that straddled a refetch must not undo the fresh value (#3965). In-progress
-		// placeholders (fetchSeq set but not yet Valid) are still removed
-		// unconditionally: the fetch may predate the write and arrive on a different
-		// stream, so let the racing Fulfill fail and waiters refetch (see
-		// deleteByRedisKey).
-		if exists && entry.state == cacheEntryValid && entry.fetchSeq > fetchSnap {
+		// Fetch-order guard: an entry whose fetch was ISSUED after this invalidation
+		// was observed (fetchSeq > fetchSnap) cannot hold the pre-write value, so keep
+		// it — whether already Valid or still in-progress. Evicting a Valid one would
+		// be a spurious miss (and a stale queued duplicate straddling a refetch must
+		// not undo the fresh value, #3965); canceling an in-progress one would fail its
+		// racing Fulfill, wake every waiter as a miss, and defeat miss coalescing. An
+		// entry reserved at or before the observe (fetchSeq <= fetchSnap) may predate
+		// the write — possibly fetched on a different stream (see deleteByRedisKey) —
+		// so it is removed, and any racing Fulfill for it correctly fails.
+		if exists && entry.fetchSeq > fetchSnap {
 			continue
 		}
 		if exists && entry.state == cacheEntryValid && entry.lastAccessNs.Load() > sinceToken {

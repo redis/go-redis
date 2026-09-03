@@ -275,3 +275,40 @@ func TestCSCRefreshDemandGenerationIgnoresStaleSignal(t *testing.T) {
 		t.Fatal("signalDemand did not stamp a nudge for the new window's key")
 	}
 }
+
+// TestCollectHotGuardKeepsInProgress pins that the fetch-order guard covers
+// in-progress reservations, not only Valid entries (#3989). A reservation issued
+// AFTER the invalidation was observed (fetchSeq > snapshot) cannot hold the
+// pre-write value, so it must survive — removing it would fail its racing Fulfill
+// and wake every waiter as a miss. A reservation issued at or before the observe is
+// still removed (it may predate the write).
+func TestCollectHotGuardKeepsInProgress(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
+
+	// In-progress reservation issued BEFORE the invalidation is observed.
+	tokOld, fetchOld := lc.Reserve("ck:old", []string{"rk"})
+	if tokOld == 0 || !fetchOld {
+		t.Fatalf("Reserve(ck:old) = (%d, %v)", tokOld, fetchOld)
+	}
+	snap := cscFetchSeq.Load()
+	// In-progress reservation issued AFTER the observe.
+	tokNew, fetchNew := lc.Reserve("ck:new", []string{"rk"})
+	if tokNew == 0 || !fetchNew {
+		t.Fatalf("Reserve(ck:new) = (%d, %v)", tokNew, fetchNew)
+	}
+
+	lc.deleteByRedisKeyCollectingHot("rk", 0, snap, nil)
+
+	// Pre-observe reservation removed: its racing Fulfill now fails.
+	if lc.fulfill("ck:old", tokOld, 0, []byte("v")) {
+		t.Fatal("pre-observe in-progress reservation should have been removed (Fulfill must fail)")
+	}
+	// Post-observe reservation kept: its Fulfill still publishes.
+	if !lc.fulfill("ck:new", tokNew, 0, []byte("v")) {
+		t.Fatal("post-observe in-progress reservation was wrongly removed (Fulfill failed)")
+	}
+	if _, ok := lc.Get(ctx, "ck:new"); !ok {
+		t.Fatal("post-observe in-progress entry did not survive the invalidation")
+	}
+}
