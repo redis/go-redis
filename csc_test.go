@@ -3933,3 +3933,32 @@ func TestCSCHandlerCloseKeepsServingUntilRefresherFlush(t *testing.T) {
 		t.Fatal("CSC still serving after teardown completed")
 	}
 }
+
+// TestPushDrainWithinShortBoundaryUnderRelaxation pins #3989: the speculative drain's
+// FIRST-byte wait stays bounded by the short cap even while maintenance relaxation is
+// active. Otherwise a TLS control record (socket-readable, zero RESP bytes) would block
+// the drain for the full relaxed timeout, stalling a ready command or the idle drainer.
+func TestPushDrainWithinShortBoundaryUnderRelaxation(t *testing.T) {
+	oldCap := cscDrainHardReadCap
+	cscDrainHardReadCap = 20 * time.Millisecond
+	defer func() { cscDrainHardReadCap = oldCap }()
+
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	cn := pool.NewConn(client)
+	cn.SetRelaxedTimeout(2*time.Second, 2*time.Second) // relaxation active: budget >> cap
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: push.NewProcessor()}
+
+	// No data on the pipe: with no RESP frame begun, the drain must return within the
+	// short cap, not wait out the 2s relaxed budget.
+	start := time.Now()
+	if err := c.pushDrainWithin(context.Background(), cn, cscDrainHardReadCap); err != nil {
+		t.Fatalf("pushDrainWithin: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("speculative drain waited %v with no frame; must be bounded by the short cap "+
+			"(%v), not the relaxed timeout (#3989)", elapsed, cscDrainHardReadCap)
+	}
+}

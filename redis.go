@@ -2849,13 +2849,35 @@ func (c *baseClient) timedPushDrain(ctx context.Context, cn *pool.Conn) error {
 	return c.pushDrainWithin(ctx, cn, time.Millisecond)
 }
 
-// pushDrainWithin runs one push drain on cn under a HARD read deadline of
-// pushDrainBudget(cn, d). HARD (not WithReader) so an ordinary drain cannot
-// silently inherit an unrelated deadline, and WithReaderHardDeadline clears the
-// deadline on exit, so no residue poisons a later deadline-less read. The budget
-// itself is relaxation-aware — see pushDrainBudget.
+// pushDrainWithin runs one push drain on cn. HARD read deadlines (not WithReader) so
+// an ordinary drain cannot silently inherit an unrelated deadline, and
+// WithReaderHardDeadline clears the deadline on exit, so no residue poisons a later
+// deadline-less read.
+//
+// The FIRST-byte wait is bounded by the short cap d; only a frame already begun gets
+// the relaxation-aware budget (pushDrainBudget) to finish. Applying the relaxed budget
+// to the first-byte wait would let a TLS control record — socket-readable with zero
+// RESP bytes — block a speculative drain for the full relaxed timeout (seconds),
+// stalling a ready command or the idle drainer (#3989). So under active relaxation,
+// probe one byte under d first; a timeout there means no frame began (benign). The
+// relaxed budget exists only to tolerate a fragmented frame mid-flight during a
+// failover — see pushDrainBudget.
 func (c *baseClient) pushDrainWithin(ctx context.Context, cn *pool.Conn, d time.Duration) error {
-	return cn.WithReaderHardDeadline(pushDrainBudget(cn, d), func(rd *proto.Reader) error {
+	budget := pushDrainBudget(cn, d)
+	if budget > d {
+		// Relaxation active: confirm a RESP byte under the short cap before granting the
+		// longer budget. The peeked byte stays buffered for the drain below.
+		if err := cn.WithReaderHardDeadline(d, func(rd *proto.Reader) error {
+			_, perr := rd.Peek(1)
+			return perr
+		}); err != nil {
+			if isTimeout, hasFlag := isTimeoutError(err); isTimeout && hasFlag {
+				return nil // no frame began within the short cap
+			}
+			return err
+		}
+	}
+	return cn.WithReaderHardDeadline(budget, func(rd *proto.Reader) error {
 		// A speculative probe on a possibly-idle conn: stop when the reader buffer
 		// empties (Buffered variant) rather than block waiting for a reply.
 		return c.drainPushFrames(ctx, cn, rd, false)
