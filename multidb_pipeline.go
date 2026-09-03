@@ -16,6 +16,11 @@ import (
 
 var _ UniversalClient = (*MultiDBClient)(nil)
 
+// Stated directly as well: MultiDBClient satisfies Cmdable in its own right
+// (Pipeline/Pipelined/TxPipeline/TxPipelined plus the command surface), not
+// only through the UniversalClient embedding above.
+var _ Cmdable = (*MultiDBClient)(nil)
+
 // resetCmds clears per-command errors from a previous attempt so a retried
 // batch does not report stale failures.
 func resetCmds(cmds []Cmder) {
@@ -35,7 +40,7 @@ func resetCmds(cmds []Cmder) {
 // path (including the autopipeliner's batch dispatcher, before the batch's
 // done channel closes), where Err on an async command would await the very
 // batch being completed and wedge the dispatcher.
-func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed *executedCmds, res imultidb.Reservation) int {
+func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, batchErr error, executed *executedCmds, res imultidb.Reservation, detectorGen uint64) int {
 	// `executed` is the per-command execution marker, not inferred from command
 	// state: an executed all-success batch whose error was injected by a
 	// post-exec hook looks identical on the commands, and stamping it would turn
@@ -131,11 +136,17 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// is still closed and never counts toward closing a later half-open
 			// episode the batch was not admitted to.
 			db.cb.RecordSuccessFor(res)
+			// detectorGen: skip the write if a detector reset landed since the
+			// batch sampled its window (see multidbCore.detectorGen).
 			if cur, _ := c.activeSnapshot(); cur == db {
-				c.detector.RecordSuccess()
 				// Recovery traffic breaks the consecutive-failed-failover chain
 				// for batch-only workloads too (see recordFailedFailoverLocked).
+				// The flag has no window semantics, so it is set regardless of
+				// the detector generation; only the detector write is gated.
 				c.successSinceFailover.Store(true)
+				if c.detectorGen.Load() == detectorGen {
+					c.detector.RecordSuccess()
+				}
 			}
 			recorded++
 		case outcomeFailure:
@@ -154,7 +165,7 @@ func (c *multidbCore) recordBatchOutcomes(db *multidbDatabase, cmds []Cmder, bat
 			// the single-command path does; a closed admission always counts
 			// toward opening.
 			db.cb.RecordFailureFor(res)
-			if cur, _ := c.activeSnapshot(); cur == db {
+			if cur, _ := c.activeSnapshot(); cur == db && c.detectorGen.Load() == detectorGen {
 				c.detector.RecordFailure(cmd.rawErr())
 			}
 			transportFailures++
@@ -325,9 +336,11 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		// reserves a bounded probe slot, and a tripped detector routes to
 		// failover without executing the batch — the reservation would leak.
 		db, idx := c.activeSnapshot()
+		// Sample the detector window with the member (see multidbCore.detectorGen).
+		dg := c.detectorGen.Load()
 		admitted := false
 		var res imultidb.Reservation
-		if db != nil && !c.detector.ShouldFailover() {
+		if db != nil && !c.shouldFailoverSafely() {
 			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
@@ -394,7 +407,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// return without touching command state on caller cancellation.
 			return exitErr(ctx.Err())
 		}
-		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res)
+		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res, dg)
 
 		if transportFailures == 0 {
 			if errors.Is(err, ErrClosed) && db.removed.Load() {
@@ -469,6 +482,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	gateRejections := 0
 	var db *multidbDatabase
 	var res imultidb.Reservation
+	var dg uint64 // detector window sampled with the admitted member
 	for {
 		if c.closed.Load() {
 			resetCmds(cmds)
@@ -482,8 +496,9 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		}
 		var idx int
 		db, idx = c.activeSnapshot()
+		dg = c.detectorGen.Load()
 		admitted := false
-		if db != nil && !c.detector.ShouldFailover() {
+		if db != nil && !c.shouldFailoverSafely() {
 			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
@@ -538,7 +553,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		db.cb.ReleaseFor(res)
 		return ctx.Err()
 	}
-	c.recordBatchOutcomes(db, user, err, executed, res)
+	c.recordBatchOutcomes(db, user, err, executed, res, dg)
 	if errors.Is(err, ErrClosed) && db.removed.Load() {
 		// A concurrent control op removed the snapshotted member (closing its
 		// client) between the gate and execution, so its pool returned the
@@ -710,7 +725,7 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 		var idx int
 		db, idx = c.core.activeSnapshot()
 		admitted := false
-		if db != nil && !c.core.detector.ShouldFailover() {
+		if db != nil && !c.core.shouldFailoverSafely() {
 			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {

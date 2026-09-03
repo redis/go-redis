@@ -89,6 +89,11 @@ type MultiDBDatabaseState struct {
 // MultiDBFailoverStrategy selects the failover target from candidate
 // databases. Return the chosen database's id (MultiDBDatabaseState.ID), or -1
 // when no candidate is acceptable.
+//
+// A candidate whose Allowed is false is never seated: returning its id drops
+// that candidate and Select is asked again with the remaining ones, until it
+// returns an allowed id or -1. An id that is not among the offered candidates
+// ends the selection with no target.
 type MultiDBFailoverStrategy interface {
 	Select(candidates []MultiDBDatabaseState) int
 }
@@ -687,7 +692,9 @@ func (c *MultiDBClient) DBSize(ctx context.Context) *IntCmd {
 		return cmd
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
-		return db.cc.DBSize(ctx)
+		res := db.cc.DBSize(ctx)
+		rewriteRemovedMemberErr(db, res)
+		return res
 	}
 	return c.cmdable.DBSize(ctx)
 }
@@ -702,7 +709,9 @@ func (c *MultiDBClient) ScriptLoad(ctx context.Context, script string) *StringCm
 		return cmd
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
-		return db.cc.ScriptLoad(ctx, script)
+		res := db.cc.ScriptLoad(ctx, script)
+		rewriteRemovedMemberErr(db, res)
+		return res
 	}
 	return c.cmdable.ScriptLoad(ctx, script)
 }
@@ -716,7 +725,9 @@ func (c *MultiDBClient) ScriptFlush(ctx context.Context) *StatusCmd {
 		return cmd
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
-		return db.cc.ScriptFlush(ctx)
+		res := db.cc.ScriptFlush(ctx)
+		rewriteRemovedMemberErr(db, res)
+		return res
 	}
 	return c.cmdable.ScriptFlush(ctx)
 }
@@ -736,9 +747,23 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 		return cmd
 	}
 	if db, _ := c.core.activeSnapshot(); db != nil && db.cc != nil {
-		return db.cc.ScriptExists(ctx, hashes...)
+		res := db.cc.ScriptExists(ctx, hashes...)
+		rewriteRemovedMemberErr(db, res)
+		return res
 	}
 	return c.cmdable.ScriptExists(ctx, hashes...)
+}
+
+// rewriteRemovedMemberErr handles a cluster control command delegated to a
+// snapshotted member that a concurrent control op removed mid-call: the
+// member's closed client returns the terminal ErrClosed even though the
+// MultiDBClient is still open. Rewrite it to the retryable
+// ErrTemporarilyNotAvailable, as the data path does, so the caller retries and
+// the next snapshot lands on the live active.
+func rewriteRemovedMemberErr(db *multidbDatabase, cmd Cmder) {
+	if db.removed.Load() && errors.Is(cmd.rawErr(), ErrClosed) {
+		cmd.SetErr(ErrTemporarilyNotAvailable)
+	}
 }
 
 // errMultiDBHImport rejects the HIMPORT command family: fieldset

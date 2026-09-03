@@ -273,6 +273,15 @@ type multidbCore struct {
 	// not a position, so removing another member never shifts it.
 	active atomic.Int64
 
+	// detectorGen is bumped on every failure-detector reset (resetDetectorSafely:
+	// manual reselect, automatic failover, fallback). Commands and batches sample
+	// it when they start and skip their detector write if it moved, so an outcome
+	// that predates a reset cannot pollute the fresh window — the case where an
+	// operator reselects the CURRENT member, which the cur == db identity check
+	// cannot see. The per-member breaker has the same guard through its own
+	// reset generation.
+	detectorGen atomic.Uint64
+
 	// nextID hands out member ids: monotonic, never decremented, never reset
 	// (not even in closeAll). Reuse would let a stale handle or a queued
 	// callback resurrect as a different member, so ids are permanent.
@@ -595,26 +604,73 @@ func (c *multidbCore) selectCandidate(cands []MultiDBDatabaseState) (best int) {
 			best = -1
 		}
 	}()
-	idx := c.strategy.Select(cands)
-	if idx < 0 {
-		return -1
-	}
-	// A custom strategy may return any int; accept it only if it names one of
-	// the candidates offered. An out-of-range or non-candidate index would
-	// otherwise be stored as the active and later index a wrong/absent member.
-	for _, cand := range cands {
-		if cand.ID == idx {
+	owned := false // cands copied — removeCandidate compacts in place
+	// Every pass returns or shrinks cands, so this terminates.
+	for len(cands) > 0 {
+		idx := c.strategy.Select(cands)
+		if idx < 0 {
+			return -1
+		}
+		// A custom strategy may return any int; accept it only if it names one
+		// of the candidates offered. An out-of-range or non-candidate index
+		// would otherwise be stored as the active and later index a wrong/absent
+		// member.
+		pick := -1
+		for i, cand := range cands {
+			if cand.ID == idx {
+				pick = i
+				break
+			}
+		}
+		if pick < 0 {
+			internal.Logger.Printf(context.Background(), "multidb: failover strategy returned invalid index %d; ignoring", idx)
+			return -1
+		}
+		if cands[pick].Allowed {
 			return idx
 		}
+		// Every candidate is offered with its Allowed flag so a strategy can
+		// prefer a healthy one. A candidate whose breaker is not admitting
+		// traffic must not be seated merely because its id was offered: it would
+		// make a known-unhealthy member the active (and, on failover, publish an
+		// open member and fire callbacks before the gate rejects it). Drop it and
+		// ask again with the rest — as a failed target probe does — so one bad
+		// pick does not abort a round that still has admissible candidates.
+		internal.Logger.Printf(context.Background(), "multidb: failover strategy returned disallowed candidate %d (circuit not admitting traffic); dropping it and reselecting", idx)
+		if !owned {
+			cands = append([]MultiDBDatabaseState(nil), cands...)
+			owned = true
+		}
+		cands = removeCandidate(cands, idx)
 	}
-	internal.Logger.Printf(context.Background(), "multidb: failover strategy returned invalid index %d; ignoring", idx)
 	return -1
+}
+
+// shouldFailoverSafely asks the failure detector whether to fail over,
+// recovering a panicking custom implementation. ShouldFailover runs on the
+// command gate and — via tryFailover — on the library-owned background loop,
+// where an escaped panic would end health checking for the client's lifetime.
+// A panicking detector is treated as "not tripped": the breaker still drives
+// failover, and the panic is logged rather than propagated.
+func (c *multidbCore) shouldFailoverSafely() (tripped bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			internal.Logger.Printf(context.Background(), "multidb: failure detector ShouldFailover panicked: %v", r)
+			tripped = false
+		}
+	}()
+	d := c.detector
+	return d.ShouldFailover()
 }
 
 // resetDetectorSafely resets the failure detector, recovering a panicking
 // custom implementation: Reset runs on the background loop (auto-failover and
 // fallback), where an escaped panic would crash the process.
 func (c *multidbCore) resetDetectorSafely() {
+	// Every reset opens a fresh outcome window: bump the generation FIRST so an
+	// in-flight command that sampled the old one cannot record a pre-reset
+	// outcome into the new window, even if it lands between the bump and Reset.
+	c.detectorGen.Add(1)
 	defer func() {
 		if r := recover(); r != nil {
 			internal.Logger.Printf(context.Background(), "multidb: failure detector Reset panicked: %v", r)
@@ -716,9 +772,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 		// failover without executing anything — the reservation would leak
 		// and eventually starve the recovering active's probe budget.
 		db, idx := c.activeSnapshot()
+		// Sample the detector window with the member: a reset that lands while
+		// this attempt runs voids its detector write (see detectorGen).
+		dg := c.detectorGen.Load()
 		admitted := false
 		var res imultidb.Reservation
-		if db != nil && !c.detector.ShouldFailover() {
+		if db != nil && !c.shouldFailoverSafely() {
 			admitted, res = db.cb.AllowReserve()
 		}
 		if !admitted {
@@ -775,8 +834,13 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// pollute the current active's failover window. The member's own
 			// breaker (above) is always updated — that is member-scoped.
 			if cur, _ := c.activeSnapshot(); cur == db {
-				c.detector.RecordSuccess()
+				// The escalation flag has no window semantics — any success on
+				// the active counts — so it is set regardless of the detector
+				// generation; only the detector write is window-gated.
 				c.successSinceFailover.Store(true)
+				if c.detectorGen.Load() == dg {
+					c.detector.RecordSuccess()
+				}
 			}
 			return err
 		case outcomeNeutral:
@@ -807,7 +871,12 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// Global detector only while this member is still the active (see
 			// the success branch): a late failure from an already-vacated or
 			// removed member must not trip failover for the new active.
-			if cur, _ := c.activeSnapshot(); cur == db {
+			// ... and only within the detector window this attempt started in: an
+			// operator reselect of this same member resets the detector without
+			// changing identity, and a pre-reset failure must not pollute the
+			// fresh window (the breaker half is already guarded by its reset
+			// generation through RecordFailureFor).
+			if cur, _ := c.activeSnapshot(); cur == db && c.detectorGen.Load() == dg {
 				c.detector.RecordFailure(err)
 			}
 			lastErr = err
@@ -950,7 +1019,7 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 		// index, and health checks may have closed the breaker. Stay if it is
 		// fully available and the detector is clear — switching away would undo
 		// a deliberate re-selection on evidence that predates the repair.
-		if db.cb.CheckState() == imultidb.CircuitClosed && !c.detector.ShouldFailover() {
+		if db.cb.CheckState() == imultidb.CircuitClosed && !c.shouldFailoverSafely() {
 			return nil
 		}
 	}
@@ -1337,6 +1406,16 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	// with a still-closed breaker until this runs, but that self-heals on the
 	// first command or the next probe and is strictly smaller than handing the
 	// callback an id that is not yet a member.
+	// Close takes no lock, so it can have flipped closed since the dbMu re-check
+	// above; closeAll then drains this member like any other. Do not hand the
+	// caller a success id for a member that is closed or about to be — report
+	// the terminal state, and skip the ForceOpen below so no state-change
+	// callback fires for a member reported as not added. The residual window
+	// (closed flips right after this check) is the inherent Close-vs-AddDatabase
+	// race.
+	if c.closed.Load() {
+		return -1, ErrClosed
+	}
 	if !healthy {
 		db.cb.ForceOpen()
 	}
@@ -1745,7 +1824,7 @@ func (c *multidbCore) newPubSub() *PubSub {
 			}
 			cn, err := db.c.pubSubPool.NewConn(ctx, db.c.opt.Network, db.c.opt.Addr, channels)
 			if err != nil {
-				return nil, err
+				return nil, pubSubDialErr(db, err)
 			}
 			if err := db.c.initConn(ctx, cn); err != nil {
 				_ = cn.Close()
@@ -1994,4 +2073,17 @@ func (defaultMultiDBPolicy) ExecuteCluster(ctx context.Context, checks []MultiDB
 		}
 	}
 	return true
+}
+
+// pubSubDialErr classifies a PubSub dial failure against a snapshotted member.
+// A member that a concurrent control op removed mid-dial has a closed pool that
+// returns pool.ErrClosed; the channel receive loops treat that as terminal and
+// stop delivery for good, even though the MultiDBClient is still open. Return
+// the retryable ErrTemporarilyNotAvailable instead so the loop re-dials and the
+// next snapshot lands on the live active. Every other error passes through.
+func pubSubDialErr(db *multidbDatabase, err error) error {
+	if db.removed.Load() && errors.Is(err, pool.ErrClosed) {
+		return ErrTemporarilyNotAvailable
+	}
+	return err
 }
