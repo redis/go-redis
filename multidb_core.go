@@ -680,6 +680,10 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 	// members the gate then rejects — without a bound this ping-pongs the
 	// active index in a busy loop instead of surfacing unavailability.
 	gateRejections := 0
+	// Separate bound for re-gates caused by a removed former active: those pass
+	// the gate (so gateRejections is reset on admission) and must not busy-loop
+	// if a rapid add/remove keeps handing back a closed member.
+	removedActiveRegates := 0
 
 	for attempt < attempts {
 		if c.closed.Load() {
@@ -762,6 +766,27 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			}
 			return err
 		case outcomeNeutral:
+			if errors.Is(err, ErrClosed) && db.removed.Load() {
+				// A concurrent control op removed the snapshotted member (closing
+				// its client) between the gate and db.process, so its pool returned
+				// the terminal ErrClosed even though the MultiDBClient is still
+				// open. Surfacing that to the caller would report a healthy client
+				// as closed. Give back the reservation and re-enter the gate on the
+				// live active, recording no health outcome (the member is gone).
+				// The member never executed the command, so this must not spend a
+				// retry attempt; bound the re-gates like gate rejections so a rapid
+				// add/remove cannot busy-loop. A genuine MultiDBClient close is
+				// caught by the c.closed check at the top of the next iteration and
+				// still returns ErrClosed.
+				db.cb.ReleaseFor(res)
+				removedActiveRegates++
+				if removedActiveRegates > c.memberCount()+1 {
+					cmd.SetErr(ErrTemporarilyNotAvailable)
+					return ErrTemporarilyNotAvailable
+				}
+				attempt--
+				continue
+			}
 			// Not a database-health signal: return to the caller without
 			// recording a failure or failing over. Give back the half-open
 			// probe slot the admission reserved — recording nothing would
