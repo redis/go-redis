@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,13 +37,25 @@ func (fakeAddr) String() string  { return "fake" }
 // panics — modelling a custom processor that rejects handler registration. With
 // MaintNotificationsConfig in ModeEnabled, NewClient registers maintenance
 // handlers (after the pools are created) and this panic propagates out.
-type panicOnRegisterProcessor struct{}
+//
+// RegisterHandler first waits for dialed, which the test's dialer closes on its
+// first call. The min-idle dial runs in a pool goroutine; without this wait the
+// deferred Close in NewClient can win the race, the pool's dialConn sees the
+// closed pool and never calls the dialer, and the test observes opened=0 — a
+// legal outcome for the client, but not the leak scenario this test pins.
+type panicOnRegisterProcessor struct{ dialed <-chan struct{} }
 
 func (panicOnRegisterProcessor) GetHandler(string) push.NotificationHandler { return nil }
 func (panicOnRegisterProcessor) ProcessPendingNotifications(context.Context, push.NotificationHandlerContext, *proto.Reader) error {
 	return nil
 }
-func (panicOnRegisterProcessor) RegisterHandler(string, push.NotificationHandler, bool) error {
+
+func (p panicOnRegisterProcessor) RegisterHandler(string, push.NotificationHandler, bool) error {
+	select {
+	case <-p.dialed:
+	case <-time.After(5 * time.Second):
+		// Fall through and panic anyway; the caller's poll reports opened=0.
+	}
 	panic("push processor rejects handler registration")
 }
 func (panicOnRegisterProcessor) UnregisterHandler(string) error { return nil }
@@ -53,8 +66,11 @@ func (panicOnRegisterProcessor) UnregisterHandler(string) error { return nil }
 // panic still propagates to the caller; here it is recovered.
 func TestNewClientPanicClosesPartialClient(t *testing.T) {
 	var opened, closed int64
+	var dialedOnce sync.Once
+	dialed := make(chan struct{})
 	dialer := func(context.Context, string, string) (net.Conn, error) {
 		atomic.AddInt64(&opened, 1)
+		dialedOnce.Do(func() { close(dialed) })
 		return &fakeConn{closed: &closed}, nil
 	}
 
@@ -71,12 +87,14 @@ func TestNewClientPanicClosesPartialClient(t *testing.T) {
 			MinIdleConns:              1,
 			Dialer:                    dialer,
 			MaintNotificationsConfig:  &maintnotifications.Config{Mode: maintnotifications.ModeEnabled},
-			PushNotificationProcessor: panicOnRegisterProcessor{},
+			PushNotificationProcessor: panicOnRegisterProcessor{dialed: dialed},
 		})
 	}()
 
-	// The min-idle dial runs in a pool goroutine, so poll: the pool must have
-	// dialed at least once and every dialed connection must end up closed.
+	// The dialer has run at least once by the time the panic fires (see
+	// panicOnRegisterProcessor). The dialed connection is closed either by the
+	// pool's Close (if it was registered in time) or by addIdleConn when it
+	// finds the pool already closed, so poll until every dialed conn is closed.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		o := atomic.LoadInt64(&opened)
