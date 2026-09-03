@@ -453,6 +453,17 @@ type Options struct {
 	//
 	// Experimental: this API may change in a minor release.
 	ClientSideCacheStrategy CSCStrategy
+
+	// DrainOnContextTimeout enables a bounded drain of the reply stream when a
+	// command finishes with a context deadline or cancellation error. The caller
+	// still receives the original context error, but the connection may be
+	// re-pooled if the outstanding reply can be safely consumed.
+	DrainOnContextTimeout bool
+
+	// ContextTimeoutDrainTimeout bounds how long the client will spend draining
+	// a reply stream after a context timeout or cancellation error. If the drain
+	// does not complete within this duration, the connection is removed.
+	ContextTimeoutDrainTimeout time.Duration
 }
 
 // CSCStrategy selects the client-side caching invalidation architecture. Set via
@@ -583,6 +594,13 @@ func (opt *Options) init() {
 	case 0:
 		opt.WriteTimeout = opt.ReadTimeout
 	}
+
+	// Default to a short drain window so context-timeout recovery remains
+	// bounded and does not introduce long stalls on the release path.
+	if opt.ContextTimeoutDrainTimeout == 0 {
+		opt.ContextTimeoutDrainTimeout = 50 * time.Millisecond
+	}
+
 	if opt.PoolTimeout == 0 {
 		if opt.ReadTimeout > 0 {
 			opt.PoolTimeout = opt.ReadTimeout + time.Second
