@@ -402,6 +402,8 @@ func (o *UniversalOptions) Simple() *Options {
 // clients in different environments.
 type UniversalClient interface {
 	Cmdable
+	Monitor(ctx context.Context, ch chan string) *MonitorCmd
+	MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd
 	AddHook(Hook)
 	Watch(ctx context.Context, fn func(*Tx) error, keys ...string) error
 	Do(ctx context.Context, args ...interface{}) *Cmd

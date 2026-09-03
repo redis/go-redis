@@ -11,6 +11,8 @@ type monitorMethods interface {
 	MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd
 }
 
+var _ monitorMethods = (UniversalClient)(nil)
+
 func TestMonitor_Args(t *testing.T) {
 	cmd := monitor(captureCmdable(new(Cmder)), context.Background(), make(chan string, 1))
 	if cmd == nil {
