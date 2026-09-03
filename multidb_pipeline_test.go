@@ -1663,3 +1663,117 @@ func TestMultiDBPipelineRetryExitPreservesPriorAttemptResults(t *testing.T) {
 		}
 	}
 }
+
+// blockingPipelineHook holds a batch dispatch open: it closes entered once the
+// hook is reached, then waits on release before returning. It never calls
+// next, so it must be the only hook on the member (installed without
+// installHooks, which would put a terminal hookedDB ahead of it in the FIFO
+// chain and make it unreachable).
+type blockingPipelineHook struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingPipelineHook() *blockingPipelineHook {
+	return &blockingPipelineHook{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *blockingPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *blockingPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return next
+}
+
+func (h *blockingPipelineHook) ProcessPipelineHook(redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error {
+		h.once.Do(func() { close(h.entered) })
+		<-h.release
+		return nil
+	}
+}
+
+// TestMultiDBCloseWaitsForAutopipelinerDrain pins the AutoPipeliner.Close /
+// WaitClosed contract at the MultiDBClient boundary. AutoPipeliner.Close
+// returns immediately, without draining, when something else already claimed
+// the shutdown (its own doc: a batch hook calling Close on its own executor
+// goroutine). If MultiDBClient.Close only called Close and not WaitClosed, it
+// would then tear down the member pool while that other drain was still
+// writing to it. Here a direct external Close call stands in for that other
+// claimant: it wins the CAS and blocks in the drain (a batch dispatch is held
+// open), so MultiDBClient.Close's own Close call loses the CAS and returns
+// nil immediately. MultiDBClient.Close must still block until the drain
+// finishes.
+func TestMultiDBCloseWaitsForAutopipelinerDrain(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.Clients = append(opts.Clients, db1.cfg)
+	mdb, err := redis.NewMultiDBClient(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	block := newBlockingPipelineHook()
+	if err := mdb.AddDatabaseHook(0, block); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	ap, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+
+	// Hold a batch dispatch open in the hook.
+	setDone := make(chan struct{})
+	go func() {
+		_ = ap.Set(context.Background(), "k", "v", 0).Err()
+		close(setDone)
+	}()
+	select {
+	case <-block.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch dispatch never reached the blocking hook")
+	}
+
+	// Win the AutoPipeliner's shutdown CAS directly and block in its drain
+	// (the dispatch above is still stuck in the hook).
+	apCloseDone := make(chan error, 1)
+	go func() { apCloseDone <- ap.Close() }()
+	time.Sleep(50 * time.Millisecond) // let ap.Close() win the CAS before mdb.Close() tries
+
+	// MultiDBClient.Close's own Close call on this autopipeliner now loses the
+	// CAS and returns nil immediately; it must still wait for the winning
+	// drain via WaitClosed before tearing down the member pool.
+	mdbCloseDone := make(chan error, 1)
+	go func() { mdbCloseDone <- mdb.Close() }()
+
+	select {
+	case err := <-mdbCloseDone:
+		t.Fatalf("MultiDBClient.Close returned (err=%v) while the AutoPipeliner drain was still stuck — it did not wait for WaitClosed", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(block.release) // let the stuck dispatch, and both drains, finish
+
+	select {
+	case err := <-apCloseDone:
+		if err != nil {
+			t.Errorf("AutoPipeliner.Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AutoPipeliner.Close never returned after the block was released")
+	}
+	select {
+	case err := <-mdbCloseDone:
+		if err != nil {
+			t.Errorf("MultiDBClient.Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MultiDBClient.Close did not unblock after the AutoPipeliner drain finished")
+	}
+	select {
+	case <-setDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the blocked ap.Set call never returned")
+	}
+}

@@ -530,10 +530,18 @@ func (c *MultiDBClient) Close() error {
 		c.autopipelinerMu.Unlock()
 		var firstErr error
 		for _, p := range []*AutoPipeliner{ap, async} {
-			if p != nil {
-				if err := p.Close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
+			if p == nil {
+				continue
+			}
+			// Close can return immediately without draining: it loses its
+			// internal CAS when something else (e.g. a batch hook calling Close
+			// on its own executor goroutine) already claimed the shutdown.
+			// WaitClosed blocks until that drain actually finishes and reports
+			// its real result either way, so core.close() below never tears
+			// down a member pool a drain is still writing to.
+			_ = p.Close()
+			if err := p.WaitClosed(); err != nil && firstErr == nil {
+				firstErr = err
 			}
 		}
 		if err := c.core.close(); err != nil && firstErr == nil {
