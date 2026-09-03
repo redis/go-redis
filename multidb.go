@@ -544,28 +544,35 @@ func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
 // new member would route merged batches around them. Close the autopipeliners
 // first, add the member, then recreate them (closed instances do not block).
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
+	// Reject any add — cluster OR standalone — once Close has begun. Close sets
+	// autopipelinerClosed under autopipelinerMu before it drains the
+	// autopipeliners and calls core.close(); a member published in that window
+	// would be torn down by the completing Close, handing the caller an id for a
+	// dead member. Checked under the mutex so it cannot race the flag write.
+	c.autopipelinerMu.Lock()
+	if c.autopipelinerClosed {
+		c.autopipelinerMu.Unlock()
+		return -1, ErrClosed
+	}
 	if cfg.ClusterOptions != nil {
-		// Hold autopipelinerMu across the check AND the membership change so
-		// a concurrent first AutoPipeline call (which creates the pipeliner
-		// under the same mutex and re-checks membership there) cannot
-		// interleave between them.
-		c.autopipelinerMu.Lock()
-		defer c.autopipelinerMu.Unlock()
-		// Close sets this under the same mutex before it starts draining the
-		// autopipeliners. Once shutdown has begun the cached pointers are
-		// already cleared, so the liveness check below would pass and admit the
+		// Hold autopipelinerMu across the liveness check AND the membership
+		// change so a concurrent first AutoPipeline call (which creates the
+		// pipeliner under the same mutex and re-checks membership there) cannot
+		// interleave between them. Once shutdown has begun the cached pointers
+		// are already cleared, so the liveness check would pass and admit the
 		// cluster member mid-drain; a batch failing over during that drain could
 		// then reach it through the unsupported unsharded autopipeline path.
-		// Reject the add instead: the client is going away.
-		if c.autopipelinerClosed {
-			return -1, ErrClosed
-		}
+		defer c.autopipelinerMu.Unlock()
 		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
 			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
 		if hasLiveAP {
 			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
 		}
+		return c.core.addDatabase(ctx, cfg)
 	}
+	// Standalone: a standalone member has no cluster-autopipeline hazard, so the
+	// mutex need not span the membership change as the cluster branch does.
+	c.autopipelinerMu.Unlock()
 	return c.core.addDatabase(ctx, cfg)
 }
 

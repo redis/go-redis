@@ -30,3 +30,24 @@ func TestAddClusterDatabaseRejectedAfterCloseBegan(t *testing.T) {
 		t.Fatalf("cluster add during shutdown mutated membership: %d -> %d", before, got)
 	}
 }
+
+// AddDatabase must refuse a STANDALONE member too once Close has begun: the
+// shutdown guard is not cluster-specific. Otherwise a standalone add racing
+// Close could publish a member that the completing Close immediately tears down,
+// handing the caller an id for a dead member.
+func TestAddStandaloneDatabaseRejectedAfterCloseBegan(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex), autopipelinerClosed: true}
+
+	before := len(core.dbs)
+	id, err := c.AddDatabase(context.Background(), MultiDBClientConfig{
+		Options:                &Options{Addr: "127.0.0.1:6379"},
+		SkipInitialHealthCheck: true,
+	})
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("standalone add during shutdown: got id=%d err=%v, want ErrClosed", id, err)
+	}
+	if got := len(core.dbs); got != before {
+		t.Fatalf("standalone add during shutdown mutated membership: %d -> %d", before, got)
+	}
+}
