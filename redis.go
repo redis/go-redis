@@ -43,12 +43,12 @@ func SetLogger(logger internal.Logging) {
 	if logger == nil {
 		return
 	}
-	internal.Logger = logger
+	internal.Logger.Store(logger)
 }
 
 // SetLogLevel sets the log level for the library.
 func SetLogLevel(logLevel internal.LogLevelT) {
-	internal.LogLevel = logLevel
+	internal.LogLevel.Store(logLevel)
 }
 
 //------------------------------------------------------------------------------
@@ -2169,6 +2169,22 @@ func NewClient(opt *Options) *Client {
 	}
 	c.init()
 
+	// Close a partially-built client if a construction step below panics before
+	// NewClient returns. The pools (and their background goroutines) are created
+	// below, but several later steps can panic — maintnotifications in
+	// ModeEnabled failing, or a custom push processor rejecting handler
+	// registration. The panic propagates to the caller (some callers, e.g.
+	// MultiDB AddDatabase, recover it), yet &c is never returned, so without this
+	// those pools would leak with no reference left to Close them. closeResources
+	// is nil-safe for a partially-built client, and the panic still propagates:
+	// this defer runs during unwind and does not recover.
+	built := false
+	defer func() {
+		if !built {
+			_ = c.Close()
+		}
+	}()
+
 	// Initialize push notification processor using shared helper
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
@@ -2180,16 +2196,23 @@ func NewClient(opt *Options) *Client {
 	mainPoolName := opt.Addr + "_" + uniqueID
 	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
 
-	// Create connection pools
-	var err error
-	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)
+	// Create connection pools. Assign the fields only AFTER the error check:
+	// newConnPool/newPubSubPool return a nil *pool on error, and assigning that
+	// straight to the pool.Pooler field would leave a typed-nil interface that
+	// closeResources treats as present (its != nil check passes), so the
+	// panic-cleanup defer above would nil-deref inside ConnPool.Close instead of
+	// surfacing the original construction error. A local var keeps the field nil
+	// on failure. The pipeline pool below already follows this pattern.
+	connPool, err := newConnPool(opt, c.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName)
+	c.connPool = connPool
+	pubSubPool, err := newPubSubPool(opt, c.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
+	c.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, like pubSubPool: it
 	// is pure burst capacity (no pre-dialing, small cap, larger buffers — see
@@ -2257,6 +2280,7 @@ func NewClient(opt *Options) *Client {
 	// This allows async gauge metrics to pull stats from pools periodically
 	otel.RegisterPools(c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
 
+	built = true
 	return &c
 }
 
