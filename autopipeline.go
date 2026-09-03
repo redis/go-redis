@@ -645,6 +645,13 @@ type AutoPipeliner struct {
 	divertMu sync.Mutex
 	divertWg sync.WaitGroup
 	closed   atomic.Bool
+	// closeDone is closed by the single Close that wins the closed CAS, once its
+	// drain has completed; closeErr then holds that drain's result. A concurrent
+	// Close that loses the CAS blocks on closeDone and returns closeErr, so no
+	// caller observes the engine as closed — and starts tearing down the pools
+	// underneath it — while accepted commands are still being flushed.
+	closeDone chan struct{}
+	closeErr  error
 }
 
 // apShard is one queue + flusher. Its fields are touched only by enqueuing
@@ -797,7 +804,8 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		return nil, fmt.Errorf(
 			"redis: AutoPipelineOptions.NumShards=%d requires Unordered:true on the deferred (async) face "+
 				"(commands are distributed round-robin across shards, which flush concurrently and do not preserve submit order)",
-			config.NumShards)
+			config.NumShards,
+		)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -808,6 +816,7 @@ func newAutoPipeliner(pipeliner cmdableClient, config *AutoPipelineOptions, bloc
 		blocking:  blocking,
 		ctx:       ctx,
 		cancel:    cancel,
+		closeDone: make(chan struct{}),
 	}
 	// Capture the pipeline pool (in-package, promoted to *Client). nil for a
 	// client that has none (e.g. *ClusterClient) — the straggler-hold then
@@ -1368,7 +1377,8 @@ func (ap *AutoPipeliner) submit(ctx context.Context, cmd Cmder) AutoFuture {
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrSubmitBlockingFace = errors.New(
-	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do")
+	"redis: Submit requires the deferred autopipeliner (AsyncAutoPipeline); on the blocking face use the typed methods or Do",
+)
 
 // errZeroAutoFuture is returned by Wait/WaitContext on a zero AutoFuture.
 var errZeroAutoFuture = errors.New("redis: Wait on a zero AutoFuture")
@@ -1385,7 +1395,8 @@ var errDoNoArgs = errors.New("redis: AutoPipeliner.Do requires at least one argu
 //
 // EXPERIMENTAL: this API is subject to change, use with caution.
 var ErrAutoPipelineTimeout = errors.New(
-	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)")
+	"redis: autopipeline: no batch permit within the internal backstop (engine overloaded or a batch is wedged)",
+)
 
 // Submit queues a command without blocking and returns an AutoFuture; Wait on
 // it when the result is needed. This is the explicit form for working with raw
@@ -1607,8 +1618,19 @@ func (ap *AutoPipeliner) setMustDivert(fn func(ctx context.Context, cmd Cmder) b
 // queued, near-zero otherwise.
 func (ap *AutoPipeliner) Close() error {
 	if !ap.closed.CompareAndSwap(false, true) {
-		return nil // Already closed
+		// Another Close already claimed the shutdown. Return immediately and do
+		// NOT wait for its drain: a re-entrant Close from an in-flight dispatch
+		// (a batch's hook calling Close on its own executor goroutine) runs on a
+		// goroutine the winner's drain is itself waiting for, so waiting here
+		// would self-wait until the backstop. Callers that must observe the
+		// drain complete before acting on "closed" — e.g. a wrapping client's
+		// Close, before it tears down shared connection pools — call WaitClosed
+		// after Close instead.
+		return nil
 	}
+	// Winner: run the drain, publish its result, and release any WaitClosed
+	// waiters exactly once (even if the drain panics).
+	defer close(ap.closeDone)
 
 	// Cancel context to stop flushers
 	ap.cancel()
@@ -1642,7 +1664,22 @@ func (ap *AutoPipeliner) Close() error {
 	// instead of blocking the caller: the engine is already closed to new work,
 	// and the leaked goroutines end when the server or the OS breaks the
 	// connection. See autoPipelineCloseBackstop for why the bound is generous.
-	return ap.drainAll(autoPipelineCloseBackstop)
+	ap.closeErr = ap.drainAll(autoPipelineCloseBackstop)
+	return ap.closeErr
+}
+
+// WaitClosed blocks until the Close that claimed the shutdown has finished its
+// drain, then returns that drain's result. Close itself returns immediately for
+// any caller that loses the shutdown CAS (so a re-entrant Close from an
+// in-flight dispatch cannot self-wait); a caller that must not act on "closed"
+// until accepted commands have been flushed calls Close and then WaitClosed.
+// The canonical use is a wrapping client whose own Close tears down shared
+// connection pools: Close, WaitClosed, then close the pools — so the pools are
+// never torn down under the winning Close's in-flight drain. Call after Close;
+// with no Close in progress it blocks until one happens.
+func (ap *AutoPipeliner) WaitClosed() error {
+	<-ap.closeDone
+	return ap.closeErr
 }
 
 // drainAll runs Close's whole drain tail under a single bound and returns an
@@ -1718,7 +1755,8 @@ func (ap *AutoPipeliner) drainAll(timeout time.Duration) error {
 				"redis: autopipeline: Close timed out after %s with %s still in flight; "+
 					"they hold pooled connections until the server or the OS ends them "+
 					"(most often a blocking command with no timeout, or ReadTimeout disabled)",
-				timeout, strings.Join(outstanding, " and "))
+				timeout, strings.Join(outstanding, " and "),
+			)
 		}
 	}
 	return nil
