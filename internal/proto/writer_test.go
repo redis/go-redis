@@ -205,6 +205,40 @@ var _ = Describe("WriteArg", func() {
 		myFloat32(10.3):   "$18\r\n10.300000190734863\r\n",
 		myFloat64(10.3):   "$4\r\n10.3\r\n",
 		myString("hello"): "$5\r\nhello\r\n",
+
+		// Pointers to named types: writeArgExtra must dereference these
+		// (matching every built-in pointer case above) rather than error, and
+		// a nil pointer must write the underlying kind's zero value.
+		util.ToPtr(myBool(true)):      "$1\r\n1\r\n",
+		(*myBool)(nil):                "$1\r\n0\r\n",
+		util.ToPtr(myInt(10)):         "$2\r\n10\r\n",
+		(*myInt)(nil):                 "$1\r\n0\r\n",
+		util.ToPtr(myInt8(10)):        "$2\r\n10\r\n",
+		(*myInt8)(nil):                "$1\r\n0\r\n",
+		util.ToPtr(myInt16(10)):       "$2\r\n10\r\n",
+		(*myInt16)(nil):               "$1\r\n0\r\n",
+		util.ToPtr(myInt32(10)):       "$2\r\n10\r\n",
+		(*myInt32)(nil):               "$1\r\n0\r\n",
+		util.ToPtr(myInt64(10)):       "$2\r\n10\r\n",
+		(*myInt64)(nil):               "$1\r\n0\r\n",
+		util.ToPtr(myUint(10)):        "$2\r\n10\r\n",
+		(*myUint)(nil):                "$1\r\n0\r\n",
+		util.ToPtr(myUint8(10)):       "$2\r\n10\r\n",
+		(*myUint8)(nil):               "$1\r\n0\r\n",
+		util.ToPtr(myUint16(10)):      "$2\r\n10\r\n",
+		(*myUint16)(nil):              "$1\r\n0\r\n",
+		util.ToPtr(myUint32(10)):      "$2\r\n10\r\n",
+		(*myUint32)(nil):              "$1\r\n0\r\n",
+		util.ToPtr(myUint64(10)):      "$2\r\n10\r\n",
+		(*myUint64)(nil):              "$1\r\n0\r\n",
+		util.ToPtr(myUintptr(10)):     "$2\r\n10\r\n",
+		(*myUintptr)(nil):             "$1\r\n0\r\n",
+		util.ToPtr(myFloat32(10.3)):   "$18\r\n10.300000190734863\r\n",
+		(*myFloat32)(nil):             "$1\r\n0\r\n",
+		util.ToPtr(myFloat64(10.3)):   "$4\r\n10.3\r\n",
+		(*myFloat64)(nil):             "$1\r\n0\r\n",
+		util.ToPtr(myString("hello")): "$5\r\nhello\r\n",
+		(*myString)(nil):              "$0\r\n\r\n",
 	}
 
 	for arg, expect := range args {

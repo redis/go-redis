@@ -200,12 +200,17 @@ func (w *Writer) WriteArg(v interface{}) error {
 }
 
 // writeArgExtra handles additional argument types not covered
-	var (
-		rfValue = reflect.ValueOf(v)
-		rfKind  = rfValue.Kind()
-	)
+func (w *Writer) writeArgExtra(v interface{}) error {
+	rfValue := reflect.ValueOf(v)
 
-	switch rfKind {
+	if rfValue.Kind() == reflect.Ptr {
+		if rfValue.IsNil() {
+			return w.writeZeroKind(rfValue.Type().Elem())
+		}
+		rfValue = rfValue.Elem()
+	}
+
+	switch rfValue.Kind() {
 	case reflect.Bool:
 		if rfValue.Bool() {
 			return w.int(1)
@@ -227,6 +232,28 @@ func (w *Writer) WriteArg(v interface{}) error {
 	default:
 		return fmt.Errorf(
 			"redis: can't marshal %T (implement encoding.BinaryMarshaler)", v)
+	}
+}
+
+// writeZeroKind writes the RESP zero value for a nil pointer whose pointee has the given type
+func (w *Writer) writeZeroKind(t reflect.Type) error {
+	switch t.Kind() {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return w.int(0)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return w.uint(0)
+	case reflect.Float32, reflect.Float64:
+		return w.float(0)
+	case reflect.String:
+		return w.string("")
+	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return w.bytes(nil)
+		}
+		fallthrough
+	default:
+		return fmt.Errorf(
+			"redis: can't marshal %s (implement encoding.BinaryMarshaler)", t)
 	}
 }
 
