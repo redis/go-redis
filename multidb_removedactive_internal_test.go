@@ -11,9 +11,9 @@ import (
 // TestRemovedFormerActiveErrClosedDoesNotSurface pins that a command whose
 // snapshotted active member was removed mid-flight (its client closed) does not
 // surface the terminal ErrClosed to the caller while the MultiDBClient is still
-// open. Instead the command re-enters the gate; with no live member to serve it
-// the re-gates are bounded and it reports the retryable ErrTemporarilyNotAvailable,
-// never ErrClosed.
+// open. It surfaces the retryable ErrTemporarilyNotAvailable instead, so the
+// caller retries like it would for a transport failure; nothing is replayed by
+// the client itself.
 func TestRemovedFormerActiveErrClosedDoesNotSurface(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	// A closed client's pool returns ErrClosed from Process without dialing.
