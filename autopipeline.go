@@ -452,8 +452,6 @@ type cmdableClient interface {
 	withProcessPipelineHook(ctx context.Context, cmds []Cmder, hook ProcessPipelineHook) error
 	hookCount() int
 	withProcessHook(ctx context.Context, cmd Cmder, hook ProcessHook) error
-	hookSnapshot() *hooksState
-	withProcessHookSnapshot(snap *hooksState, ctx context.Context, cmd Cmder, hook ProcessHook) error
 	processPipeline(ctx context.Context, cmds []Cmder) error
 	process(ctx context.Context, cmd Cmder) error
 }

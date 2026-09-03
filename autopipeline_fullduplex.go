@@ -15,81 +15,78 @@ import (
 	"github.com/redis/go-redis/v9/internal/proto"
 )
 
-// Ordered full-duplex dispatch for the ordered AutoPipeline faces (async and
-// blocking).
+// Ordered full-duplex dispatch for the async and blocking AutoPipeline faces.
 //
-// Half-duplex runs one batch per round trip, so a slow link caps throughput at
-// batch/RTT and late arrivals wait a full RTT behind the in-flight batch.
-// Full-duplex holds ONE pipeline-pool connection with a writer+reader goroutine
-// pair: the writer streams command groups back-to-back without waiting for
-// reads, the reader drains replies in FIFO order and completes each command as
-// its reply lands — ~1 RTT latency, pipe-saturated throughput.
+// Half-duplex sends one batch per round trip. A slow link caps throughput at
+// batch/RTT, and a late command waits one RTT behind the in-flight batch.
+// Full-duplex holds one pipeline-pool connection with a writer goroutine and a
+// reader goroutine. The writer streams command groups without waiting for
+// replies. The reader drains replies in FIFO order and completes each command
+// when its reply lands. Latency is about 1 RTT; throughput saturates the pipe.
 //
-// Ordering contract: each goroutine's commands execute in the order it submitted
-// them; nothing is promised between goroutines. The submit channel is MPSC (one
-// goroutine's sequential submits arrive in order) and one connection is FIFO on
-// the wire, so in-flight deque position is the reply-matching key.
+// Ordering: each goroutine's commands run in submit order. Order between
+// goroutines is not defined. The submit channel is MPSC and the connection is
+// FIFO on the wire, so a command's position in the in-flight deque matches its
+// reply.
 //
-// Retries: on a connection failure the unacked tail (in order) is re-issued on a
-// fresh connection ahead of newly queued work, respecting
-// shouldRetry/MaxRetries/backoff AND the per-command NoRetry flag — a NoRetry
-// command in the tail fails the tail instead of replaying it (half-duplex does
-// the same via cmdsContainNoRetry). After exhaustion those commands are failed
-// and the engine keeps serving on a fresh connection. Same at-least-once contract
-// as a normal Pipeline: a command whose write landed but whose reply was lost may
-// re-execute (matters for non-idempotent writes); the ambiguous set is only the
-// unacked tail.
+// Retries: on a connection failure the engine re-issues the unacked tail, in
+// order, on a fresh connection ahead of new work. It honors shouldRetry,
+// MaxRetries, backoff, and the per-command NoRetry flag. A NoRetry command in the
+// tail fails the tail instead of replaying it (half-duplex uses cmdsContainNoRetry
+// for the same result). After the budget is spent it fails those commands and
+// keeps serving on a fresh connection. The at-least-once contract matches a normal
+// Pipeline: a command whose write landed but whose reply was lost can re-execute.
+// Only the unacked tail is ambiguous.
 //
-// Gated by AutoPipelineOptions.FullDuplex, honored on the ordered single-shard
-// faces of a standalone *Client with a pipeline pool and tuned by the
-// FullDuplex* options (see their GoDoc). RESP3 push frames are demuxed inline;
-// cluster support and window auto-tune are follow-ups (see
+// Enable it with AutoPipelineOptions.FullDuplex. It runs on the ordered
+// single-shard faces of a standalone *Client with a pipeline pool. Tune it with
+// the FullDuplex* options (see their GoDoc). RESP3 push frames are demuxed inline.
+// Cluster support and window auto-tune are follow-ups (see
 // AP_ORDERED_FULLDUPLEX_DESIGN.md).
 
 var errFDReaderGone = errors.New("redis: autopipeline full-duplex reader exited")
 
-// errFDPanicRecovered marks a session failure caused by a recovered panic
-// (reply decode, batch encode). Wrapped with %w so the retry decision can
-// recognize it: the connection is desynced exactly like a transport error, and
-// the unacked tail — mostly commands the panic never touched — must be REPLAYED
-// on a fresh connection, not failed (shouldRetry alone would reject these plain
-// error values and permanently fail innocent in-flight commands).
+// errFDPanicRecovered marks a session failure from a recovered panic (reply
+// decode or batch encode). It wraps with %w so the retry decision recognizes it:
+// the connection is desynced like a transport error, so the engine replays the
+// unacked tail on a fresh connection instead of failing it. Most of that tail is
+// commands the panic never touched. shouldRetry alone would reject these plain
+// error values and fail innocent in-flight commands.
 var errFDPanicRecovered = errors.New("redis: autopipeline: full-duplex panic recovered")
 
-// errFDPushDrainFailed marks a session failure caused by a push-notification
-// drain error on the reply path (a custom PushNotificationProcessor can consume
-// part of a frame and desync the reader). Wrapped with %w like errFDPanicRecovered
-// so the retry decision recognizes it: the connection is desynced, so reading the
-// next reply would misalign the FIFO — fail the session and REPLAY the unacked
-// tail on a fresh connection rather than reading shifted bytes.
+// errFDPushDrainFailed marks a session failure from a push-notification drain
+// error on the reply path. A custom PushNotificationProcessor can consume part of
+// a frame and desync the reader. It wraps with %w like errFDPanicRecovered so the
+// retry decision recognizes it: the connection is desynced, so the next read would
+// misalign the FIFO. The engine fails the session and replays the unacked tail on
+// a fresh connection instead of reading shifted bytes.
 var errFDPushDrainFailed = errors.New("redis: autopipeline: full-duplex push drain failed")
 
 // fdReplyIsFatal reports whether a per-reply read error must ABORT the FD session
-// (stop the reader, leave the unread tail for replay) rather than be treated as
-// this command's reply. A push-drain desync is always fatal, even when it wraps a
-// Redis-typed cause: errFDPushDrainFailed carries the processor error via %w so a
-// caller can still errors.Is/As it, but that wrapped cause must NOT let
-// isRedisError reclassify the desync as a normal reply — doing so would settle or
-// divert it and leave the unread frame in the stream, shifting every later reply
-// (the exact FIFO desync the drain propagation prevents). Any other error is fatal
-// only when it is not a Redis error (a genuine transport/protocol failure); a
-// plain Redis error is a real reply and is handled inline.
+// (stop the reader and leave the unread tail for replay) instead of being treated
+// as this command's reply. A push-drain desync is always fatal, even when it wraps
+// a Redis-typed cause. errFDPushDrainFailed carries the processor error via %w for
+// errors.Is/As, but that cause must not let isRedisError reclassify the desync as a
+// normal reply: settling or diverting it would leave the unread frame in the stream
+// and shift every later reply. Any other error is fatal only when it is not a Redis
+// error (a real transport or protocol failure). A plain Redis error is a real reply
+// and is handled inline.
 func fdReplyIsFatal(e error) bool {
 	return errors.Is(e, errFDPushDrainFailed) || !isRedisError(e)
 }
 
-// errFDRetryBudgetExhausted fails a carried command that has already spent its
-// full retry budget (attempts > MaxRetries) when Close routes the unacked tail to
-// shutdownFlush, so the shutdown pipeline cannot grant it another MaxRetries+1
-// executions and push a mutating command past its configured budget.
+// errFDRetryBudgetExhausted fails a carried command that has already spent its full
+// retry budget (attempts > MaxRetries) when Close routes the unacked tail to
+// shutdownFlush. The shutdown pipeline must not grant another MaxRetries+1
+// executions and push a mutating command past its budget.
 var errFDRetryBudgetExhausted = errors.New("redis: autopipeline: retry budget exhausted before shutdown flush")
 
 // fdPartitionByBudget splits a carried tail into commands that still have retry
-// budget (kept) and commands that have already spent it (exhausted, attempts >
-// maxRetries — one FD attempt plus maxRetries replays). It always allocates a
-// fresh kept slice: carry is caller-owned (the unacked tail, or a handoff suffix
-// that may alias the in-flight ring), and shutdownFlush then appends the queue to
-// kept, so writing into carry's backing array would corrupt the caller's slice.
+// budget (kept) and commands that have spent it (exhausted, attempts > maxRetries —
+// one FD attempt plus maxRetries replays). It always allocates a fresh kept slice.
+// carry is caller-owned (the unacked tail, or a handoff suffix that may alias the
+// in-flight ring), and shutdownFlush appends the queue to kept, so a write into
+// carry's backing array would corrupt the caller's slice.
 func fdPartitionByBudget(carry []fdReq, maxRetries int) (kept, exhausted []fdReq) {
 	kept = make([]fdReq, 0, len(carry))
 	for _, r := range carry {
@@ -105,15 +102,15 @@ func fdPartitionByBudget(carry []fdReq, maxRetries int) (kept, exhausted []fdReq
 // errFDConnMoving signals that carry replay stopped early because the held
 // connection was marked for handoff (MOVING/FAILING_OVER) while a recovered carry
 // was still being written. The connection is still alive, so writeCarryChunked
-// returns the UNWRITTEN suffix out-of-band (NOT pushed into the in-flight deque);
-// the session then drains the already-written prefix to completion (those callers
-// get real replies — never re-executed) and Puts the connection back through a
-// clean fdRecycle, so the maintnotifications OnPut hook performs the seamless
-// handoff (queueHandoff + MarkQueuedForHandoff clears ShouldHandoff, so the conn is
-// re-usable and the worker moves it to the new endpoint). ONLY the never-sent
-// suffix is replayed on the next lease. Contrast errFDReaderGone / write errors,
+// returns the UNWRITTEN suffix out-of-band, not pushed into the in-flight deque.
+// The session drains the already-written prefix to completion (those callers get
+// real replies and are never re-executed) and Puts the connection back through a
+// clean fdRecycle. The maintnotifications OnPut hook then performs the seamless
+// handoff: queueHandoff plus MarkQueuedForHandoff clears ShouldHandoff, so the conn
+// is reusable and the worker moves it to the new endpoint. Only the never-sent
+// suffix replays on the next lease. Contrast errFDReaderGone and write errors,
 // where the connection is dead: there the suffix IS pushed into the deque and the
-// whole unacked tail is recovered and replayed, because a clean drain is impossible.
+// whole unacked tail replays, because a clean drain is impossible.
 var errFDConnMoving = errors.New("redis: autopipeline: full-duplex connection moving")
 
 // Full-duplex tuning defaults, applied by newFDEngine when the corresponding
@@ -169,14 +166,13 @@ type fdReq struct {
 	// connection reports its real attempt count (retry_attempts), matching the
 	// normal command path instead of always reporting a single attempt.
 	attempts int
-	// sent is set once the command MAY have reached the wire (writeBatch stamps it
-	// before attempting the flush, so a partial write or encoder panic still counts).
-	// Sticky across replays. The NoRetry gate keys on it: a NoRetry command that was
-	// never sent is replayable — issuing it is its FIRST send, not a re-send — while
-	// a sent NoRetry must be failed rather than risk a second execution. Without the
-	// marker the gate failed never-sent NoRetry commands recovered from a dead
-	// connection's backlog, handing the caller an error for a command the server
-	// never saw.
+	// sent is set once the command MAY have reached the wire. writeBatch stamps it
+	// before the flush, so a partial write or an encoder panic still counts. It is
+	// sticky across replays. The NoRetry gate keys on it: a never-sent NoRetry command
+	// is replayable, because issuing it is its FIRST send; a sent NoRetry command must
+	// be failed rather than risk a second execution. Without the marker the gate failed
+	// never-sent NoRetry commands recovered from a dead connection's backlog, returning
+	// an error for a command the server never saw.
 	sent bool
 	// limReport is the Limiter obligation for the WRITTEN chunk this req closes:
 	// non-nil ONLY on the LAST req of a chunk that Allow() admitted and writeBatch
@@ -189,16 +185,16 @@ type fdReq struct {
 }
 
 // fdLimiterReport is one chunk's outstanding Limiter obligation: the pending
-// ReportResult that must fire exactly once for the Allow() that admitted the
-// chunk in writeBatch. Reporting the WRITE outcome was wrong for a circuit
-// breaker (finding ed53z) — a peer that accepts the write but then closes before
-// replying, with replay writes also succeeding, would only ever feed the breaker
-// success and never open it. So the obligation records the REPLY-side outcome:
-// the reader settles ReportResult(nil) once every reply of the chunk has landed
-// (a server that answers is healthy, reply-LEVEL errors included), while a
-// transport failure that abandons the chunk's unread replies settles the error
-// (settleTail). The CAS makes it exactly-once even though the reader and a
-// failure path can both reach the same obligation.
+// ReportResult that must fire exactly once for the Allow() that admitted the chunk
+// in writeBatch. Reporting the WRITE outcome was wrong for a circuit breaker
+// (finding ed53z): a peer that accepts the write but closes before replying, with
+// replay writes also succeeding, would only ever feed the breaker success and never
+// open it. So the obligation records the REPLY-side outcome. The reader settles
+// ReportResult(nil) once every reply of the chunk has landed (a server that answers
+// is healthy, reply-level errors included). A transport failure that abandons the
+// chunk's unread replies settles the error (settleTail). The CAS makes it
+// exactly-once, since the reader and a failure path can both reach the same
+// obligation.
 type fdLimiterReport struct {
 	lim  Limiter
 	done atomic.Bool
@@ -207,12 +203,12 @@ type fdLimiterReport struct {
 // settle fires ReportResult(err) at most once for this obligation. A nil
 // receiver (a chunk with no Limiter) and every call after the first are no-ops.
 //
-// ReportResult is user code on FD background goroutines (the reader's success
+// ReportResult is user code, run on FD background goroutines (the reader's success
 // path, plus the write-failure and settleTail paths). A panic must not reach the
-// reader's session-failure recovery — which would replay an already-consumed
-// reply, executing the command twice — or escape fd.run, so recover and swallow
-// it: the outcome is already decided, reporting is fire-and-forget, and the CAS
-// already fired so the strict Allow/ReportResult pairing still holds.
+// reader's session-failure recovery, which would replay an already-consumed reply
+// and execute the command twice, and must not escape fd.run. Recover and swallow it:
+// the outcome is already decided, reporting is fire-and-forget, and the CAS already
+// fired, so the strict Allow/ReportResult pairing still holds.
 func (o *fdLimiterReport) settle(err error) {
 	if o == nil {
 		return
@@ -271,14 +267,13 @@ func newFDInflight() *fdInflight { return newFDInflightCap(0) }
 
 // newFDInflightCap presizes the ring so a busy session avoids repeated early
 // reallocations, capping the initial size at min(maxBatch, window). The window is
-// the hard ceiling on live count — the writer blocks once in-flight reaches it
-// and caps each drain by the remaining window room — so a MaxBatchSize larger
-// than the window (MaxBatchSize is an uncapped soft per-flush threshold) must not
-// presize beyond it: a huge MaxBatchSize with a small window would otherwise
-// allocate that many entries up front (tens of MB, or an OOM) and again after
-// every idle/recycle. Capping at maxBatch as well keeps the common small-batch
-// default unchanged. grow() is the backstop up to the window as load ramps. Tests
-// use the zero-cap no-arg form and let it grow.
+// the hard ceiling on live count: the writer blocks once in-flight reaches it and
+// caps each drain by the remaining room. So a MaxBatchSize larger than the window
+// must not presize beyond it (MaxBatchSize is an uncapped soft per-flush threshold):
+// a huge MaxBatchSize with a small window would allocate that many entries up front
+// (tens of MB, or an OOM) and again after every idle or recycle. Capping at maxBatch
+// keeps the common small-batch default unchanged. grow() is the backstop up to the
+// window as load ramps. Tests use the zero-cap no-arg form and let it grow.
 func newFDInflightCap(initialCap int) *fdInflight {
 	f := &fdInflight{room: make(chan struct{}, 1)}
 	if initialCap > 0 {
@@ -554,24 +549,24 @@ func newFDEngine(ap *AutoPipeliner, client *Client) *fdEngine {
 	if maxHold <= 0 {
 		maxHold = fdDefaultMaxHold
 	}
-	// The submit queue does not need window-sized storage: backpressure is
-	// enforced by the in-flight deque (which grows only with ACTUAL in-flight),
-	// while a buffered channel allocates its full capacity up front — at the
-	// default window that is several MiB per engine before any command is
-	// submitted. Cap the queue; total outstanding stays bounded by cap+window
-	// and submit simply blocks a little earlier under a burst.
+	// The submit queue does not need window-sized storage. Backpressure comes from
+	// the in-flight deque, which grows only with ACTUAL in-flight, while a buffered
+	// channel allocates its full capacity up front: several MiB per engine at the
+	// default window, before any command is submitted. Cap the queue. Total
+	// outstanding stays bounded by cap+window, and submit just blocks a little earlier
+	// under a burst.
 	chCap := w
 	if chCap > 4096 {
 		chCap = 4096
 	}
-	// The off-pipe retry bound is a GOROUTINE budget, not a memory window: divert
-	// retries ultimately serialize on the main pool's PoolSize connections, so
-	// slots beyond ~2x the pool only hold 8 KiB stacks and pool-wait turns. Sizing
-	// it to w (default 65536) let a retryable-reply storm — e.g. LOADING for the
-	// seconds of a server restart, which diverts EVERY reply — park tens of
-	// thousands of goroutines. 2x the pool keeps backoff sleepers overlapping with
-	// pool waiters; the reader blocking on a full sem is the designed end-to-end
-	// backpressure (see retryOnNormalConn) and now just engages earlier.
+	// The off-pipe retry bound is a GOROUTINE budget, not a memory window. Diverted
+	// retries serialize on the main pool's PoolSize connections, so slots beyond about
+	// 2x the pool only hold 8 KiB stacks and pool-wait turns. Sizing it to w (default
+	// 65536) let a retryable-reply storm — e.g. LOADING during a server restart, which
+	// diverts EVERY reply — park tens of thousands of goroutines. 2x the pool keeps
+	// backoff sleepers overlapping with pool waiters. The reader blocking on a full sem
+	// is the designed end-to-end backpressure (see retryOnNormalConn); it now just
+	// engages earlier.
 	retryCap := 2 * client.opt.PoolSize
 	if retryCap > w {
 		retryCap = w
@@ -605,15 +600,11 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		return completedBatch
 	}
 	var hookDone chan struct{}
-	var hookState *hooksState
-	// Snapshot the hook chain at SUBMIT time (a single atomic load) and carry it to
-	// the host below, so a hook added between now and when the host runs the chain
-	// does not retroactively wrap this already-accepted command - hooks are observed
-	// only by commands submitted after AddHook (see the FullDuplex GoDoc). len drives
-	// the same hooks-present gate hookCount() did, at the same cost.
-	if snap := fd.ap.pipeliner.hookSnapshot(); len(snap.slice) > 0 {
+	// With process hooks installed, run the chain on a per-command host goroutine
+	// (see hostHook). Hooks are added before the client serves traffic, so the host
+	// loads live hook state like the synchronous path. hookCount is one atomic load.
+	if fd.ap.pipeliner.hookCount() > 0 {
 		hookDone = make(chan struct{})
-		hookState = snap
 	}
 	// Hook-free blocking face: the batch is a single-waiter completion signal
 	// discarded after Wait, so draw it from the pool (buffered done, recycled in
@@ -660,7 +651,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 			fd.fastSubmitTake.Add(1) // test observability; single atomic on the (already RLock'd) fast path
 			if hookDone != nil {
 				fd.hostWg.Add(1)
-				go fd.hostHook(ctx, cmd, b, hookDone, hookState)
+				go fd.hostHook(ctx, cmd, b, hookDone)
 			}
 			fd.submitMu.RUnlock()
 			return b
@@ -675,7 +666,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 		// hostWg.Wait never races an Add on a zero counter.
 		if hookDone != nil {
 			fd.hostWg.Add(1)
-			go fd.hostHook(ctx, cmd, b, hookDone, hookState)
+			go fd.hostHook(ctx, cmd, b, hookDone)
 		}
 		fd.submitMu.RUnlock()
 		return b
@@ -702,7 +693,7 @@ func (fd *fdEngine) submit(ctx context.Context, cmd Cmder) *apBatch {
 // hookDone, so an observing hook spans the command's real write→reply latency and
 // a hook that rewrites the result is honored before the waiter wakes. Each
 // command is reported individually (withProcessHook), not as a pipeline batch.
-func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}, hookState *hooksState) {
+func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDone chan struct{}) {
 	// Declared first so it runs last: Close waits hostWg (via run()), and the host
 	// is done only after the recover defer below has also run.
 	defer fd.hostWg.Done()
@@ -739,7 +730,7 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 			b.close()
 		}
 	}()
-	err := fd.ap.pipeliner.withProcessHookSnapshot(hookState, ctx, cmd, func(context.Context, Cmder) error {
+	err := fd.ap.pipeliner.withProcessHook(ctx, cmd, func(context.Context, Cmder) error {
 		<-hookDone // reply landed (or the command was failed)
 		awaited = true
 		return cmd.rawErr() // direct read: cmd.Err() would await batch.done, which
@@ -757,20 +748,11 @@ func (fd *fdEngine) hostHook(ctx context.Context, cmd Cmder, b *apBatch, hookDon
 	b.close()       // now wake the waiter
 }
 
-// retryOnNormalConn re-runs a full-duplex command that came back with a retryable
-// Redis error (LOADING/READONLY/…) or a redirect (MOVED/ASK) on the client's
-// NORMAL path: that path routes redirects to the proper node and applies the
-// standard retry/backoff, neither of which the fixed single-conn FD socket can
-// do. It runs on its own goroutine so it does not stall the FD reader, is tracked
-// by retryWg so Close waits for it, and settles the FD request with the outcome.
-// process() is the raw exec (no hook chain) — with hooks installed the FD
-// hostHook still brackets the command and reports via req.complete(). Background
-// ctx: the command was already accepted, so it completes even under a Close.
-// retryStartAttempt returns the normal-path retry loop's starting attempt for an
-// FD command diverted after a MOVING/ASK redirect (0 — the command did not execute
-// on the FD socket, so it gets the full MaxRetries+1 budget) or a retryable reply
-// such as LOADING/READONLY/TRYAGAIN (1 — the initial attempt was already spent on
-// the FD socket, so counting it keeps the total at MaxRetries+1, not +2).
+// retryStartAttempt returns the normal-path retry loop's starting attempt for an FD
+// command diverted to it. A MOVING/ASK redirect returns 0: the command did not
+// execute on the FD socket, so it gets the full MaxRetries+1 budget. A retryable
+// reply such as LOADING/READONLY/TRYAGAIN returns 1: the initial attempt was already
+// spent on the FD socket, so counting it keeps the total at MaxRetries+1, not +2.
 func retryStartAttempt(moved, ask bool) int {
 	if moved || ask {
 		return 0
@@ -779,15 +761,14 @@ func retryStartAttempt(moved, ask bool) int {
 }
 
 // emitMetricsGuarded runs a fire-and-forget user metric callback under panic
-// recovery. Every FD metric emit funnels through here — reportReplyMetrics on the
-// reader's inline completion, and the engine-goroutine failure paths failReqs /
-// failQueue — so a panicking user callback is logged and swallowed instead of
-// aborting completion/settlement. An escaped panic would leave accepted commands
-// unsettled (callers wedged forever) and crash fd.run, or, with process hooks,
-// deadlock Close's hostWg.Wait while callers block on hookDone. On the reader
-// path it would also reach the session-failure recovery BEFORE the reply is
-// advanced out of the in-flight deque, which treats an unadvanced req as an
-// unacked tail and replays it — running an already-consumed mutating command
+// recovery. Every FD metric emit funnels through here: reportReplyMetrics on the
+// reader's inline completion, and the failure paths failReqs and failQueue. So a
+// panicking user callback is logged and swallowed, not propagated. An escaped panic
+// would leave accepted commands unsettled (callers wedged forever) and crash fd.run;
+// with process hooks it would deadlock Close's hostWg.Wait while callers block on
+// hookDone. On the reader path it would also reach the session-failure recovery
+// BEFORE the reply is advanced out of the in-flight deque, which treats an unadvanced
+// req as an unacked tail and replays it — an already-consumed mutating command run
 // twice. The reply outcome is already decided; reporting is advisory.
 func (fd *fdEngine) emitMetricsGuarded(octx context.Context, emit func()) {
 	defer func() {
@@ -835,23 +816,32 @@ func (fd *fdEngine) reportReplyMetrics(octx context.Context, req fdReq, e error,
 	})
 }
 
+// retryOnNormalConn re-runs a full-duplex command that came back with a retryable
+// Redis error (LOADING/READONLY/…) or a redirect (MOVED/ASK) on the client's NORMAL
+// path. That path routes redirects to the proper node and applies the standard
+// retry/backoff, neither of which the fixed single-conn FD socket can do. It runs on
+// its own goroutine so it does not stall the FD reader, is tracked by retryWg so
+// Close waits for it, and settles the FD request with the outcome. process() is the
+// raw exec (no hook chain); with hooks installed the FD hostHook still brackets the
+// command and reports via req.complete(). Background ctx: the command was already
+// accepted, so it completes even under a Close.
 func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
-	// Bound concurrent off-pipe retries to ~2x the main pool (see newFDEngine's
-	// retryCap): a sustained retryable stream would otherwise spawn one goroutine
-	// per reply, all parked in backoff/pool acquisition. Blocking here blocks the
-	// READER, which stops
-	// advancing the deque, which fills the window and blocks the writer and then
-	// submitters — end-to-end backpressure. No cycle: retries drain on the main
+	// Bound concurrent off-pipe retries to about 2x the main pool (see newFDEngine's
+	// retryCap): a sustained retryable stream would otherwise spawn one goroutine per
+	// reply, all parked in backoff/pool acquisition. Blocking here blocks the READER,
+	// which stops advancing the deque, which fills the window and blocks the writer and
+	// then submitters — end-to-end backpressure. No cycle: retries drain on the main
 	// pool, independent of the reader waiting here.
-	// Interruptible acquire: the reader must not park here past Close. A wait is
-	// otherwise BOUNDED — every slot holder is a retry running through process(),
-	// whose own timeouts/backoff guarantee it releases. On Close, though, the
-	// command was already ACCEPTED and came back with a retryable/redirect reply,
-	// so failing it ErrClosed would break Close's accepted-work drain contract (and
-	// every subsequent retryable reply in the tail would hit the same path). So on
-	// ap.ctx cancellation, run the retry WITHOUT the sem bound — there is no
-	// sustained new load during teardown — still tracked by retryWg so Close waits
-	// for it to settle with its real outcome.
+	//
+	// Interruptible acquire: the reader must not park here past Close. The wait is
+	// otherwise BOUNDED, since every slot holder is a retry running through process(),
+	// whose timeouts and backoff guarantee release. But on Close the command was
+	// already ACCEPTED and came back with a retryable/redirect reply, so failing it
+	// ErrClosed would break Close's accepted-work drain contract (and every later
+	// retryable reply in the tail would hit the same path). So on ap.ctx cancellation,
+	// run the retry WITHOUT the sem bound — there is no sustained new load during
+	// teardown — still tracked by retryWg so Close waits for it to settle with its
+	// real outcome.
 	acquired := false
 	select {
 	case fd.retrySem <- struct{}{}:
@@ -919,7 +909,7 @@ func (fd *fdEngine) run() {
 	// that synchronously calls Close (Client.Close or AutoPipeliner.Close) from its
 	// host goroutine deadlocks here until the close backstop (autoPipelineCloseBackstop):
 	// Close waits ap.wg -> run() -> this hostWg.Wait, which waits for the very host
-	// blocked inside Close. A reentrancy fix was rejected as unsafe - cancelAndDrain is
+	// blocked inside Close. A reentrancy fix was rejected as unsafe: cancelAndDrain is
 	// NOT once-only (the shared-pool close hook leaves ap.closed false and can run
 	// again), and an early hostWg.Done races submit's hostWg.Add. The contract is
 	// documented on the FullDuplex GoDoc instead: such a hook must call Close from a
@@ -971,12 +961,13 @@ func (fd *fdEngine) run() {
 		switch result {
 		case fdGraceful:
 			// Close: attempt() drained the written work and released the session conn
-			// via its defer — Put, so the OnPut hook can hand a marked conn off, or
-			// Remove if that release drain failed. Here unacked is the never-WRITTEN
-			// handoff suffix (nil on a plain Close), NOT written commands to
-			// re-execute; complete it on a fresh connection now that attempt() freed
-			// this one. Doing it here rather than inside session avoids failing the
-			// suffix against a saturated pool while the session conn is still held.
+			// via its defer. The defer Puts the conn, so the OnPut hook can hand a
+			// marked conn off, or Removes it if the release drain failed. Here unacked
+			// is the never-WRITTEN handoff suffix (nil on a plain Close), NOT written
+			// commands to re-execute; complete it on a fresh connection now that
+			// attempt() freed this one. Doing it here rather than inside session avoids
+			// failing the suffix against a saturated pool while the session conn is
+			// still held.
 			if len(unacked) > 0 {
 				fd.shutdownFlush(bg, unacked)
 			}
@@ -1037,8 +1028,8 @@ func (fd *fdEngine) run() {
 			// the cluster pipeline retry paths — otherwise a single WAN timeout
 			// fails the whole tail. The engine's internal failure markers
 			// (recovered panics, reader-gone) desync the conn exactly like a
-			// transport error and the tail is mostly commands they never touched,
-			// so they are replayable too — shouldRetry alone would reject them and
+			// transport error. The tail is mostly commands they never touched, so
+			// they are replayable too. shouldRetry alone would reject them and
 			// permanently fail innocent in-flight commands. The NoRetry guard
 			// below still protects non-idempotent writes.
 			replayable := shouldRetry(aerr, true) ||
@@ -1203,8 +1194,8 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 		// while readReply streams the raw reply). Recover and mark the session failed
 		// (failOnce) so run() takes the connection-error path: the reader exits, the
 		// unacked tail is recovered and the conn is removed. advance(done) FIRST so
-		// commands already completed in the panicking snapshot leave the deque —
-		// otherwise recovery re-owns and re-completes them, overwriting good results
+		// commands already completed in the panicking snapshot leave the deque.
+		// Otherwise recovery re-owns and re-completes them, overwriting good results
 		// and double-closing hookDone (a second panic) when hooks are installed.
 		defer func() {
 			if r := recover(); r != nil {
@@ -1281,7 +1272,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 					//
 					// Divert a RETRYABLE reply only while retries are enabled AND the
 					// budget is not already spent. req.attempts counts FD attempts spent
-					// (1 at submit, +1 on each fdConnErr carry replay); once it reaches
+					// (1 at submit, +1 on each fdConnErr carry replay). Once it reaches
 					// MaxRetries+1 another execution would exceed the budget, so fall
 					// through to the inline settle, which surfaces the reply as the final
 					// error and reports the true attempt count. Without this guard the
@@ -1411,7 +1402,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// the held connection for handoff. The pool queues the handoff only when
 			// the conn is Put back, so end this session promptly with a CLEAN recycle
 			// (drain in-flight to a RESP boundary, then Put) instead of continuing to
-			// write to a node known to be moving until idle/max-hold — otherwise the
+			// write to a node known to be moving until idle/max-hold. Otherwise the
 			// handoff can miss its deadline. ShouldHandoff() is an atomic load, so it
 			// is safe to poll here while the reader sets it; room fires on every
 			// reader advance, so a writer parked on the window gate above re-checks
@@ -1512,7 +1503,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// reader on replies that never arrive. Close the conn to wake the reader,
 			// then RETURN the unacked tail as the recovery set instead of failing it
 			// here. As fdConnErr it flows through run()'s standard tail recovery — the
-			// per-command budget partition and the NoRetry split — and, because ap.ctx
+			// per-command budget partition and the NoRetry split. Because ap.ctx
 			// is cancelled (this is Close), the eligible prefix is then executed by
 			// shutdownFlush on a fresh connection. That honors "accepted ⇒ completes"
 			// for the never-sent fd.ch backlog (attempts==1, never touched the dead
@@ -1540,7 +1531,7 @@ func (fd *fdEngine) session(bg context.Context, cn *pool.Conn, carry []fdReq) (u
 			// never-sent handoff suffix, in order) instead of failing it wholesale, and
 			// report the error so attempt() removes the desynced conn. As fdConnErr the
 			// set flows through run()'s standard tail recovery — per-command budget
-			// partition and the sent-NoRetry split — and, because ap.ctx is cancelled
+			// partition and the sent-NoRetry split. Because ap.ctx is cancelled
 			// (this is Close), the eligible prefix is then executed by shutdownFlush on a
 			// fresh connection, honoring "accepted ⇒ completes" exactly like the
 			// backlog-flush failure branch above. Failing here handed every acked-write
@@ -1676,15 +1667,15 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 		}()
 	}
 	// Publish the batch to the in-flight deque only AFTER a clean serialize+flush
-	// (see below), so the reader arms its per-reply ReadTimeout once the write has
-	// reached the socket — not while a slow user encoder (a BinaryMarshaler) is still
-	// running, which could time out a healthy connection and trigger a spurious
-	// replay that duplicates a mutating command. On a partial write or an encoder
-	// panic the conn is desynced, so the batch must still land in the deque for the
-	// normal conn-error recovery to settle every caller; this defer does that if the
-	// happy-path push below did not run. A command encoder panic (writeCmd on a bad
-	// BinaryMarshaler) runs on the writer goroutine, where it would otherwise crash
-	// the process — convert it to a connection error.
+	// (see below). Then the reader arms its per-reply ReadTimeout once the write has
+	// reached the socket, not while a slow user encoder (a BinaryMarshaler) is still
+	// running. A slow encoder could time out a healthy connection and trigger a
+	// spurious replay that duplicates a mutating command. On a partial write or an
+	// encoder panic the conn is desynced, so the batch must still land in the deque
+	// for the normal conn-error recovery to settle every caller; this defer does that
+	// if the happy-path push below did not run. A command encoder panic (writeCmd on a
+	// bad BinaryMarshaler) runs on the writer goroutine, where it would otherwise
+	// crash the process — convert it to a connection error.
 	pushed := false
 	// written is the count of commands the serialize loop REACHED this call (index+1
 	// of the last one it touched): the attempt-local twin of the lifetime `sent`
@@ -1700,31 +1691,31 @@ func (fd *fdEngine) writeBatch(bg context.Context, cn *pool.Conn, inflight *fdIn
 			// submit/replay attempt for every command the serializer never REACHED
 			// THIS call (index >= written). run()'s fdConnErr recovery partitions the
 			// tail by attempt count (fdPartitionByBudget) BEFORE it consults the
-			// NoRetry/sent gate, and that partition keys on attempts, not sent - so a
+			// NoRetry/sent gate, and that partition keys on attempts, not sent. So a
 			// command left at its pre-charged attempt count is declared budget-exhausted
 			// and FAILED without ever executing (acute at MaxRetries<=1).
 			//
 			// Refund by `written`, NOT by the lifetime `sent` flag: `sent` is sticky
 			// across replays, so on a SECOND-session replay whose earlier command's
 			// encoder panics the later commands still carry sent==true from the first
-			// session - a `!sent` refund would skip that suffix, leave it over-charged,
+			// session. A `!sent` refund would skip that suffix, leave it over-charged,
 			// and lose a retry it never got (MaxRetries==1: exhausted after only its
 			// original send). `written` is attempt-local, so it refunds exactly the
 			// suffix this call did not reach, regardless of a prior session's send. The
 			// prefix reached this call (< written, including a command whose own writeCmd
-			// panicked) keeps its charge - it was attempted at-least-once. Mirrors the
+			// panicked) keeps its charge. It was attempted at-least-once. Mirrors the
 			// never-written-suffix refunds in writeCarryChunked / fdRecoverTail.
 			fdRefundUnsentAttempt(reqs[written:])
 			inflight.pushBatch(reqs)
 		}
 	}()
 	// Stamp the wire-write time and mark each command SENT per-command, immediately
-	// before its writeCmd runs - NOT in a bulk loop before the flush. Only commands
+	// before its writeCmd runs, NOT in a bulk loop before the flush. Only commands
 	// the serializer actually REACHES are marked sent: if an earlier command's encoder
 	// panics (a bad BinaryMarshaler) or a partial write aborts the loop, the
 	// never-serialized suffix keeps sent=false, so the NoRetry gate replays it
 	// (issuing it is its FIRST send) instead of failing a command the server never
-	// saw. A command whose own writeCmd fails/panics stays sent=true - its bytes may
+	// saw. A command whose own writeCmd fails/panics stays sent=true: its bytes may
 	// have reached the buffer/wire, so the conservative choice avoids re-sending a
 	// NoRetry twice; a WithWriter flush error after N commands serialized leaves those
 	// N sent. Stamped before pushBatch so the deque copies the reader reads carry both.
@@ -1824,7 +1815,7 @@ func (fd *fdEngine) writeCarryChunked(bg context.Context, cn *pool.Conn, infligh
 		// Bound in-flight to the window between chunks, like the serve loop — which
 		// uses a PREDICATE LOOP, not a one-shot wait: inflight.room is a cap-1
 		// channel that can hold a STALE signal (the reader popped, the writer
-		// observed the room and refilled it without consuming the signal), so after
+		// observed the room and refilled it without consuming the signal). So after
 		// each wake recheck inflight.len() >= fd.window before writing. A one-shot if
 		// could consume that stale signal with the deque still full, compute zero
 		// remaining room, leave lim at MaxBatchSize, and write past FullDuplexWindow.
@@ -1955,13 +1946,14 @@ func fdRecoverTail(rem, suffix []fdReq) []fdReq {
 
 // settleTail settles every Limiter obligation carried by an fdConnErr recovery
 // set with err, exactly once, and returns the SAME slice so it wraps a recovery
-// expression inline. Called at each session() point that hands a written-but-
-// unacked tail back for replay/failure: the reader never completed these chunks,
-// so their reply-side outcome is this transport error. Settling here — inside
-// session(), inseparable from producing the recovery set — keeps "no obligation
-// outlives its session" readable in one function and pairs every Allow whose
-// replies never arrived. The field is cleared so the obligation never travels
-// into the replay (the rewrite's writeBatch mints a fresh Allow + obligation).
+// expression inline. Called at each session() point that hands a
+// written-but-unacked tail back for replay/failure: the reader never completed
+// these chunks, so their reply-side outcome is this transport error. Settling
+// here — inside session(), inseparable from producing the recovery set — keeps
+// "no obligation outlives its session" readable in one function and pairs every
+// Allow whose replies never arrived. The field is cleared so the obligation
+// never travels into the replay (the rewrite's writeBatch mints a fresh Allow +
+// obligation).
 func (fd *fdEngine) settleTail(reqs []fdReq, err error) []fdReq {
 	for i := range reqs {
 		if reqs[i].limReport != nil {
@@ -2150,8 +2142,8 @@ func (fd *fdEngine) flushReqs(bg context.Context, reqs []fdReq, maxRetries int) 
 	for i < len(reqs) {
 		end := fdBatchEnd(reqs, i, fd.maxBatch, byteLimit)
 		// Do not mix retry policies in one chunk: generalProcessPipeline disables
-		// retries for the WHOLE chunk if any command is NoRetry (cmdsContainNoRetry),
-		// which would strip retryable commands in the same accepted backlog of their
+		// retries for the WHOLE chunk if any command is NoRetry (cmdsContainNoRetry).
+		// That would strip retryable commands in the same accepted backlog of their
 		// budget. Break the chunk at the first NoRetry-policy change so a NoRetry
 		// command (e.g. RawWriteToCmd) is isolated from its retryable neighbors, like
 		// the half-duplex dispatcher's contiguous retry-policy runs. The clamp starts

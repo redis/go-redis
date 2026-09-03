@@ -223,31 +223,6 @@ func (hs *hooksMixin) withProcessHook(ctx context.Context, cmd Cmder, hook Proce
 	return hook(ctx, cmd)
 }
 
-// hookSnapshot returns the current immutable hook-state snapshot with a single
-// atomic load. A deferred executor (the full-duplex hook host) captures this at
-// SUBMIT time and runs the chain via withProcessHookSnapshot, so a hook added
-// between submit and host-exec does not retroactively wrap an in-flight command
-// (hooks are observed only by commands submitted after AddHook). The returned
-// value is immutable - never mutated after publication.
-func (hs *hooksMixin) hookSnapshot() *hooksState {
-	return hs.state.Load()
-}
-
-// withProcessHookSnapshot composes the process-hook chain from a snapshot taken
-// by hookSnapshot instead of re-loading the live state - same composition as
-// withProcessHook, fixed to the snapshot's hook slice.
-func (hs *hooksMixin) withProcessHookSnapshot(
-	snap *hooksState, ctx context.Context, cmd Cmder, hook ProcessHook,
-) error {
-	slice := snap.slice
-	for i := len(slice) - 1; i >= 0; i-- {
-		if wrapped := slice[i].ProcessHook(hook); wrapped != nil {
-			hook = wrapped
-		}
-	}
-	return hook(ctx, cmd)
-}
-
 func (hs *hooksMixin) withProcessPipelineHook(
 	ctx context.Context, cmds []Cmder, hook ProcessPipelineHook,
 ) error {
