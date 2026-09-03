@@ -655,6 +655,12 @@ func (c *MultiDBClient) AddHook(hook Hook) {
 // locally and records no success for the circuit breaker or failure detector.
 // The effect is under-recording only — slower recovery of a half-open member,
 // failures not reset — never a phantom success or a replay.
+//
+// For a cluster member this installs the hook on the *ClusterClient's own
+// process and pipeline chains only. It does not reach the per-node *Client
+// instances the cluster dials internally, so a DialHook never runs for a
+// cluster member's connections. There is currently no MultiDB API to reach
+// those per-node clients.
 func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 	return c.core.addDatabaseHook(id, hook)
 }
