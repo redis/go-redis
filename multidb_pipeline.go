@@ -266,10 +266,6 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 	// failover keeps handing back members the gate rejects — surface
 	// unavailability instead of busy-looping the active index.
 	gateRejections := 0
-	// Separate bound for re-gates caused by a removed former active: those pass
-	// the gate (so gateRejections is reset on admission) and must not busy-loop
-	// if a rapid add/remove keeps handing back a closed member. Mirrors process().
-	removedActiveRegates := 0
 
 	// exitErr picks the batch error for every exit: with a rejected HIMPORT
 	// in the batch the positionally first error over the ORIGINAL slice wins,
@@ -401,37 +397,23 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res)
 
 		if transportFailures == 0 {
-			if errors.Is(err, ErrClosed) && db.removed.Load() && !executed.any() {
+			if errors.Is(err, ErrClosed) && db.removed.Load() {
 				// A concurrent control op removed the snapshotted member (closing
 				// its client) between the gate and execution, so its pool returned
 				// the terminal ErrClosed, classified neutral. The MultiDBClient is
-				// still open: re-enter the gate on the live active instead of
-				// surfacing ErrClosed, mirroring the single-command process() path.
-				//
-				// Guarded on !executed.any(), like the tx path: a cluster fan-out
-				// can have one node apply its commands while another node's
-				// connection acquisition returns ErrClosed after the member was
-				// switched away and removed. transportFailures is still 0 (the
-				// applied commands are successes, the ErrClosed is neutral), but the
-				// batch DID partially execute — re-gating and replaying it would
-				// duplicate the completed node's non-idempotent writes. When any
-				// shard executed, fall through and return the batch as-is instead.
-				//
-				// recordBatchOutcomes released the reservation (nothing recorded);
-				// the batch never executed, so don't spend a retry attempt. Bound
-				// the re-gates separately from gate rejections (which reset on
-				// admission); a genuine Close is caught by c.closed next iteration.
-				removedActiveRegates++
-				if removedActiveRegates > c.memberCount()+1 {
-					// Pathological rapid add/remove: surface the retryable
-					// unavailable error rather than the removed member's terminal
-					// ErrClosed. Leave the per-command state as recorded — the
-					// attempt counter cannot cleanly tell whether an earlier attempt
-					// applied a prefix, so do not risk overwriting it here.
-					return exitErr(ErrTemporarilyNotAvailable)
+				// still open: surface the retryable ErrTemporarilyNotAvailable
+				// instead of a client-closed sentinel, as process() does, and let
+				// the caller retry as it would for a transport failure. Nothing is
+				// replayed here — a cluster fan-out may have applied one node's
+				// commands while another node's connection acquisition hit the
+				// removed member, and replaying would duplicate those writes. Only
+				// when nothing executed are the per-command stand-in errors rewritten
+				// to match the aggregate; a partially executed batch keeps its results.
+				if !executed.any() {
+					resetCmds(cmds)
+					setCmdsErr(cmds, ErrTemporarilyNotAvailable)
 				}
-				attempt--
-				continue
+				return exitErr(ErrTemporarilyNotAvailable)
 			}
 			// Only server replies (or clean success) — done, whatever the
 			// user-level outcome is.
@@ -484,109 +466,96 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	// denied member triggers another failover, bounded by the rejection
 	// cap) — only the EXECUTION below stays single-shot, so at-most-once
 	// holds: no MULTI/EXEC has been sent while the gate is still choosing.
-	// Separate bound for re-gates caused by a removed former active (see
-	// processPipeline): they pass the gate, so gateRejections cannot bound them.
-	removedActiveRegates := 0
+	gateRejections := 0
 	var db *multidbDatabase
 	var res imultidb.Reservation
-	// Release the current admission on any exit that did not settle it: a panic
-	// in a member hook skips recordBatchOutcomes and the cancel branch. The
-	// closure reads the latest res/db (the outer loop may re-admit) and ReleaseFor
-	// settles once, so an explicit release before a re-gate plus this final one
-	// never double-count. Guarded against a never-admitted exit.
-	defer func() {
-		if db != nil {
-			db.cb.ReleaseFor(res)
-		}
-	}()
 	for {
-		gateRejections := 0
-		// The gate loops like the other paths (detector before IsAllowed; a
-		// denied member triggers another failover, bounded by the rejection cap)
-		// — only the EXECUTION below stays single-shot, so at-most-once holds:
-		// no MULTI/EXEC has been sent while the gate is still choosing.
-		for {
-			if c.closed.Load() {
-				resetCmds(cmds)
-				setCmdsErr(cmds, ErrClosed)
-				return ErrClosed
-			}
-			if err := ctx.Err(); err != nil {
+		if c.closed.Load() {
+			resetCmds(cmds)
+			setCmdsErr(cmds, ErrClosed)
+			return ErrClosed
+		}
+		if err := ctx.Err(); err != nil {
+			resetCmds(cmds)
+			setCmdsErr(cmds, err)
+			return err
+		}
+		var idx int
+		db, idx = c.activeSnapshot()
+		admitted := false
+		if db != nil && !c.detector.ShouldFailover() {
+			admitted, res = db.cb.AllowReserve()
+		}
+		if !admitted {
+			gateRejections++
+			if gateRejections > c.memberCount()+1 {
+				err := ErrTemporarilyNotAvailable
 				resetCmds(cmds)
 				setCmdsErr(cmds, err)
 				return err
 			}
-			var idx int
-			db, idx = c.activeSnapshot()
-			admitted := false
-			if db != nil && !c.detector.ShouldFailover() {
-				admitted, res = db.cb.AllowReserve()
-			}
-			if !admitted {
-				gateRejections++
-				if gateRejections > c.memberCount()+1 {
-					err := ErrTemporarilyNotAvailable
-					resetCmds(cmds)
-					setCmdsErr(cmds, err)
-					return err
-				}
-				if err := c.tryFailover(ctx, idx); err != nil {
-					resetCmds(cmds)
-					setCmdsErr(cmds, err)
-					return err
-				}
-				continue
-			}
-			break
-		}
-
-		// Record outcomes only for the user's commands: cmds arrives wrapped by
-		// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
-		// would advance the breaker by three per single-command transaction.
-		user := cmds
-		if len(cmds) >= 3 {
-			user = cmds[1 : len(cmds)-1]
-		}
-		// Clear any error a caller left on a reused command — or the stale
-		// ErrClosed from a previous re-gate — before executing, so a transaction
-		// that aborts before execution is recorded as a transport failure instead
-		// of being masked by stale per-command errors setCmdsErr refuses to
-		// overwrite. Only the user slice can carry caller staleness; the MULTI/EXEC
-		// envelope is built fresh per call.
-		resetCmds(user)
-		// The execution marker rides on the context (see processPipeline and
-		// AddDatabaseHook): a member hook must pass the received ctx to next.
-		executed := newExecutedCmds(len(cmds))
-		err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
-		if err != nil && ctx.Err() != nil {
-			// Caller's context ended mid-transaction (see processPipeline): a
-			// client-side signal, not a health verdict. Return without recording;
-			// the deferred release frees the reservation. Do NOT reset the
-			// commands — EXEC may have committed, and their state is the caller's
-			// only evidence of that. Return the cancellation as the aggregate
-			// error (like processPipeline) rather than the stale transport error.
-			return ctx.Err()
-		}
-		if errors.Is(err, ErrClosed) && db.removed.Load() && !executed.any() {
-			// The snapshotted member was removed (its client closed) before the
-			// transaction executed, so its pool returned the terminal ErrClosed
-			// though the MultiDBClient is still open. The execution marker is empty
-			// — nothing ran — so re-gating is at-most-once-safe: release this
-			// admission and re-enter the gate on the live active. Bounded
-			// separately from gate rejections; a genuine Close is caught by the
-			// c.closed check at the top of the next iteration.
-			db.cb.ReleaseFor(res)
-			removedActiveRegates++
-			if removedActiveRegates > c.memberCount()+1 {
+			if err := c.tryFailover(ctx, idx); err != nil {
 				resetCmds(cmds)
-				setCmdsErr(cmds, ErrTemporarilyNotAvailable)
-				return ErrTemporarilyNotAvailable
+				setCmdsErr(cmds, err)
+				return err
 			}
 			continue
 		}
-		c.recordBatchOutcomes(db, user, err, executed, res)
-		return err
+		break
 	}
+
+	// Release the admission on any exit that did not settle it: a panic in a
+	// member hook or the member path skips both recordBatchOutcomes and the
+	// cancel branch. ReleaseFor settles at most once and no-ops for a closed
+	// admission — the same defer Watch uses.
+	defer db.cb.ReleaseFor(res)
+	// Record outcomes only for the user's commands: cmds arrives wrapped by
+	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
+	// would advance the breaker by three per single-command transaction.
+	user := cmds
+	if len(cmds) >= 3 {
+		user = cmds[1 : len(cmds)-1]
+	}
+	// Clear any error a caller left on a reused command before executing, so a
+	// transaction that aborts before execution (e.g. a connection-acquire
+	// failure) is recorded as a transport failure instead of being masked by
+	// stale per-command errors setCmdsErr refuses to overwrite. Only the user
+	// slice can carry caller staleness; the MULTI/EXEC envelope is built fresh
+	// per call.
+	resetCmds(user)
+	// The execution marker rides on the context (see processPipeline and
+	// AddDatabaseHook): a member hook must pass the received ctx to next.
+	executed := newExecutedCmds(len(cmds))
+	err := db.processTxPipelineHook(context.WithValue(ctx, pipelineExecutedKey{}, executed), cmds)
+	if err != nil && ctx.Err() != nil {
+		// Caller's context ended mid-transaction (see processPipeline): a
+		// client-side signal, not a health verdict. Release any half-open
+		// reservation and return without recording. Do NOT reset the commands
+		// here — EXEC may have committed, and their state is the caller's only
+		// evidence of that. Return the cancellation as the aggregate error (like
+		// processPipeline) rather than the stale transport error, so a caller
+		// does not mistake a deliberate cancel for a retryable disconnect.
+		db.cb.ReleaseFor(res)
+		return ctx.Err()
+	}
+	c.recordBatchOutcomes(db, user, err, executed, res)
+	if errors.Is(err, ErrClosed) && db.removed.Load() {
+		// A concurrent control op removed the snapshotted member (closing its
+		// client) between the gate and execution, so its pool returned the
+		// terminal ErrClosed though the MultiDBClient is still open. Surface the
+		// retryable ErrTemporarilyNotAvailable instead of a client-closed
+		// sentinel, as process() does. Nothing is replayed here — EXEC may have
+		// committed, so at-most-once forbids it — and recordBatchOutcomes
+		// recorded no health outcome for the neutral ErrClosed. Only when nothing
+		// executed are the per-command stand-in errors rewritten to match the
+		// aggregate; a partially executed transaction keeps its evidence.
+		if !executed.any() {
+			resetCmds(user)
+			setCmdsErr(user, ErrTemporarilyNotAvailable)
+		}
+		return ErrTemporarilyNotAvailable
+	}
+	return err
 }
 
 func (db *multidbDatabase) processPipelineHook(ctx context.Context, cmds []Cmder) error {

@@ -43,10 +43,10 @@ func newRemovedActiveCore(t *testing.T) *multidbCore {
 }
 
 // TestProcessPipelineRemovedActiveDoesNotSurfaceErrClosed is the batch analogue
-// of the single-command re-gate: a pipeline whose snapshotted member was removed
+// of the single-command path: a pipeline whose snapshotted member was removed
 // mid-flight must not surface the terminal ErrClosed while the client is open.
-// It re-enters the gate; with no live member the re-gates are bounded and it
-// reports the retryable ErrTemporarilyNotAvailable.
+// It reports the retryable ErrTemporarilyNotAvailable instead, so the caller
+// retries; nothing is replayed by the client itself.
 func TestProcessPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
 	core := newRemovedActiveCore(t)
 	err := core.processPipeline(context.Background(), []Cmder{NewStatusCmd(context.Background(), "ping")})
@@ -59,8 +59,8 @@ func TestProcessPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
 }
 
 // TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed is the same for the
-// transaction path. Re-gating is at-most-once-safe because the execution marker
-// is empty (the removed member's pool returned ErrClosed before anything ran).
+// transaction path: the retryable error is surfaced, never a replay — EXEC may
+// have committed, so at-most-once forbids re-running it.
 func TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
 	core := newRemovedActiveCore(t)
 	wrapped := wrapMultiExec(context.Background(), []Cmder{NewStatusCmd(context.Background(), "ping")})
@@ -75,9 +75,9 @@ func TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
 
 // TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed pins that a batch
 // which PARTIALLY executed (execution marker set) before hitting ErrClosed on a
-// removed member is NOT re-gated and replayed — replaying would duplicate the
-// applied writes from the completed shard. Only a wholly-unexecuted batch
-// re-gates (the !executed.any() guard, mirroring the tx path).
+// removed member is NOT replayed — replaying would duplicate the applied writes
+// from the completed shard. It surfaces the retryable error exactly once and
+// keeps the executed commands' results (they are not rewritten).
 func TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{})
 	var calls int32
@@ -92,16 +92,23 @@ func TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed(t *testing.T) 
 	core.dbs[0] = db
 	core.active.Store(0)
 
-	err := core.processPipeline(context.Background(), []Cmder{
+	cmds := []Cmder{
 		NewStatusCmd(context.Background(), "set", "k", "v"),
 		NewStatusCmd(context.Background(), "get", "k"),
-	})
-	// The batch executed, so it must surface ErrClosed as-is (not re-gate to the
-	// retryable ErrTemporarilyNotAvailable), and it must run exactly once.
-	if !errors.Is(err, ErrClosed) {
-		t.Fatalf("partially-executed removed-member batch was re-gated instead of surfacing ErrClosed: %v", err)
+	}
+	err := core.processPipeline(context.Background(), cmds)
+	// The batch executed: the retryable error is surfaced (never a replay), the
+	// batch runs exactly once, and the executed commands keep their results —
+	// they are not rewritten with the aggregate error.
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("partially-executed removed-member batch: got %v, want ErrTemporarilyNotAvailable", err)
 	}
 	if n := atomic.LoadInt32(&calls); n != 1 {
 		t.Fatalf("batch executed %d times, want 1 — it was replayed (duplicating applied writes)", n)
+	}
+	for i, cmd := range cmds {
+		if cmd.rawErr() != nil {
+			t.Fatalf("executed command %d had its result rewritten to %v", i, cmd.rawErr())
+		}
 	}
 }

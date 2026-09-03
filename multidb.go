@@ -33,7 +33,10 @@ const (
 var (
 	// ErrTemporarilyNotAvailable is returned when no healthy database can be
 	// selected right now; the client keeps attempting failover on subsequent
-	// commands.
+	// commands. It is also returned when the member a command or batch was routed
+	// to was removed mid-flight (a concurrent RemoveDatabase or manual switch): the
+	// client is still open and the next attempt lands on the live active, so the
+	// caller should retry rather than treat it as terminal.
 	ErrTemporarilyNotAvailable = errors.New("redis: multidb: no healthy database available (temporarily)")
 	// ErrPermanentlyNotAvailable is returned once MaxFailoverAttempts
 	// consecutive failover attempts have failed; the application should stop
