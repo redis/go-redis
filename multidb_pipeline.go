@@ -861,8 +861,27 @@ func (c *MultiDBClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*A
 			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
 				return nil, errMultiDBAutoPipelineCluster
 			}
-			return newAutoPipeliner(c, cfg, true)
+			return c.trackAutopipelinerLocked(newAutoPipeliner(c, cfg, true))
 		})
+}
+
+// trackAutopipelinerLocked records a freshly built autopipeliner so Close can
+// wait for its drain even after it leaves the cache, and drops the entries
+// whose drains have already finished. It passes the build result through so a
+// build func can wrap its constructor call directly. autopipelinerMu MUST be
+// held: the build funcs run under it (see builtAutopipeliners).
+func (c *MultiDBClient) trackAutopipelinerLocked(ap *AutoPipeliner, err error) (*AutoPipeliner, error) {
+	if err != nil {
+		return nil, err
+	}
+	kept := c.builtAutopipeliners[:0]
+	for _, p := range c.builtAutopipeliners {
+		if p != nil && !p.drained() {
+			kept = append(kept, p)
+		}
+	}
+	c.builtAutopipeliners = append(kept, ap)
+	return ap, nil
 }
 
 // AsyncAutoPipeline returns the deferred autopipeliner for this MultiDB
@@ -883,6 +902,6 @@ func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions
 			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
 				return nil, errMultiDBAutoPipelineCluster
 			}
-			return newAutoPipeliner(c, cfg, false)
+			return c.trackAutopipelinerLocked(newAutoPipeliner(c, cfg, false))
 		})
 }

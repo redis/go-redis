@@ -424,6 +424,15 @@ type MultiDBClient struct {
 	autopipeliner       *AutoPipeliner
 	asyncAutopipeliner  *AutoPipeliner
 	autopipelinerClosed bool
+	// builtAutopipeliners holds every instance built for this client, including
+	// ones no longer cached. An instance leaves the cache as soon as its
+	// shutdown CAS is taken, which is before its drain finishes, so a caller
+	// that closes one and asks for another would otherwise leave the first
+	// draining with nothing left holding a reference — and Close must wait for
+	// that drain before core.close() tears down the member pools it writes to.
+	// Drained entries are dropped as new ones are added, so recreating in a
+	// loop does not accumulate. Guarded by autopipelinerMu.
+	builtAutopipeliners []*AutoPipeliner
 	// pendingClusterAdds counts cluster AddDatabase calls that passed the
 	// liveness check and released autopipelinerMu to run the member's initial
 	// health probe. The autopipeliner build funcs refuse to create an instance
@@ -539,12 +548,17 @@ func (c *MultiDBClient) Close() error {
 	// the same error.
 	c.closeOnce.Do(func() {
 		c.autopipelinerMu.Lock()
-		ap, async := c.autopipeliner, c.asyncAutopipeliner
+		// Every instance ever built, not just the two cached pointers: an
+		// instance is evicted from the cache as soon as its shutdown CAS is
+		// taken, so one closed by its own caller can still be draining with
+		// no cached reference left (see builtAutopipeliners).
+		aps := c.builtAutopipeliners
+		c.builtAutopipeliners = nil
 		c.autopipeliner, c.asyncAutopipeliner = nil, nil
 		c.autopipelinerClosed = true
 		c.autopipelinerMu.Unlock()
 		var firstErr error
-		for _, p := range []*AutoPipeliner{ap, async} {
+		for _, p := range aps {
 			if p == nil {
 				continue
 			}

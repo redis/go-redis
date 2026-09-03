@@ -1793,3 +1793,104 @@ func TestMultiDBCloseWaitsForAutopipelinerDrain(t *testing.T) {
 		t.Fatal("the blocked ap.Set call never returned")
 	}
 }
+
+// TestMultiDBCloseWaitsForReplacedAutopipelinerDrain covers the gap the cached
+// pointer leaves. An autopipeliner is swapped out of the cache as soon as its
+// shutdown CAS is taken, which is BEFORE its drain finishes, so a caller that
+// closes one and then asks for a new one leaves the first instance draining and
+// unreachable from the cache. Close must still wait for it: that drain is
+// flushing accepted commands into the member pools core.close() tears down,
+// which is the same failure the WaitClosed wiring exists to prevent.
+func TestMultiDBCloseWaitsForReplacedAutopipelinerDrain(t *testing.T) {
+	db1 := newTestDB("db1", "127.0.0.1:1", 1, true)
+	opts := baseOptions()
+	opts.Clients = append(opts.Clients, db1.cfg)
+	mdb, err := redis.NewMultiDBClient(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("NewMultiDBClient: %v", err)
+	}
+	defer mdb.Close()
+
+	block := newBlockingPipelineHook()
+	if err := mdb.AddDatabaseHook(0, block); err != nil {
+		t.Fatalf("AddDatabaseHook: %v", err)
+	}
+
+	first, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+
+	// Hold a batch dispatch open on the first instance.
+	setDone := make(chan struct{})
+	go func() {
+		_ = first.Set(context.Background(), "k", "v", 0).Err()
+		close(setDone)
+	}()
+	select {
+	case <-block.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("batch dispatch never reached the blocking hook")
+	}
+
+	// Close the first instance directly. Its drain blocks on the held dispatch.
+	firstCloseDone := make(chan error, 1)
+	go func() { firstCloseDone <- first.Close() }()
+	claimed := false
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if first.IsClosed() {
+			claimed = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !claimed {
+		t.Fatal("the direct AutoPipeliner.Close never claimed the shutdown")
+	}
+
+	// Ask for an autopipeliner again. The first one is closed, so this builds a
+	// replacement and evicts the first from the cache while it is still
+	// draining.
+	second, err := mdb.AutoPipeline()
+	if err != nil {
+		t.Fatalf("AutoPipeline after closing the first: %v", err)
+	}
+	if second == first {
+		t.Fatal("expected a replacement instance, got the closed one back")
+	}
+
+	// Close must wait for the evicted instance's drain, not just the
+	// replacement's (the replacement has nothing in flight and settles at once).
+	mdbCloseDone := make(chan error, 1)
+	go func() { mdbCloseDone <- mdb.Close() }()
+
+	select {
+	case err := <-mdbCloseDone:
+		t.Fatalf("MultiDBClient.Close returned (err=%v) while the evicted AutoPipeliner was still draining — its drain is untracked", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(block.release) // let the stuck dispatch and the drain finish
+
+	select {
+	case err := <-firstCloseDone:
+		if err != nil {
+			t.Errorf("first AutoPipeliner.Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first AutoPipeliner.Close never returned")
+	}
+	select {
+	case err := <-mdbCloseDone:
+		if err != nil {
+			t.Errorf("MultiDBClient.Close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("MultiDBClient.Close did not unblock after the evicted drain finished")
+	}
+	select {
+	case <-setDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the blocked Set call never returned")
+	}
+}
