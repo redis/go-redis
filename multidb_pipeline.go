@@ -358,9 +358,23 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		gateRejections = 0
 		pendingDB, pendingRes = db, res
 
-		if attempt > 0 {
-			resetCmds(cmds)
-		}
+		// Clear any per-command error before executing. On a retry this drops
+		// the previous attempt's stamps; on the first attempt it drops an error
+		// a caller left on a reused command, so a batch that aborts before
+		// execution (e.g. a connection-acquire failure) still records the
+		// transport failure through setCmdsErr instead of being masked by stale
+		// per-command errors setCmdsErr refuses to overwrite. The rejected
+		// HIMPORT stamps live in orig, not in cmds (kept is a fresh slice), so
+		// this cannot clear them.
+		// Clear any per-command error before executing. On a retry this drops
+		// the previous attempt's stamps; on the first attempt it drops an error
+		// a caller left on a reused command, so a batch that aborts before
+		// execution (e.g. a connection-acquire failure) still records the
+		// transport failure through setCmdsErr instead of being masked by stale
+		// per-command errors setCmdsErr refuses to overwrite. The rejected
+		// HIMPORT stamps live in orig, not in cmds (kept is a fresh slice), so
+		// this cannot clear them.
+		resetCmds(cmds)
 		attempt++
 		// The marker tells recordBatchOutcomes whether execution started
 		// (fresh per attempt): command state alone cannot distinguish a
@@ -475,6 +489,20 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 	// cancel branch. ReleaseFor settles at most once and no-ops for a closed
 	// admission — the same defer Watch uses.
 	defer db.cb.ReleaseFor(res)
+	// Record outcomes only for the user's commands: cmds arrives wrapped by
+	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
+	// would advance the breaker by three per single-command transaction.
+	user := cmds
+	if len(cmds) >= 3 {
+		user = cmds[1 : len(cmds)-1]
+	}
+	// Clear any error a caller left on a reused command before executing, so a
+	// transaction that aborts before execution (e.g. a connection-acquire
+	// failure) is recorded as a transport failure instead of being masked by
+	// stale per-command errors setCmdsErr refuses to overwrite. Only the user
+	// slice can carry caller staleness; the MULTI/EXEC envelope is built fresh
+	// per call.
+	resetCmds(user)
 	// The execution marker rides on the context (see processPipeline and
 	// AddDatabaseHook): a member hook must pass the received ctx to next.
 	executed := newExecutedCmds(len(cmds))
@@ -489,13 +517,6 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		// does not mistake a deliberate cancel for a retryable disconnect.
 		db.cb.ReleaseFor(res)
 		return ctx.Err()
-	}
-	// Record outcomes only for the user's commands: cmds arrives wrapped by
-	// wrapMultiExec (MULTI ... EXEC), and counting the synthetic envelope
-	// would advance the breaker by three per single-command transaction.
-	user := cmds
-	if len(cmds) >= 3 {
-		user = cmds[1 : len(cmds)-1]
 	}
 	c.recordBatchOutcomes(db, user, err, executed, res)
 	return err
