@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"sync"
 	"time"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
+	"github.com/redis/go-redis/v9/internal/proto"
 	"github.com/redis/go-redis/v9/maintnotifications"
 )
 
@@ -31,7 +33,10 @@ const (
 var (
 	// ErrTemporarilyNotAvailable is returned when no healthy database can be
 	// selected right now; the client keeps attempting failover on subsequent
-	// commands.
+	// commands. It is also returned when the member a command or batch was routed
+	// to was removed mid-flight (a concurrent RemoveDatabase or manual switch): the
+	// client is still open and the next attempt lands on the live active, so the
+	// caller should retry rather than treat it as terminal.
 	ErrTemporarilyNotAvailable = errors.New("redis: multidb: no healthy database available (temporarily)")
 	// ErrPermanentlyNotAvailable is returned once MaxFailoverAttempts
 	// consecutive failover attempts have failed; the application should stop
@@ -401,7 +406,28 @@ var _ MultiDBCtrl = (*MultiDBClient)(nil)
 // See the Active-Active client design for details.
 type MultiDBClient struct {
 	cmdable
+	hooksMixin
+
 	core *multidbCore
+
+	// Cached autopipeliner instances, mirroring *Client (see Client.AutoPipeline).
+	autopipelinerMu     *sync.Mutex
+	autopipeliner       *AutoPipeliner
+	asyncAutopipeliner  *AutoPipeliner
+	autopipelinerClosed bool
+	// pendingClusterAdds counts cluster AddDatabase calls that passed the
+	// liveness check and released autopipelinerMu to run the member's initial
+	// health probe. The autopipeliner build funcs refuse to create an instance
+	// while it is > 0, which keeps the cluster-vs-autopipeliner invariant without
+	// holding the mutex across user-supplied health checks — a check that calls
+	// AutoPipeline itself would otherwise deadlock on the non-reentrant mutex.
+	pendingClusterAdds int // guarded by autopipelinerMu
+
+	// closeOnce serializes concurrent Close calls so a second caller cannot
+	// race ahead to core.close() while the first is still draining the
+	// autopipeliner; closeErr carries that single close result to every caller.
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewMultiDBClient creates a MultiDBClient for the configured member
@@ -458,21 +484,55 @@ func NewMultiDBClient(ctx context.Context, opts *MultiDBOptions) (*MultiDBClient
 	}
 	core.startBackgroundLoop()
 
-	c := &MultiDBClient{core: core}
+	c := &MultiDBClient{core: core, autopipelinerMu: new(sync.Mutex)}
 	c.cmdable = c.Process
+	c.initHooks(hooks{
+		process:    core.process,
+		pipeline:   core.processPipeline,
+		txPipeline: core.processTxPipeline,
+	})
 	return c, nil
 }
 
 // Process routes the command to the active database, feeding the circuit
 // breaker and failure detector, and retrying against the newly selected
-// database after a failover.
+// database after a failover. MultiDB-level hooks (AddHook) wrap this path.
 func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
-	return c.core.process(ctx, cmd)
+	err := c.processHook(ctx, cmd)
+	cmd.SetErr(err)
+	return err
 }
 
-// Close stops the background loop and closes every underlying client.
+// Close stops the autopipeliners, the background loop, and every underlying
+// client.
 func (c *MultiDBClient) Close() error {
-	return c.core.close()
+	// Serialize concurrent Close calls. Without this a second caller can
+	// observe the autopipeliner pointers already cleared, skip the drain loop,
+	// and call core.close() while the first caller's AutoPipeliner.Close is
+	// still flushing queued batches — tearing down the member clients under the
+	// drain and failing those writes with ErrClosed. Once blocks the second
+	// caller until the single ordered drain-then-close completes; both return
+	// the same error.
+	c.closeOnce.Do(func() {
+		c.autopipelinerMu.Lock()
+		ap, async := c.autopipeliner, c.asyncAutopipeliner
+		c.autopipeliner, c.asyncAutopipeliner = nil, nil
+		c.autopipelinerClosed = true
+		c.autopipelinerMu.Unlock()
+		var firstErr error
+		for _, p := range []*AutoPipeliner{ap, async} {
+			if p != nil {
+				if err := p.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		if err := c.core.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.closeErr = firstErr
+	})
+	return c.closeErr
 }
 
 // ActiveDatabaseID implements MultiDBCtrl.
@@ -488,8 +548,53 @@ func (c *MultiDBClient) ForceActiveDatabase(ctx context.Context, id int) error {
 	return c.core.setActiveDatabase(ctx, id, false)
 }
 
-// AddDatabase implements MultiDBCtrl.
+// AddDatabase implements MultiDBCtrl. Adding a cluster member is refused
+// while a live autopipeliner instance exists: the cached autopipeliner was
+// built without the cluster-specific safeguards and a later failover onto the
+// new member would route merged batches around them. Close the autopipeliners
+// first, add the member, then recreate them (closed instances do not block).
 func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig) (int, error) {
+	// Reject any add — cluster OR standalone — once Close has begun. Close sets
+	// autopipelinerClosed under autopipelinerMu before it drains the
+	// autopipeliners and calls core.close(); a member published in that window
+	// would be torn down by the completing Close, handing the caller an id for a
+	// dead member. Checked under the mutex so it cannot race the flag write.
+	c.autopipelinerMu.Lock()
+	if c.autopipelinerClosed {
+		c.autopipelinerMu.Unlock()
+		return -1, ErrClosed
+	}
+	if cfg.ClusterOptions != nil {
+		// A live autopipeliner and a cluster member must never coexist: the
+		// cached instance was built without the cluster-specific safeguards and a
+		// later failover onto the new member would route merged batches around
+		// them. Check liveness under the mutex, then mark the add as pending and
+		// RELEASE the mutex before core.addDatabase. That call runs the member's
+		// initial health probe synchronously, and a custom check that calls
+		// AutoPipeline()/AsyncAutoPipeline() would otherwise deadlock on the
+		// non-reentrant mutex. The pending count keeps the invariant the lock used
+		// to hold: the build funcs (see AutoPipelineWithOptions) refuse to create
+		// an instance while a cluster add is in flight, so no unsharded instance
+		// can appear between this check and the member landing.
+		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
+			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
+		if hasLiveAP {
+			c.autopipelinerMu.Unlock()
+			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
+		}
+		c.pendingClusterAdds++
+		c.autopipelinerMu.Unlock()
+		// Deferred so the count is released on a panic in the member path too.
+		defer func() {
+			c.autopipelinerMu.Lock()
+			c.pendingClusterAdds--
+			c.autopipelinerMu.Unlock()
+		}()
+		return c.core.addDatabase(ctx, cfg)
+	}
+	// Standalone: a standalone member has no cluster-autopipeline hazard, so the
+	// mutex need not span the membership change as the cluster branch does.
+	c.autopipelinerMu.Unlock()
 	return c.core.addDatabase(ctx, cfg)
 }
 
@@ -508,8 +613,31 @@ func (c *MultiDBClient) SetAutoFallback(enabled bool) {
 	c.core.setAutoFallback(enabled)
 }
 
+// AddHook adds a hook to the MultiDB-level chain that wraps Process, Pipeline
+// and TxPipeline — the paths this client runs directly.
+//
+// A DialHook added here never fires: a MultiDBClient does not dial, it
+// delegates every connection to its member databases. To instrument member
+// dialing (or any other per-connection behaviour), install the hook on the
+// member with AddDatabaseHook instead.
+func (c *MultiDBClient) AddHook(hook Hook) {
+	c.hooksMixin.AddHook(hook)
+}
+
 // AddDatabaseHook installs a hook on the underlying client of the database with
-// the given id. It is mainly useful for testing and instrumentation.
+// the given id. Unlike AddHook it wraps the member connection directly, so it
+// is the way to instrument member dialing and per-connection behaviour.
+//
+// A member hook must pass the context it receives — or one derived from it —
+// to next. MultiDB carries per-batch execution tracking in context values:
+// the pipeline paths attach it before entering the member's hook chain and
+// the wire path reads it back to mark commands as executed. A hook that
+// substitutes an unrelated context (context.Background() to detach
+// cancellation, a freshly built deadline context) drops that value, so a batch
+// that executed successfully is indistinguishable from one a hook served
+// locally and records no success for the circuit breaker or failure detector.
+// The effect is under-recording only — slower recovery of a half-open member,
+// failures not reset — never a phantom success or a replay.
 func (c *MultiDBClient) AddDatabaseHook(id int, hook Hook) error {
 	return c.core.addDatabaseHook(id, hook)
 }
@@ -618,7 +746,11 @@ func (c *MultiDBClient) ScriptExists(ctx context.Context, hashes ...string) *Boo
 // prepared on the active member is silently missing on the member a failover
 // switches to. Until registrations fan out across members (tracked as
 // follow-up work in the design doc), rejecting loudly beats half-working.
-var errMultiDBHImport = errors.New("redis: multidb: HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
+// A RedisError, not a plain error: the autopipeliner's sequential dispatch
+// treats a non-Redis error from one sub-batch as a fatal abort for the groups
+// behind it, and a rejected HIMPORT must fail only itself — never unrelated
+// commands that happened to be queued after it.
+var errMultiDBHImport = proto.RedisError("MULTIDB HIMPORT commands are not supported with MultiDBClient yet (fieldset registrations are per member and would be lost on failover)")
 
 // errPubSubRequiresStandalone is the retryable PubSub dial error returned when a
 // cluster member is active but the subscription needs a standalone one. It is
