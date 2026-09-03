@@ -368,3 +368,42 @@ func TestCSCRefreshRepublishedEntryIsInvalidatable(t *testing.T) {
 		t.Fatal("no attempt produced a background refresh to test in 12 tries")
 	}
 }
+
+// TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic pins #3989: if a user
+// CacheSizer panics inside Reserve mid reservation loop, the targets reserved so far
+// must be cancelled during unwind (the cancellation defer is armed BEFORE the loop),
+// not left IN_PROGRESS for readers to block on until StaleTimeout.
+func TestRefreshInvalidatedBatchCancelsReservationsOnSizerPanic(t *testing.T) {
+	calls := 0
+	sizer := func(_ string, _ []string, value []byte) int64 {
+		calls++
+		if calls == 2 {
+			panic("boom: CacheSizer panic mid reservation loop")
+		}
+		return int64(len(value))
+	}
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64, Sizer: sizer})
+	c := &baseClient{csc: lc, cscKeyPrefix: "p"}
+
+	targets := []cscRefreshTarget{
+		{cacheKey: "ck:1", redisKeys: []string{"rk:1"}},
+		{cacheKey: "ck:2", redisKeys: []string{"rk:2"}},
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected the sizer panic to propagate (the outer refresher recovers it)")
+			}
+		}()
+		_, _ = c.refreshInvalidatedBatch(context.Background(), targets)
+	}()
+
+	// ck:1 was reserved before the panic on ck:2; the defer must have cancelled it, so a
+	// fresh Reserve sees no lingering IN_PROGRESS placeholder (shouldFetch, non-zero tok).
+	tok, shouldFetch := lc.Reserve("ck:1", []string{"rk:1"})
+	if !shouldFetch || tok == 0 {
+		t.Fatalf("ck:1 reservation not cancelled after the panic (Reserve = %d, %v); a reader "+
+			"would block on the orphaned placeholder until StaleTimeout (#3989)", tok, shouldFetch)
+	}
+}

@@ -703,6 +703,19 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 	// A declined reservation means a reader is already fetching it — leave it to
 	// them rather than duplicating the work.
 	kept := make([]cscRefreshTarget, 0, len(targets))
+	// Arm the cancellation defer BEFORE the reservation loop. A user CacheSizer can
+	// panic inside Reserve; the outer refresher recovery keeps the worker alive, so
+	// without the defer already installed the targets reserved so far would stay
+	// IN_PROGRESS and block every reader of those keys until StaleTimeout (#3989). Any
+	// reservation still holding a token when this returns OR unwinds was never settled;
+	// release it rather than leave a placeholder readers would block on.
+	defer func() {
+		for i := range kept {
+			if kept[i].token != 0 {
+				c.csc.Cancel(kept[i].cacheKey, kept[i].token)
+			}
+		}
+	}()
 	for _, t := range targets {
 		token, shouldFetch := c.csc.Reserve(t.cacheKey, t.redisKeys)
 		// token==0 with shouldFetch==true is Reserve's "fetch uncached" signal
@@ -719,15 +732,6 @@ func (c *baseClient) refreshInvalidatedBatch(ctx context.Context, targets []cscR
 	if len(kept) == 0 {
 		return 0, nil
 	}
-	// Any reservation still holding a token when this returns was never settled;
-	// release it rather than leave a placeholder readers would block on.
-	defer func() {
-		for i := range kept {
-			if kept[i].token != 0 {
-				c.csc.Cancel(kept[i].cacheKey, kept[i].token)
-			}
-		}
-	}()
 
 	published := 0
 	// Publish on the MAIN pool (tracked). On this base the dedicated pipeline pool
