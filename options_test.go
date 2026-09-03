@@ -541,9 +541,74 @@ func TestOptionsCloneMaintNotificationsRace(t *testing.T) {
 	wg.Wait()
 }
 
+// TestOptionsInitSkipsEndpointDetectWhenMaintDisabled ensures Options.init does
+// not call DetectEndpointType when maintenance notifications are disabled.
+// DetectEndpointType never returns EndpointTypeAuto, so leaving Auto unchanged
+// is a deterministic signal that detection was skipped (no wall-clock bound).
+func TestOptionsInitSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	const addr = "go-redis-maint-disabled-must-not-resolve.invalid:6379"
+
+	t.Run("disabled leaves EndpointTypeAuto", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeDisabled,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want %q (unchanged when ModeDisabled)", got, maintnotifications.EndpointTypeAuto)
+		}
+	})
+
+	t.Run("auto replaces EndpointTypeAuto", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeAuto,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got == "" || got == maintnotifications.EndpointTypeAuto {
+			t.Fatalf("EndpointType = %q, want a concrete type after DetectEndpointType", got)
+		}
+	})
+
+	t.Run("explicit EndpointType is preserved", func(t *testing.T) {
+		opt := &Options{
+			Addr: addr,
+			MaintNotificationsConfig: &maintnotifications.Config{
+				Mode:         maintnotifications.ModeAuto,
+				EndpointType: maintnotifications.EndpointTypeInternalFQDN,
+			},
+		}
+		opt.init()
+		if got := opt.MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeInternalFQDN {
+			t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeInternalFQDN)
+		}
+	})
+}
+
+func TestNewClientSkipsEndpointDetectWhenMaintDisabled(t *testing.T) {
+	c := NewClient(&Options{
+		Addr: "go-redis-maint-disabled-must-not-resolve.invalid:6379",
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode:         maintnotifications.ModeDisabled,
+			EndpointType: maintnotifications.EndpointTypeAuto,
+		},
+	})
+	defer c.Close()
+
+	if got := c.Options().MaintNotificationsConfig.EndpointType; got != maintnotifications.EndpointTypeAuto {
+		t.Fatalf("EndpointType = %q, want %q", got, maintnotifications.EndpointTypeAuto)
+	}
+}
+
 func TestClientSideCacheRESP2Warning(t *testing.T) {
-	origLogger := internal.Logger
-	defer func() { internal.Logger = origLogger }()
+	origLogger := internal.Logger.Load()
+	defer func() { internal.Logger.Store(origLogger) }()
 
 	cases := []struct {
 		name     string
@@ -575,7 +640,7 @@ func TestClientSideCacheRESP2Warning(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			logger := &capturingLogger{}
-			internal.Logger = logger
+			internal.Logger.Store(logger)
 
 			tc.opt.init()
 
@@ -605,5 +670,37 @@ func TestUniversalOptionsSimpleCopiesClientSideCache(t *testing.T) {
 	}
 	if opt.ClientSideCacheStrategy != strategy {
 		t.Fatal("Simple did not copy ClientSideCacheStrategy")
+	}
+}
+
+// TestParseURLPipelinePoolOptions verifies the URL parsers accept the pipeline
+// pool settings — notably pipeline_pool_size=-1 to opt out of the now-default
+// dedicated pipeline pool — instead of rejecting them as unexpected options
+// (#3959). Covers ParseURL, ParseClusterURL and ParseFailoverURL.
+func TestParseURLPipelinePoolOptions(t *testing.T) {
+	const q = "pipeline_pool_size=-1&pipeline_read_buffer_size=131072&pipeline_write_buffer_size=65536"
+
+	o, err := ParseURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseURL: %v", err)
+	}
+	if o.PipelinePoolSize != -1 || o.PipelineReadBufferSize != 131072 || o.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseURL pipeline opts: size=%d rbuf=%d wbuf=%d", o.PipelinePoolSize, o.PipelineReadBufferSize, o.PipelineWriteBufferSize)
+	}
+
+	co, err := ParseClusterURL("redis://localhost:6379?" + q)
+	if err != nil {
+		t.Fatalf("ParseClusterURL: %v", err)
+	}
+	if co.PipelinePoolSize != -1 || co.PipelineReadBufferSize != 131072 || co.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseClusterURL pipeline opts: size=%d rbuf=%d wbuf=%d", co.PipelinePoolSize, co.PipelineReadBufferSize, co.PipelineWriteBufferSize)
+	}
+
+	fo, err := ParseFailoverURL("redis://localhost:6379?master_name=mymaster&" + q)
+	if err != nil {
+		t.Fatalf("ParseFailoverURL: %v", err)
+	}
+	if fo.PipelinePoolSize != -1 || fo.PipelineReadBufferSize != 131072 || fo.PipelineWriteBufferSize != 65536 {
+		t.Fatalf("ParseFailoverURL pipeline opts: size=%d rbuf=%d wbuf=%d", fo.PipelinePoolSize, fo.PipelineReadBufferSize, fo.PipelineWriteBufferSize)
 	}
 }

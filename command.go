@@ -330,8 +330,11 @@ func cmdFirstKeyPosWithInfo(cmd Cmder, info *CommandInfo) int {
 		if cmd.stringArg(1) == "usage" {
 			return 2
 		}
-		// CommandInfo (if available) gives the correct answer
-		// otherwise the hardcoded fallback applies.
+	case "msetex":
+		// MSetEX's constructor already sets this via SetFirstKeyPos; this
+		// fallback only covers raw Do("msetex", ...) calls, which aren't
+		// guaranteed to route correctly and aren't the recommended usage.
+		return 2
 	}
 
 	// Use CommandInfo cache when warm (in-memory only, no extra round-trips).
@@ -1887,7 +1890,7 @@ func (cmd *StringCmd) Scan(val interface{}) error {
 	if cmd.err != nil {
 		return cmd.err
 	}
-	return proto.Scan([]byte(cmd.val), val)
+	return proto.Scan(util.StringToBytes(cmd.val), val)
 }
 
 func (cmd *StringCmd) String() string {
@@ -2623,6 +2626,9 @@ func (cmd *MapStringSliceInterfaceCmd) readReply(rd *proto.Reader) (err error) {
 			itemLen, err := rd.ReadArrayLen()
 			if err != nil {
 				return err
+			}
+			if itemLen < 1 {
+				return fmt.Errorf("redis: got %d elements in map-string-slice-interface entry, expected at least 1", itemLen)
 			}
 
 			key, err := rd.ReadString()
@@ -8024,7 +8030,12 @@ func parseClientInfo(txt string) (info *ClientInfo, err error) {
 				case 'T':
 					info.Flags |= ClientNoTouch
 				default:
-					return nil, fmt.Errorf("redis: unexpected client info flags(%s)", string(val[i]))
+					// Forward compatibility: servers can return client-flag
+					// characters this client does not recognize (new flags are
+					// added over time). Skip them instead of failing, as the
+					// CLIENT LIST/INFO docs advise for version-safe parsing, and
+					// matching the "skip unknown fields" behaviour of the field
+					// switch below.
 				}
 			}
 		case "db":

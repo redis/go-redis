@@ -56,9 +56,19 @@ type HandoffState struct {
 	SeqID         int64  // Sequence ID from MOVING notification
 }
 
-// atomicNetConn is a wrapper to ensure consistent typing in atomic.Value
+// atomicNetConn is a wrapper to ensure consistent typing in atomic.Value.
+// It is always stored and accessed by pointer, so the embedded atomic.Bool is
+// never copied.
 type atomicNetConn struct {
 	conn net.Conn
+	// closed claims teardown of this specific transport generation. Close
+	// CAS-claims it before calling conn.Close, so a given socket is closed
+	// exactly once. A handoff installs a fresh wrapper (closed=false) via
+	// setNetConn, so a replacement socket is a new generation claimed by the
+	// next Close rather than skipped under a stale flag. The wrapper is left in
+	// place on Close (not swapped out) so getNetConn keeps returning the closed
+	// conn, preserving RemoteAddr/LocalAddr and the connCheck health path.
+	closed atomic.Bool
 }
 
 // generateConnID generates a fast unique identifier for a connection with zero allocations
@@ -143,15 +153,23 @@ type Conn struct {
 	// if counter reaches 0, we clear the relaxed timeouts
 	relaxedCounter atomic.Int32
 
+	// onClose is read and cleared by Close while initConn (running inside
+	// SetNetConnAndInitConn under the INITIALIZING state) installs it via
+	// SetOnClose; Close transitions to CLOSED from any state, so the two
+	// race when a pool shutdown closes a connection mid-init. Stored as an
+	// atomic pointer so the setter and Close don't need a mutex (keeping
+	// Conn slim).
+	onClose atomic.Pointer[func() error]
+
 	// Connection initialization function for reconnections
 	initConnFunc func(context.Context, *Conn) error
 
-	onClose func() error
-
 	// onCscClose is the client-side-caching close hook, kept separate from
 	// onClose (streaming-credentials cleanup) so neither clobbers the other.
-	// Both keep overwrite semantics, so re-running initConn can't accumulate them.
-	onCscClose func() error
+	// Both keep overwrite semantics, so re-running initConn can't accumulate
+	// them. Atomic for the same init-vs-Close race as onClose: it is also
+	// installed by initConn and read and cleared by Close.
+	onCscClose atomic.Pointer[func() error]
 
 	// onCscReinit runs after the connection is claimed for reinitialization but
 	// before its socket is replaced. CSC uses it to invalidate entries whose
@@ -665,13 +683,21 @@ func (cn *Conn) getEffectiveWriteTimeout(normalTimeout time.Duration) time.Durat
 // time, and a richer registry here would not even solve the "stale
 // closure" hazard described above.
 func (cn *Conn) SetOnClose(fn func() error) {
-	cn.onClose = fn
+	if fn == nil {
+		cn.onClose.Store(nil)
+		return
+	}
+	cn.onClose.Store(&fn)
 }
 
 // SetOnCscClose sets the client-side-caching close hook, overwriting any
 // previous one. It runs on Close in addition to the SetOnClose callback.
 func (cn *Conn) SetOnCscClose(fn func() error) {
-	cn.onCscClose = fn
+	if fn == nil {
+		cn.onCscClose.Store(nil)
+		return
+	}
+	cn.onCscClose.Store(&fn)
 }
 
 // SetOnCscReinit sets the client-side-caching pre-reinitialization hook,
@@ -1109,10 +1135,17 @@ func (cn *Conn) IsClosed() bool {
 }
 
 func (cn *Conn) Close() error {
+	// Transition to CLOSED. When the connection is already CLOSED, fall through
+	// to the cleanup below rather than returning early: a rejected initConn
+	// marks the connection CLOSED to report failure *before* any teardown runs
+	// (see redis.go initConn failure paths), so the pool's subsequent Close must
+	// still release the transport and run the close callbacks. Returning early
+	// on StateClosed leaked the socket and skipped the streaming-credentials
+	// unsubscribe / CSC close callbacks (issue #3982).
 	for {
 		state := cn.stateMachine.GetState()
 		if state == StateClosed {
-			return nil
+			break
 		}
 		if cn.stateMachine.TryTransitionFast(state, StateClosed) {
 			// TryTransitionFast deliberately skips waiter notification; Close
@@ -1122,20 +1155,44 @@ func (cn *Conn) Close() error {
 		}
 	}
 
-	if cn.onClose != nil {
+	// Callbacks are cleared with an atomic swap so each runs at most once even
+	// across concurrent or repeated Close calls, and independently of the state
+	// machine — the CLOSED state may have been set by a failed initialization
+	// rather than here.
+	if fn := cn.onClose.Swap(nil); fn != nil {
 		// ignore error
-		_ = cn.onClose()
-		cn.onClose = nil
+		_ = (*fn)()
 	}
-	if cn.onCscClose != nil {
+	if fn := cn.onCscClose.Swap(nil); fn != nil {
 		// ignore error
-		_ = cn.onCscClose()
-		cn.onCscClose = nil
+		_ = (*fn)()
 	}
 
-	// Lock-free netConn access for better performance
-	if netConn := cn.getNetConn(); netConn != nil {
-		return netConn.Close()
+	// Close the current transport generation exactly once, claiming it via the
+	// wrapper's per-generation flag. The wrapper is left in netConnAtomic (not
+	// nil-ed or swapped out) so getNetConn keeps returning the closed conn,
+	// preserving the pre-fix contract that RemoteAddr/LocalAddr and the
+	// connCheck health path rely on.
+	//
+	// Load-then-CAS is deliberately not a single atomic step: if a concurrent
+	// handoff installs a new wrapper between the Load and the CAS, this Close
+	// claims and closes the OLD generation (which still needs closing) while the
+	// replacement is a fresh wrapper (closed=false) claimed by the next Close.
+	// That is the correct outcome and is what makes teardown generation-bound
+	// rather than leaking a socket installed after a Close set a lifetime flag.
+	//
+	// Repeat/concurrent closes of the same generation lose the CAS and return
+	// nil, so no spurious "use of closed network connection" reaches callers
+	// such as ConnPool.closeConnsIf. A handoff may also close the pre-handoff
+	// socket directly (handoff_worker.go captures oldConn); if that races this
+	// path the socket is closed twice, which is harmless — the extra close is
+	// discarded.
+	if v := cn.netConnAtomic.Load(); v != nil {
+		if wrapper, ok := v.(*atomicNetConn); ok && wrapper.conn != nil {
+			if wrapper.closed.CompareAndSwap(false, true) {
+				return wrapper.conn.Close()
+			}
+		}
 	}
 	return nil
 }
