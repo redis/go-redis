@@ -1739,7 +1739,23 @@ func TestMultiDBCloseWaitsForAutopipelinerDrain(t *testing.T) {
 	// (the dispatch above is still stuck in the hook).
 	apCloseDone := make(chan error, 1)
 	go func() { apCloseDone <- ap.Close() }()
-	time.Sleep(50 * time.Millisecond) // let ap.Close() win the CAS before mdb.Close() tries
+	// Wait for that Close to actually claim the shutdown, rather than assuming
+	// it gets scheduled inside a fixed window. IsClosed reports the flag the
+	// shutdown CAS sets, so once it is true, MultiDBClient.Close's own Close
+	// call is guaranteed to LOSE the CAS — which is the path under test. If
+	// MultiDBClient.Close won it instead, its p.Close() would block on its own
+	// drain and the test would pass even without the WaitClosed wiring.
+	claimed := false
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if ap.IsClosed() {
+			claimed = true
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !claimed {
+		t.Fatal("the direct AutoPipeliner.Close never claimed the shutdown")
+	}
 
 	// MultiDBClient.Close's own Close call on this autopipeliner now loses the
 	// CAS and returns nil immediately; it must still wait for the winning
