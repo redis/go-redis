@@ -30,8 +30,10 @@ func (c *LocalCache) InvalidationStats() (invalidations uint64) {
 
 // DeletionStats reports APPLIED invalidations. deletions counts keys the cache
 // actually processed for removal (post-dedup, so <= InvalidationStats under
-// duplicate pushes); noop counts those that matched no live entry, the direct
-// duplicate-invalidation signature.
+// duplicate pushes); noop counts those that removed no live entry — a key that
+// matched nothing, or one whose only match was skipped by the fetch-order guard
+// because it was refetched after the invalidation (see collectHotAndDelete).
+// Both are the duplicate/stale-invalidation signature.
 func (c *LocalCache) DeletionStats() (deletions, noop uint64) {
 	return c.deletions.Load(), c.deletionsNoop.Load()
 }
@@ -39,12 +41,16 @@ func (c *LocalCache) DeletionStats() (deletions, noop uint64) {
 // deleteByRedisKeyCollectingHot deletes every cache entry tracked under redisKey
 // and returns those that were VALID and read since sinceToken, as refetch
 // targets. Delete and collect happen under one shard lock: the entry's cache key
-// and recency are known only there, and it is about to be removed.
-func (c *LocalCache) deleteByRedisKeyCollectingHot(redisKey string, sinceToken int64, dst []cscRefreshTarget) []cscRefreshTarget {
+// and recency are known only there, and it is about to be removed. fetchSnap is
+// the cscFetchSeq value observed when this invalidation arrived; a Valid entry
+// whose fetch was ISSUED after that (entry.fetchSeq > fetchSnap) is kept — it was
+// refetched after the write, so evicting it would be a spurious miss (see
+// cacheEntry.fetchSeq).
+func (c *LocalCache) deleteByRedisKeyCollectingHot(redisKey string, sinceToken int64, fetchSnap uint64, dst []cscRefreshTarget) []cscRefreshTarget {
 	removed := 0
 	for i := range c.shards {
 		var n int
-		dst, n = c.shards[i].collectHotAndDelete(redisKey, sinceToken, dst)
+		dst, n = c.shards[i].collectHotAndDelete(redisKey, sinceToken, fetchSnap, dst)
 		removed += n
 	}
 	// Applied-delete accounting (refresh-on path). Twin of DeleteByRedisKey; the
@@ -56,7 +62,7 @@ func (c *LocalCache) deleteByRedisKeyCollectingHot(redisKey string, sinceToken i
 	return dst
 }
 
-func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, dst []cscRefreshTarget) ([]cscRefreshTarget, int) {
+func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, fetchSnap uint64, dst []cscRefreshTarget) ([]cscRefreshTarget, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -70,8 +76,19 @@ func (s *cacheShard) collectHotAndDelete(redisKey string, sinceToken int64, dst 
 	}
 	removed := 0
 	for _, cacheKey := range toRemove {
-		if entry, exists := s.entries[cacheKey]; exists &&
-			entry.state == cacheEntryValid && entry.lastAccessNs.Load() > sinceToken {
+		entry, exists := s.entries[cacheKey]
+		// Fetch-order guard: a Valid entry whose fetch was issued after this
+		// invalidation was observed (fetchSeq > fetchSnap) already reflects the write,
+		// so keep it — evicting would be a spurious miss, and a stale queued duplicate
+		// that straddled a refetch must not undo the fresh value (#3965). In-progress
+		// placeholders (fetchSeq set but not yet Valid) are still removed
+		// unconditionally: the fetch may predate the write and arrive on a different
+		// stream, so let the racing Fulfill fail and waiters refetch (see
+		// deleteByRedisKey).
+		if exists && entry.state == cacheEntryValid && entry.fetchSeq > fetchSnap {
+			continue
+		}
+		if exists && entry.state == cacheEntryValid && entry.lastAccessNs.Load() > sinceToken {
 			keys := make([]string, len(entry.redisKeys))
 			copy(keys, entry.redisKeys)
 			dst = append(dst, cscRefreshTarget{

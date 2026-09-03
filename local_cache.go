@@ -41,6 +41,18 @@ type cacheEntry struct {
 	// Written under Lock (Set/Fulfill), read under RLock (get).
 	validAt time.Time
 
+	// fetchSeq is the global cscFetchSeq value at the moment this entry's fetch was
+	// ISSUED (Reserve), carried unchanged through fulfill. It lets a batched
+	// invalidation tell "this value predates me" from "this value was refetched
+	// after me": an invalidation snapshots cscFetchSeq at OBSERVE time, and a delete
+	// is skipped when entry.fetchSeq > that snapshot (the fetch was issued after the
+	// invalidate, so it reached a server that had already applied the write). Fetch-
+	// ISSUE order is used, not fulfill-COMPLETION order, because the invalidation and
+	// the reply travel on different connections with no ordering — a stale reply can
+	// fulfill after the invalidate is observed (see deleteByRedisKey). Set/read under
+	// the shard Lock.
+	fetchSeq uint64
+
 	// ownerConnID is the conn that fetched this entry (set by FulfillOwned; 0 =
 	// none). Default CLIENT TRACKING sends a key's invalidation only to that
 	// conn, so the entry must be evicted when it goes away (see EvictByConn).
@@ -54,6 +66,17 @@ var lruSequence atomic.Int64
 // nextLRUToken returns the next strictly-greater LRU token.
 func nextLRUToken() int64 {
 	return lruSequence.Add(1)
+}
+
+// cscFetchSeq is the global monotonic counter feeding cacheEntry.fetchSeq. It
+// totally orders fetch-ISSUE (Reserve) events against invalidation OBSERVE
+// events so a batched delete can skip an entry refetched after the invalidation
+// (see cacheEntry.fetchSeq).
+var cscFetchSeq atomic.Uint64
+
+// nextFetchSeq returns the next strictly-greater fetch-issue sequence.
+func nextFetchSeq() uint64 {
+	return cscFetchSeq.Add(1)
 }
 
 // CacheSizer calculates estimated memory usage in bytes for a cache entry.
@@ -441,6 +464,10 @@ func (c *LocalCache) Reserve(cacheKey string, redisKeys []string) (token uint64,
 		reservedAt: reservedAt,
 		waitCh:     waitCh,
 		sizeBytes:  sizeBytes,
+		// Stamp fetch-ISSUE order now so a later invalidation can tell a value
+		// refetched after it (keep) from one that predates it (evict). Carried
+		// through fulfill unchanged. See cacheEntry.fetchSeq.
+		fetchSeq: nextFetchSeq(),
 	}
 	entry.lastAccessNs.Store(nextLRUToken())
 

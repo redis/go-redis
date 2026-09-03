@@ -449,7 +449,10 @@ func (h *invalidateHandler) HandlePushNotification(
 				cache.DeleteByRedisKey(nsKey)
 				continue
 			}
-			hot = lc.deleteByRedisKeyCollectingHot(nsKey, refresh.sinceToken.Load(), hot[:0])
+			// Inline (window==0) path: observe and delete synchronously, so the snapshot
+			// is a live load here. Any entry with a greater fetchSeq was reserved by a
+			// concurrent refetch and is correctly kept (see cacheEntry.fetchSeq).
+			hot = lc.deleteByRedisKeyCollectingHot(nsKey, refresh.sinceToken.Load(), cscFetchSeq.Load(), hot[:0])
 			for i := range hot {
 				refresh.offer(hot[i])
 			}

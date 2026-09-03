@@ -68,6 +68,14 @@ type cscInvalItem struct {
 	// under-refresh, never chase cold keys. LRUClock is a monotonic sequence >= 0,
 	// so -1 cannot collide with a real horizon.
 	sinceToken int64
+	// fetchSnap is cscFetchSeq observed at ENQUEUE (invalidation OBSERVE time).
+	// apply passes it to deleteByRedisKeyCollectingHot, which keeps any Valid entry
+	// whose fetch was issued after it (entry.fetchSeq > fetchSnap) — that value was
+	// refetched after the write, so evicting it would be a spurious miss and would
+	// undo a fresh refresh (see cacheEntry.fetchSeq). Snapshotting at enqueue, not a
+	// live load at apply, is what makes a queued duplicate that straddled a refetch
+	// harmless.
+	fetchSnap uint64
 }
 
 // cscInvalNoHorizon marks an invalidation enqueued while no refresh binding
@@ -204,7 +212,15 @@ func (b *cscInvalBatcher) drop() {
 // is stopped (no worker left to drain, see stopMu) does it apply inline so an
 // invalidation is never dropped.
 func (b *cscInvalBatcher) enqueue(nsKey string) {
-	it := cscInvalItem{key: nsKey, epoch: b.epoch.Load(), sinceToken: cscInvalNoHorizon}
+	it := cscInvalItem{
+		key:        nsKey,
+		epoch:      b.epoch.Load(),
+		sinceToken: cscInvalNoHorizon,
+		// Snapshot fetch-issue order NOW (observe time) so a Valid entry refetched
+		// after this invalidation is kept at apply, and a queued duplicate that
+		// straddles that refetch cannot undo it (see cscInvalItem.fetchSnap).
+		fetchSnap: cscFetchSeq.Load(),
+	}
 	// Snapshot the refresh recency horizon NOW (enqueue time), so a batch-window
 	// delay can't advance it out from under apply's hot-entry check (see the field
 	// doc). Cheap: one atomic load, no lock. Stays cscInvalNoHorizon when refresh
@@ -340,7 +356,7 @@ func (b *cscInvalBatcher) apply(items []cscInvalItem) {
 		if since == cscInvalNoHorizon {
 			since = refresh.sinceToken.Load()
 		}
-		hot = lc.deleteByRedisKeyCollectingHot(k, since, hot[:0])
+		hot = lc.deleteByRedisKeyCollectingHot(k, since, it.fetchSnap, hot[:0])
 		for i := range hot {
 			refresh.offer(hot[i])
 		}
@@ -368,9 +384,11 @@ func (b *cscInvalBatcher) run() {
 		}
 	}
 	// applyPending applies the current batch and resets pending, but does NOT clear
-	// seen — the caller decides. A size-cap flush KEEPS seen so per-key dedup spans
-	// the whole collection window (see add); a window/stop flush pairs this with
-	// clearSeen to start a fresh window.
+	// seen — the caller decides. fullFlushIfRequested resets pending without applying
+	// (a full cache Flush supersedes it) and clears seen itself; every other path
+	// applies via flush(), which pairs applyPending with clearSeen. seen is a pure
+	// per-window perf dedup: the fetch-order guard, not dedup lifetime, keeps a
+	// straddling duplicate from evicting a refreshed entry (see add).
 	applyPending := func() {
 		if len(pending) == 0 {
 			return
@@ -407,19 +425,17 @@ func (b *cscInvalBatcher) run() {
 		// counted at the handler, so the dropped duplicate needs no accounting — it
 		// just won't add a deletion, which is exactly the dedup signal.
 		if len(pending) >= batchMax {
-			// Size-cap flush: apply the batch but KEEP seen. Clearing it here (as the
-			// old code did) reset dedup mid-window WITHOUT bumping the epoch, so a key
-			// straddling the cap was applied in BOTH halves — and under
-			// refresh-on-invalidate the first apply refetches+republishes the entry
-			// and the second apply then evicts that fresh copy (#3965 F1). Bumping the
-			// epoch instead (like drop()) is unsafe: epoch is captured at ENQUEUE and
-			// the bump is only correct when paired with a full cache Flush, which this
-			// path does not do — items still in ch/spill would be silently skipped and
-			// their deletes lost. Keeping seen preserves "one delete per key per
-			// window". seen stays bounded: the timer flush clears it each window, and a
-			// true flood trips the spill caps into a full Flush (flushReq), which bumps
-			// the epoch and clears everything safely because it DOES Flush the cache.
-			applyPending()
+			// Size-cap flush: apply the batch AND clear seen. A key straddling the cap
+			// can now be applied in both halves, but that is harmless: the fetch-order
+			// guard (cscInvalItem.fetchSnap) makes the second apply a no-op when the
+			// first apply's refetch already republished the entry — the duplicate's
+			// snapshot predates that refetch. So dedup LIFETIME no longer carries
+			// correctness (it did while keep-seen was the only defense against evicting
+			// a refreshed entry — that also left seen unbounded under sustained load and
+			// dropped a genuine re-invalidation of a refreshed key). seen is back to a
+			// pure per-window perf dedup, and clearing it here keeps it bounded without a
+			// full-cache Flush.
+			flush()
 			t.Reset(b.window)
 		}
 	}

@@ -113,8 +113,8 @@ func TestLocalCache_DeletionStats(t *testing.T) {
 	// The collecting variant counts on the SAME counters (no double count: the two
 	// delete paths are disjoint).
 	cache.set("get:b", []string{"b"}, []byte("2"))
-	cache.deleteByRedisKeyCollectingHot("b", 0, nil) // matches -> deletion, not noop
-	cache.deleteByRedisKeyCollectingHot("b", 0, nil) // missing -> deletion + noop
+	cache.deleteByRedisKeyCollectingHot("b", 0, ^uint64(0), nil) // matches -> deletion, not noop
+	cache.deleteByRedisKeyCollectingHot("b", 0, ^uint64(0), nil) // missing -> deletion + noop
 	if del, noop := cache.DeletionStats(); del != 4 || noop != 2 {
 		t.Fatalf("after collecting deletes: DeletionStats = (%d, %d), want (4, 2)", del, noop)
 	}

@@ -35,7 +35,9 @@ func TestCollectHotAndDeleteRecencyFilter(t *testing.T) {
 	mkValid("ck:hot", "rk:hot")
 
 	// Cold: NOT collected (read no more recently than the horizon), but still deleted.
-	if got := lc.deleteByRedisKeyCollectingHot("rk:cold", horizon, nil); len(got) != 0 {
+	// snap = max: the fetch-order guard never skips, so this isolates the hot/cold
+	// recency behavior (guard interplay is covered separately).
+	if got := lc.deleteByRedisKeyCollectingHot("rk:cold", horizon, ^uint64(0), nil); len(got) != 0 {
 		t.Fatalf("cold entry collected as a refetch target: %v", got)
 	}
 	if _, ok := lc.Get(ctx, "ck:cold"); ok {
@@ -43,7 +45,7 @@ func TestCollectHotAndDeleteRecencyFilter(t *testing.T) {
 	}
 
 	// Hot: collected (read after the horizon) and deleted.
-	got := lc.deleteByRedisKeyCollectingHot("rk:hot", horizon, nil)
+	got := lc.deleteByRedisKeyCollectingHot("rk:hot", horizon, ^uint64(0), nil)
 	if len(got) != 1 || got[0].cacheKey != "ck:hot" {
 		t.Fatalf("hot entry not collected as the sole refetch target: %v", got)
 	}
@@ -52,8 +54,109 @@ func TestCollectHotAndDeleteRecencyFilter(t *testing.T) {
 	}
 
 	// Unknown redis key: nothing collected, no panic on the missing index.
-	if got := lc.deleteByRedisKeyCollectingHot("rk:nonexistent", 0, nil); len(got) != 0 {
+	if got := lc.deleteByRedisKeyCollectingHot("rk:nonexistent", 0, ^uint64(0), nil); len(got) != 0 {
 		t.Fatalf("unknown redis key produced refetch targets: %v", got)
+	}
+}
+
+// TestCollectHotFetchOrderGuard is the discriminating test for the fetch-order
+// guard (#3965). A stale invalidation snapshots the fetch clock at OBSERVE time; an
+// entry refetched AFTER that (fetchSeq > snapshot) already reflects the write and
+// must survive — evicting it would be a spurious miss and would undo a refresh. A
+// GENUINE later invalidation, observed after the refetch, must still evict. This is
+// the case that a fulfill-time stamp would get wrong: the invalidation and the
+// reply race on different connections, so a stale reply can fulfill after the
+// invalidate is observed; only stamping at fetch ISSUE (Reserve) is sound.
+func TestCollectHotFetchOrderGuard(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
+	mkValid := func(cacheKey string, redisKeys ...string) {
+		lc.DeleteByCacheKey(cacheKey)
+		tok, fetch := lc.Reserve(cacheKey, redisKeys)
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// Entry fetched, then an invalidation observed: snapshot the fetch clock now.
+	mkValid("ck", "rk")
+	snapStale := cscFetchSeq.Load()
+
+	// The entry is refetched AFTER the invalidation was observed (a refresh or a
+	// concurrent read miss): its fetchSeq now exceeds the stale snapshot.
+	mkValid("ck", "rk")
+
+	// Stale invalidation applied: guard keeps the refetched entry and does not offer
+	// it for refetch.
+	if got := lc.deleteByRedisKeyCollectingHot("rk", 0, snapStale, nil); len(got) != 0 {
+		t.Fatalf("refetched entry offered as a refetch target: %v", got)
+	}
+	if _, ok := lc.Get(ctx, "ck"); !ok {
+		t.Fatal("stale invalidation evicted an entry refetched after it (fetch-order guard failed)")
+	}
+
+	// A GENUINE later invalidation (observed now, after the refetch) must evict.
+	snapFresh := cscFetchSeq.Load()
+	lc.deleteByRedisKeyCollectingHot("rk", 0, snapFresh, nil)
+	if _, ok := lc.Get(ctx, "ck"); ok {
+		t.Fatal("genuine post-refetch invalidation did not evict the entry")
+	}
+}
+
+// TestCollectHotMultiKeyRefreshSurvives pins the multi-key variant of #3965 that
+// dedup (seen) structurally cannot fix: one cached command depends on several
+// Redis keys, so a refresh triggered by one key's invalidation republishes the
+// entry, and another key's (stale) invalidation must not re-evict it. seen is keyed
+// by Redis key, so k1 and k2 are different dedup entries — only the per-entry
+// fetch-order guard can reason about "was THIS entry refetched after me".
+func TestCollectHotMultiKeyRefreshSurvives(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 64})
+	mkValid := func(cacheKey string, redisKeys ...string) {
+		lc.DeleteByCacheKey(cacheKey)
+		tok, fetch := lc.Reserve(cacheKey, redisKeys)
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// Two cached commands sharing k2: C1 = MGET k1 k2, C2 = GET k2.
+	mkValid("mget:k1k2", "k1", "k2")
+	mkValid("get:k2", "k2")
+
+	// Both k1 and k2 change; the client observes both invalidations now (same push,
+	// so one snapshot covers both items).
+	snap := cscFetchSeq.Load()
+
+	// k1's invalidation applies first: it deletes C1 (depends on k1).
+	if _, ok := lc.Get(ctx, "mget:k1k2"); !ok {
+		t.Fatal("precondition: C1 should be present")
+	}
+	lc.deleteByRedisKeyCollectingHot("k1", 0, snap, nil)
+	if _, ok := lc.Get(ctx, "mget:k1k2"); ok {
+		t.Fatal("k1 invalidation should have deleted C1")
+	}
+
+	// The refresh refetches C1 (MGET k1 k2) — issued after both writes, so the reply
+	// already reflects the new k2. fetchSeq now exceeds snap.
+	mkValid("mget:k1k2", "k1", "k2")
+
+	// k2's invalidation applies second, fanning out to BOTH C1 and C2 via byRedisKey.
+	// C1 was refetched after snap -> guard keeps it; C2 predates snap -> evicted.
+	lc.deleteByRedisKeyCollectingHot("k2", 0, snap, nil)
+
+	if _, ok := lc.Get(ctx, "mget:k1k2"); !ok {
+		t.Fatal("k2's stale invalidation evicted the refetched multi-key entry C1 " +
+			"(guard must keep an MGET result refetched after the write)")
+	}
+	if _, ok := lc.Get(ctx, "get:k2"); ok {
+		t.Fatal("k2's invalidation should have evicted C2 (GET k2 was not refetched)")
 	}
 }
 

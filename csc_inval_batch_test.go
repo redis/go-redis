@@ -408,20 +408,21 @@ func TestInvalBatcherChByteReservationIsAtomic(t *testing.T) {
 	}
 }
 
-// TestInvalBatcherSizeCapPreservesDedup pins #3965 F1: a key straddling the
-// size-cap flush must be applied ONCE per window, not once on each side of the
-// cap. The old size-cap flush cleared the worker's per-epoch dedup (seen) WITHOUT
-// bumping the epoch, so a key re-appearing after the cap was applied a SECOND time
-// — and under refresh-on-invalidate that second apply evicts the entry the first
-// apply just refetched. Here the refetch is simulated by re-fulfilling the entry
-// between the two occurrences; with the dedup preserved the second occurrence is a
-// no-op and the refreshed entry survives.
-func TestInvalBatcherSizeCapPreservesDedup(t *testing.T) {
+// TestInvalBatcherSizeCapGuardKeepsRefreshed pins #3965 F1 under the fetch-order
+// guard. The size-cap flush now CLEARS the per-epoch dedup (seen), so a key can be
+// applied on both sides of the cap — but a stale duplicate that straddles a
+// refetch must not evict the fresh entry. The duplicate is enqueued (its fetch
+// snapshot frozen) BEFORE the simulated refetch, so at apply the entry's fetchSeq
+// exceeds the duplicate's snapshot and the delete is skipped. The DeletionStats
+// noop delta proves the second occurrence was actually applied (seen was cleared,
+// not deduped) and the guard — not dedup — is what saved the entry.
+func TestInvalBatcherSizeCapGuardKeepsRefreshed(t *testing.T) {
 	const batchMax = 8 // small cap so the size-cap flush fires deterministically
 
 	ctx := context.Background()
 	lc := NewLocalCache(CacheConfig{MaxEntries: 1024})
 	mkValid := func(cacheKey, redisKey string) {
+		lc.DeleteByCacheKey(cacheKey)
 		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
 		if tok == 0 || !fetch {
 			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
@@ -443,38 +444,54 @@ func TestInvalBatcherSizeCapPreservesDedup(t *testing.T) {
 	go b.run()
 
 	// Enqueue the target FIRST, then fillers so pending reaches the cap and the
-	// size-cap flush applies the target in the first half of the window.
+	// size-cap flush applies the target in the first half of the window (deleting it
+	// and clearing seen).
 	b.enqueue("rk:hot")
 	for i := 0; i < batchMax-1; i++ {
 		b.enqueue("rk:filler" + strconv.Itoa(i))
 	}
 
-	// Wait for the size-cap flush to apply the first occurrence (apply #1 deletes
-	// the target; under refresh this is where it would be refetched+republished).
+	// Wait for the size-cap flush to FULLY apply batch #1 — all 8 keys, so the
+	// deletion counters are settled before we snapshot them (polling Get would race
+	// apply mid-loop while fillers still bump the counters).
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		if _, ok := lc.Get(ctx, "ck:hot"); !ok {
+		if del, _ := lc.DeletionStats(); del >= batchMax {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("size-cap flush did not apply the first occurrence")
+			t.Fatal("size-cap flush did not apply batch #1")
 		}
 		time.Sleep(time.Millisecond)
 	}
+	if _, ok := lc.Get(ctx, "ck:hot"); ok {
+		t.Fatal("apply #1 did not delete the target")
+	}
 
-	// Simulate the refresh republish: the refetch puts a fresh entry back.
-	mkValid("ck:hot", "rk:hot")
-
-	// The SAME key arrives again, post-flush. With dedup preserved across the
-	// size-cap flush this is a no-op; without the fix it is applied again and
-	// evicts the just-refetched entry.
+	// The SAME key arrives again, post-flush, with its fetch snapshot frozen NOW —
+	// BEFORE the refetch below. This is the stale straddling duplicate: it predates
+	// the refresh republish, so the guard must skip it at apply time.
+	delBefore, noopBefore := lc.DeletionStats()
 	b.enqueue("rk:hot")
+
+	// Simulate the refresh republish AFTER the duplicate was enqueued: the refetch
+	// reserves a new entry whose fetchSeq exceeds the duplicate's snapshot.
+	mkValid("ck:hot", "rk:hot")
 
 	b.stop()
 	b.join()
 
 	if _, ok := lc.Get(ctx, "ck:hot"); !ok {
-		t.Fatal("the re-appearing key was applied a SECOND time and evicted the " +
-			"refreshed entry; the size-cap flush must preserve per-key dedup (#3965 F1)")
+		t.Fatal("the stale straddling duplicate evicted the refreshed entry; the " +
+			"fetch-order guard must keep an entry refetched after the invalidation (#3965 F1)")
+	}
+	// The duplicate was applied (seen cleared) but skipped by the guard: applied
+	// deletes advanced by 1 and that delete removed nothing (noop), which is the
+	// guard-skip signature — not a dedup drop (which would advance neither).
+	delAfter, noopAfter := lc.DeletionStats()
+	if delAfter-delBefore != 1 || noopAfter-noopBefore != 1 {
+		t.Fatalf("duplicate apply delta = (deletions %d, noop %d), want (1, 1): the "+
+			"second occurrence must be applied and skipped by the guard, not deduped away",
+			delAfter-delBefore, noopAfter-noopBefore)
 	}
 }
