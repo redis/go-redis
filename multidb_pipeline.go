@@ -643,10 +643,15 @@ func (c *MultiDBClient) TxPipeline() Pipeliner {
 				}
 			}
 			// Restore via defer so a panic in the hook or member path still
-			// clears the temporary noRetry on the caller-owned commands.
+			// clears the temporary noRetry on the caller-owned commands. Restore
+			// in REVERSE order: if the same Cmder was queued twice, its second
+			// occurrence snapshotted prev=true (already set by the first), so a
+			// forward restore would end on that value and leave the shared command
+			// permanently non-retryable. Reversing makes the first occurrence's
+			// genuine original state the last write.
 			defer func() {
-				for i, cmd := range cmds {
-					if bc, ok := cmd.(noRetrier); ok {
+				for i := len(cmds) - 1; i >= 0; i-- {
+					if bc, ok := cmds[i].(noRetrier); ok {
 						bc.setNoRetry(prev[i])
 					}
 				}
