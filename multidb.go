@@ -514,6 +514,21 @@ func (c *MultiDBClient) Process(ctx context.Context, cmd Cmder) error {
 
 // Close stops the autopipeliners, the background loop, and every underlying
 // client.
+//
+// Do not call Close from a goroutine this client owns. Close waits for the
+// background loop to exit and for any autopipeliner drain to finish, and
+// either one can be the goroutine that called Close:
+//
+//   - From a health check or a health-check policy, Close blocks forever: those
+//     run on the background loop, and Close waits for that loop to exit.
+//   - From a member hook invoked inside an autopipeliner batch, Close blocks
+//     until that drain reaches its internal backstop, then reports a timeout:
+//     the drain is waiting for the batch whose hook is calling Close.
+//
+// Calling Close from a member hook on an ordinary (not autopipelined) command
+// is fine, as is calling it from OnFailover, OnActiveDatabaseChanged or
+// OnCircuitStateChanged — those callbacks run on a queue Close does not wait
+// for.
 func (c *MultiDBClient) Close() error {
 	// Serialize concurrent Close calls. Without this a second caller can
 	// observe the autopipeliner pointers already cleared, skip the drain loop,
@@ -539,6 +554,14 @@ func (c *MultiDBClient) Close() error {
 			// WaitClosed blocks until that drain actually finishes and reports
 			// its real result either way, so core.close() below never tears
 			// down a member pool a drain is still writing to.
+			//
+			// The wait is unconditional on purpose. Skipping it when this
+			// Close lost the CAS is what caused the teardown-under-drain bug,
+			// and there is no way to tell "another goroutine is draining"
+			// (wait) from "the drain is waiting for my own goroutine" (do not
+			// wait) without goroutine identity. Bounding the wait does not
+			// help either: a legitimate drain may run to the backstop. The
+			// reentrant case is documented on Close instead.
 			_ = p.Close()
 			if err := p.WaitClosed(); err != nil && firstErr == nil {
 				firstErr = err
