@@ -24,6 +24,10 @@ type fakeScripter struct {
 	// behavior controls
 	hashToReturn string
 
+	// digests the script helper actually sent with EVALSHA/EVALSHA_RO
+	lastEvalShaSHA   string
+	lastEvalShaROSHA string
+
 	// If set, the first EvalSha/EvalShaRO returns a NOSCRIPT error.
 	failFirstEvalShaWithNoScr   bool
 	failFirstEvalShaROWithNoScr bool
@@ -62,6 +66,7 @@ func (f *fakeScripter) Eval(ctx context.Context, script string, keys []string, a
 func (f *fakeScripter) EvalSha(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
 	f.mu.Lock()
 	f.evalShaCalls++
+	f.lastEvalShaSHA = sha1
 	callNum := f.evalShaCalls
 	fail := f.failFirstEvalShaWithNoScr && callNum == 1
 	f.mu.Unlock()
@@ -89,6 +94,7 @@ func (f *fakeScripter) EvalRO(ctx context.Context, script string, keys []string,
 func (f *fakeScripter) EvalShaRO(ctx context.Context, sha1 string, keys []string, args ...interface{}) *Cmd {
 	f.mu.Lock()
 	f.evalShaROCalls++
+	f.lastEvalShaROSHA = sha1
 	callNum := f.evalShaROCalls
 	fail := f.failFirstEvalShaROWithNoScr && callNum == 1
 	f.mu.Unlock()

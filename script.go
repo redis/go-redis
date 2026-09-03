@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -60,11 +61,25 @@ func (s *Script) Hash() string {
 
 func (s *Script) Load(ctx context.Context, c Scripter) *StringCmd {
 	cmd := c.ScriptLoad(ctx, s.src)
-	if err := cmd.Err(); err == nil {
-		s.mu.Lock()
-		s.hash = cmd.Val()
-		s.mu.Unlock()
+	if err := cmd.Err(); err != nil {
+		return cmd
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.serverSHA {
+		// s.hash is SHA-1(s.src) computed in NewScript, and SCRIPT LOAD returns
+		// that same digest. A different value is a protocol violation; keeping
+		// the local one means EVALSHA stays pinned to this script instead of
+		// running whatever the server holds under the returned digest.
+		if cmd.Val() != s.hash {
+			cmd.SetErr(fmt.Errorf("redis: SCRIPT LOAD returned digest %q, want %q", cmd.Val(), s.hash))
+		}
+		return cmd
+	}
+
+	s.hash = cmd.Val()
 	return cmd
 }
 
