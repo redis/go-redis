@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
-func TestMonitor_Args(t *testing.T) {
-	var captured Cmder
-	c := captureCmdable(&captured)
+type monitorMethods interface {
+	Monitor(ctx context.Context, ch chan string) *MonitorCmd
+	MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd
+}
 
-	cmd := c.Monitor(context.Background(), make(chan string, 1))
+func TestMonitor_Args(t *testing.T) {
+	cmd := monitor(captureCmdable(new(Cmder)), context.Background(), make(chan string, 1))
 	if cmd == nil {
 		t.Fatal("Monitor returned nil")
 	}
@@ -21,11 +23,32 @@ func TestMonitor_Args(t *testing.T) {
 	}
 }
 
-func TestMonitorWithArgs_Args(t *testing.T) {
-	var captured Cmder
-	c := captureCmdable(&captured)
+func TestMonitorSurfaceExcludesPipeline(t *testing.T) {
+	if _, ok := any(&Pipeline{}).(monitorMethods); ok {
+		t.Fatal("Pipeline unexpectedly exposes Monitor methods")
+	}
 
-	cmd := c.MonitorWithArgs(context.Background(), make(chan string, 1), "127.0.0.1:6379")
+	var pipe Pipeliner = &Pipeline{}
+	if _, ok := any(pipe).(monitorMethods); ok {
+		t.Fatal("Pipeliner unexpectedly exposes Monitor methods")
+	}
+
+	for name, impl := range map[string]any{
+		"Client":        (*Client)(nil),
+		"Conn":          (*Conn)(nil),
+		"Tx":            (*Tx)(nil),
+		"Ring":          (*Ring)(nil),
+		"ClusterClient": (*ClusterClient)(nil),
+		"AutoPipeliner": (*AutoPipeliner)(nil),
+	} {
+		if _, ok := impl.(monitorMethods); !ok {
+			t.Fatalf("%s must expose Monitor methods", name)
+		}
+	}
+}
+
+func TestMonitorWithArgs_Args(t *testing.T) {
+	cmd := monitor(captureCmdable(new(Cmder)), context.Background(), make(chan string, 1), "127.0.0.1:6379")
 	if cmd == nil {
 		t.Fatal("MonitorWithArgs returned nil")
 	}
