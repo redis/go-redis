@@ -222,13 +222,22 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 		// signal, so record it as a failure (below), not a pass.
 		healthy = false
 	}
-	if db.removed.Load() {
-		// The database left the membership while this probe was in flight
-		// (background snapshot racing RemoveDatabase): its index is stale
-		// and its client is closed, so record nothing and fire no callbacks.
-		return healthy
-	}
+	db.applyProbeVerdict(ctx, gen, healthy, time.Since(start))
+	return healthy
+}
 
+// applyProbeVerdict records a probe verdict on the breaker (gated on the reset
+// generation sampled before the checks ran) and the OTel recorder. Extracted so
+// the background pass can run the checks without recording, revalidate the
+// active member, and then apply the verdict — see runHealthChecksOnce. gen must
+// be the value ResetGeneration() returned before the checks ran.
+func (db *multidbDatabase) applyProbeVerdict(ctx context.Context, gen uint64, healthy bool, took time.Duration) {
+	if db.removed.Load() {
+		// The database left the membership while the probe was in flight
+		// (background snapshot racing RemoveDatabase): its client is closed, so
+		// record nothing and fire no callbacks.
+		return
+	}
 	if healthy {
 		// CheckState first so an Open circuit past its grace period transitions
 		// to HalfOpen and the external success below can count toward closing it.
@@ -240,16 +249,15 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 		db.cb.CheckState()
 		db.cb.RecordExternalSuccessForReset(gen)
 	} else {
-		// Do NOT CheckState on a failed probe: transitioning a grace-elapsed
-		// Open breaker to HalfOpen here would briefly admit application traffic
-		// to a member the probe just found unhealthy (a spurious
-		// Open -> HalfOpen -> Open, and a window where failover could select
-		// it). RecordFailureForReset refreshes the open state directly, unless an
-		// operator reselect since the sample voids this stale failure.
+		// Do NOT CheckState on a failed probe: transitioning a grace-elapsed Open
+		// breaker to HalfOpen here would briefly admit application traffic to a
+		// member the probe just found unhealthy (a spurious Open -> HalfOpen ->
+		// Open, and a window where failover could select it). RecordFailureForReset
+		// refreshes the open state directly, unless an operator reselect since the
+		// sample voids this stale failure.
 		db.cb.RecordFailureForReset(gen)
 	}
-	otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
-	return healthy
+	otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, took)
 }
 
 type multidbCore struct {
@@ -1526,7 +1534,24 @@ func (c *multidbCore) runHealthChecksOnce(ctx context.Context) {
 			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
 			continue
 		}
-		db.probe(ctx, c.opts.HealthCheckTimeout)
+		// Passive member: run the FULL check set but do NOT record yet, then
+		// revalidate the active. A failover can make this member the active while
+		// the probe runs (up to HealthCheckTimeout); recording the full verdict
+		// then could let a fail-back-only failure (lag) evict the member now
+		// serving traffic. If it went active, record only the active-safe subset
+		// (probeAsActive); otherwise apply the full verdict. This narrows the
+		// window from the whole probe to the revalidation instant — the residual
+		// (a failover between the recheck and the record) is not fully closed
+		// without per-check verdict granularity; a stale verdict is additionally
+		// dropped by the reset generation if an operator reselect intervened.
+		gen := db.cb.ResetGeneration()
+		start := time.Now()
+		healthy := db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
+		if again, _ := c.activeSnapshot(); again == db {
+			db.probeAsActive(ctx, c.opts.HealthCheckTimeout)
+			continue
+		}
+		db.applyProbeVerdict(ctx, gen, healthy, time.Since(start))
 	}
 }
 
