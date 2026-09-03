@@ -233,7 +233,7 @@ var _ = Describe("WriteArg", func() {
 		(*myUint64)(nil):              "$1\r\n0\r\n",
 		util.ToPtr(myUintptr(10)):     "$2\r\n10\r\n",
 		(*myUintptr)(nil):             "$1\r\n0\r\n",
-		util.ToPtr(myFloat32(10.3)):   "$18\r\n10.300000190734863\r\n",
+		util.ToPtr(myFloat32(10.3)):   "$4\r\n10.3\r\n",
 		(*myFloat32)(nil):             "$1\r\n0\r\n",
 		util.ToPtr(myFloat64(10.3)):   "$4\r\n10.3\r\n",
 		(*myFloat64)(nil):             "$1\r\n0\r\n",
