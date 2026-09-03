@@ -1480,7 +1480,7 @@ func (c *baseClient) processWithRetry(
 		totalAttempts++
 		attempt := attempt
 
-		retry, cn, err := c._process(ctx, cmd, attempt, capture)
+		retry, forced, cn, err := c._process(ctx, cmd, attempt, capture)
 		if cn != nil {
 			lastConn = cn
 		}
@@ -1502,9 +1502,12 @@ func (c *baseClient) processWithRetry(
 			lastErr = err
 			continue
 		}
-		// Don't retry if command explicitly disables retries (e.g., RawWriteToCmd
-		// which writes directly to an io.Writer and cannot undo partial writes)
-		if err == nil || !retry || cmd.NoRetry() {
+		// Don't retry if the command explicitly disables retries (e.g. RawWriteToCmd,
+		// which writes directly to an io.Writer and cannot undo partial writes) — UNLESS
+		// the failure was a pre-write desync (forced): the command never reached the
+		// wire, so replaying it is its first execution, which NoRetry does not forbid
+		// (NoRetry guards against a SECOND execution of a possibly-written command).
+		if err == nil || !retry || (cmd.NoRetry() && !forced) {
 			if err != nil {
 				if errorCallback := pool.GetMetricErrorCallback(); errorCallback != nil {
 					errorType, statusCode, isInternal := classifyCommandError(err)
@@ -1586,19 +1589,26 @@ func classifyCommandError(err error) (errorType, statusCode string, isInternal b
 	return "UNKNOWN", "UNKNOWN", true
 }
 
-func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (bool, *pool.Conn, error) {
+// _process runs one attempt. It returns retry (the error is retryable), forced (the
+// error is a PRE-WRITE desync: the conn was closed before the command reached the
+// wire, so replay is its FIRST execution and safe even for a NoRetry command), the
+// conn used, and the error.
+func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, capture *cscFetchCapture) (retry, forced bool, cn *pool.Conn, err error) {
 	if attempt > 0 {
 		if err := internal.Sleep(ctx, c.retryBackoff(attempt)); err != nil {
-			return false, nil, err
+			return false, false, nil, err
 		}
 	}
 
 	var usedConn *pool.Conn
 	var retryTimeout atomic.Uint32
-	// forceRetry marks the returned error as retryable regardless of its type. Set
-	// only when we have already CLOSED the connection (a pre-command push-drain
-	// desync), so re-running on a fresh conn is safe even for an error shouldRetry
-	// would otherwise reject (e.g. a custom push-processor sentinel).
+	// forceRetry marks the returned error as retryable regardless of its type, AND
+	// (surfaced as the _process "forced" return) lets the retry bypass a NoRetry
+	// command's gate. Set only when we have already CLOSED the connection before the
+	// command reached the wire (a pre-command push-drain desync), so re-running on a
+	// fresh conn is its FIRST execution — safe even for an error shouldRetry would
+	// reject (a custom push-processor sentinel) and even for a NoRetry command (whose
+	// gate guards a SECOND execution, not a first).
 	var forceRetry atomic.Bool
 	if err := c.withConn(ctx, func(ctx context.Context, cn *pool.Conn) error {
 		usedConn = cn
@@ -1727,10 +1737,10 @@ func (c *baseClient) _process(ctx context.Context, cmd Cmder, attempt int, captu
 		return readErr
 	}); err != nil {
 		retry := forceRetry.Load() || shouldRetry(err, retryTimeout.Load() == 1)
-		return retry, usedConn, err
+		return retry, forceRetry.Load(), usedConn, err
 	}
 
-	return false, usedConn, nil
+	return false, false, usedConn, nil
 }
 
 func (c *baseClient) retryBackoff(attempt int) time.Duration {
