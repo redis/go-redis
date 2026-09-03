@@ -23,6 +23,27 @@ func (t *MyType) MarshalBinary() ([]byte, error) {
 	return []byte("hello"), nil
 }
 
+// Named types with the same underlying kind as a built-in, but not matching
+// any exact case in WriteArg's type switch, so they exercise writeArgExtra's
+// reflect-based fallback instead.
+type (
+	myBool    bool
+	myInt     int
+	myInt8    int8
+	myInt16   int16
+	myInt32   int32
+	myInt64   int64
+	myUint    uint
+	myUint8   uint8
+	myUint16  uint16
+	myUint32  uint32
+	myUint64  uint64
+	myUintptr uintptr
+	myFloat32 float32
+	myFloat64 float64
+	myString  string
+)
+
 var _ = Describe("WriteBuffer", func() {
 	var buf *bytes.Buffer
 	var wr *proto.Writer
@@ -166,6 +187,24 @@ var _ = Describe("WriteArg", func() {
 		(*time.Duration)(nil):                  "$1\r\n0\r\n",
 		(encoding.BinaryMarshaler)(&MyType{}):  "$5\r\nhello\r\n",
 		(encoding.BinaryMarshaler)(nil):        "$0\r\n\r\n",
+
+		// Named types: not an exact match in WriteArg's type switch, so these
+		// fall through to writeArgExtra's reflect-based fallback.
+		myBool(true):      "$1\r\n1\r\n",
+		myInt(10):         "$2\r\n10\r\n",
+		myInt8(10):        "$2\r\n10\r\n",
+		myInt16(10):       "$2\r\n10\r\n",
+		myInt32(10):       "$2\r\n10\r\n",
+		myInt64(10):       "$2\r\n10\r\n",
+		myUint(10):        "$2\r\n10\r\n",
+		myUint8(10):       "$2\r\n10\r\n",
+		myUint16(10):      "$2\r\n10\r\n",
+		myUint32(10):      "$2\r\n10\r\n",
+		myUint64(10):      "$2\r\n10\r\n",
+		myUintptr(10):     "$2\r\n10\r\n",
+		myFloat32(10.3):   "$18\r\n10.300000190734863\r\n",
+		myFloat64(10.3):   "$4\r\n10.3\r\n",
+		myString("hello"): "$5\r\nhello\r\n",
 	}
 
 	for arg, expect := range args {
