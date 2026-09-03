@@ -3,10 +3,27 @@ package redis
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	imultidb "github.com/redis/go-redis/v9/internal/multidb"
 )
+
+// markThenCloseHook marks the batch executed, then returns ErrClosed without
+// calling next — simulating a cluster fan-out where one shard applied its
+// commands before another shard's connection acquisition failed against a
+// member that was switched away and removed.
+type markThenCloseHook struct{ calls *int32 }
+
+func (markThenCloseHook) DialHook(next DialHook) DialHook          { return next }
+func (markThenCloseHook) ProcessHook(next ProcessHook) ProcessHook { return next }
+func (h markThenCloseHook) ProcessPipelineHook(ProcessPipelineHook) ProcessPipelineHook {
+	return func(ctx context.Context, cmds []Cmder) error {
+		atomic.AddInt32(h.calls, 1)
+		markPipelineExecuted(ctx, cmds)
+		return ErrClosed
+	}
+}
 
 func newRemovedActiveCore(t *testing.T) *multidbCore {
 	t.Helper()
@@ -53,5 +70,38 @@ func TestProcessTxPipelineRemovedActiveDoesNotSurfaceErrClosed(t *testing.T) {
 	}
 	if !errors.Is(err, ErrTemporarilyNotAvailable) {
 		t.Fatalf("got %v, want ErrTemporarilyNotAvailable after the bounded re-gate", err)
+	}
+}
+
+// TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed pins that a batch
+// which PARTIALLY executed (execution marker set) before hitting ErrClosed on a
+// removed member is NOT re-gated and replayed — replaying would duplicate the
+// applied writes from the completed shard. Only a wholly-unexecuted batch
+// re-gates (the !executed.any() guard, mirroring the tx path).
+func TestProcessPipelinePartiallyExecutedRemovedMemberNotReplayed(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{})
+	var calls int32
+	a := NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1})
+	t.Cleanup(func() { _ = a.Close() })
+	a.AddHook(markThenCloseHook{calls: &calls})
+	db := &multidbDatabase{id: 0, weight: 1, c: a, cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+		FailureThreshold: 1,
+		SuccessThreshold: 1,
+	})}
+	db.removed.Store(true)
+	core.dbs[0] = db
+	core.active.Store(0)
+
+	err := core.processPipeline(context.Background(), []Cmder{
+		NewStatusCmd(context.Background(), "set", "k", "v"),
+		NewStatusCmd(context.Background(), "get", "k"),
+	})
+	// The batch executed, so it must surface ErrClosed as-is (not re-gate to the
+	// retryable ErrTemporarilyNotAvailable), and it must run exactly once.
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("partially-executed removed-member batch was re-gated instead of surfacing ErrClosed: %v", err)
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("batch executed %d times, want 1 — it was replayed (duplicating applied writes)", n)
 	}
 }

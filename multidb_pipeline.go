@@ -401,12 +401,22 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res)
 
 		if transportFailures == 0 {
-			if errors.Is(err, ErrClosed) && db.removed.Load() {
+			if errors.Is(err, ErrClosed) && db.removed.Load() && !executed.any() {
 				// A concurrent control op removed the snapshotted member (closing
 				// its client) between the gate and execution, so its pool returned
 				// the terminal ErrClosed, classified neutral. The MultiDBClient is
 				// still open: re-enter the gate on the live active instead of
 				// surfacing ErrClosed, mirroring the single-command process() path.
+				//
+				// Guarded on !executed.any(), like the tx path: a cluster fan-out
+				// can have one node apply its commands while another node's
+				// connection acquisition returns ErrClosed after the member was
+				// switched away and removed. transportFailures is still 0 (the
+				// applied commands are successes, the ErrClosed is neutral), but the
+				// batch DID partially execute — re-gating and replaying it would
+				// duplicate the completed node's non-idempotent writes. When any
+				// shard executed, fall through and return the batch as-is instead.
+				//
 				// recordBatchOutcomes released the reservation (nothing recorded);
 				// the batch never executed, so don't spend a retry attempt. Bound
 				// the re-gates separately from gate rejections (which reset on
