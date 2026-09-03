@@ -105,6 +105,15 @@ type CircuitBreaker struct {
 	// back to a new half-open episode.
 	generation atomic.Uint64
 
+	// resetGen is bumped ONLY by Reset (an operator reselect). Out-of-band
+	// health probes are not admitted through AllowReserve and hold no reservation,
+	// so they gate on this instead: a probe samples resetGen before its checks
+	// run and records its verdict only if no Reset intervened. It deliberately
+	// does NOT move on Open->HalfOpen — a probe verdict is fresh health info and
+	// must still count across a normal recovery transition; only an operator
+	// reselect voids it (see RecordFailureForReset).
+	resetGen atomic.Uint64
+
 	// transitionMu serializes ALL state transitions and the enqueue of their
 	// notifications, so callbacks are delivered in transition (CAS) order. It
 	// is held across the counter-clear + CAS + enqueue only, never across the
@@ -431,6 +440,51 @@ func (cb *CircuitBreaker) RecordExternalSuccess() {
 	cb.recordSuccess(false)
 }
 
+// ResetGeneration returns the current reset generation. A health probe samples
+// it BEFORE running its checks and passes it to RecordExternalSuccessForReset /
+// RecordFailureForReset, which drop the verdict if a Reset (an operator reselect)
+// bumped the generation meanwhile. Unlike the reservation generation, this moves
+// only on Reset, so a probe verdict still counts across a normal Open->HalfOpen.
+func (cb *CircuitBreaker) ResetGeneration() uint64 {
+	return cb.resetGen.Load()
+}
+
+// RecordExternalSuccessForReset records an out-of-band success (a health probe)
+// unless a Reset has run since gen was sampled. Like RecordExternalSuccess it
+// holds no admission slot. The generation check and the record run under
+// transitionMu — the same lock Reset holds across its counter clear + generation
+// bump — so a reselect cannot interleave between them.
+func (cb *CircuitBreaker) RecordExternalSuccessForReset(gen uint64) {
+	cb.transitionMu.Lock()
+	defer cb.transitionMu.Unlock()
+	if cb.resetGen.Load() != gen {
+		return
+	}
+	cb.recordSuccessHalfOpenLocked(false)
+}
+
+// RecordFailureForReset records an out-of-band failure (a health probe) unless a
+// Reset has run since gen was sampled — the guard that stops a probe verdict
+// sampled before an operator reselect from re-opening the freshly selected
+// member (at FailureThreshold 1 a single stale failure would). The check and the
+// record run under transitionMu, so they are atomic with Reset.
+func (cb *CircuitBreaker) RecordFailureForReset(gen uint64) {
+	cb.transitionMu.Lock()
+	defer cb.transitionMu.Unlock()
+	if cb.resetGen.Load() != gen {
+		return
+	}
+	cb.lastFailure.Store(time.Now().UnixNano())
+	switch State(cb.state.Load()) {
+	case StateClosed:
+		if int(cb.failures.Add(1)) >= cb.config.FailureThreshold {
+			cb.openFromClosedLocked()
+		}
+	case StateHalfOpen:
+		cb.recordFailureHalfOpenLocked()
+	}
+}
+
 func (cb *CircuitBreaker) recordSuccess(heldSlot bool) {
 	// Closed is the hot path (every successful command clears the failure
 	// count): keep it lock-free. The half-open lifecycle is serialized under
@@ -621,6 +675,9 @@ func (cb *CircuitBreaker) Reset() {
 	// count its failure against the freshly closed circuit, re-opening the
 	// operator-selected member immediately (FailureThreshold == 1).
 	cb.generation.Add(1)
+	// Bump the probe generation too: a health probe sampled before this reselect
+	// must not record its (now stale) verdict against the freshly closed circuit.
+	cb.resetGen.Add(1)
 	oldState := State(cb.state.Swap(int32(StateClosed)))
 	if oldState != StateClosed {
 		stats := cb.Stats()
