@@ -250,7 +250,10 @@ func (h *LagAwareHealthCheck) Config() HealthCheckConfig { return h.config }
 // precisely when the member is failing. Failover decisions ride on traffic
 // signals (the failure detector and circuit breaker) and liveness checks.
 // The MultiDB background health loop skips FailbackOnly checks when probing
-// the active member.
+// the active member; if that leaves no check, it runs the default PING
+// instead, so the active always keeps a liveness probe. A member with only
+// FailbackOnly checks is therefore PING-gated while active and lag-gated as
+// a failover or fallback candidate.
 func (h *LagAwareHealthCheck) FailbackOnly() bool { return true }
 
 // hostPortFromAddr is hostFromAddr plus the numeric Redis port (0 when the

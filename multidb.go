@@ -145,7 +145,11 @@ type MultiDBClientConfig struct {
 	// HealthChecks run against this database in addition to the global
 	// MultiDBOptions.HealthChecks (merge semantics: global + per-DB are
 	// additive). A database that ends up with no checks from either layer is
-	// given a single default PING check.
+	// given a single default PING check. A database whose checks are all
+	// fail-back-only (see FailbackOnly on the lag-aware check) still runs the
+	// default PING as a liveness floor while it is the active, so a dead
+	// endpoint is detected even though the fail-back-only checks alone never
+	// evict the active.
 	HealthChecks []MultiDBHealthCheck
 	// HealthCheckPolicy overrides MultiDBOptions.HealthCheckPolicy for this
 	// database.

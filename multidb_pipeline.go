@@ -395,6 +395,7 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			// client-side signal, not a health verdict: release any half-open
 			// reservation and return WITHOUT recording.
 			db.cb.ReleaseFor(res)
+			pendingDB = nil
 			// Do NOT reset or overwrite the commands. The deadline may have
 			// interrupted reading a LATER reply while earlier commands already
 			// received definitive results, and those are the caller's only
@@ -408,9 +409,17 @@ func (c *multidbCore) processPipeline(ctx context.Context, cmds []Cmder) error {
 			return exitErr(ctx.Err())
 		}
 		transportFailures := c.recordBatchOutcomes(db, cmds, err, executed, res, dg)
+		// recordBatchOutcomes settled the reservation (recorded or released).
+		// ReleaseFor here is what the defer would do on return: it settles at
+		// most once and, after a recorded half-open failure, is state- and
+		// generation-gated so it cannot touch the new episode. Then drop the
+		// pair from the safety net so a retry's new pair does not orphan it and
+		// the defer fires only for a reservation a panic left unsettled.
+		db.cb.ReleaseFor(res)
+		pendingDB = nil
 
 		if transportFailures == 0 {
-			if errors.Is(err, ErrClosed) && db.removed.Load() {
+			if errors.Is(err, ErrClosed) && db.removed.Load() && !c.closed.Load() {
 				// A concurrent control op removed the snapshotted member (closing
 				// its client) between the gate and execution, so its pool returned
 				// the terminal ErrClosed, classified neutral. The MultiDBClient is
@@ -554,7 +563,7 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		return ctx.Err()
 	}
 	c.recordBatchOutcomes(db, user, err, executed, res, dg)
-	if errors.Is(err, ErrClosed) && db.removed.Load() {
+	if errors.Is(err, ErrClosed) && db.removed.Load() && !c.closed.Load() {
 		// A concurrent control op removed the snapshotted member (closing its
 		// client) between the gate and execution, so its pool returned the
 		// terminal ErrClosed though the MultiDBClient is still open. Surface the
@@ -746,10 +755,22 @@ func (c *MultiDBClient) Watch(ctx context.Context, fn func(*Tx) error, keys ...s
 	// slot) is a no-op, and a transaction that outlives an open -> half-open
 	// cycle cannot free a slot a real recovery probe is holding in the new one.
 	defer db.cb.ReleaseFor(res)
+	var err error
 	if db.cc != nil {
-		return db.cc.Watch(ctx, fn, keys...)
+		err = db.cc.Watch(ctx, fn, keys...)
+	} else {
+		err = db.c.Watch(ctx, fn, keys...)
 	}
-	return db.c.Watch(ctx, fn, keys...)
+	// A member removed by a concurrent control op mid-transaction has a closed
+	// client that returns ErrClosed although the MultiDBClient is still open:
+	// surface the retryable error instead, as the command, pipeline and Pub/Sub
+	// paths do. The transaction is NOT replayed — fn may already have run
+	// against the old member. Close() marks every member removed, so the
+	// closed check keeps the terminal ErrClosed for a client that shut down.
+	if errors.Is(err, ErrClosed) && db.removed.Load() && !c.core.closed.Load() {
+		return ErrTemporarilyNotAvailable
+	}
+	return err
 }
 
 // SSubscribe subscribes to shard channels on the database that is active at

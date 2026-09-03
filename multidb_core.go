@@ -125,6 +125,11 @@ func (db *multidbDatabase) probe(parent context.Context, timeout time.Duration) 
 // nonFailbackChecks returns the checks whose verdict may evict the member —
 // everything except fail-back-only checks (e.g. the lag-aware REST check),
 // which gate routing TO a member but never the one already serving traffic.
+// With only fail-back-only checks configured it falls back to the default
+// PING: an active member must keep a liveness probe, or an idle or
+// Pub/Sub-only client would never notice that the endpoint died (configuring
+// any check suppresses the default, and Pub/Sub errors do not feed the
+// breaker).
 func (db *multidbDatabase) nonFailbackChecks() []MultiDBHealthCheck {
 	filtered := make([]MultiDBHealthCheck, 0, len(db.checks))
 	for _, check := range db.checks {
@@ -133,33 +138,26 @@ func (db *multidbDatabase) nonFailbackChecks() []MultiDBHealthCheck {
 		}
 		filtered = append(filtered, check)
 	}
+	if len(filtered) == 0 {
+		return []MultiDBHealthCheck{defaultPingHealthCheck{}}
+	}
 	return filtered
 }
 
 // probeAsActive probes the CURRENTLY ACTIVE member: fail-back-only checks
 // are excluded, so a lag breach cannot open the active's breaker and evict
-// the member traffic is flowing through. With no applicable checks left the
-// probe records nothing — a vacuously healthy pass would pump external
-// successes into a breaker that real traffic failures opened.
+// the member traffic is flowing through. nonFailbackChecks guarantees at
+// least the default PING runs, so the recorded verdict is never vacuous.
 func (db *multidbDatabase) probeAsActive(parent context.Context, timeout time.Duration) {
-	filtered := db.nonFailbackChecks()
-	if len(filtered) == 0 {
-		return
-	}
-	db.probeWith(parent, timeout, filtered)
+	db.probeWith(parent, timeout, db.nonFailbackChecks())
 }
 
-// probeExcludingFailbackOnly runs the member's non-fail-back-only checks and
-// reports whether it is healthy, used to gate a re-selection of the current
-// active: a lag breach must not fail selecting the member already serving
-// traffic. With only fail-back-only checks configured, nothing gates the
-// active, so it is reported healthy without recording an outcome.
+// probeExcludingFailbackOnly runs the member's non-fail-back-only checks (at
+// least the default PING) and reports whether it is healthy, used to gate a
+// re-selection of the current active: a lag breach must not fail selecting the
+// member already serving traffic, but a dead endpoint must.
 func (db *multidbDatabase) probeExcludingFailbackOnly(parent context.Context, timeout time.Duration) bool {
-	filtered := db.nonFailbackChecks()
-	if len(filtered) == 0 {
-		return true
-	}
-	return db.probeWith(parent, timeout, filtered)
+	return db.probeWith(parent, timeout, db.nonFailbackChecks())
 }
 
 // runPolicy executes the health-check policy over checks under ctx, recovering
@@ -281,6 +279,12 @@ type multidbCore struct {
 	// cannot see. The per-member breaker has the same guard through its own
 	// reset generation.
 	detectorGen atomic.Uint64
+
+	// pendingAdds holds the probe-cancel funcs of AddDatabase calls whose
+	// startup probe is still running: those members are not in dbs yet, so
+	// close() cancels them here instead of through closeAll.
+	pendingAddMu sync.Mutex
+	pendingAdds  map[*multidbDatabase]context.CancelFunc
 
 	// nextID hands out member ids: monotonic, never decremented, never reset
 	// (not even in closeAll). Reuse would let a stale handle or a queued
@@ -849,7 +853,7 @@ func (c *multidbCore) process(ctx context.Context, cmd Cmder) error {
 			// probe slot the admission reserved — recording nothing would
 			// otherwise leak it (ReleaseFor is a no-op for a closed admission).
 			db.cb.ReleaseFor(res)
-			if errors.Is(err, ErrClosed) && db.removed.Load() {
+			if errors.Is(err, ErrClosed) && db.removed.Load() && !c.closed.Load() {
 				// A concurrent control op removed the snapshotted member (closing
 				// its client) between the gate and db.process, so its pool returned
 				// the terminal ErrClosed even though the MultiDBClient is still
@@ -1062,8 +1066,30 @@ func (c *multidbCore) tryFailover(ctx context.Context, from int) error {
 			}
 			return c.recordFailedFailoverLocked()
 		}
+		// Commit-time revalidation: candidates() is a snapshot, and background
+		// probes can open a candidate's breaker while this round runs
+		// (failoverMu does not serialize probes). Never publish a member that is
+		// no longer selectable — drop it and re-select, as a failed target probe
+		// does. Weight is read at selection time: a SetWeight that lands after
+		// the snapshot takes effect at the next selection.
+		target := c.dbByID(best)
+		if target == nil {
+			// removeDatabase holds failoverMu, so under it a missing member can
+			// only mean close() drained the membership: report the terminal
+			// state instead of dropping every candidate and charging a failover
+			// attempt.
+			if c.closed.Load() {
+				return ErrClosed
+			}
+			cands = removeCandidate(cands, best)
+			continue
+		}
+		if !target.selectable() {
+			cands = removeCandidate(cands, best)
+			continue
+		}
 		if c.opts.ProbeTargetBeforeFailover {
-			if db := c.dbByID(best); db != nil && !db.probe(ctx, c.opts.HealthCheckTimeout) {
+			if !target.probe(ctx, c.opts.HealthCheckTimeout) {
 				if err := ctx.Err(); err != nil {
 					// The caller's context ended mid-probe: the candidate was
 					// never proven unhealthy. Surface the context error
@@ -1111,6 +1137,54 @@ func removeCandidate(cands []MultiDBDatabaseState, index int) []MultiDBDatabaseS
 		}
 	}
 	return out
+}
+
+// backgroundFailoverOnce is the background twin of the command gate: the
+// active must move even with no command traffic, so one pass of the
+// background loop fails over when the active is not selectable OR the
+// detector is tripped. The detector term matters on its own: a no-retry or
+// non-retryable command can trip a latched custom detector while the breaker
+// stays closed and exit without another gate pass, and an idle or Pub/Sub-only
+// client would otherwise never switch. tryFailover resets the detector when it
+// switches, so a tripped detector does not ping-pong the active.
+func (c *multidbCore) backgroundFailoverOnce(ctx context.Context) {
+	if db, idx := c.activeSnapshot(); db != nil && (!db.selectable() || c.shouldFailoverSafely()) {
+		_ = c.tryFailover(ctx, idx)
+	}
+}
+
+// trackPendingAdd registers the cancel func of an in-flight AddDatabase probe.
+// The member is not in c.dbs yet, so closeAll cannot reach it: close() cancels
+// these instead, and the add's own closed re-check then discards the member.
+// Re-checking closed after registering covers a close() that ran between the
+// add's first closed check and this registration.
+func (c *multidbCore) trackPendingAdd(db *multidbDatabase, cancel context.CancelFunc) {
+	c.pendingAddMu.Lock()
+	if c.pendingAdds == nil {
+		c.pendingAdds = map[*multidbDatabase]context.CancelFunc{}
+	}
+	c.pendingAdds[db] = cancel
+	c.pendingAddMu.Unlock()
+	if c.closed.Load() {
+		cancel()
+	}
+}
+
+func (c *multidbCore) untrackPendingAdd(db *multidbDatabase) {
+	c.pendingAddMu.Lock()
+	delete(c.pendingAdds, db)
+	c.pendingAddMu.Unlock()
+}
+
+// cancelPendingAdds unblocks every in-flight AddDatabase probe (see
+// trackPendingAdd). A custom check that ignores its context still runs to
+// HealthCheckTimeout; that is the check's bug, not something close can force.
+func (c *multidbCore) cancelPendingAdds() {
+	c.pendingAddMu.Lock()
+	defer c.pendingAddMu.Unlock()
+	for _, cancel := range c.pendingAdds {
+		cancel()
+	}
 }
 
 // resetFailoverEscalationLocked starts a fresh escalation chain: the next
@@ -1362,7 +1436,16 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	healthy := true
 	if !cfg.SkipInitialHealthCheck {
 		start := time.Now()
-		healthy = db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
+		// close() cancels in-flight add probes (trackPendingAdd), so a shutdown
+		// does not wait out HealthCheckTimeout on a member it will discard; the
+		// closed re-check below then closes the built client.
+		probeCtx, cancelProbe := context.WithCancel(ctx)
+		c.trackPendingAdd(db, cancelProbe)
+		healthy = db.checkHealthyNoRecord(probeCtx, c.opts.HealthCheckTimeout, db.checks)
+		// Read before cancelProbe below makes probeCtx.Err() unconditionally set.
+		canceledByClose := probeCtx.Err() != nil && ctx.Err() == nil
+		c.untrackPendingAdd(db)
+		cancelProbe()
 		if err := ctx.Err(); err != nil {
 			// The caller's context ended while the probe ran: a canceled control
 			// operation must not mutate the membership. No callbacks were fired,
@@ -1371,7 +1454,11 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 			_ = db.closeClient()
 			return -1, err
 		}
-		otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
+		if !canceledByClose {
+			// A probe close() cut short is not a health verdict for a member
+			// that is never added; the closed re-check below discards it.
+			otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
+		}
 	}
 	// Serialize with the other membership paths (RemoveDatabase, manual failover),
 	// which also hold failoverMu, and publish under it so the ForceOpen callback
@@ -1560,11 +1647,7 @@ func (c *multidbCore) startBackgroundLoop() {
 
 			c.runHealthChecksOnce(ctx)
 
-			// Background-driven failover: the active index must move even
-			// with no command traffic.
-			if db, idx := c.activeSnapshot(); db != nil && !db.selectable() {
-				_ = c.tryFailover(ctx, idx)
-			}
+			c.backgroundFailoverOnce(ctx)
 
 			if !c.autoFallbackDisabled.Load() &&
 				time.Since(lastFallbackCheck) >= c.fallbackInterval {
@@ -1966,6 +2049,9 @@ func (c *multidbCore) close() error {
 	if !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	// Members whose startup probe is still running are not in dbs yet; unblock
+	// those adds so they discard their member promptly (see trackPendingAdd).
+	c.cancelPendingAdds()
 	close(c.stopCh)
 	c.wg.Wait()
 

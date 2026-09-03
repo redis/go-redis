@@ -203,6 +203,15 @@ func TestProbeVerdictVoidedByResetDuringProbe(t *testing.T) {
 	}
 }
 
+// okLivenessCheck is an always-healthy, non-fail-back-only check: it stands in
+// for the default PING liveness floor on members built without a client.
+type okLivenessCheck struct{}
+
+func (okLivenessCheck) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
+func (okLivenessCheck) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return true, nil
+}
+
 // failbackLagCheck is a fail-back-only check that reports unhealthy and, as a
 // side effect, flips the active member mid-probe — simulating a failover that
 // lands while a passive member is being probed with the full check set.
@@ -226,17 +235,23 @@ func (c *failbackLagCheck) FailbackOnly() bool { return true }
 // active-safe subset is recorded — so a fail-back-only failure (lag) cannot open
 // the breaker of the member now serving traffic.
 func TestBackgroundProbeDoesNotEvictMemberGoneActive(t *testing.T) {
-	core := newMultidbCore(&MultiDBOptions{})
+	// A real probe timeout: the active-safe probe now always runs (liveness
+	// floor), and an already-expired probe context reads as unhealthy.
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
 	mkCB := func() *imultidb.CircuitBreaker {
 		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
 	}
-	a := &multidbDatabase{id: 0, cb: mkCB(), policy: defaultMultiDBPolicy{}}
+	// Both members carry a passing liveness check standing in for the default
+	// PING floor (neither has a client).
+	a := &multidbDatabase{id: 0, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
 	b := &multidbDatabase{id: 1, cb: mkCB(), policy: defaultMultiDBPolicy{}}
 	core.dbs[0] = a
 	core.dbs[1] = b
 	core.active.Store(0) // A active at the start of the pass
 
-	b.checks = []MultiDBHealthCheck{&failbackLagCheck{onCheck: func() { core.active.Store(1) }}}
+	// The fail-back-only check is the one whose failure must not evict b once
+	// it is the active.
+	b.checks = []MultiDBHealthCheck{okLivenessCheck{}, &failbackLagCheck{onCheck: func() { core.active.Store(1) }}}
 
 	core.runHealthChecksOnce(context.Background())
 
@@ -1198,9 +1213,13 @@ func TestProcessSameMemberReselectStillBreaksEscalation(t *testing.T) {
 type scriptedStrategy struct {
 	picks   []int
 	offered []int
+	before  func(call int) // optional side effect run before each pick
 }
 
 func (s *scriptedStrategy) Select(cands []MultiDBDatabaseState) int {
+	if s.before != nil {
+		s.before(len(s.offered))
+	}
 	s.offered = append(s.offered, len(cands))
 	i := len(s.offered) - 1
 	if i >= len(s.picks) {
@@ -1307,5 +1326,250 @@ func TestShouldFailoverSafelyRecoversPanic(t *testing.T) {
 	core := newMultidbCore(&MultiDBOptions{FailureDetector: shouldFailoverPanicFD{}})
 	if core.shouldFailoverSafely() {
 		t.Fatal("a panicking detector must read as not tripped")
+	}
+}
+
+// latchedFD is a custom detector that stays tripped until Reset.
+type latchedFD struct{ tripped bool }
+
+func (d *latchedFD) RecordSuccess()       {}
+func (d *latchedFD) RecordFailure(error)  {}
+func (d *latchedFD) ShouldFailover() bool { return d.tripped }
+func (d *latchedFD) Reset()               { d.tripped = false }
+
+// newLazyMember builds a member around a never-dialed client with a closed
+// breaker, for control-path tests that never send a command.
+func newLazyMember(id int) *multidbDatabase {
+	return &multidbDatabase{
+		id:     id,
+		weight: 1,
+		c:      NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1}),
+		cb: imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{
+			FailureThreshold: 5,
+			SuccessThreshold: 1,
+		}),
+	}
+}
+
+// TestBackgroundFailoverOnceHonorsTrippedDetector pins the background twin of
+// the gate: a tripped detector alone (breaker closed) must move the active off
+// the member with no command traffic, and the switch resets the detector so a
+// second pass does not ping-pong.
+func TestBackgroundFailoverOnceHonorsTrippedDetector(t *testing.T) {
+	det := &latchedFD{tripped: true}
+	core := newMultidbCore(&MultiDBOptions{
+		FailureDetector:  det,
+		FailoverStrategy: &scriptedStrategy{picks: []int{1, 0}},
+	})
+	a, b := newLazyMember(0), newLazyMember(1)
+	t.Cleanup(func() { _ = a.c.Close(); _ = b.c.Close() })
+	core.dbs[0], core.dbs[1] = a, b
+	core.active.Store(0)
+
+	core.backgroundFailoverOnce(context.Background())
+	if got := core.active.Load(); got != 1 {
+		t.Fatalf("active = %d after a pass with a tripped detector and a closed breaker, want 1", got)
+	}
+	if det.tripped {
+		t.Fatal("the switch must reset the detector")
+	}
+	core.backgroundFailoverOnce(context.Background())
+	if got := core.active.Load(); got != 1 {
+		t.Fatalf("active = %d after a second pass with a clear detector, want 1 (no ping-pong)", got)
+	}
+}
+
+// TestTryFailoverRevalidatesCandidateAtCommit pins commit-time revalidation:
+// a candidate whose breaker opened after candidates() snapshotted it must not
+// be published; it is dropped and the next pick is taken.
+func TestTryFailoverRevalidatesCandidateAtCommit(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	a, b, cc := newLazyMember(0), newLazyMember(1), newLazyMember(2)
+	t.Cleanup(func() { _ = a.c.Close(); _ = b.c.Close(); _ = cc.c.Close() })
+	core.dbs[0], core.dbs[1], core.dbs[2] = a, b, cc
+	core.active.Store(0)
+	a.cb.ForceOpen()
+	core.strategy = &scriptedStrategy{
+		picks: []int{1, 2},
+		before: func(call int) {
+			if call == 0 {
+				b.cb.ForceOpen() // opens between the snapshot and the commit
+			}
+		},
+	}
+
+	if err := core.tryFailover(context.Background(), 0); err != nil {
+		t.Fatalf("tryFailover: %v", err)
+	}
+	if got := core.active.Load(); got != 2 {
+		t.Fatalf("active = %d, want 2 (the stale pick 1 opened before commit)", got)
+	}
+}
+
+// TestWatchRewritesRemovedMemberClosed pins the Watch removed-member race: a
+// member removed mid-call answers ErrClosed from its closed client although the
+// MultiDBClient is open; the caller must see the retryable error, and the
+// transaction is not replayed.
+func TestWatchRewritesRemovedMemberClosed(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{FailureDetector: &countingFD{}})
+	a := newLazyMember(0)
+	core.dbs[0] = a
+	core.active.Store(0)
+	_ = a.c.Close()
+	a.removed.Store(true)
+	mc := &MultiDBClient{core: core}
+
+	calls := 0
+	err := mc.Watch(context.Background(), func(*Tx) error { calls++; return nil }, "k")
+	if !errors.Is(err, ErrTemporarilyNotAvailable) {
+		t.Fatalf("Watch on a removed member: got %v, want ErrTemporarilyNotAvailable", err)
+	}
+	if calls != 0 {
+		t.Fatalf("fn ran %d times, want 0 (WATCH failed before fn; no replay)", calls)
+	}
+}
+
+// blockingCheck signals when it starts and then blocks until its context ends.
+type blockingCheck struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingCheck) CheckHealth(ctx context.Context, _ *Client) (bool, error) {
+	b.once.Do(func() { close(b.started) })
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+func (b *blockingCheck) CheckClusterHealth(ctx context.Context, _ *ClusterClient) (bool, error) {
+	return b.CheckHealth(ctx, nil)
+}
+
+// TestCloseCancelsInFlightAddDatabaseProbe pins shutdown vs AddDatabase: a
+// member whose startup probe is still running when Close lands is not in
+// c.dbs yet, so closeAll cannot drain it. Close must cancel the probe so the
+// add unwinds promptly (instead of waiting out HealthCheckTimeout) and closes
+// the built client itself.
+func TestCloseCancelsInFlightAddDatabaseProbe(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{
+		FailureDetector:      &countingFD{},
+		HealthCheckTimeout:   30 * time.Second,
+		HealthCheckPolicy:    defaultMultiDBPolicy{},
+		CircuitBreakerConfig: &MultiDBCircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1, GracePeriod: time.Second},
+	})
+	check := &blockingCheck{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := core.addDatabase(context.Background(), MultiDBClientConfig{
+			Options:      &Options{Addr: "127.0.0.1:6379", MaxRetries: -1},
+			Weight:       1,
+			HealthChecks: []MultiDBHealthCheck{check},
+		})
+		done <- err
+	}()
+	select {
+	case <-check.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup probe never started")
+	}
+	if err := core.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("addDatabase after Close: got %v, want ErrClosed", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("addDatabase did not unwind after Close canceled its probe (would wait out HealthCheckTimeout)")
+	}
+}
+
+// lagOnlyStub is a fail-back-only check (like the lag-aware REST check) that
+// always passes, to exercise a member with no liveness check of its own.
+type lagOnlyStub struct{}
+
+func (lagOnlyStub) CheckHealth(context.Context, *Client) (bool, error) { return true, nil }
+func (lagOnlyStub) CheckClusterHealth(context.Context, *ClusterClient) (bool, error) {
+	return true, nil
+}
+func (lagOnlyStub) FailbackOnly() bool { return true }
+
+// TestNonFailbackChecksKeepsLivenessFloor pins the liveness floor: a member
+// configured with only fail-back-only checks still gets the default PING as
+// its active-safe probe, so a dead active endpoint is detected on an idle
+// client instead of the active probe becoming a no-op.
+func TestNonFailbackChecksKeepsLivenessFloor(t *testing.T) {
+	db := &multidbDatabase{checks: []MultiDBHealthCheck{lagOnlyStub{}}}
+	got := db.nonFailbackChecks()
+	if len(got) != 1 {
+		t.Fatalf("nonFailbackChecks = %d checks, want 1 (the default PING)", len(got))
+	}
+	if _, ok := got[0].(defaultPingHealthCheck); !ok {
+		t.Fatalf("nonFailbackChecks = %T, want defaultPingHealthCheck", got[0])
+	}
+	// The floor is a real probe: against a refusing endpoint the active-safe
+	// check set reports unhealthy instead of vacuously healthy.
+	dead := &multidbDatabase{
+		checks: []MultiDBHealthCheck{lagOnlyStub{}},
+		c:      NewClient(&Options{Addr: "127.0.0.1:1", MaxRetries: -1, DialTimeout: 200 * time.Millisecond}),
+		policy: defaultMultiDBPolicy{},
+	}
+	t.Cleanup(func() { _ = dead.c.Close() })
+	if dead.checkHealthyNoRecord(context.Background(), time.Second, dead.nonFailbackChecks()) {
+		t.Fatal("a member with only fail-back-only checks and a dead endpoint must not probe healthy")
+	}
+}
+
+// pongHook answers every command with PONG without dialing, counting calls.
+type pongHook struct{ pings *int }
+
+func (pongHook) DialHook(next DialHook) DialHook { return next }
+func (h pongHook) ProcessHook(ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		*h.pings++
+		if sc, ok := cmd.(*StatusCmd); ok {
+			sc.SetVal("PONG")
+		}
+		return nil
+	}
+}
+
+func (pongHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor is the split-verdict
+// scenario for a member configured with ONLY a fail-back-only check: when it
+// becomes active mid-probe, the active-safe pass must run the PING floor (a
+// real liveness verdict) and must not record the lag failure — the member
+// stays closed because PONG came back, not because nothing was probed.
+func TestBackgroundProbeLagOnlyMemberGoneActiveUsesPingFloor(t *testing.T) {
+	core := newMultidbCore(&MultiDBOptions{HealthCheckTimeout: time.Second})
+	mkCB := func() *imultidb.CircuitBreaker {
+		return imultidb.NewCircuitBreaker(imultidb.CircuitBreakerConfig{FailureThreshold: 1, SuccessThreshold: 1})
+	}
+	a := &multidbDatabase{id: 0, cb: mkCB(), policy: defaultMultiDBPolicy{}, checks: []MultiDBHealthCheck{okLivenessCheck{}}}
+	pings := 0
+	b := &multidbDatabase{
+		id:     1,
+		weight: 1,
+		c:      NewClient(&Options{Addr: "127.0.0.1:6379", MaxRetries: -1}),
+		cb:     mkCB(),
+		policy: defaultMultiDBPolicy{},
+	}
+	t.Cleanup(func() { _ = b.c.Close() })
+	b.c.AddHook(pongHook{pings: &pings})
+	core.dbs[0], core.dbs[1] = a, b
+	core.active.Store(0)
+	b.checks = []MultiDBHealthCheck{&failbackLagCheck{onCheck: func() { core.active.Store(1) }}} // lag-only
+
+	core.runHealthChecksOnce(context.Background())
+
+	if b.cb.State() != imultidb.CircuitClosed {
+		t.Fatalf("lag-only member that went active mid-probe was evicted: breaker=%v (PING answered PONG, so only the lag failure could have opened it)", b.cb.State())
+	}
+	if pings == 0 {
+		t.Fatal("the active-safe pass ran no liveness probe: the PING floor did not execute")
 	}
 }
