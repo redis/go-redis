@@ -199,6 +199,8 @@ func (w *Writer) WriteArg(v interface{}) error {
 	}
 }
 
+// writeArgExtra handles additional argument types not covered by the
+// main switch in writeArg. 
 func (w *Writer) writeArgExtra(v interface{}) error {
 	var (
 		rfValue = reflect.ValueOf(v)
