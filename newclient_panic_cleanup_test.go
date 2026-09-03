@@ -3,7 +3,9 @@ package redis
 import (
 	"context"
 	"io"
+	"math"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -105,5 +107,27 @@ func TestNewClientPanicClosesPartialClient(t *testing.T) {
 			t.Fatalf("partial client leaked its pool after NewClient panicked: opened=%d closed=%d", o, atomic.LoadInt64(&closed))
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// TestNewClientPanicCleanupSurvivesNilPool pins that the panic-cleanup defer
+// does not itself panic when a pool constructor fails. newConnPool returns a
+// nil pool plus an error for an out-of-range PoolSize; the pool field must stay
+// nil (not a typed-nil pool.Pooler) so closeResources skips it and the ORIGINAL
+// construction error surfaces to the caller, not a nil-deref from the cleanup.
+func TestNewClientPanicCleanupSurvivesNilPool(t *testing.T) {
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		// PoolSize overflows int32 -> newConnPool returns (nil, err) -> NewClient
+		// panics at pool creation, before the field is assigned.
+		NewClient(&Options{PoolSize: math.MaxInt32 + 1})
+	}()
+	if recovered == nil {
+		t.Fatal("expected NewClient to panic on an out-of-range PoolSize")
+	}
+	err, ok := recovered.(error)
+	if !ok || !strings.Contains(err.Error(), "failed to create connection pool") {
+		t.Fatalf("cleanup replaced the construction panic (typed-nil pool nil-deref?): recovered=%v (%T)", recovered, recovered)
 	}
 }

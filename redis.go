@@ -2125,16 +2125,23 @@ func NewClient(opt *Options) *Client {
 	mainPoolName := opt.Addr + "_" + uniqueID
 	pubsubPoolName := opt.Addr + "_" + uniqueID + "_pubsub"
 
-	// Create connection pools
-	var err error
-	c.connPool, err = newConnPool(opt, c.dialHook, mainPoolName)
+	// Create connection pools. Assign the fields only AFTER the error check:
+	// newConnPool/newPubSubPool return a nil *pool on error, and assigning that
+	// straight to the pool.Pooler field would leave a typed-nil interface that
+	// closeResources treats as present (its != nil check passes), so the
+	// panic-cleanup defer above would nil-deref inside ConnPool.Close instead of
+	// surfacing the original construction error. A local var keeps the field nil
+	// on failure. The pipeline pool below already follows this pattern.
+	connPool, err := newConnPool(opt, c.dialHook, mainPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create connection pool: %w", err))
 	}
-	c.pubSubPool, err = newPubSubPool(opt, c.dialHook, pubsubPoolName)
+	c.connPool = connPool
+	pubSubPool, err := newPubSubPool(opt, c.dialHook, pubsubPoolName)
 	if err != nil {
 		panic(fmt.Errorf("redis: failed to create pubsub pool: %w", err))
 	}
+	c.pubSubPool = pubSubPool
 
 	// Create the dedicated pipeline pool unconditionally, like pubSubPool: it
 	// is pure burst capacity (no pre-dialing, small cap, larger buffers — see
