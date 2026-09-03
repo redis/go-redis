@@ -2840,6 +2840,133 @@ func TestDrainPushNotifications_CustomProcessorErrorIsFatal(t *testing.T) {
 	}
 }
 
+// TestDrainPushNotifications_CustomProcessorSkipsKernelOnlyData pins the spec gate
+// (push.md): a custom processor gets work only when real RESP bytes are BUFFERED.
+// Here a full frame sits on the socket (CheckForData readable) but nothing is
+// buffered yet — the kernel-only case that over TLS can be a control record with no
+// RESP bytes. The custom processor must be skipped (not invoked, not fatal); the
+// frame is left for a later drain with buffered bytes or the MaxStaleness backstop.
+func TestDrainPushNotifications_CustomProcessorSkipsKernelOnlyData(t *testing.T) {
+	switch runtime.GOOS {
+	case "linux", "darwin", "dragonfly", "freebsd", "netbsd", "openbsd", "solaris", "illumos":
+	default:
+		t.Skip("platform has no non-consuming raw-socket probe")
+	}
+
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	// A wrapper around the built-in processor is classified CUSTOM; erroringProcessor
+	// returns its error WITHOUT reading, so if the gate wrongly invokes it the drain
+	// returns a (fatal) non-nil error.
+	proc := erroringProcessor{push.NewProcessor(), errors.New("custom must be skipped on kernel-only data")}
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+	cn := pool.NewConn(client)
+
+	if _, err := server.Write(invalidateFrame("foo")); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !cn.MaybeHasData() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !cn.MaybeHasData() {
+		t.Fatal("frame never became socket-readable")
+	}
+	if cn.HasBufferedData() {
+		t.Fatal("precondition: nothing should be buffered in the reader yet")
+	}
+
+	processed, err := c.drainPushNotifications(cn)
+	if err != nil {
+		t.Fatalf("custom processor was invoked on kernel-only data (must be skipped): %v", err)
+	}
+	if processed {
+		t.Fatal("custom processor must not report success on kernel-only data")
+	}
+}
+
+// TestDrainPushNotifications_CustomProcessorSkippedOnProbedBytes pins that the
+// custom-processor gate keys on bytes ALREADY buffered, not on a byte the probe just
+// peeked from an opaque transport. An opaque wrapper hides real invalidate bytes
+// from the socket check and requests a drain (MarkCscReadPending); the probe can
+// peek a byte into the buffer, but a custom processor must still be skipped this
+// pass — handing its blocking loop probed (not pre-buffered) data risks a fatal
+// spurious retire (spec: push.md). Skipping is bounded (periodic fallback +
+// MaxStaleness). A built-in processor is unaffected.
+func TestDrainPushNotifications_CustomProcessorSkippedOnProbedBytes(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	proc := erroringProcessor{push.NewProcessor(), errors.New("custom must not run on probed (not pre-buffered) bytes")}
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+	cn := pool.NewConn(&bufferedNetConn{
+		Conn:     client,
+		buffered: bytes.NewReader(invalidateFrame("foo")),
+	})
+	cn.MarkCscReadPending()
+
+	processed, err := c.drainPushNotifications(cn)
+	if err != nil {
+		t.Fatalf("custom processor was run on probed (not pre-buffered) bytes and retired the conn: %v", err)
+	}
+	if processed {
+		t.Fatal("custom processor must not report success on probed (not pre-buffered) bytes")
+	}
+}
+
+// TestDrainPushNotifications_RelaxedBudgetToleratesFragmentedFrame pins that the
+// background drain uses pushDrainBudget (push.md): while maintenance relaxation is
+// active, a push frame fragmented past the small hard cap must still complete rather
+// than be treated as a fatal mid-frame desync that evicts this conn's CSC coverage.
+func TestDrainPushNotifications_RelaxedBudgetToleratesFragmentedFrame(t *testing.T) {
+	oldHardReadCap := cscDrainHardReadCap
+	cscDrainHardReadCap = 10 * time.Millisecond // tail arrives after this, within relaxed
+	defer func() { cscDrainHardReadCap = oldHardReadCap }()
+
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	rec := &recordingHandler{}
+	proc := push.NewProcessor()
+	if err := proc.RegisterHandler("invalidate", rec, false); err != nil {
+		t.Fatalf("register handler: %v", err)
+	}
+	c := &baseClient{opt: &Options{Protocol: 3}, pushProcessor: proc}
+	cn := pool.NewConn(client)
+	// Activate relaxation so pushDrainBudget raises the cap well above 10ms.
+	cn.SetRelaxedTimeout(500*time.Millisecond, 500*time.Millisecond)
+
+	frame := invalidateFrame("fragmented")
+	split := len(frame) - 4
+	if _, err := server.Write(frame[:split]); err != nil {
+		t.Fatalf("write frame prefix: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !cn.MaybeHasData() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !cn.MaybeHasData() {
+		t.Fatal("frame prefix never became socket-readable")
+	}
+	go func() {
+		time.Sleep(60 * time.Millisecond) // past the 10ms hard cap, within the 500ms budget
+		_, _ = server.Write(frame[split:])
+	}()
+
+	processed, err := c.drainPushNotifications(cn)
+	if err != nil {
+		t.Fatalf("relaxed drain of fragmented frame errored (budget not applied?): %v", err)
+	}
+	if !processed || rec.count() != 1 {
+		t.Fatalf("fragmented frame not processed under relaxed budget: processed=%v calls=%d",
+			processed, rec.count())
+	}
+}
+
 // TestBackgroundDrainerLifecycle verifies start stores a handle on the client,
 // double-start is a no-op, and stop joins the goroutine. The handle is
 // intentionally RETAINED (not cleared) after stop: cscPoolHook is read on the

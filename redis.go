@@ -2961,7 +2961,12 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 	if socketErr != nil {
 		return false, socketErr
 	}
-	hasData := cn.HasBufferedData() || socketData
+	// Capture the already-buffered state BEFORE the probe below: it decides whether a
+	// custom processor may run (see the custom-processor gate). The probe can peek a
+	// byte into the buffer, but a byte fetched from the socket/wrapper is NOT the
+	// "real bytes already buffered" the spec requires for a custom processor.
+	buffered := cn.HasBufferedData()
+	hasData := buffered || socketData
 	if !readPending && !periodicReadPending && !hasData {
 		return false, nil
 	}
@@ -2990,9 +2995,31 @@ func (c *baseClient) drainPushNotifications(cn *pool.Conn) (processorSucceeded b
 		}
 	}
 
+	// Custom-processor gate (spec: .claude/specs/push.md): a custom processor
+	// implements only the blocking loop, so it gets work only when real RESP bytes
+	// were ALREADY buffered — never on kernel-only readability, which over TLS can be
+	// a control record with zero RESP bytes, and never on a byte the probe above just
+	// fetched from the socket/wrapper. Handing it non-buffered data would run the
+	// blocking loop into the hard cap; its error is always fatal for a custom
+	// processor and would retire a healthy conn (the spurious-retire the spec warns
+	// of). Skipping is bounded: the periodic fallback re-probes and MaxStaleness
+	// backstops. The built-in buffered processor accepts kernel-only readability (a
+	// boundary timeout is benign), so it still proceeds. Gate on `buffered` captured
+	// before the probe, mirroring peekAndProcessPushNotifications.
+	if !buffered {
+		if _, builtin := c.pushProcessor.(*push.Processor); !builtin {
+			return false, nil
+		}
+	}
+
 	handlerCtx := c.pushNotificationHandlerContext(cn)
 	handlerCtx.Client = cscHandlerClient{baseClient: c}
-	err = cn.WithReaderHardDeadline(cscDrainHardReadCap, func(rd *proto.Reader) error {
+	// Relaxation-aware cap (spec: pushDrainBudget): during a failover/migration a push
+	// frame can fragment past the small hard cap, and a mid-frame timeout is a fatal
+	// desync that would evict this conn's CSC coverage in the very window relaxation
+	// covers. Raise the cap to the relaxed timeout while relaxation is active; without
+	// it EffectiveReadTimeout returns the unchanged hard cap.
+	err = cn.WithReaderHardDeadline(pushDrainBudget(cn, cscDrainHardReadCap), func(rd *proto.Reader) error {
 		if processor, ok := c.pushProcessor.(*push.Processor); ok {
 			return processor.ProcessPendingNotificationsBuffered(
 				context.Background(), handlerCtx, rd,
