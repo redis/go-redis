@@ -1333,18 +1333,73 @@ func TestCircuitBreaker_HalfOpenSuccessFailureRaceNeverDropsOutcome(t *testing.T
 		close(start)
 		wg.Wait()
 
+		// With FailureThreshold 1, EVERY correct serialization ends Open, so
+		// this is the assertion that actually detects a dropped failure.
+		// Failure first: half-open re-opens. Success first: the circuit closes,
+		// and the failure is then reclassified as a fresh closed-state failure
+		// (recordFailureHalfOpenLocked's StateClosed branch) which re-opens at
+		// the threshold of one. Accepting Closed here would pass exactly when
+		// the failure was discarded, which is the regression under test.
 		state := State(cb.state.Load())
-		if state != StateClosed && state != StateOpen {
-			t.Fatalf("round %d: state=%v after a concurrent half-open success/failure, want Closed or Open (never stuck half-open)", i, state)
+		if state != StateOpen {
+			t.Fatalf("round %d: state=%v after a concurrent half-open success/failure, want Open (the failure must survive either serialization)", i, state)
 		}
-		// Whichever outcome won, the loser's generation/state check must have
-		// left the counters clean for the new episode — a dropped-CAS bug would
-		// instead leave a stale non-zero successes/requests count behind.
+		// The failure must also be accounted for, not merely reflected in the
+		// state: a success that closed the circuit zeroes the failure count, so
+		// a dropped failure leaves this at zero.
+		if got := cb.Stats().Failures; got < 1 {
+			t.Fatalf("round %d: failures=%d after settling to Open, want at least 1 (the failure outcome was dropped)", i, got)
+		}
+		// Both transitions into Open clear the half-open counters, so a stale
+		// non-zero count would mean a botched transition.
 		if got := cb.Stats().Successes; got != 0 {
 			t.Fatalf("round %d: successes=%d after settling to %v, want 0", i, got, state)
 		}
 		if got := cb.Stats().Requests; got != 0 {
 			t.Fatalf("round %d: requests=%d after settling to %v, want 0", i, got, state)
 		}
+	}
+}
+
+// TestCircuitBreaker_FailureAfterSettlingSuccessIsReclassified pins the exact
+// interleaving the concurrent test above can only hit by luck: a failure reads
+// half-open, is descheduled, a success takes transitionMu first and closes the
+// circuit, and only then does the failure acquire the lock. The failure must
+// then be reclassified as a fresh closed-state failure and re-open the circuit,
+// not be discarded because the state it was recorded against is gone. Driving
+// the locked helpers directly makes the order deterministic instead of timing
+// dependent.
+func TestCircuitBreaker_FailureAfterSettlingSuccessIsReclassified(t *testing.T) {
+	cb := New(Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    1,
+		MaxHalfOpenRequests: 2,
+		OpenTimeout:         time.Nanosecond,
+	})
+	cb.RecordFailure()
+	cb.CheckState() // -> HalfOpen
+	if got := State(cb.state.Load()); got != StateHalfOpen {
+		t.Fatalf("setup: state=%v, want half-open", got)
+	}
+
+	// The success wins transitionMu and closes the circuit.
+	cb.transitionMu.Lock()
+	cb.recordSuccessHalfOpenLocked(false)
+	cb.transitionMu.Unlock()
+	if got := State(cb.state.Load()); got != StateClosed {
+		t.Fatalf("after the settling success: state=%v, want closed", got)
+	}
+
+	// The failure that had already observed half-open now records. It must not
+	// be dropped just because the episode closed underneath it.
+	cb.transitionMu.Lock()
+	cb.recordFailureHalfOpenLocked()
+	cb.transitionMu.Unlock()
+
+	if got := State(cb.state.Load()); got != StateOpen {
+		t.Fatalf("state=%v, want open: the failure was discarded instead of reclassified as a closed-state failure", got)
+	}
+	if got := cb.Stats().Failures; got < 1 {
+		t.Fatalf("failures=%d, want at least 1: the failure outcome was not counted", got)
 	}
 }
