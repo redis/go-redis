@@ -808,12 +808,16 @@ func (c *MultiDBClient) AutoPipeline() (*AutoPipeliner, error) {
 // EXPERIMENTAL: this API is subject to change, use with caution.
 func (c *MultiDBClient) AutoPipelineWithOptions(config *AutoPipelineOptions) (*AutoPipeliner, error) {
 	// The cluster-member check runs inside the build function, under
-	// autopipelinerMu: AddDatabase performs its cluster-vs-autopipeliner
-	// check under the same mutex, so the two cannot interleave.
+	// autopipelinerMu: AddDatabase performs its cluster-vs-autopipeliner check
+	// under the same mutex, so the two cannot interleave. AddDatabase releases
+	// the mutex before running the new member's health probe (so a probe that
+	// calls AutoPipeline cannot deadlock) and leaves pendingClusterAdds > 0 for
+	// that window; the build func refuses then too, so no unsharded instance is
+	// created while a cluster member is landing.
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.autopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultBlockingAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
-			if c.core.hasClusterMember() {
+			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
 				return nil, errMultiDBAutoPipelineCluster
 			}
 			return newAutoPipeliner(c, cfg, true)
@@ -835,7 +839,7 @@ func (c *MultiDBClient) AsyncAutoPipelineWithOptions(config *AutoPipelineOptions
 	return getOrCreateAutoPipeliner(c.autopipelinerMu, &c.asyncAutopipeliner, &c.autopipelinerClosed, nil, config,
 		DefaultAutoPipelineOptions,
 		func(cfg *AutoPipelineOptions) (*AutoPipeliner, error) {
-			if c.core.hasClusterMember() {
+			if c.core.hasClusterMember() || c.pendingClusterAdds > 0 {
 				return nil, errMultiDBAutoPipelineCluster
 			}
 			return newAutoPipeliner(c, cfg, false)

@@ -415,6 +415,13 @@ type MultiDBClient struct {
 	autopipeliner       *AutoPipeliner
 	asyncAutopipeliner  *AutoPipeliner
 	autopipelinerClosed bool
+	// pendingClusterAdds counts cluster AddDatabase calls that passed the
+	// liveness check and released autopipelinerMu to run the member's initial
+	// health probe. The autopipeliner build funcs refuse to create an instance
+	// while it is > 0, which keeps the cluster-vs-autopipeliner invariant without
+	// holding the mutex across user-supplied health checks — a check that calls
+	// AutoPipeline itself would otherwise deadlock on the non-reentrant mutex.
+	pendingClusterAdds int // guarded by autopipelinerMu
 
 	// closeOnce serializes concurrent Close calls so a second caller cannot
 	// race ahead to core.close() while the first is still draining the
@@ -558,19 +565,31 @@ func (c *MultiDBClient) AddDatabase(ctx context.Context, cfg MultiDBClientConfig
 		return -1, ErrClosed
 	}
 	if cfg.ClusterOptions != nil {
-		// Hold autopipelinerMu across the liveness check AND the membership
-		// change so a concurrent first AutoPipeline call (which creates the
-		// pipeliner under the same mutex and re-checks membership there) cannot
-		// interleave between them. Once shutdown has begun the cached pointers
-		// are already cleared, so the liveness check would pass and admit the
-		// cluster member mid-drain; a batch failing over during that drain could
-		// then reach it through the unsupported unsharded autopipeline path.
-		defer c.autopipelinerMu.Unlock()
+		// A live autopipeliner and a cluster member must never coexist: the
+		// cached instance was built without the cluster-specific safeguards and a
+		// later failover onto the new member would route merged batches around
+		// them. Check liveness under the mutex, then mark the add as pending and
+		// RELEASE the mutex before core.addDatabase. That call runs the member's
+		// initial health probe synchronously, and a custom check that calls
+		// AutoPipeline()/AsyncAutoPipeline() would otherwise deadlock on the
+		// non-reentrant mutex. The pending count keeps the invariant the lock used
+		// to hold: the build funcs (see AutoPipelineWithOptions) refuse to create
+		// an instance while a cluster add is in flight, so no unsharded instance
+		// can appear between this check and the member landing.
 		hasLiveAP := (c.autopipeliner != nil && !c.autopipeliner.closed.Load()) ||
 			(c.asyncAutopipeliner != nil && !c.asyncAutopipeliner.closed.Load())
 		if hasLiveAP {
+			c.autopipelinerMu.Unlock()
 			return -1, errors.New("redis: multidb: close autopipeliners before adding a cluster member database")
 		}
+		c.pendingClusterAdds++
+		c.autopipelinerMu.Unlock()
+		// Deferred so the count is released on a panic in the member path too.
+		defer func() {
+			c.autopipelinerMu.Lock()
+			c.pendingClusterAdds--
+			c.autopipelinerMu.Unlock()
+		}()
 		return c.core.addDatabase(ctx, cfg)
 	}
 	// Standalone: a standalone member has no cluster-autopipeline hazard, so the
