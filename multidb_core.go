@@ -1294,38 +1294,40 @@ func (c *multidbCore) addDatabase(ctx context.Context, cfg MultiDBClientConfig) 
 	if err != nil {
 		return -1, err
 	}
-	// Serialize with the other membership paths (RemoveDatabase, manual
-	// failover), which also hold failoverMu: the new member's index is then
-	// stable before the initial probe runs, so breaker state-change
-	// callbacks fired by the probe report the real index instead of 0.
-	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
-	// Re-check after the lock wait: with SkipInitialHealthCheck there is no
-	// probe, so this is the last chance to notice that the caller's context
-	// expired while the call queued behind another control operation.
-	if err := ctx.Err(); err != nil {
-		db.removed.Store(true)
-		_ = db.closeClient()
-		return -1, err
-	}
-
-	// The initial probe result never blocks membership; it only seeds the
-	// circuit breaker (and is skipped entirely with SkipInitialHealthCheck).
-	// A failed probe opens the breaker outright — one recorded failure would
-	// leave the member selectable under the default threshold, letting
-	// failover pick a database already known to be down.
+	// Probe BEFORE taking failoverMu and BEFORE publishing the member.
+	// checkHealthyNoRecord runs the checks and returns a verdict WITHOUT recording
+	// on the breaker or firing OnCircuitStateChanged. Recording here would open
+	// the breaker (at the default threshold a single failure does) and dispatch a
+	// callback for a member not yet in c.dbs, so a SetWeight / AddDatabaseHook
+	// made from that callback would get ErrDatabaseNotFound. Running it off
+	// failoverMu also stops a slow (or uncooperative custom) health check from
+	// blocking an urgent failover, which needs the same lock. The verdict is
+	// applied after the member is published, below.
 	healthy := true
 	if !cfg.SkipInitialHealthCheck {
-		healthy = db.probe(ctx, c.opts.HealthCheckTimeout)
+		start := time.Now()
+		healthy = db.checkHealthyNoRecord(ctx, c.opts.HealthCheckTimeout, db.checks)
 		if err := ctx.Err(); err != nil {
-			// The caller's context ended while the probe ran (whatever the
-			// verdict): a canceled control operation must not mutate the
-			// membership. Mark it removed first: the probe may already have
-			// queued circuit callbacks for a member that was never added.
+			// The caller's context ended while the probe ran: a canceled control
+			// operation must not mutate the membership. No callbacks were fired,
+			// so the built client just needs closing.
 			db.removed.Store(true)
 			_ = db.closeClient()
 			return -1, err
 		}
+		otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
+	}
+	// Serialize with the other membership paths (RemoveDatabase, manual failover),
+	// which also hold failoverMu, and publish under it so the ForceOpen callback
+	// below reports a stable member id.
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+	// Re-check after the lock wait: the caller's context may have expired while
+	// the call queued behind another control operation.
+	if err := ctx.Err(); err != nil {
+		db.removed.Store(true)
+		_ = db.closeClient()
+		return -1, err
 	}
 
 	c.dbMu.Lock()
