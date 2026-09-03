@@ -495,3 +495,48 @@ func TestInvalBatcherSizeCapGuardKeepsRefreshed(t *testing.T) {
 			delAfter-delBefore, noopAfter-noopBefore)
 	}
 }
+
+// TestInvalBatcherDedupKeepsLatestFetchSnap pins #3989: when two writes to the same
+// key land in one batching window with a refetch between them, the second write's
+// invalidation is deduped, but its NEWER fetch snapshot must be carried onto the
+// retained item — otherwise the apply-time guard uses the first write's older snapshot
+// and preserves the entry refetched BETWEEN the writes, serving it stale.
+func TestInvalBatcherDedupKeepsLatestFetchSnap(t *testing.T) {
+	ctx := context.Background()
+	lc := NewLocalCache(CacheConfig{MaxEntries: 1024})
+	mkValid := func(cacheKey, redisKey string) {
+		lc.DeleteByCacheKey(cacheKey)
+		tok, fetch := lc.Reserve(cacheKey, []string{redisKey})
+		if tok == 0 || !fetch {
+			t.Fatalf("Reserve(%q) = (%d, %v)", cacheKey, tok, fetch)
+		}
+		if !lc.fulfill(cacheKey, tok, 0, []byte("v")) {
+			t.Fatalf("fulfill(%q) failed", cacheKey)
+		}
+	}
+
+	// window never fires; only the stop-drain applies (which dedups ch in order).
+	b := newTestBatcher(lc, 64, time.Hour)
+	q := &cscRefreshQueue{ch: make(chan cscRefreshTarget, 64)}
+	q.sinceToken.Store(lc.LRUClock())
+	b.refresh.Store(q)
+
+	mkValid("ck:hot", "rk") // original entry
+	go b.run()
+
+	// Write 1's invalidation: snapshot BEFORE the refetch below.
+	b.enqueue("rk")
+	// Refetch between the two writes: the entry's fetchSeq now exceeds occ1's snapshot.
+	mkValid("ck:hot", "rk")
+	// Write 2's invalidation: same key, same window -> deduped, but carries a NEWER
+	// snapshot that must overwrite occ1's so the guard evicts the between-writes entry.
+	b.enqueue("rk")
+
+	b.stop()
+	b.join()
+
+	if _, ok := lc.Get(ctx, "ck:hot"); ok {
+		t.Fatal("entry refetched between two same-window writes was preserved; dedup must " +
+			"keep the LATEST fetch snapshot so the guard evicts it (#3989)")
+	}
+}

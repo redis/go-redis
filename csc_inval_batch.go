@@ -376,8 +376,16 @@ func (b *cscInvalBatcher) run() {
 	pending := make([]cscInvalItem, 0, 256)
 	// seen dedups by key WITHIN an epoch: the same key arriving again after a
 	// flush bumped the epoch must be re-appended (the old occurrence will be
-	// skipped by apply), or its post-flush delete would be lost to dedup.
-	seen := make(map[string]uint64, 256)
+	// skipped by apply), or its post-flush delete would be lost to dedup. idx is the
+	// key's index in pending, so a deduped duplicate can update the retained item's
+	// fetch snapshot (see add). seen and pending are always reset together (every
+	// applyPending is inside flush, which then clearSeen()s; fullFlushIfRequested
+	// resets both), so a stored idx never outlives its pending entry.
+	type seenEntry struct {
+		epoch uint64
+		idx   int
+	}
+	seen := make(map[string]seenEntry, 256)
 	clearSeen := func() {
 		for k := range seen {
 			delete(seen, k)
@@ -416,9 +424,17 @@ func (b *cscInvalBatcher) run() {
 	// SAME dedup as fast-path items — a burst of duplicate keys collapses to one
 	// delete per key.
 	add := func(it cscInvalItem) {
-		if e, dup := seen[it.key]; !dup || e != it.epoch {
-			seen[it.key] = it.epoch
+		if e, dup := seen[it.key]; !dup || e.epoch != it.epoch {
+			seen[it.key] = seenEntry{epoch: it.epoch, idx: len(pending)}
 			pending = append(pending, it)
+		} else if it.fetchSnap > pending[e.idx].fetchSnap {
+			// Same key, same epoch: dropped as a duplicate delete, BUT carry the LATEST
+			// fetch snapshot onto the retained item. A second write to the key in this
+			// window arrives with a newer fetchSnap; keeping only the first would let the
+			// apply-time fetch-order guard use the older snapshot and preserve an entry
+			// refetched BETWEEN the two writes, serving it stale until MaxStaleness
+			// (#3989). The item is still a single delete.
+			pending[e.idx].fetchSnap = it.fetchSnap
 		}
 		// A duplicate key in the same epoch is dropped here: apply() deletes the key
 		// once, so it becomes a single deletion. The incoming push was already
