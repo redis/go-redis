@@ -223,8 +223,6 @@ type Cmdable interface {
 	SlowLogGet(ctx context.Context, num int64) *SlowLogCmd
 	SlowLogLen(ctx context.Context) *IntCmd
 	SlowLogReset(ctx context.Context) *StatusCmd
-	Monitor(ctx context.Context, ch chan string) *MonitorCmd
-	MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd
 	Time(ctx context.Context) *TimeCmd
 	DebugObject(ctx context.Context, key string) *StringCmd
 	MemoryUsage(ctx context.Context, key string, samples ...int) *IntCmd
@@ -913,16 +911,53 @@ Notes:
 - This runs concurrently in the background. Trigger via the Start and Stop functions
 See further: Redis MONITOR command: https://redis.io/commands/monitor
 */
-func (c cmdable) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
-	cmd := newMonitorCmd(ctx, ch)
+
+// MONITOR stays off the shared cmdable surface so ordinary Pipeline values do
+// not inherit it through method promotion.
+func monitor(c cmdable, ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	cmd := newMonitorCmd(ctx, ch, args...)
 	_ = c(ctx, cmd)
 	return cmd
 }
 
+func (c *Client) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch)
+}
+
 // MonitorWithArgs works like Monitor, but appends vendor-specific arguments to
 // the MONITOR command for Redis-compatible services that require them.
-func (c cmdable) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
-	cmd := newMonitorCmd(ctx, ch, args...)
-	_ = c(ctx, cmd)
-	return cmd
+func (c *Client) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch, args...)
+}
+
+func (c *Tx) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch)
+}
+
+func (c *Tx) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch, args...)
+}
+
+func (c *Ring) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch)
+}
+
+func (c *Ring) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch, args...)
+}
+
+func (c *ClusterClient) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch)
+}
+
+func (c *ClusterClient) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch, args...)
+}
+
+func (c *Conn) Monitor(ctx context.Context, ch chan string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch)
+}
+
+func (c *Conn) MonitorWithArgs(ctx context.Context, ch chan string, args ...string) *MonitorCmd {
+	return monitor(c.cmdable, ctx, ch, args...)
 }
