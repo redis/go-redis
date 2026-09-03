@@ -1,10 +1,12 @@
 package redis
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"runtime"
 	"strings"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/redis/go-redis/v9/internal/otel"
 	"github.com/redis/go-redis/v9/internal/pool"
+	"github.com/redis/go-redis/v9/internal/proto"
+	"github.com/redis/go-redis/v9/push"
 )
 
 // fdCountHook counts Get/Put on the pipeline pool — used to prove the held
@@ -2574,5 +2578,1344 @@ func TestFullDuplexMaxHoldIdleDoesNotChurn(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if n := ap.fd.recycles.Load(); n > 2 {
 		t.Fatalf("idle engine recycled %d times in 300ms (max-hold ~40ms) — it churns Get/Put when idle", n)
+	}
+}
+
+// TestFullDuplexHandoffRecyclesPromptly verifies the writer observes a
+// connection marked for maintenance handoff and ends the session with a clean
+// recycle well before FullDuplexMaxHold, so the pool can queue the handoff at
+// Put instead of the conn continuing to take writes to a moving node until
+// max-hold. (Review thread #3789192590.)
+func TestFullDuplexHandoffRecyclesPromptly(t *testing.T) {
+	ctx := context.Background()
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	// Long max-hold and idle so ONLY a handoff can cause a prompt recycle.
+	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:            true,
+		Unordered:             false,
+		MaxConcurrentBatches:  1,
+		FullDuplexMaxHold:     30 * time.Second,
+		FullDuplexIdleTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	// The FD handoff recycle Puts the moving conn so the maintnotifications OnPut
+	// hook can hand it off. This test does not wire up that manager, so install a
+	// stand-in hook that takes a marked conn out of rotation on Put — otherwise the
+	// marked conn would be handed straight back and the recycle would livelock.
+	if pp := c.getPipelinePool(); pp != nil {
+		pp.AddPoolHook(handoffSimHook{})
+	}
+
+	// Start a session and wait until the engine holds a connection.
+	if err := ap.Set(ctx, "fd:handoff:k", "v", 0).Err(); err != nil {
+		t.Fatalf("initial set: %v", err)
+	}
+	cn := ap.fd.curConn.Load()
+	for deadline := time.Now().Add(2 * time.Second); cn == nil && time.Now().Before(deadline); {
+		time.Sleep(5 * time.Millisecond)
+		cn = ap.fd.curConn.Load()
+	}
+	if cn == nil {
+		t.Fatal("engine never exposed a held connection")
+	}
+
+	before := ap.fd.recycles.Load()
+	// Mark the held conn for handoff, as a MOVING push handler would.
+	if err := cn.MarkForHandoff(":6379", 1); err != nil {
+		t.Fatalf("MarkForHandoff: %v", err)
+	}
+	// Keep issuing commands so the writer loops and observes ShouldHandoff; assert
+	// a recycle happens far faster than the 30s max-hold.
+	start := time.Now()
+	recycled := false
+	for time.Since(start) < 5*time.Second {
+		_ = ap.Get(ctx, "fd:handoff:k").Err() // errors are fine; drives the loop
+		if ap.fd.recycles.Load() > before {
+			recycled = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !recycled {
+		t.Fatalf("session did not recycle after handoff mark within 5s (max-hold is 30s) — writer is not observing ShouldHandoff")
+	}
+	if el := time.Since(start); el > 10*time.Second {
+		t.Fatalf("recycle took %v, far above expectation", el)
+	}
+}
+
+// fdEncoderPanicArg is a command argument whose BinaryMarshaler panics, so
+// writeCmd (proto WriteArgs) panics mid-serialization - simulating a user
+// BinaryMarshaler that blows up on the FD writer goroutine.
+type fdEncoderPanicArg struct{}
+
+func (fdEncoderPanicArg) MarshalBinary() ([]byte, error) { panic("boom: encoder panic") }
+
+// TestFDWriteBatchStampsSentPerCommand pins finding eTWPc: writeBatch must stamp
+// sent/writtenAt per-command INSIDE the serialize loop, so a command the
+// serializer never reaches (behind an earlier encoder panic) keeps sent=false and
+// its optimistic attempt refunded - otherwise a never-executed NoRetry behind the
+// panic is failed unsent (acute at MaxRetries==0).
+func TestFDWriteBatchStampsSentPerCommand(t *testing.T) {
+	ctx := context.Background()
+	cn := pool.NewConn(&mockNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	// index 1's encoder panics; indices 2 and 3 must never be serialized.
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "set", "k1", fdEncoderPanicArg{}), attempts: 1},
+		{cmd: NewRawWriteToCmd(ctx, nil, "get", "k2"), attempts: 1}, // NoRetry() == true
+		{cmd: NewStatusCmd(ctx, "set", "k3", "v"), attempts: 1},
+	}
+
+	err := fd.writeBatch(ctx, cn, inflight, reqs)
+	if err == nil || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("writeBatch err = %v, want errFDPanicRecovered", err)
+	}
+
+	if !reqs[0].sent {
+		t.Error("reqs[0] not marked sent (it was serialized)")
+	}
+	if !reqs[1].sent {
+		t.Error("reqs[1] not marked sent (the serializer reached it; it panicked)")
+	}
+	if reqs[2].sent {
+		t.Error("reqs[2] marked sent but was never serialized (behind the panic)")
+	}
+	if reqs[3].sent {
+		t.Error("reqs[3] marked sent but was never serialized (behind the panic)")
+	}
+
+	if reqs[0].attempts != 1 || reqs[1].attempts != 1 {
+		t.Errorf("serialized-prefix attempts = %d,%d, want 1,1", reqs[0].attempts, reqs[1].attempts)
+	}
+	if reqs[2].attempts != 0 || reqs[3].attempts != 0 {
+		t.Errorf("never-serialized-suffix attempts = %d,%d, want 0,0 (refunded)", reqs[2].attempts, reqs[3].attempts)
+	}
+
+	if inflight.len() != 4 {
+		t.Fatalf("inflight.len() = %d, want 4 (whole batch recovered for settlement)", inflight.len())
+	}
+
+	// The never-serialized NoRetry (reqs[2]) must REPLAY, not fail: sent=false so it
+	// is not a split point, and refunded so it is not budget-exhausted at MaxRetries=0.
+	if n := fdFirstNoRetry(reqs[2:]); n != len(reqs[2:]) {
+		t.Errorf("fdFirstNoRetry flagged a never-sent NoRetry at %d - it would be failed unsent", n)
+	}
+	kept, exhausted := fdPartitionByBudget(reqs[2:], 0)
+	if len(kept) != 2 || len(exhausted) != 0 {
+		t.Errorf("fdPartitionByBudget(suffix, 0) kept=%d exhausted=%d, want 2,0 - never-serialized suffix would be failed at MaxRetries=0", len(kept), len(exhausted))
+	}
+}
+
+// fdFakeRedisErr implements the redis.Error interface (a custom
+// PushNotificationProcessor could return one).
+type fdFakeRedisErr struct{}
+
+func (fdFakeRedisErr) Error() string { return "FAKE custom redis error" }
+func (fdFakeRedisErr) RedisError()   {}
+
+// TestFDPipelineErrConnUnusableStampsCmds pins finding eR1Nh: when a push-drain
+// returns errConnUnusable WRAPPING a redis.Error, isRedisError classifies it as a
+// reply, so the old guard skipped setCmdsErr and every command kept Err()==nil
+// while Exec returned an error (the FD shutdown flush could then complete them as
+// successes). The errConnUnusable marker must take precedence and stamp all cmds.
+func TestFDPipelineErrConnUnusableStampsCmds(t *testing.T) {
+	ctx := context.Background()
+	c := NewClient(&Options{Addr: ":6379"})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	wrapped := fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, fdFakeRedisErr{})
+	// Preconditions that make the bug possible: isRedisError sees through the wrap,
+	// yet the marker is present.
+	if !isRedisError(wrapped) {
+		t.Fatal("precondition: isRedisError(wrapped) should be true (it unwraps to a redis.Error)")
+	}
+	if !errors.Is(wrapped, errConnUnusable) {
+		t.Fatal("precondition: errors.Is(wrapped, errConnUnusable) should be true")
+	}
+
+	cmds := []Cmder{
+		NewStatusCmd(ctx, "ping"),
+		NewStatusCmd(ctx, "ping"),
+	}
+	stub := func(context.Context, *pool.Conn, []Cmder) (bool, error) {
+		return false, wrapped // no retry; behaves like a fatal push-drain error
+	}
+
+	err := c.generalProcessPipeline(ctx, cmds, stub, "test", 0)
+	if !errors.Is(err, errConnUnusable) {
+		t.Fatalf("generalProcessPipeline err = %v, want errConnUnusable-wrapped", err)
+	}
+	for i, cmd := range cmds {
+		if cmd.Err() == nil {
+			t.Errorf("cmd[%d].Err() == nil - a transport-desync error was left unstamped", i)
+		}
+	}
+}
+
+// fdCountingHook counts ProcessHook invocations.
+type fdCountingHook struct{ n *int32 }
+
+func (h fdCountingHook) DialHook(next DialHook) DialHook { return next }
+func (h fdCountingHook) ProcessHook(next ProcessHook) ProcessHook {
+	return func(ctx context.Context, cmd Cmder) error {
+		atomic.AddInt32(h.n, 1)
+		return next(ctx, cmd)
+	}
+}
+
+func (h fdCountingHook) ProcessPipelineHook(next ProcessPipelineHook) ProcessPipelineHook {
+	return next
+}
+
+// TestFDLiveHookChain checks that the FD host runs the client's live process-hook
+// chain. Hooks are added at construction (before traffic), so the FD host loads live
+// hook state like the synchronous path — no submit-time snapshot.
+func TestFDLiveHookChain(t *testing.T) {
+	ctx := context.Background()
+	c := NewClient(&Options{Addr: ":6379"}) // no dial: only hook methods are exercised
+	defer c.Close()
+
+	var h1 int32
+	c.AddHook(fdCountingHook{&h1})
+
+	cmd := NewStatusCmd(ctx, "ping")
+	base := func(context.Context, Cmder) error { return nil }
+
+	if err := c.withProcessHook(ctx, cmd, base); err != nil {
+		t.Fatalf("withProcessHook: %v", err)
+	}
+	if got := atomic.LoadInt32(&h1); got != 1 {
+		t.Fatalf("live hook ran %d times, want 1", got)
+	}
+}
+
+// TestFDWriteBatchRefundsReplaySuffixByReached pins finding F1: writeBatch's
+// recovery-push must refund the optimistic attempt by how far the serialize loop
+// REACHED this call (index >= written), NOT by the lifetime `sent` flag. `sent` is
+// sticky across replays, so on a SECOND-session replay every command already carries
+// sent==true; keying the refund on !sent then skips the suffix that this call never
+// serialized (an earlier command's encoder panicked), leaving it over-charged and
+// budget-exhausted one replay early. At MaxRetries==1 that FAILS a command that was
+// never actually re-issued.
+func TestFDWriteBatchRefundsReplaySuffixByReached(t *testing.T) {
+	ctx := context.Background()
+	cn := pool.NewConn(&mockNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	// SECOND-session replay: every command was already sent in session 1 (sent==true,
+	// sticky) and re-charged for this replay (attempts==2: submit + one replay bump,
+	// like run()'s carry[i].attempts++). index 1's encoder panics, so indices 2 and 3
+	// are never reached this call.
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k1", fdEncoderPanicArg{}), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k2", "v"), attempts: 2, sent: true},
+		{cmd: NewStatusCmd(ctx, "set", "k3", "v"), attempts: 2, sent: true},
+	}
+
+	err := fd.writeBatch(ctx, cn, inflight, reqs)
+	if err == nil || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("writeBatch err = %v, want errFDPanicRecovered", err)
+	}
+
+	// The prefix REACHED this call keeps its charge: reqs[0] serialized cleanly,
+	// reqs[1] panicked mid-serialize (its bytes may have reached the wire).
+	if reqs[0].attempts != 2 || reqs[1].attempts != 2 {
+		t.Errorf("reached-prefix attempts = %d,%d, want 2,2 (kept)", reqs[0].attempts, reqs[1].attempts)
+	}
+	// The suffix NOT reached this call must be refunded DESPITE sent==true — this is
+	// the fix. A refund keyed on !sent would skip these (they carry the sticky flag).
+	if reqs[2].attempts != 1 || reqs[3].attempts != 1 {
+		t.Errorf("unreached-suffix attempts = %d,%d, want 1,1 (refunded despite sent==true)", reqs[2].attempts, reqs[3].attempts)
+	}
+	// Consequence: at MaxRetries==1 the refunded suffix stays eligible for one more
+	// replay; over-charged (attempts 2 > 1) it would be declared budget-exhausted and
+	// FAILED without ever being re-issued.
+	kept, exhausted := fdPartitionByBudget(reqs[2:], 1)
+	if len(kept) != 2 || len(exhausted) != 0 {
+		t.Errorf("fdPartitionByBudget(suffix, 1) kept=%d exhausted=%d, want 2,0 (suffix loses its retry without the reached-based refund)", len(kept), len(exhausted))
+	}
+	if inflight.len() != 4 {
+		t.Fatalf("inflight.len() = %d, want 4 (whole batch recovered for settlement)", inflight.len())
+	}
+}
+
+// fdPanicAllowLimiter is a user Limiter whose Allow panics (user code that blows up
+// on the engine's writer goroutine). ReportResult counts calls so the test can pin
+// that a panicking Allow — like a deny — grants no permit and so reports nothing.
+type fdPanicAllowLimiter struct{ reports atomic.Int64 }
+
+func (l *fdPanicAllowLimiter) Allow() error         { panic("boom: limiter Allow panic") }
+func (l *fdPanicAllowLimiter) ReportResult(_ error) { l.reports.Add(1) }
+
+// TestFDWriteBatchRecoversPanickingLimiterAllow pins finding F4: Limiter.Allow runs
+// on the FD writer goroutine BEFORE writeBatch arms its serialize-panic defer, so a
+// panicking Allow (user code) would escape fd.run and crash the process with the
+// accepted chunk unsettled. writeBatch must recover it, fail the chunk (deny
+// semantics), and — because no permit was granted — never call ReportResult.
+func TestFDWriteBatchRecoversPanickingLimiterAllow(t *testing.T) {
+	ctx := context.Background()
+	cn := pool.NewConn(&mockNetConn{})
+	lim := &fdPanicAllowLimiter{}
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), batch: newAPBatch(), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "set", "k1", "v"), batch: newAPBatch(), attempts: 1},
+	}
+
+	// The panic must be recovered inside writeBatch, not propagated to the caller.
+	err := func() (e error) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("writeBatch propagated a limiter Allow panic instead of recovering it: %v", r)
+			}
+		}()
+		return fd.writeBatch(ctx, cn, inflight, reqs)
+	}()
+	// Deny semantics: writeBatch returns nil (only THIS chunk failed), each command
+	// carries the wrapped panic error, and the connection is untouched.
+	if err != nil {
+		t.Fatalf("writeBatch err = %v, want nil (a deny fails the chunk, not writeBatch)", err)
+	}
+	for i := range reqs {
+		got := reqs[i].cmd.rawErr()
+		if got == nil {
+			t.Errorf("reqs[%d].Err() == nil, want the recovered panic error", i)
+		} else if !errors.Is(got, errFDPanicRecovered) {
+			t.Errorf("reqs[%d].Err() = %v, want errFDPanicRecovered", i, got)
+		}
+	}
+	if reqs[0].sent || reqs[1].sent {
+		t.Errorf("a command was marked sent after a denied (panicking) Allow — the connection must be untouched")
+	}
+	if inflight.len() != 0 {
+		t.Errorf("inflight.len() = %d, want 0 — a denied chunk must never enter the in-flight deque", inflight.len())
+	}
+	// Strict pairing: a panicking Allow grants no permit, so there is NO ReportResult.
+	if n := lim.reports.Load(); n != 0 {
+		t.Errorf("ReportResult called %d times after a panicking Allow, want 0 (no permit -> no report)", n)
+	}
+}
+
+// TestAutoPipelineConcurrentSharedDrainRunsOnce pins finding F3: the two close entry
+// points for one engine — the explicit AutoPipeliner.Close and the shared-pool close
+// hook (which calls cancelAndDrain WITHOUT setting ap.closed) — can run concurrently
+// when a pool-sharing clone closes the shared pools while the owner calls Close. The
+// drain body must run exactly ONCE (two concurrent drains would interleave drainAll's
+// flushers->sweep->batchWg.Wait ordering and panic "WaitGroup misuse: Add called
+// concurrently with Wait"), and both callers must get the SAME close error.
+//
+// No -race red-check is available: there is no shared-memory data race here (the
+// hazard is a WaitGroup-misuse runtime panic, and each caller returns its own value).
+// The red-check is the drainRuns counter: reverting cancelAndDrain to call drainBody
+// directly (no drainOnce) makes both callers run the body, so drainRuns == 2.
+func TestAutoPipelineConcurrentSharedDrainRunsOnce(t *testing.T) {
+	c := NewClient(&Options{Addr: ":6379"}) // no dial: nothing is dispatched
+	defer c.Close()
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{Unordered: true, NumShards: 4})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	// Path A: the explicit Close (CAS on ap.closed, unregister hook, then drain).
+	go func() { defer wg.Done(); <-start; errs[0] = ap.Close() }()
+	// Path B: the shared-pool close hook path (cancelAndDrain, ap.closed left false).
+	go func() { defer wg.Done(); <-start; errs[1] = ap.cancelAndDrain() }()
+	close(start)
+	wg.Wait()
+
+	if got := ap.drainRuns.Load(); got != 1 {
+		t.Fatalf("drain body ran %d times, want 1 — concurrent closers double-drained the engine", got)
+	}
+	if errs[0] != errs[1] {
+		t.Fatalf("concurrent close paths returned different results: Close=%v hook=%v", errs[0], errs[1])
+	}
+	if errs[0] != nil {
+		t.Fatalf("healthy concurrent close returned %v, want nil", errs[0])
+	}
+}
+
+// fdPanicReportLimiter is a user Limiter whose ReportResult panics — the reply-side
+// obligation report (fdLimiterReport.settle) runs on FD background goroutines: the
+// reader's success path and the write-failure/settleTail paths. reports counts calls
+// (incremented BEFORE the panic) so pairing stays assertable; panicOnce restricts the
+// panic to the FIRST report for the manual red-check, so a removed recover exhibits
+// the replay of an already-consumed reply rather than a cascade of crashes.
+type fdPanicReportLimiter struct {
+	reports   atomic.Int64
+	panicOnce bool
+}
+
+func (l *fdPanicReportLimiter) Allow() error { return nil }
+
+func (l *fdPanicReportLimiter) ReportResult(_ error) {
+	n := l.reports.Add(1)
+	if !l.panicOnce || n == 1 {
+		panic("boom: limiter ReportResult panic")
+	}
+}
+
+// fdCannedReplyConn is a net.Conn whose Write succeeds (a peer that accepts the
+// batch) and whose Read serves preloaded RESP replies, so the FD reader decodes a
+// real reply for every command. After the canned bytes drain it blocks until Close,
+// so a stray read past the last reply never returns a spurious EOF mid-parse.
+type fdCannedReplyConn struct {
+	mockNetConn
+	mu     sync.Mutex
+	buf    *bytes.Reader
+	closed chan struct{}
+}
+
+func newFDCannedReplyConn(reply []byte) *fdCannedReplyConn {
+	return &fdCannedReplyConn{buf: bytes.NewReader(reply), closed: make(chan struct{})}
+}
+
+func (c *fdCannedReplyConn) Read(b []byte) (int, error) {
+	c.mu.Lock()
+	if c.buf.Len() > 0 {
+		n, err := c.buf.Read(b)
+		c.mu.Unlock()
+		return n, err
+	}
+	c.mu.Unlock()
+	<-c.closed
+	return 0, io.EOF
+}
+
+func (c *fdCannedReplyConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+
+// TestFDLimiterReportPanicOnReplyDoesNotReplay pins the reply-side half of the
+// "limiter report panic kills engine" finding: ReportResult runs on the reader's
+// success path (fdLimiterReport.settle) BEFORE the reader advances past the command.
+// An unguarded panic there hits the reader's session-failure recovery, which recovers
+// the still-unadvanced req as an unacked tail and replays it — a command whose reply
+// was ALREADY consumed executes twice (the INCR-twice bug). settle must recover the
+// panic so the command completes with its real reply, is never replayed, and the
+// engine keeps serving.
+//
+// Deterministic and dial-free: the conn accepts every write and serves one +OK per
+// command, so the reader decodes a real reply for each; the session ends via ctx
+// cancel (fdGraceful) once every command has completed.
+//
+// Red-check: remove the recover in fdLimiterReport.settle AND set panicOnce=true
+// below — the first settle(nil) then panics into the reader recovery, session returns
+// fdConnErr with a non-empty tail, and no command completes (the replay), so the
+// hookDone wait below times out and the test fails.
+func TestFDLimiterReportPanicOnReplyDoesNotReplay(t *testing.T) {
+	const n = 4
+	lim := &fdPanicReportLimiter{} // panicOnce=false: EVERY report panics -> the guard must hold repeatedly
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}, ctx: ctx},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, ReadTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 1,   // one chunk per command -> every req carries a limReport, so every reply settles
+		window:   100, // >= n, so the writer never window-gates the carry
+	}
+
+	var reply bytes.Buffer
+	cmds := make([]*StatusCmd, n)
+	dones := make([]chan struct{}, n)
+	carry := make([]fdReq, n)
+	for i := range carry {
+		reply.WriteString("+OK\r\n")
+		cmds[i] = NewStatusCmd(ctx, "set", fmt.Sprintf("k%d", i), "v")
+		dones[i] = make(chan struct{})
+		carry[i] = fdReq{cmd: cmds[i], hookDone: dones[i], attempts: 1}
+	}
+	cn := pool.NewConn(newFDCannedReplyConn(reply.Bytes()))
+
+	type sess struct {
+		reqs   []fdReq
+		result fdResult
+		err    error
+	}
+	done := make(chan sess, 1)
+	go func() {
+		r, res, e := fd.session(context.Background(), cn, carry)
+		done <- sess{r, res, e}
+	}()
+
+	// Every command must complete (its reply consumed and delivered) despite each
+	// report panicking. A hung wait here is the replay/loss bug: the reader died on
+	// the first panic and the req was recovered for replay instead of completed.
+	for i := range dones {
+		select {
+		case <-dones[i]:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("command %d never completed — a ReportResult panic killed the reader (replay/loss)", i)
+		}
+	}
+	// Completed with the REAL reply, not merely woken with an error: proves the
+	// consumed reply survived the panic (no double execution).
+	for i := range cmds {
+		if err := cmds[i].Err(); err != nil {
+			t.Errorf("command %d: Err() = %v, want nil (completed with its reply)", i, err)
+		}
+		if v := cmds[i].Val(); v != "OK" {
+			t.Errorf("command %d: Val() = %q, want OK", i, v)
+		}
+	}
+
+	// The engine survived: end the session cleanly and confirm no tail was recovered
+	// for replay.
+	cancel()
+	var got sess
+	select {
+	case got = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("session() hung after ctx cancel — the engine did not converge")
+	}
+	if got.result != fdGraceful {
+		t.Fatalf("session result = %v, want fdGraceful (a report panic must not look like a transport failure)", got.result)
+	}
+	if len(got.reqs) != 0 {
+		t.Fatalf("session returned %d reqs for replay, want 0 (nothing may be re-executed)", len(got.reqs))
+	}
+	if got.err != nil {
+		t.Fatalf("session err = %v, want nil", got.err)
+	}
+	// Strict pairing survives: every Allow's obligation still reported exactly once
+	// (the panic was swallowed but the Once fired).
+	if r := lim.reports.Load(); r != n {
+		t.Fatalf("ReportResult fired %d times, want %d", r, n)
+	}
+}
+
+// TestFDLimiterReportPanicOnWriteFailureNoCrash pins the write-side half of the
+// finding: writeBatch's report defer settles the chunk's obligation with the write
+// error via fdLimiterReport.settle. A panicking ReportResult there must be contained
+// so it neither escapes writeBatch (on the real writer goroutine it would crash the
+// process) nor replaces the real write error; the chunk still lands in the in-flight
+// deque for normal conn-error recovery.
+//
+// Red-check: remove the recover in fdLimiterReport.settle — the report panic then
+// escapes writeBatch and the recover wrapper below fires t.Fatalf.
+func TestFDLimiterReportPanicOnWriteFailureNoCrash(t *testing.T) {
+	ctx := context.Background()
+	lim := &fdPanicReportLimiter{}
+	cn := pool.NewConn(&failWriteNetConn{})
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{WriteTimeout: time.Second, Limiter: lim}}},
+		maxBatch: 8,
+	}
+	inflight := newFDInflight()
+
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "set", "k0", "v"), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "set", "k1", "v"), attempts: 1},
+	}
+
+	err := func() (e error) {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("writeBatch propagated a ReportResult panic instead of recovering it: %v", r)
+			}
+		}()
+		return fd.writeBatch(ctx, cn, inflight, reqs)
+	}()
+	if err == nil {
+		t.Fatal("writeBatch err = nil, want the write error (a report panic must not swallow the failure)")
+	}
+	if inflight.len() != len(reqs) {
+		t.Fatalf("inflight.len() = %d, want %d (a write-failed chunk still lands for conn-error recovery)", inflight.len(), len(reqs))
+	}
+	// The chunk's single write-failure obligation reported exactly once (panic
+	// swallowed, Once fired).
+	if r := lim.reports.Load(); r != 1 {
+		t.Fatalf("ReportResult fired %d times, want 1", r)
+	}
+}
+
+// TestFDReportReplyMetricsRecoversCallbackPanic pins that a panicking user metric
+// callback (OTel duration or the native error callback) cannot escape the reader:
+// reportReplyMetrics runs BEFORE the reply is advanced out of the in-flight deque,
+// and the reader's broad recovery would re-own an unadvanced req and replay an
+// already-consumed reply (a mutating command twice). It must recover the panic so
+// the caller completes normally.
+func TestFDReportReplyMetricsRecoversCallbackPanic(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(_ context.Context, _ string, _ *pool.Conn, _ string, _ bool, _ int) {
+			calls.Add(1)
+			panic("boom from a user metric callback")
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), attempts: 1}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("reportReplyMetrics propagated a callback panic: %v", r)
+			}
+		}()
+		// A non-nil error routes to the panicking error callback.
+		fd.reportReplyMetrics(context.Background(), req, errors.New("WRONGTYPE Operation"), nil)
+	}()
+
+	if calls.Load() != 1 {
+		t.Fatalf("error callback invoked %d times, want 1 (it must be reached, then its panic recovered)", calls.Load())
+	}
+}
+
+// TestFDFailReqsRecoversMetricCallbackPanic pins that a panicking user MetricError
+// callback on the engine-goroutine failure path (failReqs, reached on lease
+// failure / retry exhaustion / Close) cannot abort settlement: every req must get
+// its error set and its batch closed (caller woken), and the panic must not
+// escape into fd.run. The guard is PER-req, not around the loop — three reqs with
+// a callback that always panics prove reqs after the first still settle. Pure, no
+// server.
+func TestFDFailReqsRecoversMetricCallbackPanic(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
+			calls.Add(1)
+			panic("boom from a user metric callback")
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	ctx := context.Background()
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+
+	const n = 3
+	reqs := make([]fdReq, n)
+	batches := make([]*apBatch, n)
+	for i := range reqs {
+		cmd := NewStatusCmd(ctx, "set", "k", "v")
+		b := newAPBatch()
+		cmd.setReady(b) // cmd.Err()/await() would now block until b closes
+		batches[i] = b
+		reqs[i] = fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1}
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("failReqs propagated a callback panic: %v", r)
+			}
+		}()
+		fd.failReqs(reqs, ErrClosed)
+	}()
+
+	if got := calls.Load(); got != n {
+		t.Fatalf("error callback invoked %d times, want %d (every req must reach it)", got, n)
+	}
+	for i := range reqs {
+		if err := reqs[i].cmd.rawErr(); !errors.Is(err, ErrClosed) {
+			t.Fatalf("req %d cmd err = %v, want ErrClosed", i, err)
+		}
+		select {
+		case <-batches[i].done:
+		default:
+			t.Fatalf("req %d batch not closed: a panicking callback left the caller wedged", i)
+		}
+	}
+}
+
+// TestFDFailQueueRecoversMetricCallbackPanic is the failQueue twin of the above:
+// draining the accepted backlog on an fdLeaseErr must settle every buffered req
+// even when the MetricError callback panics, and must not propagate. Pure, no
+// server.
+func TestFDFailQueueRecoversMetricCallbackPanic(t *testing.T) {
+	var calls atomic.Int64
+	pool.SetAllMetricCallbacks(&pool.MetricCallbacks{
+		Error: func(context.Context, string, *pool.Conn, string, bool, int) {
+			calls.Add(1)
+			panic("boom from a user metric callback")
+		},
+	})
+	defer pool.SetAllMetricCallbacks(nil)
+
+	ctx := context.Background()
+	const n = 3
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}, ch: make(chan fdReq, n)}
+	batches := make([]*apBatch, n)
+	for i := 0; i < n; i++ {
+		cmd := NewStatusCmd(ctx, "set", "k", "v")
+		b := newAPBatch()
+		cmd.setReady(b)
+		batches[i] = b
+		fd.ch <- fdReq{cmd: cmd, batch: b, ctx: ctx, attempts: 1}
+	}
+
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("failQueue propagated a callback panic: %v", r)
+			}
+		}()
+		fd.failQueue(ErrClosed)
+	}()
+
+	if got := calls.Load(); got != n {
+		t.Fatalf("error callback invoked %d times, want %d (every buffered req must reach it)", got, n)
+	}
+	for i := range batches {
+		select {
+		case <-batches[i].done:
+		default:
+			t.Fatalf("req %d batch not closed: a panicking callback left the caller wedged", i)
+		}
+	}
+}
+
+// fdBlockingDurationRecorder is a custom OTel recorder whose duration callback
+// reads its OWN async command (cmd.Err()/cmd.String()). Both accessors await the
+// command's batch.done, which the FD reader closes only AFTER the duration
+// callback returns — so without the executor-guard escape in reportReplyMetrics
+// this call blocks forever and wedges the reader. Embeds fdOtelRecorder for the
+// no-op remainder of the Recorder interface.
+type fdBlockingDurationRecorder struct {
+	fdOtelRecorder
+	called atomic.Int64
+	gotErr atomic.Value // string: cmd.Err() text ("" for nil)
+	gotStr atomic.Value // string: cmd.String()
+}
+
+func (r *fdBlockingDurationRecorder) RecordOperationDuration(_ context.Context, _ time.Duration, cmd otel.Cmder, _ int, _ error, _ *pool.Conn, _ int) {
+	r.called.Add(1)
+	acc, ok := cmd.(interface {
+		Err() error
+		String() string
+	})
+	if !ok {
+		return
+	}
+	if e := acc.Err(); e != nil {
+		r.gotErr.Store(e.Error())
+	} else {
+		r.gotErr.Store("")
+	}
+	r.gotStr.Store(acc.String())
+}
+
+// TestFDReportReplyMetricsDurationCallbackNoDeadlock pins F3: a duration callback
+// that reads its own command must not wedge the reader. reportReplyMetrics runs
+// BEFORE req.complete() and the reader is not otherwise the batch's executor, so a
+// naive cmd.Err()/cmd.String() would block on the batch.done the reader has not
+// closed yet. The fix registers the reader as the batch's executor for the call,
+// so the accessor guard returns the just-set view without blocking. Asserting the
+// returned value (not just "did not hang") separates a working guard from one that
+// short-circuits to a garbage view. Pure, no server.
+func TestFDReportReplyMetricsDurationCallbackNoDeadlock(t *testing.T) {
+	rec := &fdBlockingDurationRecorder{}
+	otel.SetGlobalRecorder(rec)
+	defer otel.SetGlobalRecorder(nil)
+
+	ctx := context.Background()
+	cmd := NewStatusCmd(ctx, "get", "k")
+	cmd.SetVal("OK") // the "final result" the reader set before reporting
+	b := newAPBatch()
+	cmd.setReady(b) // cmd.Err()/cmd.String() now await b.done until it closes
+	req := fdReq{cmd: cmd, batch: b, attempts: 1, writtenAt: time.Now()}
+
+	fd := &fdEngine{client: &Client{baseClient: &baseClient{opt: &Options{}}}}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// e == nil exercises the duration callback (the blocking-view path). The
+		// batch is deliberately left open, matching the real order where
+		// reportReplyMetrics runs before req.complete().
+		fd.reportReplyMetrics(ctx, req, nil, nil)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reportReplyMetrics wedged: a duration callback read its own command and blocked on batch.done the reader has not yet closed")
+	}
+
+	if got := rec.called.Load(); got != 1 {
+		t.Fatalf("duration callback invoked %d times, want 1", got)
+	}
+	if v, _ := rec.gotErr.Load().(string); v != "" {
+		t.Fatalf("callback saw cmd.Err() = %q, want \"\" (the just-set view)", v)
+	}
+	if v, _ := rec.gotStr.Load().(string); !strings.Contains(v, "OK") {
+		t.Fatalf("callback saw cmd.String() = %q, want it to contain the set value OK", v)
+	}
+	// The guard must not have completed the batch; that stays req.complete()'s job.
+	select {
+	case <-b.done:
+		t.Fatal("reportReplyMetrics closed the batch; completion is req.complete()'s job")
+	default:
+	}
+}
+
+// fdPanicNoRetryCmd is a Cmder whose NoRetry() panics. flushReqs reads
+// reqs[i].cmd.NoRetry() at the top of each chunk (before any I/O), so this
+// triggers the shutdown-flush recover defer at the exact `i` the defer expects,
+// without needing a live server.
+type fdPanicNoRetryCmd struct{ *StatusCmd }
+
+func (fdPanicNoRetryCmd) NoRetry() bool { panic("boom: NoRetry panic in shutdown flush") }
+
+// TestFDShutdownFlushAbortsAfterRecoveredPanic pins finding F1: flushReqs
+// recovers an encoder/serialize panic in a carried-tail flush and fails that
+// group, but with an UNNAMED return it returned nil after recovery, so
+// flushCarryBudgeted treated the failed group as success and ran later
+// attempt-count groups (and, via shutdownFlush, the fresh queue) even though an
+// earlier ordered command never completed. The named return must propagate the
+// failure so the ordered flush aborts like a transport failure.
+//
+// Red-check: revert flushReqs to an unnamed/nil return -> flushCarryBudgeted
+// runs the later group (runPipeline call count becomes 1).
+func TestFDShutdownFlushAbortsAfterRecoveredPanic(t *testing.T) {
+	ctx := context.Background()
+	var runCalls atomic.Int32
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{MaxRetries: 5}}},
+		maxBatch: 8,
+		runPipeline: func(_ context.Context, _ []Cmder, _ int) error {
+			runCalls.Add(1)
+			return nil
+		},
+	}
+
+	// carry is attempts-descending, so [attempts=2] and [attempts=1] are two
+	// contiguous groups. group1's first command panics in NoRetry(); group2 is a
+	// normal command that must NOT run once group1 aborts. MaxRetries=5 keeps both
+	// groups' budgets positive (rem = MaxRetries+1-attempts), so neither is
+	// dropped as budget-exhausted before it is flushed.
+	g1 := fdPanicNoRetryCmd{NewStatusCmd(ctx, "set", "k0", "v")}
+	g2 := NewStatusCmd(ctx, "get", "k1")
+	carry := []fdReq{
+		{cmd: g1, batch: newAPBatch(), attempts: 2},
+		{cmd: g2, batch: newAPBatch(), attempts: 1},
+	}
+
+	err := fd.flushCarryBudgeted(ctx, carry)
+	if err == nil || !errors.Is(err, errFDPanicRecovered) {
+		t.Fatalf("flushCarryBudgeted err = %v, want errFDPanicRecovered", err)
+	}
+	if got := runCalls.Load(); got != 0 {
+		t.Fatalf("runPipeline called %d times, want 0 - a later group ran after a recovered shutdown-flush panic", got)
+	}
+	// Both the panicking group and the aborted later group must be failed (not left
+	// hanging) with the panic error.
+	if e := g1.rawErr(); e == nil || !errors.Is(e, errFDPanicRecovered) {
+		t.Fatalf("group1 cmd Err() = %v, want errFDPanicRecovered", e)
+	}
+	if e := g2.rawErr(); e == nil || !errors.Is(e, errFDPanicRecovered) {
+		t.Fatalf("group2 cmd Err() = %v, want errFDPanicRecovered (failed by the abort)", e)
+	}
+}
+
+// TestFDFlushReqsAbortsChunksOnErrConnUnusable pins finding F2: when a
+// shutdown-flush chunk returns an errConnUnusable wrapper (e.g. a custom push
+// processor returned a redis.Error during the close-time drain, so the chunk was
+// never written), the chunk loop classified it as an ordinary Redis reply
+// (isRedisError unwraps the marker) and CONTINUED to later chunks - flushing an
+// ordered shutdown out of order. The errConnUnusable precedence
+// (pipelineErrShouldStamp) must abort and fail the remaining reqs.
+//
+// Red-check: revert the guard to `!isRedisError(err)` -> the loop continues and
+// runPipeline is called for every chunk (call count becomes 3).
+func TestFDFlushReqsAbortsChunksOnErrConnUnusable(t *testing.T) {
+	ctx := context.Background()
+
+	// The exact shape withPipelineConn produces on a drain failure: errConnUnusable
+	// wrapping a redis.Error. isRedisError sees through the wrap, yet the marker is
+	// present - the bug's precondition.
+	wrapped := fmt.Errorf("%w: pipeline push drain: %w", errConnUnusable, fdFakeRedisErr{})
+	if !isRedisError(wrapped) {
+		t.Fatal("precondition: isRedisError(wrapped) should be true (it unwraps to a redis.Error)")
+	}
+	if !errors.Is(wrapped, errConnUnusable) {
+		t.Fatal("precondition: errors.Is(wrapped, errConnUnusable) should be true")
+	}
+
+	var calls atomic.Int32
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{config: &AutoPipelineOptions{}},
+		client:   &Client{baseClient: &baseClient{opt: &Options{}}},
+		maxBatch: 1, // one command per chunk, so the three reqs span three chunks
+		runPipeline: func(_ context.Context, _ []Cmder, _ int) error {
+			if calls.Add(1) == 1 {
+				return wrapped // chunk 1: desynced, never written
+			}
+			return nil
+		},
+	}
+	reqs := []fdReq{
+		{cmd: NewStatusCmd(ctx, "ping"), batch: newAPBatch(), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "ping"), batch: newAPBatch(), attempts: 1},
+		{cmd: NewStatusCmd(ctx, "ping"), batch: newAPBatch(), attempts: 1},
+	}
+
+	err := fd.flushReqs(ctx, reqs, 0)
+	if !errors.Is(err, errConnUnusable) {
+		t.Fatalf("flushReqs err = %v, want errConnUnusable-wrapped", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("runPipeline called %d times, want 1 - later chunks ran after an errConnUnusable chunk", got)
+	}
+	// The un-run chunks must be failed with the desync error, not completed as
+	// successes.
+	for i := 1; i < len(reqs); i++ {
+		if e := reqs[i].cmd.rawErr(); e == nil || !errors.Is(e, errConnUnusable) {
+			t.Errorf("reqs[%d].Err() = %v, want errConnUnusable (failed by the abort)", i, e)
+		}
+	}
+}
+
+// fdDrainErrProcessor is a custom (non-*push.Processor) PushNotificationProcessor
+// whose drain returns a caller-supplied error.
+type fdDrainErrProcessor struct{ err error }
+
+func (fdDrainErrProcessor) GetHandler(string) push.NotificationHandler { return nil }
+func (fdDrainErrProcessor) RegisterHandler(string, push.NotificationHandler, bool) error {
+	return nil
+}
+func (fdDrainErrProcessor) UnregisterHandler(string) error { return nil }
+func (p fdDrainErrProcessor) ProcessPendingNotifications(context.Context, push.NotificationHandlerContext, *proto.Reader) error {
+	return p.err
+}
+
+// TestReleaseConnRemovesConnAfterCustomDrainError pins finding F3: on the release
+// path, a custom PushNotificationProcessor that returns a redis.Error during the
+// release-time push drain left the possibly-partially-drained conn returning to
+// the pool - releaseConnToPool only Removed it when isBadConn recognized the
+// error, and isBadConn returns false for a (non-readonly, non-moved) redis.Error.
+// A drain error must make the conn unusable so it is Removed regardless.
+//
+// Red-check: restore the `if isBadConn(err, ...) { Remove; return }` guard -> the
+// redis.Error drain error is not isBadConn, so the conn is Put (puts=1, removes=0).
+func TestReleaseConnRemovesConnAfterCustomDrainError(t *testing.T) {
+	server, client := newIdleTCPConnPair(t)
+	defer server.Close()
+	defer client.Close()
+
+	cn := pool.NewConn(client)
+	// A push frame so MaybeHasData() and PeekReplyType() see a RespPush, routing to
+	// the custom processor (redis.go peeks the type, then calls it).
+	if _, err := server.Write([]byte(">1\r\n$3\r\nfoo\r\n")); err != nil {
+		t.Fatalf("write push frame: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !cn.MaybeHasData() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !cn.MaybeHasData() {
+		t.Fatal("push frame never became readable")
+	}
+
+	cp := &releaseRecordingPool{}
+	c := &baseClient{
+		opt:           &Options{Addr: "127.0.0.1:6379", Protocol: 3},
+		connPool:      cp,
+		pushProcessor: fdDrainErrProcessor{err: fdFakeRedisErr{}},
+	}
+	// err=nil so the first guard (isBadConn/errConnUnusable on the op error) does
+	// not fire; the drain error alone must drive removal.
+	c.releaseConn(context.Background(), cn, nil)
+
+	if cp.removes != 1 || cp.puts != 0 {
+		t.Fatalf("a custom release-drain error must remove, not re-pool, the conn: removes=%d puts=%d",
+			cp.removes, cp.puts)
+	}
+}
+
+// TestFDConfigReportsResolvedWindow pins finding F4: newFDEngine resolves a zero
+// FullDuplexWindow to fdDefaultWindow in a local, so Config() (documented to
+// report the effective config) reported 0. The resolved window must be written
+// back so Config() reports the value actually enforced.
+//
+// Red-check: drop `ap.config.FullDuplexWindow = w` in newFDEngine -> Config()
+// reports 0.
+func TestFDConfigReportsResolvedWindow(t *testing.T) {
+	c := NewClient(&Options{
+		Addr:                    internalTestRedisAddr(),
+		Protocol:                3,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+	})
+	defer c.Close()
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:       true,
+		FullDuplexWindow: 0, // 0 => default
+	})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active; cannot exercise the window write-back")
+	}
+
+	if got := ap.Config().FullDuplexWindow; got != fdDefaultWindow {
+		t.Fatalf("Config().FullDuplexWindow = %d, want %d (resolved default not published)", got, fdDefaultWindow)
+	}
+}
+
+// TestFDBlockingBatchPoolReuse exercises the pooled-batch lifecycle directly:
+// get → signal (as the reader would, via close) → wait → recycle, thousands of
+// times with concurrent get/put churn. Run under -race: a mis-delivered wakeup
+// from a recycled channel, a missed reset, or a double-signal surfaces as a race
+// or a hang here without needing a live server.
+func TestFDBlockingBatchPoolReuse(t *testing.T) {
+	const workers = 32
+	const iters = 5000
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				b := getFDBlockingBatch()
+				if !b.pooled {
+					t.Errorf("pooled batch lost its pooled flag")
+					return
+				}
+				if b.closed.Load() {
+					t.Errorf("recycled batch came back already closed")
+					return
+				}
+				// A completer (the reader) signals on its own goroutine while the
+				// "caller" waits — the real submit/complete/Wait shape.
+				done := make(chan struct{})
+				go func() {
+					b.close() // buffered send for pooled batches
+					close(done)
+				}()
+				<-b.done // the caller's Wait drains the signal
+				<-done
+				// close is idempotent: a second completer (e.g. a racing failReqs)
+				// must not send a second value or panic.
+				b.close()
+				select {
+				case <-b.done:
+					t.Errorf("second close signalled a recycled channel")
+					return
+				default:
+				}
+				putFDBlockingBatch(b)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// TestFDBlockingBatchPoolResets guards the individual-field reset: a batch put
+// back dirty must come out clean, or the next caller's completion is a no-op.
+func TestFDBlockingBatchPoolResets(t *testing.T) {
+	b := getFDBlockingBatch()
+	// Dirty every field the reset must clear.
+	b.closed.Store(true)
+	b.dispGid.Store(999)
+	b.nodeCount.Store(3)
+	b.nodeGids = []int64{1, 2, 3}
+	// Leave a stray signal in the buffered channel.
+	select {
+	case b.done <- struct{}{}:
+	default:
+	}
+	putFDBlockingBatch(b)
+
+	// The pool may hand back a different object, so loop until we observe ours
+	// (or give up after a bounded number of gets) — either way every returned
+	// batch must be clean.
+	for i := 0; i < 64; i++ {
+		g := getFDBlockingBatch()
+		if g.closed.Load() || g.dispGid.Load() != 0 || g.nodeCount.Load() != 0 || g.nodeGids != nil {
+			t.Fatalf("getFDBlockingBatch returned a dirty batch")
+		}
+		select {
+		case <-g.done:
+			t.Fatalf("getFDBlockingBatch returned a batch with a stray signal")
+		default:
+		}
+		putFDBlockingBatch(g)
+	}
+}
+
+// mkReq returns an fdReq tagged with a unique *apBatch pointer used as identity
+// in the model comparison.
+func mkReq() fdReq { return fdReq{batch: newAPBatch()} }
+
+// TestFDInflightRingModel compares the ring buffer against a reference []fdReq
+// model over a long randomized sequence of push / advance / frontBatch /
+// takeRemaining, deliberately driving the head around the array so growth and
+// snapshots straddle the wrap seam — the one place a ring breaks and that no
+// existing FD test targets.
+func TestFDInflightRingModel(t *testing.T) {
+	rng := rand.New(rand.NewSource(12345))
+	for trial := 0; trial < 200; trial++ {
+		f := newFDInflightCap(rng.Intn(8)) // mix of presized and grow-from-zero
+		var model []fdReq
+		var scratch []fdReq
+
+		for step := 0; step < 400; step++ {
+			switch rng.Intn(3) {
+			case 0: // push a batch
+				k := 1 + rng.Intn(20)
+				reqs := make([]fdReq, k)
+				for i := range reqs {
+					reqs[i] = mkReq()
+				}
+				f.pushBatch(reqs)
+				model = append(model, reqs...)
+			case 1: // advance (pop front)
+				if len(model) == 0 {
+					continue
+				}
+				n := rng.Intn(len(model) + 1)
+				f.advance(n)
+				model = model[n:]
+			case 2: // frontBatch snapshot must equal model front prefix, in order
+				if len(model) == 0 {
+					continue // frontBatch blocks by contract on an empty, open ring
+				}
+				scratch, _ = f.frontBatch(scratch)
+				want := len(model)
+				if want > fdReadBatch {
+					want = fdReadBatch
+				}
+				if len(scratch) != want {
+					t.Fatalf("trial %d step %d: frontBatch len=%d want=%d", trial, step, len(scratch), want)
+				}
+				for i := 0; i < want; i++ {
+					if scratch[i].batch != model[i].batch {
+						t.Fatalf("trial %d step %d: frontBatch[%d] mismatch", trial, step, i)
+					}
+				}
+			}
+			if f.len() != len(model) {
+				t.Fatalf("trial %d step %d: len=%d want=%d", trial, step, f.len(), len(model))
+			}
+			if f.empty() != (len(model) == 0) {
+				t.Fatalf("trial %d step %d: empty=%v want=%v", trial, step, f.empty(), len(model) == 0)
+			}
+		}
+
+		// takeRemaining must return exactly the model tail, in order.
+		rem := f.takeRemaining()
+		if len(rem) != len(model) {
+			t.Fatalf("trial %d: takeRemaining len=%d want=%d", trial, len(rem), len(model))
+		}
+		for i := range rem {
+			if rem[i].batch != model[i].batch {
+				t.Fatalf("trial %d: takeRemaining[%d] mismatch", trial, i)
+			}
+		}
+	}
+}
+
+// TestFDInflightRingGrowWhileWrapped forces the specific hazard: grow the ring
+// while the live window straddles the end of the backing array (head > 0 and
+// the tail has wrapped to the front), then verify order is preserved end to end.
+func TestFDInflightRingGrowWhileWrapped(t *testing.T) {
+	f := newFDInflightCap(8)
+	var model []fdReq
+
+	push := func(k int) {
+		reqs := make([]fdReq, k)
+		for i := range reqs {
+			reqs[i] = mkReq()
+		}
+		f.pushBatch(reqs)
+		model = append(model, reqs...)
+	}
+	adv := func(n int) { f.advance(n); model = model[n:] }
+
+	push(8)  // fill: head=0 count=8 cap=8
+	adv(5)   // head=5 count=3
+	push(4)  // tail wraps past end: entries at 5,6,7,0,... head=5 count=7 cap=8 (still fits)
+	adv(2)   // head=7 count=5
+	push(10) // count 15 > cap 8 -> grow WHILE wrapped (head=7)
+	// Advance across what was the old wrap seam and verify order throughout.
+	for f.len() > 0 {
+		var snap []fdReq
+		snap, _ = f.frontBatch(snap)
+		if snap[0].batch != model[0].batch {
+			t.Fatalf("front mismatch after wrapped grow")
+		}
+		adv(1)
+	}
+	if len(model) != 0 {
+		t.Fatalf("model not drained: %d left", len(model))
+	}
+	if rem := f.takeRemaining(); rem != nil {
+		t.Fatalf("takeRemaining after drain should be nil, got %d", len(rem))
+	}
+}
+
+// TestFDInflightRingAdvanceEmpty guards against a divide-by-zero in advance on a
+// never-grown ring (nil backing buffer): n>0 clamps to 0, and the modulo update
+// must not run. Regression for the copilot review on #3970.
+func TestFDInflightRingAdvanceEmpty(t *testing.T) {
+	f := newFDInflight() // zero-cap: buf is nil until first push
+	f.advance(5)         // must be a no-op, not a panic
+	if f.len() != 0 {
+		t.Fatalf("len=%d after advance on empty ring, want 0", f.len())
+	}
+	// Also after draining a grown ring back to empty.
+	f.pushBatch([]fdReq{mkReq(), mkReq()})
+	f.advance(2)
+	f.advance(3) // over-advance on an empty (but grown) ring: no-op, no panic
+	if f.len() != 0 {
+		t.Fatalf("len=%d after over-advance, want 0", f.len())
+	}
+}
+
+// TestFDInflightRingZeroesConsumed guards the load-bearing zeroing in advance:
+// popped slots must be cleared so drained entries don't pin cmd/ctx/batch for
+// the life of the session.
+func TestFDInflightRingZeroesConsumed(t *testing.T) {
+	f := newFDInflightCap(4)
+	reqs := []fdReq{mkReq(), mkReq(), mkReq(), mkReq()}
+	f.pushBatch(reqs)
+	f.advance(4)
+	for i := range f.buf {
+		if f.buf[i].batch != nil {
+			t.Fatalf("buf[%d] not zeroed after advance: %#v", i, f.buf[i])
+		}
+	}
+}
+
+// TestFullDuplexSparseTrafficPooledBatch drives the blocking full-duplex face
+// with intentionally sparse traffic: each caller pauses longer than the idle
+// timeout between commands, so the engine returns its connection to the pool and
+// re-leases on the next command — every command runs in its own single-entry
+// batch, repeatedly. This is the path where the pooled completion batch (buffered
+// done, recycled after Wait) and the idle-return/re-lease machinery meet, so it
+// guards against a mis-delivered wakeup from a recycled batch under intermittent
+// execution. Correctness checks: ECHO round-trips its own token (no
+// misattribution) and per-caller INCR is strictly sequential (no lost or
+// duplicated completion); nothing hangs.
+func TestFullDuplexSparseTrafficPooledBatch(t *testing.T) {
+	ctx := context.Background()
+
+	c := fdTestClient(":6379")
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+	ap, err := c.AutoPipelineWithOptions(&AutoPipelineOptions{
+		FullDuplex:            true,
+		Unordered:             false,
+		MaxConcurrentBatches:  1,
+		FullDuplexIdleTimeout: 40 * time.Millisecond,
+		FullDuplexMaxHold:     10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AutoPipeline: %v", err)
+	}
+	defer ap.Close()
+	if ap.fd == nil {
+		t.Fatal("full-duplex engine not active")
+	}
+
+	const workers = 4
+	const opsPerWorker = 12 // ~12 * 70ms ~= 0.85s per worker, run in parallel
+	for i := 0; i < workers; i++ {
+		if err := ap.Del(ctx, fmt.Sprintf("fd:sparse:%d", i)).Err(); err != nil {
+			t.Fatalf("del: %v", err)
+		}
+	}
+
+	done := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := fmt.Sprintf("fd:sparse:%d", id)
+			for op := 0; op < opsPerWorker; op++ {
+				// Pause past the 40ms idle timeout so the conn is returned and
+				// re-leased for this command (the sparse / intermittent case).
+				time.Sleep(70 * time.Millisecond)
+
+				token := fmt.Sprintf("w%d-op%d", id, op)
+				if got, err := ap.Echo(ctx, token).Result(); err != nil {
+					done <- fmt.Errorf("worker %d op %d: echo: %w", id, op, err)
+					return
+				} else if got != token {
+					done <- fmt.Errorf("worker %d op %d: ECHO misattribution: sent %q got %q", id, op, token, got)
+					return
+				}
+
+				want := int64(op + 1)
+				if got, err := ap.Incr(ctx, key).Result(); err != nil {
+					done <- fmt.Errorf("worker %d op %d: incr: %w", id, op, err)
+					return
+				} else if got != want {
+					done <- fmt.Errorf("worker %d op %d: INCR out of order: got %d want %d", id, op, got, want)
+					return
+				}
+			}
+			done <- nil
+		}(i)
+	}
+
+	// Watchdog: sparse traffic must still complete promptly (each op is ~1 RTT +
+	// the 70ms pause). A recycled-batch mis-wakeup that dropped a completion would
+	// hang a caller here.
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-time.After(30 * time.Second):
+		t.Fatal("sparse-traffic workers did not finish (possible dropped completion)")
+	}
+
+	for i := 0; i < workers; i++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
