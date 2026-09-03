@@ -199,6 +199,12 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
+	// Sample the reset generation BEFORE the checks run: an operator reselect
+	// (SetActiveDatabase/ForceActiveDatabase Resets the breaker) that lands while
+	// this probe is in flight must void the probe's verdict, so the record below
+	// is gated on this generation being unchanged. Probes hold no reservation, so
+	// this is their analogue of AllowReserve's generation stamp.
+	gen := db.cb.ResetGeneration()
 	start := time.Now()
 	healthy := db.runPolicy(ctx, checks)
 
@@ -227,16 +233,20 @@ func (db *multidbDatabase) probeWith(parent context.Context, timeout time.Durati
 		// CheckState first so an Open circuit past its grace period transitions
 		// to HalfOpen and the external success below can count toward closing it.
 		// External: probes are not admitted through IsAllowed, so a success must
-		// not release a half-open slot a real command probe is holding.
+		// not release a half-open slot a real command probe is holding. Gated on
+		// the reset generation: a success sampled before an operator reselect must
+		// not count toward closing the freshly reset episode. (CheckState bumps
+		// only the reservation generation, not resetGen, so it never voids this.)
 		db.cb.CheckState()
-		db.cb.RecordExternalSuccess()
+		db.cb.RecordExternalSuccessForReset(gen)
 	} else {
 		// Do NOT CheckState on a failed probe: transitioning a grace-elapsed
 		// Open breaker to HalfOpen here would briefly admit application traffic
 		// to a member the probe just found unhealthy (a spurious
 		// Open -> HalfOpen -> Open, and a window where failover could select
-		// it). RecordFailure refreshes the open state directly.
-		db.cb.RecordFailure()
+		// it). RecordFailureForReset refreshes the open state directly, unless an
+		// operator reselect since the sample voids this stale failure.
+		db.cb.RecordFailureForReset(gen)
 	}
 	otel.RecordMultiDBHealthCheck(ctx, db.fqdn, healthy, time.Since(start))
 	return healthy
