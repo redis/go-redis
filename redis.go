@@ -2098,6 +2098,22 @@ func NewClient(opt *Options) *Client {
 	}
 	c.init()
 
+	// Close a partially-built client if a construction step below panics before
+	// NewClient returns. The pools (and their background goroutines) are created
+	// below, but several later steps can panic — maintnotifications in
+	// ModeEnabled failing, or a custom push processor rejecting handler
+	// registration. The panic propagates to the caller (some callers, e.g.
+	// MultiDB AddDatabase, recover it), yet &c is never returned, so without this
+	// those pools would leak with no reference left to Close them. closeResources
+	// is nil-safe for a partially-built client, and the panic still propagates:
+	// this defer runs during unwind and does not recover.
+	built := false
+	defer func() {
+		if !built {
+			_ = c.Close()
+		}
+	}()
+
 	// Initialize push notification processor using shared helper
 	// Use void processor for RESP2 connections (push notifications not available)
 	c.pushProcessor = initializePushProcessor(opt)
@@ -2186,6 +2202,7 @@ func NewClient(opt *Options) *Client {
 	// This allows async gauge metrics to pull stats from pools periodically
 	otel.RegisterPools(c.connPool, c.pubSubPool, c.getPipelinePool(), opt.Addr)
 
+	built = true
 	return &c
 }
 
