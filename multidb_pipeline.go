@@ -427,12 +427,22 @@ func (c *multidbCore) processTxPipeline(ctx context.Context, cmds []Cmder) error
 		return ErrClosed
 	}
 	if cmdsContainHImport(cmds) {
-		// Reject the whole transaction (MULTI/EXEC is all-or-nothing). Report
-		// the positionally-first error like Pipeline.Exec: setCmdsErr fills only
-		// empty slots, so a command the caller queued with a pre-existing error
-		// keeps it and must win over errMultiDBHImport when it comes first.
-		setCmdsErr(cmds, errMultiDBHImport)
-		return cmdsFirstErr(cmds)
+		// Reject the whole transaction (MULTI/EXEC is all-or-nothing) and report
+		// the positionally-first error over the USER commands, like Pipeline.Exec
+		// — not the synthetic MULTI that wrapMultiExec prepends. cmds is always
+		// the wrapped [MULTI, user..., EXEC]: TxPipeline().Exec is the only caller
+		// and wraps before dispatch, and transactions are never autopipelined, so
+		// the user commands are cmds[1:len-1] (the minimum wrapped length is 3).
+		// setCmdsErr fills only empty slots, so a user command the caller queued
+		// with a pre-existing error keeps it and wins over errMultiDBHImport when
+		// it comes first — stamping the fresh MULTI (index 0) instead would let it
+		// win every time.
+		user := cmds
+		if len(cmds) >= 3 {
+			user = cmds[1 : len(cmds)-1]
+		}
+		setCmdsErr(user, errMultiDBHImport)
+		return cmdsFirstErr(user)
 	}
 	// A context that is already done must not reach the failover gate: with
 	// ProbeTargetBeforeFailover the doomed probes would damage candidate

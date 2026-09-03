@@ -219,9 +219,18 @@ func TestProcessTxPipelineHImportPreservesFirstError(t *testing.T) {
 	preErr.SetErr(prior)
 	him := NewStatusCmd(context.Background(), "himport", "fs")
 
-	err := core.processTxPipeline(context.Background(), []Cmder{preErr, him})
+	// Wrap like TxPipeline().Exec does before dispatch. The synthetic MULTI at
+	// index 0 must not win the first-error ordering over a user command the
+	// caller pre-stamped.
+	wrapped := wrapMultiExec(context.Background(), []Cmder{preErr, him})
+	err := core.processTxPipeline(context.Background(), wrapped)
 	if !errors.Is(err, prior) {
 		t.Fatalf("processTxPipeline = %v, want the positionally-first pre-existing error %v", err, prior)
+	}
+	// The HIMPORT command itself is stamped — proving the envelope was stripped
+	// and the user slice stamped, not that stamping was skipped altogether.
+	if !errors.Is(him.Err(), errMultiDBHImport) {
+		t.Fatalf("HIMPORT command err = %v, want errMultiDBHImport", him.Err())
 	}
 }
 
