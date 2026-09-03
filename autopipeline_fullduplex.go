@@ -833,27 +833,30 @@ func (fd *fdEngine) retryOnNormalConn(req fdReq, startAttempt int) {
 	// then submitters — end-to-end backpressure. No cycle: retries drain on the main
 	// pool, independent of the reader waiting here.
 	//
-	// Interruptible acquire: the reader must not park here past Close. The wait is
-	// otherwise BOUNDED, since every slot holder is a retry running through process(),
-	// whose timeouts and backoff guarantee release. But on Close the command was
-	// already ACCEPTED and came back with a retryable/redirect reply, so failing it
-	// ErrClosed would break Close's accepted-work drain contract (and every later
-	// retryable reply in the tail would hit the same path). So on ap.ctx cancellation,
-	// run the retry WITHOUT the sem bound — there is no sustained new load during
-	// teardown — still tracked by retryWg so Close waits for it to settle with its
-	// real outcome.
-	acquired := false
+	// Off Close: block for a slot (the backpressure above). On Close (ap.ctx done):
+	// take a slot if one is FREE, else FAIL the command — never block and never run
+	// slot-less. Blocking the reader on Close can deadlock: a spilled FD session
+	// (attempt's spill) pins a main-pool conn until the reader drains, so parking the
+	// reader while retry holders contend for that same pool hangs at a small PoolSize.
+	// Running slot-less (an earlier ap.ctx.Done() bypass) let a Close mid retryable-
+	// reply storm spawn one goroutine per in-flight reply (up to FullDuplexWindow) and
+	// OOM. Bounded fail is the lesser evil: the engine is closing, so ErrClosed on the
+	// overflow is acceptable, and retryWg still covers the slots that were granted.
 	select {
 	case fd.retrySem <- struct{}{}:
-		acquired = true
 	case <-fd.ap.ctx.Done():
+		select {
+		case fd.retrySem <- struct{}{}:
+		default:
+			req.cmd.SetErr(ErrClosed)
+			req.complete()
+			return
+		}
 	}
 	fd.retryWg.Add(1)
 	go func() {
 		defer func() {
-			if acquired {
-				<-fd.retrySem
-			}
+			<-fd.retrySem
 			fd.retryWg.Done()
 		}()
 		// process runs user code (hooks, arg encoders) and can panic; without
@@ -1105,6 +1108,10 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 	// Limiter's unit. Admission is per written chunk, in writeBatch — see the
 	// comment there for the rationale.
 	var cn *pool.Conn
+	// connPool records which pool cn was leased from — the pipeline pool normally, or
+	// the main pool on a spill (see the acquire below) — so the deferred remove/release
+	// returns it to the pool that owns it.
+	connPool := fd.pool
 	defer func() {
 		if cn == nil {
 			return // nothing acquired, or already Removed inline below
@@ -1117,44 +1124,77 @@ func (fd *fdEngine) attempt(bg context.Context, carry []fdReq) (unacked []fdReq,
 		// handoff recycle) go through releaseConnToPool: it drains pending pushes and
 		// Puts, so the OnPut hook can perform the maintenance handoff on a marked conn.
 		if result == fdConnErr {
-			fd.pool.Remove(bg, cn, aerr)
+			connPool.Remove(bg, cn, aerr)
 		} else {
-			fd.client.releaseConnToPool(bg, fd.pool, cn, nil)
+			fd.client.releaseConnToPool(bg, connPool, cn, nil)
 		}
 	}()
 
-	// Acquire under ap.ctx (not bg): if Close cancels ap.ctx while this Get is
-	// blocked on a saturated pool it returns at once instead of waiting out
-	// PoolTimeout, so shutdown is not delayed. Everything after — init and the
-	// session I/O — stays on bg so already-accepted commands still complete during
-	// Close (Close waits for run() via ap.wg).
-	cn, aerr = fd.pool.Get(fd.ap.ctx)
-	if aerr != nil {
-		cn = nil
-		return carry, fdLeaseErr, aerr
-	}
-	// Init + acquire through initPooledConn rather than hand-inlining
-	// initConn/TryAcquire (the main and pipeline paths drift when mirrored by hand).
-	// It records the create-time metric, unwraps the init error, and Removes the
-	// conn on any failure (so the defer, seeing cn=nil, does not double-release); it
-	// does NOT Put the conn, which suits the held-conn model.
-	//
-	// Initialize with the SESSION-INITIATING caller's context (values only, via
-	// WithoutCancel), not context.Background(): a CredentialsProviderContext
-	// derives credentials from context values, and Background made those invisible
-	// so such providers rejected FD sessions or authed with fallback identity.
-	// Full-duplex holds ONE connection for MANY callers, so credentials are
-	// necessarily SESSION-scoped (the first caller's), not per-call — the same
-	// limitation every shared/pooled connection has; documented on FullDuplex.
+	// initCtx: initialize with the SESSION-INITIATING caller's context (values only,
+	// via WithoutCancel), not context.Background(). A CredentialsProviderContext
+	// derives credentials from context values, and Background made those invisible so
+	// such providers rejected FD sessions or authed with fallback identity. Full-duplex
+	// holds ONE connection for MANY callers, so credentials are session-scoped (the
+	// first caller's), like any shared/pooled connection (documented on FullDuplex).
 	// WithoutCancel keeps the values but drops the caller's deadline/cancel, so one
-	// caller's ctx expiry cannot abort an init the whole session depends on.
+	// caller's ctx expiry cannot abort an init the whole session depends on. init goes
+	// through initPooledConn (shared with the main/pipeline paths): it records the
+	// create-time metric and Removes the conn on any failure, so the defer, seeing
+	// cn=nil, does not double-release.
 	initCtx := bg
 	if len(carry) > 0 && carry[0].ctx != nil {
 		initCtx = context.WithoutCancel(carry[0].ctx)
 	}
-	if e := fd.client.initPooledConn(initCtx, fd.pool, cn); e != nil {
-		cn = nil // initPooledConn already Removed it
-		return carry, fdLeaseErr, e
+
+	// Acquire+init from the pipeline pool; SPILL to the main pool when the pipeline
+	// pool cannot serve the lease, mirroring withPipelineConn — an FD lease must not
+	// fail already-accepted commands while the main pool has idle capacity. Unlike a
+	// per-round-trip pipeline borrow, a spilled FD session holds the main-pool conn for
+	// its whole lifetime (until idle/maxHold); that is the accepted cost of not
+	// stranding the backlog. TryGet (non-blocking) so a saturated pipeline pool spills
+	// at once instead of stalling up to PoolTimeout. Spill on saturation
+	// (ErrPoolTryFull / ErrPoolExhausted) or a pipeline-conn init failure (the main
+	// pool may have an idle conn); NOT on a non-saturation error (ctx cancelled, pool
+	// closed) — the main pool would fail the same way. Acquire under ap.ctx (not bg) so
+	// a Close cancelling ap.ctx returns at once instead of waiting out PoolTimeout;
+	// init and session I/O stay on bg so accepted commands still complete during Close.
+	if ref := fd.client.loadPipelinePool(); ref != nil {
+		spill := false
+		cn, aerr = ref.pool.TryGet(fd.ap.ctx)
+		if aerr != nil {
+			cn = nil
+			if !errors.Is(aerr, pool.ErrPoolTryFull) && !errors.Is(aerr, pool.ErrPoolExhausted) {
+				return carry, fdLeaseErr, aerr
+			}
+			spill = true
+		} else if e := fd.client.initPooledConn(initCtx, ref.pool, cn); e != nil {
+			cn = nil // initPooledConn already Removed it from the pipeline pool
+			spill = true
+		}
+		if spill {
+			cn, aerr = fd.client.connPool.Get(fd.ap.ctx)
+			if aerr != nil {
+				cn = nil
+				return carry, fdLeaseErr, aerr
+			}
+			connPool = fd.client.connPool
+			if e := fd.client.initPooledConn(initCtx, fd.client.connPool, cn); e != nil {
+				cn = nil // initPooledConn already Removed it from the main pool
+				return carry, fdLeaseErr, e
+			}
+		}
+	} else {
+		// No dedicated pipeline pool (PipelinePoolSize < 0, or an internal wrapper
+		// client): fd.pool IS the main pool, so acquire directly with no spill.
+		cn, aerr = fd.pool.Get(fd.ap.ctx)
+		if aerr != nil {
+			cn = nil
+			return carry, fdLeaseErr, aerr
+		}
+		if e := fd.client.initPooledConn(initCtx, fd.pool, cn); e != nil {
+			cn = nil // initPooledConn already Removed it
+			return carry, fdLeaseErr, e
+		}
 	}
 
 	unacked, result, aerr = fd.session(bg, cn, carry)

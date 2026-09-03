@@ -3919,3 +3919,55 @@ func TestFullDuplexSparseTrafficPooledBatch(t *testing.T) {
 		}
 	}
 }
+
+// TestFullDuplexSpillsToMainPoolWhenPipelinePoolFull pins that an FD lease falls back
+// to the main pool when the dedicated pipeline pool is saturated, mirroring
+// withPipelineConn — otherwise a full pipeline pool fails already-accepted commands
+// even though the main pool has idle capacity.
+func TestFullDuplexSpillsToMainPoolWhenPipelinePoolFull(t *testing.T) {
+	ctx := context.Background()
+
+	// PipelinePoolSize:1 so holding its one conn saturates it; the main pool has room.
+	c := NewClient(&Options{
+		Addr:                    ":6379",
+		Protocol:                3,
+		PipelinePoolSize:        1,
+		PoolSize:                8,
+		PipelineReadBufferSize:  64 * 1024,
+		PipelineWriteBufferSize: 64 * 1024,
+	})
+	defer c.Close()
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("no redis: %v", err)
+	}
+
+	// Detect the spill: a Get on the MAIN pool by the FD lease.
+	mainHook := &fdCountHook{}
+	c.connPool.AddPoolHook(mainHook)
+
+	// Saturate the pipeline pool by holding its only turn.
+	pp := c.getPipelinePool()
+	held, err := pp.Get(ctx)
+	if err != nil {
+		t.Fatalf("hold pipeline conn: %v", err)
+	}
+	defer pp.Put(ctx, held)
+
+	ap, err := c.AsyncAutoPipelineWithOptions(&AutoPipelineOptions{FullDuplex: true})
+	if err != nil {
+		t.Fatalf("AsyncAutoPipeline: %v", err)
+	}
+	defer ap.Close()
+
+	// The engine leases lazily on the first command; the pipeline pool is full, so it
+	// must spill to the main pool and still succeed.
+	if err := ap.Set(ctx, "fd:spill:k", "v", 0).Err(); err != nil {
+		t.Fatalf("FD command failed instead of spilling to the main pool: %v", err)
+	}
+	if v, err := ap.Get(ctx, "fd:spill:k").Result(); err != nil || v != "v" {
+		t.Fatalf("FD get after spill: v=%q err=%v", v, err)
+	}
+	if g := mainHook.gets.Load(); g < 1 {
+		t.Fatalf("FD lease did not spill to the main pool (main-pool gets=%d)", g)
+	}
+}

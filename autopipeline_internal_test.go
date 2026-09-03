@@ -728,6 +728,33 @@ func TestFDFirstNoRetrySentGate(t *testing.T) {
 	}
 }
 
+// TestFDRetryOnNormalConnBoundedDuringClose pins that a Close-time off-pipe retry does
+// not block the reader or spawn a slot-less goroutine when the retry semaphore is
+// full: it fails the command with ErrClosed instead. The earlier ap.ctx.Done() bypass
+// ran slot-less, so a Close mid retryable-reply storm could spawn one goroutine per
+// in-flight reply (up to FullDuplexWindow) and OOM; blocking instead can deadlock with
+// a spilled main-pool FD session. Bounded fail is the chosen middle.
+func TestFDRetryOnNormalConnBoundedDuringClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // ap.ctx cancelled == Close in progress
+
+	fd := &fdEngine{
+		ap:       &AutoPipeliner{ctx: ctx},
+		retrySem: make(chan struct{}, 1),
+	}
+	fd.retrySem <- struct{}{} // saturate the bound
+
+	req := fdReq{cmd: NewStatusCmd(context.Background(), "get", "k"), batch: newAPBatch()}
+	fd.retryOnNormalConn(req, 0) // must return synchronously, not spawn a goroutine
+
+	if err := req.cmd.rawErr(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Close-time retry with a full sem: rawErr = %v, want ErrClosed", err)
+	}
+	if n := len(fd.retrySem); n != 1 {
+		t.Fatalf("fail path must not acquire a slot: retrySem len = %d, want 1", n)
+	}
+}
+
 // TestFDRecoverTailRefundsSuffixOnly pins the fdConnErr recovery-set builder:
 // the drained (sent) tail keeps its attempt charge, the never-sent suffix is
 // refunded (run()'s recovery re-bumps on the real re-issue), and the result is
