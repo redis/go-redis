@@ -1305,3 +1305,46 @@ func TestCircuitBreaker_StaleReservationFailureIgnored(t *testing.T) {
 		t.Errorf("stale reservation failure re-opened the circuit: state=%v, want half-open", got)
 	}
 }
+
+// TestCircuitBreaker_HalfOpenSuccessFailureRaceNeverDropsOutcome pins that a
+// success closing the circuit and a failure re-opening it, arriving at the
+// same instant in half-open, can never race each other's CAS: both
+// recordSuccessHalfOpenLocked and recordFailureHalfOpenLocked run fully under
+// transitionMu, so exactly one of them completes first, and the other's own
+// state check (not a raw CompareAndSwap outside the lock) then classifies
+// correctly instead of silently discarding a completed outcome.
+func TestCircuitBreaker_HalfOpenSuccessFailureRaceNeverDropsOutcome(t *testing.T) {
+	config := Config{
+		FailureThreshold:    1,
+		SuccessThreshold:    1, // one success is enough to close from half-open
+		MaxHalfOpenRequests: 2,
+		OpenTimeout:         time.Nanosecond,
+	}
+	for i := 0; i < 2000; i++ {
+		cb := New(config)
+		cb.RecordFailure()
+		cb.CheckState() // -> HalfOpen
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; cb.RecordSuccess() }() // may close
+		go func() { defer wg.Done(); <-start; cb.RecordFailure() }() // may re-open
+		close(start)
+		wg.Wait()
+
+		state := State(cb.state.Load())
+		if state != StateClosed && state != StateOpen {
+			t.Fatalf("round %d: state=%v after a concurrent half-open success/failure, want Closed or Open (never stuck half-open)", i, state)
+		}
+		// Whichever outcome won, the loser's generation/state check must have
+		// left the counters clean for the new episode — a dropped-CAS bug would
+		// instead leave a stale non-zero successes/requests count behind.
+		if got := cb.Stats().Successes; got != 0 {
+			t.Fatalf("round %d: successes=%d after settling to %v, want 0", i, got, state)
+		}
+		if got := cb.Stats().Requests; got != 0 {
+			t.Fatalf("round %d: requests=%d after settling to %v, want 0", i, got, state)
+		}
+	}
+}
